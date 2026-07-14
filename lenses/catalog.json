@@ -1,0 +1,514 @@
+{
+  "deep_threshold_files": 8,
+  "code_extensions": [
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".vue",
+    ".svelte",
+    ".go",
+    ".rs",
+    ".java",
+    ".rb",
+    ".php",
+    ".c",
+    ".cpp",
+    ".cs",
+    ".sql",
+    ".sh",
+    ".kt",
+    ".swift",
+    ".m",
+    ".mm",
+    ".dart",
+    ".scala"
+  ],
+  "lenses": [
+    {
+      "id": "product",
+      "name": "Product",
+      "group": "Product & delivery",
+      "charter": "user value, requirements, scope fidelity, journey completeness",
+      "boundary": "delivery timing/dependencies \u2192 project-management",
+      "looks_for": "requirements met, scope creep/gaps, user-journey completeness, success metrics",
+      "globs": [
+        "**/specs/**",
+        "specs/**",
+        "**/*.spec.md",
+        "**/requirements/**",
+        "**/PRD*"
+      ],
+      "task_types": [
+        "feature"
+      ]
+    },
+    {
+      "id": "security",
+      "name": "Security",
+      "group": "Quality & verification",
+      "charter": "confidentiality, integrity, authz, safe inputs, supply chain",
+      "boundary": "reliability/uptime \u2192 sre",
+      "looks_for": "secrets, authz gaps, injection, unsafe input, vulnerable deps",
+      "globs": [
+        "**/auth/**",
+        "**/*.sql",
+        "**/api/**",
+        "**/*.env*",
+        "**/secrets/**"
+      ],
+      "task_types": [
+        "auth",
+        "api",
+        "integration"
+      ],
+      "baseline": "code",
+      "deep_globs": [
+        "**/auth/**",
+        "**/*.sql",
+        "**/*.env*"
+      ],
+      "checks": [
+        "gitleaks",
+        "semgrep --config auto",
+        "dependency audit"
+      ]
+    },
+    {
+      "id": "code-quality",
+      "name": "Code quality",
+      "group": "Engineering craft",
+      "charter": "cross-cutting craft: clarity, correctness, maintainability",
+      "boundary": "surface specifics \u2192 frontend/backend/mobile; test adequacy \u2192 qa",
+      "looks_for": "clarity, error handling, dead code, naming, duplication",
+      "baseline": "code",
+      "checks": [
+        "lint",
+        "typecheck",
+        "jscpd (copy-paste/duplication)"
+      ]
+    },
+    {
+      "id": "testability",
+      "name": "Testability",
+      "group": "Quality & verification",
+      "charter": "CAN this be tested \u2014 seams, determinism, isolation",
+      "boundary": "IS it tested well \u2192 qa",
+      "looks_for": "coverage of new paths, seams/mockability, hidden globals, non-determinism",
+      "baseline": "code",
+      "checks": [
+        "coverage"
+      ]
+    },
+    {
+      "id": "design",
+      "name": "Design & UX",
+      "group": "Experience",
+      "charter": "interaction, visual consistency, all UI states",
+      "boundary": "a11y \u2192 accessibility; FE implementation \u2192 frontend",
+      "looks_for": "UX flow, loading/empty/error states, visual consistency, hierarchy",
+      "globs": [
+        "**/*.tsx",
+        "**/*.jsx",
+        "**/*.vue",
+        "**/*.svelte",
+        "**/*.css",
+        "**/*.scss",
+        "**/components/**",
+        "**/ui/**"
+      ],
+      "task_types": [
+        "ui",
+        "screens",
+        "design-system"
+      ],
+      "deep_globs": [
+        "**/*.tsx",
+        "**/*.jsx",
+        "**/*.vue"
+      ]
+    },
+    {
+      "id": "scalability",
+      "name": "Scalability & performance",
+      "group": "Operations",
+      "charter": "will it hold under load and data growth",
+      "boundary": "runtime reliability/observability \u2192 sre",
+      "looks_for": "N+1 / unbounded queries, blocking calls, resource ceilings, hot paths",
+      "globs": [
+        "**/api/**",
+        "**/db/**",
+        "**/*.sql",
+        "**/services/**",
+        "**/queries/**"
+      ],
+      "task_types": [
+        "api",
+        "integration",
+        "backend"
+      ],
+      "deep_globs": [
+        "**/*.sql",
+        "**/db/**"
+      ]
+    },
+    {
+      "id": "integrability",
+      "name": "Integrability",
+      "group": "Interfaces",
+      "charter": "contracts BETWEEN systems: shapes, versioning, errors",
+      "boundary": "internal service logic \u2192 backend",
+      "looks_for": "API/data contracts, versioning, error codes, error recovery, schema hygiene",
+      "globs": [
+        "**/api/**",
+        "**/*.proto",
+        "**/schema/**",
+        "**/contracts/**",
+        "**/openapi*"
+      ],
+      "task_types": [
+        "api",
+        "integration"
+      ]
+    },
+    {
+      "id": "data-safety",
+      "name": "Data & migration safety",
+      "group": "Data",
+      "charter": "changing stored data without corrupting it",
+      "boundary": "schema DESIGN/perf \u2192 dba",
+      "looks_for": "additive/rollback-safe migrations, nullable/defaulted columns, backfill, cascades",
+      "globs": [
+        "**/migrations/**",
+        "**/*.sql",
+        "**/schema/**"
+      ],
+      "task_types": [
+        "migration"
+      ],
+      "deep_globs": [
+        "**/migrations/**"
+      ]
+    },
+    {
+      "id": "tech-writer",
+      "name": "Technical writing",
+      "group": "Docs",
+      "charter": "docs, references, changelogs that stay true to the code",
+      "boundary": "in-product UI copy \u2192 design/content",
+      "looks_for": "README/API-doc/changelog accuracy & completeness, ADR clarity, examples that run",
+      "globs": [
+        "**/*.md",
+        "**/*.mdx",
+        "**/docs/**",
+        "**/README*",
+        "**/CHANGELOG*",
+        "**/openapi*",
+        "**/*.rst"
+      ],
+      "task_types": [
+        "docs"
+      ],
+      "deep_globs": [
+        "**/docs/**",
+        "**/openapi*"
+      ]
+    },
+    {
+      "id": "qa",
+      "name": "QA",
+      "group": "Quality & verification",
+      "charter": "IS the change tested well and safe to ship",
+      "boundary": "CAN it be tested \u2192 testability",
+      "looks_for": "test strategy, coverage adequacy, regression risk, edge/negative cases, E2E paths",
+      "globs": [
+        "**/tests/**",
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/e2e/**",
+        "**/cypress/**",
+        "**/playwright/**",
+        "**/__tests__/**"
+      ],
+      "task_types": [
+        "feature",
+        "qa"
+      ]
+    },
+    {
+      "id": "devops",
+      "name": "DevOps",
+      "group": "Operations",
+      "charter": "build and ship: CI/CD, IaC, deploy config",
+      "boundary": "run-time reliability \u2192 sre",
+      "looks_for": "pipeline correctness, build reproducibility, IaC hygiene, env parity, secrets in config",
+      "globs": [
+        "**/.github/**",
+        "**/Dockerfile",
+        "**/docker-compose*",
+        "**/*.tf",
+        "**/k8s/**",
+        "**/*.helm*",
+        "**/Jenkinsfile",
+        "**/.gitlab-ci*",
+        "**/Makefile",
+        "**/*.cicd.yml"
+      ],
+      "task_types": [
+        "infra",
+        "devops",
+        "deploy"
+      ],
+      "deep_globs": [
+        "**/*.tf",
+        "**/k8s/**"
+      ],
+      "checks": [
+        "terraform validate",
+        "hadolint",
+        "actionlint"
+      ]
+    },
+    {
+      "id": "dba",
+      "name": "DBA",
+      "group": "Data",
+      "charter": "schema design, indexing, query efficiency, data modeling",
+      "boundary": "migration SAFETY \u2192 data-safety",
+      "looks_for": "normalization, indexes, query plans, constraints/keys, data types, partitioning",
+      "globs": [
+        "**/*.sql",
+        "**/models/**",
+        "**/entities/**",
+        "**/*.prisma",
+        "**/schema/**",
+        "**/repositories/**"
+      ],
+      "task_types": [
+        "migration",
+        "backend"
+      ],
+      "deep_globs": [
+        "**/schema/**",
+        "**/*.prisma"
+      ]
+    },
+    {
+      "id": "sre",
+      "name": "SRE",
+      "group": "Operations",
+      "charter": "will we know when it breaks, and recover",
+      "boundary": "load/perf \u2192 scalability; build/deploy \u2192 devops",
+      "looks_for": "observability (logs/metrics/traces/alerts), retries/timeouts/circuit-breakers, failure modes, runbooks, error budgets",
+      "globs": [
+        "**/monitoring/**",
+        "**/observability/**",
+        "**/alerts/**",
+        "**/*.slo*",
+        "**/runbooks/**",
+        "**/health*",
+        "**/*.pagerduty*"
+      ],
+      "task_types": [
+        "backend",
+        "infra",
+        "reliability"
+      ]
+    },
+    {
+      "id": "project-management",
+      "name": "Project / delivery",
+      "group": "Product & delivery",
+      "charter": "scope, sequencing, dependencies, risk, rollout readiness",
+      "boundary": "user value/requirements \u2192 product",
+      "looks_for": "dependency order, cross-team impact, timeline/risk, rollout & rollback plan, delivery readiness",
+      "globs": [
+        "**/plan/**",
+        "plan/**",
+        "**/roadmap*",
+        "**/*.plan.md",
+        "**/milestones*"
+      ]
+    },
+    {
+      "id": "frontend",
+      "name": "Front-end engineering",
+      "group": "Engineering craft",
+      "charter": "FE implementation: components, state, render, bundle, compat",
+      "boundary": "visual/UX \u2192 design; a11y \u2192 accessibility",
+      "looks_for": "component architecture, state mgmt, render/bundle perf, browser/device compat, FE error/loading handling",
+      "globs": [
+        "**/*.tsx",
+        "**/*.jsx",
+        "**/*.vue",
+        "**/*.svelte",
+        "**/web/**",
+        "**/src/components/**",
+        "**/pages/**",
+        "**/*.stories.*"
+      ],
+      "task_types": [
+        "ui",
+        "frontend"
+      ],
+      "deep_globs": [
+        "**/*.tsx",
+        "**/*.jsx"
+      ]
+    },
+    {
+      "id": "backend",
+      "name": "Back-end engineering",
+      "group": "Engineering craft",
+      "charter": "service logic, data access, boundaries, transactions",
+      "boundary": "cross-system contracts \u2192 integrability; DB design \u2192 dba",
+      "looks_for": "API design, business-logic correctness, data-access patterns, service boundaries, idempotency, transactions",
+      "globs": [
+        "**/api/**",
+        "**/services/**",
+        "**/handlers/**",
+        "**/controllers/**",
+        "**/routes/**",
+        "**/*.proto",
+        "**/usecases/**"
+      ],
+      "task_types": [
+        "backend",
+        "api"
+      ]
+    },
+    {
+      "id": "architecture",
+      "name": "System design & architecture",
+      "group": "Architecture & systems",
+      "charter": "component boundaries, data flow, contracts, scaling & failure modes",
+      "boundary": "in-file code craft \u2192 code-quality; infra provisioning \u2192 devops",
+      "looks_for": "component/service decomposition, data flow & coupling, state & consistency, scaling & failure modes, tech-choice fit",
+      "globs": [
+        "**/architecture/**",
+        "**/adr/**",
+        "**/*.arch.md",
+        "**/docker-compose*",
+        "**/*.proto",
+        "**/k8s/**",
+        "**/design/**",
+        "**/*.tf"
+      ],
+      "task_types": [
+        "greenfield",
+        "system-design",
+        "distributed",
+        "integration"
+      ]
+    },
+    {
+      "id": "mobile",
+      "name": "Mobile engineering",
+      "group": "Engineering craft",
+      "charter": "native/mobile: platform, offline, lifecycle, store",
+      "boundary": "shared business logic \u2192 backend/frontend",
+      "looks_for": "iOS/Android specifics, offline/sync, battery/network, app lifecycle, permissions, store guidelines, native perf",
+      "globs": [
+        "**/*.swift",
+        "**/*.kt",
+        "**/*.m",
+        "**/*.mm",
+        "**/ios/**",
+        "**/android/**",
+        "**/*.dart",
+        "**/*.xcodeproj/**",
+        "**/AndroidManifest.xml"
+      ],
+      "task_types": [
+        "mobile"
+      ],
+      "deep_globs": [
+        "**/ios/**",
+        "**/android/**"
+      ]
+    },
+    {
+      "id": "accessibility",
+      "name": "Accessibility (a11y)",
+      "group": "Experience",
+      "charter": "usable by everyone \u2014 WCAG, keyboard, screen readers",
+      "boundary": "general visual design \u2192 design",
+      "looks_for": "keyboard nav, ARIA/screen-reader, contrast, focus management, alt text, WCAG",
+      "globs": [
+        "**/*.tsx",
+        "**/*.jsx",
+        "**/*.vue",
+        "**/*.svelte",
+        "**/*.html",
+        "**/components/**",
+        "**/ui/**"
+      ],
+      "task_types": [
+        "ui",
+        "screens"
+      ],
+      "checks": [
+        "axe",
+        "a11y-lint"
+      ]
+    },
+    {
+      "id": "privacy-compliance",
+      "name": "Privacy & compliance",
+      "group": "Compliance",
+      "charter": "handle user & regulated data lawfully",
+      "boundary": "technical attack surface \u2192 security",
+      "looks_for": "PII handling, consent, data residency/retention, GDPR/CCPA, license/legal exposure",
+      "globs": [
+        "**/*consent*",
+        "**/privacy/**",
+        "**/*gdpr*",
+        "**/*.env*",
+        "**/analytics/**",
+        "**/tracking/**",
+        "**/pii/**"
+      ],
+      "task_types": [
+        "data",
+        "auth"
+      ]
+    },
+    {
+      "id": "cost-finops",
+      "name": "Cost / FinOps (optional)",
+      "group": "Operations",
+      "charter": "resource & cloud cost efficiency",
+      "boundary": "raw perf \u2192 scalability",
+      "looks_for": "right-sizing, waste, egress, over-provisioning, autoscaling bounds",
+      "globs": [
+        "**/*.tf",
+        "**/k8s/**",
+        "**/serverless*",
+        "**/*.cloudformation*"
+      ],
+      "task_types": [
+        "infra"
+      ]
+    },
+    {
+      "id": "i18n",
+      "name": "Localization / i18n (optional)",
+      "group": "Experience",
+      "charter": "works across languages and locales",
+      "boundary": "content accuracy \u2192 tech-writer",
+      "looks_for": "externalized strings, locale formatting, pluralization, RTL, timezone/currency",
+      "globs": [
+        "**/locales/**",
+        "**/i18n/**",
+        "**/*.po",
+        "**/*.pot",
+        "**/lang/**",
+        "**/translations/**"
+      ],
+      "task_types": [
+        "ui"
+      ]
+    }
+  ]
+}

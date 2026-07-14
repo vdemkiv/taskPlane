@@ -1,0 +1,22 @@
+# taskplane governance (local state + review scratch)
+.taskplane/
+.em-review/
+.eval/
+# python
+__pycache__/
+*.pyc
+# OS
+.DS_Store
+
+cleanup.sh
+reset-history.sh
+
+# taskplane knowledge base — lives in the external store (~/.taskplane), never the repo
+knowledge/
+
+# taskplane runtime (local-only — see docs/state-spec.md)
+.security-review/
+.tp-work/
+
+# built distribution artifact (packaged via SendUserFile / device)
+taskplane.plugin
