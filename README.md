@@ -8,6 +8,8 @@ it legible. It keeps each agent inside a clear task scope, renders the whole
 run as a live dashboard, and holds the thread of progress — so you always
 know where things stand and what needs your call.
 
+![taskplane in action — a governed run on a real PR: Definition of Ready gate → read-only review with the product rendered and findings pinned → your approval → parallel fix wave with a live out-of-scope block → Definition of Done gate → sign-off](docs/assets/taskplane-cowork-flow.gif)
+
 Built for PMs, EMs, and engineers who want to move fast with the Claude
 ecosystem without losing the plot. Three things, everywhere: **you can see
 what's happening, it stays on topic, and you keep the thread.** The scope
