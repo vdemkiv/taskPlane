@@ -938,11 +938,36 @@ def activate(workspace: str, contract: dict,
     return contract
 
 
+def safe_remove(path: str) -> None:
+    """Remove a state file even on filesystems that forbid unlink (FUSE
+    mounts in sandboxed/Cowork hosts allow rename but not delete). Falls
+    back to an atomic rename-to-tombstone, so the original path is gone —
+    the only property callers rely on — either way."""
+    try:
+        os.remove(path)
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
+    last: OSError | None = None
+    for i in range(32):
+        tomb = f"{path}.removed.{os.getpid()}.{i}"
+        if os.path.exists(tomb):
+            continue
+        try:
+            os.replace(path, tomb)          # rename IS allowed on these mounts
+            return
+        except OSError as e:                # pragma: no cover — rare double-fail
+            last = e
+    raise last or OSError("safe_remove: could not remove or rename")
+
+
 def clear(workspace: str) -> None:
     path = os.path.join(tp_dir(workspace), "active_contract.json")
     if os.path.exists(path):
         c = load_active(workspace) or {}
-        os.remove(path)
+        safe_remove(path)
         trace(workspace, "contract_cleared", task_id=c.get("task_id"))
 
 
@@ -987,6 +1012,89 @@ MODEL_TIERS = ("cheap", "standard", "deep")
 # behaviour is unchanged until an operator opts in. Override any tier via
 # TASKPLANE_MODEL_CHEAP / _STANDARD / _DEEP (value "inherit" or "" => inherit).
 _DEFAULT_TIER_MODEL = {"cheap": "haiku", "standard": None, "deep": None}
+
+
+# --- dispatch verification (tier routing is only real if the driver passes
+# the emitted model to the Agent tool; these queues make that checkable) ---
+
+def _dispatch_path(workspace: str, name: str) -> str:
+    return os.path.join(tp_dir(workspace), name)
+
+
+def _load_queue(path: str) -> list:
+    try:
+        with open(path) as f:
+            q = json.load(f)
+        return q if isinstance(q, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_queue(path: str, q: list) -> None:
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(q[-200:], f, indent=1)
+    os.replace(tmp, path)
+
+
+def record_expected_dispatch(workspace: str, kind: str, agent: str,
+                             model_tier: str, model: str | None,
+                             ref: str | None = None) -> None:
+    """Called when a brief is emitted (`loop next` / `lens dispatch`): what
+    agent SHOULD be dispatched next, on what model. A queue, not a scalar —
+    a parallel wave emits many briefs with different tiers at once."""
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    q = _load_queue(path)
+    q.append({"ts": _now(), "kind": kind, "agent": agent, "ref": ref,
+              "model_tier": model_tier, "model": model, "matched": False})
+    _save_queue(path, q)
+
+
+def consume_expectation(workspace: str, agent: str) -> dict | None:
+    """Oldest unmatched expectation for this agent short-name (host
+    subagent_type arrives namespaced, e.g. `taskplane:tp-lens`)."""
+    short = (agent or "").split(":")[-1]
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    q = _load_queue(path)
+    for e in q:
+        if not e.get("matched") and e.get("agent") == short:
+            e["matched"] = True
+            _save_queue(path, q)
+            return e
+    return None
+
+
+def record_observed_dispatch(workspace: str, agent: str, model: str | None,
+                             expected: dict | None, ok: bool) -> None:
+    path = _dispatch_path(workspace, "observed_dispatch.json")
+    q = _load_queue(path)
+    q.append({"ts": _now(), "agent": (agent or "").split(":")[-1],
+              "model": model, "ok": ok,
+              "expected_model": expected and expected.get("model"),
+              "expected_tier": expected and expected.get("model_tier"),
+              "ref": expected and expected.get("ref")})
+    _save_queue(path, q)
+
+
+def dispatch_report(workspace: str) -> dict:
+    """Audit: per emitted brief, did a dispatch with the right model land?
+    This is the by-hand trace.jsonl analysis, mechanized."""
+    exp = _load_queue(_dispatch_path(workspace, "expected_dispatch.json"))
+    obs = _load_queue(_dispatch_path(workspace, "observed_dispatch.json"))
+    mismatches = [o for o in obs if not o.get("ok")]
+    unobserved = [e for e in exp if not e.get("matched")]
+    return {"expected": len(exp), "observed": len(obs),
+            "mismatches": mismatches, "unobserved": len(unobserved),
+            "hook_active": bool(obs),
+            "note": None if obs else
+            "no dispatches observed — enable the check with "
+            "TASKPLANE_ENFORCE_DISPATCH=warn|strict (PreToolUse Task hook)"}
+
+
+def _now() -> float:
+    import time
+    return time.time()
+
 
 # Effective tier per loop step when a task doesn't override it. Reasoning-heavy
 # steps ask for `deep` (a no-op unless the operator points DEEP at a stronger

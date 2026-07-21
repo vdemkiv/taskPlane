@@ -1,6 +1,6 @@
 {
   "name": "taskplane-marketplace",
-  "description": "taskplane — see what your AI agents are doing in Claude Code / Cowork and keep them on track.",
+  "description": "taskplane \u2014 see what your AI agents are doing in Claude Code / Cowork and keep them on track.",
   "owner": {
     "name": "Volodymyr Demkiv",
     "email": "vdemkiv@gmail.com"
@@ -10,7 +10,7 @@
       "name": "taskplane",
       "source": ".",
       "description": "See what your AI agents are doing and keep them on track. taskplane makes Claude Code / Cowork legible: each agent works inside a clear task scope, the whole run renders as a live dashboard, and human gates (plan approval, sign-off) keep the thread. Serial or parallel agents, A/B variant selection, 22 review lenses, a requirements engine, a per-project knowledge base kept outside your repo, and a zero-token dependency graph. Built for PMs, EMs, and engineers. Say 'taskplane help' for the tour.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "homepage": "https://github.com/vdemkiv/taskPlane",
       "repository": "https://github.com/vdemkiv/taskPlane",
       "license": "Apache-2.0",
@@ -26,5 +26,5 @@
       ]
     }
   ],
-  "version": "1.0.0"
+  "version": "1.0.1"
 }

@@ -53,3 +53,25 @@ on every brief. When the driver dispatches the role/lens agent, it passes that
 `model` to the Agent tool's `model` param — `null` means omit it and inherit the
 session model. The agent frontmatter is never touched; the pin lives only at the
 dispatch call, which is what keeps taskplane portable.
+
+## Verify it worked (don't assume)
+
+Emitting a model is intent; the dispatch is the fact. Two affordances close
+the gap:
+
+- **Audit after the fact** — `tp loop verify-dispatch` compares every brief
+  the run emitted (`.taskplane/expected_dispatch.json`) against the dispatches
+  the hook observed, and reports mismatches. This is the by-hand
+  `trace.jsonl` analysis, mechanized.
+- **Enforce at dispatch (opt-in)** — set `TASKPLANE_ENFORCE_DISPATCH=warn`
+  (or `strict`) and the shipped PreToolUse hook on the Agent tool checks each
+  dispatch against the matching brief: `warn` surfaces a correction message,
+  `strict` denies the dispatch until the emitted `model` is passed. Unset,
+  the hook is inert — enforcement is opt-in by design.
+
+**Know the default:** out of the box only `cheap` pins a model (`haiku`);
+`standard` and `deep` resolve to `null` = inherit the session model. If you
+want differentiated routing, set `TASKPLANE_MODEL_STANDARD` /
+`TASKPLANE_MODEL_DEEP` — otherwise a run on a top-tier session model runs
+everything (except the sweep) on that model, by design, and only the sweep's
+`cheap → haiku` saves cost.

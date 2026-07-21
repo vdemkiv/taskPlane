@@ -20,3 +20,6 @@ knowledge/
 
 # built distribution artifact (packaged via SendUserFile / device)
 taskplane.plugin
+
+# local Claude session settings (never commit)
+.claude/

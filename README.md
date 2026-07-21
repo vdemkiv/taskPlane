@@ -8,8 +8,6 @@ it legible. It keeps each agent inside a clear task scope, renders the whole
 run as a live dashboard, and holds the thread of progress — so you always
 know where things stand and what needs your call.
 
-![taskplane in action — a governed run on a real PR: Definition of Ready gate → read-only review with the product rendered and findings pinned → your approval → parallel fix wave with a live out-of-scope block → Definition of Done gate → sign-off](docs/assets/taskplane-cowork-flow.gif)
-
 Built for PMs, EMs, and engineers who want to move fast with the Claude
 ecosystem without losing the plot. Three things, everywhere: **you can see
 what's happening, it stays on topic, and you keep the thread.** The scope
@@ -39,7 +37,7 @@ confidence that the review itself won't touch a thing.
 > **tp-engineering: review the approvals-reporting PR against main**
 
 taskplane activates a **read-only contract** (the hook blocks any write to
-the reviewed source), routes the **full 22-lens catalog** — deep on what the
+the reviewed source), routes the **full 25-lens catalog** — deep on what the
 change touches, a quick sweep on the rest, and **architecture & system
 design always on** — leads with the dependency-graph **blast radius**,
 checks each acceptance criterion, and hands you a findings report ranked
@@ -145,14 +143,14 @@ the model's own calls.
 | Requirements engine | refinement scoring + iteration forecast; quick-vs-full with tracked debt |
 | Knowledge base | decisions, requirements, debt — retrieved by relevance at every step; kept in an external per-project store (`~/.taskplane`), out of your repo |
 | Dependency graph | deterministic scan + change blast-radius + interactive map |
+| Model tiers | portable `cheap`/`standard`/`deep` capability tiers routed per step, task, and lens — mapped to models by env config, verifiable with `tp loop verify-dispatch` |
 
-**Seven commands, three working personas plus a summoned strategy lens:**
-`tp-go` (the entry point — routes everything), `tp-product` (the WHAT seat:
-requirements, scores, decisions), `tp-build` (new features: refinement + a
-north-star check first, visual mocks, A/B variants with a selection gate),
-`tp-engineering` (the SOUND seat: full-catalog review, impact, verdicts,
-retro), `tp-northstar` (the summoned STRATEGY lens: alignment vs the
-project's north star — advisory, never a gate), `tp-status`, `tp-help`. Definition and judgment are deliberately separate seats — the
+**Six commands, three personas:** `tp-go` (the entry point — routes
+everything), `tp-product` (the WHAT seat: requirements, scores,
+decisions), `tp-build` (new features: refinement + a north-star check first, visual
+mocks, A/B variants with a selection gate), `tp-engineering` (the SOUND
+seat: full-catalog review, impact, verdicts, retro), `tp-status`,
+`tp-help`. Definition and judgment are deliberately separate seats — the
 grader never grades their own spec.
 
 **License:** free and open source under the **Apache License 2.0** — use it
@@ -163,15 +161,29 @@ telemetry, no accounts, no network calls of its own. All state stays on your
 disk — your code in the repo, taskplane's knowledge base in a separate
 external store (`~/.taskplane`), never transmitted anywhere. See `PRIVACY.md`.
 
+## Model tiers (cost routing)
+
+Every loop step, task, and lens brief carries a capability tier —
+`cheap` / `standard` / `deep` — and taskplane resolves it to a model at
+dispatch time. Out of the box only `cheap` is pinned (to `haiku` — the lens
+sweep and planner-marked simple tasks); `standard` and `deep` inherit your
+session model. Point tiers at concrete models with env config
+(`TASKPLANE_MODEL_CHEAP` / `_STANDARD` / `_DEEP`) — no model ids are
+hardcoded, so the plugin stays portable as models change. And because a
+brief's model only matters if the dispatch actually used it, the routing is
+verifiable: `tp loop verify-dispatch` audits a run, and
+`TASKPLANE_ENFORCE_DISPATCH=warn|strict` turns on a dispatch-time check
+(opt-in, inert by default). Details: `discipline/model-tiers.md`.
+
 ## Layout
 
 ```
 taskplane/
 ├── taskplane/              # the enforcement core (kernel + hook screener)
 ├── hooks/hooks.json        # PreToolUse → taskplane screen
-├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent); + tp-northstar (summoned strategy)
-├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-northstar, tp-status, tp-help
-├── lenses/                 # the 22-lens catalog
+├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent)
+├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-status, tp-help
+├── lenses/                 # the 25-lens catalog
 ├── scripts/                # generators (e.g. the lens-catalog doc)
 ├── discipline/             # TDD, debugging, worktrees — the operating disciplines
 ├── docs/                   # state spec + design notes

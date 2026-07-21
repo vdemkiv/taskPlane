@@ -19,7 +19,16 @@
    their answers) — the product doc feeds the product lens AND its Direction /
    north star line feeds the north-star review, tech-stack feeds engineering
    lenses, workflow sets gate conventions.
-3. Register the first track: `$TP track new <name> "<goal>"`. More
+3. **Model tiers (cost routing).** `$TP onboard --json` includes
+   `model_tiers` — the resolved tier→model map. Explain the default to the
+   user: only `cheap` is pinned (`haiku`, used for the lens sweep and tasks a
+   planner marks cheap); `standard`/`deep` inherit the session model until
+   `TASKPLANE_MODEL_STANDARD` / `TASKPLANE_MODEL_DEEP` are set. Offer to set
+   them now if they want cost-differentiated routing, and mention
+   `TASKPLANE_ENFORCE_DISPATCH=warn` + `tp loop verify-dispatch` for making
+   the routing verified rather than assumed (discipline/model-tiers.md).
+   Defaults are fine — skip if unsure.
+4. Register the first track: `$TP track new <name> "<goal>"`. More
    workstreams later: `track new` / `track switch` / `track close` — the
    KB, graph, and requirements are shared across tracks by design.
-4. Hand off to `/tp-go` for the first governed goal.
+5. Hand off to `/tp-go` for the first governed goal.

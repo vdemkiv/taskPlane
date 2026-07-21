@@ -142,7 +142,14 @@ def _onboard_report(ws: str) -> dict:
     return {"workspace": ws, "looks_like_project": looks_like_project,
             "is_git": inside_git, "has_commit": has_commit,
             "has_context": has_context, "ready": ready,
-            "checks": checks, "next_action": nxt}
+            "checks": checks, "next_action": nxt,
+            # Resolved model routing, visible at cold start: with defaults
+            # only `cheap` pins a model — standard/deep inherit the session
+            # model until TASKPLANE_MODEL_<TIER> is set (discipline/
+            # model-tiers.md). Surfacing it here is what makes the routing
+            # discoverable instead of a silent no-op.
+            "model_tiers": {t: (tp.model_for_tier(t) or "inherit")
+                            for t in tp.MODEL_TIERS}}
 
 
 # --------------------------------------------------------------- new
@@ -225,6 +232,49 @@ def _print_dor(ready, blockers, warnings) -> None:
 
 # --------------------------------------------------------------- ready
 
+def cmd_screen_dispatch(a) -> int:
+    """PreToolUse hook for the Agent/Task tool: verify the driver dispatched
+    the model the most recent matching brief resolved (tier routing). OPT-IN
+    and fail-open — inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict.
+    warn: allow + a visible correction message. strict: deny with the same
+    message so the driver re-dispatches with the right model."""
+    mode = (os.environ.get("TASKPLANE_ENFORCE_DISPATCH") or "").strip().lower()
+    try:
+        event = json.load(sys.stdin)
+    except Exception:
+        return 0
+    if mode not in ("warn", "strict"):
+        return 0                                   # opt-in: default inert
+    try:
+        ti = event.get("tool_input") or {}
+        agent = (ti.get("subagent_type") or "")
+        model = ti.get("model")
+        ws = _workspace(event.get("cwd"))
+        exp = tp.consume_expectation(ws, agent)
+        expected_model = exp and exp.get("model")
+        ok = (exp is None) or (expected_model is None) \
+            or (model == expected_model)
+        tp.record_observed_dispatch(ws, agent, model, exp, ok)
+        if ok:
+            return 0
+        reason = (f"taskplane dispatch check: the {exp['kind']} brief "
+                  f"'{exp.get('ref') or exp['agent']}' resolved "
+                  f"model={expected_model} (tier {exp['model_tier']}) but "
+                  f"this agent was dispatched with "
+                  f"model={model or '<inherit session model>'} — pass "
+                  f"model=\"{expected_model}\" to the Agent tool.")
+        if mode == "strict":
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason}}))
+        else:
+            print(json.dumps({"systemMessage": reason}))
+        return 0
+    except Exception:
+        return 0                                   # never break dispatch
+
+
 def cmd_clear(a) -> int:
     """Deactivate the workspace contract (e.g. when a review ends), so the
     enforcement hook stops governing subsequent work."""
@@ -232,8 +282,7 @@ def cmd_clear(a) -> int:
     path = os.path.join(tp.tp_dir(ws), "active_contract.json")
     if os.path.exists(path):
         c = tp.load_active(ws) or {}
-        os.remove(path)
-        tp.trace(ws, "contract_cleared", task_id=c.get("task_id"))
+        tp.clear(ws)                      # FUSE-safe removal (safe_remove)
         print(f"taskplane: contract {c.get('task_id','')} cleared — "
               "workspace is ungoverned again.")
     else:
@@ -604,6 +653,10 @@ def cmd_loop(a) -> int:
         print(json.dumps(loopmod.status(ws), indent=2))
     elif action == "retro":
         print(json.dumps(loopmod.retro(ws), indent=2))
+    elif action == "verify-dispatch":
+        rep = tp.dispatch_report(ws)
+        print(json.dumps(rep, indent=2))
+        return 1 if rep["mismatches"] else 0
     return 0
 
 
@@ -646,6 +699,16 @@ def cmd_lens(a) -> int:
     if action == "dispatch":
         briefs = lensmod.dispatch_briefs(routing, base=a.base,
                                          max_actions=a.max_actions)
+        for b in briefs.get("deep") or []:
+            tp.record_expected_dispatch(ws, "lens", b.get("agent", "tp-lens"),
+                                        b.get("model_tier", "standard"),
+                                        b.get("model"), ref=b.get("id"))
+        sw = briefs.get("sweep")
+        if sw:
+            tp.record_expected_dispatch(ws, "lens",
+                                        sw.get("agent", "tp-lens"),
+                                        sw.get("model_tier", "cheap"),
+                                        sw.get("model"), ref="sweep")
         if getattr(a, "dashboard", False):
             import dashboard
             lanes = [{"id": b["id"], "name": b["name"], "status": "running",
@@ -1115,6 +1178,11 @@ def main() -> int:
     s = sub.add_parser("screen", help="PreToolUse hook entrypoint (stdin event)")
     s.set_defaults(fn=cmd_screen)
 
+    sd = sub.add_parser("screen-dispatch", help="PreToolUse hook for the "
+                        "Agent tool: verify tier-routed model was passed "
+                        "(inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict)")
+    sd.set_defaults(fn=cmd_screen_dispatch)
+
     rd = sub.add_parser("ready", help="Definition-of-Ready entry gate")
     rd.add_argument("--workspace")
     rd.set_defaults(fn=cmd_ready)
@@ -1172,9 +1240,11 @@ def main() -> int:
     la.add_argument("--force", action="store_true",
                     help="pass a BLOCKED refinement gate anyway")
     lr = lsub.add_parser("resolve")
-    lr.add_argument("decision", choices=["retry", "skip", "abort"])
+    lr.add_argument("decision", choices=["retry", "skip", "defer", "abort"])
     lsub.add_parser("status")
     lsub.add_parser("retro")
+    lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "
+                    "used the models the briefs resolved (tier routing)")
     lp.set_defaults(fn=cmd_loop)
 
     ln = sub.add_parser("lens", help="route lenses for a change")

@@ -10,6 +10,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py\" screen-dispatch",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionStart": [

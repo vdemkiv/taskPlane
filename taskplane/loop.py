@@ -61,7 +61,13 @@ HUMAN_STEPS = {"plan_approval", "selection", "signoff", "escalated",
 # A task is SETTLED when nothing further is owed on it: it passed, or the
 # selection gate closed it (not_selected / reference), or a human skipped it.
 # Wave readiness and "are we done?" both reason over this set.
-SETTLED = {"passed", "not_selected", "reference", "skipped"}
+SETTLED = {"passed", "not_selected", "reference", "skipped",
+           "done", "external"}
+# Statuses that SATISFY a dependency: the work exists (passed here,
+# `done` seeded from outside the loop, `external` deferred to an
+# external gate by an explicit human decision). `skipped` settles a
+# task but does NOT satisfy its dependents (they cascade-skip).
+DEP_SATISFIED = {"passed", "done", "external"}
 
 # The canonical governance rail — (step, label). This is the SINGLE source a
 # view renders its timeline from; the engine owns the machine, so a dashboard
@@ -144,7 +150,7 @@ def save(ws: str, state: dict) -> None:
     os.replace(tmp, p)
     legacy = _legacy_loop_path(ws)         # migrate: single source of truth
     if os.path.exists(legacy):
-        os.remove(legacy)
+        tp.safe_remove(legacy)
 
 
 @contextlib.contextmanager
@@ -297,7 +303,8 @@ def wave(ws: str) -> dict:
     if state["step"] != "execute":
         return {"error": f"waves only at execute (current: {state['step']})"}
     tasks = state.get("tasks") or []
-    passed = {t["id"] for t in tasks if t.get("status") == "passed"}
+    passed = {t["id"] for t in tasks
+              if t.get("status") in DEP_SATISFIED}
     ready, held = [], []
     for t in tasks:
         if t.get("status") != "pending":
@@ -602,6 +609,8 @@ def next_action(ws: str) -> dict:
     model = tp.model_for_tier(model_tier)
     tp.trace(ws, "model_tier", step=step,
              task=(task or {}).get("id"), tier=model_tier, model=model)
+    tp.record_expected_dispatch(ws, "step", STEP_ROLE[step], model_tier,
+                                model, ref=(task or {}).get("id") or step)
 
     return {
         "step": step,
@@ -1099,10 +1108,28 @@ def resolve(ws: str, decision: str) -> dict:
                 state["step"] = "execute"
             else:
                 state["step"] = "em"
+    elif decision == "defer":
+        # Human parks the task on an external gate: it settles AND satisfies
+        # its dependents (the work will exist, just not via this loop) — the
+        # clean form of what previously required hand-editing loop.json.
+        t["status"] = "external"
+        if state.get("parallel"):
+            if all(x.get("status") in SETTLED for x in state["tasks"]):
+                state["step"] = ("selection" if state.get("ab")
+                                 and not state.get("selection") else "em")
+            else:
+                state["step"] = "execute"
+        else:
+            nxt = _next_unsettled_index(state, state["current_task"])
+            if nxt is not None:
+                state["current_task"] = nxt
+                state["step"] = "execute"
+            else:
+                state["step"] = "em"
     elif decision == "abort":
         state["step"] = "failed"
     else:
-        return {"error": "decision must be retry|skip|abort"}
+        return {"error": "decision must be retry|skip|defer|abort"}
     tp.trace(ws, "loop_resolve", decision=decision, task=t.get("id"))
     save(ws, state)
     return {"step": state["step"], "status": status(ws)}
