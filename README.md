@@ -35,25 +35,64 @@ as the source:
 Requires `git` in your workspace (the gates need a commit snapshot) and
 `python3` (standard library only). Nothing else to set up.
 
-## First run (onboarding)
+## Onboarding (`tp onboard`) — the full setup
 
 Say **taskplane help** for the tour, or just state a goal — `tp-go` routes
-it. On a fresh folder taskplane walks you in from zero: `tp onboard` checks
-the three things a governed run needs (a real folder, a git commit to diff
-against, `tp init` scaffolding for the context docs + knowledge base) and
-shows the onboarding dashboard until all three are green. It also reports
-the resolved **model-tier map** (`cheap → haiku` out of the box;
-`standard`/`deep` inherit your session model until you set
-`TASKPLANE_MODEL_STANDARD` / `TASKPLANE_MODEL_DEEP` — see *Model tiers*
-below). Then fill the three context docs with your project's reality —
-the product doc's *Direction / north star* line is what the strategic
-review measures against — and you're governed from the first task.
+it and runs onboarding for you on a fresh folder. `tp onboard` shows the
+onboarding dashboard and won't hand you to a governed run until three
+checks are green:
 
-## Three ways to use it
+1. **A real folder to work in** — connect/open your project (an empty
+   scratch dir or the session root is refused: a contract scoped there
+   would govern everything).
+2. **A git commit to diff against** — the gates fail closed without a
+   snapshot; `git init && git add -A && git commit` if the repo is new.
+3. **`tp init`** — scaffolds the three context docs
+   (`product.md` / `tech-stack.md` / `workflow.md`), scans the dependency
+   graph, and creates the external knowledge base.
 
-One entry point (`tp-go` picks up whatever you prompt and routes it) and
-three personas — a way to define, build, and review agent work while keeping
-it visible, on-scope, and easy to steer.
+Two setup choices then decide how efficiently the whole system runs:
+
+**Models (cost routing).** Every step, task, and lens carries a capability
+tier, and `tp onboard` reports the resolved map. Out of the box only
+`cheap` is pinned:
+
+| Tier | Default | Used for | Override |
+| --- | --- | --- | --- |
+| `cheap` | `haiku` | the lens sweep; tasks a planner marks simple | `TASKPLANE_MODEL_CHEAP` |
+| `standard` | inherit session model | execute / evaluate / fix | `TASKPLANE_MODEL_STANDARD` |
+| `deep` | inherit session model | spec, plan, engineering review, hard lenses (security, architecture, …) | `TASKPLANE_MODEL_DEEP` |
+
+For cost-differentiated runs, set the overrides before starting, e.g.
+`export TASKPLANE_MODEL_STANDARD=sonnet TASKPLANE_MODEL_DEEP=opus` — the
+bulk build work runs mid-tier while judgment-heavy steps get the strong
+model, and the wide lens sweep stays on `haiku`. No model ids are
+hardcoded; tiers are yours to map as models change. Routing is *verified*,
+not assumed: `tp loop verify-dispatch` audits a run, and
+`TASKPLANE_ENFORCE_DISPATCH=warn|strict` turns on a dispatch-time check.
+Details: `discipline/model-tiers.md`.
+
+**Context storage (token efficiency).** Fill the three context docs with
+your project's reality — the product doc's *Direction / north star* line is
+what `tp-northstar` measures against. From then on decisions, requirements,
+tracked debt, and the dependency graph accumulate in an **external
+per-project store** (`~/.taskplane/projects/<key>/` — `tp kb where` shows
+the path). That location is deliberate resource economics: every loop step
+recalls only the few records *relevant to the task at hand* instead of
+re-reading the repo or replaying history, so context stays small and the
+token bill goes down as the project's memory grows. The store never touches
+your repo (nothing to commit or push), `kb lint` keeps prompt text and
+pricing out of it, and the zero-token dependency graph answers blast-radius
+questions without spending model calls at all.
+
+Then you're governed from the first task.
+
+## Five ways to use it
+
+One entry point (`tp-go` picks up whatever you prompt and routes it), three
+working personas, and a summoned strategy lens — a way to define, build,
+and review agent work while keeping it visible, on-scope, and easy to
+steer.
 
 ### 1. Review code, change nothing → `tp-engineering`
 
@@ -63,7 +102,7 @@ confidence that the review itself won't touch a thing.
 > **tp-engineering: review the approvals-reporting PR against main**
 
 taskplane activates a **read-only contract** (the hook blocks any write to
-the reviewed source), routes the **full 25-lens catalog** — deep on what the
+the reviewed source), routes the **full 22-lens catalog** — deep on what the
 change touches, a quick sweep on the rest, and **architecture & system
 design always on** — leads with the dependency-graph **blast radius**,
 checks each acceptance criterion, and hands you a findings report ranked
@@ -106,6 +145,47 @@ quietly make a mess.
 
 *Good for: shipping features, fixes, refactors, and migrations you can
 actually follow.*
+
+### 4. Own the WHAT → `tp-product`
+
+You need the thing defined before anyone builds it — or a product decision
+recorded so it survives the session.
+
+> **tp-product: spec CSV export — testable acceptance criteria, then score it**
+
+tp-product turns a rough goal into a contract-ready spec: problem, users,
+in/out of scope, and **testable acceptance criteria that become the
+Definition of Done**. It scores the requirement's refinement and forecasts
+fix cycles — close the gaps *before* planning, when they're cheap. Mid-flight
+changes are **change requests** against the original requirement (re-scored,
+re-approved at the plan gate, never silently absorbed), and product
+decisions and debt are recorded in the knowledge base. It defines and
+decides; it never implements, fixes, or reviews code — the grader never
+grades their own spec.
+
+*Good for: specs, acceptance criteria, prioritization, change requests,
+decision records.*
+
+### 5. A direction check, when you ask for it → `tp-northstar`
+
+Before an expensive build — or over any idea, task, diff, or finished
+review — you can summon the strategic lens.
+
+> **north-star this: is the integrations hub worth building given where
+> we're going?**
+
+tp-northstar measures the target against your project's **Direction /
+north star** line (from the product context doc) and returns one strategic
+note: an alignment verdict (on-course / drift / off-course), four decision
+lenses — **Leverage, Reversibility, Opportunity cost, Coherence** — the
+single sharpest tension, and a recommendation (proceed /
+proceed-with-eyes-open / reconsider). It is **summoned, not scheduled**:
+read-only, advisory, never a gate, no executive cosplay. The product and
+engineering seats run automatically; this third lens runs when you want a
+direction check.
+
+*Good for: "should we build this", roadmap calls, scope-creep checks,
+strategic review of a plan or PR.*
 
 ### Compose them → review, then fix
 
@@ -171,12 +251,13 @@ the model's own calls.
 | Dependency graph | deterministic scan + change blast-radius + interactive map |
 | Model tiers | portable `cheap`/`standard`/`deep` capability tiers routed per step, task, and lens — mapped to models by env config, verifiable with `tp loop verify-dispatch` |
 
-**Six commands, three personas:** `tp-go` (the entry point — routes
-everything), `tp-product` (the WHAT seat: requirements, scores,
-decisions), `tp-build` (new features: refinement + a north-star check first, visual
-mocks, A/B variants with a selection gate), `tp-engineering` (the SOUND
-seat: full-catalog review, impact, verdicts, retro), `tp-status`,
-`tp-help`. Definition and judgment are deliberately separate seats — the
+**Seven commands, three working personas plus a summoned strategy lens:**
+`tp-go` (the entry point — routes everything), `tp-product` (the WHAT seat:
+requirements, scores, decisions), `tp-build` (new features: refinement + a
+north-star check first, visual mocks, A/B variants with a selection gate),
+`tp-engineering` (the SOUND seat: full-catalog review, impact, verdicts,
+retro), `tp-northstar` (the summoned STRATEGY lens — advisory, never a
+gate), `tp-status`, `tp-help`. Definition and judgment are deliberately separate seats — the
 grader never grades their own spec.
 
 **License:** free and open source under the **Apache License 2.0** — use it
@@ -207,9 +288,9 @@ verifiable: `tp loop verify-dispatch` audits a run, and
 taskplane/
 ├── taskplane/              # the enforcement core (kernel + hook screener)
 ├── hooks/hooks.json        # PreToolUse → taskplane screen
-├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent)
-├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-status, tp-help
-├── lenses/                 # the 25-lens catalog
+├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent); + tp-northstar (summoned strategy)
+├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-northstar, tp-status, tp-help
+├── lenses/                 # the 22-lens catalog
 ├── scripts/                # generators (e.g. the lens-catalog doc)
 ├── discipline/             # TDD, debugging, worktrees — the operating disciplines
 ├── docs/                   # state spec + design notes
