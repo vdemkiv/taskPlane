@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install test runner (the plugin itself is stdlib-only)
+        run: pip install pytest
+
+      - name: Configure git (the gates and tests need commit identity)
+        run: |
+          git config --global user.email "ci@taskplane"
+          git config --global user.name "taskplane-ci"
+
+      - name: Run the suite
+        working-directory: taskplane
+        run: python -m pytest tests/ -q
+
+  validate-plugin:
+    name: plugin manifest validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: JSON manifests parse and versions agree
+        run: |
+          python - <<'PY'
+          import json, re, sys, glob
+          pj = json.load(open(".claude-plugin/plugin.json"))
+          mp = json.load(open(".claude-plugin/marketplace.json"))
+          hooks = json.load(open("hooks/hooks.json"))
+          assert pj["version"] == mp["plugins"][0]["version"], "version drift"
+          for f in glob.glob("skills/*/SKILL.md"):
+              desc = re.search(r'description:\s*"(.*)"', open(f).read())
+              if desc and ("<" in desc.group(1) or ">" in desc.group(1)):
+                  sys.exit(f"{f}: XML tags in description break plugin validation")
+          print("manifests ok:", pj["name"], pj["version"])
+          PY
