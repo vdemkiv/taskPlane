@@ -50,7 +50,7 @@ acceptance criteria). Both sides for anything user-facing and structural.
 5. **Loop, governed.** `$TP loop init --req R-XXXX [--parallel]` and drive
    as in `/tp-go`: plan → human approval → contracted build (TDD, budgets)
    → evaluate → engineering review (full catalog) → visual sign-off.
-   Dashboard at every transition — visualization is not decoration here,
+   Dashboard at every transition (auto-refreshed by gate/next — the payload's `dashboard` field points at the fragment; the step journey + agent→model stats ride along) — visualization is not decoration here,
    it IS the interface the human governs through (the graph tab now shows
    the product layer: requirements ↔ modules, depends edges, shared-surface
    warnings).

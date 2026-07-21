@@ -1270,3 +1270,39 @@ def status(ws: str) -> dict:
     if state.get("selection"):
         out["selection"] = state["selection"]
     return out
+
+
+# --- Dashboard v2 (R-0001): rendering is part of the flow, not a separate
+# call. Every successful gate()/next_action() refreshes the fragment on disk
+# and points at it in the payload — the driver renders what's already there.
+# Fail-open: a dashboard problem must never break the loop itself.
+
+def _with_dashboard(fn):
+    def wrapped(ws, *a, **k):
+        out = fn(ws, *a, **k)
+        try:
+            if isinstance(out, dict) and "error" not in out:
+                import dashboard as _dash
+                frag = _dash.widget(ws)
+                p = os.path.join(tp.tp_dir(ws), "dashboard.html")
+                tmp = f"{p}.tmp.{os.getpid()}"
+                with open(tmp, "w") as f:
+                    f.write(frag)
+                os.replace(tmp, p)
+                out["dashboard"] = {
+                    "path": os.path.join(".taskplane", "dashboard.html"),
+                    "render": "refreshed for this transition — show it "
+                              "(mcp__visualize__show_widget) before "
+                              "proceeding; the dashboard is the interface "
+                              "the human governs through"}
+        except Exception:
+            pass
+        return out
+    wrapped.__name__ = fn.__name__
+    wrapped.__doc__ = fn.__doc__
+    wrapped.__wrapped__ = fn
+    return wrapped
+
+
+gate = _with_dashboard(gate)
+next_action = _with_dashboard(next_action)

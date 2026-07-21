@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "See what your AI agents are doing and keep them on track. taskplane makes Claude Code / Cowork legible: each agent works inside a clear task scope, the whole run renders as a live dashboard, and human gates (plan approval, sign-off) keep the thread. Serial or parallel agents, A/B variant selection, 22 review lenses, a requirements engine, a per-project knowledge base kept outside your repo, and a zero-token dependency graph. Built for PMs, EMs, and engineers. Say 'taskplane help' for the tour.",
   "author": {
     "name": "Volodymyr Demkiv"

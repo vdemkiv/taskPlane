@@ -15,13 +15,39 @@ guardrails and gates are how it delivers that — not the point, the means.
 
 ## Install
 
+taskplane isn't in the built-in plugin catalog yet — you add it straight
+from this Git repo (there's an option exactly for this).
+
+**Claude Desktop or claude.ai (Chat / Cowork):**
+Customize → Plugins → **+** in *Personal plugins* → **Add marketplace** →
+**"Add from a repository"** → paste `https://github.com/vdemkiv/taskPlane`
+→ *taskplane* appears → **Install**.
+
+**Claude Code (terminal)** — same thing; the first command adds this repo
+as the source:
+
 ```
 /plugin marketplace add vdemkiv/taskPlane
 /plugin install taskplane@taskplane-marketplace
+/reload-plugins
 ```
 
-Then say **taskplane help** for the tour. Requires `git` in your workspace
-(the gates need a commit snapshot) and `python3` (standard library only).
+Requires `git` in your workspace (the gates need a commit snapshot) and
+`python3` (standard library only). Nothing else to set up.
+
+## First run (onboarding)
+
+Say **taskplane help** for the tour, or just state a goal — `tp-go` routes
+it. On a fresh folder taskplane walks you in from zero: `tp onboard` checks
+the three things a governed run needs (a real folder, a git commit to diff
+against, `tp init` scaffolding for the context docs + knowledge base) and
+shows the onboarding dashboard until all three are green. It also reports
+the resolved **model-tier map** (`cheap → haiku` out of the box;
+`standard`/`deep` inherit your session model until you set
+`TASKPLANE_MODEL_STANDARD` / `TASKPLANE_MODEL_DEEP` — see *Model tiers*
+below). Then fill the three context docs with your project's reality —
+the product doc's *Direction / north star* line is what the strategic
+review measures against — and you're governed from the first task.
 
 ## Three ways to use it
 

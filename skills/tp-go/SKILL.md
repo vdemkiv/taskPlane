@@ -41,6 +41,14 @@ appears at the end is the failure mode; the whole point is to watch
 progress. If a step will take several tool calls, show the board going in.
 
 After each `loop next`, `loop gate`, `loop wave`, and `loop approve`:
+0. **The fragment is already on disk.** Every successful `loop gate` /
+   `loop next` refreshes `.taskplane/dashboard.html` and returns a
+   `dashboard` field in its JSON — rendering is part of the flow, not an
+   optional extra call. Read that file (or run `$TP dashboard`) and SHOW it;
+   never skip a transition. The board now also carries the **step journey**
+   (click any traversed step for its execution + decision detail) and an
+   always-on **stats band with the agent→model table** (who ran which
+   step/lens on which model — expected vs dispatched).
 1. `$TP dashboard` — prints the mission-control HTML fragment. Four tabs:
    **loop** (governance rail PM→Plan→Approve→Build→EM→Sign-off→Done; inside
    Build, one lane per task showing its own build → evaluate ⟲ fix

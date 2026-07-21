@@ -1453,6 +1453,251 @@ def _agents_hero(harness, tasks, step, parallel):
         f'</div></div>')
 
 
+# --- Dashboard v2 (R-0001): step journey, model table, always-on stats ---
+
+def _journey(ws):
+    """Ordered step visits reconstructed from the trace — the single source
+    of truth (no new state files). A model_tier event opens a visit; the
+    matching loop_gate closes it; loop_step DoR detail enriches it."""
+    full = _read_trace(ws, 99999)[::-1]          # chronological
+    # Artifacts for review: the requirement's FULL acceptance criteria and
+    # the FULL execution plan — attached to the steps that produced them,
+    # from the same sources the gates use (loop state + requirements store).
+    state = _load_loop(ws) or {}
+    req = None
+    if state.get("requirement_id"):
+        try:
+            import requirements as _reqs
+            req = _reqs.get_requirement(ws, state["requirement_id"])
+        except Exception:
+            req = None
+    criteria = (req or {}).get("acceptance") or []
+    plan_tasks = state.get("tasks") or []
+    visits = []
+    for e in full:
+        ev = e.get("event")
+        if ev == "model_tier":
+            visits.append({
+                "step": e.get("step"), "task": e.get("task"),
+                "tier": e.get("tier"), "model": e.get("model"),
+                "agent": _loop.STEP_ROLE.get(e.get("step"), "\u2014"),
+                "ts": e.get("ts"), "ts_end": None,
+                "outcome": None, "note": "", "dor": None,
+                "criteria": criteria if e.get("step") == "pm" else None,
+                "plan": plan_tasks if e.get("step") in
+                ("plan", "plan_approval") else None})
+        elif ev == "loop_step" and visits and e.get("dor_ready") is not None:
+            visits[-1]["dor"] = {
+                "ready": e.get("dor_ready"),
+                "blockers": e.get("dor_blockers") or [],
+                "warnings": e.get("dor_warnings") or []}
+        elif ev == "loop_gate":
+            step = e.get("step")
+            for v in reversed(visits):
+                if v["step"] == step and v["outcome"] is None:
+                    v["outcome"] = e.get("outcome")
+                    v["note"] = e.get("note") or ""
+                    v["ts_end"] = e.get("ts")
+                    break
+            else:
+                # human gates (plan_approval, signoff, selection) have no
+                # model_tier brief — the gate event IS the visit
+                visits.append({
+                    "step": step, "task": e.get("task"), "tier": None,
+                    "model": None, "agent": "you",
+                    "ts": e.get("ts"), "ts_end": e.get("ts"),
+                    "outcome": e.get("outcome"),
+                    "note": e.get("note") or "", "dor": None,
+                    "criteria": criteria if step == "signoff" else None,
+                    "plan": plan_tasks if step == "plan_approval"
+                    else None})
+        elif ev == "loop_resolve":
+            visits.append({
+                "step": "resolve", "task": e.get("task"), "tier": None,
+                "model": None, "agent": "you",
+                "ts": e.get("ts"), "ts_end": e.get("ts"),
+                "outcome": e.get("decision"), "note": "", "dor": None})
+    return visits
+
+
+def _model_rows(ws):
+    """Who ran on what: expected dispatches (brief queue) joined best-effort,
+    in order, with the observed dispatches the v1.0.1 hook recorded."""
+    exp = tp._load_queue(tp._dispatch_path(ws, "expected_dispatch.json"))
+    obs = tp._load_queue(tp._dispatch_path(ws, "observed_dispatch.json"))
+    by_agent = {}
+    for o in obs:
+        by_agent.setdefault(o.get("agent"), []).append(o)
+    rows = []
+    for e in exp:
+        pool = by_agent.get(e.get("agent"))
+        o = pool.pop(0) if pool else None
+        if o is None:
+            disp = "\u2014"
+        else:
+            disp = (o.get("model") or "session") +                 (" \u2713" if o.get("ok") else " \u2717")
+        rows.append({"agent": e.get("agent") or "\u2014",
+                     "what": e.get("ref") or e.get("kind") or "\u2014",
+                     "tier": e.get("model_tier") or "\u2014",
+                     "resolved": e.get("model") or "inherit",
+                     "dispatched": disp})
+    return rows
+
+
+def render_journey(visits, suffix="s"):
+    """Client-side step navigator: one entry per traversed step; clicking
+    reveals that step's execution + decision detail. Pure inline JS."""
+    if not visits:
+        return ""
+    import time as _t
+    items, details = [], []
+    for i, v in enumerate(visits):
+        oid = f"tpj{suffix}{i}"
+        oc = v["outcome"]
+        dot = ("var(--text-success,var(--text-primary))" if oc == "pass"
+               or oc in ("approved", "retry", "skip", "defer")
+               else "var(--text-danger)" if oc in ("fail", "rejected",
+                                                   "abort")
+               else "var(--border-strong)")
+        label = _esc(v["step"] or "\u2014")
+        if v.get("task"):
+            label += f' \u00b7 {_esc(str(v["task"]))}'
+        meta = _esc(v["agent"] or "\u2014")
+        if v.get("tier"):
+            meta += (f' \u00b7 {_esc(v["tier"])} '
+                     f'({_esc(v["model"] or "session")})')
+        items.append(
+            f'<div onclick="tpJ(\'{suffix}\',{i})" id="{oid}-b" '
+            f'data-step="{_attr(v["step"] or "")}" '
+            f'style="display:flex;align-items:center;gap:8px;padding:6px '
+            f'9px;border-radius:6px;cursor:pointer;font-size:12.5px;'
+            f'border:1px solid transparent">'
+            f'<span style="width:8px;height:8px;border-radius:50%;flex:none;'
+            f'background:{dot}"></span><span>{label}</span>'
+            f'<span style="margin-left:auto;font-family:var(--font-mono);'
+            f'font-size:10px;color:var(--text-muted)">{meta}</span></div>')
+        kv = []
+        def _row(k, val):
+            kv.append(f'<div style="display:flex;justify-content:'
+                      f'space-between;gap:12px;font-size:12px;padding:4px 0;'
+                      f'border-bottom:1px solid var(--border)">'
+                      f'<span style="color:var(--text-muted)">{k}</span>'
+                      f'<span style="text-align:right">{val}</span></div>')
+        _row("agent", _esc(v["agent"] or "\u2014"))
+        if v.get("tier"):
+            _row("model", f'tier {_esc(v["tier"])} \u2192 '
+                          f'{_esc(v["model"] or "inherit (session)")}')
+        _row("outcome", _esc(oc or "in progress"))
+        if v.get("note"):
+            _row("decision / note", _esc(v["note"]))
+        if v.get("dor"):
+            d = v["dor"]
+            _row("DoR", ("ready \u2713" if d["ready"] else "NOT READY: "
+                         + _esc("; ".join(d["blockers"])))
+                 + (f' \u00b7 {len(d["warnings"])} warning(s)'
+                    if d["warnings"] else ""))
+        if v.get("ts"):
+            when = _t.strftime("%H:%M:%S", _t.localtime(v["ts"]))
+            dur = ""
+            if v.get("ts_end"):
+                dur = f' \u00b7 {max(0, int(v["ts_end"] - v["ts"]))}s'
+            _row("when", _esc(when) + dur)
+        artifacts = ""
+        if v.get("criteria"):
+            lis = "".join(f'<li style="margin:3px 0">{_esc(str(a))}</li>'
+                          for a in v["criteria"])
+            artifacts += (
+                f'<div style="{_MICRO};margin:10px 0 4px">acceptance '
+                f'criteria \u2014 all {len(v["criteria"])}, for review'
+                f'</div><ol style="margin:0;padding-left:18px;font-size:'
+                f'12px;line-height:1.45">{lis}</ol>')
+        if v.get("plan"):
+            trs = ""
+            for t in v["plan"]:
+                _tid = _esc(str(t.get("id")))
+                _tsc = _esc(", ".join(t.get("scope") or []))
+                _tdp = _esc(", ".join(t.get("deps") or []) or "\u2014")
+                _tst = _esc(t.get("status") or "pending")
+                trs += (
+                    f'<tr><td style="padding:3px 6px;font-family:'
+                    f'var(--font-mono);font-size:11px">{_tid}</td>'
+                    f'<td style="padding:3px 6px;font-family:'
+                    f'var(--font-mono);font-size:11px">{_tsc}</td>'
+                    f'<td style="padding:3px 6px">{_tdp}</td>'
+                    f'<td style="padding:3px 6px">{_tst}</td></tr>')
+            th = ("font-size:9.5px;text-transform:uppercase;"
+                  "letter-spacing:.6px;color:var(--text-muted);text-align:"
+                  "left;padding:3px 6px;border-bottom:1px solid "
+                  "var(--border)")
+            artifacts += (
+                f'<div style="{_MICRO};margin:10px 0 4px">execution plan '
+                f'\u2014 all {len(v["plan"])} task(s), for review</div>'
+                f'<table style="width:100%;border-collapse:collapse;'
+                f'font-size:12px"><tr><th style="{th}">task</th>'
+                f'<th style="{th}">scope</th><th style="{th}">deps</th>'
+                f'<th style="{th}">status</th></tr>{trs}</table>')
+        details.append(
+            f'<div id="{oid}" style="display:none;padding:2px 4px">'
+            + "".join(kv) + artifacts + '</div>')
+    js = ('<script>function tpJ(sfx,i){var n=0;'
+          'while(document.getElementById("tpj"+sfx+n)){'
+          'var d=document.getElementById("tpj"+sfx+n),'
+          'b=document.getElementById("tpj"+sfx+n+"-b");'
+          'd.style.display=n===i?"block":"none";'
+          'b.style.borderColor=n===i?"var(--border-strong)":"transparent";'
+          'b.style.background=n===i?"var(--surface-0)":"none";'
+          'n++;}}</script>')
+    return (
+        f'<div id="tp-journey-{suffix}" style="border:1px solid '
+        f'var(--border);border-radius:6px;padding:12px 14px;margin-bottom:'
+        f'14px"><div style="{_MICRO};margin-bottom:8px">step journey \u2014 '
+        f'click a step for its execution &amp; decisions</div>'
+        f'<div style="display:grid;grid-template-columns:minmax(220px,38%) '
+        f'1fr;gap:12px"><div>{"".join(items)}</div>'
+        f'<div>{"".join(details)}'
+        f'<div style="font-size:11px;color:var(--text-muted);padding:4px">'
+        f'select a step on the left</div></div></div></div>' + js)
+
+
+def render_stats(ws, metrics, denials, suffix="s"):
+    """The always-on stats band (was retro-only) + the agent\u2192model
+    table \u2014 who ran which step/lens on which model, live."""
+    rows = _model_rows(ws)
+    cells = [("agents", metrics["agents"]), ("steps", metrics["steps"]),
+             ("waves", metrics["waves"]), ("fix cycles", metrics["fixes"]),
+             ("blocks", denials)]
+    band = "".join(
+        f'<div style="flex:1;text-align:center;padding:7px 6px">'
+        f'<div style="font-size:16px;font-weight:600;'
+        f'{"color:var(--text-danger)" if k == "blocks" and v else ""}">{v}'
+        f'</div><div style="{_MICRO}">{k}</div></div>'
+        for k, v in cells)
+    tbl = ""
+    if rows:
+        tr = "".join(
+            f'<tr><td style="padding:4px 6px">{_esc(r["agent"])}</td>'
+            f'<td style="padding:4px 6px">{_esc(str(r["what"]))}</td>'
+            f'<td style="padding:4px 6px">{_esc(r["tier"])}</td>'
+            f'<td style="padding:4px 6px;font-family:var(--font-mono);'
+            f'font-size:11px">{_esc(r["resolved"])}</td>'
+            f'<td style="padding:4px 6px;font-family:var(--font-mono);'
+            f'font-size:11px">{_esc(r["dispatched"])}</td></tr>'
+            for r in rows[-14:])
+        th = ('font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;'
+              'color:var(--text-muted);text-align:left;padding:3px 6px;'
+              'border-bottom:1px solid var(--border)')
+        tbl = (
+            f'<table id="tp-models-{suffix}" style="width:100%;'
+            f'border-collapse:collapse;font-size:12px;margin-top:8px">'
+            f'<tr><th style="{th}">agent</th><th style="{th}">step / lens'
+            f'</th><th style="{th}">tier</th><th style="{th}">resolved</th>'
+            f'<th style="{th}">dispatched</th></tr>{tr}</table>')
+    return (
+        f'<div id="tp-stats-{suffix}" style="border:1px solid var(--border);'
+        f'border-radius:6px;padding:8px 10px;margin-bottom:14px">'
+        f'<div style="display:flex;gap:4px">{band}</div>{tbl}</div>')
+
+
 def widget(ws: str) -> str:
     """Return an inline HTML fragment for mcp__visualize__show_widget. Opens
     with a live parallel-agents hero band on top (when agents are active),
@@ -1519,11 +1764,17 @@ def widget(ws: str) -> str:
         else:
             dot = "background:none;border:1.5px solid var(--border-strong)"
             col, wt, bg = "var(--text-muted)", "", ""
+        visited = cur_i >= 0 and i <= cur_i
+        click = (f' onclick="tpSpine(\'{sid}\')" id="tp-spine-{sid}" '
+                 f'class="tp-spine-n" title="see how this '
+                 f'stage was executed"' if visited else "")
         nodes.append(
-            f'<span style="display:flex;align-items:center;gap:6px;padding:'
-            f'5px 11px;border-radius:20px;font-family:var(--font-mono);'
+            f'<span{click} style="display:flex;align-items:center;gap:6px;'
+            f'padding:5px 11px;border-radius:20px;font-family:'
+            f'var(--font-mono);'
             f'font-size:12px;white-space:nowrap;{bg}color:{col};font-weight:'
-            f'{"500" if i == cur_i else "400"}"><span style="width:7px;'
+            f'{"500" if i == cur_i else "400"}'
+            f'{";cursor:pointer" if visited else ""}"><span style="width:7px;'
             f'height:7px;border-radius:{sq};flex:none;box-sizing:border-box;'
             f'{dot}"></span>{label}{wt}</span>')
         if i < len(spine) - 1:
@@ -1828,6 +2079,25 @@ def widget(ws: str) -> str:
         'function st(b,a){b.style.background=a?"var(--text-primary)":"none";'
         'b.style.color=a?"var(--surface-2)":"var(--text-secondary)";}'
         'st(bs,!on);st(bd,on);}'
+        'var tpMap={pm:["pm"],plan:["plan"],plan_approval:["plan_approval"],'
+        'build:["execute","evaluate","fix","escalated","resolve"],'
+        'selection:["selection"],em:["em"],signoff:["signoff"],'
+        'done:["done"]};'
+        'function tpSpine(sid){var steps=tpMap[sid]||[sid];'
+        'var sfx=document.getElementById("tp-detail").style.display==='
+        '"block"?"d":"s";var j=document.getElementById("tp-journey-"+sfx);'
+        'if(!j)return;var best=-1,n=0;'
+        'while(true){var b=document.getElementById("tpj"+sfx+n+"-b");'
+        'if(!b)break;if(steps.indexOf(b.getAttribute("data-step"))>=0)'
+        'best=n;n++;}'
+        'if(best>=0){tpJ(sfx,best);'
+        'var ns=document.getElementsByClassName("tp-spine-n");'
+        'for(var q=0;q<ns.length;q++){if(ns[q].style.background.indexOf('
+        '"text-primary")<0)ns[q].style.background="none";}'
+        'var me=document.getElementById("tp-spine-"+sid);'
+        'if(me&&me.style.background.indexOf("text-primary")<0)'
+        'me.style.background="var(--surface-0)";'
+        'j.scrollIntoView({behavior:"smooth",block:"nearest"});}}'
         'tpView("simple");tpTab("loop");</script>')
     # DoR strip — the entry-gate verdict for the CURRENT step, surfaced from
     # the latest loop_step trace (was computed every `loop next` but never
@@ -1861,6 +2131,12 @@ def widget(ws: str) -> str:
             + f'<span style="{_MICRO};margin-left:auto">entry gate · '
               f'{_esc(step)}</span></div>')
 
+    # Dashboard v2 (R-0001): journey navigator + always-on stats band.
+    visits = _journey(ws)
+    journey_s = render_journey(visits, "s")
+    journey_d = render_journey(visits, "d")
+    stats_html = render_stats(ws, metrics, denials, "s")
+
     return (
         f'<h2 class="sr-only">taskplane mission control: the governed loop is '
         f'at step {step_badge} for goal {goal}.</h2>'
@@ -1879,10 +2155,11 @@ def widget(ws: str) -> str:
         f'{hero}'
         f'{gatebar}'
         f'{dor_html}'
-        f'<div id="tp-simple">{pipe}{harness_panel}</div>'
+        f'{stats_html}'
+        f'<div id="tp-simple">{pipe}{journey_s}{harness_panel}</div>'
         f'<div id="tp-detail">'
         f'<div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:'
         f'1px solid var(--border);padding-bottom:10px">{tabs}</div>'
-        f'<div id="tp-panel-loop">{pipe}{loop_panel}</div>'
+        f'<div id="tp-panel-loop">{pipe}{journey_d}{loop_panel}</div>'
         f'<div id="tp-panel-map">{map_panel}</div></div></div>'
         + script)
