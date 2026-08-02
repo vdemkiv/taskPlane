@@ -1259,6 +1259,25 @@ def _context_panel(ws, state, trace_all):
     req = next((r for r in idx.get("requirements", [])
                 if r.get("id") == rid), None)
     parts = []
+    # R-0002: governing decisions — accepted ADRs whose modules overlap the
+    # current task's scope; always shown, they are in force for this work.
+    _t = _loop._current_task(state) if state else None
+    _scope = (_t or {}).get("scope") or []
+    gov = _kb.governing(ws, _scope) if _scope else []
+    if gov:
+        rows = "".join(
+            f'<div style="display:flex;gap:8px;align-items:baseline;'
+            f'font-size:13px;padding:3px 0"><span style="font-family:'
+            f'var(--font-mono);font-size:11px;color:var(--text-muted)">'
+            f'{_esc(d["id"])}</span><span>{_esc(d["title"])}</span>'
+            f'<span style="font-family:var(--font-mono);font-size:10px;'
+            f'color:var(--text-success,var(--text-primary))">in force'
+            f'</span></div>' for d in gov)
+        parts.append(
+            f'<div id="tp-governing" style="border:1px solid var(--border);'
+            f'border-radius:6px;padding:12px 14px;margin-bottom:12px">'
+            f'<div style="{_MICRO};margin-bottom:6px">governing decisions '
+            f'\u2014 accepted, scope-linked</div>{rows}</div>')
     if req:
         acc = "".join(
             f'<div style="display:flex;gap:8px;align-items:baseline;'

@@ -158,7 +158,10 @@ class TestCatalogCut(unittest.TestCase):
         ids = {l["id"] for l in cat["lenses"]}
         for gone in ("tech-strategy", "cost-roi", "business-alignment"):
             self.assertNotIn(gone, ids)
-        self.assertEqual(len(cat["lenses"]), 22)
+        # v1.0.0 cut the 3 advisory-board lenses (25->22); v1.2.0 added 3
+        # DESIGN lenses (tradeoffs, services-selection, time-to-market) which
+        # are per-change review lenses, not an advisory tier -> 25 again.
+        self.assertEqual(len(cat["lenses"]), 25)
         self.assertFalse(any("Advisory" in (l.get("group") or "")
                              for l in cat["lenses"]))
 

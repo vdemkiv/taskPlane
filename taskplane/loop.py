@@ -625,6 +625,11 @@ def next_action(ws: str) -> dict:
         "dor": {"ready": dor_ready, "blockers": blockers,
                 "warnings": warnings},
         "knowledge": {"decisions": recalled,
+                      # R-0002: accepted decisions whose modules overlap this
+                      # task's scope are ALWAYS in force — injected
+                      # unconditionally, not relevance-ranked.
+                      "governing_decisions": kb.governing(
+                          ws, contract["coding"]["scope_paths"]),
                       "context": kb.render_context(recalled)},
         "lenses": routing["lenses"] if routing else None,
         "impact": imp and {**imp, "context": depgraph.render_context(imp)},

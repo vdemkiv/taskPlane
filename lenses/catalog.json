@@ -379,6 +379,77 @@
       ]
     },
     {
+      "id": "tradeoffs",
+      "name": "Design trade-offs",
+      "group": "Architecture & systems",
+      "charter": "every significant design choice names >=2 real alternatives with an explicit trade-off table: gained / given up / revisit-when; the chosen option is recorded as a proposed decision (D-record) in the registry",
+      "boundary": "the final call -> human at the gate; product scope -> product; overall structure -> architecture",
+      "looks_for": "unexamined single-option designs, hidden costs of the chosen path, missing revisit conditions, decisions made in code but never recorded",
+      "globs": [
+        "**/architecture/**",
+        "**/adr/**",
+        "**/design/**",
+        "**/*.arch.md",
+        "plan/**",
+        "**/specs/**"
+      ],
+      "task_types": [
+        "greenfield",
+        "system-design",
+        "distributed",
+        "integration",
+        "feature"
+      ],
+      "deep_globs": [
+        "**/architecture/**",
+        "**/adr/**",
+        "**/design/**"
+      ]
+    },
+    {
+      "id": "services-selection",
+      "name": "Tool & services selection",
+      "group": "Architecture & systems",
+      "charter": "build-vs-buy and dependency choices: managed vs self-hosted, vendor lock-in and exit cost, maturity, license, operational load",
+      "boundary": "code-level dependency hygiene -> code-quality; runtime ops -> devops/sre; live pricing/vendor data -> out of scope (reasons from the repo only)",
+      "looks_for": "new dependencies/services without a selection rationale, lock-in with no exit path, self-hosting what a managed service does better (and vice versa), license risk",
+      "globs": [
+        "**/package.json",
+        "**/requirements*.txt",
+        "**/pyproject.toml",
+        "**/go.mod",
+        "**/Cargo.toml",
+        "**/docker-compose*",
+        "**/*.tf",
+        "**/Gemfile",
+        "**/pom.xml"
+      ],
+      "task_types": [
+        "integration",
+        "greenfield",
+        "infrastructure"
+      ]
+    },
+    {
+      "id": "time-to-market",
+      "name": "Time to market",
+      "group": "Product & delivery",
+      "charter": "delivery speed as a first-class criterion: the fastest credible path, what can be deferred (recorded as debt, not lost), reversible-now over perfect-later",
+      "boundary": "quality floors are NOT negotiable -> security/testability baselines still apply; long-term structure -> architecture",
+      "looks_for": "over-engineering vs the stated goal, deferrable work inside the critical path, scope that could ship in halves, missing debt records for deliberate cuts",
+      "globs": [
+        "plan/**",
+        "**/specs/**",
+        "**/roadmap*",
+        "**/*.spec.md"
+      ],
+      "task_types": [
+        "feature",
+        "greenfield",
+        "prototype"
+      ]
+    },
+    {
       "id": "architecture",
       "name": "System design & architecture",
       "group": "Architecture & systems",

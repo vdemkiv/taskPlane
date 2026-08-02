@@ -122,6 +122,56 @@ GUIDES = {
    "Main-thread discipline: I/O and decoding off the UI thread."],
   blocker="data loss on lifecycle events; a store-policy violation",
   major="unusable offline behavior; main-thread I/O jank"),
+ "tradeoffs": dict(examine=[
+   "Every significant design choice in the diff/plan: are >=2 REAL "
+   "alternatives named (not strawmen), with an explicit table — what is "
+   "GAINED, what is GIVEN UP, and WHEN to revisit?",
+   "Hidden costs of the chosen path: operational load, coupling, migration "
+   "cost, the option it forecloses.",
+   "Decisions made in code but never recorded: if the choice matters, it "
+   "belongs in the decision registry — end your review by drafting the "
+   "chosen option as a PROPOSED decision: `tp decision new \"<title>\" "
+   "--status proposed --alternative 'opt | gained | given up' "
+   "--modules <globs> --req <R-id>` for the human to accept.",
+   "Revisit conditions: a trade-off without a trigger to reconsider it is "
+   "a permanent accident.",
+  ], blocker=(
+   "an irreversible or structure-defining choice made with NO alternative "
+   "considered and no recorded rationale"), major=(
+   "a significant choice whose trade-off table is missing a real cost, or "
+   "a chosen option left unrecorded in the registry")),
+ "services-selection": dict(examine=[
+   "Every NEW dependency, service, or tool in the diff (manifests, compose, "
+   "terraform): is there a selection rationale — build vs buy, managed vs "
+   "self-hosted — proportionate to its blast radius?",
+   "Lock-in and exit: what does leaving this vendor/library cost; is the "
+   "integration behind a seam or smeared through the code?",
+   "Maturity & license: maintenance activity, ecosystem, license "
+   "compatibility with the project's own license.",
+   "Operational load: who patches, upgrades, monitors this; does the team "
+   "already run something that does the job?",
+   "Reason from the REPO ONLY — never fetch live vendor data or pricing.",
+  ], blocker=(
+   "a new hard dependency with material lock-in and no exit seam or "
+   "recorded rationale"), major=(
+   "self-hosting what a mature managed service provides (or vice versa) "
+   "without a stated reason, or a license conflict")),
+ "time-to-market": dict(examine=[
+   "The fastest CREDIBLE path: does the plan reach user value in the "
+   "fewest gated steps that still satisfy the acceptance criteria?",
+   "Deferrable work inside the critical path: what here could ship later — "
+   "and is each deliberate cut RECORDED as debt (`tp req debt`), not lost?",
+   "Reversible-now over perfect-later: prefer the two-way-door version "
+   "shipped this week to the one-way-door version shipped next month.",
+   "Over-engineering vs the stated goal: abstractions, config surface, or "
+   "generality nobody asked for yet.",
+   "Quality floors are NOT the lever: never propose cutting the security/"
+   "testability baselines to go faster — cut SCOPE, not floors.",
+  ], blocker=(
+   "the plan's critical path contains work the acceptance criteria do not "
+   "require, materially delaying delivery"), major=(
+   "a deferrable item not deferred (or deferred without a debt record), or "
+   "speculative generality with no requirement behind it")),
  "architecture": dict(examine=[
    "READ `knowledge/architecture.md` FIRST and judge the change against the "
    "documented model — never re-derive the architecture from the codebase.",

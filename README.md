@@ -106,7 +106,7 @@ confidence that the review itself won't touch a thing.
 > **tp-engineering: review the approvals-reporting PR against main**
 
 taskplane activates a **read-only contract** (the hook blocks any write to
-the reviewed source), routes the **full 22-lens catalog** — deep on what the
+the reviewed source), routes the **full 25-lens catalog** — deep on what the
 change touches, a quick sweep on the rest, and **architecture & system
 design always on** — leads with the dependency-graph **blast radius**,
 checks each acceptance criterion, and hands you a findings report ranked
@@ -249,9 +249,10 @@ the model's own calls.
 | --- | --- |
 | Enforcement kernel | contracts + PreToolUse hook + DoR/DoD gates + action budget + audit trace |
 | Evaluate-Loop | plan → build → evaluate → fix (≤2) → review → sign-off; serial or parallel waves, one enforced contract per agent |
-| 22 lenses (as agents) | the diff picks the reviewers (security, a11y, DBA, performance, …); each is a governed read-only agent, fanned out in PARALLEL so a wide review runs in one pass — architecture & system design ALWAYS on |
+| 25 lenses (as agents) | the diff picks the reviewers (security, a11y, DBA, performance, …); each is a governed read-only agent, fanned out in PARALLEL so a wide review runs in one pass — architecture & system design ALWAYS on |
 | Requirements engine | refinement scoring + iteration forecast; quick-vs-full with tracked debt |
 | Knowledge base | decisions, requirements, debt — retrieved by relevance at every step; kept in an external per-project store (`~/.taskplane`), out of your repo |
+| Decision registry | structured ADRs (`tp decision`) with lifecycle, alternatives + trade-offs, and supersede chains — accepted decisions linked to a task's modules are ALWAYS injected into that task's brief |
 | Dependency graph | deterministic scan + change blast-radius + interactive map |
 | Model tiers | portable `cheap`/`standard`/`deep` capability tiers routed per step, task, and lens — mapped to models by env config, verifiable with `tp loop verify-dispatch` |
 
@@ -294,7 +295,7 @@ taskplane/
 ├── hooks/hooks.json        # PreToolUse → taskplane screen
 ├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent); + tp-northstar (summoned strategy)
 ├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-northstar, tp-status, tp-help
-├── lenses/                 # the 22-lens catalog
+├── lenses/                 # the 25-lens catalog
 ├── scripts/                # generators (e.g. the lens-catalog doc)
 ├── discipline/             # TDD, debugging, worktrees — the operating disciplines
 ├── docs/                   # state spec + design notes

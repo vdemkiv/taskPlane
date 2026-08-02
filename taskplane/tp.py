@@ -275,6 +275,62 @@ def cmd_screen_dispatch(a) -> int:
         return 0                                   # never break dispatch
 
 
+def cmd_decision(a) -> int:
+    """Decision registry (R-0002): structured ADRs with lifecycle, links and
+    supersede chains — `tp decision new/list/show/accept/supersede`."""
+    import kb as _kb
+    ws = _workspace(a.workspace)
+    act = a.decision_action
+    if act == "new":
+        alts = []
+        for spec in (a.alternative or []):
+            parts = [p.strip() for p in spec.split("|")]
+            alts.append({"option": parts[0],
+                         "gained": parts[1] if len(parts) > 1 else "",
+                         "given_up": parts[2] if len(parts) > 2 else ""})
+        alt_md = "\n".join(
+            f"- **{x['option']}** — gained: {x['gained'] or '—'}; "
+            f"given up: {x['given_up'] or '—'}" for x in alts)
+        links = {}
+        if a.req:
+            links["requirement"] = a.req
+        if a.modules:
+            links["modules"] = [m.strip() for m in a.modules.split(",")]
+        rec = _kb.record_decision(
+            ws, a.title, context=a.context or "",
+            decision=a.decision or "", rationale=a.rationale or "",
+            alternatives=alt_md, tags=(a.tags or "").split(",") if a.tags
+            else ["decision"], links=links, status=a.status)
+        if a.supersedes:
+            _kb.supersede(ws, a.supersedes, rec["id"])
+        print(json.dumps({"recorded": rec["id"], "status": rec["status"],
+                          "links": links,
+                          "alternatives": len(alts),
+                          "supersedes": a.supersedes}, indent=2))
+    elif act == "list":
+        ds = _kb.list_decisions(ws)
+        if a.status_filter:
+            ds = [d for d in ds if d["status"] == a.status_filter]
+        print(json.dumps([{"id": d["id"], "title": d["title"],
+                           "status": d["status"]} for d in ds], indent=2))
+    elif act == "show":
+        d = _kb.get_decision(ws, a.id)
+        if not d:
+            print(f"taskplane: no decision {a.id}", file=sys.stderr)
+            return 1
+        print(json.dumps(d, indent=2))
+        p = os.path.join(_kb.kb_dir(ws), d["file"])
+        if os.path.exists(p):
+            print(open(p).read())
+    elif act == "accept":
+        d = _kb.set_status(ws, a.id, "accepted")
+        print(json.dumps({"id": a.id, "status": d and d["status"]}, indent=2))
+    elif act == "supersede":
+        _kb.supersede(ws, a.id, a.by)
+        print(json.dumps({"superseded": a.id, "by": a.by}, indent=2))
+    return 0
+
+
 def cmd_clear(a) -> int:
     """Deactivate the workspace contract (e.g. when a review ends), so the
     enforcement hook stops governing subsequent work."""
@@ -1174,6 +1230,40 @@ def main() -> int:
                         "(e.g. .em-review/**) — repeatable")
     n.add_argument("--workspace")
     n.set_defaults(fn=cmd_new)
+
+    dc = sub.add_parser("decision", help="decision registry — structured "
+                        "ADRs with lifecycle, links and supersede chains")
+    dc.add_argument("--workspace")
+    dsub = dc.add_subparsers(dest="decision_action", required=True)
+    dn = dsub.add_parser("new")
+    dn.add_argument("--workspace")
+    dn.add_argument("title")
+    dn.add_argument("--context")
+    dn.add_argument("--decision")
+    dn.add_argument("--rationale")
+    dn.add_argument("--alternative", action="append",
+                    help="repeatable: 'option | gained | given up'")
+    dn.add_argument("--req", help="linked requirement R-XXXX")
+    dn.add_argument("--modules", help="comma-separated module globs this "
+                    "decision governs (drives always-on context injection)")
+    dn.add_argument("--supersedes", help="decision id this one replaces")
+    dn.add_argument("--status", default="accepted",
+                    choices=["proposed", "accepted"])
+    dn.add_argument("--tags")
+    dl = dsub.add_parser("list")
+    dl.add_argument("--workspace")
+    dl.add_argument("--status", dest="status_filter")
+    dsh = dsub.add_parser("show")
+    dsh.add_argument("--workspace")
+    dsh.add_argument("id")
+    da = dsub.add_parser("accept")
+    da.add_argument("--workspace")
+    da.add_argument("id")
+    dsp = dsub.add_parser("supersede")
+    dsp.add_argument("--workspace")
+    dsp.add_argument("id")
+    dsp.add_argument("--by", required=True)
+    dc.set_defaults(fn=cmd_decision)
 
     s = sub.add_parser("screen", help="PreToolUse hook entrypoint (stdin event)")
     s.set_defaults(fn=cmd_screen)

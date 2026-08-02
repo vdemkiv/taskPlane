@@ -117,6 +117,44 @@ def supersede(ws: str, old_id: str, by_id: str) -> None:
 
 # --------------------------------------------------------------- retrieve
 
+def get_decision(ws: str, did: str) -> dict | None:
+    for d in load_index(ws)["decisions"]:
+        if d["id"] == did:
+            return d
+    return None
+
+
+def set_status(ws: str, did: str, status: str) -> dict | None:
+    """Lifecycle transition (e.g. proposed -> accepted). Append-only: files
+    are never deleted; only the index status moves."""
+    idx = load_index(ws)
+    hit = None
+    for d in idx["decisions"]:
+        if d["id"] == did:
+            d["status"] = status
+            hit = d
+    _save_index(ws, idx)
+    return hit
+
+
+def governing(ws: str, scope_globs) -> list:
+    """Decision-registry context extension (R-0002): ACCEPTED decisions whose
+    linked modules overlap the given scope are ALWAYS in force for that work —
+    returned unconditionally, not relevance-ranked. Constraints travel with
+    the contract."""
+    scope = list(scope_globs or [])
+    if not scope:
+        return []
+    out = []
+    for d in load_index(ws)["decisions"]:
+        if d.get("status") != "accepted":
+            continue
+        mods = (d.get("links") or {}).get("modules") or []
+        if mods and _path_overlap(scope, list(mods)):
+            out.append(d)
+    return out
+
+
 def _stem(glob: str) -> str:
     """The fixed directory prefix of a glob, before the first wildcard."""
     cut = len(glob)
