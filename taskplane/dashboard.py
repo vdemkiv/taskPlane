@@ -1278,6 +1278,21 @@ def _context_panel(ws, state, trace_all):
             f'border-radius:6px;padding:12px 14px;margin-bottom:12px">'
             f'<div style="{_MICRO};margin-bottom:6px">governing decisions '
             f'\u2014 accepted, scope-linked</div>{rows}</div>')
+    # R-0004: current-state grounding \u2014 the as-built inventory every design
+    # lens is grounded in; shown whenever it's filled.
+    _cs = _kb.current_state(ws)
+    if _cs:
+        _n_lines = sum(1 for ln in _cs["text"].splitlines()
+                       if ln.strip() and not ln.strip().startswith("#"))
+        parts.append(
+            f'<div id="tp-current-state" style="border:1px solid '
+            f'var(--border);border-radius:6px;padding:12px 14px;'
+            f'margin-bottom:12px"><div style="{_MICRO};margin-bottom:6px">'
+            f'current state \u2014 as-built inventory (grounding)</div>'
+            f'<div style="font-size:13px">{_esc(_cs["path"])} '
+            f'<span style="font-family:var(--font-mono);font-size:10px;'
+            f'color:var(--text-success,var(--text-primary))">grounds design '
+            f'lenses \u00b7 {_n_lines} lines</span></div></div>')
     if req:
         acc = "".join(
             f'<div style="display:flex;gap:8px;align-items:baseline;'

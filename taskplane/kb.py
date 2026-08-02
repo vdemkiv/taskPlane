@@ -155,6 +155,42 @@ def governing(ws: str, scope_globs) -> list:
     return out
 
 
+CURRENT_STATE_CAP = 6000     # chars of inventory injected into a brief
+
+
+def current_state(ws: str):
+    """Current-state grounding (R-0004): the as-built inventory —
+    context/current-state.md in the external store. Returned to every brief
+    so design work is judged as a DELTA against what exists, never in a
+    vacuum. None when the file is missing or still the unfilled scaffold
+    (only headings/placeholder parentheticals — no real content lines)."""
+    p = os.path.join(kb_dir(ws), "context", "current-state.md")
+    try:
+        text = open(p, encoding="utf-8").read()
+    except OSError:
+        return None
+    filled = False
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("- **") and s.rstrip().endswith(":**"):
+            continue                       # empty scaffold bullet
+        if s.startswith("(") and s.endswith(")"):
+            continue                       # placeholder hint
+        if s.startswith(">"):
+            continue                       # scaffold explainer quote
+        filled = True
+        break
+    if not filled:
+        return None
+    if len(text) > CURRENT_STATE_CAP:
+        text = text[:CURRENT_STATE_CAP] + "\n… (truncated — read " \
+            "context/current-state.md in the knowledge store for the rest)"
+    return {"path": os.path.join("context", "current-state.md"),
+            "text": text}
+
+
 def _stem(glob: str) -> str:
     """The fixed directory prefix of a glob, before the first wildcard."""
     cut = len(glob)

@@ -17,15 +17,16 @@ You are reviewing this change through the **System design & architecture** lens 
 
 Examine, with file:line evidence:
 
-1. READ `knowledge/architecture.md` FIRST and judge the change against the documented model — never re-derive the architecture from the codebase.
-2. Boundary integrity: does a new dependency cross a layer/service line that was deliberately separate?
-3. Data flow & coupling: chatty call patterns, shared databases, implicit contracts between components.
-4. State & consistency: where state lives is explicit; consistency model (strong/eventual) chosen, not accidental.
-5. Failure modes of new edges: timeout, retry, backpressure, partial availability.
-6. Tech-choice fit: new tech earns its place; effort matches the tier (light = sanity-check the boundary; full = design pass as a subagent).
-7. UPDATE `knowledge/architecture.md` (or file a decision) when the shape changed — the model must stay current or the lens goes blind.
+1. GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory (`context/current-state.md` in the knowledge store, injected into briefs as `knowledge.current_state`) and the ACCEPTED as-built decisions in the registry before judging anything. A design is reviewed as a DELTA against what exists — never in a vacuum. Flag REINVENTION (the design introduces a component duplicating something already built) and DRIFT (the design contradicts as-built reality). If the inventory is missing on system-design work, say so — an ungrounded architecture document is itself a finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the capability the as-built stack already provides (the incumbent platform's own registry, MLOps, queue, auth …) over introducing a new service — name the concrete incumbent option in the finding's suggestion.
+2. READ `knowledge/architecture.md` FIRST and judge the change against the documented model — never re-derive the architecture from the codebase.
+3. Boundary integrity: does a new dependency cross a layer/service line that was deliberately separate?
+4. Data flow & coupling: chatty call patterns, shared databases, implicit contracts between components.
+5. State & consistency: where state lives is explicit; consistency model (strong/eventual) chosen, not accidental.
+6. Failure modes of new edges: timeout, retry, backpressure, partial availability.
+7. Tech-choice fit: new tech earns its place; effort matches the tier (light = sanity-check the boundary; full = design pass as a subagent).
+8. UPDATE `knowledge/architecture.md` (or file a decision) when the shape changed — the model must stay current or the lens goes blind.
 
-**Blocker** = a silent violation of a settled boundary or recorded decision.
+**Blocker** = a silent violation of a settled boundary or recorded decision; or reinventing / contradicting a component in the as-built inventory (current-state grounding).
 **Major** = new cross-component coupling left undocumented.
 Minor = worth fixing, doesn't gate. Prefer the smallest suggestion that resolves each finding.
 

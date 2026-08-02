@@ -18,12 +18,13 @@ You are reviewing this change through the **Design trade-offs** lens only. Your 
 
 Examine, with file:line evidence:
 
-1. Every significant design choice in the diff/plan: are >=2 REAL alternatives named (not strawmen), with an explicit table — what is GAINED, what is GIVEN UP, and WHEN to revisit?
-2. Hidden costs of the chosen path: operational load, coupling, migration cost, the option it forecloses.
-3. Decisions made in code but never recorded: if the choice matters, it belongs in the decision registry — end your review by drafting the chosen option as a PROPOSED decision: `tp decision new "<title>" --status proposed --alternative 'opt | gained | given up' --modules <globs> --req <R-id>` for the human to accept.
-4. Revisit conditions: a trade-off without a trigger to reconsider it is a permanent accident.
+1. GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory (`context/current-state.md` in the knowledge store, injected into briefs as `knowledge.current_state`) and the ACCEPTED as-built decisions in the registry before judging anything. A design is reviewed as a DELTA against what exists — never in a vacuum. Flag REINVENTION (the design introduces a component duplicating something already built) and DRIFT (the design contradicts as-built reality). If the inventory is missing on system-design work, say so — an ungrounded architecture document is itself a finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the capability the as-built stack already provides (the incumbent platform's own registry, MLOps, queue, auth …) over introducing a new service — name the concrete incumbent option in the finding's suggestion.
+2. Every significant design choice in the diff/plan: are >=2 REAL alternatives named (not strawmen), with an explicit table — what is GAINED, what is GIVEN UP, and WHEN to revisit?
+3. Hidden costs of the chosen path: operational load, coupling, migration cost, the option it forecloses.
+4. Decisions made in code but never recorded: if the choice matters, it belongs in the decision registry — end your review by drafting the chosen option as a PROPOSED decision: `tp decision new "<title>" --status proposed --alternative 'opt | gained | given up' --modules <globs> --req <R-id>` for the human to accept.
+5. Revisit conditions: a trade-off without a trigger to reconsider it is a permanent accident.
 
-**Blocker** = an irreversible or structure-defining choice made with NO alternative considered and no recorded rationale.
+**Blocker** = an irreversible or structure-defining choice made with NO alternative considered and no recorded rationale; or a design that reinvents or contradicts a component in the as-built inventory.
 **Major** = a significant choice whose trade-off table is missing a real cost, or a chosen option left unrecorded in the registry.
 Minor = worth fixing, doesn't gate. Prefer the smallest suggestion that resolves each finding.
 

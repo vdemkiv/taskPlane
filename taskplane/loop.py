@@ -630,6 +630,10 @@ def next_action(ws: str) -> dict:
                       # unconditionally, not relevance-ranked.
                       "governing_decisions": kb.governing(
                           ws, contract["coding"]["scope_paths"]),
+                      # R-0004: the as-built inventory — ALWAYS in the brief
+                      # when filled, so design work is judged as a delta
+                      # against what exists, never in a vacuum.
+                      "current_state": kb.current_state(ws),
                       "context": kb.render_context(recalled)},
         "lenses": routing["lenses"] if routing else None,
         "impact": imp and {**imp, "context": depgraph.render_context(imp)},

@@ -928,6 +928,22 @@ system model in `knowledge/architecture.md`; this file is the coarse truth.
 - **Non-negotiables (compliance, uptime, budgets):**
 """
 
+CURRENT_STATE_MD = """# Current state — as-built inventory
+
+> What ALREADY EXISTS. Every design lens grounds its review here: a design
+> is judged as a DELTA against this inventory, never in a vacuum.
+> Reinventing a listed component, or contradicting a fact below, is a
+> blocker-class finding. Keep it short and true; record the big as-built
+> choices as ACCEPTED decisions (`tp decision new "<title>" --modules
+> <globs>`) so they also govern future work automatically.
+
+- **Built & running (components, who owns them):**
+- **Data & integrations that exist (sources, pipelines, stores):**
+- **Hardware / physical constraints already in place:**
+- **In flight (started, not landed):**
+- **Known debt on the built parts:**
+"""
+
 WORKFLOW_MD = """# Workflow conventions
 
 How this team ships. The loop reads these as defaults.
@@ -986,7 +1002,8 @@ def cmd_init(a) -> int:
     wrote = []
     for name, body in (("product.md", PRODUCT_MD),
                        ("tech-stack.md", TECH_MD),
-                       ("workflow.md", WORKFLOW_MD)):
+                       ("workflow.md", WORKFLOW_MD),
+                       ("current-state.md", CURRENT_STATE_MD)):
         p = os.path.join(ctx, name)
         if not os.path.exists(p):
             with open(p, "w") as f:

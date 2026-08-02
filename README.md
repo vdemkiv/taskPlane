@@ -51,9 +51,20 @@ checks are green:
    would govern everything).
 2. **A git commit to diff against** — the gates fail closed without a
    snapshot; `git init && git add -A && git commit` if the repo is new.
-3. **`tp init`** — scaffolds the three context docs
-   (`product.md` / `tech-stack.md` / `workflow.md`), scans the dependency
-   graph, and creates the external knowledge base.
+3. **`tp init`** — scaffolds the four context docs
+   (`product.md` / `tech-stack.md` / `workflow.md` / `current-state.md`),
+   scans the dependency graph, and creates the external knowledge base.
+
+   **Fill `current-state.md` first on a brownfield project.** It is the
+   as-built inventory — what already runs, what data/integrations exist,
+   what hardware is in place. Once filled, it is injected into every task
+   brief (`knowledge.current_state`), and the design lenses (architecture,
+   trade-offs, services selection, time-to-market) ground their reviews in
+   it: a design is judged as a *delta against what exists*, and
+   **reinventing an existing component or contradicting as-built reality is
+   a blocker-class finding**. Record the big as-built choices as accepted
+   decisions too (`tp decision new "<title>" --modules <globs>`) so they
+   govern future work automatically.
 
 Two setup choices then decide how efficiently the whole system runs:
 
@@ -253,6 +264,7 @@ the model's own calls.
 | Requirements engine | refinement scoring + iteration forecast; quick-vs-full with tracked debt |
 | Knowledge base | decisions, requirements, debt — retrieved by relevance at every step; kept in an external per-project store (`~/.taskplane`), out of your repo |
 | Decision registry | structured ADRs (`tp decision`) with lifecycle, alternatives + trade-offs, and supersede chains — accepted decisions linked to a task's modules are ALWAYS injected into that task's brief |
+| Current-state grounding | the as-built inventory (`context/current-state.md`) injected into every brief; design lenses review as a delta against what exists — reinvention and doc-vs-reality drift are blocker-class |
 | Dependency graph | deterministic scan + change blast-radius + interactive map |
 | Model tiers | portable `cheap`/`standard`/`deep` capability tiers routed per step, task, and lens — mapped to models by env config, verifiable with `tp loop verify-dispatch` |
 

@@ -123,6 +123,18 @@ GUIDES = {
   blocker="data loss on lifecycle events; a store-policy violation",
   major="unusable offline behavior; main-thread I/O jank"),
  "tradeoffs": dict(examine=[
+   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
+   "(`context/current-state.md` in the knowledge store, injected into briefs "
+   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
+   "registry before judging anything. A design is reviewed as a DELTA against "
+   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
+   "a component duplicating something already built) and DRIFT (the design "
+   "contradicts as-built reality). If the inventory is missing on system-"
+   "design work, say so — an ungrounded architecture document is itself a "
+   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
+   "capability the as-built stack already provides (the incumbent platform's "
+   "own registry, MLOps, queue, auth …) over introducing a new service — "
+   "name the concrete incumbent option in the finding's suggestion.",
    "Every significant design choice in the diff/plan: are >=2 REAL "
    "alternatives named (not strawmen), with an explicit table — what is "
    "GAINED, what is GIVEN UP, and WHEN to revisit?",
@@ -137,10 +149,23 @@ GUIDES = {
    "a permanent accident.",
   ], blocker=(
    "an irreversible or structure-defining choice made with NO alternative "
-   "considered and no recorded rationale"), major=(
+   "considered and no recorded rationale; or a design that reinvents or "
+   "contradicts a component in the as-built inventory"), major=(
    "a significant choice whose trade-off table is missing a real cost, or "
    "a chosen option left unrecorded in the registry")),
  "services-selection": dict(examine=[
+   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
+   "(`context/current-state.md` in the knowledge store, injected into briefs "
+   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
+   "registry before judging anything. A design is reviewed as a DELTA against "
+   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
+   "a component duplicating something already built) and DRIFT (the design "
+   "contradicts as-built reality). If the inventory is missing on system-"
+   "design work, say so — an ungrounded architecture document is itself a "
+   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
+   "capability the as-built stack already provides (the incumbent platform's "
+   "own registry, MLOps, queue, auth …) over introducing a new service — "
+   "name the concrete incumbent option in the finding's suggestion.",
    "Every NEW dependency, service, or tool in the diff (manifests, compose, "
    "terraform): is there a selection rationale — build vs buy, managed vs "
    "self-hosted — proportionate to its blast radius?",
@@ -157,6 +182,18 @@ GUIDES = {
    "self-hosting what a mature managed service provides (or vice versa) "
    "without a stated reason, or a license conflict")),
  "time-to-market": dict(examine=[
+   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
+   "(`context/current-state.md` in the knowledge store, injected into briefs "
+   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
+   "registry before judging anything. A design is reviewed as a DELTA against "
+   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
+   "a component duplicating something already built) and DRIFT (the design "
+   "contradicts as-built reality). If the inventory is missing on system-"
+   "design work, say so — an ungrounded architecture document is itself a "
+   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
+   "capability the as-built stack already provides (the incumbent platform's "
+   "own registry, MLOps, queue, auth …) over introducing a new service — "
+   "name the concrete incumbent option in the finding's suggestion.",
    "The fastest CREDIBLE path: does the plan reach user value in the "
    "fewest gated steps that still satisfy the acceptance criteria?",
    "Deferrable work inside the critical path: what here could ship later — "
@@ -173,6 +210,18 @@ GUIDES = {
    "a deferrable item not deferred (or deferred without a debt record), or "
    "speculative generality with no requirement behind it")),
  "architecture": dict(examine=[
+   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
+   "(`context/current-state.md` in the knowledge store, injected into briefs "
+   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
+   "registry before judging anything. A design is reviewed as a DELTA against "
+   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
+   "a component duplicating something already built) and DRIFT (the design "
+   "contradicts as-built reality). If the inventory is missing on system-"
+   "design work, say so — an ungrounded architecture document is itself a "
+   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
+   "capability the as-built stack already provides (the incumbent platform's "
+   "own registry, MLOps, queue, auth …) over introducing a new service — "
+   "name the concrete incumbent option in the finding's suggestion.",
    "READ `knowledge/architecture.md` FIRST and judge the change against the "
    "documented model — never re-derive the architecture from the codebase.",
    "Boundary integrity: does a new dependency cross a layer/service line "
@@ -187,7 +236,7 @@ GUIDES = {
    "(light = sanity-check the boundary; full = design pass as a subagent).",
    "UPDATE `knowledge/architecture.md` (or file a decision) when the shape "
    "changed — the model must stay current or the lens goes blind."],
-  blocker="a silent violation of a settled boundary or recorded decision",
+  blocker="a silent violation of a settled boundary or recorded decision; or reinventing / contradicting a component in the as-built inventory (current-state grounding)",
   major="new cross-component coupling left undocumented"),
  "scalability": dict(examine=[
    "Complexity of new hot paths against realistic data growth, not demo "
