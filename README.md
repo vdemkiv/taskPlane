@@ -17,6 +17,17 @@ ecosystem without losing the plot. Three things, everywhere: **you can see
 what's happening, it stays on topic, and you keep the thread.** The scope
 guardrails and gates are how it delivers that — not the point, the means.
 
+## What's new
+
+| Version | Highlights |
+| --- | --- |
+| **v1.3.1** | **Remedy required on every finding** — the shared verdict format across all 25 lenses makes `suggestion` mandatory on every blocker/major/minor: criticism must come with a concrete alternative or solution, preferring capabilities your stack already runs. |
+| **v1.3.0** | **Current-state grounding** — `tp init` scaffolds `context/current-state.md` (the as-built inventory); once filled it is injected into every task brief, and the design lenses review any design as a *delta against what exists*: reinventing an existing component or contradicting as-built reality is blocker-class. Grounding panel in the dashboard. |
+| **v1.2.0** | **Decision registry** — `tp decision`: structured ADRs with lifecycle, alternatives (`option \| gained \| given up`), and supersede chains; accepted decisions linked to a task's modules are always injected into that task's brief. Plus three new design lenses: trade-offs, services selection, time-to-market (catalog: 25). |
+| **v1.1.0** | **Dashboard v2** — auto-rendered on every gate and step; clickable loop rail + step journey with per-step execution and decision details; full acceptance criteria and execution plan shown for review; always-on stats with the agent → model table. |
+| **v1.0.1** | Dispatch verification (`tp loop verify-dispatch` + opt-in Task-dispatch hook), FUSE-safe store cleanup, richer task statuses (`done`/`external` satisfy dependencies), model-tier setup in onboarding. |
+| **v1.0.0** | First public release — enforced task contracts (PreToolUse hook), human-gated Evaluate-Loop, context-routed lens catalog, requirements engine, external per-project knowledge base, model tiers, on-demand north-star review. |
+
 ## Install
 
 taskplane isn't in the built-in plugin catalog yet — you add it straight
