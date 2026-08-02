@@ -57,14 +57,19 @@ Minor = worth fixing, doesn't gate. Prefer the smallest suggestion that resolves
 ## Verdict format (all lenses)
 
 Return findings, then a verdict. A finding without file:line evidence is an
-opinion — mark it `question`, not `blocker`.
+opinion — mark it `question`, not `blocker`. And a criticism without a
+remedy is pointless: `suggestion` is REQUIRED on every blocker/major/minor —
+a concrete alternative or solution, preferring capabilities the as-built
+stack already provides (see the current-state inventory when present). A
+finding you cannot propose a remedy for is a `question`, not a verdict.
 
 ```json
 {"lens": "<id>",
  "findings": [{"severity": "blocker|major|minor|question|praise",
                "file": "path", "line": 0,
                "issue": "what is wrong", "why": "the principle",
-               "suggestion": "smallest fix that resolves it"}],
+               "suggestion": "REQUIRED: the remedy — smallest concrete fix
+                              or alternative, incumbent-stack first"}],
  "verdict": "pass|fail",
  "confidence": "high|medium|low"}
 ```
