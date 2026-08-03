@@ -534,10 +534,28 @@ def headline_findings(findings, meta=None) -> str:
             f"({sum(c.values())} findings)")
     if meta.get("tests"):
         line += f" · {meta['tests']}"
+    if meta.get("lens_coverage") is not None:
+        cov = lens_coverage(meta["lens_coverage"])
+        line += (f" · lenses {cov['deep']} deep/{cov['sweep']} sweep of "
+                 f"{cov['total']}")
+    if meta.get("impact"):
+        line += f" · touches {meta['impact'].get('total_impacted', 0)} modules"
     rec = meta.get("headline") or meta.get("recommendation")
     if rec:
         line += f" · {rec}"
     return line
+
+
+def headline_northstar(note) -> str:
+    """Never-skippable text line for the north-star review (v1.5.4): the
+    alignment verdict + recommendation + sharpest tension, so the strategic
+    call lands even if the widget render is skipped."""
+    note = note or {}
+    al = (note.get("alignment") or {}).get("verdict", "—")
+    rec = note.get("recommendation", "—")
+    t = note.get("target", "target")
+    tail = f" · tension: {note['tension']}" if note.get("tension") else ""
+    return f"north-star ({t}): {al} → {rec}{tail}"
 
 
 def _ptitle(t):
@@ -663,6 +681,113 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
     for i, p in enumerate(pages, 1):
         p["title"] = f"{p['title']} — {i}/{n}"
     return pages
+
+
+def _catalog():
+    """The lens catalog — the single source of truth for what lenses exist.
+    Rendered dynamically so adding a lens to catalog.json appears in every
+    dashboard with zero hand-maintenance (v1.5.4)."""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "lenses", "catalog.json")
+    try:
+        c = json.load(open(p))
+        return c["lenses"] if isinstance(c, dict) else c
+    except (OSError, ValueError):
+        return []
+
+
+def lens_coverage(routed=None):
+    """Coverage summary from the catalog + this run's routing.
+    routed: {lens_id: 'deep'|'sweep'}. Returns {total, deep, sweep, skipped,
+    groups:[{group, lenses:[{id,name,tier}]}]}. tier is 'deep'|'sweep'|'—'."""
+    cat = _catalog()
+    routed = routed or {}
+    groups = {}
+    deep = sweep = 0
+    for lz in cat:
+        tier = routed.get(lz["id"], "—")
+        if tier == "deep":
+            deep += 1
+        elif tier == "sweep":
+            sweep += 1
+        groups.setdefault(lz.get("group", "other"), []).append(
+            {"id": lz["id"], "name": lz.get("name", lz["id"]), "tier": tier})
+    return {"total": len(cat), "deep": deep, "sweep": sweep,
+            "skipped": len(cat) - deep - sweep,
+            "groups": [{"group": g, "lenses": v} for g, v in groups.items()]}
+
+
+def render_lens_coverage(routed=None):
+    """Persistent lens-catalog panel: all N lenses grouped, each marked deep /
+    sweep / didn't-fire for this run. Sourced from catalog.json so new lenses
+    appear automatically (v1.5.4). Collapsible — coverage line always visible."""
+    cov = lens_coverage(routed)
+    _tier = {"deep": ("var(--text-danger)", "deep"),
+             "sweep": ("var(--text-secondary)", "sweep"),
+             "—": ("var(--text-muted)", "—")}
+    rows = []
+    for grp in cov["groups"]:
+        chips = "".join(
+            f'<span style="display:inline-flex;align-items:center;gap:5px;'
+            f'font-size:11.5px;padding:2px 9px;border:1px solid var(--border);'
+            f'border-radius:12px;margin:0 5px 5px 0;color:{_tier[l["tier"]][0]}">'
+            f'{_esc(l["name"])}'
+            + (f'<span style="font-family:var(--font-mono);font-size:9px">'
+               f'{_tier[l["tier"]][1]}</span>' if routed else "")
+            + '</span>'
+            for l in grp["lenses"])
+        rows.append(f'<div style="margin-top:8px"><div style="{_MICRO};'
+                    f'margin-bottom:3px">{_esc(grp["group"])}</div>{chips}</div>')
+    if routed:
+        summary = (f'{cov["total"]} lenses · {cov["deep"]} deep · '
+                   f'{cov["sweep"]} sweep · {cov["skipped"]} did not fire')
+        label = "LENS COVERAGE"
+    else:
+        summary = f'{cov["total"]} lenses across {len(cov["groups"])} groups'
+        label = "LENS CATALOG"
+    return (f'<details style="margin-top:14px" id="tp-lens-coverage">'
+            f'<summary style="cursor:pointer;{_MICRO}">{label} — '
+            f'{summary}</summary><div style="margin-top:6px">'
+            + "".join(rows) + '</div></details>')
+
+
+def render_review_graph(ws, impact=None, tasks=None):
+    """Blast-radius panel for the REVIEW findings dashboard (v1.5.4) — the
+    review is where 'what does this change touch' matters most, yet the graph
+    only lived on the loop dashboard before. Explains an empty graph instead
+    of omitting it silently."""
+    g = _dg.load(ws)
+    have = bool(g.get("modules") or g.get("edges"))
+    if not have:
+        return ('<details style="margin-top:10px" id="tp-review-graph">'
+                f'<summary style="cursor:'
+                f'pointer;{_MICRO}">DEPENDENCY GRAPH — not scanned</summary>'
+                '<div style="font-size:12px;color:var(--text-muted);'
+                'margin-top:6px">No graph yet — run <code style="font-family:'
+                'var(--font-mono)">tp graph scan</code>. Note: the scanner '
+                'follows in-language imports; cross-service calls in a '
+                'polyglot repo (e.g. a Node gateway calling Python services '
+                'over HTTP) are not import edges, so the graph can look sparse '
+                '— record those links with <code style="font-family:'
+                'var(--font-mono)">tp graph edge</code> or in an ADR.</div>'
+                '</details>')
+    n_mod = len(g.get("modules", {}))
+    n_edge = len(g.get("edges", []))
+    line = f"{n_mod} modules · {n_edge} edges"
+    body = ""
+    if impact:
+        tot = impact.get("total_impacted", 0)
+        touched = ", ".join(_esc(m) for m in (impact.get("touched") or [])[:8])
+        body = (f'<div style="font-size:12.5px;color:var(--text-secondary);'
+                f'margin-top:6px"><b style="font-weight:500;color:'
+                f'var(--text-primary)">{tot} modules impacted</b> by the '
+                f'changed set{" — " + touched if touched else ""}</div>')
+    if not body:
+        body = ('<div style="font-size:12px;color:var(--text-muted);'
+                'margin-top:6px">no change set to compute blast radius</div>')
+    return (f'<details style="margin-top:10px" id="tp-review-graph"><summary '
+            f'style="cursor:pointer;{_MICRO}">DEPENDENCY GRAPH — {line}'
+            f'</summary>{body}</details>')
 
 
 def render_findings(findings, meta=None, out=None):
@@ -813,6 +938,15 @@ def render_findings(findings, meta=None, out=None):
     subtitle = _esc(meta.get("subtitle", ""))
     note = (f'<div style="{_MICRO};margin-top:10px">{_esc(meta["note"])}</div>'
             if meta.get("note") else "")
+    # v1.5.4: coverage + blast-radius surfaced IN the review — both derive from
+    # their source of truth (catalog.json / graph.json), so new lenses and the
+    # graph can't be silently dropped.
+    coverage_html = ""
+    if meta.get("lens_coverage") is not None:
+        coverage_html = render_lens_coverage(meta.get("lens_coverage"))
+    graph_html = ""
+    if meta.get("ws"):
+        graph_html = render_review_graph(meta["ws"], meta.get("impact"))
 
     frag = (
         f'<h2 class="sr-only">Review findings: {counts["high"]} high, '
@@ -828,7 +962,7 @@ def render_findings(findings, meta=None, out=None):
         f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px" '
         f'id="tpf-chips">{chips}</div>'
         f'<div id="tpf-list">{cards_html}</div>'
-        f'{clean_html}{gate_html}{note}'
+        f'{coverage_html}{graph_html}{clean_html}{gate_html}{note}'
         f'<script>'
         f'function tpFilter(s){{'
         f'document.querySelectorAll(".tpf-card").forEach(function(c){{'
@@ -1271,7 +1405,11 @@ def _graph_panel(ws, tasks):
         return ('<div style="font-size:13px;color:var(--text-muted)">no '
                 'dependency graph yet — scanned at loop start, or run '
                 '<code style="font-family:var(--font-mono)">tp graph scan'
-                '</code>.</div>')
+                '</code>. In a polyglot repo the scanner follows in-language '
+                'imports, so cross-service calls (a Node gateway → Python '
+                'services over HTTP) are not import edges and the graph can '
+                'look sparse — record those with <code style="font-family:'
+                'var(--font-mono)">tp graph edge</code>.</div>')
     mods, edges = g.get("modules", {}), g.get("edges", [])
     internal = [e for e in edges
                 if not str(e.get("to", "")).startswith("ext:")]
@@ -1530,6 +1668,10 @@ def _context_panel(ws, state, trace_all):
             f'12px"><div style="font-size:12px;color:var(--text-muted);'
             f'letter-spacing:.5px;margin-bottom:8px">open debt</div>{drows}'
             f'</div>')
+    # v1.5.4: the lens catalog is part of the governed context — show it here
+    # (sourced from catalog.json), so adding a lens is reflected in the loop
+    # dashboard without touching this file.
+    parts.append(render_lens_coverage(None))
     if not parts:
         return ('<div style="font-size:13px;color:var(--text-muted)">no '
                 'context recorded yet — the PM step records the requirement '

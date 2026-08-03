@@ -75,3 +75,21 @@ want differentiated routing, set `TASKPLANE_MODEL_STANDARD` /
 `TASKPLANE_MODEL_DEEP` — otherwise a run on a top-tier session model runs
 everything (except the sweep) on that model, by design, and only the sweep's
 `cheap → haiku` saves cost.
+
+## Rendering runs on the cheap tier (v1.5.4)
+
+Visualization work — building a dashboard fragment, a findings page, a
+lens-wave board, or a shareable poster — is **rendering, not reasoning**. It
+does not need the deep tier; a chipper, fast model (Sonnet-class) does it
+without any problem, and spending the deep tier on HTML assembly is pure
+waste. So route rendering to `cheap`/`standard`, never `deep`:
+
+- The `tech-writer` lens and any dedicated render/report step default to the
+  `standard` tier (Sonnet), and the parallel lens **sweep** already runs on
+  `cheap`.
+- Reserve `deep` for the hardest *judgment* — security, architecture, the
+  adversarial verify passes — not for turning findings into a widget.
+- If you dispatch a helper agent purely to assemble a visualization, pin it
+  with the Agent tool's `model` to a Sonnet-class model (or `effort: low`);
+  the dashboards themselves are rendered by the stdlib kernel with no model
+  at all, which is the cheapest path of all.

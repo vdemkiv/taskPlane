@@ -1302,6 +1302,11 @@ def cmd_findings(a) -> int:
         return 1
     findings = data.get("findings", data) if isinstance(data, dict) else data
     meta = data.get("meta", {}) if isinstance(data, dict) else {}
+    # v1.5.4: default the workspace so the findings dashboard can render the
+    # dependency-graph blast-radius panel (or explain its absence); a review
+    # that recorded `impact`/`lens_coverage` in meta flows through to the
+    # panels and the headline.
+    meta.setdefault("ws", _workspace(a.workspace))
     # Render-reliability contract (v1.5.3): the headline ALWAYS prints first,
     # so the key numbers reach the human even if the widget render is skipped.
     print("HEADLINE: " + dashboard.headline_findings(findings, meta))
@@ -1336,6 +1341,9 @@ def cmd_northstar(a) -> int:
                   file=sys.stderr)
             return 1
         note.setdefault("north_star", north_star(ws))
+        # v1.5.4: same render flow as every other command — headline first
+        # (never-skippable), then the widget fragment.
+        print("HEADLINE: " + dashboard.headline_northstar(note))
         print(dashboard.render_strategy_note(note, out=a.out))
         return 0
     ns = north_star(ws)

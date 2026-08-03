@@ -43,6 +43,20 @@ comes up mid-product-work, point the human at `/tp-northstar` rather than
 convening an executive board. (The old advisory tier — tech-strategy / cost-roi
 / business-alignment — was removed in v1.0.)
 
+## Render contract (v1.5.3/4) — the same flow every taskplane command uses
+
+tp-product has no render command of its own — the `pm` step's status shows
+through the **loop dashboard** (`$TP dashboard`), so follow that one flow:
+relay the printed `HEADLINE:` line to the human as plain text FIRST (it is
+the never-skippable carrier of step + gate + lens/graph coverage), then show
+the inline widget via `mcp__visualize__show_widget`; for an unusually large
+board use `$TP dashboard --paged` and render EACH ≤14 KB page in order.
+The loop board's **context tab carries the full lens catalog** (from
+`catalog.json`, so a new lens appears automatically) and its **graph tab
+shows blast radius** — the requirement's impact payload
+(`affected_requirements` + dependents) is the product half of that same
+graph. Never replace the dashboard with a prose recap.
+
 ## Product actions (judgments, never code)
 
 Refine requirements, amend acceptance criteria, `$TP req debt` (tracked,

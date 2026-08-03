@@ -38,10 +38,14 @@ the product. This is honest strategic *lenses*, not a boardroom cosplay.
 4. **Name the single sharpest tension** and a **recommendation**: `proceed` /
    `proceed-with-eyes-open` / `reconsider`. A note with no tension named
    reviewed nothing — find the real trade-off.
-5. **Render it** — write the note JSON, then
-   `$TP north-star --render note.json` prints the inline widget fragment; show
-   it via `mcp__visualize__show_widget` (title `northstar_<target-slug>`). The
-   note is the deliverable and the human acts on it — it does NOT feed a gate.
+5. **Render it — same flow as every taskplane command (v1.5.4).** Write the
+   note JSON, then `$TP north-star --render note.json`: it prints a
+   `HEADLINE:` line (the alignment verdict → recommendation → sharpest
+   tension) FIRST — relay that as plain text so the strategic call lands even
+   if the render is skipped — then the inline widget fragment. Show the
+   fragment via `mcp__visualize__show_widget` (title `northstar_<target-slug>`).
+   The note is the deliverable and the human acts on it — it does NOT feed a
+   gate.
 6. **Record it (optional)** — `$TP kb record "North-star review: <target>"
    --tags north-star` so the decision and its rationale persist.
 

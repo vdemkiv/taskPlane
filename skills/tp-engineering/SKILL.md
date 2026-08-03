@@ -48,8 +48,14 @@ human should watch, not a black box that ends in a report. So:
 dispatch is for when the catalog is wide and speed matters.) Browse the
 catalog anytime: `$TP lens list`, `$TP lens show <id>`.
 
-Lead every review with impact — it costs nothing:
-`$TP graph impact --files …` (blast radius by depth), `references/graph.md`.
+Lead every review with impact — it costs nothing, and it is NOT optional
+(v1.5.4): `$TP graph impact --files …` (blast radius by depth),
+`references/graph.md`. Put the result in the findings `meta.impact` block so
+the review dashboard renders the dependency-graph blast radius and the
+headline carries "touches N modules" — a review without it is incomplete. If
+the graph is empty (a polyglot repo where cross-service calls aren't import
+edges), run `$TP graph scan` first; if it's still sparse, say so and record
+the missing links with `$TP graph edge` rather than omitting the panel.
 The impact payload carries BOTH sides of the graph: dependent modules
 (engineering) and `affected_requirements` + `dependent_requirements`
 (product) — when a diff touches another requirement's realized surface,
@@ -67,8 +73,13 @@ has no loop, so `$TP dashboard` (loop state) has nothing to render — that's
 why a review must emit its findings and render them itself. Write every
 finding (ALL severities, not just the blockers) to `.em-review/findings.json`
 — each `{severity, domain, file, line, title, scenario, fix, status}`, with
-a `meta` block (`title`, `subtitle`, `tests`, `clean:[…]`, and a `gate` with
-buttons) — then render it.
+a `meta` block: `title`, `subtitle`, `tests`, `clean:[…]`, a `gate` with
+buttons, and — required (v1.5.4) — `lens_coverage` (the `{id: deep|sweep}`
+map from `tp lens dispatch`, so the dashboard shows all 25 lenses marked
+deep / sweep / didn't-fire, and adding a lens to the catalog appears
+automatically) and `impact` (the `tp graph impact` payload, so the
+blast-radius panel renders). Both also fold into the never-skippable
+headline. Then render it.
 
 **Render contract — the findings ARE the deliverable, never a prose summary
 (v1.5.3).** For anything past a handful of findings, use

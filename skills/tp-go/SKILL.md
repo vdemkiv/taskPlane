@@ -65,6 +65,17 @@ After each `loop next`, `loop gate`, `loop wave`, and `loop approve`:
    updates the earlier widget in place instead of drawing a new one at the
    current position.
 
+**Render contract (v1.5.3/4) — the same flow every taskplane command uses.**
+`$TP dashboard` prints a `HEADLINE:` line first — relay it to the human as
+plain text, always: it is the never-skippable carrier of step + gate +
+lens/graph coverage, so the status lands even if a render is skipped. For an
+unusually large board use `$TP dashboard --paged` (ordered ≤14 KB pages) and
+render EACH page in order via `show_widget` — never collapse them into one
+giant widget and never replace them with a prose recap. The loop board's
+**context tab shows the full lens catalog** (sourced from `catalog.json`, so
+a newly added lens appears automatically) and the **graph tab shows blast
+radius**; if the graph is empty on a polyglot repo, say so — don't omit it.
+
 At a human gate, STOP after showing the widget — its buttons let the person
 approve/sign-off/resolve with a click (they call `sendPrompt`, which drives
 the next `loop approve`/`resolve`). Never run the loop silently — the inline
