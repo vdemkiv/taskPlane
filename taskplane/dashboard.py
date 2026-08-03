@@ -369,6 +369,11 @@ _MICRO = ('font-family:var(--font-mono);font-size:10.5px;letter-spacing:'
           '1.2px;color:var(--text-muted)')
 _CARD = ('background:none;border:1px solid var(--border);'
          'border-radius:6px;padding:14px')
+# Keyboard equivalent for role=button divs/spans: Enter or Space fires the
+# element's own onclick, so journey steps and spine nodes are reachable
+# without a mouse (WCAG 2.1 keyboard-operable).
+_KEYCLICK = ("if(event.key==='Enter'||event.key===' '){"
+             "event.preventDefault();this.click()}")
 
 
 def _esc(s: str) -> str:
@@ -1470,9 +1475,6 @@ def _agents_hero(harness, tasks, step, parallel):
             f'<div style="font-size:11px;color:var(--text-secondary);margin-'
             f'top:2px;padding-left:15px"><code style="font-family:var(--font-'
             f'mono);font-size:10.5px">{scope}</code></div>{budget}</div>')
-    dot_h = ('<span style="width:7px;height:7px;border-radius:50%;background:'
-             'var(--text-primary);flex:none"></span>' if n_run else
-             '<i class="ti ti-check" aria-hidden="true"></i>')
     return (
         f'<div style="border:1px solid var(--border-strong);border-radius:6px;'
         f'padding:12px 14px;margin-bottom:14px"><div style="display:flex;'
@@ -1602,6 +1604,9 @@ def render_journey(visits, suffix="s"):
                      f'({_esc(v["model"] or "session")})')
         items.append(
             f'<div onclick="tpJ(\'{suffix}\',{i})" id="{oid}-b" '
+            f'role="button" tabindex="0" '
+            f'aria-label="step {_attr(v["step"] or "")} — show execution '
+            f'detail" onkeydown="{_KEYCLICK}" '
             f'data-step="{_attr(v["step"] or "")}" '
             f'style="display:flex;align-items:center;gap:8px;padding:6px '
             f'9px;border-radius:6px;cursor:pointer;font-size:12.5px;'
@@ -1738,7 +1743,6 @@ def widget(ws: str) -> str:
     then simple/detailed views. Gate buttons grey out on click."""
     state = _load_loop(ws)
     trace = _read_trace(ws, 8)
-    c = _counts(ws)
     contract = tp.load_active(ws)
     step = (state or {}).get("step", "—")
     goal = _esc((state or {}).get("goal", "no active loop"))[:80]
@@ -1800,6 +1804,8 @@ def widget(ws: str) -> str:
             col, wt, bg = "var(--text-muted)", "", ""
         visited = cur_i >= 0 and i <= cur_i
         click = (f' onclick="tpSpine(\'{sid}\')" id="tp-spine-{sid}" '
+                 f'role="button" tabindex="0" onkeydown="{_KEYCLICK}" '
+                 f'aria-label="stage {sid} — see how it was executed" '
                  f'class="tp-spine-n" title="see how this '
                  f'stage was executed"' if visited else "")
         nodes.append(

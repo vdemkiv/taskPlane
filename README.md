@@ -21,6 +21,7 @@ guardrails and gates are how it delivers that — not the point, the means.
 
 | Version | Highlights |
 | --- | --- |
+| **v1.5.2** | **Hardening from the full 25-lens self-review of v1.5.1** (62 findings across every severity, all addressed): write-screen now covers `git apply/am`, `patch`, `sort -o`, and `cp/mv -t` and treats unscopeable mutation as default-deny; dependency-graph HTML escapes repo-supplied names (XSS); shared-store decision ids are collision-free; `publish`/`set_status`/`supersede` and the dispatch queue are lock-serialized; the team store is committable (anchored gitignore); private mode refuses inside Tag; `init --plan` scaffolds into the right store; docs (README, PRIVACY, state-spec, loop-design) truthed-up to the plan-aware store; keyboard + ARIA on the dashboard; and a raft of smaller correctness/UX fixes. 373 tests. |
 | **v1.5.1** | **Hardening from a full 3-lens review of v1.5.0** (22 findings, all fixed): shared-store bookkeeping no longer trips the DoD gates; private mode refuses loudly inside Claude Tag instead of silently writing to the shared store; `init --plan` scaffolds into the right store; loop coordination state stays per-user (share knowledge, not the state machine); publish hardened — corrupt shared index aborts instead of erasing history, stale/lost markers repair via content-based idempotency, collision-free hash-suffixed shared ids, flows now push too, unknown ids and malformed entries reported; KB writes are atomic + locked; repo-supplied shared config carries a visible notice; plan/privacy settings follow the repo across checkouts. |
 | **v1.5.0** | **Plan-aware onboarding, private mode & share push** — onboarding asks whether you're on a personal or Team/Enterprise plan (changeable any time with `tp share plan`): personal keeps knowledge in the private store (`~/.taskplane`), team/enterprise shares it in-repo (`.taskplane-kb/`, Claude-Tag compatible, inherited by every clone). On a team plan you can still work privately (`tp share set private`) and publish selected decisions to the team later with `tp share push [--ids …]` — deliberate and idempotent, like pushing commits. |
 | **v1.4.0** | **Claude Tag support (beta)** — run governed work as your org's @Claude in Slack: `TASKPLANE_STORE=repo` persists the knowledge store inside the repo (Tag's sandbox is ephemeral — the KB travels with the branch/PR), `tp loop approve --by "<who> — '<their words>'"` makes every human-gate pass attributable to a real person in the thread, and the new `tp-tag` skill carries the thread protocol: post the gate, stop, wait for a human reply, attach the dashboard. |
@@ -122,8 +123,11 @@ per-project store** (`~/.taskplane/projects/<key>/` — `tp kb where` shows
 the path). That location is deliberate resource economics: every loop step
 recalls only the few records *relevant to the task at hand* instead of
 re-reading the repo or replaying history, so context stays small and the
-token bill goes down as the project's memory grows. The store never touches
-your repo (nothing to commit or push), `kb lint` keeps prompt text and
+token bill goes down as the project's memory grows. Where that store lives
+is plan-aware: on a personal plan it stays external (`~/.taskplane`) and
+never touches your repo (nothing to commit or push); on a Team/Enterprise
+plan it lives in-repo at `.taskplane-kb/` and is committed deliberately so
+the team shares one registry. Either way `kb lint` keeps prompt text and
 pricing out of it, and the zero-token dependency graph answers blast-radius
 questions without spending model calls at all.
 
@@ -255,12 +259,16 @@ The whole reason it exists — legibility, focus, and a thread you don't lose:
   stays on the thing you asked for instead of wandering.
 - **Memory that compounds**: decisions, requirements, tracked debt, and the
   dependency graph persist in an external per-project store
-  (`~/.taskplane/projects/<key>/`) — the next task starts from what the last
+  — the next task starts from what the last
   one learned instead of re-deriving it (that's your token bill going down).
-  The store lives OUTSIDE your repo, so taskplane's artifacts never get
-  committed or pushed with your code; `kb lint` keeps prompt text and pricing
-  strategy out of it, and runtime telemetry stays local
-  (`docs/state-spec.md`). `tp kb where` shows the path.
+  Where the store lives is plan-aware: on a personal plan it stays OUTSIDE
+  your repo (`~/.taskplane/projects/<key>/`) and taskplane's knowledge is
+  never committed or pushed with your code; on a Team/Enterprise plan it
+  lives in-repo at `.taskplane-kb/` and is committed deliberately so the team
+  shares one registry. Either way `kb lint` keeps prompt text and pricing
+  strategy out of it, and runtime telemetry (the `.taskplane/` trace) stays
+  local and git-ignored in both (`docs/state-spec.md`). `tp kb where` shows
+  the path.
 
 ## Honest about what the guardrails are
 
@@ -289,7 +297,7 @@ the model's own calls.
 | Evaluate-Loop | plan → build → evaluate → fix (≤2) → review → sign-off; serial or parallel waves, one enforced contract per agent |
 | 25 lenses (as agents) | the diff picks the reviewers (security, a11y, DBA, performance, …); each is a governed read-only agent, fanned out in PARALLEL so a wide review runs in one pass — architecture & system design ALWAYS on |
 | Requirements engine | refinement scoring + iteration forecast; quick-vs-full with tracked debt |
-| Knowledge base | decisions, requirements, debt — retrieved by relevance at every step; kept in an external per-project store (`~/.taskplane`), out of your repo |
+| Knowledge base | decisions, requirements, debt — retrieved by relevance at every step; plan-aware store: personal plan keeps it in an external per-project store (`~/.taskplane`, out of your repo), Team/Enterprise commits it in-repo (`.taskplane-kb/`) so the team shares one registry |
 | Decision registry | structured ADRs (`tp decision`) with lifecycle, alternatives + trade-offs, and supersede chains — accepted decisions linked to a task's modules are ALWAYS injected into that task's brief |
 | Current-state grounding | the as-built inventory (`context/current-state.md`) injected into every brief; design lenses review as a delta against what exists — reinvention and doc-vs-reality drift are blocker-class |
 | Dependency graph | deterministic scan + change blast-radius + interactive map |
@@ -310,8 +318,9 @@ personally or at work, commercially or not, no strings. See `LICENSE`.
 
 **Privacy:** taskplane runs locally, collects nothing, and sends nothing — no
 telemetry, no accounts, no network calls of its own. All state stays on your
-disk — your code in the repo, taskplane's knowledge base in a separate
-external store (`~/.taskplane`), never transmitted anywhere. See `PRIVACY.md`.
+disk — taskplane's knowledge base lives in an external store (`~/.taskplane`,
+personal plan) or in-repo (`.taskplane-kb/`, Team/Enterprise), and nothing is
+ever transmitted anywhere by taskplane. See `PRIVACY.md`.
 
 ## Model tiers (cost routing)
 
@@ -368,12 +377,13 @@ taskplane/
 ├── taskplane/              # the enforcement core (kernel + hook screener)
 ├── hooks/hooks.json        # PreToolUse → taskplane screen
 ├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent); + tp-northstar (summoned strategy)
-├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-northstar, tp-status, tp-help
+├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-northstar, tp-tag, tp-status, tp-help
 ├── lenses/                 # the 25-lens catalog
 ├── scripts/                # generators (e.g. the lens-catalog doc)
 ├── discipline/             # TDD, debugging, worktrees — the operating disciplines
 ├── docs/                   # state spec + design notes
-# note: the knowledge base is NOT here — it lives in ~/.taskplane/projects/<key>/
+# note: on a personal plan the knowledge base is NOT here — it lives in ~/.taskplane/projects/<key>/;
+#       on a Team/Enterprise plan it lives in-repo at .taskplane-kb/ (committed with the code)
 ├── PRIVACY.md              # privacy policy (local-only, no telemetry)
 └── LICENSE                 # Apache License 2.0
 ```

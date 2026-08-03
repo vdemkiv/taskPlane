@@ -40,11 +40,6 @@
 
 **Architecture is routed on every code change** — a light pass on any diff, a full pass when the change is structurally significant. That floor is enforced by the engine (`tp lens route --all`), not by memory: component boundaries, data flow, contracts, and failure modes get a look even when no architecture files changed.
 
-## Advisory (strategy) tier — the board
-
-Beyond the per-change review lenses, 0 **strategy lenses** run at the *should-we-build-this* level (the advisory board), on requirements/roadmap/context artifacts rather than code:
-
-
 ## Routing notes
 
 - **Baselines are intentionally only four** — `code-quality`, `security`, `testability`, and always-on `architecture` — so a typical change fires ~4–7 lenses, not all 25. Role lenses fire by context (files/task type).

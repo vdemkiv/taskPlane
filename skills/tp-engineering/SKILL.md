@@ -15,7 +15,7 @@ All review runs read-only toward code under an enforced contract:
 `$TP new --read-only --write-allow ".em-review/**" "engineering review: <target>"`.
 
 **Every review applies the full catalog — nothing skipped.**
-`$TP lens route --all` returns all 22 lenses: `tier=deep` (summoned by
+`$TP lens route --all` returns all 25 lenses: `tier=deep` (summoned by
 the change — run at full depth) and `tier=sweep` (quick pass of each
 remaining lens's top checks). **Architecture & system design is always
 on** — every code change gets at least a light pass, a structurally

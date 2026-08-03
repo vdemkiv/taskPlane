@@ -93,7 +93,8 @@ from Claude Code/Cowork): their decisions live in their own store,
 invisible to the channel. When
 someone says they want to share their work with the team, run
 `tp.py share push --ids <ids>` in their session — it publishes the selected
-decisions into `.taskplane-kb/` (re-numbered into the shared index), then
+decisions and flows into `.taskplane-kb/` (re-numbered into the shared
+index), then
 commit it. Like a git push, publishing is always a deliberate human ask —
 never push someone's private knowledge on your own initiative.
 

@@ -71,24 +71,18 @@ def main():
              "data flow, contracts, and failure modes get a look even when no "
              "architecture files changed.\n")
 
+    # Strategy is a single SUMMONED lens (tp-northstar), not a scheduled
+    # "advisory board" tier — the board was removed in v1.0. Only emit this
+    # section if the catalog actually carries advisory-tier lenses (it does
+    # not), so the doc can't advertise "0 strategy lenses". (v1.5.2)
     if board:
         L.append("## Advisory (strategy) tier\n")
-        L.append("Beyond the per-change review lenses, "
-                 f"{len(board)} **strategy lenses** run at the *should-we-"
-                 "build-this* level, on requirements/roadmap/context "
-                 "artifacts rather than code:\n")
+        L.append(f"{len(board)} **strategy lenses** run at the "
+                 "*should-we-build-this* level on requirements/roadmap/"
+                 "context artifacts rather than code:\n")
         for x in board:
             L.append(f"- **`{x['id']}`** — {x['charter']}.")
         L.append("")
-    else:
-        L.append("## Strategy: the north-star review\n")
-        L.append("Strategy is deliberately NOT a lens tier. The "
-                 "*should-we-build-this* question is answered on demand by the "
-                 "**north-star review** (`/tp-northstar`) \u2014 a summoned, "
-                 "advisory pass that measures a target against the project's "
-                 "`Direction / north star` (alignment + Leverage, "
-                 "Reversibility, Opportunity cost, Coherence). It never gates "
-                 "the loop and is not part of this per-change catalog.\n")
 
     L.append("## Routing notes\n")
     L.append("- **Baselines are intentionally only four** — `code-quality`, "

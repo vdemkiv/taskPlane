@@ -167,8 +167,14 @@ Small, additive changes — the loop engine and contracts don't change shape:
    security/design?") and at EVALUATE/EM.
 2. **Router is auto + transparent + overridable** — context picks the lenses
    (plus baselines), shows which fired and why, and honors `--only`/`--skip`.
-3. **Knowledge base = in-repo markdown ADRs** under `knowledge/`, git-versioned,
-   retrieved by files/tags.
+3. **Knowledge base = a plan-aware knowledge store** of markdown ADRs (and
+   flows), retrieved by files/tags. Where it lives depends on the plan: a
+   personal plan keeps it in an external per-project store
+   (`~/.taskplane/projects/<key>/`, out of the repo and never committed); a
+   Team/Enterprise plan keeps it in-repo at `.taskplane-kb/` and commits it so
+   the team shares one registry. (This shipped later than this draft — the
+   original in-repo `knowledge/` layout was superseded by the external/in-repo
+   plan-aware store; see `docs/state-spec.md`.)
 4. **Personas: light version now** — a small per-human-role starter-prompt
    config in v0.1.
 5. **Keep "EM", widen it** — cross-functional synthesis, not code review.

@@ -43,7 +43,7 @@ tier degrades to inherit rather than erroring, so a typo never blocks the loop.
   tier overrides the step default; an invalid one is ignored.
 - **Lens** — the quick sweep runs `cheap`; deep lenses run `standard`, except
   the hard-reasoning lenses (security, architecture, scalability, data-safety,
-  concurrency, dba, sre, privacy-compliance) which run `deep`.
+  dba, sre, privacy-compliance) which run `deep`.
 
 ## What the driver does
 

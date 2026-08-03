@@ -16,17 +16,28 @@ no network calls of its own. Everything it produces stays on your filesystem.
 
 taskplane writes only to your own machine, under your control:
 
-- **External knowledge store** (`~/.taskplane/projects/<key>/`, one folder
-  per project): decisions, requirements, tracked debt, the dependency graph,
-  context docs, and loop coordination state. This lives OUTSIDE your git repo
-  by design — so taskplane's artifacts are never committed or pushed with
-  your code. It is *decision data only* — the `kb lint` check mechanically
+- **Knowledge store** (decisions, requirements, tracked debt, the dependency
+  graph, context docs, and loop coordination state). Where it lives is
+  plan-aware:
+  - **Personal plan (default):** an external store at
+    `~/.taskplane/projects/<key>/`, one folder per project. It lives OUTSIDE
+    your git repo, so on a personal plan taskplane's knowledge is never
+    committed or pushed with your code.
+  - **Team/Enterprise plan:** an in-repo store at `.taskplane-kb/`, committed
+    *deliberately* alongside your code so the whole team shares one registry
+    and a fresh clone inherits it. On a team plan the knowledge store IS in
+    your repo and IS committed — by design, not by accident.
+
+  In both cases it is *decision data only* — the `kb lint` check mechanically
   blocks prompt text, raw model content, and pricing/commercial strategy from
-  the store. (`$TASKPLANE_HOME` moves the root; `tp kb where` shows the path.)
-- **Local runtime files** (e.g. `.taskplane/`, `.em-review/`, worktrees):
-  the active contract, an append-only audit trace of tool decisions, action
-  meters, and scratch review artifacts. These stay local to the checkout and
-  are not transmitted anywhere by taskplane.
+  the store. (`$TASKPLANE_HOME` moves the personal root; `tp kb where` shows
+  the active path.)
+- **Local runtime files** (e.g. `.taskplane/` — including the `trace.jsonl`
+  audit trace — `.em-review/`, worktrees): the active contract, an
+  append-only audit trace of tool decisions, action meters, and scratch
+  review artifacts. These stay local to the checkout and git-ignored on
+  **both** plans, and are not transmitted anywhere by taskplane. (Only
+  knowledge is ever shared on a team plan — never the runtime trace.)
 
 You own all of it. Deleting these files removes the data; nothing persists
 elsewhere.

@@ -58,13 +58,17 @@ import contextlib
 
 
 @contextlib.contextmanager
-def mutate(ws: str):
+def mutate(ws: str, root: str | None = None):
     """Serialize KB read-modify-write (v1.5.1) — mirrors loop.mutate.
     Parallel wave workers record decisions at gates; without a lock two
     writers read the same index, both mint id len+1, and the second save
-    orphans the first's decision. Advisory flock on index.json.lock."""
-    os.makedirs(kb_dir(ws), exist_ok=True)
-    lf = open(_index_path(ws) + ".lock", "w")
+    orphans the first's decision. Advisory flock on index.json.lock. `root`
+    locks a specific store dir (v1.5.2: publish must lock BOTH the private
+    and shared indexes, so it needs to name the root rather than default to
+    kb_dir)."""
+    d = root or kb_dir(ws)
+    os.makedirs(d, exist_ok=True)
+    lf = open(os.path.join(d, "index.json.lock"), "w")
     try:
         try:
             import fcntl
@@ -74,6 +78,17 @@ def mutate(ws: str):
         yield
     finally:
         lf.close()
+
+
+def _is_shared_store(ws: str) -> bool:
+    """True when kb writes land in the committed in-repo store — decision ids
+    there must be collision-free so concurrent teammate commits merge as pure
+    additions (v1.5.2), not dense len+1 numbers two branches both mint."""
+    try:
+        return os.path.realpath(kb_dir(ws)).startswith(
+            os.path.realpath(tp.repo_store_root(ws)))
+    except OSError:
+        return False
 
 
 def _slug(title: str) -> str:
@@ -104,9 +119,17 @@ def _record_decision_locked(ws, title, *, context, decision, rationale,
                             alternatives, tags, context_files, links,
                             status, date) -> dict:
     idx = load_index(ws)
-    n = len(idx["decisions"]) + 1
-    did = f"{n:04d}"
+    seq = len(idx["decisions"]) + 1
     slug = _slug(title)
+    # In the shared in-repo store, mint a collision-free id (dense seq + a
+    # content hash) so two teammates recording on different branches don't
+    # both allocate the same dense number and conflict on merge. Private
+    # external store keeps the clean dense id.
+    if _is_shared_store(ws):
+        did = _shared_id(seq, {"id": f"{seq:04d}", "title": title,
+                               "date": date or _today()})
+    else:
+        did = f"{seq:04d}"
     entry = {
         "id": did,
         "title": title,
@@ -193,6 +216,15 @@ def publish(ws: str, ids=None) -> dict:
     deliberate human ask; the caller then commits .taskplane-kb/."""
     src_kb = os.path.join(tp.external_store_root(ws), "knowledge")
     dst_kb = os.path.join(tp.repo_store_root(ws), "knowledge")
+    # Lock BOTH stores across the whole read-modify-write: a concurrent gate
+    # decision recording into the shared index (or a second publish) must not
+    # interleave and orphan an entry. Fixed order (src before dst) avoids
+    # deadlock. (v1.5.2)
+    with mutate(ws, root=src_kb), mutate(ws, root=dst_kb):
+        return _publish_locked(ws, src_kb, dst_kb, ids)
+
+
+def _publish_locked(ws, src_kb, dst_kb, ids):
     try:
         dst_idx = _load_index_at(dst_kb, strict=True)
     except SharedIndexCorrupt as e:
@@ -274,11 +306,12 @@ def publish(ws: str, ids=None) -> dict:
 
 
 def supersede(ws: str, old_id: str, by_id: str) -> None:
-    idx = load_index(ws)
-    for d in idx["decisions"]:
-        if d["id"] == old_id:
-            d["status"] = f"superseded-by-{by_id}"
-    _save_index(ws, idx)
+    with mutate(ws):
+        idx = load_index(ws)
+        for d in idx["decisions"]:
+            if d["id"] == old_id:
+                d["status"] = f"superseded-by-{by_id}"
+        _save_index(ws, idx)
 
 
 # --------------------------------------------------------------- retrieve
@@ -293,13 +326,14 @@ def get_decision(ws: str, did: str) -> dict | None:
 def set_status(ws: str, did: str, status: str) -> dict | None:
     """Lifecycle transition (e.g. proposed -> accepted). Append-only: files
     are never deleted; only the index status moves."""
-    idx = load_index(ws)
-    hit = None
-    for d in idx["decisions"]:
-        if d["id"] == did:
-            d["status"] = status
-            hit = d
-    _save_index(ws, idx)
+    with mutate(ws):
+        idx = load_index(ws)
+        hit = None
+        for d in idx["decisions"]:
+            if d["id"] == did:
+                d["status"] = status
+                hit = d
+        _save_index(ws, idx)
     return hit
 
 

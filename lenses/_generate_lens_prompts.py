@@ -13,6 +13,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Hand-authored review guides. examine: the specific things this lens checks
 # in a diff. blocker/major: severity anchors so verdicts are consistent.
+_GROUNDING = (
+   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
+   "(`context/current-state.md` in the knowledge store, injected into briefs "
+   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
+   "registry before judging anything. A design is reviewed as a DELTA against "
+   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
+   "a component duplicating something already built) and DRIFT (the design "
+   "contradicts as-built reality). If the inventory is missing on system-"
+   "design work, say so — an ungrounded architecture document is itself a "
+   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
+   "capability the as-built stack already provides (the incumbent platform's "
+   "own registry, MLOps, queue, auth …) over introducing a new service — "
+   "name the concrete incumbent option in the finding's suggestion."
+)
+
+
 GUIDES = {
  "security": dict(examine=[
    "Hardcoded secrets, keys, tokens — including in test fixtures and config.",
@@ -123,18 +139,7 @@ GUIDES = {
   blocker="data loss on lifecycle events; a store-policy violation",
   major="unusable offline behavior; main-thread I/O jank"),
  "tradeoffs": dict(examine=[
-   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
-   "(`context/current-state.md` in the knowledge store, injected into briefs "
-   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
-   "registry before judging anything. A design is reviewed as a DELTA against "
-   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
-   "a component duplicating something already built) and DRIFT (the design "
-   "contradicts as-built reality). If the inventory is missing on system-"
-   "design work, say so — an ungrounded architecture document is itself a "
-   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
-   "capability the as-built stack already provides (the incumbent platform's "
-   "own registry, MLOps, queue, auth …) over introducing a new service — "
-   "name the concrete incumbent option in the finding's suggestion.",
+   _GROUNDING,
    "Every significant design choice in the diff/plan: are >=2 REAL "
    "alternatives named (not strawmen), with an explicit table — what is "
    "GAINED, what is GIVEN UP, and WHEN to revisit?",
@@ -154,18 +159,7 @@ GUIDES = {
    "a significant choice whose trade-off table is missing a real cost, or "
    "a chosen option left unrecorded in the registry")),
  "services-selection": dict(examine=[
-   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
-   "(`context/current-state.md` in the knowledge store, injected into briefs "
-   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
-   "registry before judging anything. A design is reviewed as a DELTA against "
-   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
-   "a component duplicating something already built) and DRIFT (the design "
-   "contradicts as-built reality). If the inventory is missing on system-"
-   "design work, say so — an ungrounded architecture document is itself a "
-   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
-   "capability the as-built stack already provides (the incumbent platform's "
-   "own registry, MLOps, queue, auth …) over introducing a new service — "
-   "name the concrete incumbent option in the finding's suggestion.",
+   _GROUNDING,
    "Every NEW dependency, service, or tool in the diff (manifests, compose, "
    "terraform): is there a selection rationale — build vs buy, managed vs "
    "self-hosted — proportionate to its blast radius?",
@@ -182,18 +176,7 @@ GUIDES = {
    "self-hosting what a mature managed service provides (or vice versa) "
    "without a stated reason, or a license conflict")),
  "time-to-market": dict(examine=[
-   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
-   "(`context/current-state.md` in the knowledge store, injected into briefs "
-   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
-   "registry before judging anything. A design is reviewed as a DELTA against "
-   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
-   "a component duplicating something already built) and DRIFT (the design "
-   "contradicts as-built reality). If the inventory is missing on system-"
-   "design work, say so — an ungrounded architecture document is itself a "
-   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
-   "capability the as-built stack already provides (the incumbent platform's "
-   "own registry, MLOps, queue, auth …) over introducing a new service — "
-   "name the concrete incumbent option in the finding's suggestion.",
+   _GROUNDING,
    "The fastest CREDIBLE path: does the plan reach user value in the "
    "fewest gated steps that still satisfy the acceptance criteria?",
    "Deferrable work inside the critical path: what here could ship later — "
@@ -210,18 +193,7 @@ GUIDES = {
    "a deferrable item not deferred (or deferred without a debt record), or "
    "speculative generality with no requirement behind it")),
  "architecture": dict(examine=[
-   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
-   "(`context/current-state.md` in the knowledge store, injected into briefs "
-   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
-   "registry before judging anything. A design is reviewed as a DELTA against "
-   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
-   "a component duplicating something already built) and DRIFT (the design "
-   "contradicts as-built reality). If the inventory is missing on system-"
-   "design work, say so — an ungrounded architecture document is itself a "
-   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
-   "capability the as-built stack already provides (the incumbent platform's "
-   "own registry, MLOps, queue, auth …) over introducing a new service — "
-   "name the concrete incumbent option in the finding's suggestion.",
+   _GROUNDING,
    "READ `knowledge/architecture.md` FIRST and judge the change against the "
    "documented model — never re-derive the architecture from the codebase.",
    "Boundary integrity: does a new dependency cross a layer/service line "

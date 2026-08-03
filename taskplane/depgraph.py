@@ -620,6 +620,13 @@ def render_context(imp: dict) -> str:
 
 # ------------------------------------------------------------------ html
 
+def _esc(s) -> str:
+    """HTML-escape a repo-derived value (module id, dir name) before it goes
+    into the impact table — directory names are attacker-influenced."""
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
 _HTML = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Dependency graph — __TITLE__</title>
 <style>
@@ -695,16 +702,17 @@ for(const e of edges){const a=byId[e.from],b=byId[e.to],
   d:`M${a.x} ${a.y}L${x2} ${y2}`,'marker-end':'url(#ar)'});
  svg.appendChild(p);}
 const tip=document.getElementById('tip');
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function details(n){
- const outs=edges.filter(e=>e.from===n.id).map(e=>`→ ${e.to} (${e.kind})`);
- const ins=edges.filter(e=>e.to===n.id).map(e=>`← ${e.from} (${e.kind})`);
- return {head:`${n.id} · ${n.kind}${n.files?` · ${n.files} file(s)`:''}`+
+ const outs=edges.filter(e=>e.from===n.id).map(e=>`→ ${esc(e.to)} (${esc(e.kind)})`);
+ const ins=edges.filter(e=>e.to===n.id).map(e=>`← ${esc(e.from)} (${esc(e.kind)})`);
+ return {head:`${esc(n.id)} · ${esc(n.kind)}${n.files?` · ${n.files} file(s)`:''}`+
    (CHANGED.has(n.id)?' · changed':'')+
    (IMPACT[n.id]?` · impacted d${IMPACT[n.id]}`:''),
   edges:outs.concat(ins)};}
 function showTip(n,x,y){const d=details(n);tip.style.display='block';
  tip.style.left=(x+16)+'px';tip.style.top=(y+8)+'px';
- tip.innerHTML=`<b>${n.id}</b> · ${n.kind}${n.files?` · ${n.files} file(s)`:''}`+
+ tip.innerHTML=`<b>${esc(n.id)}</b> · ${esc(n.kind)}${n.files?` · ${n.files} file(s)`:''}`+
   (CHANGED.has(n.id)?' · <b class=chg>changed</b>':'')+
   (IMPACT[n.id]?` · <b class=imp>impacted d${IMPACT[n.id]}</b>`:'')+
   `<br>${d.edges.slice(0,9).join('<br>')||'no edges'}`;}
@@ -741,13 +749,14 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
     rows = ["<table><tr><th>module</th><th>status</th><th>via</th>"
             "<th>kind</th></tr>"]
     for m in imp["touched"]:
-        rows.append(f"<tr><td>{m}</td><td class=chg>changed</td>"
+        rows.append(f"<tr><td>{_esc(m)}</td><td class=chg>changed</td>"
                     "<td>—</td><td>—</td></tr>")
     for d in sorted(imp["impacted"]):
         for e in imp["impacted"][d]:
-            rows.append(f"<tr><td>{e['module']}</td>"
+            rows.append(f"<tr><td>{_esc(e['module'])}</td>"
                         f"<td class=imp>impacted (depth {d})</td>"
-                        f"<td>{e['via']}</td><td>{e['kind']}</td></tr>")
+                        f"<td>{_esc(e['via'])}</td><td>{_esc(e['kind'])}</td>"
+                        "</tr>")
     table = "\n".join(rows) + "</table>" if imp["touched"] else \
         "<p style='margin:6px 20px'>no change set given — structural view.</p>"
 
@@ -757,10 +766,16 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
            f"{imp['total_impacted']} impacted by this change"
            if imp["touched"] else
            f"{len(g['modules'])} components · {len(g['edges'])} edges")
-    html = (_HTML.replace("__TITLE__", title or os.path.basename(ws))
-            .replace("__SUB__", sub)
+    # json.dumps does not neutralize a `</script>` occurring inside a
+    # repo-supplied module id — it would close the inline <script> early and
+    # let the remainder execute as markup. Escape `<` (and U+2028/9) so the
+    # embedded JSON can never break out of the script element.
+    safe_data = (json.dumps(data).replace("<", "\\u003c")
+                 .replace(" ", "\\u2028").replace(" ", "\\u2029"))
+    html = (_HTML.replace("__TITLE__", _esc(title or os.path.basename(ws)))
+            .replace("__SUB__", _esc(sub))
             .replace("__TABLE__", table)
-            .replace("__DATA__", json.dumps(data)))
+            .replace("__DATA__", safe_data))
     out = out or os.path.join(ws, ".taskplane", "depgraph.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:

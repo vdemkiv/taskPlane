@@ -1,7 +1,10 @@
-# Loop design — outline for review
+# Loop design — the shipped design
 
-> Draft for you to mark up. The open decisions are at the bottom; answer those
-> and I'll build to them. Nothing here is implemented yet.
+> **Status: SHIPPED.** This is the design taskplane's Evaluate-Loop was built
+> to; the open decisions listed at the bottom were resolved as recommended and
+> **locked on 2026-07-11** (see `taskplane/loop.py`). The document is kept as
+> the design record — the "Open decisions" section now reads as the settled
+> answers, not a request for input.
 
 ## Why the loop first
 
@@ -123,7 +126,9 @@ Per run, the loop needs (some from you, some the PM can derive):
 - **Later (v0.2+):** parallel task dispatch, a plan-approval human gate,
   per-role budget rollups, board escalation on repeated FAIL.
 
-## Open decisions — your input, please
+## Design decisions (resolved & locked 2026-07-11)
+
+Each was settled as the **Recommendation** noted below and is what shipped.
 
 1. **Loop engine location.** taskplane owns the state machine (`tp.py loop`
    engine, strongest "runs through taskplane") *or* the orchestrator agent

@@ -86,7 +86,8 @@ _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 _INTERPRETERS = {"python", "python2", "python3", "perl", "ruby", "node",
                  "php", "lua", "Rscript", "deno", "bun"}
 # git subcommands that rewrite tracked files in the working tree.
-_GIT_MUTATORS = {"checkout", "reset", "restore", "clean", "stash"}
+_GIT_MUTATORS = {"checkout", "reset", "restore", "clean", "stash",
+                 "apply", "am", "rebase", "cherry-pick", "revert"}
 # git GLOBAL options that consume a SEPARATE following token as their value —
 # `git -C <path> checkout` etc. Skipping the flag but not its value would let
 # the value be misread as the subcommand, dodging the mutator screen.
@@ -157,6 +158,43 @@ def _targets_dd(a):
     return [t[3:] for t in a if t.startswith("of=")]
 
 
+def _targets_sort_o(a):
+    # `sort -o FILE …` (and glued -oFILE / --output=FILE) writes FILE — a
+    # mutation the older screen missed entirely, so `sort -o main.py x` slipped
+    # past a build scope and a read-only source guard alike.
+    out = []
+    i = 0
+    while i < len(a):
+        t = a[i]
+        if t in ("-o", "--output") and i + 1 < len(a):
+            out.append(a[i + 1]); i += 2; continue
+        if t.startswith("-o") and len(t) > 2:
+            out.append(t[2:])
+        elif t.startswith("--output="):
+            out.append(t.split("=", 1)[1])
+        i += 1
+    return out
+
+
+def _targets_t_dir(a):
+    # GNU `cp -t DIR src…` / `mv -t DIR src…` / `install -t DIR …`: the
+    # target-directory flag puts the destination FIRST, so _targets_last_arg
+    # (which returns the trailing arg) grabbed a SOURCE and screened the wrong
+    # path. When -t/--target-directory is present, DIR is the write target;
+    # otherwise fall back to the trailing-arg convention.
+    i = 0
+    while i < len(a):
+        t = a[i]
+        if t in ("-t", "--target-directory") and i + 1 < len(a):
+            return [a[i + 1]]
+        if t.startswith("--target-directory="):
+            return [t.split("=", 1)[1]]
+        if t.startswith("-t") and len(t) > 2:
+            return [t[2:]]
+        i += 1
+    return _targets_last_arg(a)
+
+
 def _targets_sed_i(a):
     if not any(t == "-i" or t.startswith("-i") or t.startswith("--in-place")
                for t in a):
@@ -178,10 +216,10 @@ def _targets_skip_first(a):
 # review contract would approve `rm -rf <reviewed source>` and a scoped
 # build contract could `rm -rf ../other` — both now screened as writes.
 _WRITE_PROGRAMS = {
-    "tee": _targets_tee, "cp": _targets_last_arg, "mv": _targets_last_arg,
-    "install": _targets_last_arg, "rsync": _targets_last_arg,
+    "tee": _targets_tee, "cp": _targets_t_dir, "mv": _targets_t_dir,
+    "install": _targets_t_dir, "rsync": _targets_last_arg,
     "ln": _targets_last_arg, "truncate": _targets_last_arg,
-    "dd": _targets_dd, "sed": _targets_sed_i,
+    "dd": _targets_dd, "sed": _targets_sed_i, "sort": _targets_sort_o,
     "rm": _targets_tee, "shred": _targets_tee, "mkfifo": _targets_tee,
     "mknod": _targets_tee, "chmod": _targets_skip_first,
     "chown": _targets_skip_first,
@@ -388,6 +426,16 @@ def _analyze(command: str, _depth: int = 0):
         fn = _WRITE_PROGRAMS.get(prog)
         if fn:
             targets += fn(args)
+            continue
+        if prog == "patch":
+            # `patch` applies a diff — the files it rewrites are named INSIDE
+            # the diff, not in argv, so the target can't be resolved
+            # statically. Clearly file-mutating and unscopeable: block it under
+            # any governing/read-only contract, like find -delete / git apply.
+            opaque = opaque or (
+                "destructive",
+                "`patch` applies a diff to files named in the patch body, "
+                "at no statically-known path")
             continue
         if prog == "find":
             act = next((a for a in args
@@ -1031,6 +1079,27 @@ def _dispatch_path(workspace: str, name: str) -> str:
     return os.path.join(tp_dir(workspace), name)
 
 
+import contextlib as _contextlib
+
+
+@_contextlib.contextmanager
+def _file_lock(path: str):
+    """Advisory exclusive flock on <path>.lock — serialize the dispatch-queue
+    read-modify-write so parallel-wave hooks don't double-consume expectations
+    or clobber each other's appends (v1.5.2)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lf = open(path + ".lock", "w")
+    try:
+        try:
+            import fcntl
+            fcntl.flock(lf, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        yield
+    finally:
+        lf.close()
+
+
 def _load_queue(path: str) -> list:
     try:
         with open(path) as f:
@@ -1054,10 +1123,11 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
     agent SHOULD be dispatched next, on what model. A queue, not a scalar —
     a parallel wave emits many briefs with different tiers at once."""
     path = _dispatch_path(workspace, "expected_dispatch.json")
-    q = _load_queue(path)
-    q.append({"ts": _now(), "kind": kind, "agent": agent, "ref": ref,
-              "model_tier": model_tier, "model": model, "matched": False})
-    _save_queue(path, q)
+    with _file_lock(path):
+        q = _load_queue(path)
+        q.append({"ts": _now(), "kind": kind, "agent": agent, "ref": ref,
+                  "model_tier": model_tier, "model": model, "matched": False})
+        _save_queue(path, q)
 
 
 def consume_expectation(workspace: str, agent: str) -> dict | None:
@@ -1065,25 +1135,27 @@ def consume_expectation(workspace: str, agent: str) -> dict | None:
     subagent_type arrives namespaced, e.g. `taskplane:tp-lens`)."""
     short = (agent or "").split(":")[-1]
     path = _dispatch_path(workspace, "expected_dispatch.json")
-    q = _load_queue(path)
-    for e in q:
-        if not e.get("matched") and e.get("agent") == short:
-            e["matched"] = True
-            _save_queue(path, q)
-            return e
+    with _file_lock(path):
+        q = _load_queue(path)
+        for e in q:
+            if not e.get("matched") and e.get("agent") == short:
+                e["matched"] = True
+                _save_queue(path, q)
+                return e
     return None
 
 
 def record_observed_dispatch(workspace: str, agent: str, model: str | None,
                              expected: dict | None, ok: bool) -> None:
     path = _dispatch_path(workspace, "observed_dispatch.json")
-    q = _load_queue(path)
-    q.append({"ts": _now(), "agent": (agent or "").split(":")[-1],
-              "model": model, "ok": ok,
-              "expected_model": expected and expected.get("model"),
-              "expected_tier": expected and expected.get("model_tier"),
-              "ref": expected and expected.get("ref")})
-    _save_queue(path, q)
+    with _file_lock(path):
+        q = _load_queue(path)
+        q.append({"ts": _now(), "agent": (agent or "").split(":")[-1],
+                  "model": model, "ok": ok,
+                  "expected_model": expected and expected.get("model"),
+                  "expected_tier": expected and expected.get("model_tier"),
+                  "ref": expected and expected.get("ref")})
+        _save_queue(path, q)
 
 
 def dispatch_report(workspace: str) -> dict:
@@ -1210,6 +1282,12 @@ def _adopt_legacy_store(workspace: str, new_root: str) -> None:
             pass
 
 
+def store_env() -> str:
+    """The TASKPLANE_STORE override, normalized ('repo' | 'external' | '').
+    One reader so the kernel and loop can't drift on how the env is parsed."""
+    return os.environ.get("TASKPLANE_STORE", "").strip().lower()
+
+
 def external_store_root(workspace: str) -> str:
     """The classic PRIVATE external store (~/.taskplane/projects/<key>/),
     resolved unconditionally — mode config never redirects this. It is the
@@ -1316,7 +1394,7 @@ def get_mode(workspace: str) -> dict:
       3. a committed shared config (<ws>/.taskplane-kb/config.json)
       4. the recorded plan: team/enterprise -> repo, personal -> external
       5. default: external (personal)."""
-    env = os.environ.get("TASKPLANE_STORE", "").strip().lower()
+    env = store_env()
     if env in ("repo", "external"):
         personal, _ = _read_personal_mode(workspace)
         return {"plan": personal.get("plan"), "store": env,
@@ -1338,17 +1416,26 @@ def set_mode(workspace: str, plan: str | None = None,
         cfg["plan"] = plan
     if private is not None:
         cfg["private"] = bool(private)
-    for p in (_mode_file(workspace), _remote_mode_file(workspace)):
-        if not p:
-            continue
+    targets = [p for p in (_mode_file(workspace),
+                           _remote_mode_file(workspace)) if p]
+    wrote_any, last_err = False, None
+    for p in targets:
         try:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w") as f:
                 json.dump(cfg, f, indent=2)
-        except OSError:
-            pass
+            wrote_any = True
+        except OSError as e:
+            last_err = e
+    if targets and not wrote_any:
+        # Every persistence target failed — a silent no-op here means the
+        # user's `share set private` never took effect. Surface it. (v1.5.2)
+        raise OSError(f"could not persist taskplane mode to any of "
+                      f"{targets}: {last_err}")
     persistent = _persistent_mode(workspace)
-    if persistent["store"] == "repo" and             persistent["plan"] in ("team", "enterprise") and             cfg.get("plan") in ("team", "enterprise"):
+    if persistent["store"] == "repo" \
+            and persistent["plan"] in ("team", "enterprise") \
+            and cfg.get("plan") in ("team", "enterprise"):
         try:
             os.makedirs(repo_store_root(workspace), exist_ok=True)
             with open(os.path.join(repo_store_root(workspace),

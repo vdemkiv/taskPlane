@@ -46,7 +46,7 @@ def _state_dir(ws: str) -> str:
     env override (Claude Tag): there the sandbox is ephemeral and
     single-writer, so committed state is exactly what lets the next session
     resume the loop."""
-    if os.environ.get("TASKPLANE_STORE", "").strip().lower() == "repo":
+    if tp.store_env() == "repo":
         return os.path.join(tp.kb_root(ws), "state")
     ext = os.path.join(tp.external_store_root(ws), "knowledge", "state")
     if os.path.exists(os.path.join(ext, LOOP_FILE)):

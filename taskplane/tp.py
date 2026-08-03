@@ -271,8 +271,16 @@ def cmd_screen_dispatch(a) -> int:
         else:
             print(json.dumps({"systemMessage": reason}))
         return 0
-    except Exception:
-        return 0                                   # never break dispatch
+    except Exception as e:
+        # Never break dispatch — but in STRICT mode a silent fail-open means
+        # the enforcement the operator asked for vanished with no trace.
+        # Emit a diagnostic (warn-style, non-blocking) so the failure is
+        # visible instead of invisible. (v1.5.2)
+        if mode == "strict":
+            print(json.dumps({"systemMessage":
+                              f"taskplane dispatch check errored and "
+                              f"fell open (allowed): {e}"}))
+        return 0
 
 
 def cmd_decision(a) -> int:
@@ -324,8 +332,14 @@ def cmd_decision(a) -> int:
             print(open(p).read())
     elif act == "accept":
         d = _kb.set_status(ws, a.id, "accepted")
-        print(json.dumps({"id": a.id, "status": d and d["status"]}, indent=2))
+        if d is None:                       # unknown id — don't exit 0 silently
+            print(json.dumps({"error": f"no decision {a.id}"}, indent=2))
+            return 1
+        print(json.dumps({"id": a.id, "status": d["status"]}, indent=2))
     elif act == "supersede":
+        if _kb.get_decision(ws, a.id) is None:
+            print(json.dumps({"error": f"no decision {a.id}"}, indent=2))
+            return 1
         _kb.supersede(ws, a.id, a.by)
         print(json.dumps({"superseded": a.id, "by": a.by}, indent=2))
     return 0
@@ -983,8 +997,21 @@ def _migrate_kb(ws) -> dict:
             tp._run(["git", "rm", "-r", "--cached", "--ignore-unmatch",
                      "--quiet", "knowledge"], cwd=ws)
     res = tp.migrate_store(ws)            # move data + write meta.json
+    # ANCHORED pattern: a bare `knowledge/` also matches `.taskplane-kb/
+    # knowledge/`, so on a team plan the shared store became uncommittable
+    # and sharing silently never worked (v1.5.2). `/knowledge/` matches only
+    # the repo-root legacy dir this rule is about. Rewrite any pre-existing
+    # unanchored line in place.
+    gi_path = os.path.join(ws, ".gitignore")
+    if os.path.exists(gi_path):
+        with open(gi_path) as f:
+            body = f.read()
+        fixed = re.sub(r'(?m)^knowledge/\s*$', '/knowledge/', body)
+        if fixed != body:
+            with open(gi_path, "w") as f:
+                f.write(fixed)
     ignored = _ensure_gitignored(
-        ws, ["knowledge/"],
+        ws, ["/knowledge/"],
         "taskplane knowledge base — lives in the external store "
         "(~/.taskplane), never the repo")
     res.update({"untracked": was_tracked, "gitignored": bool(ignored)})
@@ -1004,20 +1031,15 @@ def cmd_share(a) -> int:
     act = a.share_cmd
     if act == "status":
         mode = tp.get_mode(ws)
-        unpublished = 0
+        unpublished = unpub_flows = 0
         try:
             with open(os.path.join(tp.external_store_root(ws),
                                    "knowledge", "index.json")) as f:
-                unpublished = sum(1 for d in json.load(f)["decisions"]
-                                  if not d.get("published_as"))
-        except (OSError, ValueError):
-            pass
-        unpub_flows = 0
-        try:
-            with open(os.path.join(tp.external_store_root(ws),
-                                   "knowledge", "index.json")) as f:
-                unpub_flows = sum(1 for d in json.load(f).get("flows", [])
-                                  if not d.get("published_as"))
+                pidx = json.load(f)
+            unpublished = sum(1 for d in pidx.get("decisions", [])
+                              if not d.get("published_as"))
+            unpub_flows = sum(1 for d in pidx.get("flows", [])
+                              if not d.get("published_as"))
         except (OSError, ValueError):
             pass
         print(json.dumps({**mode, "store_path": tp.store_root(ws),
@@ -1033,13 +1055,19 @@ def cmd_share(a) -> int:
                                      "[--ids 0001,0002]"}}, indent=2))
     elif act == "plan":
         mode = tp.set_mode(ws, plan=a.value)
-        print(json.dumps({**mode, "store_path": tp.store_root(ws)},
-                         indent=2))
+        out = {**mode, "store_path": tp.store_root(ws)}
+        if a.value == "personal" and mode["store"] == "repo":
+            # Plan says personal but a committed shared config keeps the store
+            # in-repo — so decisions still land in the team store. Make the
+            # mismatch explicit rather than silently surprising. (v1.5.2)
+            out["notice"] = ("plan is personal, but this repo has a committed "
+                             "shared store (.taskplane-kb/config.json) so "
+                             "knowledge still goes to the team. To work "
+                             "privately here, run `tp share set private`.")
+        print(json.dumps(out, indent=2))
     elif act == "set":
         want_private = (a.value == "private")
-        if want_private and \
-                os.environ.get("TASKPLANE_STORE", "").strip().lower() \
-                == "repo":
+        if want_private and tp.store_env() == "repo":
             # v1.5.1 (B2): inside Claude Tag the env mandates the repo
             # store and the private store cannot survive the ephemeral
             # sandbox — a silent "private" flag that still writes to the
@@ -1063,7 +1091,21 @@ def cmd_share(a) -> int:
         print(json.dumps({**mode, "store_path": tp.store_root(ws)},
                          indent=2))
     elif act == "push":
-        ids = [x.strip() for x in (a.ids or "").split(",") if x.strip()]             or None
+        # Guard: publishing only makes sense to a team store. On a personal
+        # plan with no committed shared config, push would silently create a
+        # .taskplane-kb no teammate will ever see — same failure `set shared`
+        # now rejects. (v1.5.2)
+        mode = tp.get_mode(ws)
+        shared_cfg = os.path.exists(os.path.join(
+            tp.repo_store_root(ws), "config.json"))
+        if mode["plan"] not in ("team", "enterprise") and not shared_cfg:
+            print(json.dumps({"error": "nothing to publish to — sharing "
+                              "needs a team/enterprise plan. Run `tp share "
+                              "plan team|enterprise` first.",
+                              "plan": mode["plan"]}, indent=2))
+            return 1
+        ids = [x.strip() for x in (a.ids or "").split(",")
+               if x.strip()] or None
         out = kbmod.publish(ws, ids=ids)
         print(json.dumps(out, indent=2))
         if out.get("error") or out.get("unknown_ids"):
@@ -1127,11 +1169,17 @@ def cmd_init(a) -> int:
         "context_docs_created": wrote or "(already present)",
         "graph": {"modules": len(g["modules"]), "edges": len(g["edges"])},
         "gitignored_runtime": missing or "(already present)",
-        "committed_state": "NONE — the knowledge base is external "
-                           "(~/.taskplane); the repo carries no taskplane "
-                           "artifacts",
-        "git": head[:12] if head else "NOT A REPO — git init && commit "
-                                      "(gates need a snapshot)",
+        "committed_state": (
+            "NONE — the knowledge base is external (~/.taskplane); the repo "
+            "carries no taskplane artifacts" if mode["store"] == "external"
+            else "SHARED — the knowledge base lives in-repo (.taskplane-kb/) "
+                 "and is committed with the code (team/enterprise plan)"),
+        "git": head[:12] if head else
+               (os.path.isdir(os.path.join(ws, ".git")) and
+                "REPO HAS NO COMMITS — `git add -A && git commit` "
+                "(gates need a snapshot)" or
+                "NOT A REPO — `git init && git add -A && git commit` "
+                "(gates need a snapshot)"),
         "next": "fill the context docs in the store, then state a goal via "
                 "the tp-go skill (or `tp.py req new` + `tp.py loop init`)",
     }, indent=2))
@@ -1327,7 +1375,7 @@ def _changed_for_impact(ws, base):
     return [f for f in (r.stdout + u.stdout).splitlines() if f]
 
 
-def main() -> int:
+def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="tp.py")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -1345,15 +1393,15 @@ def main() -> int:
     n.add_argument("--write-allow", action="append", metavar="GLOB",
                    help="in read-only mode, dirs that ARE writable "
                         "(e.g. .em-review/**) — repeatable")
-    n.add_argument("--workspace")
+    n.add_argument("--workspace", default=argparse.SUPPRESS)
     n.set_defaults(fn=cmd_new)
 
     dc = sub.add_parser("decision", help="decision registry — structured "
                         "ADRs with lifecycle, links and supersede chains")
-    dc.add_argument("--workspace")
+    dc.add_argument("--workspace", default=argparse.SUPPRESS)
     dsub = dc.add_subparsers(dest="decision_action", required=True)
     dn = dsub.add_parser("new")
-    dn.add_argument("--workspace")
+    dn.add_argument("--workspace", default=argparse.SUPPRESS)
     dn.add_argument("title")
     dn.add_argument("--context")
     dn.add_argument("--decision")
@@ -1368,16 +1416,16 @@ def main() -> int:
                     choices=["proposed", "accepted"])
     dn.add_argument("--tags")
     dl = dsub.add_parser("list")
-    dl.add_argument("--workspace")
+    dl.add_argument("--workspace", default=argparse.SUPPRESS)
     dl.add_argument("--status", dest="status_filter")
     dsh = dsub.add_parser("show")
-    dsh.add_argument("--workspace")
+    dsh.add_argument("--workspace", default=argparse.SUPPRESS)
     dsh.add_argument("id")
     da = dsub.add_parser("accept")
-    da.add_argument("--workspace")
+    da.add_argument("--workspace", default=argparse.SUPPRESS)
     da.add_argument("id")
     dsp = dsub.add_parser("supersede")
-    dsp.add_argument("--workspace")
+    dsp.add_argument("--workspace", default=argparse.SUPPRESS)
     dsp.add_argument("id")
     dsp.add_argument("--by", required=True)
     dc.set_defaults(fn=cmd_decision)
@@ -1391,15 +1439,15 @@ def main() -> int:
     sd.set_defaults(fn=cmd_screen_dispatch)
 
     rd = sub.add_parser("ready", help="Definition-of-Ready entry gate")
-    rd.add_argument("--workspace")
+    rd.add_argument("--workspace", default=argparse.SUPPRESS)
     rd.set_defaults(fn=cmd_ready)
 
     cl = sub.add_parser("clear", help="deactivate the workspace contract")
-    cl.add_argument("--workspace")
+    cl.add_argument("--workspace", default=argparse.SUPPRESS)
     cl.set_defaults(fn=cmd_clear)
 
     st = sub.add_parser("status", help="show the active contract")
-    st.add_argument("--workspace")
+    st.add_argument("--workspace", default=argparse.SUPPRESS)
     st.set_defaults(fn=cmd_status)
 
     b = sub.add_parser("budget", help="record a cooperative spend estimate, "
@@ -1410,15 +1458,15 @@ def main() -> int:
                    help="raise the enforced action ceiling by N — for the "
                         "human / ungoverned main session after approving "
                         "more budget (a governed agent cannot grant itself)")
-    b.add_argument("--workspace")
+    b.add_argument("--workspace", default=argparse.SUPPRESS)
     b.set_defaults(fn=cmd_budget)
 
     d = sub.add_parser("dod", help="Definition-of-Done exit gate (+ kb lint)")
-    d.add_argument("--workspace")
+    d.add_argument("--workspace", default=argparse.SUPPRESS)
     d.set_defaults(fn=cmd_dod)
 
     lp = sub.add_parser("loop", help="drive the Evaluate-Loop engine")
-    lp.add_argument("--workspace")
+    lp.add_argument("--workspace", default=argparse.SUPPRESS)
     lsub = lp.add_subparsers(dest="loop_action", required=True)
     li = lsub.add_parser("init")
     li.add_argument("goal", nargs="*")
@@ -1447,7 +1495,7 @@ def main() -> int:
     la.add_argument("--by", default=None,
                     help="who approved and where (e.g. a Slack user + "
                          "quoted reply) — recorded in trace + KB")
-    la.add_argument("--workspace")   # accepted after the subcommand too
+    la.add_argument("--workspace", default=argparse.SUPPRESS)
     la.add_argument("--force", action="store_true",
                     help="pass a BLOCKED refinement gate anyway")
     lr = lsub.add_parser("resolve")
@@ -1472,17 +1520,17 @@ def main() -> int:
                      help="full catalog: routed lenses run deep, the rest "
                           "as a quick sweep — nothing skipped")
     lnr.add_argument("--json", action="store_true")
-    lnr.add_argument("--workspace")
+    lnr.add_argument("--workspace", default=argparse.SUPPRESS)
     lnr.set_defaults(fn=cmd_lens)
 
     lnl = lnsub.add_parser("list", help="every lens in the catalog")
     lnl.add_argument("--json", action="store_true")
-    lnl.add_argument("--workspace")
+    lnl.add_argument("--workspace", default=argparse.SUPPRESS)
     lnl.set_defaults(fn=cmd_lens)
 
     lns = lnsub.add_parser("show", help="the full brief for one lens")
     lns.add_argument("id")
-    lns.add_argument("--workspace")
+    lns.add_argument("--workspace", default=argparse.SUPPRESS)
     lns.set_defaults(fn=cmd_lens)
 
     lnd = lnsub.add_parser("dispatch", help="ready-to-dispatch lens-agent "
@@ -1497,11 +1545,11 @@ def main() -> int:
     lnd.add_argument("--dashboard", action="store_true",
                      help="print the live lens-wave progress board instead "
                           "of the JSON briefs (render this BEFORE dispatch)")
-    lnd.add_argument("--workspace")
+    lnd.add_argument("--workspace", default=argparse.SUPPRESS)
     lnd.set_defaults(fn=cmd_lens)
 
     kbp = sub.add_parser("kb", help="knowledge base (decisions)")
-    kbp.add_argument("--workspace")
+    kbp.add_argument("--workspace", default=argparse.SUPPRESS)
     kbsub = kbp.add_subparsers(dest="kb_action", required=True)
     kr = kbsub.add_parser("record")
     kr.add_argument("title")
@@ -1520,7 +1568,7 @@ def main() -> int:
     kbp.set_defaults(fn=cmd_kb)
 
     rq = sub.add_parser("req", help="requirements: record, refine, mode, debt")
-    rq.add_argument("--workspace")
+    rq.add_argument("--workspace", default=argparse.SUPPRESS)
     rqsub = rq.add_subparsers(dest="req_action", required=True)
     rn = rqsub.add_parser("new")
     rn.add_argument("title")
@@ -1559,7 +1607,7 @@ def main() -> int:
     rq.set_defaults(fn=cmd_req)
 
     gp = sub.add_parser("graph", help="dependency graph: scan/impact/edge/html")
-    gp.add_argument("--workspace")
+    gp.add_argument("--workspace", default=argparse.SUPPRESS)
     gsub = gp.add_subparsers(dest="graph_action", required=True)
     gsub.add_parser("scan")
     gi = gsub.add_parser("impact")
@@ -1588,7 +1636,7 @@ def main() -> int:
 
     db = sub.add_parser("dashboard", help="render the mission-control view")
     db.add_argument("--out")
-    db.add_argument("--workspace")
+    db.add_argument("--workspace", default=argparse.SUPPRESS)
     db.set_defaults(fn=cmd_dashboard)
 
     op = sub.add_parser("onboard", help="cold-start readiness — folder + git "
@@ -1596,7 +1644,7 @@ def main() -> int:
     op.add_argument("--json", action="store_true",
                     help="print the readiness report instead of the widget")
     op.add_argument("--out", help="also write the fragment to this path")
-    op.add_argument("--workspace")
+    op.add_argument("--workspace", default=argparse.SUPPRESS)
     op.set_defaults(fn=cmd_onboard)
 
     fp = sub.add_parser("findings", help="render a review findings dashboard "
@@ -1604,7 +1652,7 @@ def main() -> int:
     fp.add_argument("--file", help="findings JSON (default "
                     ".em-review/findings.json)")
     fp.add_argument("--out", help="also write the fragment to this path")
-    fp.add_argument("--workspace")
+    fp.add_argument("--workspace", default=argparse.SUPPRESS)
     fp.set_defaults(fn=cmd_findings)
 
     nsp = sub.add_parser("north-star", help="on-demand strategic review: print "
@@ -1612,36 +1660,36 @@ def main() -> int:
     nsp.add_argument("--render", help="a strategic-note JSON to render as the "
                      "inline widget fragment")
     nsp.add_argument("--out", help="also write the fragment to this path")
-    nsp.add_argument("--workspace")
+    nsp.add_argument("--workspace", default=argparse.SUPPRESS)
     nsp.set_defaults(fn=cmd_northstar)
 
     shp = sub.add_parser("share", help="plan-aware knowledge sharing: "
                          "status / plan / set private|shared / push")
     shsub = shp.add_subparsers(dest="share_cmd", required=True)
     sst = shsub.add_parser("status")
-    sst.add_argument("--workspace")
+    sst.add_argument("--workspace", default=argparse.SUPPRESS)
     spl = shsub.add_parser("plan")
     spl.add_argument("value", choices=["personal", "team", "enterprise"])
-    spl.add_argument("--workspace")
+    spl.add_argument("--workspace", default=argparse.SUPPRESS)
     sse = shsub.add_parser("set")
     sse.add_argument("value", choices=["private", "shared"])
-    sse.add_argument("--workspace")
+    sse.add_argument("--workspace", default=argparse.SUPPRESS)
     spu = shsub.add_parser("push")
     spu.add_argument("--ids", default=None,
                      help="comma-separated private decision ids; default = "
                           "everything unpublished")
-    spu.add_argument("--workspace")
+    spu.add_argument("--workspace", default=argparse.SUPPRESS)
     shp.set_defaults(fn=cmd_share)
 
     ip = sub.add_parser("init", help="scaffold context docs + KB + graph")
     ip.add_argument("--plan", choices=["personal", "team", "enterprise"],
                     default=None, help="record the Claude plan at init — "
                     "decides the default knowledge store")
-    ip.add_argument("--workspace")
+    ip.add_argument("--workspace", default=argparse.SUPPRESS)
     ip.set_defaults(fn=cmd_init)
 
     tk = sub.add_parser("track", help="multi-track workstreams")
-    tk.add_argument("--workspace")
+    tk.add_argument("--workspace", default=argparse.SUPPRESS)
     tksub = tk.add_subparsers(dest="track_action", required=True)
     tn = tksub.add_parser("new"); tn.add_argument("name")
     tn.add_argument("goal", nargs="*"); tn.add_argument("--req")
@@ -1652,12 +1700,24 @@ def main() -> int:
     tk.set_defaults(fn=cmd_track)
 
     cx = sub.add_parser("context", help="session-start context summary")
-    cx.add_argument("--workspace")
+    cx.add_argument("--workspace", default=argparse.SUPPRESS)
     cx.set_defaults(fn=cmd_context)
 
-    a = p.parse_args()
+    a = p.parse_args(argv)
+    if not hasattr(a, "workspace"):
+        a.workspace = None      # SUPPRESS leaves it unset when never passed
     return a.fn(a)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        # Downstream (head/less) closed the pipe — exit quietly instead of
+        # dumping a traceback. Redirect stdout to devnull so the interpreter's
+        # final flush doesn't re-raise. (v1.5.2)
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+        sys.exit(0)
