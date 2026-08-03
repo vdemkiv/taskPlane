@@ -21,6 +21,7 @@ guardrails and gates are how it delivers that — not the point, the means.
 
 | Version | Highlights |
 | --- | --- |
+| **v1.4.0** | **Claude Tag support (beta)** — run governed work as your org's @Claude in Slack: `TASKPLANE_STORE=repo` persists the knowledge store inside the repo (Tag's sandbox is ephemeral — the KB travels with the branch/PR), `tp loop approve --by "<who> — '<their words>'"` makes every human-gate pass attributable to a real person in the thread, and the new `tp-tag` skill carries the thread protocol: post the gate, stop, wait for a human reply, attach the dashboard. |
 | **v1.3.1** | **Remedy required on every finding** — the shared verdict format across all 25 lenses makes `suggestion` mandatory on every blocker/major/minor: criticism must come with a concrete alternative or solution, preferring capabilities your stack already runs. |
 | **v1.3.0** | **Current-state grounding** — `tp init` scaffolds `context/current-state.md` (the as-built inventory); once filled it is injected into every task brief, and the design lenses review any design as a *delta against what exists*: reinventing an existing component or contradicting as-built reality is blocker-class. Grounding panel in the dashboard. |
 | **v1.2.0** | **Decision registry** — `tp decision`: structured ADRs with lifecycle, alternatives (`option \| gained \| given up`), and supersede chains; accepted decisions linked to a task's modules are always injected into that task's brief. Plus three new design lenses: trade-offs, services selection, time-to-market (catalog: 25). |
@@ -279,13 +280,14 @@ the model's own calls.
 | Dependency graph | deterministic scan + change blast-radius + interactive map |
 | Model tiers | portable `cheap`/`standard`/`deep` capability tiers routed per step, task, and lens — mapped to models by env config, verifiable with `tp loop verify-dispatch` |
 
-**Seven commands, three working personas plus a summoned strategy lens:**
+**Eight commands, three working personas plus a summoned strategy lens:**
 `tp-go` (the entry point — routes everything), `tp-product` (the WHAT seat:
 requirements, scores, decisions), `tp-build` (new features: refinement + a
 north-star check first, visual mocks, A/B variants with a selection gate),
 `tp-engineering` (the SOUND seat: full-catalog review, impact, verdicts,
 retro), `tp-northstar` (the summoned STRATEGY lens — advisory, never a
-gate), `tp-status`, `tp-help`. Definition and judgment are deliberately separate seats — the
+gate), `tp-tag` (governed work as your org's @Claude in a Slack channel —
+see below), `tp-status`, `tp-help`. Definition and judgment are deliberately separate seats — the
 grader never grades their own spec.
 
 **License:** free and open source under the **Apache License 2.0** — use it
@@ -309,6 +311,37 @@ brief's model only matters if the dispatch actually used it, the routing is
 verifiable: `tp loop verify-dispatch` audits a run, and
 `TASKPLANE_ENFORCE_DISPATCH=warn|strict` turns on a dispatch-time check
 (opt-in, inert by default). Details: `discipline/model-tiers.md`.
+
+## Claude Tag (beta) — taskplane in your Slack channels
+
+[Claude Tag](https://claude.com/docs/claude-tag/overview) runs @Claude as
+your organization's shared identity in Slack (Team/Enterprise, public
+beta). taskplane adapts to that environment with three mechanisms:
+
+- **Repo-persisted store.** Tag's sandbox is ephemeral — `~` is discarded
+  when the conversation idles. Set `TASKPLANE_STORE=repo` and the knowledge
+  store (decisions, requirements, loop state) lives at `.taskplane-kb/`
+  inside the repo, committed and pushed with the work. The next Tag session
+  resumes the loop by cloning the branch.
+- **Attributable human gates.** There is no PreToolUse hook layer in Tag,
+  so gates are process + audit: at `plan_approval` and `signoff` the loop
+  parks, the gate summary goes to the thread, and only a real person's
+  reply unlocks it — recorded with `tp loop approve --by "Dana — 'approved'
+  in #platform-eng"`. The approver lands in the trace and the KB, so every
+  gate pass is attributable. An approve without `--by` is detectable as a
+  self-approval.
+- **The `tp-tag` skill** carries the full thread protocol: compact status
+  posts, the dashboard attached at every gate, scope restated before each
+  execute step, and a hard rule the skill never breaks — it does not
+  approve gates on its own, under any phrasing of urgency.
+
+To deploy: an Owner attaches the taskplane plugin to a scope (channel,
+workspace, or org) from the Access bundle's Plugins tab or a skills
+repository — see [Customize Claude
+Tag](https://claude.com/docs/claude-tag/admins/customize). Honest limit:
+Tag's plugin surface today is skills-only, so enforcement is by process,
+visibility, and trace — not by mechanical interception. The hook layer
+remains fully active in Claude Code and Cowork.
 
 ## Layout
 

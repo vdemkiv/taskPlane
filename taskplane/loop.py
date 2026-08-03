@@ -926,8 +926,15 @@ def _refinement_report(ws: str, state: dict) -> list:
     return out
 
 
-def approve(ws: str, force: bool = False) -> dict:
-    """Pass a human checkpoint (plan-approval or EM sign-off)."""
+def approve(ws: str, force: bool = False, by: str = None) -> dict:
+    """Pass a human checkpoint (plan-approval or EM sign-off).
+
+    `by` (v1.4.0, built for Claude Tag threads): WHO approved and where —
+    e.g. "Dana R. — 'approved' in #platform-eng thread". Recorded into the
+    trace event and the KB decision, so a gate pass is attributable to a
+    human even in environments with no hook enforcement. In an unattended
+    or Tag session, an approve WITHOUT `by` is exactly the self-approval
+    the adherence experiment flags — drivers must pass the human's words."""
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
@@ -946,24 +953,26 @@ def approve(ws: str, force: bool = False) -> dict:
         state["baseline"] = tp.git_head(ws)
         state["step"] = "execute"
         state["current_task"] = 0
-        tp.trace(ws, "loop_approve", gate="plan")
+        tp.trace(ws, "loop_approve", gate="plan", by=by)
         # High-signal decision → the knowledge base.
         scope = sorted({g for t in (state.get("tasks") or [])
                         for g in t.get("scope", [])})
         kb.record_decision(
             ws, f"Plan approved: {state['goal'][:60]}",
-            context=f"Goal: {state['goal']}",
+            context=f"Goal: {state['goal']}"
+                    + (f"\nApproved by: {by}" if by else ""),
             decision=f"Approved a {len(state.get('tasks') or [])}-task plan.",
             tags=["plan-approval"], context_files=scope,
             links={"loop": "plan"})
     elif step == "signoff":
         state["step"] = "done"
-        tp.trace(ws, "loop_approve", gate="em_signoff", final="done")
+        tp.trace(ws, "loop_approve", gate="em_signoff", final="done", by=by)
         scope = sorted({g for t in (state.get("tasks") or [])
                         for g in t.get("scope", [])})
         kb.record_decision(
             ws, f"Accepted: {state['goal'][:60]}",
-            context=f"Goal: {state['goal']}",
+            context=f"Goal: {state['goal']}"
+                    + (f"\nApproved by: {by}" if by else ""),
             decision="EM review passed and the human signed off — shipped.",
             tags=["accepted", "em-signoff"], context_files=scope,
             links={"loop": "signoff"})

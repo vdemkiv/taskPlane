@@ -1201,7 +1201,16 @@ def _adopt_legacy_store(workspace: str, new_root: str) -> None:
 
 
 def store_root(workspace: str) -> str:
-    """This project's own store dir: <store_home>/projects/<key>/."""
+    """This project's own store dir: <store_home>/projects/<key>/.
+
+    TAG MODE (v1.4.0): TASKPLANE_STORE=repo relocates the store INSIDE the
+    workspace at <ws>/.taskplane-kb/ so it can be COMMITTED with the work.
+    Built for Claude Tag's ephemeral Anthropic-hosted sandbox, where ~ is
+    discarded when the conversation goes idle — the external-store default
+    would silently lose every decision, requirement and loop state between
+    sessions. In repo mode the KB travels with the branch/PR instead."""
+    if os.environ.get("TASKPLANE_STORE", "").strip().lower() == "repo":
+        return os.path.join(os.path.abspath(workspace), ".taskplane-kb")
     root = os.path.join(store_home(), "projects", project_key(workspace))
     if not os.path.isdir(root):
         _adopt_legacy_store(workspace, root)

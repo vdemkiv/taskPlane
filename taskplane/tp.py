@@ -699,7 +699,9 @@ def cmd_loop(a) -> int:
         print(json.dumps(loopmod.claim(ws, a.task_id, a.agent_workspace),
                          indent=2))
     elif action == "approve":
-        print(json.dumps(loopmod.approve(ws, force=a.force), indent=2))
+        print(json.dumps(loopmod.approve(ws, force=a.force,
+                                         by=getattr(a, "by", None)),
+                         indent=2))
     elif action == "select":
         print(json.dumps(loopmod.select(ws, a.choice, note=a.note or ""),
                          indent=2))
@@ -1344,6 +1346,10 @@ def main() -> int:
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")
     ls_.add_argument("--note", help="the WHY — recorded to the KB")
     la = lsub.add_parser("approve")
+    la.add_argument("--by", default=None,
+                    help="who approved and where (e.g. a Slack user + "
+                         "quoted reply) — recorded in trace + KB")
+    la.add_argument("--workspace")   # accepted after the subcommand too
     la.add_argument("--force", action="store_true",
                     help="pass a BLOCKED refinement gate anyway")
     lr = lsub.add_parser("resolve")
