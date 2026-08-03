@@ -68,12 +68,28 @@ why a review must emit its findings and render them itself. Write every
 finding (ALL severities, not just the blockers) to `.em-review/findings.json`
 — each `{severity, domain, file, line, title, scenario, fix, status}`, with
 a `meta` block (`title`, `subtitle`, `tests`, `clean:[…]`, and a `gate` with
-buttons) — then `$TP findings` prints the findings dashboard fragment: every
-severity as a filter chip (all/high/med/low with counts), each finding an
-expandable card (domain · file:line · failure · fix · status), a collapsed
-clean-checks list, and the sign-off gate. Show it inline via
-`mcp__visualize__show_widget` at the review gate so the human can filter,
-expand, and review high AND medium AND low — not just the headline.
+buttons) — then render it.
+
+**Render contract — the findings ARE the deliverable, never a prose summary
+(v1.5.3).** For anything past a handful of findings, use
+`$TP findings --paged`: it prints a `HEADLINE:` line and a JSON
+`{headline, pages:[{title, html}], render}` where every page is a
+self-contained fragment under 14 KB (summary → high → medium → low, split
+into "part i/n" when a tier is large). Then:
+1. Relay the `HEADLINE:` line to the human as plain text FIRST — this is the
+   never-skippable carrier of the numbers, so the decision data lands even if
+   a render fails.
+2. Call `mcp__visualize__show_widget` once **per page, in order**, each with a
+   unique title. Small pages always render cleanly — that is the whole point
+   of paging; do NOT collapse them back into one giant widget, and do NOT
+   replace them with a written recap.
+3. If a page errors, retry it once, then fall back to delivering the written
+   file for that page — but never silently drop it.
+
+(Small review? `$TP findings` without `--paged` still prints the headline
+then one fragment — render that single widget.) Each page carries filter
+chips, expandable cards (domain · file:line · failure · fix · status), the
+clean-checks list, and the sign-off gate.
 
 **Render UI changes, don't just read them.** When the change touches a UI,
 build a faithful self-contained HTML mock of the affected view with mock

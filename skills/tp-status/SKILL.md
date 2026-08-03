@@ -21,11 +21,15 @@ description: "Use when the user asks where things stand with taskplane-governed 
    If the loop's book lags reality (e.g. a custom flow like an A/B
    selection gate, or an agent that couldn't record its gate), SAY SO and
    name the real pending action; the dashboard renders the recorded state.
-2. Then `$TP dashboard` and show the fragment inline via
-   `mcp__visualize__show_widget` as the LAST thing in the reply. Title:
-   `taskplane_status_<step-or-context>` — UNIQUE per render; a repeated
-   title updates the earlier widget in place instead of drawing a new one
-   where the user is looking. The dashboard carries an **action banner** at
+2. Then `$TP dashboard` — it prints a `HEADLINE:` line first (relay it as
+   plain text — the never-skippable carrier of step + gate, so status lands
+   even if the render is skipped), then the fragment. Show the fragment
+   inline via `mcp__visualize__show_widget` as the LAST thing in the reply.
+   Title: `taskplane_status_<step-or-context>` — UNIQUE per render; a
+   repeated title updates the earlier widget in place instead of drawing a
+   new one where the user is looking. (For an unusually large board,
+   `$TP dashboard --paged` returns ordered ≤14 KB pages — render each in
+   order, same contract as tp-engineering findings.) The dashboard carries an **action banner** at
    the top of the loop tab: gate buttons (approve / sign-off / resolve,
    wired to `sendPrompt`) when a decision is the human's, an explicit
    "no action needed from you — <role> is on <step> · next human gate: X"

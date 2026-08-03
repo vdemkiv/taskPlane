@@ -512,6 +512,158 @@ _SEV = {  # order high→low; each: (rank, label, dot-color, accent-border)
 _SEV_KEY = {"blocker": "high", "high": "high", "med": "med",
             "medium": "med", "low": "low"}
 
+# Render-reliability contract (v1.5.3): a dashboard's data is too valuable to
+# depend on a single big widget that might get skipped. Three guarantees:
+#  1. headline_findings() — a plain-text one-liner of the key numbers that is
+#     ALWAYS printed to chat, so decision data survives even a skipped render.
+#  2. render_findings_paged() — splits a large fragment into ordered,
+#     self-contained pages each under PAGE_BUDGET, rendered one after another.
+#  3. the skills instruct the driver to render EVERY page and never summarize.
+PAGE_BUDGET = 14000     # max chars per inline fragment — safe to pass through
+
+
+def headline_findings(findings, meta=None) -> str:
+    """The never-skippable text line. Key counts + tests + recommendation, so
+    the numbers reach the human even if every widget render is skipped."""
+    meta = meta or {}
+    c = {"high": 0, "med": 0, "low": 0}
+    for f in findings or []:
+        c[_SEV_KEY.get(str(f.get("severity", "med")).lower(), "med")] += 1
+    t = meta.get("title") or "review findings"
+    line = (f"{t}: {c['high']} high · {c['med']} med · {c['low']} low "
+            f"({sum(c.values())} findings)")
+    if meta.get("tests"):
+        line += f" · {meta['tests']}"
+    rec = meta.get("headline") or meta.get("recommendation")
+    if rec:
+        line += f" · {rec}"
+    return line
+
+
+def _ptitle(t):
+    return (f'<div style="{_MICRO};margin-bottom:8px">{_esc(t)}</div>')
+
+
+def _compact_card(f, open_=True):
+    sev = str(f.get("severity", "med")).lower()
+    _, slabel, dot, accent = _SEV.get(sev, _SEV["med"])
+    loc = ""
+    if f.get("file"):
+        ln = f":{f['line']}" if f.get("line") not in (None, "") else ""
+        loc = (f'<span style="font-family:var(--font-mono);font-size:10px;'
+               f'color:var(--text-muted)"> · {_esc(f["file"])}{_esc(ln)}</span>')
+    dom = (f'<span style="font-family:var(--font-mono);font-size:9.5px;'
+           f'color:var(--text-muted);min-width:80px">{_esc(f.get("domain",""))}'
+           f'</span>')
+    det = ""
+    if open_ and (f.get("scenario") or f.get("fix")):
+        parts = []
+        if f.get("scenario"):
+            parts.append(f'<b style="color:var(--text-primary);'
+                         f'font-weight:500">fail</b> {_esc(f["scenario"])[:260]}')
+        if f.get("fix"):
+            parts.append(f'<b style="color:var(--text-primary);'
+                         f'font-weight:500">fix</b> {_esc(f["fix"])[:220]}')
+        det = (f'<div style="padding:3px 0 2px 88px;font-size:11.5px;'
+               f'color:var(--text-secondary);line-height:1.5">'
+               + "<br>".join(parts) + "</div>")
+    return (f'<div style="border-top:.5px solid var(--border)">'
+            f'<div style="padding:5px 0;font-size:12.5px;display:flex;gap:8px">'
+            f'{dom}<span style="flex:1">{_esc(f.get("title",""))}'
+            f'<span style="font-family:var(--font-mono);font-size:9.5px;'
+            f'color:{dot}"> {_esc(slabel)}</span>{loc}</span></div>{det}</div>')
+
+
+def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
+    """Ordered, self-contained fragments each <= budget. If the full rich
+    fragment already fits, returns it as a single page (no behavior change for
+    small reviews). Otherwise splits by MEANING: summary → high cards →
+    medium → low. Each page carries a 'part i/n' title. Returns
+    [{"title","html"}]."""
+    meta = meta or {}
+    full = render_findings(findings, meta)
+    if len(full) <= budget:
+        return [{"title": meta.get("title", "review findings"), "html": full}]
+
+    norm = []
+    for f in findings or []:
+        k = _SEV_KEY.get(str(f.get("severity", "med")).lower(), "med")
+        norm.append({**f, "_key": k})
+    buckets = {k: [f for f in norm if f["_key"] == k]
+               for k in ("high", "med", "low")}
+    c = {k: len(v) for k, v in buckets.items()}
+    pages = []
+
+    # page 1 — summary: title, counts, tests, clean, gate
+    chips = "".join(
+        f'<span style="font-family:var(--font-mono);font-size:11px;'
+        f'padding:2px 9px;border-radius:12px;margin-right:6px;background:'
+        f'{bg};color:{fg}">{lbl} {c[k]}</span>'
+        for k, lbl, bg, fg in (
+            ("high", "high", "var(--bg-danger)", "var(--text-danger)"),
+            ("med", "med", "var(--bg-warning,var(--surface-1))",
+             "var(--text-warning,var(--text-primary))"),
+            ("low", "low", "var(--surface-1)", "var(--text-secondary)")))
+    clean = meta.get("clean") or []
+    clean_html = ""
+    if clean:
+        clean_html = ('<div style="margin-top:10px;font-size:12px;'
+                      'color:var(--text-secondary)"><b style="font-weight:500">'
+                      f'clean — {len(clean)} areas:</b> '
+                      + "; ".join(_esc(x) for x in clean[:12]) + "</div>")
+    rec = meta.get("headline") or meta.get("recommendation") or ""
+    rec_html = (f'<div style="border-left:3px solid var(--border-danger);'
+                f'padding:8px 12px;margin-top:12px;background:var(--surface-1);'
+                f'border-radius:0 8px 8px 0;font-size:12.5px">{_esc(rec)}</div>'
+                if rec else "")
+    sub = _esc(meta.get("subtitle", ""))
+    tests = (f' · {_esc(meta["tests"])}' if meta.get("tests") else "")
+    summary = (
+        f'<div style="padding:.5rem 0;font-family:var(--font-sans);'
+        f'color:var(--text-primary)"><div style="font-size:16px;'
+        f'font-weight:500">{_esc(meta.get("title","review findings"))}</div>'
+        f'<div style="font-size:12px;color:var(--text-secondary);'
+        f'margin-bottom:10px">{sub}{tests}</div>{chips}{clean_html}{rec_html}'
+        f'</div>')
+    pages.append({"title": "summary", "html": summary})
+
+    def chunk(bucket, label, open_):
+        rows, buf, part = [], "", 1
+        for f in bucket:
+            rows.append(_compact_card(f, open_))
+        # greedily pack rows into pages under budget
+        cur = []
+        cur_len = 0
+        packed = []
+        for r in rows:
+            if cur and cur_len + len(r) > budget:
+                packed.append(cur)
+                cur, cur_len = [], 0
+            cur.append(r)
+            cur_len += len(r)
+        if cur:
+            packed.append(cur)
+        for i, grp in enumerate(packed, 1):
+            suffix = f" (part {i}/{len(packed)})" if len(packed) > 1 else ""
+            pages.append({
+                "title": f"{label}{suffix}",
+                "html": (f'<div style="padding:.5rem 0;font-family:'
+                         f'var(--font-sans);color:var(--text-primary)">'
+                         + _ptitle(f"{label} · {len(bucket)}{suffix}")
+                         + "".join(grp) + "</div>")})
+
+    if buckets["high"]:
+        chunk(buckets["high"], "high — fix first", True)
+    if buckets["med"]:
+        chunk(buckets["med"], "medium", False)
+    if buckets["low"]:
+        chunk(buckets["low"], "low", False)
+
+    n = len(pages)
+    for i, p in enumerate(pages, 1):
+        p["title"] = f"{p['title']} — {i}/{n}"
+    return pages
+
 
 def render_findings(findings, meta=None, out=None):
     """Render a REVIEW findings dashboard — every severity, each finding an
@@ -1735,6 +1887,32 @@ def render_stats(ws, metrics, denials, suffix="s"):
         f'<div id="tp-stats-{suffix}" style="border:1px solid var(--border);'
         f'border-radius:6px;padding:8px 10px;margin-bottom:14px">'
         f'<div style="display:flex;gap:4px">{band}</div>{tbl}</div>')
+
+
+def headline_loop(ws: str) -> str:
+    """Never-skippable text line for the loop dashboard: step, task progress,
+    open gate. Printed to chat so status survives a skipped render (v1.5.3)."""
+    state = _load_loop(ws)
+    if not state:
+        return "taskplane: no active loop"
+    step = state.get("step", "—")
+    tasks = state.get("tasks") or []
+    done = sum(1 for t in tasks if t.get("status") in
+               ("passed", "done", "external", "skipped", "not_selected",
+                "reference"))
+    goal = (state.get("goal") or "")[:60]
+    gate = " — YOUR GATE: approve/sign-off" if step in (
+        "plan_approval", "signoff", "selection") else ""
+    return (f"taskplane loop: step={step} · tasks {done}/{len(tasks)} · "
+            f"\"{goal}\"{gate}")
+
+
+def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
+    """The loop dashboard as ordered pages (v1.5.3). It is usually one widget;
+    returned as a single page when it fits, so the driver's render contract is
+    uniform across findings and loop dashboards."""
+    html = widget(ws)
+    return [{"title": "mission control", "html": html}]
 
 
 def widget(ws: str) -> str:

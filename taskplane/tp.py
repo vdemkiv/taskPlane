@@ -1258,6 +1258,15 @@ def cmd_dashboard(a) -> int:
     ws = _workspace(a.workspace)
     if a.out:
         dashboard.render(ws, out=a.out)
+    # v1.5.3: headline first (never-skippable), then the widget / pages.
+    print("HEADLINE: " + dashboard.headline_loop(ws))
+    if getattr(a, "paged", False):
+        pages = dashboard.widget_paged(ws)
+        print(json.dumps({"headline": dashboard.headline_loop(ws),
+                          "pages": pages,
+                          "render": "call mcp__visualize__show_widget once "
+                          "PER PAGE, in order"}, indent=2))
+        return 0
     print(dashboard.widget(ws))
     return 0
 
@@ -1293,6 +1302,18 @@ def cmd_findings(a) -> int:
         return 1
     findings = data.get("findings", data) if isinstance(data, dict) else data
     meta = data.get("meta", {}) if isinstance(data, dict) else {}
+    # Render-reliability contract (v1.5.3): the headline ALWAYS prints first,
+    # so the key numbers reach the human even if the widget render is skipped.
+    print("HEADLINE: " + dashboard.headline_findings(findings, meta))
+    if getattr(a, "paged", False):
+        pages = dashboard.render_findings_paged(findings, meta)
+        print(json.dumps({"headline":
+                          dashboard.headline_findings(findings, meta),
+                          "pages": pages,
+                          "render": "call mcp__visualize__show_widget once "
+                          "PER PAGE, in order — the pages ARE the deliverable, "
+                          "do not summarize them as prose"}, indent=2))
+        return 0
     frag = dashboard.render_findings(findings, meta, out=a.out)
     print(frag)
     return 0
@@ -1636,6 +1657,9 @@ def main(argv=None) -> int:
 
     db = sub.add_parser("dashboard", help="render the mission-control view")
     db.add_argument("--out")
+    db.add_argument("--paged", action="store_true",
+                    help="emit ordered <=14KB pages (JSON) for reliable "
+                         "inline rendering + a never-skippable headline")
     db.add_argument("--workspace", default=argparse.SUPPRESS)
     db.set_defaults(fn=cmd_dashboard)
 
@@ -1652,6 +1676,9 @@ def main(argv=None) -> int:
     fp.add_argument("--file", help="findings JSON (default "
                     ".em-review/findings.json)")
     fp.add_argument("--out", help="also write the fragment to this path")
+    fp.add_argument("--paged", action="store_true",
+                    help="emit ordered <=14KB pages (JSON) for reliable "
+                         "inline rendering + a never-skippable headline")
     fp.add_argument("--workspace", default=argparse.SUPPRESS)
     fp.set_defaults(fn=cmd_findings)
 
