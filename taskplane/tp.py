@@ -107,7 +107,9 @@ def _onboard_report(ws: str) -> dict:
     # "attach a folder it's already in". Home/root is bare only when it's NOT
     # a committed git tree.
     bare_root = _bare_root(ws)
-    looks_like_project = has_files and not bare_root
+    # A committed checkout is a project even when its only tracked file is an
+    # otherwise ignored marker such as .gitignore (or the commit is empty).
+    looks_like_project = (has_files or (inside_git and has_commit)) and not bare_root
     has_context = os.path.isdir(os.path.join(tp.kb_root(ws), "context"))
 
     is_codex = bool(os.environ.get("CODEX_HOME")
@@ -1233,12 +1235,18 @@ def cmd_context(a) -> int:
     ws = _workspace(a.workspace)
     if not os.path.isdir(tp.kb_root(ws)) and \
             not os.path.isdir(tp.tp_dir(ws)):
-        # Ungoverned workspace. In a code repo, offer the one-line on-ramp;
-        # anywhere else stay completely silent (no noise in random folders).
-        if os.path.isdir(os.path.join(ws, ".git")):
-            print("[taskplane] installed, this repo isn't governed yet — "
-                  "say \"set up taskplane\" to onboard it, or \"taskplane "
-                  "help\" for the tour.")
+        # An installed plugin must expose its on-ramp. Using the same report
+        # as tp-go also recognizes linked worktrees (.git is a file) and
+        # keeps the prompt specific to the single missing prerequisite.
+        report = _onboard_report(ws)
+        prompts = {
+            "attach_folder": "no project folder is connected yet",
+            "init_git": "this folder needs a git repo with an initial commit",
+            "tp_init": "this repo needs taskplane initialization",
+        }
+        missing = prompts.get(report["next_action"], "setup is incomplete")
+        print(f"[taskplane] installed; {missing} — say \"set up taskplane\" "
+              "to continue, or \"taskplane help\" for the tour.")
         return 0
     st = loopmod.status(ws)
     g = dg.load(ws)

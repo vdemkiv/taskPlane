@@ -8,11 +8,12 @@ description: "Use when the user asks how taskplane works or how to get started: 
 **FIRST, always:** run `python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" onboard --json`
 for the current folder. If `ready` is **false**, do NOT open with the tour —
 open with setup: tell them this folder isn't set up yet, name the ONE missing
-piece from `next_action` (folder / git / init), and say that **"set up
-taskplane"** (or `/tp-go`) runs the guided setup — it walks folder → git →
-init, asks whether knowledge stays private or shared with the team, and shows
-the model-tier map. THEN give whatever tour they asked for. A just-installed
-user's real question is "now what?" — answer that before explaining concepts.
+piece from `next_action` (folder / git / init), and continue directly with the
+`/tp-go` cold-start procedure. Walk folder → git → init, asking before any
+git initialization or commit; ask whether knowledge stays private or shared
+with the team and show the model-tier map. THEN give whatever tour they asked
+for. A just-installed user's real question is "now what?" — answer that before
+explaining concepts.
 
 Explain conversationally (adapt to what they asked; don't dump everything):
 

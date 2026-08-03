@@ -298,6 +298,31 @@ class TestOnboarding(unittest.TestCase):
         self.assertTrue(r["has_commit"])
         self.assertEqual(r["next_action"], "tp_init")
 
+    def test_gitignore_only_commit_is_still_a_project(self):
+        ws = tempfile.mkdtemp(prefix="tp-ob-marker-")
+        _git(ws, "init", "-q")
+        _git(ws, "config", "user.email", "t@t")
+        _git(ws, "config", "user.name", "t")
+        open(os.path.join(ws, ".gitignore"), "w").write(".taskplane/\n")
+        _git(ws, "add", "-A")
+        _git(ws, "commit", "-qm", "base")
+        r = self._report(ws)
+        self.assertTrue(r["looks_like_project"])
+        self.assertEqual(r["next_action"], "tp_init")
+
+    def test_session_context_exposes_onramp_without_git(self):
+        ws = tempfile.mkdtemp(prefix="tp-ob-context-")
+        env = dict(os.environ, TASKPLANE_HOME=tempfile.mkdtemp(
+            prefix="tp-ob-store-"))
+        p = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "tp.py"), "context",
+             "--workspace", ws],
+            capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("no project folder is connected yet", p.stdout)
+        self.assertIn("set up taskplane", p.stdout)
+
     def test_ready_when_all_present(self):
         ws = _repo(prefix="tp-ob-ready-")
         os.makedirs(os.path.join(ws, "knowledge", "context"))
