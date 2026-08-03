@@ -107,6 +107,68 @@ def record_decision(ws: str, title: str, *, context: str = "",
     return entry
 
 
+def publish(ws: str, ids=None) -> dict:
+    """Share push (v1.5.0) — like committing work to the team. Copies
+    decisions from the PRIVATE external store into the SHARED in-repo store
+    (<ws>/.taskplane-kb/knowledge), re-numbered into the shared index. Each
+    pushed decision is marked `published_as` in the private index, so a
+    second push is idempotent; the shared copy records `published_from`.
+    `ids`: push only these private ids; None pushes everything unpublished.
+    The caller (a human, or a driver acting on a human's ask) then commits
+    .taskplane-kb/ — publishing is deliberate, never automatic."""
+    src_kb = os.path.join(tp.external_store_root(ws), "knowledge")
+    dst_kb = os.path.join(tp.repo_store_root(ws), "knowledge")
+
+    def _load(root):
+        try:
+            with open(os.path.join(root, "index.json")) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {"decisions": [], "flows": []}
+
+    src_idx, dst_idx = _load(src_kb), _load(dst_kb)
+    os.makedirs(os.path.join(dst_kb, "decisions"), exist_ok=True)
+    pushed, already = [], []
+    want = set(ids) if ids else None
+    for d in src_idx["decisions"]:
+        if want is not None and d["id"] not in want:
+            continue
+        if d.get("published_as"):
+            already.append({"private": d["id"],
+                            "shared": d["published_as"]})
+            continue
+        new_id = f"{len(dst_idx['decisions']) + 1:04d}"
+        base = os.path.basename(d["file"])          # NNNN-slug.md
+        new_file = os.path.join("decisions", new_id + base[4:])
+        try:
+            with open(os.path.join(src_kb, d["file"])) as f:
+                body = f.read()
+        except OSError:
+            continue                                 # index entry w/o file
+        with open(os.path.join(dst_kb, new_file), "w") as f:
+            f.write(body)
+        shared = dict(d)
+        shared.update({"id": new_id, "file": new_file,
+                       "published_from": d["id"]})
+        shared.pop("published_as", None)
+        dst_idx["decisions"].append(shared)
+        d["published_as"] = new_id
+        pushed.append({"private": d["id"], "shared": new_id,
+                       "title": d["title"]})
+    if pushed:
+        with open(os.path.join(dst_kb, "index.json"), "w") as f:
+            json.dump(dst_idx, f, indent=2)
+        os.makedirs(src_kb, exist_ok=True)
+        with open(os.path.join(src_kb, "index.json"), "w") as f:
+            json.dump(src_idx, f, indent=2)
+        tp.trace(ws, "share_push", count=len(pushed),
+                 ids=[p["private"] for p in pushed])
+    return {"pushed": pushed, "already_published": already,
+            "shared_store": os.path.join(".taskplane-kb", "knowledge"),
+            "next": "commit .taskplane-kb/ to make this visible to the "
+                    "team" if pushed else "nothing new to push"}
+
+
 def supersede(ws: str, old_id: str, by_id: str) -> None:
     idx = load_index(ws)
     for d in idx["decisions"]:

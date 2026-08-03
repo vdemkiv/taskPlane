@@ -1200,21 +1200,110 @@ def _adopt_legacy_store(workspace: str, new_root: str) -> None:
             pass
 
 
-def store_root(workspace: str) -> str:
-    """This project's own store dir: <store_home>/projects/<key>/.
-
-    TAG MODE (v1.4.0): TASKPLANE_STORE=repo relocates the store INSIDE the
-    workspace at <ws>/.taskplane-kb/ so it can be COMMITTED with the work.
-    Built for Claude Tag's ephemeral Anthropic-hosted sandbox, where ~ is
-    discarded when the conversation goes idle — the external-store default
-    would silently lose every decision, requirement and loop state between
-    sessions. In repo mode the KB travels with the branch/PR instead."""
-    if os.environ.get("TASKPLANE_STORE", "").strip().lower() == "repo":
-        return os.path.join(os.path.abspath(workspace), ".taskplane-kb")
+def external_store_root(workspace: str) -> str:
+    """The classic PRIVATE external store (~/.taskplane/projects/<key>/),
+    resolved unconditionally — mode config never redirects this. It is the
+    private side of `tp share push` and the home of mode.json itself."""
     root = os.path.join(store_home(), "projects", project_key(workspace))
     if not os.path.isdir(root):
         _adopt_legacy_store(workspace, root)
     return root
+
+
+def repo_store_root(workspace: str) -> str:
+    """The SHARED in-repo store (<ws>/.taskplane-kb/) — committed with the
+    work, so it survives Claude Tag's ephemeral sandbox and is visible to
+    every teammate who clones the branch."""
+    return os.path.join(os.path.abspath(workspace), ".taskplane-kb")
+
+
+def _mode_file(workspace: str) -> str:
+    return os.path.join(external_store_root(workspace), "mode.json")
+
+
+def get_mode(workspace: str) -> dict:
+    """v1.5.0 — plan-aware store resolution. Returns
+    {"plan", "store" ("external"|"repo"), "private", "source"}.
+
+    Precedence:
+      1. TASKPLANE_STORE env (explicit override — Tag skill, tests)
+      2. the user's PRIVATE setting (mode.json in the external store):
+         `tp share set private` keeps knowledge in the external store even
+         on a Team/Enterprise plan, until the user pushes it
+      3. a committed shared config (<ws>/.taskplane-kb/config.json) — the
+         team already shares here, so a fresh clone inherits repo mode
+      4. the recorded plan: team/enterprise -> repo, personal -> external
+      5. default: external (personal)."""
+    personal = {}
+    try:
+        with open(_mode_file(workspace)) as f:
+            personal = json.load(f)
+    except (OSError, ValueError):
+        personal = {}
+    plan = personal.get("plan")
+    private = bool(personal.get("private"))
+    env = os.environ.get("TASKPLANE_STORE", "").strip().lower()
+    if env in ("repo", "external"):
+        return {"plan": plan, "store": env, "private": private,
+                "source": "env"}
+    if private:
+        return {"plan": plan, "store": "external", "private": True,
+                "source": "private-setting"}
+    shared_cfg = os.path.join(repo_store_root(workspace), "config.json")
+    if os.path.exists(shared_cfg):
+        if not plan:
+            try:
+                with open(shared_cfg) as f:
+                    plan = json.load(f).get("plan")
+            except (OSError, ValueError):
+                pass
+        return {"plan": plan or "team", "store": "repo", "private": False,
+                "source": "shared-config"}
+    if plan in ("team", "enterprise"):
+        return {"plan": plan, "store": "repo", "private": False,
+                "source": "plan"}
+    return {"plan": plan or "personal", "store": "external",
+            "private": False, "source": "default"}
+
+
+def set_mode(workspace: str, plan: str | None = None,
+             private: bool | None = None) -> dict:
+    """Update the plan and/or private flag (both changeable any time).
+    Personal settings persist in the external store's mode.json; choosing a
+    shared store also writes <ws>/.taskplane-kb/config.json so teammates'
+    clones inherit repo mode without any per-user setup."""
+    mf = _mode_file(workspace)
+    cfg = {}
+    try:
+        with open(mf) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    if plan is not None:
+        cfg["plan"] = plan
+    if private is not None:
+        cfg["private"] = bool(private)
+    os.makedirs(os.path.dirname(mf), exist_ok=True)
+    with open(mf, "w") as f:
+        json.dump(cfg, f, indent=2)
+    mode = get_mode(workspace)
+    if mode["store"] == "repo":
+        os.makedirs(repo_store_root(workspace), exist_ok=True)
+        with open(os.path.join(repo_store_root(workspace),
+                               "config.json"), "w") as f:
+            json.dump({"plan": mode["plan"], "store": "repo"}, f, indent=2)
+    return mode
+
+
+def store_root(workspace: str) -> str:
+    """This project's store dir — external (private, ~/.taskplane) or
+    in-repo (<ws>/.taskplane-kb, the Claude Tag / team-shared mode),
+    resolved by get_mode(): TASKPLANE_STORE env wins, then the user's
+    private setting, then a committed shared config, then the plan
+    (team/enterprise -> repo, personal -> external)."""
+    if get_mode(workspace)["store"] == "repo":
+        return repo_store_root(workspace)
+    return external_store_root(workspace)
 
 
 def kb_root(workspace: str) -> str:

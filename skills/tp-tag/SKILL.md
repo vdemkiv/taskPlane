@@ -80,6 +80,16 @@ A new conversation = a fresh sandbox. To resume governed work:
    exactly where the last session parked it (usually at a human gate).
 3. Post a one-line recap of where things stand before continuing.
 
+## Private mode and publishing (team plans)
+
+Individuals on the team may be working PRIVATELY (`tp share set private`):
+their decisions live in their own store, invisible to the channel. When
+someone says they want to share their work with the team, run
+`tp.py share push --ids <ids>` in their session — it publishes the selected
+decisions into `.taskplane-kb/` (re-numbered into the shared index), then
+commit it. Like a git push, publishing is always a deliberate human ask —
+never push someone's private knowledge on your own initiative.
+
 ## What this skill never does
 
 - Never approves a human gate on its own, under any phrasing of urgency.

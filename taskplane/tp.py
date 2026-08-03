@@ -991,6 +991,53 @@ def _migrate_kb(ws) -> dict:
     return res
 
 
+def cmd_share(a) -> int:
+    """v1.5.0 — plan-aware knowledge sharing.
+
+    share status                     mode, plan, store, unpublished count
+    share plan personal|team|enterprise    set (and change) the plan
+    share set private|shared         private mode even on a team plan
+    share push [--ids 0001,0002]     publish private decisions to the
+                                     shared repo store — like a git push"""
+    import kb as kbmod
+    ws = _workspace(a.workspace)
+    act = a.share_cmd
+    if act == "status":
+        mode = tp.get_mode(ws)
+        unpublished = 0
+        try:
+            with open(os.path.join(tp.external_store_root(ws),
+                                   "knowledge", "index.json")) as f:
+                unpublished = sum(1 for d in json.load(f)["decisions"]
+                                  if not d.get("published_as"))
+        except (OSError, ValueError):
+            pass
+        print(json.dumps({**mode, "store_path": tp.store_root(ws),
+                          "private_decisions_unpublished": unpublished,
+                          "change": {"plan": "tp share plan "
+                                     "personal|team|enterprise",
+                                     "privacy": "tp share set "
+                                     "private|shared",
+                                     "publish": "tp share push "
+                                     "[--ids 0001,0002]"}}, indent=2))
+    elif act == "plan":
+        mode = tp.set_mode(ws, plan=a.value)
+        print(json.dumps({**mode, "store_path": tp.store_root(ws)},
+                         indent=2))
+    elif act == "set":
+        mode = tp.set_mode(ws, private=(a.value == "private"))
+        print(json.dumps({**mode, "store_path": tp.store_root(ws)},
+                         indent=2))
+    elif act == "push":
+        ids = [x.strip() for x in (a.ids or "").split(",") if x.strip()]             or None
+        print(json.dumps(kbmod.publish(ws, ids=ids), indent=2))
+    else:
+        print(json.dumps({"error": "share needs a subcommand: status | "
+                          "plan | set | push"}))
+        return 1
+    return 0
+
+
 def cmd_init(a) -> int:
     """Scaffold a project for governed work: context docs, KB dirs, graph.
     The knowledge base lives in the EXTERNAL per-project store (~/.taskplane),
@@ -1020,11 +1067,22 @@ def cmd_init(a) -> int:
     head = _git_head(ws)
     if head and not _is_commit_sha(head):
         head = None    # empty repo: rev-parse echoes "HEAD"
+    if getattr(a, "plan", None):
+        tp.set_mode(ws, plan=a.plan)
+    mode = tp.get_mode(ws)
     tp.trace(ws, "project_init", context_docs=wrote,
              graph_modules=len(g["modules"]), store=store,
              migrated=mig.get("moved"))
     print(json.dumps({
         "knowledge_store": store,
+        "mode": mode,
+        "plan_question": None if (mode["source"] != "default") else
+            "ASK THE HUMAN: personal plan, or Team/Enterprise? Set it with "
+            "`tp share plan personal|team|enterprise` — personal keeps "
+            "knowledge in the private store (~/.taskplane); team/enterprise "
+            "shares it in-repo (.taskplane-kb/, Claude-Tag compatible). "
+            "On a team plan, `tp share set private` works privately and "
+            "`tp share push` publishes selected decisions later.",
         "migrated_from_repo": mig.get("moved") or False,
         "context_docs_created": wrote or "(already present)",
         "graph": {"modules": len(g["modules"]), "edges": len(g["edges"])},
@@ -1517,7 +1575,28 @@ def main() -> int:
     nsp.add_argument("--workspace")
     nsp.set_defaults(fn=cmd_northstar)
 
+    shp = sub.add_parser("share", help="plan-aware knowledge sharing: "
+                         "status / plan / set private|shared / push")
+    shsub = shp.add_subparsers(dest="share_cmd")
+    sst = shsub.add_parser("status")
+    sst.add_argument("--workspace")
+    spl = shsub.add_parser("plan")
+    spl.add_argument("value", choices=["personal", "team", "enterprise"])
+    spl.add_argument("--workspace")
+    sse = shsub.add_parser("set")
+    sse.add_argument("value", choices=["private", "shared"])
+    sse.add_argument("--workspace")
+    spu = shsub.add_parser("push")
+    spu.add_argument("--ids", default=None,
+                     help="comma-separated private decision ids; default = "
+                          "everything unpublished")
+    spu.add_argument("--workspace")
+    shp.set_defaults(fn=cmd_share)
+
     ip = sub.add_parser("init", help="scaffold context docs + KB + graph")
+    ip.add_argument("--plan", choices=["personal", "team", "enterprise"],
+                    default=None, help="record the Claude plan at init — "
+                    "decides the default knowledge store")
     ip.add_argument("--workspace")
     ip.set_defaults(fn=cmd_init)
 

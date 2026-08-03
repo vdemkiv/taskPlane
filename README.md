@@ -21,6 +21,7 @@ guardrails and gates are how it delivers that — not the point, the means.
 
 | Version | Highlights |
 | --- | --- |
+| **v1.5.0** | **Plan-aware onboarding, private mode & share push** — onboarding asks whether you're on a personal or Team/Enterprise plan (changeable any time with `tp share plan`): personal keeps knowledge in the private store (`~/.taskplane`), team/enterprise shares it in-repo (`.taskplane-kb/`, Claude-Tag compatible, inherited by every clone). On a team plan you can still work privately (`tp share set private`) and publish selected decisions to the team later with `tp share push [--ids …]` — deliberate and idempotent, like pushing commits. |
 | **v1.4.0** | **Claude Tag support (beta)** — run governed work as your org's @Claude in Slack: `TASKPLANE_STORE=repo` persists the knowledge store inside the repo (Tag's sandbox is ephemeral — the KB travels with the branch/PR), `tp loop approve --by "<who> — '<their words>'"` makes every human-gate pass attributable to a real person in the thread, and the new `tp-tag` skill carries the thread protocol: post the gate, stop, wait for a human reply, attach the dashboard. |
 | **v1.3.1** | **Remedy required on every finding** — the shared verdict format across all 25 lenses makes `suggestion` mandatory on every blocker/major/minor: criticism must come with a concrete alternative or solution, preferring capabilities your stack already runs. |
 | **v1.3.0** | **Current-state grounding** — `tp init` scaffolds `context/current-state.md` (the as-built inventory); once filled it is injected into every task brief, and the design lenses review any design as a *delta against what exists*: reinventing an existing component or contradicting as-built reality is blocker-class. Grounding panel in the dashboard. |
@@ -77,6 +78,19 @@ checks are green:
    a blocker-class finding**. Record the big as-built choices as accepted
    decisions too (`tp decision new "<title>" --modules <globs>`) so they
    govern future work automatically.
+
+**Plan & sharing mode.** Onboarding asks one question first: *personal
+plan, or Team/Enterprise?* (`tp share plan personal|team|enterprise` — or
+`tp init --plan …`). Personal keeps every decision, requirement and loop
+state in your private store (`~/.taskplane`). Team/Enterprise moves the
+store into the repo (`.taskplane-kb/`, committed — the Claude-Tag mode), so
+the whole team shares one registry and a fresh clone inherits it with zero
+setup. Both are changeable any time. And on a team plan you can still work
+**privately**: `tp share set private` keeps your work in your own store
+while you explore, and when you're ready to make it visible —
+like pushing commits — `tp share push [--ids 0001,0002]` publishes the
+selected decisions into the shared store (then commit `.taskplane-kb/`).
+`tp share status` shows your current mode and unpublished count.
 
 Two setup choices then decide how efficiently the whole system runs:
 
@@ -341,7 +355,10 @@ repository — see [Customize Claude
 Tag](https://claude.com/docs/claude-tag/admins/customize). Honest limit:
 Tag's plugin surface today is skills-only, so enforcement is by process,
 visibility, and trace — not by mechanical interception. The hook layer
-remains fully active in Claude Code and Cowork.
+remains fully active in Claude Code and Cowork. Individuals can work
+privately even on a team plan and publish selected decisions to the
+channel's shared store with `tp share push` — see the changelog's v1.5.0
+entry.
 
 ## Layout
 
