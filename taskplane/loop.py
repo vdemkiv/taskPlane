@@ -38,10 +38,23 @@ LOOP_FILE = "loop.json"
 
 
 def _state_dir(ws: str) -> str:
-    """Loop coordination state — lives in the external per-project store
-    (taskplane_lite.kb_root), NOT the repo, so it never gets committed with
-    the code. A teammate continues the loop via the shared store, not git."""
-    return os.path.join(tp.kb_root(ws), "state")
+    """Loop coordination state. v1.5.1: state is PER-USER even in team/repo
+    knowledge mode — share knowledge, not the state machine. Two teammates'
+    concurrent loops in a committed loop.json are guaranteed unmergeable
+    conflicts, and flock on a git-round-tripped file serializes nothing
+    across machines. The ONE exception is the explicit TASKPLANE_STORE=repo
+    env override (Claude Tag): there the sandbox is ephemeral and
+    single-writer, so committed state is exactly what lets the next session
+    resume the loop."""
+    if os.environ.get("TASKPLANE_STORE", "").strip().lower() == "repo":
+        return os.path.join(tp.kb_root(ws), "state")
+    ext = os.path.join(tp.external_store_root(ws), "knowledge", "state")
+    if os.path.exists(os.path.join(ext, LOOP_FILE)):
+        return ext
+    legacy = os.path.join(ws, "knowledge", "state")   # unmigrated project
+    if os.path.exists(os.path.join(legacy, LOOP_FILE)):
+        return legacy
+    return ext
 
 # Per-step contract recipes. Non-build steps are read-only with a write-allow
 # so they can only touch their own artifact dir; build steps get a real scope.

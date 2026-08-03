@@ -106,10 +106,12 @@ class TestSharePush(_Ws):
     def test_push_selected_then_rest_idempotent(self):
         out = kb.publish(self.ws, ids=["0001"])
         self.assertEqual([p["private"] for p in out["pushed"]], ["0001"])
+        shared1 = out["pushed"][0]["shared"]
+        self.assertRegex(shared1, r"^0001-[0-9a-f]{8}$")  # collision-free
         out2 = kb.publish(self.ws)             # pushes only what's left
         self.assertEqual([p["private"] for p in out2["pushed"]], ["0002"])
         self.assertEqual(out2["already_published"],
-                         [{"private": "0001", "shared": "0001"}])
+                         [{"private": "0001", "shared": shared1}])
         out3 = kb.publish(self.ws)
         self.assertEqual(out3["pushed"], [])   # fully idempotent
 
@@ -118,8 +120,8 @@ class TestSharePush(_Ws):
         tp.set_mode(self.ws, private=False)    # flip to the shared store
         titles = [d["title"] for d in kb.list_decisions(self.ws)]
         self.assertEqual(titles, ["priv A", "priv B"])
-        d = kb.get_decision(self.ws, "0001")
-        self.assertEqual(d["published_from"], "0001")
+        d = next(x for x in kb.load_index(self.ws)["decisions"]
+                 if x["published_from"] == "0001")
         body = open(os.path.join(kb.kb_dir(self.ws), d["file"])).read()
         self.assertIn("priv A", body)
 
@@ -128,8 +130,10 @@ class TestSharePush(_Ws):
         kb.record_decision(self.ws, "team already had one", decision="x")
         tp.set_mode(self.ws, private=True)
         out = kb.publish(self.ws)
-        self.assertEqual([p["shared"] for p in out["pushed"]],
-                         ["0002", "0003"])     # appended after team's 0001
+        seqs = [p["shared"][:4] for p in out["pushed"]]
+        self.assertEqual(seqs, ["0002", "0003"])  # appended after team's 0001
+        for p in out["pushed"]:                    # hash-suffixed, no dense
+            self.assertRegex(p["shared"], r"^000\d-[0-9a-f]{8}$")
 
 
 class TestOnboardingSurface(_Ws):

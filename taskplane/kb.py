@@ -41,10 +41,39 @@ def load_index(ws: str) -> dict:
         return json.load(f)
 
 
+def _atomic_json(path: str, obj) -> None:
+    """tmp + os.replace — a reader never sees a torn index (v1.5.1)."""
+    tmp = path + f".tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.replace(tmp, path)
+
+
 def _save_index(ws: str, idx: dict) -> None:
     os.makedirs(kb_dir(ws), exist_ok=True)
-    with open(_index_path(ws), "w") as f:
-        json.dump(idx, f, indent=2)
+    _atomic_json(_index_path(ws), idx)
+
+
+import contextlib
+
+
+@contextlib.contextmanager
+def mutate(ws: str):
+    """Serialize KB read-modify-write (v1.5.1) — mirrors loop.mutate.
+    Parallel wave workers record decisions at gates; without a lock two
+    writers read the same index, both mint id len+1, and the second save
+    orphans the first's decision. Advisory flock on index.json.lock."""
+    os.makedirs(kb_dir(ws), exist_ok=True)
+    lf = open(_index_path(ws) + ".lock", "w")
+    try:
+        try:
+            import fcntl
+            fcntl.flock(lf, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        yield
+    finally:
+        lf.close()
 
 
 def _slug(title: str) -> str:
@@ -63,6 +92,17 @@ def record_decision(ws: str, title: str, *, context: str = "",
                     links=None, status: str = "accepted",
                     date: str | None = None) -> dict:
     """Write a new ADR + index entry. Returns the entry."""
+    with mutate(ws):
+        return _record_decision_locked(
+            ws, title, context=context, decision=decision,
+            rationale=rationale, alternatives=alternatives, tags=tags,
+            context_files=context_files, links=links, status=status,
+            date=date)
+
+
+def _record_decision_locked(ws, title, *, context, decision, rationale,
+                            alternatives, tags, context_files, links,
+                            status, date) -> dict:
     idx = load_index(ws)
     n = len(idx["decisions"]) + 1
     did = f"{n:04d}"
@@ -107,64 +147,128 @@ def record_decision(ws: str, title: str, *, context: str = "",
     return entry
 
 
+class SharedIndexCorrupt(Exception):
+    """The shared index exists but does not parse — publishing must refuse
+    rather than treat it as empty and erase team history (v1.5.1)."""
+
+
+def _load_index_at(root: str, *, strict: bool):
+    p = os.path.join(root, "index.json")
+    if not os.path.exists(p):
+        return {"decisions": [], "flows": []}
+    try:
+        with open(p) as f:
+            idx = json.load(f)
+    except ValueError:
+        if strict:
+            raise SharedIndexCorrupt(p)
+        idx = {"decisions": [], "flows": []}
+    idx.setdefault("decisions", [])
+    idx.setdefault("flows", [])
+    return idx
+
+
+def _shared_id(seq: int, entry: dict) -> str:
+    """Collision-free shared id: dense number for display order + a short
+    content hash so two teammates pushing concurrently on different
+    branches mint DIFFERENT ids and their index entries merge as pure
+    additions (v1.5.1 — dense len+1 ids collided)."""
+    import hashlib
+    h = hashlib.sha1((entry.get("id", "") + entry.get("title", "")
+                      + entry.get("date", "")).encode("utf-8")
+                     ).hexdigest()[:8]
+    return f"{seq:04d}-{h}"
+
+
 def publish(ws: str, ids=None) -> dict:
-    """Share push (v1.5.0) — like committing work to the team. Copies
-    decisions from the PRIVATE external store into the SHARED in-repo store
-    (<ws>/.taskplane-kb/knowledge), re-numbered into the shared index. Each
-    pushed decision is marked `published_as` in the private index, so a
-    second push is idempotent; the shared copy records `published_from`.
-    `ids`: push only these private ids; None pushes everything unpublished.
-    The caller (a human, or a driver acting on a human's ask) then commits
-    .taskplane-kb/ — publishing is deliberate, never automatic."""
+    """Share push (v1.5.x) — like committing work to the team. Copies
+    decisions AND flows from the PRIVATE external store into the SHARED
+    in-repo store (<ws>/.taskplane-kb/knowledge), under collision-free
+    shared ids. Idempotency is CONTENT-BASED: an entry already present in
+    the shared index (matched by `published_from`) is never re-copied even
+    if the private-side marker was lost mid-crash — retries converge.
+    A stale private marker whose shared entry vanished (store rebuilt) is
+    dropped and the entry re-pushed. Requirements and context docs are NOT
+    pushed (see the returned `not_covered` field). Publishing is always a
+    deliberate human ask; the caller then commits .taskplane-kb/."""
     src_kb = os.path.join(tp.external_store_root(ws), "knowledge")
     dst_kb = os.path.join(tp.repo_store_root(ws), "knowledge")
+    try:
+        dst_idx = _load_index_at(dst_kb, strict=True)
+    except SharedIndexCorrupt as e:
+        return {"error": "shared index is corrupt — refusing to push over "
+                         "it (pushing would erase team history). Repair "
+                         f"or restore {e} first.", "pushed": []}
+    src_idx = _load_index_at(src_kb, strict=False)
 
-    def _load(root):
-        try:
-            with open(os.path.join(root, "index.json")) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {"decisions": [], "flows": []}
-
-    src_idx, dst_idx = _load(src_kb), _load(dst_kb)
-    os.makedirs(os.path.join(dst_kb, "decisions"), exist_ok=True)
-    pushed, already = [], []
+    src_real = os.path.realpath(src_kb)
+    pushed, already, malformed = [], [], []
     want = set(ids) if ids else None
-    for d in src_idx["decisions"]:
-        if want is not None and d["id"] not in want:
-            continue
-        if d.get("published_as"):
-            already.append({"private": d["id"],
-                            "shared": d["published_as"]})
-            continue
-        new_id = f"{len(dst_idx['decisions']) + 1:04d}"
-        base = os.path.basename(d["file"])          # NNNN-slug.md
-        new_file = os.path.join("decisions", new_id + base[4:])
-        try:
-            with open(os.path.join(src_kb, d["file"])) as f:
-                body = f.read()
-        except OSError:
-            continue                                 # index entry w/o file
-        with open(os.path.join(dst_kb, new_file), "w") as f:
-            f.write(body)
-        shared = dict(d)
-        shared.update({"id": new_id, "file": new_file,
-                       "published_from": d["id"]})
-        shared.pop("published_as", None)
-        dst_idx["decisions"].append(shared)
-        d["published_as"] = new_id
-        pushed.append({"private": d["id"], "shared": new_id,
-                       "title": d["title"]})
-    if pushed:
-        with open(os.path.join(dst_kb, "index.json"), "w") as f:
-            json.dump(dst_idx, f, indent=2)
+    seen_ids = set()
+
+    for kind, subdir in (("decisions", "decisions"), ("flows", "flows")):
+        dst_by_origin = {d.get("published_from"): d
+                        for d in dst_idx[kind] if d.get("published_from")}
+        dst_ids = {d.get("id") for d in dst_idx[kind]}
+        os.makedirs(os.path.join(dst_kb, subdir), exist_ok=True)
+        for d in src_idx[kind]:
+            seen_ids.add(d.get("id"))
+            if want is not None and d.get("id") not in want:
+                continue
+            # content-based idempotency: shared side is the truth
+            hit = dst_by_origin.get(d.get("id"))
+            if hit is not None:
+                if d.get("published_as") != hit["id"]:
+                    d["published_as"] = hit["id"]     # repair lost marker
+                already.append({"private": d["id"], "shared": hit["id"]})
+                continue
+            if d.get("published_as"):
+                if d["published_as"] in dst_ids:
+                    already.append({"private": d["id"],
+                                    "shared": d["published_as"]})
+                    continue
+                d.pop("published_as", None)   # stale — store was rebuilt
+            fpath = os.path.realpath(
+                os.path.join(src_kb, d.get("file", "")))
+            if not fpath.startswith(src_real + os.sep):
+                malformed.append({"private": d.get("id"),
+                                  "problem": "file path escapes the "
+                                             "private store"})
+                continue
+            try:
+                with open(fpath) as f:
+                    body = f.read()
+            except OSError:
+                malformed.append({"private": d.get("id"),
+                                  "problem": "decision file missing"})
+                continue
+            new_id = _shared_id(len(dst_idx[kind]) + 1, d)
+            slug = re.sub(r"^\d+-", "", os.path.basename(d["file"]))
+            new_file = os.path.join(subdir, f"{new_id}-{slug}")
+            with open(os.path.join(dst_kb, new_file), "w") as f:
+                f.write(body)
+            shared = dict(d)
+            shared.update({"id": new_id, "file": new_file,
+                           "published_from": d["id"]})
+            shared.pop("published_as", None)
+            dst_idx[kind].append(shared)
+            d["published_as"] = new_id
+            pushed.append({"private": d["id"], "shared": new_id,
+                           "title": d.get("title", ""), "kind": kind})
+
+    unknown = sorted(want - seen_ids) if want else []
+    if pushed or already:              # `already` may carry marker repairs
+        _atomic_json(os.path.join(dst_kb, "index.json"), dst_idx)
         os.makedirs(src_kb, exist_ok=True)
-        with open(os.path.join(src_kb, "index.json"), "w") as f:
-            json.dump(src_idx, f, indent=2)
+        _atomic_json(os.path.join(src_kb, "index.json"), src_idx)
+    if pushed:
         tp.trace(ws, "share_push", count=len(pushed),
                  ids=[p["private"] for p in pushed])
     return {"pushed": pushed, "already_published": already,
+            "unknown_ids": unknown, "malformed": malformed,
             "shared_store": os.path.join(".taskplane-kb", "knowledge"),
+            "not_covered": "requirements and context docs stay private — "
+                           "publish covers decisions and flows",
             "next": "commit .taskplane-kb/ to make this visible to the "
                     "team" if pushed else "nothing new to push"}
 

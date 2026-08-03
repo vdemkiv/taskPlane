@@ -1012,8 +1012,19 @@ def cmd_share(a) -> int:
                                   if not d.get("published_as"))
         except (OSError, ValueError):
             pass
+        unpub_flows = 0
+        try:
+            with open(os.path.join(tp.external_store_root(ws),
+                                   "knowledge", "index.json")) as f:
+                unpub_flows = sum(1 for d in json.load(f).get("flows", [])
+                                  if not d.get("published_as"))
+        except (OSError, ValueError):
+            pass
         print(json.dumps({**mode, "store_path": tp.store_root(ws),
                           "private_decisions_unpublished": unpublished,
+                          "private_flows_unpublished": unpub_flows,
+                          "not_covered_by_push": "requirements + context "
+                          "docs (stay private)",
                           "change": {"plan": "tp share plan "
                                      "personal|team|enterprise",
                                      "privacy": "tp share set "
@@ -1025,12 +1036,38 @@ def cmd_share(a) -> int:
         print(json.dumps({**mode, "store_path": tp.store_root(ws)},
                          indent=2))
     elif act == "set":
-        mode = tp.set_mode(ws, private=(a.value == "private"))
+        want_private = (a.value == "private")
+        if want_private and \
+                os.environ.get("TASKPLANE_STORE", "").strip().lower() \
+                == "repo":
+            # v1.5.1 (B2): inside Claude Tag the env mandates the repo
+            # store and the private store cannot survive the ephemeral
+            # sandbox — a silent "private" flag that still writes to the
+            # committed store is the worst outcome. Refuse loudly.
+            print(json.dumps({"error": "private mode is unavailable here: "
+                              "TASKPLANE_STORE=repo forces the shared "
+                              "in-repo store (Claude Tag sandbox — the "
+                              "private store would not survive it). Work "
+                              "privately from Claude Code/Cowork instead."}))
+            return 1
+        mode = tp.set_mode(ws, private=want_private)
+        if not want_private and mode["store"] != "repo":
+            # v1.5.1: "set shared" with no shared store configured was a
+            # silent no-op — the user asked to share, nothing changed.
+            print(json.dumps({**mode, "store_path": tp.store_root(ws),
+                              "error": "no shared store is configured — "
+                              "sharing needs a team/enterprise plan. Run "
+                              "`tp share plan team|enterprise` first."},
+                             indent=2))
+            return 1
         print(json.dumps({**mode, "store_path": tp.store_root(ws)},
                          indent=2))
     elif act == "push":
         ids = [x.strip() for x in (a.ids or "").split(",") if x.strip()]             or None
-        print(json.dumps(kbmod.publish(ws, ids=ids), indent=2))
+        out = kbmod.publish(ws, ids=ids)
+        print(json.dumps(out, indent=2))
+        if out.get("error") or out.get("unknown_ids"):
+            return 1
     else:
         print(json.dumps({"error": "share needs a subcommand: status | "
                           "plan | set | push"}))
@@ -1044,6 +1081,11 @@ def cmd_init(a) -> int:
     not the repo — any legacy in-repo knowledge/ is migrated out here."""
     import depgraph as dg
     ws = _workspace(a.workspace)
+    # v1.5.1 (B3): the plan decides WHERE the store lives — record it
+    # BEFORE anything resolves store paths, or context docs land in the
+    # wrong store and the project looks un-initialized right after init.
+    if getattr(a, "plan", None):
+        tp.set_mode(ws, plan=a.plan)
     mig = _migrate_kb(ws)                 # relocate + untrack + gitignore
     store = tp.store_root(ws)
     ctx = os.path.join(tp.kb_root(ws), "context")
@@ -1067,8 +1109,6 @@ def cmd_init(a) -> int:
     head = _git_head(ws)
     if head and not _is_commit_sha(head):
         head = None    # empty repo: rev-parse echoes "HEAD"
-    if getattr(a, "plan", None):
-        tp.set_mode(ws, plan=a.plan)
     mode = tp.get_mode(ws)
     tp.trace(ws, "project_init", context_docs=wrote,
              graph_modules=len(g["modules"]), store=store,
@@ -1577,7 +1617,7 @@ def main() -> int:
 
     shp = sub.add_parser("share", help="plan-aware knowledge sharing: "
                          "status / plan / set private|shared / push")
-    shsub = shp.add_subparsers(dest="share_cmd")
+    shsub = shp.add_subparsers(dest="share_cmd", required=True)
     sst = shsub.add_parser("status")
     sst.add_argument("--workspace")
     spl = shsub.add_parser("plan")

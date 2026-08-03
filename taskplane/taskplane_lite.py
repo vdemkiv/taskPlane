@@ -542,7 +542,7 @@ def _run(cmd, cwd, shell=False, timeout=600):
 # decision or a plan would fail every governed task.
 RUNTIME_OWNED = (".taskplane/", ".taskplane_output.json", "knowledge/",
                  "plan/", ".eval/", ".em-review/", ".security-review/",
-                 ".tp-work/")
+                 ".tp-work/", ".taskplane-kb/")
 
 
 def changed_files(workspace: str, snapshot_ref: str) -> list:
@@ -985,7 +985,17 @@ def _ensure_self_ignored(d: str) -> None:
     """The runtime dir ignores itself — a worker's `git add -A` must never
     commit contracts/traces, and merges must never collide on them."""
     gi = os.path.join(d, ".gitignore")
-    if os.path.isdir(d) and not os.path.exists(gi):
+    if not os.path.isdir(d):
+        return
+    body = ""
+    try:
+        with open(gi) as f:
+            body = f.read()
+    except OSError:
+        body = ""
+    # Content check, not existence: a cloned repo can pre-plant a permissive
+    # .gitignore here (e.g. "!trace.jsonl") to make the trace committable.
+    if "*" not in body.splitlines():
         try:
             with open(gi, "w") as f:
                 f.write("*\n")
@@ -1221,31 +1231,50 @@ def _mode_file(workspace: str) -> str:
     return os.path.join(external_store_root(workspace), "mode.json")
 
 
-def get_mode(workspace: str) -> dict:
-    """v1.5.0 — plan-aware store resolution. Returns
-    {"plan", "store" ("external"|"repo"), "private", "source"}.
+def _remote_mode_file(workspace: str) -> str | None:
+    """Fallback mode file keyed by the git remote URL, so plan/privacy
+    settings follow the REPO across checkouts/paths (a second clone without
+    its own mode.json inherits the user's choice, closing the quiet privacy
+    hole where `share set private` in checkout A did nothing in checkout B)."""
+    if not os.path.isdir(workspace):
+        return None
+    try:
+        r = _run(["git", "remote", "get-url", "origin"], cwd=workspace)
+        url = (r.stdout or "").strip()
+    except OSError:
+        return None
+    if not url:
+        return None
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(store_home(), "modes", f"{h}.json")
 
-    Precedence:
-      1. TASKPLANE_STORE env (explicit override — Tag skill, tests)
-      2. the user's PRIVATE setting (mode.json in the external store):
-         `tp share set private` keeps knowledge in the external store even
-         on a Team/Enterprise plan, until the user pushes it
-      3. a committed shared config (<ws>/.taskplane-kb/config.json) — the
-         team already shares here, so a fresh clone inherits repo mode
-      4. the recorded plan: team/enterprise -> repo, personal -> external
-      5. default: external (personal)."""
-    personal = {}
+
+def _read_personal_mode(workspace: str) -> tuple[dict, bool]:
+    """(settings, found) — path-keyed mode.json first; the remote-keyed
+    fallback (which shells out to git) is consulted only on a miss."""
     try:
         with open(_mode_file(workspace)) as f:
-            personal = json.load(f)
+            return json.load(f), True
     except (OSError, ValueError):
-        personal = {}
+        pass
+    rp = _remote_mode_file(workspace)
+    if rp:
+        try:
+            with open(rp) as f:
+                return json.load(f), True
+        except (OSError, ValueError):
+            pass
+    return {}, False
+
+
+def _persistent_mode(workspace: str) -> dict:
+    """Mode resolution EXCLUDING the TASKPLANE_STORE env override — the
+    durable truth that set_mode may materialize into a committed config.
+    (v1.5.1: deciding the config.json write from the env-influenced mode let
+    a transient env var create a committable artifact for the whole team.)"""
+    personal, found = _read_personal_mode(workspace)
     plan = personal.get("plan")
     private = bool(personal.get("private"))
-    env = os.environ.get("TASKPLANE_STORE", "").strip().lower()
-    if env in ("repo", "external"):
-        return {"plan": plan, "store": env, "private": private,
-                "source": "env"}
     if private:
         return {"plan": plan, "store": "external", "private": True,
                 "source": "private-setting"}
@@ -1257,8 +1286,19 @@ def get_mode(workspace: str) -> dict:
                     plan = json.load(f).get("plan")
             except (OSError, ValueError):
                 pass
-        return {"plan": plan or "team", "store": "repo", "private": False,
-                "source": "shared-config"}
+        out = {"plan": plan or "team", "store": "repo", "private": False,
+               "source": "shared-config"}
+        if not found:
+            # The repo (not this user) chose the shared store. Honor it —
+            # zero-setup team inheritance is the feature — but SAY so:
+            # every surface that shows the mode surfaces this notice until
+            # the user records any setting of their own.
+            out["notice"] = ("this repo configures a SHARED in-repo store "
+                            "(.taskplane-kb/ — committed with the code). "
+                            "Your decisions here will be team-visible. "
+                            "`tp share set private` opts out; any `tp "
+                            "share` setting silences this notice.")
+        return out
     if plan in ("team", "enterprise"):
         return {"plan": plan, "store": "repo", "private": False,
                 "source": "plan"}
@@ -1266,33 +1306,58 @@ def get_mode(workspace: str) -> dict:
             "private": False, "source": "default"}
 
 
+def get_mode(workspace: str) -> dict:
+    """v1.5.0 — plan-aware store resolution. Returns
+    {"plan", "store" ("external"|"repo"), "private", "source"[, "notice"]}.
+
+    Precedence:
+      1. TASKPLANE_STORE env (explicit override — Tag skill, tests)
+      2. the user's PRIVATE setting (mode.json; also remote-keyed fallback)
+      3. a committed shared config (<ws>/.taskplane-kb/config.json)
+      4. the recorded plan: team/enterprise -> repo, personal -> external
+      5. default: external (personal)."""
+    env = os.environ.get("TASKPLANE_STORE", "").strip().lower()
+    if env in ("repo", "external"):
+        personal, _ = _read_personal_mode(workspace)
+        return {"plan": personal.get("plan"), "store": env,
+                "private": bool(personal.get("private")), "source": "env"}
+    return _persistent_mode(workspace)
+
+
 def set_mode(workspace: str, plan: str | None = None,
              private: bool | None = None) -> dict:
     """Update the plan and/or private flag (both changeable any time).
-    Personal settings persist in the external store's mode.json; choosing a
-    shared store also writes <ws>/.taskplane-kb/config.json so teammates'
-    clones inherit repo mode without any per-user setup."""
-    mf = _mode_file(workspace)
-    cfg = {}
-    try:
-        with open(mf) as f:
-            cfg = json.load(f)
-    except (OSError, ValueError):
-        cfg = {}
+    Personal settings persist in the external store's mode.json AND a
+    remote-keyed copy (so they follow the repo across checkouts). The
+    committed shared config (<ws>/.taskplane-kb/config.json) is written
+    ONLY from the env-independent resolution, and ONLY for an explicit
+    team/enterprise plan — a transient TASKPLANE_STORE, or one user's
+    personal-plan declaration, must never rewrite the team's file."""
+    cfg, _ = _read_personal_mode(workspace)
     if plan is not None:
         cfg["plan"] = plan
     if private is not None:
         cfg["private"] = bool(private)
-    os.makedirs(os.path.dirname(mf), exist_ok=True)
-    with open(mf, "w") as f:
-        json.dump(cfg, f, indent=2)
-    mode = get_mode(workspace)
-    if mode["store"] == "repo":
-        os.makedirs(repo_store_root(workspace), exist_ok=True)
-        with open(os.path.join(repo_store_root(workspace),
-                               "config.json"), "w") as f:
-            json.dump({"plan": mode["plan"], "store": "repo"}, f, indent=2)
-    return mode
+    for p in (_mode_file(workspace), _remote_mode_file(workspace)):
+        if not p:
+            continue
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as f:
+                json.dump(cfg, f, indent=2)
+        except OSError:
+            pass
+    persistent = _persistent_mode(workspace)
+    if persistent["store"] == "repo" and             persistent["plan"] in ("team", "enterprise") and             cfg.get("plan") in ("team", "enterprise"):
+        try:
+            os.makedirs(repo_store_root(workspace), exist_ok=True)
+            with open(os.path.join(repo_store_root(workspace),
+                                   "config.json"), "w") as f:
+                json.dump({"plan": persistent["plan"], "store": "repo"},
+                          f, indent=2)
+        except OSError:
+            pass
+    return get_mode(workspace)
 
 
 def store_root(workspace: str) -> str:

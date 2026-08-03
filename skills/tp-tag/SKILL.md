@@ -82,8 +82,15 @@ A new conversation = a fresh sandbox. To resume governed work:
 
 ## Private mode and publishing (team plans)
 
-Individuals on the team may be working PRIVATELY (`tp share set private`):
-their decisions live in their own store, invisible to the channel. When
+**Private mode is unavailable inside Tag itself**: the private store lives
+in the sandbox home, which is destroyed when the conversation idles — and
+`TASKPLANE_STORE=repo` forces the shared store, so `tp share set private`
+refuses with an error here. A teammate who wants to work privately does so
+from Claude Code or Cowork on their own machine, then publishes.
+
+Individuals on the team may be working PRIVATELY (`tp share set private`
+from Claude Code/Cowork): their decisions live in their own store,
+invisible to the channel. When
 someone says they want to share their work with the team, run
 `tp.py share push --ids <ids>` in their session — it publishes the selected
 decisions into `.taskplane-kb/` (re-numbered into the shared index), then
