@@ -12,8 +12,7 @@ cleanup.sh
 reset-history.sh
 
 # taskplane knowledge base — lives in the external store (~/.taskplane), never the repo
-knowledge/
-
+/knowledge/
 # taskplane runtime (local-only — see docs/state-spec.md)
 .security-review/
 .tp-work/
