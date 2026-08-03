@@ -1311,6 +1311,9 @@ def cmd_onboard(a) -> int:
     if a.json:
         print(json.dumps(report, indent=2))
         return 0
+    # Render contract (v1.5.3/4): the HEADLINE is the never-skippable carrier
+    # — on hosts without inline widgets (Codex) it is the primary channel.
+    print("HEADLINE: " + dashboard.headline_onboarding(report))
     print(dashboard.render_onboarding(report, out=a.out))
     return 0
 

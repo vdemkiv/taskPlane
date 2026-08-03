@@ -1083,6 +1083,20 @@ def render_lens_wave(lenses, meta=None, out=None):
 
 # ------------------------------------------------------ onboarding dashboard
 
+def headline_onboarding(report):
+    """Never-skippable one-liner for the setup state (render contract)."""
+    checks = report.get("checks") or []
+    ok = sum(1 for c in checks if c.get("ok"))
+    nxt = {"attach_folder": "connect a project folder",
+           "init_git": "create a git snapshot (git init + commit)",
+           "tp_init": "initialize taskplane (tp init)",
+           "ready": "ready for governed work"}.get(
+        report.get("next_action"), "setup incomplete")
+    host = report.get("host")
+    tail = f" · host: {host}" if host else ""
+    return f"setup {ok}/{len(checks)} prerequisites ready · next: {nxt}{tail}"
+
+
 def render_onboarding(report, out=None):
     """The cold-start dashboard — walks a brand-new user in from a zero state
     (no folder attached, no repo). Shows the three prerequisites as a

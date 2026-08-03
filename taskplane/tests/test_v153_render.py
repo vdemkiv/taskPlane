@@ -135,5 +135,31 @@ class TestSkillContract(unittest.TestCase):
         self.assertIn("HEADLINE", eng)
 
 
+
+class TestOnboardHeadline(unittest.TestCase):
+    def test_onboard_render_prints_headline_first(self):
+        import subprocess, tempfile
+        ws = tempfile.mkdtemp(prefix="tp-onb-hl-")
+        tppy = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "tp.py")
+        p = subprocess.run([sys.executable, tppy, "onboard",
+                            "--workspace", ws],
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0)
+        first = p.stdout.splitlines()[0]
+        self.assertTrue(first.startswith("HEADLINE: "), first)
+        self.assertIn("prerequisites ready", first)
+        self.assertIn("next:", first)
+
+    def test_onboard_headline_reports_codex_host(self):
+        import dashboard as d
+        h = d.headline_onboarding(
+            {"checks": [{"ok": True}, {"ok": False}],
+             "next_action": "init_git", "host": "codex"})
+        self.assertIn("1/2", h)
+        self.assertIn("git init", h)
+        self.assertIn("host: codex", h)
+
+
 if __name__ == "__main__":
     unittest.main()
