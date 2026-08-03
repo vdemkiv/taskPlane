@@ -8,7 +8,7 @@ task is safe to start (Definition of Ready), and whether it is actually done
 (Definition of Done). Roles supply the expertise; the harness supplies the
 guardrails.
 
-`PLUGIN=${CLAUDE_PLUGIN_ROOT}`. Run every command from the task's working
+`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`. Run every command from the task's working
 directory.
 
 ## The default pipeline

@@ -5,7 +5,7 @@ description: "The on-demand STRATEGIC lens of taskplane — the north-star revie
 
 # /tp-northstar — the north-star review (summoned, advisory, never a gate)
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. Product owns the WHAT,
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Product owns the WHAT,
 engineering owns whether it's SOUND. This is the third lens — **strategy** —
 and it is **summoned, not automatic**. Point it at anything: an idea, a
 requirement, a task, a diff/PR, or a finished review. It changes nothing; it
@@ -43,7 +43,9 @@ the product. This is honest strategic *lenses*, not a boardroom cosplay.
    `HEADLINE:` line (the alignment verdict → recommendation → sharpest
    tension) FIRST — relay that as plain text so the strategic call lands even
    if the render is skipped — then the inline widget fragment. Show the
-   fragment via `mcp__visualize__show_widget` (title `northstar_<target-slug>`).
+   fragment via `mcp__visualize__show_widget` when available (title
+   `northstar_<target-slug>`); otherwise save and link the rendered HTML
+   artifact.
    The note is the deliverable and the human acts on it — it does NOT feed a
    gate.
 6. **Record it (optional)** — `$TP kb record "North-star review: <target>"

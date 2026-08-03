@@ -1,7 +1,7 @@
 
 # /tp-graph — the map that saves the re-derivation
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`.
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
 - **Scan:** `$TP graph scan` — builds/refreshes `knowledge/graph.json`
   (Python/JS/TS/Go imports, docker-compose services; incremental by file

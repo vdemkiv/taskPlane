@@ -5,7 +5,7 @@ description: "Use when the user asks where things stand with taskplane-governed 
 
 # /tp-status — where the governed work stands
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. Gather compactly
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Gather compactly
 (skip empty sections):
 
 - `$TP context` — the one-screen summary (track, loop, reqs, debt, graph, KB)
@@ -24,7 +24,9 @@ description: "Use when the user asks where things stand with taskplane-governed 
 2. Then `$TP dashboard` — it prints a `HEADLINE:` line first (relay it as
    plain text — the never-skippable carrier of step + gate, so status lands
    even if the render is skipped), then the fragment. Show the fragment
-   inline via `mcp__visualize__show_widget` as the LAST thing in the reply.
+   inline via `mcp__visualize__show_widget` when available as the LAST thing
+   in the reply; otherwise link `.taskplane/dashboard.html` as the final
+   dashboard artifact.
    Title: `taskplane_status_<step-or-context>` — UNIQUE per render; a
    repeated title updates the earlier widget in place instead of drawing a
    new one where the user is looking. (For an unusually large board,

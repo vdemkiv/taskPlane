@@ -1,7 +1,7 @@
 
 # /tp-retro — the track teaches the next track
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. Run at `done` (or
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Run at `done` (or
 after abort — failed runs teach the most).
 
 1. `$TP loop retro` — the engine computes: refinement-forecast accuracy

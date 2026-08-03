@@ -5,7 +5,7 @@ description: "The single entry point for governed work — use when the user sta
 
 # /tp-go — goal in, governed delivery out
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. Drive the whole loop;
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Drive the whole loop;
 pause ONLY at the human gates. Follow each step's returned `instruction`.
 
 **Model tiers.** Each `loop next` payload and each `lens dispatch` brief carries
@@ -29,9 +29,10 @@ The loop dispatches them automatically (`pm` step = tp-product, `em` step
 = tp-engineering); reach for tp-build's flow whenever the goal is a new
 feature rather than a fix or review.
 
-**SHOW THE WORK — render the live dashboard inline at every transition.**
-Use Claude's native inline visualization — no files, no permission prompts,
-works on web/desktop/mobile, and the human gates become clickable.
+**SHOW THE WORK — render the live dashboard at every transition.** Use the
+host's inline HTML/widget capability when available. When it is not, relay the
+`HEADLINE:` and provide `.taskplane/dashboard.html` as the dashboard artifact;
+never pretend unavailable widget buttons were shown.
 
 **Progress-first, not result-only.** Render BEFORE a burst of work, not
 just after it. When you're about to dispatch agents (a parallel wave, a
@@ -58,9 +59,9 @@ After each `loop next`, `loop gate`, `loop wave`, and `loop approve`:
    **graph** (hubs + blast radius of the current scope), **context**
    (requirement, acceptance criteria, routed lenses, recent decisions, debt).
 2. Put the decision context in TEXT first (what happened, what's the call),
-   THEN call `mcp__visualize__show_widget` with that fragment as
-   `widget_code` as the LAST thing in the reply — so the dashboard is the
-   focal point where the person acts. Title:
+   THEN call `mcp__visualize__show_widget` when available, with that fragment
+   as `widget_code`, as the LAST thing in the reply. Otherwise link the
+   refreshed `.taskplane/dashboard.html` artifact after the text. Title:
    `taskplane_<goal-slug>_<step>` — UNIQUE per render; a repeated title
    updates the earlier widget in place instead of drawing a new one at the
    current position.
@@ -76,18 +77,18 @@ giant widget and never replace them with a prose recap. The loop board's
 a newly added lens appears automatically) and the **graph tab shows blast
 radius**; if the graph is empty on a polyglot repo, say so — don't omit it.
 
-At a human gate, STOP after showing the widget — its buttons let the person
-approve/sign-off/resolve with a click (they call `sendPrompt`, which drives
-the next `loop approve`/`resolve`). Never run the loop silently — the inline
-dashboard IS the interface. (No desktop needed; `show_widget` is native.)
+At a human gate, STOP after showing the widget or dashboard artifact. Widget
+buttons can drive the next prompt where supported; otherwise ask for the same
+explicit approval in conversation. Never run the loop silently.
 
 0. **Cold start (nothing attached yet):** FIRST run `$TP onboard --json`.
    If `ready` is false, don't dive in — show the onboarding dashboard
    (`$TP onboard` prints the fragment) inline via `mcp__visualize__show_widget`
    and help with the one missing piece its `next_action` names:
-   `attach_folder` → the user needs to connect a folder (Cowork: attach a
-   folder; Code: open their project) or give you a git URL to clone — explain
-   how, then re-check; `init_git` → offer to `git init && git add -A &&
+   `attach_folder` → the user needs to connect/open a folder or give you a git
+   URL to clone. In Codex CLI, start from the repo directory; in the desktop
+   app, open/create a local environment for that repo and start a new task
+   after installation. Then re-check. `init_git` → offer to `git init && git add -A &&
    git commit` for them (gates need a snapshot); `tp_init` → run step 1.
    The buttons drive this via `sendPrompt`. Don't guess a workspace — a
    governed run needs a real folder + a git commit, and this is where a
@@ -105,7 +106,10 @@ dashboard IS the interface. (No desktop needed; `show_widget` is native.)
 3. **Loop:** `$TP loop init --req R-XXXX "<goal>"` (add `--parallel` when
    the plan will have independent tasks; `--spec path` if a spec exists).
    Then repeat `$TP loop next` and DO what its `instruction` says, playing
-   the named role under its activated contract — plan writes plan/tasks.json
+   the named role under its activated contract. On Codex or any host that
+   does not register `agents/` as named roles, dispatch a general subagent
+   with the action payload's `role_instructions` file; never improvise a
+   reduced role prompt. Plan writes plan/tasks.json
    (each task: id, scope, tests, req, deps), execute builds TDD-first
    (`discipline/tdd.md`) honoring the primed lenses, evaluate proves
    criteria + runs routed lenses, the engineering review synthesizes.

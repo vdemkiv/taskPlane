@@ -5,7 +5,7 @@ description: "The product persona of taskplane — owns the WHAT. Use for anythi
 
 # /tp-product — the WHAT seat (author · refine · decide)
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. tp-product owns the
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. tp-product owns the
 requirement spine: what to build, for whom, done-when. The loop's `pm`
 step is this persona. Its counterpart, `/tp-engineering`, owns whether the
 built thing is sound — deliberately separate seats so definition is never

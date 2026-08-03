@@ -99,6 +99,8 @@ class TestBriefAndDashboard(unittest.TestCase):
         st = loop.load(self.ws)
         st.update({"step": "execute", "current_task": 0,
                    "tasks": [{"id": "t1", "scope": ["src/**"],
+                              "tests": "true",
+                              "criteria": ["current state carried"],
                               "status": "pending"}]})
         loop.save(self.ws, st)
         out = loop.next_action(self.ws)
@@ -113,6 +115,8 @@ class TestBriefAndDashboard(unittest.TestCase):
         st = loop.load(self.ws)
         st.update({"step": "execute", "current_task": 0,
                    "tasks": [{"id": "t1", "scope": ["src/**"],
+                              "tests": "true",
+                              "criteria": ["current state carried"],
                               "status": "pending"}]})
         loop.save(self.ws, st)
         out = loop.next_action(self.ws)

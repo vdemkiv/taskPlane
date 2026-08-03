@@ -7,7 +7,7 @@ EVALUATE step. Read-only by contract; report, don't repair.
 ## Procedure
 
 1. **Bind the review contract** so writes are mechanically blocked
-   (`PLUGIN=${CLAUDE_PLUGIN_ROOT}`):
+   (`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
 
    ```bash
    python3 "$PLUGIN/taskplane/tp.py" new --read-only \

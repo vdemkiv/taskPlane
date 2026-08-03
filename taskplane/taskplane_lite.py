@@ -1,7 +1,7 @@
 """taskplane-lite — the enforcement kernel, stdlib only.
 
-A dependency-free port of the parts of taskplane that a Cowork plugin can
-enforce *mechanically* on the host agent:
+A dependency-free port of the parts of taskplane that a Claude or Codex plugin
+can enforce *mechanically* on the host agent:
 
   * tool allowlist               (contract.allowed_tools)
   * filesystem scope boundaries  (coding.scope_paths / out_of_scope_paths)
@@ -9,7 +9,7 @@ enforce *mechanically* on the host agent:
   * shell write-target screening (redirects + tee/cp/mv/dd/sed -i/…)
   * Definition-of-Done gate       (git scope diff + a test command)
 
-What a Cowork plugin CANNOT do (the honest limitation): intercept the host
+What a host plugin CANNOT do (the honest limitation): intercept the host
 agent's model calls, so the dollar/token budget is tracked cooperatively,
 not enforced before spend. The tool/scope/command screen IS enforced by the
 PreToolUse hook before the action runs — but it screens a *cooperative*
@@ -25,8 +25,8 @@ screened from argv. For a hard guarantee, run review/build contracts on a
 read-only bind-mount or in a container — the screen is defense-in-depth,
 not the wall.
 
-Behavior mirrors the audited taskplane hooks/DoD logic so a task governed
-in Cowork behaves the same as one governed via the full proxy runtime.
+Behavior mirrors the audited taskplane hooks/DoD logic so a governed task
+behaves consistently across supported hosts.
 """
 
 from __future__ import annotations
@@ -40,16 +40,28 @@ import re
 import shlex
 import subprocess
 
-# Claude Code / Cowork write tools → the input key that carries the path.
+# Host write tools → the input key that carries the path. Codex sends
+# apply_patch with the patch body in ``command``; its targets are extracted
+# separately because one call may edit several files.
 WRITE_TOOL_PATH_FIELDS = {
     "Write": ("file_path", "path"),
     "Edit": ("file_path", "path"),
     "MultiEdit": ("file_path", "path"),
     "NotebookEdit": ("notebook_path", "file_path", "path"),
     "str_replace": ("file_path", "path"),
+    "apply_patch": (),
 }
 WRITE_TOOLS = set(WRITE_TOOL_PATH_FIELDS)
 COMMAND_TOOLS = {"Bash", "BashOutput"}
+TOOL_ALIASES = {
+    "apply_patch": ("apply_patch", "Edit", "Write"),
+    "Agent": ("Agent", "Task"),
+}
+_PATCH_TARGET_RE = re.compile(
+    r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):\s*"
+    r"(?P<path>.+?)\s*$",
+    re.MULTILINE,
+)
 
 _CMD_SEP_RE = re.compile(r"[;&|\n]+")
 # a redirect operator token after shlex tokenization: >, >>, 2>, &>, >| …
@@ -517,11 +529,31 @@ def screen_command(cmd: str, coding: dict, workspace: str | None) -> str | None:
 
 # --------------------------------------------------------------- screen
 
+def tool_aliases(tool_name: str) -> tuple[str, ...]:
+    """Names a host may use for the same capability.
+
+    Codex reports the canonical ``apply_patch`` and ``Agent`` names in hook
+    events even when hook matchers used the compatibility aliases Edit/Write
+    and Task. Contracts written for Claude therefore remain valid without
+    weakening their allowlists.
+    """
+    return TOOL_ALIASES.get(tool_name, (tool_name,))
+
+
+def write_paths(tool_name: str, tool_input: dict) -> list[str]:
+    """Return every filesystem target named by a host write tool."""
+    if tool_name == "apply_patch":
+        body = str(tool_input.get("command", ""))
+        return [m.group("path").strip() for m in _PATCH_TARGET_RE.finditer(body)]
+    fields = WRITE_TOOL_PATH_FIELDS.get(tool_name, ())
+    raw = next((tool_input[f] for f in fields if tool_input.get(f)), "")
+    return [str(raw)] if raw else []
+
 def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                 workspace: str | None) -> tuple[bool, str]:
     """Return (allow, reason). Mirrors the taskplane PreToolUse hook."""
     allowed = contract.get("allowed_tools") or []
-    if allowed and tool_name not in allowed:
+    if allowed and not any(name in allowed for name in tool_aliases(tool_name)):
         return False, f"tool '{tool_name}' not in allowed_tools"
 
     coding = contract.get("coding") or {}
@@ -533,13 +565,19 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
     if contract.get("read_only"):
         allow = contract.get("write_allow") or []
         if tool_name in WRITE_TOOLS:
-            fields = WRITE_TOOL_PATH_FIELDS[tool_name]
-            raw = next((tool_input[f] for f in fields if tool_input.get(f)), "")
-            p = norm(str(raw), workspace)
-            if not (p and match_any(p, allow)):
+            paths = write_paths(tool_name, tool_input)
+            if not paths:
+                return False, (f"read-only review contract: '{tool_name}' "
+                               "did not expose a screenable write target")
+            bad = next((raw for raw in paths
+                        if not (norm(raw, workspace)
+                                and match_any(norm(raw, workspace), allow))),
+                       None)
+            if bad is not None:
                 return False, (f"read-only review contract: '{tool_name}' may "
                                f"only write under {allow or '(nothing)'} — "
-                               "the reviewed source is protected")
+                               f"'{bad}' is outside it; the reviewed source "
+                               "is protected")
         if tool_name in COMMAND_TOOLS:
             targets, opaque = _analyze(str(tool_input.get("command", "")))
             for t in targets:
@@ -561,10 +599,12 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
     if tool_name in WRITE_TOOLS and (coding.get("scope_paths")
                                      or coding.get("out_of_scope_paths")):
-        fields = WRITE_TOOL_PATH_FIELDS[tool_name]
-        raw = next((tool_input[f] for f in fields if tool_input.get(f)), "")
-        p = norm(str(raw), workspace)
-        if p:
+        paths = write_paths(tool_name, tool_input)
+        if not paths:
+            return False, (f"'{tool_name}' did not expose a screenable write "
+                           "target")
+        for raw in paths:
+            p = norm(raw, workspace)
             v = scope_violation(p, coding)
             if v:
                 return False, v
@@ -663,8 +703,8 @@ def dor_check(contract: dict, workspace: str,
         return (not kept), kept, warnings
 
     if not dod.get("test_command"):
-        warnings.append("no DoD test_command — the exit gate will check scope "
-                        "only, not behavior; set --tests to verify correctness")
+        blockers.append("no DoD test_command — behavior cannot be verified; "
+                        "set --tests before execution")
     if any(g in ("**", "*", "**/*", "./**") for g in scope):
         warnings.append("scope includes a catch-all glob — governance is weak; "
                         "narrow it to the paths this task really needs")
@@ -1065,11 +1105,16 @@ def _ensure_self_ignored(d: str) -> None:
 # pricing feature and carries no pricing data (kb-lint still forbids that).
 MODEL_TIERS = ("cheap", "standard", "deep")
 
-# Default tier -> model. Only `cheap` maps to a concrete model out of the box;
-# `standard`/`deep` inherit the session model (None) so nothing is forced and
-# behaviour is unchanged until an operator opts in. Override any tier via
+# Default tier -> model. Claude keeps the historical cheap=haiku mapping;
+# Codex inherits for every tier so no provider-specific id crosses hosts.
+# `standard`/`deep` always inherit unless an operator opts in. Override via
 # TASKPLANE_MODEL_CHEAP / _STANDARD / _DEEP (value "inherit" or "" => inherit).
-_DEFAULT_TIER_MODEL = {"cheap": "haiku", "standard": None, "deep": None}
+def _default_tier_models() -> dict:
+    """Return defaults that never send another host's model identifier."""
+    is_codex = bool(os.environ.get("CODEX_HOME")
+                    or os.environ.get("CODEX_THREAD_ID"))
+    return {"cheap": None if is_codex else "haiku",
+            "standard": None, "deep": None}
 
 
 # --- dispatch verification (tier routing is only real if the driver passes
@@ -1199,7 +1244,7 @@ def model_for_tier(tier: str | None) -> str | None:
     if env is not None:
         env = env.strip()
         return None if env in ("", "inherit") else env
-    return _DEFAULT_TIER_MODEL.get(t)
+    return _default_tier_models().get(t)
 
 
 def step_tier(step: str, task: dict | None = None) -> str:

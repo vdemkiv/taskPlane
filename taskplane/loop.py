@@ -445,9 +445,17 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
             tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                    "MultiEdit"])
         agent_ws = os.path.abspath(agent_ws)
-        tp.activate(agent_ws, contract)
+        snapshot = tp.git_head(agent_ws)
         dor_ready, blockers, warnings = tp.dor_check(
-            contract, agent_ws, tp.snapshot_ref(agent_ws))
+            contract, agent_ws, snapshot)
+        if not dor_ready:
+            tp.trace(ws, "loop_claim_blocked", task=task_id,
+                     agent_workspace=agent_ws, dor_blockers=blockers)
+            return {"error": "Definition of Ready failed — task was not "
+                             "claimed", "task": task_id,
+                    "dor": {"ready": False, "blockers": blockers,
+                            "warnings": warnings}}
+        tp.activate(agent_ws, contract, snapshot=snapshot)
         t["status"] = "running"
         t["workspace"] = agent_ws
     tp.trace(ws, "loop_claim", task=task_id, agent_workspace=agent_ws,
@@ -531,13 +539,21 @@ def next_action(ws: str) -> dict:
         act_ws = tws if tws and os.path.isdir(tws) else ws
 
     contract = _step_contract(step, state)
-    tp.activate(act_ws, contract)
+    snapshot = tp.git_head(act_ws)
     dor_ready, blockers, warnings = tp.dor_check(
-        contract, act_ws, tp.snapshot_ref(act_ws))
+        contract, act_ws, snapshot)
     tp.trace(ws, "loop_step", step=step, role=STEP_ROLE[step],
              task=(_current_task(state) or {}).get("id"),
              dor_ready=dor_ready, dor_blockers=blockers,
              dor_warnings=warnings)
+    if not dor_ready:
+        return {"error": "Definition of Ready failed — resolve blockers "
+                         "before this step can start",
+                "step": step, "role": STEP_ROLE[step],
+                "dor": {"ready": False, "blockers": blockers,
+                        "warnings": warnings},
+                "status": status(ws)}
+    tp.activate(act_ws, contract, snapshot=snapshot)
 
     # Inject the handful of prior decisions relevant to this step's work, so
     # the role starts with context instead of re-deriving it (token savings).
@@ -628,6 +644,12 @@ def next_action(ws: str) -> dict:
     return {
         "step": step,
         "role": STEP_ROLE[step],
+        "role_instructions": os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "agents", STEP_ROLE[step] + ".md"),
+        "codex_dispatch": ("Dispatch a general Codex subagent with the "
+                           "role_instructions file plus this action payload "
+                           "when the named role is not registered."),
         "task": task,
         "model_tier": model_tier,
         "model": model,
@@ -687,9 +709,165 @@ def _instruction(step: str, state: dict) -> str:
               "mode says inline vs subagent) and every tier=sweep lens as a "
               "quick pass (its top checks against the diff; flag or clear). "
               "Synthesize all verdicts + requirement-vs-implementation into "
-              ".em-review/report.md, record the verdict to the knowledge "
+              ".em-review/report.md AND .em-review/findings.json (including "
+              "complete meta.lens_coverage, meta.impact, tests, and gate "
+              "verdict), record the verdict to the knowledge "
               "base, then `loop approve` for human sign-off.",
     }[step]
+
+
+def _read_json(path: str) -> tuple[dict | None, list]:
+    try:
+        with open(path) as f:
+            value = json.load(f)
+    except FileNotFoundError:
+        return None, [f"required evidence missing: {path}"]
+    except (OSError, ValueError) as exc:
+        return None, [f"invalid evidence {path}: {exc}"]
+    if not isinstance(value, dict):
+        return None, [f"invalid evidence {path}: root must be an object"]
+    return value, []
+
+
+def _criteria_for(ws: str, state: dict, task: dict) -> list:
+    criteria = list(task.get("criteria") or [])
+    rid = task.get("req") or state.get("requirement_id")
+    rec = reqs.get_requirement(ws, rid) if rid else None
+    if rec:
+        criteria = list(rec.get("acceptance") or criteria)
+    criteria = [str(c).strip() for c in criteria if str(c).strip()]
+    # Minor-version compatibility for pre-1.6 plans: their runnable test
+    # command was the only acceptance check. New planners emit explicit
+    # criteria, but an existing plan remains executable and its test still
+    # has to pass at every DoD gate.
+    if not criteria and str(task.get("tests") or "").strip():
+        criteria = [f"test command passes: {task['tests']}"]
+    return criteria
+
+
+def _plan_dor_errors(ws: str, state: dict) -> list:
+    """Definition of Ready for implementation, derived from the plan."""
+    errors = []
+    for task in state.get("tasks") or []:
+        prefix = f"task {task.get('id', '?')}: "
+        if not task.get("scope"):
+            errors.append(prefix + "scope is missing")
+        if not str(task.get("tests") or "").strip():
+            errors.append(prefix + "test command is missing")
+        if not _criteria_for(ws, state, task):
+            errors.append(prefix + "acceptance criteria are missing")
+        rid = task.get("req") or state.get("requirement_id")
+        if rid and task.get("high_cost"):
+            rec = reqs.get_requirement(ws, rid)
+            if rec is None:
+                errors.append(prefix + f"requirement {rid} does not exist")
+            elif rec.get("open_questions"):
+                errors.append(prefix + "requirement has unresolved questions: "
+                              + "; ".join(rec["open_questions"]))
+    return errors
+
+
+def _task_dod_errors(ws: str, state: dict, task: dict,
+                     snapshot: str | None) -> list:
+    contract = tp.build_contract(
+        f"EXECUTE: {task['id']}", scope=task.get("scope"),
+        test_command=task.get("tests"))
+    return tp.dod_check(contract, ws, snapshot)
+
+
+def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
+    """Validate evaluator evidence instead of trusting `gate pass`."""
+    path = os.path.join(ws, ".eval", "verdict.json")
+    verdict, errors = _read_json(path)
+    if errors:
+        return errors
+    if verdict.get("task") != task.get("id"):
+        errors.append("evaluation evidence is for task "
+                      f"{verdict.get('task')!r}, expected {task.get('id')!r}")
+    if verdict.get("verdict") != "pass":
+        errors.append("evaluation verdict is not pass")
+
+    expected_criteria = _criteria_for(ws, state, task)
+    rows = verdict.get("criteria") or []
+    if not isinstance(rows, list):
+        errors.append("evaluation criteria must be a list")
+        rows = []
+    by_criterion = {str(r.get("criterion", "")).strip(): r
+                    for r in rows if isinstance(r, dict)}
+    for criterion in expected_criteria:
+        row = by_criterion.get(criterion)
+        if not row:
+            errors.append(f"acceptance criterion has no evidence: {criterion}")
+        elif row.get("status") != "met" or not str(row.get("evidence") or "").strip():
+            errors.append(f"acceptance criterion is not proven met: {criterion}")
+
+    routing = lens_router.route_git_diff(
+        ws, base=state.get("baseline") or "HEAD",
+        task_type=task.get("type"), breadth="routed")
+    expected_lenses = {entry["id"] for entry in routing.get("lenses") or []}
+    raw_lenses = verdict.get("lenses") or []
+    if not isinstance(raw_lenses, list):
+        errors.append("evaluation lenses must be a list")
+        raw_lenses = []
+    lens_rows = {str(r.get("lens", "")): r for r in raw_lenses
+                 if isinstance(r, dict)}
+    for lens_id in sorted(expected_lenses):
+        row = lens_rows.get(lens_id)
+        if not row:
+            errors.append(f"routed lens has no verdict: {lens_id}")
+        else:
+            try:
+                blocker_count = int(row.get("blockers") or 0)
+            except (TypeError, ValueError):
+                blocker_count = 1
+            if row.get("verdict") != "pass" or blocker_count > 0:
+                errors.append(f"routed lens did not pass cleanly: {lens_id}")
+    if verdict.get("failures"):
+        errors.append("evaluation contains unresolved failures")
+    return errors
+
+
+def _engineering_review_errors(ws: str) -> list:
+    """Require full-catalog lens evidence before the EM gate can pass."""
+    path = os.path.join(ws, ".em-review", "findings.json")
+    findings, errors = _read_json(path)
+    if errors:
+        return errors
+    meta = findings.get("meta") or {}
+    coverage = meta.get("lens_coverage") or {}
+    if not isinstance(coverage, dict):
+        errors.append("engineering lens coverage must be an object")
+        coverage = {}
+    catalog = lens_router.load_catalog()
+    expected = {entry["id"] for entry in catalog.get("lenses") or []}
+    missing = sorted(expected - set(coverage))
+    invalid = sorted(k for k, v in coverage.items()
+                     if k in expected and v not in ("deep", "sweep"))
+    if missing:
+        errors.append("engineering review omitted lenses: " + ", ".join(missing))
+    if invalid:
+        errors.append("engineering review has invalid lens tiers: "
+                      + ", ".join(invalid))
+    if not isinstance(meta.get("impact"), dict):
+        errors.append("engineering review is missing dependency impact evidence")
+    if not meta.get("tests"):
+        errors.append("engineering review is missing test evidence")
+    gate = meta.get("gate") or {}
+    if gate.get("verdict") not in ("pass", "recommend-pass"):
+        errors.append("engineering review does not recommend sign-off")
+    rows = findings.get("findings") or []
+    if not isinstance(rows, list):
+        errors.append("engineering findings must be a list")
+        rows = []
+    for finding in rows:
+        if (isinstance(finding, dict)
+                and str(finding.get("severity", "")).lower() in ("critical", "high")
+                and str(finding.get("status", "open")).lower()
+                not in ("resolved", "accepted", "closed")):
+            errors.append("engineering review has an unresolved "
+                          f"{finding.get('severity')} finding: "
+                          f"{finding.get('title', 'untitled')}")
+    return errors
 
 
 def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> dict:
@@ -714,6 +892,15 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
         # NOTHING — the merge would be empty and worktree removal would
         # destroy the work. Commit first, then gate.
         wt = wt_precheck.get("workspace")
+        if outcome == "pass":
+            dod_errors = _task_dod_errors(
+                wt or ws, state, wt_precheck, tp.snapshot_ref(wt or ws))
+            if dod_errors:
+                tp.trace(ws, "loop_gate_blocked", step=step, task=task_id,
+                         reason="dod", errors=dod_errors)
+                return {"error": "Definition of Done failed — task remains "
+                                 "running", "dod": {"passed": False,
+                                 "errors": dod_errors}}
         if outcome == "pass" and wt and os.path.isdir(wt) and tp.is_dirty(wt):
             return {"error": f"task {task_id}: uncommitted work in {wt} — "
                              "the tp/<task> branch carries nothing yet. "
@@ -736,7 +923,55 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
         return {"step": "execute", "task": task_id, "built": True,
                 "still_running": running, "status": status(ws)}
 
-    tp.clear(ws)
+    # Validate the implementation-ready plan while its read-only contract is
+    # still active. A rejected plan remains governed for the planner's retry.
+    if step == "plan" and outcome == "pass":
+        _load_tasks(ws, state)
+        if state.get("tasks"):
+            dor_errors = _plan_dor_errors(ws, state)
+            if dor_errors:
+                tp.trace(ws, "loop_gate_blocked", step=step, reason="dor",
+                         errors=dor_errors)
+                return {"error": "Definition of Ready failed — revise "
+                                 "plan/tasks.json before approval or execution",
+                        "step": "plan",
+                        "dor": {"ready": False, "blockers": dor_errors}}
+
+    task = _current_task(state)
+    act_ws = ws
+    if step in ("evaluate", "fix") and state.get("parallel"):
+        tws = (task or {}).get("workspace")
+        act_ws = tws if tws and os.path.isdir(tws) else ws
+
+    # A reported PASS is a request to evaluate the gate. Evidence, not the
+    # agent's assertion, determines whether the state machine advances.
+    if outcome == "pass" and step in ("execute", "fix"):
+        dod_errors = _task_dod_errors(
+            act_ws, state, task, tp.snapshot_ref(act_ws))
+        if dod_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step, reason="dod",
+                     errors=dod_errors)
+            return {"error": "Definition of Done failed — step did not "
+                             "advance", "step": step,
+                    "dod": {"passed": False, "errors": dod_errors}}
+    if outcome == "pass" and step == "evaluate":
+        evidence_errors = _evaluation_errors(act_ws, state, task)
+        if evidence_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step,
+                     reason="evaluation_evidence", errors=evidence_errors)
+            return {"error": "evaluation evidence failed — step did not "
+                             "advance", "step": step,
+                    "dod": {"passed": False, "errors": evidence_errors}}
+    if outcome == "pass" and step == "em":
+        review_errors = _engineering_review_errors(ws)
+        if review_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step,
+                     reason="engineering_review", errors=review_errors)
+            return {"error": "engineering review is incomplete — sign-off "
+                             "is not available", "step": step,
+                    "dod": {"passed": False, "errors": review_errors}}
+
+    tp.clear(act_ws)
     tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note)
 
     if step == "pm":
@@ -767,6 +1002,14 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                              "no tasks — the plan exists only as words. "
                              "Write plan/tasks.json (+ plan/plan.md for the "
                              "human), then gate again."}
+        dor_errors = _plan_dor_errors(ws, state)
+        if dor_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step, reason="dor",
+                     errors=dor_errors)
+            return {"error": "Definition of Ready failed — revise "
+                             "plan/tasks.json before approval or execution",
+                    "step": "plan",
+                    "dor": {"ready": False, "blockers": dor_errors}}
         # Product↔engineering graph, PLANNED side: link each task's
         # requirement to the modules its scope intends to touch, then
         # annotate the task with its blast radius (engineering) and any
@@ -777,6 +1020,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
         state["step"] = ("plan_approval" if "plan" in state["checkpoints"]
                          else "execute")
         state["current_task"] = 0
+        if state["step"] == "execute":
+            state["baseline"] = tp.git_head(ws)
     elif step == "execute":
         # a build always goes to evaluate; a FAILED build is flagged so
         # evaluate FAILs and routes to fix/escalate — one place owns the fail
@@ -845,6 +1090,20 @@ def _signoff_dod(ws: str, state: dict) -> dict:
     contract = {"coding": {"scope_paths": scopes,
                            "dod": {"require_clean_scope_diff": bool(scopes)}}}
     errors = list(tp.dod_check(contract, ws, baseline)) if scopes else []
+    for task in state.get("tasks") or []:
+        test_command = task.get("tests")
+        if not test_command:
+            errors.append(f"task {task.get('id', '?')}: test command missing")
+            continue
+        test_contract = tp.build_contract(
+            f"SIGNOFF TEST: {task.get('id', '?')}",
+            scope=task.get("scope"), test_command=test_command)
+        # Aggregate scope was checked above; run each task's behavioral test
+        # without incorrectly treating another task's files as scope creep.
+        test_contract["coding"]["dod"]["require_clean_scope_diff"] = False
+        errors.extend(f"task {task.get('id', '?')}: {e}"
+                      for e in tp.dod_check(test_contract, ws, baseline))
+    errors.extend(_engineering_review_errors(ws))
     for problem in kb.lint(ws):
         errors.append("kb_lint: " + (problem.get("file", "?")) + " — "
                       + problem.get("problem", ""))
@@ -978,6 +1237,13 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             tags=["plan-approval"], context_files=scope,
             links={"loop": "plan"})
     elif step == "signoff":
+        dod = _signoff_dod(ws, state)
+        if not dod["passed"]:
+            tp.trace(ws, "loop_approve_blocked", gate="em_signoff",
+                     reason="dod", errors=dod["errors"], by=by)
+            return {"error": "Definition of Done failed — sign-off cannot "
+                             "complete until the evidence is repaired",
+                    "step": "signoff", "dod": dod}
         state["step"] = "done"
         tp.trace(ws, "loop_approve", gate="em_signoff", final="done", by=by)
         scope = sorted({g for t in (state.get("tasks") or [])

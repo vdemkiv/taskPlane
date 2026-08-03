@@ -6,7 +6,7 @@ not, and how "done" is verified — then do the work under that contract. The
 plugin's PreToolUse hook enforces the boundaries mechanically (out-of-scope
 writes, denied commands, and disallowed tools are blocked before they run).
 
-`PLUGIN=${CLAUDE_PLUGIN_ROOT}` and `TP="python3 $PLUGIN/taskplane/tp.py"` in the
+`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}` and `TP="python3 $PLUGIN/taskplane/tp.py"` in the
 commands below. Always run them from the task's working directory (the repo
 or folder being changed) so the contract binds to that workspace.
 

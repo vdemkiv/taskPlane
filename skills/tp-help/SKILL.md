@@ -67,7 +67,7 @@ not taste. Neither seat edits code — that's the loop's job.
 Concepts on request (don't dump): gates → `references/gates.md`;
 contracts → `references/contracts.md`; roles & the PM handoff →
 `references/roles.md`, `references/product-manager.md`. Power users: the
-full CLI is `python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py" --help`.
+full CLI is `python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" --help`.
 
 **Licensing if asked:** free and open source under Apache License 2.0 — any
 use, personal or commercial (see `LICENSE`).

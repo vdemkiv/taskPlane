@@ -14,21 +14,23 @@ feature and carries no pricing data (kb-lint still forbids that in the store).
 ## The three tiers
 
 - `cheap` — simple, mechanical, well-specified work (a formatting fix, a
-  rote edit, the quick full-catalog sweep). Defaults to `haiku`.
+  rote edit, the quick full-catalog sweep). Defaults to `haiku` on Claude;
+  inherits the session model on Codex so a provider-specific id is never sent.
 - `standard` — the default for build/verify work. Inherits the session model.
 - `deep` — hard reasoning (planning, the engineering review, the security /
   architecture lenses). Inherits the session model until you point it at a
   stronger one.
 
-Only `cheap` maps to a concrete model out of the box; `standard` and `deep`
-inherit, so **behaviour is unchanged until you opt in** — nothing is forced.
+On Claude, only `cheap` maps to a concrete model out of the box. On Codex all
+three tiers inherit until explicitly mapped, so **behaviour is unchanged until
+you opt in** and no cross-provider model identifier is forced.
 
 ## Configure per tier (portable, no code change)
 
 ```
-export TASKPLANE_MODEL_CHEAP=haiku      # the cost saver (default)
-export TASKPLANE_MODEL_STANDARD=sonnet  # or leave unset = inherit
-export TASKPLANE_MODEL_DEEP=opus        # stronger model for planning/review
+export TASKPLANE_MODEL_CHEAP=<host-model-id>
+export TASKPLANE_MODEL_STANDARD=<host-model-id>  # or leave unset = inherit
+export TASKPLANE_MODEL_DEEP=<host-model-id>      # stronger planning/review
 ```
 
 A value of `inherit` or empty means "inherit the session model". An unknown
@@ -69,12 +71,12 @@ the gap:
   `strict` denies the dispatch until the emitted `model` is passed. Unset,
   the hook is inert — enforcement is opt-in by design.
 
-**Know the default:** out of the box only `cheap` pins a model (`haiku`);
-`standard` and `deep` resolve to `null` = inherit the session model. If you
+**Know the default:** on Claude only `cheap` pins a model (`haiku`); on Codex
+it also resolves to `null` = inherit. `standard` and `deep` inherit on both.
+If you
 want differentiated routing, set `TASKPLANE_MODEL_STANDARD` /
 `TASKPLANE_MODEL_DEEP` — otherwise a run on a top-tier session model runs
-everything (except the sweep) on that model, by design, and only the sweep's
-`cheap → haiku` saves cost.
+everything on that model by design unless you map the tiers for that host.
 
 ## Rendering runs on the cheap tier (v1.5.4)
 

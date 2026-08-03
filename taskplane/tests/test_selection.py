@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
+import lens  # noqa: E402
 
 
 def _git(ws, *args):
@@ -42,6 +43,23 @@ def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
     loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
     loop.approve(ws)                 # → execute
     return loop.load(ws)
+
+
+def _pass_eval(ws):
+    state = loop.load(ws)
+    task = state["tasks"][state["current_task"]]
+    routed = lens.route_git_diff(ws, base=state.get("baseline") or "HEAD",
+                                 task_type=task.get("type"), breadth="routed")
+    os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
+    with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
+        json.dump({"task": task["id"], "verdict": "pass",
+                   "criteria": [{"criterion": c, "status": "met",
+                                  "evidence": "verified"}
+                                for c in loop._criteria_for(ws, state, task)],
+                   "lenses": [{"lens": x["id"], "verdict": "pass",
+                               "blockers": 0} for x in routed["lenses"]],
+                   "failures": []}, f)
+    return loop.gate(ws, "pass")
 
 
 class TestSelectionStep(unittest.TestCase):
@@ -79,11 +97,11 @@ class TestSelectionStep(unittest.TestCase):
         state["step"] = "evaluate"
         state["current_task"] = 0
         loop.save(self.ws, state)
-        loop.gate(self.ws, "pass")                     # variant a passes
+        _pass_eval(self.ws)                              # variant a passes
         state = loop.load(self.ws)
         state["step"] = "evaluate"; state["current_task"] = 1
         loop.save(self.ws, state)
-        r = loop.gate(self.ws, "pass")                 # variant b passes
+        r = _pass_eval(self.ws)                          # variant b passes
         self.assertEqual(r["step"], "selection")
         nxt = loop.next_action(self.ws)
         self.assertTrue(nxt["paused"])
@@ -142,8 +160,9 @@ class TestSelectionStep(unittest.TestCase):
         state["step"] = "fix"
         state["current_task"] = 1                      # the winner task
         loop.save(self.ws, state)
+        loop.next_action(self.ws)                       # activate fix contract
         loop.gate(self.ws, "pass")                     # fix → evaluate
-        r = loop.gate(self.ws, "pass")                 # evaluate pass
+        r = _pass_eval(self.ws)                          # evaluate pass
         self.assertEqual(r["step"], "em")              # NOT execute/selection
 
 

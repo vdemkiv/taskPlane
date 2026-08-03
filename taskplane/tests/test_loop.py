@@ -8,6 +8,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
+import lens  # noqa: E402
 
 
 def git_ws(tmp, tasks):
@@ -26,6 +27,37 @@ def git_ws(tmp, tasks):
 
 TASK = {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
         "criteria": ["complete() marks done"]}
+
+
+def pass_eval(ws):
+    state = loop.load(ws)
+    task = state["tasks"][state["current_task"]]
+    act_ws = task.get("workspace") or ws
+    routed = lens.route_git_diff(
+        act_ws, base=state.get("baseline") or "HEAD",
+        task_type=task.get("type"), breadth="routed")
+    criteria = loop._criteria_for(ws, state, task)
+    os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
+    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w") as f:
+        json.dump({"task": task["id"], "verdict": "pass",
+                   "criteria": [{"criterion": c, "status": "met",
+                                  "evidence": "verified by test"}
+                                for c in criteria],
+                   "lenses": [{"lens": x["id"], "verdict": "pass",
+                               "blockers": 0} for x in routed["lenses"]],
+                   "failures": []}, f)
+    return loop.gate(ws, "pass")
+
+
+def pass_em(ws):
+    coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
+    os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
+    with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
+        json.dump({"meta": {"lens_coverage": coverage, "impact": {},
+                            "tests": ["true"],
+                            "gate": {"verdict": "recommend-pass"}},
+                   "findings": []}, f)
+    return loop.gate(ws, "pass")
 
 
 class TestLoop(unittest.TestCase):
@@ -89,9 +121,9 @@ class TestLoop(unittest.TestCase):
         loop.next_action(ws); loop.gate(ws, "pass")            # plan → execute
         self.assertEqual(loop.load(ws)["step"], "execute")
         loop.next_action(ws); loop.gate(ws, "pass")            # execute → evaluate
-        loop.next_action(ws); loop.gate(ws, "pass")            # evaluate → em
+        loop.next_action(ws); pass_eval(ws)                     # evaluate → em
         self.assertEqual(loop.load(ws)["step"], "em")
-        loop.next_action(ws); loop.gate(ws, "pass")            # em → signoff
+        loop.next_action(ws); pass_em(ws)                       # em → signoff
         self.assertEqual(loop.load(ws)["step"], "signoff")
         loop.approve(ws)                                       # → done
         self.assertEqual(loop.load(ws)["step"], "done")
@@ -117,11 +149,11 @@ class TestLoop(unittest.TestCase):
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])
         loop.next_action(ws); loop.gate(ws, "pass")   # plan → execute t1
         loop.next_action(ws); loop.gate(ws, "pass")   # execute → evaluate
-        loop.next_action(ws); loop.gate(ws, "pass")   # evaluate t1 pass → execute t2
+        loop.next_action(ws); pass_eval(ws)            # evaluate t1 pass → execute t2
         self.assertEqual(loop.load(ws)["step"], "execute")
         self.assertEqual(loop.load(ws)["current_task"], 1)
         loop.next_action(ws); loop.gate(ws, "pass")
-        loop.next_action(ws); loop.gate(ws, "pass")   # evaluate t2 pass → em
+        loop.next_action(ws); pass_eval(ws)            # evaluate t2 pass → em
         self.assertEqual(loop.load(ws)["step"], "em")
 
     def test_escalate_retry_resets_cycles(self):
@@ -295,10 +327,10 @@ class TestParallelExecution(unittest.TestCase):
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
         self.assertEqual(act["task"]["id"], "t1")
-        loop.gate(ws, "pass")                         # t1 passed
+        pass_eval(ws)                                  # t1 passed
         act2 = loop.next_action(ws)                   # evaluate t2
         self.assertEqual(act2["task"]["id"], "t2")
-        loop.gate(ws, "pass")                         # t2 passed
+        pass_eval(ws)                                  # t2 passed
         # t1 passed unlocks t4, but t3/t4 overlap on src/c → serialized:
         # t3 (first in plan order) dispatches, t4 holds for the next wave.
         w = loop.wave(ws)
@@ -316,7 +348,7 @@ class TestParallelExecution(unittest.TestCase):
         loop.save(ws, st)
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
-        out = loop.gate(ws, "pass")
+        out = pass_eval(ws)
         self.assertEqual(out["step"], "em")
 
     def test_gate_requires_task_id_in_parallel_execute(self):

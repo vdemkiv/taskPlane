@@ -110,13 +110,23 @@ def _onboard_report(ws: str) -> dict:
     looks_like_project = has_files and not bare_root
     has_context = os.path.isdir(os.path.join(tp.kb_root(ws), "context"))
 
+    is_codex = bool(os.environ.get("CODEX_HOME")
+                    or os.environ.get("CODEX_THREAD_ID"))
+    host = "codex" if is_codex else "claude"
+    workspace_hint = (
+        "Open this repository as the working folder in Codex (CLI: `cd` to "
+        "the repo before starting `codex`; desktop: open/create a local "
+        "environment for the repo), then start a new task."
+        if is_codex else
+        "Connect a folder (Cowork: attach a folder; Claude Code: open your "
+        "project) — or use this one if it's where you want to work."
+    )
     checks = [
         {"id": "workspace", "label": "A folder to work in",
          "ok": looks_like_project,
          "detail": ws if looks_like_project else
          f"{ws} — looks empty or scratch",
-         "hint": "Connect a folder (Cowork: attach a folder; Code: open your "
-                 "project) — or use this one if it's where you want to work."},
+         "hint": workspace_hint},
         {"id": "git", "label": "A git repo with a snapshot",
          "ok": inside_git and has_commit,
          "detail": (head[:12] if has_commit else
@@ -139,13 +149,15 @@ def _onboard_report(ws: str) -> dict:
         nxt = "tp_init"
     else:
         nxt = "ready"
-    return {"workspace": ws, "looks_like_project": looks_like_project,
+    return {"workspace": ws, "host": host,
+            "looks_like_project": looks_like_project,
             "is_git": inside_git, "has_commit": has_commit,
             "has_context": has_context, "ready": ready,
             "checks": checks, "next_action": nxt,
             # Resolved model routing, visible at cold start: with defaults
-            # only `cheap` pins a model — standard/deep inherit the session
-            # model until TASKPLANE_MODEL_<TIER> is set (discipline/
+            # Claude pins only `cheap`; Codex inherits all tiers so another
+            # provider's model id is never dispatched. Overrides remain
+            # available through TASKPLANE_MODEL_<TIER> (discipline/
             # model-tiers.md). Surfacing it here is what makes the routing
             # discoverable instead of a silent no-op.
             "model_tiers": {t: (tp.model_for_tier(t) or "inherit")
@@ -247,7 +259,8 @@ def cmd_screen_dispatch(a) -> int:
         return 0                                   # opt-in: default inert
     try:
         ti = event.get("tool_input") or {}
-        agent = (ti.get("subagent_type") or "")
+        agent = (ti.get("subagent_type") or ti.get("agent_type")
+                 or ti.get("task_name") or "")
         model = ti.get("model")
         ws = _workspace(event.get("cwd"))
         exp = tp.consume_expectation(ws, agent)
@@ -549,7 +562,14 @@ def _screen(a) -> int:
     allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
     if allow:
         _meter_bump(ws, tid, "actions")
-        print(json.dumps({"decision": "approve"}))
+        # Codex does not support the legacy PreToolUse
+        # {"decision":"approve"} shape. A successful hook with no output
+        # means continue while preserving Codex's normal sandbox/approval
+        # policy. Claude events do not carry Codex's turn_id extension, so
+        # retain the existing approval response there for backwards
+        # compatibility.
+        if "turn_id" not in event:
+            print(json.dumps({"decision": "approve"}))
         return 0
     _meter_bump(ws, tid, "denies")
     tp.trace(ws, "hook_deny", tool=tool_name, reason=reason)
@@ -1159,10 +1179,11 @@ def cmd_init(a) -> int:
         "knowledge_store": store,
         "mode": mode,
         "plan_question": None if (mode["source"] != "default") else
-            "ASK THE HUMAN: personal plan, or Team/Enterprise? Set it with "
-            "`tp share plan personal|team|enterprise` — personal keeps "
-            "knowledge in the private store (~/.taskplane); team/enterprise "
-            "shares it in-repo (.taskplane-kb/, Claude-Tag compatible). "
+            "ASK THE HUMAN: keep taskplane knowledge private/local, or "
+            "share it with the team in the repository? Set private/local "
+            "with `tp share plan personal`; set shared with `tp share plan "
+            "team|enterprise`. Private keeps knowledge outside the repo "
+            "(~/.taskplane); shared keeps it in-repo (.taskplane-kb/). "
             "On a team plan, `tp share set private` works privately and "
             "`tp share push` publishes selected decisions later.",
         "migrated_from_repo": mig.get("moved") or False,
@@ -1718,8 +1739,9 @@ def main(argv=None) -> int:
 
     ip = sub.add_parser("init", help="scaffold context docs + KB + graph")
     ip.add_argument("--plan", choices=["personal", "team", "enterprise"],
-                    default=None, help="record the Claude plan at init — "
-                    "decides the default knowledge store")
+                    default=None, help="choose knowledge storage at init — "
+                    "personal is private/external; team/enterprise is "
+                    "shared in-repo")
     ip.add_argument("--workspace", default=argparse.SUPPRESS)
     ip.set_defaults(fn=cmd_init)
 

@@ -1,7 +1,7 @@
 
 # /tp-parallel — many agents, one harness each
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. Requires a loop
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Requires a loop
 initialized with `--parallel` and an approved plan whose tasks carry
 `scope` (+ optional `deps`).
 

@@ -215,7 +215,10 @@ class TestShareUX(_Ws):
             tp.set_mode(self.ws, private=True)       # any own setting…
             self.assertNotIn("notice", tp.get_mode(self.ws))  # …silences
         finally:
-            os.environ["TASKPLANE_HOME"] = prev
+            if prev is None:
+                os.environ.pop("TASKPLANE_HOME", None)
+            else:
+                os.environ["TASKPLANE_HOME"] = prev
 
     def test_mode_follows_repo_across_checkouts_via_remote(self):
         subprocess.run(["git", "remote", "add", "origin",

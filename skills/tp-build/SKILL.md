@@ -5,7 +5,7 @@ description: "The new-feature flow of taskplane — use when the goal is to BUIL
 
 # /tp-build — new features, refined first, seen always
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. Building new is where
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Building new is where
 agents waste the most — vague specs, invisible progress, one unexamined
 design. tp-build inverts that: **refine before you plan, see before you
 sign, and when the design space is wide, build it twice and choose.**
@@ -43,10 +43,10 @@ acceptance criteria). Both sides for anything user-facing and structural.
    re-checking) and the next feature's contracts start from reality.
    Manual joins when needed: `$TP graph link --req R-XXXX --files …`,
    `$TP graph edge` for runtime deps static analysis can't see.
-4. **Show the spec.** Render a visual mock of the feature from the
-   acceptance criteria (self-contained HTML via `mcp__visualize__show_widget`)
-   BEFORE building — the human corrects a mock in seconds; a built feature
-   costs a fix cycle. State what's assumed.
+4. **Show the spec.** Render a visual mock of the feature from the acceptance
+   criteria BEFORE building. Use an inline HTML widget when available;
+   otherwise deliver the self-contained HTML artifact. The human corrects a
+   mock in seconds; a built feature costs a fix cycle. State what's assumed.
 5. **Loop, governed.** `$TP loop init --req R-XXXX [--parallel]` and drive
    as in `/tp-go`: plan → human approval → contracted build (TDD, budgets)
    → evaluate → engineering review (full catalog) → visual sign-off.

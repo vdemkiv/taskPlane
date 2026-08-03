@@ -11,7 +11,7 @@ This is deliberate and cuts against the system's default. When operating as this
 
 ### The cardinal rule is enforced by taskplane, not merely trusted
 
-Before acquiring the target, the agent activates a **read-only review contract** (`PLUGIN=${CLAUDE_PLUGIN_ROOT}`):
+Before acquiring the target, the agent activates a **read-only review contract** (`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
 
 ```bash
 python3 "$PLUGIN/taskplane/tp.py" new --read-only \

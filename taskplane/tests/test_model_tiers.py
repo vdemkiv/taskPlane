@@ -23,7 +23,8 @@ class TestTierResolver(unittest.TestCase):
         # isolate the TASKPLANE_MODEL_* env across tests
         self._saved = {k: os.environ.get(k) for k in
                        ("TASKPLANE_MODEL_CHEAP", "TASKPLANE_MODEL_STANDARD",
-                        "TASKPLANE_MODEL_DEEP")}
+                        "TASKPLANE_MODEL_DEEP", "CODEX_HOME",
+                        "CODEX_THREAD_ID")}
         for k in self._saved:
             os.environ.pop(k, None)
 
@@ -38,6 +39,12 @@ class TestTierResolver(unittest.TestCase):
         # portable default: only 'cheap' maps to a concrete model; the rest
         # inherit the session model (None) so nothing is forced.
         self.assertEqual(tp.model_for_tier("cheap"), "haiku")
+        self.assertIsNone(tp.model_for_tier("standard"))
+        self.assertIsNone(tp.model_for_tier("deep"))
+
+    def test_codex_defaults_all_tiers_to_inherit(self):
+        os.environ["CODEX_HOME"] = "/tmp/codex-test"
+        self.assertIsNone(tp.model_for_tier("cheap"))
         self.assertIsNone(tp.model_for_tier("standard"))
         self.assertIsNone(tp.model_for_tier("deep"))
 
@@ -101,9 +108,9 @@ class TestLensBriefsCarryModel(unittest.TestCase):
             self.assertIn("model", b)
         self.assertEqual(by_id["security"]["model_tier"], "deep")
         self.assertEqual(by_id["code-quality"]["model_tier"], "standard")
-        # the quick sweep runs cheap -> the one pinned model by default
+        # the quick sweep resolves through the current host's cheap tier
         self.assertEqual(d["sweep"]["model_tier"], "cheap")
-        self.assertEqual(d["sweep"]["model"], "haiku")
+        self.assertEqual(d["sweep"]["model"], tp.model_for_tier("cheap"))
 
 
 class TestLoopPayloadCarriesModel(unittest.TestCase):
@@ -144,7 +151,7 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
         out = loop.next_action(ws)
         self.assertEqual(out["step"], "execute")
         self.assertEqual(out["model_tier"], "cheap")
-        self.assertEqual(out["model"], "haiku")
+        self.assertEqual(out["model"], tp.model_for_tier("cheap"))
 
 
 if __name__ == "__main__":

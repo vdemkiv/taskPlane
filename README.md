@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml/badge.svg)](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml)
 
-**See what your AI agents are doing — and keep them on track.** Claude Code
-and Cowork are powerful, but driving them can feel like flying blind: work
+**See what your AI agents are doing — and keep them on track.** Claude Code,
+Cowork, and Codex are powerful, but driving them can feel like flying blind: work
 scrolls past, agents wander off the task, and it's hard to tell what's done,
 what's pending, and what's waiting on you. taskplane is the layer that makes
 it legible. It keeps each agent inside a clear task scope, renders the whole
@@ -12,8 +12,8 @@ know where things stand and what needs your call.
 
 ![taskplane in action — a governed run on a real PR: Definition of Ready gate → read-only review with the product rendered and findings pinned → your approval → parallel fix wave with a live out-of-scope block → Definition of Done gate → sign-off](docs/assets/taskplane-cowork-flow.gif)
 
-Built for PMs, EMs, and engineers who want to move fast with the Claude
-ecosystem without losing the plot. Three things, everywhere: **you can see
+Built for PMs, EMs, and engineers who want to move fast with coding agents
+without losing the plot. Three things, everywhere: **you can see
 what's happening, it stays on topic, and you keep the thread.** The scope
 guardrails and gates are how it delivers that — not the point, the means.
 
@@ -21,6 +21,7 @@ guardrails and gates are how it delivers that — not the point, the means.
 
 | Version | Highlights |
 | --- | --- |
+| **v1.6.0** | **Codex support — same governed loop, second host** — taskplane now packages as an OpenAI Codex plugin from the same repo: the shared hook screens Codex `apply_patch` (every patch target, move destinations included; opaque patches fail closed) and `Agent` dispatches, contracts written on Claude stay valid via tool aliasing, and allowed actions preserve Codex's own sandbox/approval flow. Governance hardened for both hosts: DoR now refuses to start unready steps, PASS advances only on evidence (task tests + evaluator criteria/lens verdicts + the full-catalog review), and a failed final DoD blocks sign-off. Dashboards render inline widgets where the host supports them and fall back to `HEADLINE:` + a generated HTML artifact; Codex inherits its session model for every tier unless explicitly mapped. Claude behavior unchanged. 409 tests. |
 | **v1.5.4** | **Lens coverage & dependency graph, surfaced where you decide** — new review lenses kept drifting out of the visualization and the dependency graph kept getting skipped. Both now derive from their single source of truth and appear automatically: the dashboard renders a **lens-coverage panel from `catalog.json`** (add a lens, it shows up — no hand-editing), the findings dashboard carries a **blast-radius graph panel** (an empty graph on a polyglot repo *explains* the cross-service gap and how to record edges with `tp graph edge`, instead of showing nothing), and the never-skippable `HEADLINE:` now reports lens coverage (`N deep / M sweep of 25`) and modules touched. The same render flow — HEADLINE first, `--paged` widgets, catalog in the context tab, graph in the graph tab — is now shared by **every** command: go, engineering, product, and north-star. Rendering is pinned to the cheap/standard model tier. |
 | **v1.5.3** | **Render-reliability contract for inline dashboards** — the decision data in a dashboard no longer depends on one big widget that might get skipped. Every dashboard command prints a never-skippable plain-text `HEADLINE:` with the key numbers; `tp findings --paged` / `tp dashboard --paged` split a large view into ordered, self-contained fragments (summary → high → medium → low), each under 14 KB, rendered one after another; and the skills now mandate rendering every page in order rather than summarizing. Small reviews still render as a single widget. |
 | **v1.5.2** | **Hardening from the full 25-lens self-review of v1.5.1** (62 findings across every severity, all addressed): write-screen now covers `git apply/am`, `patch`, `sort -o`, and `cp/mv -t` and treats unscopeable mutation as default-deny; dependency-graph HTML escapes repo-supplied names (XSS); shared-store decision ids are collision-free; `publish`/`set_status`/`supersede` and the dispatch queue are lock-serialized; the team store is committable (anchored gitignore); private mode refuses inside Tag; `init --plan` scaffolds into the right store; docs (README, PRIVACY, state-spec, loop-design) truthed-up to the plan-aware store; keyboard + ARIA on the dashboard; and a raft of smaller correctness/UX fixes. 373 tests. |
@@ -53,8 +54,33 @@ as the source:
 /reload-plugins
 ```
 
+**Codex CLI:** add the GitHub marketplace, install taskplane, and then open the
+plugin browser to verify it is enabled:
+
+```bash
+codex plugin marketplace add vdemkiv/taskPlane
+codex plugin add taskplane
+codex
+# inside Codex: /plugins
+```
+
+**Codex in the ChatGPT desktop app:** select **Codex**, open **Plugins**, choose
+the `taskplane-marketplace` source after adding it, and install **taskplane**.
+Open the repository as a local environment and start a new task.
+
+Codex loads newly installed skills and hooks only in a new task/session. It
+also asks you to review and trust the bundled lifecycle hooks when prompted
+(`/plugins` confirms taskplane is enabled). Keep Codex's own sandbox and
+approval controls enabled — taskplane's
+scope contract is an additional guardrail, not a replacement. Plugins are
+currently supported in Codex CLI and Codex in the ChatGPT desktop app, not the
+IDE extension. Until the public listing is approved, install from this GitHub
+marketplace source. See [Codex plugins](https://learn.chatgpt.com/docs/plugins)
+and [Codex hooks](https://learn.chatgpt.com/docs/hooks).
+
 Requires `git` in your workspace (the gates need a commit snapshot) and
-`python3` (standard library only). Nothing else to set up.
+Python 3 (standard library only; `python3` on macOS/Linux or the `py` launcher
+on Windows). Nothing else to set up.
 
 ## Onboarding (`tp onboard`) — the full setup
 
@@ -83,11 +109,36 @@ checks are green:
    decisions too (`tp decision new "<title>" --modules <globs>`) so they
    govern future work automatically.
 
-**Plan & sharing mode.** Onboarding asks one question first: *personal
-plan, or Team/Enterprise?* (`tp share plan personal|team|enterprise` — or
-`tp init --plan …`). Personal keeps every decision, requirement and loop
-state in your private store (`~/.taskplane`). Team/Enterprise moves the
-store into the repo (`.taskplane-kb/`, committed — the Claude-Tag mode), so
+### Codex onboarding
+
+1. Install and enable taskplane, approve its bundled hooks when prompted,
+   then start a
+   **new** Codex task/session.
+2. Make the target repository the working folder. In Codex CLI, `cd` to the
+   repository before running `codex`; in the desktop app, open or create a
+   local environment for that repository.
+3. Prompt **"set up taskplane"** or **"use taskplane for …"**. The plugin runs
+   `tp onboard --json` before governed work.
+4. If the folder is not a committed Git repository, approve initialization or
+   make the first commit yourself. taskplane needs the commit as its diff and
+   Definition-of-Done baseline.
+5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
+   is **shared in the repository** (`team`/`enterprise`). This is a storage
+   choice; it is not tied to the name of your ChatGPT or Codex subscription.
+6. Let taskplane initialize the context documents, then fill
+   `current-state.md` first for an existing project. State the goal; taskplane
+   will stop at plan approval and final sign-off for your explicit decision.
+
+When inline HTML widgets are unavailable, Codex still relays the plain-text
+`HEADLINE:` and provides `.taskplane/dashboard.html` as the local dashboard
+artifact. The governance state and human gates do not depend on widget support.
+
+**Knowledge storage and sharing mode.** Onboarding asks one question first:
+*keep taskplane knowledge private/local, or share it with the team in the
+repository?* (`tp share plan personal|team|enterprise` — or `tp init --plan
+…`). `personal` keeps every decision, requirement and loop state in your
+private store (`~/.taskplane`). `team`/`enterprise` moves the store into the
+repo (`.taskplane-kb/`, committed — also compatible with Claude Tag), so
 the whole team shares one registry and a fresh clone inherits it with zero
 setup. Both are changeable any time. And on a team plan you can still work
 **privately**: `tp share set private` keeps your work in your own store
@@ -99,20 +150,21 @@ selected decisions into the shared store (then commit `.taskplane-kb/`).
 Two setup choices then decide how efficiently the whole system runs:
 
 **Models (cost routing).** Every step, task, and lens carries a capability
-tier, and `tp onboard` reports the resolved map. Out of the box only
-`cheap` is pinned:
+tier, and `tp onboard` reports the resolved map. Claude retains the historical
+`cheap → haiku` default; Codex inherits its session model for every tier unless
+you explicitly map one:
 
 | Tier | Default | Used for | Override |
 | --- | --- | --- | --- |
-| `cheap` | `haiku` | the lens sweep; tasks a planner marks simple | `TASKPLANE_MODEL_CHEAP` |
+| `cheap` | Claude: `haiku`; Codex: inherit session model | the lens sweep; tasks a planner marks simple | `TASKPLANE_MODEL_CHEAP` |
 | `standard` | inherit session model | execute / evaluate / fix | `TASKPLANE_MODEL_STANDARD` |
 | `deep` | inherit session model | spec, plan, engineering review, hard lenses (security, architecture, …) | `TASKPLANE_MODEL_DEEP` |
 
-For cost-differentiated runs, set the overrides before starting, e.g.
-`export TASKPLANE_MODEL_STANDARD=sonnet TASKPLANE_MODEL_DEEP=opus` — the
-bulk build work runs mid-tier while judgment-heavy steps get the strong
-model, and the wide lens sweep stays on `haiku`. No model ids are
-hardcoded; tiers are yours to map as models change. Routing is *verified*,
+For cost-differentiated runs, set the overrides before starting with model
+ids your host understands — on Claude e.g. `export
+TASKPLANE_MODEL_STANDARD=sonnet TASKPLANE_MODEL_DEEP=opus`; on Codex use your
+host's model ids the same way. No cross-provider model
+ids are hardcoded; tiers are yours to map as models change. Routing is *verified*,
 not assumed: `tp loop verify-dispatch` audits a run, and
 `TASKPLANE_ENFORCE_DISPATCH=warn|strict` turns on a dispatch-time check.
 Details: `discipline/model-tiers.md`.

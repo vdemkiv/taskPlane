@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import dashboard  # noqa: E402
+import lens  # noqa: E402
 
 
 def _git(ws, *a):
@@ -46,13 +47,25 @@ class TestSignoffDoD(unittest.TestCase):
     def _state(self, base, scope=("src/**",)):
         return {"goal": "g", "step": "signoff", "current_task": 0,
                 "max_fix_cycles": 2, "checkpoints": ["plan", "em"],
-                "tasks": [{"id": "t1", "scope": list(scope)}],
+                "tasks": [{"id": "t1", "scope": list(scope),
+                           "tests": "true", "criteria": ["works"]}],
                 "baseline": base}
+
+    def _review_evidence(self, ws):
+        coverage = {x["id"]: "sweep"
+                    for x in lens.load_catalog()["lenses"]}
+        os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
+        with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
+            json.dump({"meta": {"lens_coverage": coverage, "impact": {},
+                                "tests": ["true"],
+                                "gate": {"verdict": "recommend-pass"}},
+                       "findings": []}, f)
 
     def test_in_scope_change_passes(self):
         ws = _repo(self.tmp)
         base = _head(ws)
         open(os.path.join(ws, "src", "a.py"), "w").write("x = 2\n")  # in scope
+        self._review_evidence(ws)
         d = loop._signoff_dod(ws, self._state(base))
         self.assertTrue(d["passed"], d["errors"])
 

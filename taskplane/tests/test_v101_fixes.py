@@ -245,6 +245,8 @@ class TestOnboardTiers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ws = _repo(tmp)
             env = {**os.environ, "TASKPLANE_MODEL_DEEP": "opus"}
+            env.pop("CODEX_HOME", None)
+            env.pop("CODEX_THREAD_ID", None)
             r = subprocess.run([sys.executable, TPPY, "onboard", "--json",
                                 "--workspace", ws], capture_output=True,
                                text=True, env=env)

@@ -1,22 +1,24 @@
 
 # /tp-setup — make a repo governable
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`.
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
 0. **Cold start.** `$TP onboard --json` reports readiness — a folder to work
    in, a git repo with a snapshot, and taskplane initialized. `$TP onboard`
    (no `--json`) prints the onboarding dashboard for a brand-new user with
    nothing attached; its `next_action` is one of `attach_folder` (help them
-   connect a folder or clone a URL), `init_git` (offer to init + commit),
+   connect/open a folder or clone a URL; on Codex, open the repo as the task's
+   working folder and use a new task after plugin installation), `init_git` (offer to init + commit),
    `tp_init` (step 1), or `ready`. Don't proceed to a governed run until
    `ready` — the gates need a real folder and a commit to diff against.
 
-1. **Plan & knowledge storage (ask FIRST).** Ask the user: *personal plan
-   (Free/Pro/Max), or Team/Enterprise?* Then `$TP share plan
-   personal|team|enterprise`. Personal keeps all knowledge in the private
-   external store (`~/.taskplane` — the classic mode). Team/Enterprise
-   switches to the SHARED in-repo store (`.taskplane-kb/`, committed with
-   the work — Claude-Tag compatible, every teammate's clone inherits it).
+1. **Knowledge storage (ask FIRST).** Ask the user: *keep taskplane knowledge
+   private/local, or share it with the team in the repository?* This is a
+   storage choice, not the name of their Claude, ChatGPT, or Codex subscription.
+   Then `$TP share plan personal|team|enterprise`. `personal` keeps all
+   knowledge in the private external store (`~/.taskplane`). `team` or
+   `enterprise` switches to the SHARED in-repo store (`.taskplane-kb/`,
+   committed with the work; every teammate's clone inherits it).
    Both are changeable any time. On a team plan, an individual can still
    work privately: `$TP share set private` keeps their decisions in the
    private store, and when they're ready to make work visible to the team —
@@ -35,8 +37,8 @@
    lenses, workflow sets gate conventions.
 4. **Model tiers (cost routing).** `$TP onboard --json` includes
    `model_tiers` — the resolved tier→model map. Explain the default to the
-   user: only `cheap` is pinned (`haiku`, used for the lens sweep and tasks a
-   planner marks cheap); `standard`/`deep` inherit the session model until
+   user: on Claude only `cheap` is pinned (`haiku`); on Codex it inherits so
+   no Claude model id is dispatched. `standard`/`deep` inherit until
    `TASKPLANE_MODEL_STANDARD` / `TASKPLANE_MODEL_DEEP` are set. Offer to set
    them now if they want cost-differentiated routing, and mention
    `TASKPLANE_ENFORCE_DISPATCH=warn` + `tp loop verify-dispatch` for making

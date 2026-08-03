@@ -3,7 +3,7 @@
 _Last updated: 2026_
 
 taskplane is a local developer tool — a plugin that runs inside your own
-coding agent (e.g. Claude Code / Cowork) on your machine. This policy
+coding agent (for example Claude Code, Cowork, or Codex) on your machine. This policy
 describes what it does and does not do with data.
 
 ## The short version
@@ -56,7 +56,8 @@ elsewhere.
 taskplane runs *inside* a host coding agent. When you run a governed loop, the
 host agent may send code, prompts, and your instructions to an AI model to do
 the work. That data flow is handled by the **host agent and its model
-provider** (for Claude Code / Cowork, that is Anthropic) under **their**
+provider** (for Claude Code / Cowork, that is Anthropic; for Codex, OpenAI)
+under **their**
 privacy policy and terms — not by taskplane. taskplane neither controls nor
 receives a copy of those model interactions; it only reads the resulting files
 on your disk and enforces its contracts locally.

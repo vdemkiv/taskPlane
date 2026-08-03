@@ -1127,8 +1127,12 @@ def render_onboarding(report, out=None):
 
     if nxt == "attach_folder":
         headline = "Let's give taskplane a place to work"
-        sub = ("Connect the folder you want to work in — then I'll set up "
-               "the rest. Nothing's attached yet.")
+        if report.get("host") == "codex":
+            sub = ("Open the repository as this Codex task's working folder "
+                   "— then start a new task and I'll set up the rest.")
+        else:
+            sub = ("Connect the folder you want to work in — then I'll set "
+                   "up the rest. Nothing's attached yet.")
         actions = (
             b(btn, "How do I connect a folder?",
               "How do I connect a folder or repo so taskplane can work in it?")

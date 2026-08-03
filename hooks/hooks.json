@@ -2,21 +2,23 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|str_replace|Bash|BashOutput",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|str_replace|Bash|BashOutput|apply_patch|.*(write|edit|patch|delete|remove|rename|move|create|upload|execute|run|shell|command).*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py\" screen",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" screen",
+            "commandWindows": "py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen",
             "timeout": 15
           }
         ]
       },
       {
-        "matcher": "Task",
+        "matcher": "Task|Agent",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py\" screen-dispatch",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" screen-dispatch",
+            "commandWindows": "py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen-dispatch",
             "timeout": 10
           }
         ]
@@ -28,7 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py\" context",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" context",
+            "commandWindows": "py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" context",
             "timeout": 10
           }
         ]

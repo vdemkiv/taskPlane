@@ -5,7 +5,7 @@ description: "The engineering persona of taskplane — owns whether the built th
 
 # /tp-engineering — the SOUND seat (impact · all lenses · verdicts)
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`. tp-engineering owns
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. tp-engineering owns
 the HOW-judgment: is the work sound, what does it affect, what did we
 learn. The loop's `em` step is this persona. Its counterpart,
 `/tp-product`, owns the requirement — deliberately separate seats so the
@@ -32,11 +32,16 @@ exactly its lens to the diff and writes `.em-review/lens-<id>/findings.json`,
 and none can touch code (the harness holds — read-only, metered). A
 7-lens review runs in one wall-clock pass instead of seven.
 
+On hosts that do not register `agents/` as named definitions, dispatch a
+general subagent with the brief plus `agents/tp-lens.md` as its role
+instructions. The contract and output path remain identical.
+
 **SHOW THE PROGRESS, NOT JUST THE RESULT.** A review is agent work the
 human should watch, not a black box that ends in a report. So:
 1. BEFORE you dispatch, render the live wave board —
    `$TP lens dispatch --base <ref> --all --dashboard` prints it — via
-   `mcp__visualize__show_widget` (unique title). The person sees every
+   an inline widget tool when available (unique title), otherwise deliver the
+   generated dashboard artifact. The person sees every
    lens-agent about to run, in parallel, read-only.
 2. Dispatch the agents.
 3. AFTER they land, MERGE every lens's findings into `$TP findings` and
@@ -90,10 +95,9 @@ into "part i/n" when a tier is large). Then:
 1. Relay the `HEADLINE:` line to the human as plain text FIRST — this is the
    never-skippable carrier of the numbers, so the decision data lands even if
    a render fails.
-2. Call `mcp__visualize__show_widget` once **per page, in order**, each with a
-   unique title. Small pages always render cleanly — that is the whole point
-   of paging; do NOT collapse them back into one giant widget, and do NOT
-   replace them with a written recap.
+2. With an inline widget tool, render once **per page, in order**, each with a
+   unique title. Without one, save and link every ordered page as an artifact.
+   Do NOT collapse pages into one giant widget or replace them with a recap.
 3. If a page errors, retry it once, then fall back to delivering the written
    file for that page — but never silently drop it.
 

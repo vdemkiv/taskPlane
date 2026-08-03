@@ -43,9 +43,15 @@ jobs:
           python - <<'PY'
           import json, re, sys, glob
           pj = json.load(open(".claude-plugin/plugin.json"))
+          cj = json.load(open(".codex-plugin/plugin.json"))
           mp = json.load(open(".claude-plugin/marketplace.json"))
           hooks = json.load(open("hooks/hooks.json"))
-          assert pj["version"] == mp["plugins"][0]["version"], "version drift"
+          versions = {pj["version"], cj["version"],
+                      mp["plugins"][0]["version"], mp["version"]}
+          assert len(versions) == 1, f"version drift: {sorted(versions)}"
+          assert cj["name"] == pj["name"] == mp["plugins"][0]["name"]
+          assert cj["skills"] == "./skills/"
+          assert "PreToolUse" in hooks["hooks"]
           for f in glob.glob("skills/*/SKILL.md"):
               desc = re.search(r'description:\s*"(.*)"', open(f).read())
               if desc and ("<" in desc.group(1) or ">" in desc.group(1)):

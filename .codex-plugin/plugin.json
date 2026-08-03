@@ -1,0 +1,32 @@
+{
+  "name": "taskplane",
+  "version": "1.6.0",
+  "description": "Build and review robust code with enforced readiness, evidence-backed completion, scoped execution, and technical-consequence lenses.",
+  "author": {
+    "name": "Volodymyr Demkiv",
+    "email": "vdemkiv@gmail.com",
+    "url": "https://github.com/vdemkiv"
+  },
+  "homepage": "https://github.com/vdemkiv/taskPlane",
+  "repository": "https://github.com/vdemkiv/taskPlane",
+  "license": "Apache-2.0",
+  "keywords": ["governance", "task-contract", "code-review", "requirements", "human-in-the-loop", "guardrails"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "taskplane",
+    "shortDescription": "Enforce ready, scoped, evidence-backed coding",
+    "longDescription": "taskplane helps heavy AI coding users build and review robust features. Definition of Ready blocks under-specified work; scoped contracts constrain execution; evidence-backed Definition of Done blocks unproven completion; and a full 25-lens engineering review exposes architecture, security, operability, data, UX, and other technical consequences for technical and nontechnical decision-makers.",
+    "developerName": "Volodymyr Demkiv",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write", "Interactive"],
+    "websiteURL": "https://github.com/vdemkiv/taskPlane",
+    "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/vdemkiv/taskPlane/blob/main/TERMS.md",
+    "defaultPrompt": [
+      "Use taskplane to plan and implement this feature with approval gates.",
+      "Use taskplane to review this branch without changing code.",
+      "Show the current taskplane run status and what needs my decision."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

@@ -91,7 +91,10 @@ class TestModeResolution(_Ws):
             self.assertEqual((m["store"], m["source"]),
                              ("repo", "shared-config"))
         finally:
-            os.environ["TASKPLANE_HOME"] = prev
+            if prev is None:
+                os.environ.pop("TASKPLANE_HOME", None)
+            else:
+                os.environ["TASKPLANE_HOME"] = prev
 
 
 class TestSharePush(_Ws):

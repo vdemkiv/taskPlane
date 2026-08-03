@@ -12,6 +12,7 @@ import taskplane_lite as tl  # noqa: E402
 import loop  # noqa: E402
 import depgraph  # noqa: E402
 import dashboard  # noqa: E402
+import lens  # noqa: E402
 
 
 def _git(ws, *a):
@@ -25,6 +26,23 @@ def _repo(prefix="tp-fix-"):
     open(os.path.join(ws, "a.py"), "w").write("x = 1\n")
     _git(ws, "add", "-A"); _git(ws, "commit", "-qm", "base")
     return ws
+
+
+def _pass_eval(ws):
+    state = loop.load(ws)
+    task = state["tasks"][state["current_task"]]
+    routed = lens.route_git_diff(ws, base=state.get("baseline") or "HEAD",
+                                 task_type=task.get("type"), breadth="routed")
+    os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
+    with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
+        json.dump({"task": task["id"], "verdict": "pass",
+                   "criteria": [{"criterion": c, "status": "met",
+                                  "evidence": "verified"}
+                                for c in loop._criteria_for(ws, state, task)],
+                   "lenses": [{"lens": x["id"], "verdict": "pass",
+                               "blockers": 0} for x in routed["lenses"]],
+                   "failures": []}, f)
+    return loop.gate(ws, "pass")
 
 
 class TestKernel(unittest.TestCase):
@@ -94,7 +112,7 @@ class TestEngine(unittest.TestCase):
             t["status"] = "passed"
         s["step"] = "evaluate"; s["current_task"] = len(s["tasks"]) - 1
         loop.save(self.ws, s)
-        r = loop.gate(self.ws, "pass")
+        r = _pass_eval(self.ws)
         self.assertEqual(r["step"], "selection")
 
     def test_skip_cascades_to_dependents_no_deadlock(self):

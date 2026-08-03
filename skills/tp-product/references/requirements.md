@@ -1,7 +1,7 @@
 
 # /tp-requirements — the spine of the knowledge base
 
-`TP=python3 "${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py"`.
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
 - **Record:** `$TP req new "<title>" --functional "..." --acceptance "..."
   --nfr security=... --files "src/x/**"` — acceptance criteria become the
