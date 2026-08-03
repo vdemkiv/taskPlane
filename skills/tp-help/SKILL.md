@@ -1,9 +1,18 @@
 ---
 name: tp-help
-description: "Use when the user asks how taskplane works or how to get started: 'taskplane help', 'how do I use taskplane', 'what can taskplane do', 'taskplane tour', 'getting started with taskplane', 'what is taskplane'. Gives the mental model, the quickstart, and which skill to reach for."
+description: "Use when the user asks how taskplane works or how to get started: 'taskplane help', 'how do I use taskplane', 'what can taskplane do', 'taskplane tour', 'getting started with taskplane', 'what is taskplane', 'I installed taskplane, now what', 'taskplane is not doing anything'. Gives the mental model, the quickstart, and which skill to reach for."
 ---
 
 # /tp-help — the guided tour
+
+**FIRST, always:** run `python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" onboard --json`
+for the current folder. If `ready` is **false**, do NOT open with the tour —
+open with setup: tell them this folder isn't set up yet, name the ONE missing
+piece from `next_action` (folder / git / init), and say that **"set up
+taskplane"** (or `/tp-go`) runs the guided setup — it walks folder → git →
+init, asks whether knowledge stays private or shared with the team, and shows
+the model-tier map. THEN give whatever tour they asked for. A just-installed
+user's real question is "now what?" — answer that before explaining concepts.
 
 Explain conversationally (adapt to what they asked; don't dump everything):
 
