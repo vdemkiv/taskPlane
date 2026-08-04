@@ -39,7 +39,7 @@ their own definition. The loop's `em` step is yours.
 
 **Cardinal rule: you judge — you never implement or fix.** Reports only.
 This is enforced, not trusted — activate your contract FIRST
-(`PLUGIN=${CLAUDE_PLUGIN_ROOT}`):
+(`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
 
 ```bash
 python3 "$PLUGIN/taskplane/tp.py" new --read-only \

@@ -77,6 +77,14 @@ giant widget and never replace them with a prose recap. The loop board's
 a newly added lens appears automatically) and the **graph tab shows blast
 radius**; if the graph is empty on a polyglot repo, say so — don't omit it.
 
+**Shared progress artifacts (v2.0.0).** Every `loop gate`/`next`/`approve`/
+`retro` also snapshots the decision artifacts (dashboard, plan, findings,
+graph, `HEADLINES.md`, retro) into the active store — the payload's
+`artifacts.path` names the folder. On a team/enterprise store that folder is
+inside `.taskplane-kb/`: COMMIT it with the work, so the org sees progress
+from a fresh clone. Treat it as a context cache too — before re-deriving
+plan/review/graph state, read the snapshot; it's cheaper than recomputing.
+
 At a human gate, STOP after showing the widget or dashboard artifact. Widget
 buttons can drive the next prompt where supported; otherwise ask for the same
 explicit approval in conversation. Never run the loop silently.
@@ -93,6 +101,9 @@ explicit approval in conversation. Never run the loop silently.
    The buttons drive this via `sendPrompt`. Don't guess a workspace — a
    governed run needs a real folder + a git commit, and this is where a
    brand-new user gets them in place.
+   If the report includes `artifacts`, read the latest snapshot before
+   re-deriving plan, review, graph, or progress state; it is the durable
+   cross-session/team handoff.
 1. **Setup (once a folder + repo exist):** if `knowledge/context/` is
    missing, run `$TP init` yourself (details: `references/setup.md`) and fill
    the three context docs from the conversation — only ask what you can't

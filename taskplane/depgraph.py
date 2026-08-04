@@ -451,6 +451,32 @@ def scan(ws: str) -> dict:
     g["edges"] += [e for e in g["recorded"]
                    if not any(x["from"] == e["from"] and x["to"] == e["to"]
                               and x["kind"] == e["kind"] for x in g["edges"])]
+    # v2.0.0: unify ext:X with an INTERNAL module named X. An import the
+    # resolver could not map to a file (e.g. `from core import hub` where
+    # core/ is a package dir) used to become a dangling ext: node - and
+    # every consumer (impact, hub signal, blast radius) undercounted the
+    # real dependents of that internal module.
+    internal = {m for m, meta in g["modules"].items()
+                if not m.startswith(("ext:", "svc:", "req:"))}
+    for e in g["edges"]:
+        for side in ("from", "to"):
+            v = e[side]
+            if v.startswith("ext:") and v[4:] in internal:
+                e[side] = v[4:]
+    referenced = {e["from"] for e in g["edges"]}
+    referenced |= {e["to"] for e in g["edges"]}
+    for m in [m for m in g["modules"]
+              if m.startswith("ext:") and m[4:] in internal
+              and m not in referenced]:
+        del g["modules"][m]
+    # dedupe edges that collapsed onto an existing internal edge
+    seen, uniq = set(), []
+    for e in g["edges"]:
+        k = (e["from"], e["to"], e["kind"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(e)
+    g["edges"] = uniq
     save(ws, g)
     tp.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]),
              files=len(file_entries))
@@ -567,7 +593,12 @@ def impact(ws: str, changed_files, max_depth: int = 3) -> dict:
     for e in g["edges"]:
         rev.setdefault(e["to"], []).append((e["from"], e["kind"]))
 
-    touched = sorted({module_of(f) for f in (changed_files or [])})
+    # v2.0.0: accept BOTH file paths and module ids - the plan gate and
+    # the execute brief pass modules_for_scope() output (module names),
+    # which module_of() used to collapse to "(root)", silently zeroing
+    # their blast radius.
+    touched = sorted({f if f in g["modules"] else module_of(f)
+                      for f in (changed_files or [])})
     seen = {m: 0 for m in touched}
     frontier, by_depth = list(touched), {}
     depth = 0

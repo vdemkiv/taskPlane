@@ -15,6 +15,10 @@ with the team and show the model-tier map. THEN give whatever tour they asked
 for. A just-installed user's real question is "now what?" — answer that before
 explaining concepts.
 
+If the onboarding report includes `artifacts`, read the latest snapshot before
+reconstructing prior plans, findings, graph context, or progress. It is the
+durable handoff from an earlier session or teammate, not optional decoration.
+
 Explain conversationally (adapt to what they asked; don't dump everything):
 
 **The mental model (30 seconds).** Agents are fast; taskplane makes them

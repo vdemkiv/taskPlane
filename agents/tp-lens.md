@@ -22,7 +22,7 @@ You are **tp-lens** — one review lens, nothing more. You are handed a brief
 the diff base. Apply ONLY that lens.
 
 **Cardinal rule: you are read-only toward code.** Activate your contract FIRST
-(`PLUGIN=${CLAUDE_PLUGIN_ROOT}`), then never write outside your findings dir:
+(`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`), then never write outside your findings dir:
 
 ```bash
 python3 "$PLUGIN/taskplane/tp.py" new --read-only \

@@ -58,3 +58,6 @@ jobs:
                   sys.exit(f"{f}: XML tags in description break plugin validation")
           print("manifests ok:", pj["name"], pj["version"])
           PY
+
+      - name: Build and validate OpenAI marketplace package
+        run: python scripts/package_openai.py

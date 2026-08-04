@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "description": "Build and review robust code with enforced readiness, evidence-backed completion, scoped execution, and technical-consequence lenses.",
   "author": {
     "name": "Volodymyr Demkiv",
@@ -14,11 +14,17 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "taskplane",
-    "shortDescription": "Enforce ready, scoped, evidence-backed coding",
+    "shortDescription": "Govern AI coding with proof",
     "longDescription": "taskplane helps heavy AI coding users build and review robust features. Definition of Ready blocks under-specified work; scoped contracts constrain execution; evidence-backed Definition of Done blocks unproven completion; and a full 25-lens engineering review exposes architecture, security, operability, data, UX, and other technical consequences for technical and nontechnical decision-makers.",
     "developerName": "Volodymyr Demkiv",
     "category": "Developer Tools",
-    "capabilities": ["Read", "Write", "Interactive"],
+    "capabilities": [
+      "Enforce Definition of Ready before implementation begins",
+      "Constrain execution to an approved task scope",
+      "Require evidence-backed Definition of Done before sign-off",
+      "Review code through 25 engineering lenses",
+      "Publish progress artifacts for team handoff"
+    ],
     "websiteURL": "https://github.com/vdemkiv/taskPlane",
     "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/vdemkiv/taskPlane/blob/main/TERMS.md",
@@ -27,6 +33,8 @@
       "Use taskplane to review this branch without changing code.",
       "Show the current taskplane run status and what needs my decision."
     ],
-    "brandColor": "#2563EB"
+    "brandColor": "#2563EB",
+    "logo": "./assets/taskplane-logo.svg",
+    "composerIcon": "./assets/taskplane-icon.svg"
   }
 }

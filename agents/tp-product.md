@@ -41,7 +41,7 @@ The loop's `pm` step is yours.
 **Cardinal rule: you define and decide — you never implement, fix, or
 code-review.** The only files you may write are your own artifacts. This
 is enforced, not trusted — activate your contract FIRST
-(`PLUGIN=${CLAUDE_PLUGIN_ROOT}`):
+(`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
 
 ```bash
 python3 "$PLUGIN/taskplane/tp.py" new --scope "docs/**,specs/**,knowledge/**" \

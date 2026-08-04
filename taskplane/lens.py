@@ -95,25 +95,57 @@ _ARCH_BOUNDARY_GLOBS = ["**/api/**", "**/services/**", "**/architecture/**",
 _ARCH_SYSTEM_TASKS = {"system-design", "distributed", "greenfield"}
 
 
-def architecture_effort(files, task_type, large: bool) -> str:
+# Graph hubness thresholds (v2.0.0): a change to a module that N other
+# modules depend on IS an architectural event, whatever its path looks like.
+_HUB_LIGHT = 3    # >= this many direct dependents -> at least a light pass
+_HUB_FULL = 8     # >= this many -> a full design pass
+
+
+def hub_signal(workspace, files) -> int:
+    """Max count of DIRECT dependents among the modules a change touches —
+    the dependency graph's zero-token answer to "is this a hub?"."""
+    try:
+        import depgraph
+        g = depgraph.load(workspace)
+        if not g.get("modules"):
+            return 0
+        rev = {}
+        for e in g.get("edges") or []:
+            rev.setdefault(e["to"], set()).add(e["from"])
+        touched = {depgraph.module_of(f) for f in files or []}
+        return max((len(rev.get(m, ())) for m in touched), default=0)
+    except Exception:
+        return 0
+
+
+def architecture_effort(files, task_type, large: bool,
+                        hub_dependents: int = 0) -> str:
     """How much architecture work THIS task warrants: skip | light | full.
 
     - full  : new/changed system shape — multi-service infra, distributed or
-              greenfield task, or a large structural change.
-    - light : touches a boundary/contract (API, service, interface, ADR).
+              greenfield task, a large structural change, OR a change to a
+              heavy hub module (>= _HUB_FULL direct dependents).
+    - light : touches a boundary/contract (API, service, interface, ADR) or
+              a moderate hub (>= _HUB_LIGHT dependents).
     - skip  : no architectural signal (a localized change) — don't overthink it.
+
+    The hub signal comes from the dependency graph (see hub_signal): a
+    one-line edit to the module everything imports is an architecture
+    review, whatever directory it lives in.
     """
     if (task_type in _ARCH_SYSTEM_TASKS or _any_match(files, _ARCH_SYSTEM_GLOBS)
-            or (large and len({f.split("/")[0] for f in files}) >= 3)):
+            or (large and len({f.split("/")[0] for f in files}) >= 3)
+            or hub_dependents >= _HUB_FULL):
         return "full"
-    if _any_match(files, _ARCH_BOUNDARY_GLOBS):
+    if _any_match(files, _ARCH_BOUNDARY_GLOBS) or hub_dependents >= _HUB_LIGHT:
         return "light"
     return "skip"
 
 
 def route(changed_files, task_type: str | None = None,
           artifact_type: str | None = None, catalog: dict | None = None,
-          only=None, skip=None, breadth: str = "routed") -> dict:
+          only=None, skip=None, breadth: str = "routed",
+          hub_dependents: int = 0) -> dict:
     """Return the routing decision.
 
     {"lenses": [{id, name, mode, tier, reasons[], checks[], looks_for}],
@@ -157,7 +189,11 @@ def route(changed_files, task_type: str | None = None,
         # changes still route only via its globs (ADRs, architecture docs).
         effort = None
         if lid == "architecture":
-            effort = architecture_effort(files, task_type, large)
+            effort = architecture_effort(files, task_type, large,
+                                         hub_dependents=hub_dependents)
+            if hub_dependents >= _HUB_LIGHT:
+                reasons.append(f"hub module: {hub_dependents} direct "
+                               "dependents (dependency graph)")
             if effort == "skip":
                 if not has_code:
                     continue
@@ -214,6 +250,7 @@ def route(changed_files, task_type: str | None = None,
             "task_type": task_type,
             "artifact_type": artifact_type,
             "breadth": breadth,
+            "hub_dependents": hub_dependents,
         },
     }
 
@@ -268,7 +305,10 @@ def route_git_diff(workspace: str, base: str = "HEAD",
         files = [f for f in files
                  if not f.startswith(LOOP_OWNED)
                  and not f.endswith(".taskplane_output.json")]
-    return route(sorted(set(files)), task_type=task_type, **kw)
+    kw.setdefault("hub_dependents", hub_signal(workspace, files))
+    routing = route(sorted(set(files)), task_type=task_type, **kw)
+    routing["context"]["files"] = sorted(set(files))
+    return routing
 
 
 def catalog_summary(catalog: dict | None = None) -> list:
@@ -301,7 +341,8 @@ def lens_brief(lens_id: str, catalog: dict | None = None) -> dict | None:
 CLEAR_ALWAYS = (
     "FINALLY — ALWAYS, in every outcome (done, error, or blocked): release "
     "your contract as your LAST action: "
-    '`python3 "$CLAUDE_PLUGIN_ROOT/taskplane/tp.py" clear`. Treat this as '
+    '`python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" '
+    'clear`. Treat this as '
     "the finally-block of your whole task — a leaked contract locks the "
     "workspace for everyone after you. If the clear itself is blocked "
     "(budget exhausted), STOP and report the leaked contract in your final "
@@ -328,7 +369,8 @@ def _lens_prompt(entry: dict, base: str) -> str:
 
 
 def dispatch_briefs(routing: dict, base: str = "HEAD",
-                    max_actions: int = 30) -> dict:
+                    max_actions: int = 30,
+                    impact_context: str | None = None) -> dict:
     """Turn a routing into READY-TO-DISPATCH lens-agent briefs — one governed
     read-only agent per DEEP lens (fanned out in parallel = much faster than
     one reviewer running them in sequence), the SWEEP lenses batched into a
@@ -349,7 +391,10 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "contract": {"read_only": True,
                          "write_allow": [f".em-review/lens-{lid}/**"],
                          "max_actions": max_actions},
-            "prompt": _lens_prompt(x, base),
+            "prompt": _lens_prompt(x, base) + (
+                "\nBLAST RADIUS (from the dependency graph - factor "
+                "these dependents into your verdict):\n"
+                + impact_context + "\n" if impact_context else ""),
             "looks_for": x.get("looks_for", ""), "checks": x.get("checks", []),
         })
     sweep_brief = None

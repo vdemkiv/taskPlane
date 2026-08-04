@@ -139,6 +139,27 @@ class TestSkillPortability(unittest.TestCase):
                 offenders.append(os.path.relpath(f, root))
         self.assertEqual(offenders, [])
 
+    def test_no_bare_claude_plugin_root_in_agent_roles(self):
+        # Codex dispatches these files as general-subagent role instructions.
+        # Their contract/cleanup commands must work before any host-specific
+        # environment variable is assumed.
+        import glob
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        offenders = []
+        for f in glob.glob(os.path.join(root, "agents", "*.md")):
+            body = open(f).read()
+            bare = body.replace(
+                "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}", "")
+            if "${CLAUDE_PLUGIN_ROOT}" in bare:
+                offenders.append(os.path.relpath(f, root))
+        self.assertEqual(offenders, [])
+
+    def test_generated_lens_cleanup_is_host_portable(self):
+        import lens
+        self.assertIn("${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}",
+                      lens.CLEAR_ALWAYS)
+
 
 class TestCodexOnboarding(unittest.TestCase):
     def test_reports_codex_workspace_instructions(self):

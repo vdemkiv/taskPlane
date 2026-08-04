@@ -216,6 +216,17 @@ def init(ws: str, goal: str, spec_path: str | None = None,
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,
              first_step=state["step"], max_fix_cycles=max_fix_cycles,
              checkpoints=checkpoints)
+    # v2.0.0: point the driver at prior gate snapshots (context cache) -
+    # read the published state instead of re-deriving it.
+    with contextlib.suppress(Exception):
+        art = os.path.join(tp.store_root(ws), "artifacts")
+        tracks = sorted(os.listdir(art)) if os.path.isdir(art) else []
+        if tracks:
+            return {**state, "prior_artifacts": {
+                "path": art, "tracks": tracks,
+                "note": "prior gate snapshots (dashboard, plan, "
+                        "findings, graph, HEADLINES) - read these "
+                        "before re-deriving context"}}
     return state
 
 
@@ -257,6 +268,43 @@ def _current_task(state: dict):
         return None
     i = state.get("current_task", 0)
     return tasks[i] if 0 <= i < len(tasks) else None
+
+
+def _edge_nudges(ws: str, changed, base: str) -> list:
+    """Spot side-effect channels the import scanner cannot see (v2.0.0):
+    SQL/migrations, HTTP calls, queue/topic messaging in the diff. Each
+    nudge asks the reviewer to record the runtime edge (`tp graph edge`)
+    so the NEXT change to that surface has a true blast radius."""
+    import re as _re
+    import subprocess as _sp
+    nudges = []
+    try:
+        names = " ".join(changed)
+        if _re.search(r"\.sql\b|/migrations?/", names):
+            nudges.append(
+                "diff touches SQL/migrations - schema changes ripple to "
+                "every consumer of those tables; record the edge: "
+                "tp graph edge <consumer-module> <db-module> --kind data")
+        diff = _sp.run(["git", "diff", "-U0", base, "--", *changed[:50]],
+                       cwd=ws, capture_output=True, text=True
+                       ).stdout[:60000]
+        added = "\n".join(l for l in diff.splitlines()
+                           if l.startswith("+"))
+        if _re.search(r"https?://|requests\.|urllib|fetch\(|axios"
+                      r"|http\.client|HttpClient", added):
+            nudges.append(
+                "diff adds HTTP calls - cross-service effects are not "
+                "import edges; record them: tp graph edge <this-module> "
+                "<called-service> --kind runtime")
+        if _re.search(r"publish|subscribe|topic|queue|kafka|sqs|rabbit"
+                      r"|emit\(", added, _re.I):
+            nudges.append(
+                "diff touches messaging (topic/queue) - consumers are "
+                "invisible to the import graph; record them: tp graph "
+                "edge <producer> <consumer> --kind runtime")
+    except Exception:
+        pass
+    return nudges
 
 
 def _diff_files(ws: str, base: str) -> list:
@@ -618,10 +666,29 @@ def next_action(ws: str) -> dict:
             imp["affected_requirements"] = [
                 r for r in prod["affected_requirements"] if r != own]
             imp["dependent_requirements"] = prod["dependent_requirements"]
+            nudges = _edge_nudges(diff_ws, changed,
+                                  state.get("baseline") or "HEAD")
+            if nudges:
+                imp["edge_suggestions"] = nudges
             tp.trace(ws, "graph_impact", step=step,
                      touched=imp["touched"],
                      impacted=imp["total_impacted"],
                      affected_reqs=imp["affected_requirements"])
+    elif step in ("execute", "fix") and task:
+        # v2.0.0: the BUILDER sees the blast radius BEFORE changing code
+        # (previously only the judges at evaluate/em did) - side effects
+        # get prevented, not just detected a loop-step later.
+        scope = task.get("scope") or []
+        if scope and depgraph.load(ws)["modules"]:
+            mods = depgraph.modules_for_scope(scope)
+            if mods:
+                imp = depgraph.impact(ws, mods)
+                if not imp["touched"]:
+                    imp = None
+                else:
+                    tp.trace(ws, "graph_impact", step=step,
+                             touched=imp["touched"],
+                             impacted=imp["total_impacted"])
 
     # Requirement anchoring: this task's R-id (or the loop's) is the spine —
     # its acceptance criteria are the DoD the evaluator holds the work to.
@@ -1508,6 +1575,16 @@ def retro(ws: str) -> dict:
         links={"loop": "retro"})
     tp.trace(ws, "loop_retro", lessons=len(lessons),
              denials=len(denies))
+    # human-readable summary for the shared artifacts snapshot (v2.0.0)
+    with contextlib.suppress(Exception):
+        lines = [f"# Retro — {state.get('goal', 'track')}", ""]
+        for k, v in report.items():
+            if isinstance(v, (str, int, float)):
+                lines.append(f"- **{k}**: {v}")
+        for l in (report.get("lessons") or []):
+            lines.append(f"- lesson: {l if isinstance(l, str) else json.dumps(l)}")
+        with open(os.path.join(tp.tp_dir(ws), "retro.md"), "w") as f:
+            f.write("\n".join(lines) + "\n")
     return report
 
 
@@ -1572,6 +1649,63 @@ def status(ws: str) -> dict:
 # --- Dashboard v2 (R-0001): rendering is part of the flow, not a separate
 # call. Every successful gate()/next_action() refreshes the fragment on disk
 # and points at it in the payload — the driver renders what's already there.
+# ---- shared progress artifacts (v2.0.0) -------------------------------------
+# Every gate transition snapshots its decision artifacts into the ACTIVE store
+# (team/enterprise plan: in-repo .taskplane-kb/ — commit it and the whole org
+# sees progress from a fresh clone; personal/private: the external store, so
+# nothing leaks). Doubles as a context cache: a future session reads the
+# snapshot instead of re-deriving it — shared progress AND cheaper tokens.
+# Fail-open like the dashboard: publishing must never break the loop.
+
+def _publish_artifacts(ws: str) -> str | None:
+    import re as _re
+    import shutil as _sh
+    import time as _time
+    try:
+        state = load(ws) or {}
+        slug = _re.sub(r"[^a-z0-9]+", "-",
+                       str(state.get("goal") or "track").lower()
+                       ).strip("-")[:60] or "track"
+        root = os.path.join(tp.store_root(ws), "artifacts", slug)
+        os.makedirs(root, exist_ok=True)
+
+        def _cp(src):
+            if os.path.isfile(src):
+                _sh.copyfile(src, os.path.join(root, os.path.basename(src)))
+
+        _cp(os.path.join(tp.tp_dir(ws), "dashboard.html"))
+        _cp(os.path.join(tp.tp_dir(ws), "retro.md"))
+        _cp(os.path.join(ws, "plan", "plan.md"))
+        _cp(os.path.join(ws, "plan", "tasks.json"))
+        _cp(os.path.join(ws, ".em-review", "findings.json"))
+        _cp(os.path.join(ws, ".em-review", "report.md"))
+        with contextlib.suppress(Exception):
+            g = depgraph.load(ws)
+            if g and g.get("modules"):
+                with open(os.path.join(root, "graph.json"), "w") as f:
+                    json.dump(g, f, indent=1)
+        with contextlib.suppress(Exception):
+            import dashboard as _dash
+            line = _dash.headline_loop(ws)
+            if line:
+                p = os.path.join(root, "HEADLINES.md")
+                prev = ""
+                if os.path.exists(p):
+                    lines = open(p).read().rstrip().splitlines()
+                    prev = lines[-1] if lines else ""
+                if not prev.endswith(line):        # skip consecutive repeats
+                    with open(p, "a") as f:
+                        if not prev:
+                            f.write(f"# {state.get('goal', 'track')} — "
+                                    "progress log\n\n")
+                        stamp = _time.strftime("%Y-%m-%d %H:%M UTC",
+                                               _time.gmtime())
+                        f.write(f"- {stamp} · {line}\n")
+        return root
+    except Exception:
+        return None
+
+
 # Fail-open: a dashboard problem must never break the loop itself.
 
 def _with_dashboard(fn):
@@ -1592,6 +1726,15 @@ def _with_dashboard(fn):
                               "(mcp__visualize__show_widget) before "
                               "proceeding; the dashboard is the interface "
                               "the human governs through"}
+                root = _publish_artifacts(ws)
+                if root:
+                    out["artifacts"] = {
+                        "path": root,
+                        "note": "gate-state snapshot (dashboard, plan, "
+                                "findings, graph, HEADLINES.md) — on a team "
+                                "store commit it with the work so the org "
+                                "sees progress; future sessions read it "
+                                "instead of re-deriving (token cache)"}
         except Exception:
             pass
         return out
@@ -1603,3 +1746,5 @@ def _with_dashboard(fn):
 
 gate = _with_dashboard(gate)
 next_action = _with_dashboard(next_action)
+approve = _with_dashboard(approve)
+retro = _with_dashboard(retro)

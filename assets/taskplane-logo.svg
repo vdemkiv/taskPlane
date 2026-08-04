@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">taskplane logo</title>
+  <desc id="desc">Three ordered work planes converging on a completion check.</desc>
+  <rect width="512" height="512" rx="104" fill="#2563EB"/>
+  <path d="M110 142h292l-50 56H110c-25 0-45-12-45-28s20-28 45-28Z" fill="#BFDBFE"/>
+  <path d="M110 228h214l50 56H110c-25 0-45-12-45-28s20-28 45-28Z" fill="#DBEAFE"/>
+  <path d="M110 314h166l-50 56H110c-25 0-45-12-45-28s20-28 45-28Z" fill="#FFFFFF"/>
+  <path d="m278 334 42 42 93-111" fill="none" stroke="#FFFFFF" stroke-width="35" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

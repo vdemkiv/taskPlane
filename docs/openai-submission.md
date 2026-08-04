@@ -1,4 +1,4 @@
-# OpenAI plugin submission — taskplane 1.6.0
+# OpenAI plugin submission — taskplane 2.0.0
 
 This is the submission worksheet for the skills-only taskplane plugin. It is
 not an MCP submission: taskplane has no server, authentication, account, remote
@@ -14,15 +14,45 @@ local task contracts on supported Codex surfaces.
 - **Support:** https://github.com/vdemkiv/taskPlane/blob/main/SUPPORT.md
 - **Privacy:** https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md
 - **Terms:** https://github.com/vdemkiv/taskPlane/blob/main/TERMS.md
-- **Short description:** Keep AI coding work visible and on scope.
-- **Long description:** taskplane governs coding work with explicit task
-  scope, plan and sign-off gates, structured requirements, persistent project
-  decisions, parallel execution support, and a 25-lens engineering review.
+- **Short description:** Govern AI coding with proof
+- **Long description:** taskplane helps heavy AI coding users build and review
+  robust features. Definition of Ready blocks under-specified work; scoped
+  contracts constrain execution; evidence-backed Definition of Done blocks
+  unproven completion; and a full 25-lens engineering review exposes
+  architecture, security, operability, data, UX, and other technical
+  consequences for technical and nontechnical decision-makers.
+- **Logo:** `assets/taskplane-logo.svg`
+- **Composer icon:** `assets/taskplane-icon.svg`
 
 Do not upload the existing animated GIF as a marketplace screenshot. The
 current submission is skills-only and does not provide MCP Apps UI; OpenAI's
-guidelines say not to submit UI screenshots for a plugin without UI. Prepare a
-production logo separately for the submission form.
+guidelines say not to submit UI screenshots for a plugin without UI. The two
+square production brand assets above are bundled in the upload ZIP and declared
+in `.codex-plugin/plugin.json`.
+
+## Build the upload
+
+From the repository root:
+
+```bash
+python3 scripts/package_openai.py
+```
+
+This writes:
+
+- `dist/taskplane-2.0.0-openai.zip` — upload this in the **Skills only** flow.
+- `dist/taskplane-2.0.0-openai.zip.sha256` — checksum for release provenance.
+
+The ZIP is deterministic, has one top-level `taskplane/` directory, and
+contains the Codex manifest, all seven Codex-relevant skills and their
+references, the local Python runtime, lifecycle hooks, agent roles, lens
+catalog, operating disciplines, runtime specifications, brand assets, and legal
+files. It deliberately excludes Claude manifests, MCP/app configuration, the
+Claude Tag-only skill, tests, non-runtime design documents, repository
+metadata, generated local state, and the animated documentation GIF. The
+builder validates the public directory field limits, skill front matter, asset
+dimensions, skills-only constraints, archive safety, and OpenAI's documented
+size and entry limits before reporting success.
 
 ## Starter prompts
 
@@ -103,24 +133,27 @@ governed implementation. It explains the minimal setup needed and waits.
 
 ## Submission release notes
 
-Version 1.6.0 adds Codex host compatibility to the existing taskplane
-workflows. It adds the Codex manifest, adapts lifecycle-hook behavior and tool
-aliases, and hardens the existing governance contract: failed Definition of
-Ready blocks execution, task and evaluator evidence controls PASS transitions,
-full lens coverage is required for engineering review, and failed Definition
-of Done blocks final sign-off. These are corrections to existing guarantees,
-not a new product workflow.
-The release also documents artifact fallbacks for dashboards and supplies public
-privacy, terms, and support materials. It does not add an MCP server, external
-service, authentication, telemetry, or a new end-user workflow.
+Version 2.0.0 is taskplane's first OpenAI marketplace submission and its first
+fully multi-host release. The skills-only package brings the same governed loop
+to Codex and Claude: Definition of Ready blocks under-specified work, scoped
+contracts constrain execution, evidence-backed Definition of Done blocks
+unproven completion, and 25 review lenses surface technical consequences.
+Durable gate artifacts let another session or teammate resume from approved
+plans, findings, graph context, retrospectives, and progress headlines. The
+dependency graph now shapes execution and review: hub changes escalate
+architecture scrutiny, builders receive blast radius before editing, and
+reviewers are prompted to record runtime edges the import scanner cannot see.
+It does not add an MCP server, external service, authentication, or telemetry.
 
 ## Portal checklist
 
 - Obtain **Apps Management: Write** in the publishing OpenAI organization.
 - Complete individual or business verification under the same organization.
 - Choose **Skills only** in the plugin submission portal.
-- Upload the final tested skill bundle from this repository.
+- Run `python3 scripts/package_openai.py` and upload
+  `dist/taskplane-2.0.0-openai.zip`.
 - Use the listing fields and test cases above.
-- Add a production logo and choose availability countries/regions.
-- Confirm the public GitHub URLs resolve after the 1.6.0 changes are pushed.
+- Confirm the bundled logo and composer icon render correctly, then choose
+  availability countries/regions.
+- Confirm the public GitHub URLs resolve after the 2.0.0 changes are pushed.
 - Complete policy attestations and submit for review.

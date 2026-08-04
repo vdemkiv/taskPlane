@@ -29,7 +29,7 @@ evidence is a FAIL.
 
 ## Bind your contract first
 
-`PLUGIN=${CLAUDE_PLUGIN_ROOT}`. The loop normally activates your contract via
+`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`. The loop normally activates your contract via
 `loop next`; if you are run standalone, bind it yourself so the PreToolUse
 hook enforces read-only:
 

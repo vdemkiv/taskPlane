@@ -151,7 +151,17 @@ def _onboard_report(ws: str) -> dict:
         nxt = "tp_init"
     else:
         nxt = "ready"
-    return {"workspace": ws, "host": host,
+    artifacts = None
+    try:
+        _art = os.path.join(tp.store_root(ws), "artifacts")
+        _tracks = sorted(os.listdir(_art)) if os.path.isdir(_art) else []
+        if _tracks:
+            artifacts = {"path": _art, "tracks": _tracks,
+                         "note": "prior gate snapshots - a context "
+                                 "cache; read before re-deriving"}
+    except Exception:
+        artifacts = None
+    return {"workspace": ws, "host": host, "artifacts": artifacts,
             "looks_like_project": looks_like_project,
             "is_git": inside_git, "has_commit": has_commit,
             "has_context": has_context, "ready": ready,
@@ -791,8 +801,19 @@ def cmd_lens(a) -> int:
                                          breadth=breadth)
 
     if action == "dispatch":
+        impact_ctx = None
+        try:
+            import depgraph as dg
+            _files = (routing.get("context") or {}).get("files") or []
+            if _files and dg.load(ws).get("modules"):
+                _imp = dg.impact(ws, _files)
+                if _imp["touched"]:
+                    impact_ctx = dg.render_context(_imp)
+        except Exception:
+            impact_ctx = None
         briefs = lensmod.dispatch_briefs(routing, base=a.base,
-                                         max_actions=a.max_actions)
+                                         max_actions=a.max_actions,
+                                         impact_context=impact_ctx)
         for b in briefs.get("deep") or []:
             tp.record_expected_dispatch(ws, "lens", b.get("agent", "tp-lens"),
                                         b.get("model_tier", "standard"),
