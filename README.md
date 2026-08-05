@@ -9,7 +9,7 @@ behind that simple request it checks whether the work is ready, keeps every
 agent inside an approved scope, and requires current implementation, test, and
 review evidence before anything can be called done.
 
-![taskplane in action — a governed run on a real PR: Definition of Ready gate → read-only review with the product rendered and findings pinned → your approval → parallel fix wave with a live out-of-scope block → Definition of Done gate → sign-off](docs/assets/taskplane-cowork-flow.gif)
+![taskplane 2.1 in action — a real safe-order-cancellation project: graph-aware Definition of Ready blocks an undeclared audit module → a human approves the corrected dependency-aware plan → the execution contract blocks a Codex edit outside scope → worker evidence cannot self-advance → an independent evaluator checks acceptance criteria, routed lenses, dependents, and the distributed contract → the full 25-lens review runs → final human sign-off](docs/assets/taskplane-cowork-flow.gif)
 
 taskplane is not another prompt collection, review bot, or project tracker. It
 is the governed execution and assurance layer between your intent and
