@@ -65,6 +65,20 @@ class TestTierResolver(unittest.TestCase):
         self.assertIsNone(tp.model_for_tier("cheap"))
 
 
+class TestAgentFrontmatterPortability(unittest.TestCase):
+    def test_agents_never_pin_provider_specific_models(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        agents = os.path.join(root, "agents")
+        for name in os.listdir(agents):
+            if not name.endswith(".md"):
+                continue
+            with open(os.path.join(agents, name), encoding="utf-8") as f:
+                text = f.read()
+            frontmatter = text.split("---", 2)[1]
+            self.assertIn("model: inherit", frontmatter, name)
+
+
 class TestStepTier(unittest.TestCase):
     def test_reasoning_steps_default_deep(self):
         for s in ("pm", "plan", "em"):

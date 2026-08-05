@@ -12,7 +12,8 @@ initialized with `--parallel` and an approved plan whose tasks carry
    .tp-work/<id>` — the task's contract activates in THAT worktree.
 3. Dispatch ONE subagent per task, all concurrently (single message,
    multiple Task calls). Each builds inside its worktree only, then
-   reports `$TP loop gate pass|fail --task <id>`.
+   commits and runs `$TP loop submit pass|fail --task <id>`. The orchestrator
+   verifies the fingerprint and alone runs the matching `$TP loop gate`.
 4. When the wave empties, `$TP loop next` evaluates each built task
    (read-only, routed lenses, impact). On PASS merge `tp/<id>` into the
    main tree and remove the worktree; then the next `$TP loop wave`.
@@ -23,7 +24,8 @@ finding about the plan.
 
 ## Show the wave
 
-After `loop wave` and after each `loop gate --task`, run `$TP dashboard`
-and pass the fragment to `mcp__visualize__show_widget` — the agent cards
+After `loop wave`, worker submission, and each `loop gate --task`, run
+`$TP summary` for the user-facing state; render `$TP dashboard` when
+supported. The agent cards
 show each worker's task, contract scope, and status (queued → running →
 built → passed) live, inline in the reply.

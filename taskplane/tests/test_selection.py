@@ -27,9 +27,9 @@ def _repo():
 
 AB_PLAN = {"mode": "ab-selection", "tasks": [
     {"id": "feat-variant-a", "variant": "A", "req": "R-0001",
-     "scope": ["src/**"], "tests": "true"},
+     "scope": ["src/**"], "new_modules": ["src"], "tests": "true"},
     {"id": "feat-variant-b", "variant": "B", "req": "R-0001",
-     "scope": ["src/**"], "tests": "true"},
+     "scope": ["src/**"], "new_modules": ["src"], "tests": "true"},
 ]}
 
 
@@ -59,6 +59,7 @@ def _pass_eval(ws):
                    "lenses": [{"lens": x["id"], "verdict": "pass",
                                "blockers": 0} for x in routed["lenses"]],
                    "failures": []}, f)
+    loop.submit(ws, "pass")
     return loop.gate(ws, "pass")
 
 
@@ -82,8 +83,10 @@ class TestSelectionStep(unittest.TestCase):
 
     def test_same_scope_non_variants_still_serialize(self):
         plan = {"tasks": [
-            {"id": "t1", "scope": ["src/**"], "tests": "true"},
-            {"id": "t2", "scope": ["src/**"], "tests": "true"}]}
+            {"id": "t1", "scope": ["src/**"], "new_modules": ["src"],
+             "tests": "true"},
+            {"id": "t2", "scope": ["src/**"], "new_modules": ["src"],
+             "tests": "true"}]}
         _to_plan_approved(self.ws, plan=plan)
         w = loop.wave(self.ws)
         self.assertEqual(len(w["wave"]), 1)
@@ -161,6 +164,7 @@ class TestSelectionStep(unittest.TestCase):
         state["current_task"] = 1                      # the winner task
         loop.save(self.ws, state)
         loop.next_action(self.ws)                       # activate fix contract
+        loop.submit(self.ws, "pass")
         loop.gate(self.ws, "pass")                     # fix → evaluate
         r = _pass_eval(self.ws)                          # evaluate pass
         self.assertEqual(r["step"], "em")              # NOT execute/selection

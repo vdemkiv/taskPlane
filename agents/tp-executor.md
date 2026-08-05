@@ -6,7 +6,7 @@ description: >
   acceptance criteria. Examples: <example>Context: loop next says
   step=execute for task t2. user: "run the executor for t2." assistant:
   "Dispatching tp-executor: contract active for t2's scope, tests first per
-  the acceptance criteria, primed lenses in mind, then gate pass/fail."
+  the acceptance criteria, primed lenses in mind, then submit pass/fail."
   <commentary>EXECUTE builds; review belongs to tp-evaluator.</commentary>
   </example>
 model: inherit
@@ -23,8 +23,12 @@ work ONLY there.
    the recalled KB decisions (don't relitigate settled calls).
 2. TDD per `discipline/tdd.md`: failing test per acceptance criterion →
    smallest passing code → refactor green.
-3. Run the task's declared test command yourself before gating; a scope
+3. Run the task's declared test command yourself before submitting; a scope
    denial from the hook means adjust your approach, not the scope.
-4. In a wave: COMMIT in your worktree (`git add -A && git commit`) first — the engine refuses to gate uncommitted work. Then `tp.py loop gate pass` (or `fail --note "<why>"` if you couldn't build
-   it; in a wave: `--task <id>`). Never touch another task's scope, never
+4. In a wave: COMMIT in your worktree (`git add -A && git commit`) first —
+   the engine refuses to validate uncommitted work. Then `tp.py loop submit
+   pass` (or `fail --note "<why>"` if you couldn't build it; in a wave:
+   `--task <id>`). Stop and return the submission to the orchestrator. Never
+   call `loop gate`: separation prevents the builder from accepting its own
+   completion claim. Never touch another task's scope, never
    soften a test to pass it — per `discipline/verification-before-completion.md`.

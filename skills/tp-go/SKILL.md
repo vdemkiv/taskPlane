@@ -8,6 +8,10 @@ description: "The single entry point for governed work — use when the user sta
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Drive the whole loop;
 pause ONLY at the human gates. Follow each step's returned `instruction`.
 
+This is the internal delivery driver behind the user-facing `taskplane`
+skill. Keep role names, CLI choreography, graph policies, and evidence files
+out of the user's way unless they ask. Do not simplify any of them for agents.
+
 **Model tiers.** Each `loop next` payload and each `lens dispatch` brief carries
 a `model` (a concrete id, or `null` = inherit the session model) resolved from a
 capability tier — mechanical steps/tasks/sweeps run cheaper, hard reasoning runs
@@ -41,7 +45,8 @@ work forming — then render again as it lands. A dashboard that only
 appears at the end is the failure mode; the whole point is to watch
 progress. If a step will take several tool calls, show the board going in.
 
-After each `loop next`, `loop gate`, `loop wave`, and `loop approve`:
+After each `loop next`, `loop submit`, `loop gate`, `loop wave`, and
+`loop approve`:
 0. **The fragment is already on disk.** Every successful `loop gate` /
    `loop next` refreshes `.taskplane/dashboard.html` and returns a
    `dashboard` field in its JSON — rendering is part of the flow, not an
@@ -121,9 +126,14 @@ explicit approval in conversation. Never run the loop silently.
    does not register `agents/` as named roles, dispatch a general subagent
    with the action payload's `role_instructions` file; never improvise a
    reduced role prompt. Plan writes plan/tasks.json
-   (each task: id, scope, tests, req, deps), execute builds TDD-first
+   (each task: id, scope, tests, req, deps, contracts, `new_modules` when
+   applicable, and typed `impact_policy`), execute builds TDD-first
    (`discipline/tdd.md`) honoring the primed lenses, evaluate proves
-   criteria + runs routed lenses, the engineering review synthesizes.
+   criteria + runs routed lenses and dispositions graph impact, the
+   engineering review synthesizes. Execute/fix/evaluate/engineering workers
+   end with `loop submit`; the orchestrator alone calls `loop gate` and trusts
+   only the engine's recomputed evidence. Product/planner return their
+   artifacts for the orchestrator's mechanical gate.
 4. **Human gates:** at `plan_approval` present the plan + refinement
    forecast and WAIT for the user; at `signoff` present the engineering
    report and WAIT. `$TP loop approve` only on their explicit yes.
@@ -140,7 +150,7 @@ explicit approval in conversation. Never run the loop silently.
    just the code. State what's mocked. The visual IS part of the sign-off.
 5. **Parallel:** when `loop next` returns a wave, follow
    `references/parallel.md` (worktree + claim + one governed subagent per
-   task, commit before gating, merge on evaluate PASS — EXCEPT entries
+   task, commit before submitting, orchestrator gate, merge on evaluate PASS — EXCEPT entries
    with `merge_on_pass: false`: those are A/B variants, never merge them).
    When all variants pass, the loop pauses at the native `selection` gate:
    present both variants rendered side by side, then

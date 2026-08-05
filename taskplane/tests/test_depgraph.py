@@ -102,6 +102,7 @@ class TestLoopImpactWiring(unittest.TestCase):
         loop.next_action(ws); loop.gate(ws, "pass"); loop.approve(ws)
         loop.next_action(ws)
         w(ws, "src/db/conn.py", "x=2\n")      # the "build"
+        loop.submit(ws, "pass")
         loop.gate(ws, "pass")
         act = loop.next_action(ws)             # evaluate
         self.assertEqual(act["step"], "evaluate")
@@ -133,6 +134,7 @@ class TestImpactExcludesLoopOwned(unittest.TestCase):
         loop.next_action(ws); loop.gate(ws, "pass"); loop.approve(ws)
         loop.next_action(ws)
         w(ws, "src/db/conn.py", "x=2\n")
+        loop.submit(ws, "pass")
         loop.gate(ws, "pass")
         act = loop.next_action(ws)
         touched = act["impact"]["touched"]
@@ -177,9 +179,8 @@ class TestCSharpJavaRuby(unittest.TestCase):
           "public class Api {}\n")
         g = dg.scan(self.ws)
         pairs = {(e["from"], e["to"]) for e in g["edges"]}
-        self.assertIn(("main/java", "ext:org.springframework.web"), pairs)
-        # both files in src/main → internal edge collapses to same module,
-        # so resolution is proven by the ABSENCE of ext:com.shop
+        self.assertIn(("shop/api", "shop/data"), pairs)
+        self.assertIn(("shop/api", "ext:org.springframework.web"), pairs)
         self.assertFalse(any(t.startswith("ext:com.shop")
                              for _, t in pairs))
         self.assertFalse(any(t.startswith("ext:java") for _, t in pairs))

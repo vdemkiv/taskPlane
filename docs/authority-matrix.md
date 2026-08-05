@@ -1,6 +1,6 @@
 # Authority matrix — who may decide what, and how it's enforced
 
-taskplane's answer to "how much can the agents decide on their own?" Four
+taskplane's answer to "how much can the agents decide on their own?" Five
 authority levels, from most to least autonomous. Unlike a convention-only
 matrix, most rows here are **mechanically enforced** — the PreToolUse hook
 and the loop's gates make over-reach impossible rather than just discouraged.
@@ -10,6 +10,7 @@ and the loop's gates make over-reach impossible rather than just discouraged.
 | **AUTONOMOUS** | executor / fixer agents | anything *inside* the active contract: which in-scope files to edit, how to implement, when to run the declared tests | anything outside scope/tools/commands; changing its own contract; skipping the DoD | PreToolUse hook blocks out-of-contract actions before they run |
 | **TECHNICAL** | lenses & the evaluator | verdicts *within each lens's charter*: pass/fail per acceptance criterion, finding severity, routing a fix cycle (≤ `max_fix_cycles`) | widening its charter (boundary disputes resolve by the catalog's "does NOT own" line); overriding another lens; deciding "done" | read-only contracts (write-allow `.eval/**` only); the loop owns the fail policy in one place |
 | **VALIDATION** | the EM agent | what to *surface*: the synthesized multi-lens report, the requirements-vs-implementation comparison, what it recommends | nothing final — it never fixes, never dispatches fixes, never closes DoD; judgment is handed to the human | read-only contract (write-allow `.em-review/**`); sign-off only via human `loop approve` |
+| **CONTROL** | orchestrator | request an engine gate that matches a worker's submission; sequence steps and waves | doing role work; fabricating worker evidence; changing the submitted outcome; passing an engine-rejected gate; approving a human checkpoint | source + evaluator/EM artifact fingerprint, engine-owned DoR/DoD checks, and state machine |
 | **HUMAN** | you | plan approval (incl. forcing a BLOCKED refinement gate), EM sign-off, escalation resolution (`retry` / `skip` / `abort`), contract scope changes, anything irreversible | — | the loop pauses at `plan_approval`, `signoff`, `escalated`; nothing advances these steps but an explicit human command |
 
 ## Escalation paths (when a level runs out of authority)
@@ -40,6 +41,7 @@ a loop decision: dependencies satisfied + pairwise-disjoint scopes.
 ## Audit
 
 Every authority exercise leaves a trace event (`.taskplane/trace.jsonl`):
-contract activations, hook denials, gate outcomes, refinement scores, forced
+contract activations, hook denials, worker submissions and their workspace
+fingerprints, gate outcomes, refinement scores, forced
 approvals, escalation resolutions, and human sign-offs. The matrix is only
 as honest as its audit log — taskplane writes the log mechanically.

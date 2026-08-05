@@ -24,25 +24,31 @@ acceptance criteria). Both sides for anything user-facing and structural.
    point — but summoned, not automatic, and advisory, never a gate.
    (`../tp-northstar/SKILL.md`.)
 2. **Refine until it forecasts clean.** `$TP req new` with functional,
-   NFR-by-lens AND acceptance criteria — and `--depends R-YYYY` for every
+   NFR-by-lens AND acceptance criteria — `--depends R-YYYY` for every
    requirement this one builds on (product dependencies are graph edges,
-   not prose); `$TP req score` — close every gap the forecast names BEFORE
+   not prose), and repeatable
+   `--contract provides|consumes|changes:NAME` for every named API, event,
+   data, trust, or runtime boundary. `$TP req score` — close every gap BEFORE
    planning. Architecture & system design input belongs here (it's
    always-on in the lens engine, starting at the spec).
-3. **The graph carries both sides — build it, maintain it, use it.**
+3. **The graph carries both sides and gates Ready/Done.**
    `$TP graph scan` if the repo is new to taskplane. From here the loop
    maintains the product↔engineering graph mechanically: at the plan gate
    each task's requirement is linked to the modules its scope intends to
    touch (`planned` edges) and the task is annotated with its blast radius
    plus any OTHER requirements whose surface it overlaps — the human
    approves the plan seeing both, and the executor's contract briefing
-   carries them. At the engineering review the links are TRUED-UP to what
-   the build actually changed (`realizes` edges) and the graph is
+   carries them. New modules must be declared, and distributed work must
+   name its contract boundary. Before engineering review the links are
+   TRUED-UP to what the build actually changed (`realizes` edges) and the graph is
    rescanned, so evaluation checks the diff against the product surface
    (`affected_requirements` in the impact payload: whose criteria need
    re-checking) and the next feature's contracts start from reality.
    Manual joins when needed: `$TP graph link --req R-XXXX --files …`,
-   `$TP graph edge` for runtime deps static analysis can't see.
+   `$TP graph contract NAME --provider MODULE --consumer MODULE`, and
+   `$TP graph edge` for runtime deps static analysis can't see. Between
+   distributed entities, stop at `contract:`/`resource:`; do not pull remote
+   implementation details into the local graph.
 4. **Show the spec.** Render a visual mock of the feature from the acceptance
    criteria BEFORE building. Use an inline HTML widget when available;
    otherwise deliver the self-contained HTML artifact. The human corrects a

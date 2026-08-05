@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
+import depgraph  # noqa: E402
 
 
 def git_ws(tmp, tasks):
@@ -29,6 +30,13 @@ TASK = {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
         "criteria": ["complete() marks done"]}
 
 
+def submit_gate(ws, outcome="pass", task_id=None):
+    submitted = loop.submit(ws, outcome, task_id=task_id)
+    if "error" in submitted:
+        return submitted
+    return loop.gate(ws, outcome, task_id=task_id)
+
+
 def pass_eval(ws):
     state = loop.load(ws)
     task = state["tasks"][state["current_task"]]
@@ -38,6 +46,20 @@ def pass_eval(ws):
         task_type=task.get("type"), breadth="routed")
     criteria = loop._criteria_for(ws, state, task)
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
+    graph_dod = loop._task_graph_dod(ws, state, task)
+    impact = graph_dod.get("impact") or {}
+    direct = sorted({e.get("module")
+                     for e in (impact.get("impacted") or {}).get(1, [])
+                     if e.get("module") and
+                     not str(e.get("module")).startswith("req:")})
+    prod = depgraph.product_impact(
+        ws, graph_dod.get("realized_modules") or [])
+    own = task.get("req") or state.get("requirement_id")
+    own = depgraph._req_node(own) if own else None
+    affected = [r for r in prod.get("affected_requirements") or []
+                if r != own]
+    contracts = [c.get("id") if isinstance(c, dict) else c
+                 for c in (task.get("contracts") or [])]
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w") as f:
         json.dump({"task": task["id"], "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
@@ -45,19 +67,34 @@ def pass_eval(ws):
                                 for c in criteria],
                    "lenses": [{"lens": x["id"], "verdict": "pass",
                                "blockers": 0} for x in routed["lenses"]],
+                   "graph": {
+                       "dispositions": [
+                           {"node": node, "status": "tested",
+                            "evidence": "covered by declared task tests"}
+                           for node in direct],
+                       "requirements_checked": affected,
+                       "contracts_checked": contracts,
+                   },
                    "failures": []}, f)
-    return loop.gate(ws, "pass")
+    return submit_gate(ws, "pass")
 
 
 def pass_em(ws):
     coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
+    with open(os.path.join(ws, ".em-review", "report.md"), "w") as f:
+        f.write("# Engineering review\n\nAll required evidence passed.\n")
+    state = loop.load(ws)
+    changed = [f for f in loop._diff_files(
+        ws, state.get("baseline") or "HEAD")
+        if not f.startswith(lens.LOOP_OWNED)]
+    impact = depgraph.impact(ws, changed)
     with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
-        json.dump({"meta": {"lens_coverage": coverage, "impact": {},
+        json.dump({"meta": {"lens_coverage": coverage, "impact": impact,
                             "tests": ["true"],
                             "gate": {"verdict": "recommend-pass"}},
                    "findings": []}, f)
-    return loop.gate(ws, "pass")
+    return submit_gate(ws, "pass")
 
 
 class TestLoop(unittest.TestCase):
@@ -120,7 +157,7 @@ class TestLoop(unittest.TestCase):
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])  # no plan gate
         loop.next_action(ws); loop.gate(ws, "pass")            # plan → execute
         self.assertEqual(loop.load(ws)["step"], "execute")
-        loop.next_action(ws); loop.gate(ws, "pass")            # execute → evaluate
+        loop.next_action(ws); submit_gate(ws, "pass")          # execute → evaluate
         loop.next_action(ws); pass_eval(ws)                     # evaluate → em
         self.assertEqual(loop.load(ws)["step"], "em")
         loop.next_action(ws); pass_em(ws)                       # em → signoff
@@ -132,13 +169,13 @@ class TestLoop(unittest.TestCase):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"], max_fix_cycles=2)
         loop.next_action(ws); loop.gate(ws, "pass")   # plan → execute
-        loop.next_action(ws); loop.gate(ws, "pass")   # execute → evaluate
-        loop.next_action(ws); loop.gate(ws, "fail")   # evaluate FAIL → fix (1)
+        loop.next_action(ws); submit_gate(ws, "pass") # execute → evaluate
+        loop.next_action(ws); submit_gate(ws, "fail") # evaluate FAIL → fix (1)
         self.assertEqual(loop.load(ws)["step"], "fix")
-        loop.next_action(ws); loop.gate(ws, "pass")   # fix → evaluate
-        loop.next_action(ws); loop.gate(ws, "fail")   # FAIL → fix (2)
-        loop.next_action(ws); loop.gate(ws, "pass")   # fix → evaluate
-        loop.next_action(ws); loop.gate(ws, "fail")   # cycle 3 > max → escalated
+        loop.next_action(ws); submit_gate(ws, "pass") # fix → evaluate
+        loop.next_action(ws); submit_gate(ws, "fail") # FAIL → fix (2)
+        loop.next_action(ws); submit_gate(ws, "pass") # fix → evaluate
+        loop.next_action(ws); submit_gate(ws, "fail") # cycle 3 > max → escalated
         self.assertEqual(loop.load(ws)["step"], "escalated")
         loop.resolve(ws, "skip")                       # last task → em
         self.assertEqual(loop.load(ws)["step"], "em")
@@ -148,11 +185,11 @@ class TestLoop(unittest.TestCase):
         ws = git_ws(self.tmp, [TASK, t2])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])
         loop.next_action(ws); loop.gate(ws, "pass")   # plan → execute t1
-        loop.next_action(ws); loop.gate(ws, "pass")   # execute → evaluate
+        loop.next_action(ws); submit_gate(ws, "pass") # execute → evaluate
         loop.next_action(ws); pass_eval(ws)            # evaluate t1 pass → execute t2
         self.assertEqual(loop.load(ws)["step"], "execute")
         self.assertEqual(loop.load(ws)["current_task"], 1)
-        loop.next_action(ws); loop.gate(ws, "pass")
+        loop.next_action(ws); submit_gate(ws, "pass")
         loop.next_action(ws); pass_eval(ws)            # evaluate t2 pass → em
         self.assertEqual(loop.load(ws)["step"], "em")
 
@@ -160,10 +197,10 @@ class TestLoop(unittest.TestCase):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"], max_fix_cycles=1)
         loop.next_action(ws); loop.gate(ws, "pass")   # → execute
-        loop.next_action(ws); loop.gate(ws, "pass")   # → evaluate
-        loop.next_action(ws); loop.gate(ws, "fail")   # → fix (1)
-        loop.next_action(ws); loop.gate(ws, "pass")   # → evaluate
-        loop.next_action(ws); loop.gate(ws, "fail")   # cycle2 > max1 → escalated
+        loop.next_action(ws); submit_gate(ws, "pass") # → evaluate
+        loop.next_action(ws); submit_gate(ws, "fail") # → fix (1)
+        loop.next_action(ws); submit_gate(ws, "pass") # → evaluate
+        loop.next_action(ws); submit_gate(ws, "fail") # cycle2 > max1 → escalated
         loop.resolve(ws, "retry")
         self.assertEqual(loop.load(ws)["step"], "fix")
         self.assertEqual(loop.load(ws)["tasks"][0]["fix_cycles"], 0)
@@ -222,7 +259,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         # the "build": touch an auth file, uncommitted
         with open(os.path.join(ws, "src", "auth", "b.py"), "w") as f:
             f.write("y=2\n")
-        loop.gate(ws, "pass")                     # execute -> evaluate
+        submit_gate(ws, "pass")                   # execute -> evaluate
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
         sec = next(x for x in act["lenses"] if x["id"] == "security")
@@ -320,9 +357,9 @@ class TestParallelExecution(unittest.TestCase):
             subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
                             f"tp/{tid}"], cwd=ws)
             loop.claim(ws, tid, agent_ws)
-        out = loop.gate(ws, "pass", task_id="t1")
+        out = submit_gate(ws, "pass", task_id="t1")
         self.assertEqual(out["still_running"], ["t2"])
-        loop.gate(ws, "pass", task_id="t2")
+        submit_gate(ws, "pass", task_id="t2")
         # both built → next surfaces evaluate for the first built task
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
@@ -365,12 +402,14 @@ class TestParallelCommitDiscipline(unittest.TestCase):
         loop.claim(ws, "t1", agent_ws)
         with open(os.path.join(agent_ws, "src", "a", "new.py"), "w") as f:
             f.write("y=2\n")
+        loop.submit(ws, "pass", task_id="t1")
         out = loop.gate(ws, "pass", task_id="t1")
         self.assertIn("error", out)                    # fail closed
         self.assertIn("uncommitted", out["error"])
         subprocess.run(["git", "add", "-A"], cwd=agent_ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "t1"], cwd=agent_ws)
+        loop.submit(ws, "pass", task_id="t1")
         out2 = loop.gate(ws, "pass", task_id="t1")
         self.assertTrue(out2.get("built"))             # now accepted
 

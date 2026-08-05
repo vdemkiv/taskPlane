@@ -63,6 +63,15 @@ process + audit: the trace records what actually happened, `--by` makes
 every gate pass attributable to a person, and the whole exchange is visible
 to the channel. Visibility is the enforcement.
 
+The state and evidence gates still run mechanically in Tag. For
+`execute`, `fix`, `evaluate`, and `em`, the worker role must run
+`tp.py loop submit pass|fail` after writing its artifacts. That submission
+does not advance or clear anything: it records an engine-computed source and
+evidence-artifact fingerprint. The Tag driver acting as orchestrator then runs the matching
+`tp.py loop gate`. A missing, mismatched, or stale submission is rejected.
+Never let the same role claim that its own submission passed the gate; the
+orchestrator reads the evidence and invokes the transition.
+
 ## Scope discipline without hooks
 
 The contract's scope still governs even though nothing intercepts writes:

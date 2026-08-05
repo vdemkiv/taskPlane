@@ -8,6 +8,8 @@ description: "Use when the user asks where things stand with taskplane-governed 
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Gather compactly
 (skip empty sections):
 
+- `$TP summary` — the user-facing headline, human decision, progress, graph,
+  and enforcement assurance. Use this as the primary read model.
 - `$TP context` — the one-screen summary (track, loop, reqs, debt, graph, KB)
 - `$TP loop status` — step, per-task status + fix cycles, checkpoints
 - `$TP track list` — all tracks + which is active

@@ -67,9 +67,15 @@ The impact payload carries BOTH sides of the graph: dependent modules
 re-check THAT requirement's acceptance criteria too, not just this one's.
 Walk the diff against EACH acceptance criterion of its R-record
 (met / partial / not-met / cannot-verify, with evidence). Check journey
-completeness and scope fidelity (gaps AND creep). At the em gate the
-loop trues-up the product graph (realizes edges + rescan) — your review
-is what makes the map honest for the next contract. Deep session procedure:
+completeness and scope fidelity (gaps AND creep). Before the EM brief, the
+loop trues-up the product graph (realizes edges + rescan), and the action's
+`impact.graph.content_fingerprint` binds your evidence to that exact map.
+Copy the full impact payload into `meta.impact`. A stale graph revision or an
+incomplete/wrong review policy blocks the engineering gate. Per-task
+evaluation separately blocks unknown or undispositioned direct impact,
+unchecked affected requirements, and unverified declared contracts.
+Distributed traversal stops at the named contract/resource boundary. Your
+review makes the map honest for the next contract. Deep session procedure:
 `references/em-session.md`; security depth: `references/security.md`;
 feedback per `references/feedback-craft.md`.
 
@@ -115,9 +121,10 @@ alongside the verdict, not only the code. Note what's mocked vs live.
 
 ## Engineering actions (judgments, never code)
 
-Gate verdicts with reproducible notes, escalation options for the human
+Submit verdicts with reproducible notes, escalation options for the human
 (`loop resolve`), the sign-off recommendation at the final gate,
 `$TP loop retro` at done (forecast accuracy + lessons → KB), recorded
 decisions. tp-engineering never edits code — a build gap goes back
-through the loop (gate fail with a reproducible note). Deep persona spec:
+through the loop (`loop submit fail` with a reproducible note; the
+orchestrator gates it). Deep persona spec:
 `agents/tp-engineering.md`.

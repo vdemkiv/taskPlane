@@ -53,6 +53,8 @@ def _write_eval(ws, state):
 def _write_em(ws):
     coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
+    with open(os.path.join(ws, ".em-review", "report.md"), "w") as f:
+        f.write("# Engineering review\n\nNo blockers.\n")
     with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
         json.dump({"meta": {"lens_coverage": coverage, "impact": {},
                             "tests": ["true"],

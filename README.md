@@ -2,34 +2,63 @@
 
 [![CI](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml/badge.svg)](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml)
 
-**See what your AI agents are doing — and keep them on track.** Claude Code,
-Cowork, and Codex are powerful, but driving them can feel like flying blind: work
-scrolls past, agents wander off the task, and it's hard to tell what's done,
-what's pending, and what's waiting on you. taskplane is the layer that makes
-it legible. It keeps each agent inside a clear task scope, renders the whole
-run as a live dashboard, and holds the thread of progress — so you always
-know where things stand and what needs your call.
+**Build and review AI-generated software with evidence, not trust.** taskplane
+is the AI software-delivery control plane for people who ship and review code
+with Claude or Codex every day. You ask it to build, review, or show status;
+behind that simple request it checks whether the work is ready, keeps every
+agent inside an approved scope, and requires current implementation, test, and
+review evidence before anything can be called done.
 
 ![taskplane in action — a governed run on a real PR: Definition of Ready gate → read-only review with the product rendered and findings pinned → your approval → parallel fix wave with a live out-of-scope block → Definition of Done gate → sign-off](docs/assets/taskplane-cowork-flow.gif)
 
-Built for PMs, EMs, and engineers who want to move fast with coding agents
-without losing the plot. Three things, everywhere: **you can see
-what's happening, it stays on topic, and you keep the thread.** The scope
-guardrails and gates are how it delivers that — not the point, the means.
+taskplane is not another prompt collection, review bot, or project tracker. It
+is the governed execution and assurance layer between your intent and
+agent-generated changes. Requirements, dependencies, contracts, implementation,
+and review stay connected from Definition of Ready through Definition of Done.
+A 25-lens engineering review makes architecture, security, data, operability,
+UX, and other technical consequences explicit for engineers, EMs, PMs, and
+nontechnical decision-makers.
+
+**Simple for the user; strict for the agents.** State the goal, review the
+evidence, and make only the decisions that require human judgment. taskplane
+keeps the machinery — scoped contracts, dependency depth, independent
+submissions, lifecycle gates, durable memory, and the live dashboard — behind
+that interaction without weakening it.
+
+## Three prompts are enough
+
+> **taskplane build:** add CSV export to the monthly report
+
+> **taskplane review:** review this branch against main; do not change code
+
+> **taskplane status**
+
+The `taskplane` skill routes those requests to the existing product, build,
+engineering, status, and orchestration skills. You do not need to choose a
+persona, remember loop commands, select review lenses, or set dependency
+depth. taskplane reports a concise text summary after each material
+transition and shows the richer dashboard when the host supports it.
+
+This simplicity does **not** reduce agent work. A worker may only submit a
+result; it cannot advance its own stage. The orchestrator independently runs
+the engine gate, which recomputes source and review-artifact fingerprints and
+rejects missing, stale, out-of-scope, under-tested, or under-reviewed work.
+Human plan approval and final sign-off remain explicit.
 
 ## What's new
 
 | Version | Highlights |
 | --- | --- |
-| **v2.0.0** | **One governed delivery plane for Claude and Codex** — the same enforced Definition of Ready, scoped task contracts, evidence-backed Definition of Done, human gates, and full 25-lens review now run across both hosts. Every gate publishes durable progress artifacts so a new session or teammate can resume from the approved plan, dashboard, findings, graph, retro, and `HEADLINES.md` instead of reconstructing context. The dependency graph is now consumed by the actors as well as the judges: hub changes escalate architecture review, execute/fix briefs receive blast radius before code changes, lens agents receive impact context, and reviews capture runtime edges the import scanner cannot see. Codex role dispatch and cleanup use host-portable plugin paths while preserving Codex's sandbox and approval flow. 430 tests. |
-| **v1.6.0** | **Codex support — same governed loop, second host** — taskplane packages as an OpenAI Codex plugin from the same repo: the shared hook screens Codex `apply_patch` and agent dispatches, contracts written on Claude stay valid through tool aliasing, and allowed actions preserve Codex's sandbox and approval flow. DoR blocks unready steps, PASS requires task/evaluator/lens evidence, and failed DoD blocks sign-off. 409 tests. |
+| **v2.1.0** | **AI software delivery with proof, not agent self-reporting** — one `taskplane` entry point now routes build, review, and status while the strict harness stays behind the scenes. Workers submit source-and-artifact fingerprints but cannot advance their own stage; the orchestrator independently reruns the gate. Requirements and plans carry dependency and contract awareness, every new module must be declared at Ready, and Done verifies the realized graph plus affected consumers and requirements. Distributed review stops at explicit inter-entity contract boundaries by default. Shared agents remain provider-neutral across Claude and Codex. 444 tests. |
+| **v2.0.0** | **One governed delivery plane for Claude and Codex** — the same Definition of Ready, scoped task contracts, evidence-backed Definition of Done, human gates, durable progress artifacts, dependency-aware execution, and 25-lens review run across both hosts. Codex support preserves its sandbox and approval flow while using host-portable role dispatch, model inheritance, onboarding, and dashboard fallbacks. 430 tests. |
 
-Older releases (v1.0.0 – v1.5.4): see [CHANGELOG.md](CHANGELOG.md).
+Older releases (v1.0.0 – v1.6.0): see [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
-taskplane isn't in the built-in plugin catalog yet — you add it straight
-from this Git repo (there's an option exactly for this).
+taskplane is live in the plugin marketplace. If the listing has not reached
+your client yet, or you want to install directly from source, add this Git
+repository as a marketplace; the host-specific source instructions are below.
 
 **Claude Desktop or claude.ai (Chat / Cowork):**
 Customize → Plugins → **+** in *Personal plugins* → **Add marketplace** →
@@ -75,7 +104,7 @@ on Windows). Nothing else to set up.
 
 ## Onboarding (`tp onboard`) — the full setup
 
-Say **taskplane help** for the tour, or just state a goal — `tp-go` routes
+Say **taskplane help** for the tour, or just state a goal — `taskplane` routes
 it and runs onboarding for you on a fresh folder. `tp onboard` shows the
 onboarding dashboard and won't hand you to a governed run until three
 checks are green:
@@ -178,12 +207,10 @@ questions without spending model calls at all.
 
 Then you're governed from the first task.
 
-## Five ways to use it
+## Five internal routes (optional power-user surface)
 
-One entry point (`tp-go` picks up whatever you prompt and routes it), three
-working personas, and a summoned strategy lens — a way to define, build,
-and review agent work while keeping it visible, on-scope, and easy to
-steer.
+The three prompts above cover normal use. If you want to address a specialist
+seat directly, taskplane keeps these routes available:
 
 ### 1. Review code, change nothing → `tp-engineering`
 
@@ -299,6 +326,21 @@ The whole reason it exists — legibility, focus, and a thread you don't lose:
 - **Gates that keep the thread**: the loop pauses at plan-approval and
   sign-off. Nothing advances those but you — so you're never surprised by
   what shipped.
+- **A graph-aware Ready/Done bar**: requirements name what they depend on and
+  which API/event/data/runtime contracts they provide, consume, or change.
+  Before plan approval taskplane refreshes the graph and checks dependency
+  depth, boundaries, and every deliberately new module; undeclared graph
+  surface blocks Ready for ordinary work too. During evaluation and
+  final review it compares planned versus realized modules, requires evidence
+  for impacted consumers and affected requirements, and rejects a stale graph
+  fingerprint. Across distributed systems, the default review boundary is the
+  contract between entities — not speculative access to another service's
+  internals.
+- **Independent completion validation**: builders, fixers, evaluators, and
+  engineering reviewers submit results; only the
+  orchestrator invokes the state-transition gate. The fingerprint includes
+  changed work plus evaluator/engineering evidence files, so editing a verdict
+  after submission invalidates it. Agent prose is never the evidence source.
 - **On-topic by default**: an agent writing outside its task scope, or firing
   a destructive command, is stopped with a reason before it runs — the run
   stays on the thing you asked for instead of wandering.
@@ -338,18 +380,19 @@ the model's own calls.
 
 | Capability | What it does |
 | --- | --- |
-| Enforcement kernel | contracts + PreToolUse hook + DoR/DoD gates + action budget + audit trace |
+| Enforcement kernel | contracts + lifecycle hook + worker submissions + orchestrator-only DoR/DoD gates + action budget + audit trace |
 | Evaluate-Loop | plan → build → evaluate → fix (≤2) → review → sign-off; serial or parallel waves, one enforced contract per agent |
 | 25 lenses (as agents) | the diff picks the reviewers (security, a11y, DBA, performance, …); each is a governed read-only agent, fanned out in PARALLEL so a wide review runs in one pass — architecture & system design ALWAYS on |
-| Requirements engine | refinement scoring + iteration forecast; quick-vs-full with tracked debt |
+| Requirements engine | refinement scoring + iteration forecast; requirement dependencies and named contracts; quick-vs-full with tracked debt |
 | Knowledge base | decisions, requirements, debt — retrieved by relevance at every step; plan-aware store: personal plan keeps it in an external per-project store (`~/.taskplane`, out of your repo), Team/Enterprise commits it in-repo (`.taskplane-kb/`) so the team shares one registry |
 | Decision registry | structured ADRs (`tp decision`) with lifecycle, alternatives + trade-offs, and supersede chains — accepted decisions linked to a task's modules are ALWAYS injected into that task's brief |
 | Current-state grounding | the as-built inventory (`context/current-state.md`) injected into every brief; design lenses review as a delta against what exists — reinvention and doc-vs-reality drift are blocker-class |
-| Dependency graph | deterministic scan + change blast-radius + interactive map |
+| Dependency graph | deterministic scan + provenance/fingerprint + typed local/contract/requirement depth + graph DoR/DoD + interactive blast-radius map |
 | Model tiers | portable `cheap`/`standard`/`deep` capability tiers routed per step, task, and lens — mapped to models by env config, verifiable with `tp loop verify-dispatch` |
 
-**Eight commands, three working personas plus a summoned strategy lens:**
-`tp-go` (the entry point — routes everything), `tp-product` (the WHAT seat:
+**One simple entry point plus eight specialist skills:** `taskplane` routes
+build/review/status without exposing the harness. Power users can call
+`tp-go` (the delivery driver), `tp-product` (the WHAT seat:
 requirements, scores, decisions), `tp-build` (new features: refinement + a
 north-star check first, visual mocks, A/B variants with a selection gate),
 `tp-engineering` (the SOUND seat: full-catalog review, impact, verdicts,
@@ -422,7 +465,7 @@ taskplane/
 ├── taskplane/              # the enforcement core (kernel + hook screener)
 ├── hooks/hooks.json        # PreToolUse → taskplane screen
 ├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent); + tp-northstar (summoned strategy)
-├── skills/                 # tp-go, tp-product, tp-build, tp-engineering, tp-northstar, tp-tag, tp-status, tp-help
+├── skills/                 # taskplane façade + tp-go/product/build/engineering/northstar/tag/status/help
 ├── lenses/                 # the 25-lens catalog
 ├── scripts/                # generators (e.g. the lens-catalog doc)
 ├── discipline/             # TDD, debugging, worktrees — the operating disciplines

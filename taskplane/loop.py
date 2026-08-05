@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import time
 
 import depgraph
 import kb
@@ -202,6 +203,11 @@ def init(ws: str, goal: str, spec_path: str | None = None,
     checkpoints = list(checkpoints if checkpoints is not None else
                        ["plan", "em"])
     state = {
+        "governance_revision": 2,
+        # Workers submit evidence; only the driver asks the engine to evaluate
+        # a gate.  Older persisted loops omit this flag and remain resumable.
+        "submission_required": True,
+        "graph_governance": True,
         "goal": goal,
         "parallel": bool(parallel),
         "requirement_id": requirement_id,
@@ -301,7 +307,10 @@ def _edge_nudges(ws: str, changed, base: str) -> list:
             nudges.append(
                 "diff touches messaging (topic/queue) - consumers are "
                 "invisible to the import graph; record them: tp graph "
-                "edge <producer> <consumer> --kind runtime")
+                "edge <consumer> <contract:event-name> --kind consumes; "
+                "record the producer with --kind provides. Dependency edges "
+                "point from the dependent to the contract so contract changes "
+                "impact consumers in the correct direction")
     except Exception:
         pass
     return nudges
@@ -456,8 +465,10 @@ def wave(ws: str) -> dict:
             "--agent-workspace <worktree>` — activates THAT task's contract "
             "in THAT worktree, so the hook confines the agent mechanically; "
             "(3) the subagent builds inside its worktree (TDD, primed "
-            "lenses, acceptance criteria); (4) it COMMITS its work in the worktree (`git add -A && git commit`) and reports `tp.py loop gate "
-            "pass|fail --task <id>`. When the wave empties, `loop next` "
+            "lenses, acceptance criteria); (4) it COMMITS its work in the "
+            "worktree (`git add -A && git commit`) and runs `tp.py loop "
+            "submit pass|fail --task <id>`. The orchestrator alone runs "
+            "the matching `loop gate`. When the wave empties, `loop next` "
             "evaluates each built task; on evaluate PASS merge its branch "
             "(`git merge tp/<task>`) and remove the worktree. "
             "EXCEPTION — entries with merge_on_pass=false are A/B variants: "
@@ -601,6 +612,28 @@ def next_action(ws: str) -> dict:
                 "dor": {"ready": False, "blockers": blockers,
                         "warnings": warnings},
                 "status": status(ws)}
+    # The graph is an input to evaluation, not a cache refreshed only after
+    # review.  Serial work and the final merged-tree review can safely refresh
+    # the shared graph here. Parallel task worktrees are deliberately deferred
+    # until their branches merge; publishing one worker's partial graph as the
+    # project graph would hide its siblings.
+    if step == "em":
+        # Make the final graph describe the merged, as-built system BEFORE
+        # the engineering reviewer receives it.  Doing this at the EM gate
+        # would invalidate the review's graph fingerprint at sign-off.
+        try:
+            _true_up_graph(ws, state)
+        except Exception as exc:
+            if state.get("graph_governance"):
+                return {"error": f"graph true-up failed before {step}: {exc}",
+                        "step": step, "status": status(ws)}
+    elif step == "evaluate" and not state.get("parallel"):
+        try:
+            depgraph.scan(ws)
+        except Exception as exc:
+            if state.get("graph_governance"):
+                return {"error": f"graph refresh failed before {step}: {exc}",
+                        "step": step, "status": status(ws)}
     tp.activate(act_ws, contract, snapshot=snapshot)
 
     # Inject the handful of prior decisions relevant to this step's work, so
@@ -655,8 +688,11 @@ def next_action(ws: str) -> dict:
         changed = [f for f in _diff_files(
             diff_ws, state.get("baseline") or "HEAD")
             if not f.startswith(lens_router.LOOP_OWNED)]
-        if changed and depgraph.load(ws)["modules"]:
-            imp = depgraph.impact(ws, changed)
+        if changed or step == "em":
+            review_policy = (_aggregate_impact_policy(state.get("tasks") or [])
+                             if step == "em" else
+                             depgraph.impact_policy(task or {}))
+            imp = depgraph.impact(ws, changed, policy=review_policy)
             # Product side of the blast radius: which OTHER requirements'
             # surface this diff touches (their criteria may need re-checking)
             # and which requirements depend on the affected ones.
@@ -682,7 +718,8 @@ def next_action(ws: str) -> dict:
         if scope and depgraph.load(ws)["modules"]:
             mods = depgraph.modules_for_scope(scope)
             if mods:
-                imp = depgraph.impact(ws, mods)
+                imp = depgraph.impact(
+                    ws, mods, policy=depgraph.impact_policy(task))
                 if not imp["touched"]:
                     imp = None
                 else:
@@ -752,25 +789,29 @@ def _instruction(step: str, state: dict) -> str:
     t = _current_task(state)
     return {
         "pm": "Run tp-product: author specs/spec.md with "
-              "testable acceptance criteria + a contract handoff. Then "
-              "`loop gate pass`.",
+              "testable acceptance criteria + a contract handoff. Return to "
+              "the orchestrator; it validates with `loop gate pass`.",
         "plan": "Run the tp-planner role: write plan/tasks.json (machine) "
                 "and plan/plan.md (human) — tasks with scope, tests, "
-                "criteria. Then `loop gate pass`.",
+                "criteria, dependencies, contracts, and impact policy. Return "
+                "to the orchestrator; it validates with `loop gate pass`.",
         "execute": f"Run the tp-executor on task {t and t['id']}: build "
                    "under this contract (TDD), honoring the PRIMED lenses "
                    "(see `lenses`) and the requirement's acceptance criteria "
-                   "(see `requirement`). Then `loop gate pass` (or `fail` "
-                   "if you couldn't build it).",
+                   "(see `requirement`). Then `loop submit pass` (or `fail` "
+                   "if you couldn't build it); only the orchestrator calls "
+                   "`loop gate`.",
         "evaluate": f"Run the tp-evaluator (read-only) on task "
                     f"{t and t['id']}: run its tests + acceptance criteria, "
                     "then apply each ROUTED lens (see `lenses`; prompt at "
                     "lenses/<id>.md) — inline ones yourself, one governed "
                     "read-only subagent per subagent-mode lens. Write "
-                    ".eval/verdict.json. Then `loop gate pass|fail`.",
+                    ".eval/verdict.json, including graph dispositions and "
+                    "affected requirements. Then `loop submit pass|fail`; "
+                    "only the orchestrator calls `loop gate`.",
         "fix": f"Run the tp-fixer on task {t and t['id']}: repair the "
-               "listed failures + add a regression test. Then `loop gate "
-               "pass`.",
+               "listed failures + add a regression test. Then `loop submit "
+               "pass`; only the orchestrator calls `loop gate`.",
         "em": "Run tp-engineering (read-only): the `lenses` list is "
               "the FULL catalog — run tier=deep lenses at full depth (their "
               "mode says inline vs subagent) and every tier=sweep lens as a "
@@ -779,7 +820,8 @@ def _instruction(step: str, state: dict) -> str:
               ".em-review/report.md AND .em-review/findings.json (including "
               "complete meta.lens_coverage, meta.impact, tests, and gate "
               "verdict), record the verdict to the knowledge "
-              "base, then `loop approve` for human sign-off.",
+              "base, then `loop submit pass`. The orchestrator validates "
+              "with `loop gate pass` before presenting human sign-off.",
     }[step]
 
 
@@ -812,6 +854,32 @@ def _criteria_for(ws: str, state: dict, task: dict) -> list:
     return criteria
 
 
+def _aggregate_impact_policy(tasks) -> dict:
+    """One fail-closed review radius for a multi-task final review."""
+    policies = [depgraph.impact_policy(t) for t in (tasks or [])]
+    if not policies:
+        return depgraph.impact_policy({})
+    boundary_rank = {"stop": 0, "contract-only": 1, "expand": 2}
+    boundary = max(
+        (p.get("boundary_mode", "contract-only") for p in policies),
+        key=lambda value: boundary_rank.get(value, 1))
+    def number(policy, key, default, minimum):
+        try:
+            return max(minimum, int(policy.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "local_depth": max(number(p, "local_depth", 3, 1)
+                           for p in policies),
+        "boundary_mode": boundary,
+        "contract_depth": max(number(p, "contract_depth", 1, 0)
+                              for p in policies),
+        "requirement_depth": max(number(p, "requirement_depth", 1, 0)
+                                 for p in policies),
+    }
+
+
 def _plan_dor_errors(ws: str, state: dict) -> list:
     """Definition of Ready for implementation, derived from the plan."""
     errors = []
@@ -824,14 +892,72 @@ def _plan_dor_errors(ws: str, state: dict) -> list:
         if not _criteria_for(ws, state, task):
             errors.append(prefix + "acceptance criteria are missing")
         rid = task.get("req") or state.get("requirement_id")
+        rec = reqs.get_requirement(ws, rid) if rid else None
+        if rec:
+            # Requirements own stable product/contract dependencies; the plan
+            # may add contracts but cannot silently erase the requirement's
+            # boundaries with an empty or narrower task-level list.
+            merged_contracts, seen_contracts = [], set()
+            for contract in list(rec.get("contracts") or []) + \
+                    list(task.get("contracts") or []):
+                contract_id = (contract.get("id")
+                               if isinstance(contract, dict) else contract)
+                contract_id = str(contract_id or "").strip()
+                if contract_id and contract_id not in seen_contracts:
+                    merged_contracts.append(contract)
+                    seen_contracts.add(contract_id)
+            task["contracts"] = merged_contracts
+            for dep in rec.get("depends_on") or []:
+                if reqs.get_requirement(ws, dep) is None:
+                    errors.append(prefix + f"requirement dependency {dep} "
+                                  "does not exist")
+                else:
+                    # Requirements are the source of truth. Reconcile their
+                    # product edges before graph Ready instead of depending on
+                    # a particular CLI path having populated the derived map.
+                    depgraph.link_requirement_dep(ws, rid, dep)
+            for contract in rec.get("contracts") or []:
+                contract_id = (contract.get("id")
+                               if isinstance(contract, dict) else contract)
+                relation = (contract.get("relation", "changes")
+                            if isinstance(contract, dict) else "changes")
+                if str(contract_id or "").strip():
+                    depgraph.record_edge(
+                        ws, depgraph._req_node(rid), str(contract_id),
+                        kind=relation, confidence="high")
+        task["impact_policy"] = depgraph.impact_policy(task)
         if rid and task.get("high_cost"):
-            rec = reqs.get_requirement(ws, rid)
             if rec is None:
                 errors.append(prefix + f"requirement {rid} does not exist")
             elif rec.get("open_questions"):
                 errors.append(prefix + "requirement has unresolved questions: "
                               + "; ".join(rec["open_questions"]))
+    graph_dor = depgraph.readiness(ws, state.get("tasks") or [])
+    state["graph_dor"] = graph_dor
+    errors.extend("graph DoR: " + e for e in graph_dor.get("errors") or [])
     return errors
+
+
+def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
+    """As-built dependency proof for one task.
+
+    Parallel worktrees cannot replace the shared graph before merge, so their
+    final graph proof is explicitly deferred to the merged EM review.
+    """
+    if state.get("parallel"):
+        return {"passed": True, "deferred_to_post_merge": True,
+                "errors": [], "impact": {}}
+    baseline = state.get("baseline") or tp.snapshot_ref(ws)
+    changed = [f for f in _diff_files(ws, baseline or "HEAD")
+               if not f.startswith(lens_router.LOOP_OWNED)]
+    stems = [g.split("*", 1)[0] for g in (task.get("scope") or [])]
+    mine = [f for f in changed
+            if not stems or any(f.startswith(s) for s in stems if s)]
+    planned = ((task.get("blast") or {}).get("modules")
+               or depgraph.modules_for_scope(task.get("scope") or []))
+    return depgraph.completion(
+        ws, mine, planned_modules=planned,
+        policy=task.get("impact_policy") or depgraph.impact_policy(task))
 
 
 def _task_dod_errors(ws: str, state: dict, task: dict,
@@ -891,15 +1017,72 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
                 errors.append(f"routed lens did not pass cleanly: {lens_id}")
     if verdict.get("failures"):
         errors.append("evaluation contains unresolved failures")
+    if state.get("graph_governance"):
+        graph_dod = _task_graph_dod(ws, state, task)
+        errors.extend("graph DoD: " + e for e in graph_dod.get("errors") or [])
+        if not graph_dod.get("deferred_to_post_merge"):
+            impact = graph_dod.get("impact") or {}
+            direct = sorted({e.get("module")
+                             for e in (impact.get("impacted") or {}).get(1, [])
+                             if e.get("module")
+                             and not str(e.get("module")).startswith("req:")})
+            prod = depgraph.product_impact(ws,
+                                           graph_dod.get("realized_modules") or [])
+            own = task.get("req") or state.get("requirement_id")
+            own = depgraph._req_node(own) if own else None
+            affected = sorted(r for r in prod.get("affected_requirements") or []
+                              if r != own)
+            needs_graph_evidence = bool(
+                direct or affected or graph_dod.get("contract_files")
+                or impact.get("unknown") or impact.get("truncated"))
+            graph_ev = verdict.get("graph") or {}
+            if needs_graph_evidence and not isinstance(verdict.get("graph"), dict):
+                errors.append("evaluation is missing graph impact evidence")
+                graph_ev = {}
+            dispositions = {str(x.get("node")): x for x in
+                            (graph_ev.get("dispositions") or [])
+                            if isinstance(x, dict)}
+            allowed = {"tested", "contract-verified", "unaffected",
+                       "follow-up", "requires-replan"}
+            for node in direct:
+                row = dispositions.get(node)
+                if (not row or row.get("status") not in allowed
+                        or not str(row.get("evidence") or "").strip()):
+                    errors.append(f"graph impact has no evidenced disposition: {node}")
+                elif row.get("status") == "requires-replan":
+                    errors.append(f"graph impact requires replanning: {node}")
+            checked = set(graph_ev.get("requirements_checked") or [])
+            for rid in affected:
+                if rid not in checked:
+                    errors.append("affected requirement was not re-checked: " + rid)
+            expected_contracts = set()
+            for contract_row in task.get("contracts") or []:
+                contract_id = (contract_row.get("id")
+                               if isinstance(contract_row, dict)
+                               else contract_row)
+                if str(contract_id or "").strip():
+                    expected_contracts.add(str(contract_id))
+            checked_contracts = set(graph_ev.get("contracts_checked") or [])
+            for contract in sorted(expected_contracts - checked_contracts):
+                errors.append("declared contract was not verified: " + contract)
     return errors
 
 
-def _engineering_review_errors(ws: str) -> list:
+def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     """Require full-catalog lens evidence before the EM gate can pass."""
     path = os.path.join(ws, ".em-review", "findings.json")
     findings, errors = _read_json(path)
     if errors:
         return errors
+    report_path = os.path.join(ws, ".em-review", "report.md")
+    try:
+        with open(report_path, encoding="utf-8") as report_file:
+            report_text = report_file.read()
+        if not report_text.strip():
+            errors.append("engineering narrative report is empty")
+    except OSError:
+        errors.append("engineering narrative report is missing: "
+                      + report_path)
     meta = findings.get("meta") or {}
     coverage = meta.get("lens_coverage") or {}
     if not isinstance(coverage, dict):
@@ -915,8 +1098,34 @@ def _engineering_review_errors(ws: str) -> list:
     if invalid:
         errors.append("engineering review has invalid lens tiers: "
                       + ", ".join(invalid))
-    if not isinstance(meta.get("impact"), dict):
+    impact_ev = meta.get("impact")
+    if not isinstance(impact_ev, dict):
         errors.append("engineering review is missing dependency impact evidence")
+    elif (state or {}).get("graph_governance"):
+        required = {"touched", "impacted", "total_impacted", "unknown",
+                    "depth_limit", "truncated", "policy", "graph"}
+        missing_impact = sorted(required - set(impact_ev))
+        if missing_impact:
+            errors.append("engineering dependency impact evidence is incomplete: "
+                          + ", ".join(missing_impact))
+        changed = [f for f in _diff_files(
+            ws, (state or {}).get("baseline") or "HEAD")
+            if not f.startswith(lens_router.LOOP_OWNED)]
+        if changed:
+            review_policy = _aggregate_impact_policy(
+                (state or {}).get("tasks") or [])
+            expected = depgraph.impact(ws, changed, policy=review_policy)
+            if not impact_ev.get("touched"):
+                errors.append("engineering dependency impact names no touched modules")
+            elif not set(expected.get("touched") or []) <= \
+                    set(impact_ev.get("touched") or []):
+                errors.append("engineering dependency impact does not cover the diff")
+            expected_fp = (expected.get("graph") or {}).get("content_fingerprint")
+            actual_fp = (impact_ev.get("graph") or {}).get("content_fingerprint")
+            if expected_fp and actual_fp != expected_fp:
+                errors.append("engineering dependency impact uses a stale graph revision")
+            if impact_ev.get("policy") != review_policy:
+                errors.append("engineering dependency impact uses the wrong review policy")
     if not meta.get("tests"):
         errors.append("engineering review is missing test evidence")
     gate = meta.get("gate") or {}
@@ -937,12 +1146,137 @@ def _engineering_review_errors(ws: str) -> list:
     return errors
 
 
+def submit(ws: str, outcome: str, note: str = "",
+           task_id: str | None = None) -> dict:
+    """Worker submission — evidence request, never a state transition.
+
+    The engine, not the worker, computes the changed paths and fingerprint.
+    The orchestrator subsequently calls ``gate``; if anything changed between
+    submission and validation, the gate rejects the stale evidence.  Repeating
+    the same submission is idempotent, which makes interrupted/resumed drivers
+    safe.
+    """
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop"}
+    step = state.get("step")
+    if step not in ("execute", "fix", "evaluate", "em"):
+        return {"error": f"step '{step}' is not a worker submission step"}
+    if outcome not in ("pass", "fail"):
+        return {"error": "submission outcome must be pass or fail"}
+
+    task = _current_task(state)
+    act_ws = ws
+    parallel_execute = step == "execute" and state.get("parallel")
+    if parallel_execute:
+        task = next((x for x in state.get("tasks") or []
+                     if x.get("id") == task_id), None)
+        if task is None:
+            return {"error": "parallel submit needs --task <id> of a wave member"}
+        act_ws = task.get("workspace") or ws
+    elif step in ("evaluate", "fix") and state.get("parallel"):
+        tws = (task or {}).get("workspace")
+        act_ws = tws if tws and os.path.isdir(tws) else ws
+
+    snapshot = tp.snapshot_ref(act_ws)
+    evidence_paths = ({"evaluate": [".eval/verdict.json"],
+                       "em": [".em-review/findings.json",
+                              ".em-review/report.md"]}.get(step, []))
+    graph_fingerprint = None
+    if state.get("graph_governance") and \
+            (step == "em" or step == "evaluate" and not state.get("parallel")):
+        graph_fingerprint = (depgraph.load(ws).get("meta") or {}).get(
+            "content_fingerprint")
+    submission = {
+        "step": step,
+        "task": (task or {}).get("id"),
+        "outcome": outcome,
+        "note": note,
+        "workspace": act_ws,
+        "snapshot": snapshot,
+        "fingerprint": tp.workspace_fingerprint(
+            act_ws, snapshot, extra_paths=evidence_paths),
+        "changed_files": (tp.changed_files(act_ws, snapshot)
+                          if snapshot else []),
+        "evidence_paths": evidence_paths,
+        "graph_fingerprint": graph_fingerprint,
+        "submitted_at": int(time.time()),
+    }
+    with mutate(ws) as locked:
+        if locked is None:
+            return {"error": "no active loop"}
+        if parallel_execute:
+            target = next((x for x in locked.get("tasks") or []
+                           if x.get("id") == task_id), None)
+            if target is None:
+                return {"error": f"no task {task_id}"}
+            existing = target.get("_submission")
+            if existing and all(existing.get(k) == submission.get(k)
+                                for k in ("step", "task", "outcome",
+                                          "fingerprint")):
+                submission = existing
+            else:
+                target["_submission"] = submission
+        else:
+            existing = locked.get("_submission")
+            if existing and all(existing.get(k) == submission.get(k)
+                                for k in ("step", "task", "outcome",
+                                          "fingerprint")):
+                submission = existing
+            else:
+                locked["_submission"] = submission
+    tp.trace(ws, "loop_submit", step=step, task=submission.get("task"),
+             outcome=outcome, fingerprint=submission["fingerprint"][:12])
+    return {"submitted": True, "transitioned": False,
+            "submission": submission,
+            "next": "orchestrator: run loop gate with the submitted outcome"}
+
+
+def _submission_staleness(ws: str, submission: dict) -> str | None:
+    """Recompute the engine-owned attestations for a pending submission."""
+    sub_ws = submission.get("workspace") or ws
+    current_fp = tp.workspace_fingerprint(
+        sub_ws, submission.get("snapshot"),
+        extra_paths=submission.get("evidence_paths") or [])
+    if current_fp != submission.get("fingerprint"):
+        return "workspace or evidence changed after worker submission"
+    graph_fp = submission.get("graph_fingerprint")
+    if graph_fp:
+        current_graph_fp = (depgraph.load(ws).get("meta") or {}).get(
+            "content_fingerprint")
+        if current_graph_fp != graph_fp:
+            return "dependency graph changed after worker submission"
+    return None
+
+
 def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> dict:
     """Record the current step's outcome, transition, and clear its contract."""
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
     step = state["step"]
+
+    if state.get("submission_required") and step in \
+            ("execute", "fix", "evaluate", "em"):
+        task_for_submission = (_current_task(state) if step != "execute"
+                               or not state.get("parallel") else
+                               next((x for x in state.get("tasks") or []
+                                     if x.get("id") == task_id), None))
+        submission = ((task_for_submission or {}).get("_submission")
+                      if step == "execute" and state.get("parallel") else
+                      state.get("_submission"))
+        if not submission:
+            return {"error": "worker evidence was not submitted — the worker "
+                             "must run `loop submit pass|fail`; only the "
+                             "orchestrator may evaluate `loop gate`",
+                    "step": step}
+        if submission.get("step") != step or submission.get("outcome") != outcome:
+            return {"error": "gate request does not match the worker submission",
+                    "step": step, "submission": submission}
+        stale = _submission_staleness(ws, submission)
+        if stale:
+            return {"error": stale + " — discard stale evidence and submit again",
+                    "step": step}
 
     # Parallel EXECUTE: a wave worker reports its own task's build outcome.
     # Concurrent workers gate against the SAME loop.json — serialize the whole
@@ -973,6 +1307,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                              "the tp/<task> branch carries nothing yet. "
                              "`git add -A && git commit` in the worktree, "
                              "then gate again."}
+        if state.get("submission_required"):
+            stale = _submission_staleness(ws, submission)
+            if stale:
+                return {"error": stale + " during gate validation — submit "
+                                 "the final state again", "step": step}
         with mutate(ws) as locked:
             t = next((x for x in (locked.get("tasks") or [])
                       if x["id"] == task_id), None)
@@ -981,6 +1320,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                                  "member"}
             tp.clear(t.get("workspace") or ws)
             t["status"] = "built"
+            t.pop("_submission", None)
             if outcome != "pass":
                 t["_build_failed"] = True
             tp.trace(ws, "loop_gate", step=step, task=task_id, outcome=outcome,
@@ -992,17 +1332,31 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
 
     # Validate the implementation-ready plan while its read-only contract is
     # still active. A rejected plan remains governed for the planner's retry.
-    if step == "plan" and outcome == "pass":
+    if step == "plan":
         _load_tasks(ws, state)
-        if state.get("tasks"):
-            dor_errors = _plan_dor_errors(ws, state)
-            if dor_errors:
-                tp.trace(ws, "loop_gate_blocked", step=step, reason="dor",
-                         errors=dor_errors)
-                return {"error": "Definition of Ready failed — revise "
-                                 "plan/tasks.json before approval or execution",
-                        "step": "plan",
-                        "dor": {"ready": False, "blockers": dor_errors}}
+        if outcome != "pass":
+            tp.trace(ws, "loop_gate", step=step, outcome="rejected",
+                     note=note or "plan rejected — staying at plan")
+            return {"error": "plan gate: outcome was not 'pass' — the plan "
+                             "was rejected. Revise plan/tasks.json (+ "
+                             "plan/plan.md) and gate again; the loop stays at "
+                             "the plan step.",
+                    "step": "plan", "status": status(ws)}
+        if not state.get("tasks"):
+            tp.trace(ws, "loop_gate", step=step, outcome="rejected",
+                     note="phantom plan: plan/tasks.json missing or empty")
+            return {"error": "plan gate: plan/tasks.json is missing or has "
+                             "no tasks — the plan exists only as words. "
+                             "Write plan/tasks.json (+ plan/plan.md for the "
+                             "human), then gate again."}
+        dor_errors = _plan_dor_errors(ws, state)
+        if dor_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step, reason="dor",
+                     errors=dor_errors)
+            return {"error": "Definition of Ready failed — revise "
+                             "plan/tasks.json before approval or execution",
+                    "step": "plan",
+                    "dor": {"ready": False, "blockers": dor_errors}}
 
     task = _current_task(state)
     act_ws = ws
@@ -1030,7 +1384,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                              "advance", "step": step,
                     "dod": {"passed": False, "errors": evidence_errors}}
     if outcome == "pass" and step == "em":
-        review_errors = _engineering_review_errors(ws)
+        review_errors = _engineering_review_errors(ws, state)
         if review_errors:
             tp.trace(ws, "loop_gate_blocked", step=step,
                      reason="engineering_review", errors=review_errors)
@@ -1038,45 +1392,23 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                              "is not available", "step": step,
                     "dod": {"passed": False, "errors": review_errors}}
 
+    # Tests and evidence validation may take long enough for another process
+    # to modify the workspace or graph. Re-attest immediately before the
+    # transition; a worker's pre-validation fingerprint is not enough.
+    if state.get("submission_required") and step in \
+            ("execute", "fix", "evaluate", "em"):
+        stale = _submission_staleness(ws, submission)
+        if stale:
+            return {"error": stale + " during gate validation — submit the "
+                             "final state again", "step": step}
+
     tp.clear(act_ws)
     tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note)
+    state.pop("_submission", None)
 
     if step == "pm":
         state["step"] = "plan"
     elif step == "plan":
-        _load_tasks(ws, state)
-        # Fail closed: the plan step ADVANCES only on an explicit `pass` with
-        # a real plan on disk. A `fail`/`reject` outcome (human or evaluator
-        # rejected the plan) keeps the loop AT `plan` for a retry — advancing
-        # a failed plan would strand the loop at `execute` with no current
-        # task, and the next `loop next` would crash dereferencing it.
-        if outcome != "pass":
-            tp.trace(ws, "loop_gate", step=step, outcome="rejected",
-                     note=note or "plan rejected — staying at plan")
-            return {"error": "plan gate: outcome was not 'pass' — the plan "
-                             "was rejected. Revise plan/tasks.json (+ "
-                             "plan/plan.md) and gate again; the loop stays at "
-                             "the plan step.",
-                    "step": "plan", "status": status(ws)}
-        # Fail closed on a phantom plan: a planner REPORTING a plan is
-        # nothing — the gate believes only plan/tasks.json on disk. This
-        # is exactly the failure the ungoverned control run produced
-        # (planner claimed files it never wrote; downstream trusted it).
-        if not state["tasks"]:
-            tp.trace(ws, "loop_gate", step=step, outcome="rejected",
-                     note="phantom plan: plan/tasks.json missing or empty")
-            return {"error": "plan gate: plan/tasks.json is missing or has "
-                             "no tasks — the plan exists only as words. "
-                             "Write plan/tasks.json (+ plan/plan.md for the "
-                             "human), then gate again."}
-        dor_errors = _plan_dor_errors(ws, state)
-        if dor_errors:
-            tp.trace(ws, "loop_gate_blocked", step=step, reason="dor",
-                     errors=dor_errors)
-            return {"error": "Definition of Ready failed — revise "
-                             "plan/tasks.json before approval or execution",
-                    "step": "plan",
-                    "dor": {"ready": False, "blockers": dor_errors}}
         # Product↔engineering graph, PLANNED side: link each task's
         # requirement to the modules its scope intends to touch, then
         # annotate the task with its blast radius (engineering) and any
@@ -1134,11 +1466,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
     elif step == "fix":
         state["step"] = "evaluate"
     elif step == "em":
-        # TRUE-UP the product graph before sign-off: replace each
-        # requirement's planned links with edges to what the build ACTUALLY
-        # changed, then rescan so new modules/edges from the new code are
-        # in the graph. The next contract and review start from reality.
-        _true_up_graph(ws, state)
+        # The graph was true-d up before the EM brief, so its fingerprint is
+        # part of the evidence being gated rather than a post-review mutation.
         state["step"] = "signoff"
     save(ws, state)
     return {"step": state["step"], "status": status(ws)}
@@ -1157,6 +1486,11 @@ def _signoff_dod(ws: str, state: dict) -> dict:
     contract = {"coding": {"scope_paths": scopes,
                            "dod": {"require_clean_scope_diff": bool(scopes)}}}
     errors = list(tp.dod_check(contract, ws, baseline)) if scopes else []
+    if state.get("graph_governance"):
+        try:
+            depgraph.scan(ws)
+        except Exception as exc:
+            errors.append(f"graph_dod: final merged-tree scan failed: {exc}")
     for task in state.get("tasks") or []:
         test_command = task.get("tests")
         if not test_command:
@@ -1170,7 +1504,7 @@ def _signoff_dod(ws: str, state: dict) -> dict:
         test_contract["coding"]["dod"]["require_clean_scope_diff"] = False
         errors.extend(f"task {task.get('id', '?')}: {e}"
                       for e in tp.dod_check(test_contract, ws, baseline))
-    errors.extend(_engineering_review_errors(ws))
+    errors.extend(_engineering_review_errors(ws, state))
     for problem in kb.lint(ws):
         errors.append("kb_lint: " + (problem.get("file", "?")) + " — "
                       + problem.get("problem", ""))
@@ -1198,7 +1532,9 @@ def _annotate_plan_graph(ws: str, state: dict) -> None:
         if not scope:
             continue
         mods = depgraph.modules_for_scope(scope)
-        imp = depgraph.impact(ws, mods) if \
+        imp = depgraph.impact(
+            ws, mods, policy=t.get("impact_policy")
+            or depgraph.impact_policy(t)) if \
             depgraph.load(ws)["modules"] else None
         prod = depgraph.product_impact(ws, mods)
         own = depgraph._req_node(rid) if rid else None
@@ -1206,6 +1542,9 @@ def _annotate_plan_graph(ws: str, state: dict) -> None:
         t["blast"] = {
             "modules": mods,
             "impacted": imp["total_impacted"] if imp else 0,
+            "unknown": imp["unknown"] if imp else mods,
+            "truncated": bool(imp and imp.get("truncated")),
+            "policy": t.get("impact_policy") or depgraph.impact_policy(t),
             "shared_with": shared,
             "dependent_requirements": prod["dependent_requirements"],
         }
@@ -1215,10 +1554,12 @@ def _annotate_plan_graph(ws: str, state: dict) -> None:
 
 
 def _true_up_graph(ws: str, state: dict) -> None:
-    """EM-gate graph work: realizes edges from the actual diff + rescan."""
+    """Pre-EM graph work: realize requirements, then scan the final tree."""
     changed = [f for f in _diff_files(ws, state.get("baseline") or "HEAD")
                if not f.startswith(lens_router.LOOP_OWNED)]
     if not changed:
+        depgraph.scan(ws)
+        tp.trace(ws, "graph_true_up", files=0)
         return
     # Batch by requirement (see _annotate_plan_graph) so multiple tasks
     # sharing one requirement accumulate their realized surface instead of
@@ -1234,10 +1575,9 @@ def _true_up_graph(ws: str, state: dict) -> None:
         realized.setdefault(rid, []).extend(mine)
     for rid, files in realized.items():
         depgraph.link_requirement(ws, rid, files or changed, kind="realizes")
-    try:
-        depgraph.scan(ws)
-    except Exception:
-        pass   # a scan failure must never block the gate
+    # Scan after recording the realized edges so the graph fingerprint covers
+    # both the final code tree and requirement-to-implementation truth.
+    depgraph.scan(ws)
     tp.trace(ws, "graph_true_up", files=len(changed))
 
 
@@ -1646,6 +1986,61 @@ def status(ws: str) -> dict:
     return out
 
 
+def user_summary(ws: str) -> dict:
+    """Human control-plane read model over the existing durable artifacts.
+
+    It intentionally does not replace loop.json, findings, graph, or trace.
+    Skills use this compact view so users see progress and decisions while the
+    full harness remains available to agents.
+    """
+    state = load(ws)
+    if state is None:
+        return {"state": "not_started", "action_required": False,
+                "headline": "No active taskplane run.",
+                "next": "Tell taskplane what to build or review."}
+    tasks = state.get("tasks") or []
+    settled = sum(1 for t in tasks if t.get("status") in SETTLED)
+    step = state.get("step")
+    decisions = {
+        "plan_approval": "Review and approve the implementation plan.",
+        "selection": "Choose the A/B variant or request a hybrid.",
+        "signoff": "Review the engineering evidence and sign off.",
+        "escalated": "Choose retry, skip/defer, or abort.",
+    }
+    action = decisions.get(step)
+    current = _current_task(state)
+    graph = depgraph.summary(ws)
+    host = ("codex" if os.environ.get("CODEX_HOME")
+            or os.environ.get("CODEX_THREAD_ID") else
+            "claude-tag" if tp.store_env() == "repo" else "claude")
+    assurance = ("state-and-evidence enforced; tool interception is cooperative"
+                 if host == "claude-tag" else
+                 "state, evidence, and tool boundaries mechanically enforced")
+    if step == "done":
+        headline = f"Complete — {settled}/{len(tasks)} task(s) settled."
+    elif action:
+        headline = f"Decision required — {action}"
+    else:
+        label = current.get("id") if current else step
+        headline = (f"In progress — {settled}/{len(tasks)} task(s) settled; "
+                    f"current: {label} ({step}).")
+    return {
+        "state": step,
+        "goal": state.get("goal"),
+        "progress": {"settled": settled, "total": len(tasks)},
+        "current_task": current and {"id": current.get("id"),
+                                     "status": current.get("status")},
+        "action_required": bool(action),
+        "decision": action,
+        "headline": headline,
+        "host": host,
+        "assurance": assurance,
+        "graph": graph,
+        "submission_pending_validation": bool(
+            state.get("_submission") or any(t.get("_submission") for t in tasks)),
+    }
+
+
 # --- Dashboard v2 (R-0001): rendering is part of the flow, not a separate
 # call. Every successful gate()/next_action() refreshes the fragment on disk
 # and points at it in the payload — the driver renders what's already there.
@@ -1745,6 +2140,7 @@ def _with_dashboard(fn):
 
 
 gate = _with_dashboard(gate)
+submit = _with_dashboard(submit)
 next_action = _with_dashboard(next_action)
 approve = _with_dashboard(approve)
 retro = _with_dashboard(retro)

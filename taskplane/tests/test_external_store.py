@@ -51,6 +51,13 @@ class TestKey(unittest.TestCase):
                 ("/x/my-app", "/x/my_app", "/x/my.app", "/x/my app")}
         self.assertEqual(len(keys), 4)
 
+    def test_filesystem_aliases_share_one_project_identity(self):
+        logical = tempfile.mkdtemp(prefix="tp-alias-")
+        canonical = os.path.realpath(logical)
+        if logical == canonical:
+            self.skipTest("platform does not expose an aliased temp path")
+        self.assertEqual(tl.project_key(logical), tl.project_key(canonical))
+
     def test_store_under_home(self):
         prev = os.environ.get("TASKPLANE_HOME")
         home = tempfile.mkdtemp()

@@ -21,6 +21,8 @@ functional: [...]              # testable statements
 nfr: {performance, security, scale, a11y, ...}   # non-functional, by lens
 acceptance: [...]              # → becomes the DoD
 open_questions: [...]          # what's still fuzzy
+depends_on: [R-....]           # product dependencies, stored as graph edges
+contracts: [{relation, id}]    # provides/consumes/changes API/event/data/runtime
 links: {decisions, tasks, arch}
 ---
 ```
@@ -28,6 +30,14 @@ links: {decisions, tasks, arch}
 The PM/product lens owns these. Everything downstream (plan, tasks, DoD, EM
 sign-off) traces back to a requirement id, so nothing is built that isn't
 anchored to a refined requirement.
+
+Dependencies and contracts are therefore part of readiness, not optional
+review context. The plan inherits them. Distributed entities meet at an
+explicit `contract:` or `resource:` node; taskplane does not pretend it knows
+remote implementation internals. Graph DoR checks the declared boundary and
+depth policy before approval. Graph DoD compares the actual diff with the
+planned modules and requires evaluators to disposition impacted consumers,
+affected requirements, and contracts with evidence.
 
 ## 2. A refinement gate before build (the optimization point)
 

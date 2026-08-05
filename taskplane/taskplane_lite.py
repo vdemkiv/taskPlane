@@ -642,6 +642,58 @@ def changed_files(workspace: str, snapshot_ref: str) -> list:
     return sorted(set(files))
 
 
+def workspace_fingerprint(workspace: str, snapshot_ref: str | None = None,
+                          extra_paths=None) -> str:
+    """Stable evidence identity for the current governed change.
+
+    Agent prose is never evidence.  A submission is bound to the baseline,
+    changed paths, and the bytes currently present at those paths so the
+    orchestrator can reject a gate when work changed after the worker
+    submitted it.  Deleted paths and git metadata-only changes are represented
+    explicitly; untracked files are included through ``changed_files``.
+    """
+    h = hashlib.sha256()
+    h.update((snapshot_ref or "NO-SNAPSHOT").encode("utf-8"))
+    files = changed_files(workspace, snapshot_ref) if snapshot_ref else []
+    # Runtime-owned paths are deliberately excluded from source-scope DoD,
+    # but evaluator/EM evidence must still be immutable between submit and
+    # gate. Callers name those exact artifacts here; reject absolute/traversal
+    # paths so the attestation never reads outside the governed workspace.
+    for rel in extra_paths or []:
+        rel = str(rel or "").replace("\\", "/").strip()
+        if (not rel or os.path.isabs(rel) or rel == ".."
+                or rel.startswith("../") or "/../" in rel):
+            continue
+        files.append(rel)
+    files = sorted(set(files))
+    for rel in files:
+        h.update(b"\0path\0")
+        h.update(rel.encode("utf-8", errors="surrogateescape"))
+        full = os.path.join(workspace, rel)
+        try:
+            st = os.lstat(full)
+            h.update(f"\0mode:{st.st_mode:o}\0size:{st.st_size}\0".encode())
+            if os.path.isfile(full) and not os.path.islink(full):
+                with open(full, "rb") as f:
+                    while True:
+                        chunk = f.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+            elif os.path.islink(full):
+                h.update(b"symlink\0")
+                h.update(os.readlink(full).encode("utf-8",
+                                                   errors="surrogateescape"))
+        except FileNotFoundError:
+            h.update(b"\0deleted\0")
+        except OSError as exc:
+            # Fail deterministic rather than silently dropping a path from the
+            # attestation.  The exact errno is enough to invalidate a later
+            # submission once the path becomes readable again.
+            h.update(f"\0unreadable:{exc.errno}\0".encode())
+    return h.hexdigest()
+
+
 def _porcelain_path(ln: str) -> str:
     """The path out of a `git status --porcelain` line — strips the 2-char
     status + space prefix and unwraps a rename's `old -> new` to `new`."""
@@ -1279,24 +1331,53 @@ def store_home() -> str:
             or os.path.join(os.path.expanduser("~"), ".taskplane"))
 
 
+def _workspace_identity(workspace: str) -> str:
+    """Canonical checkout identity shared by parent and child processes."""
+    return os.path.realpath(os.path.abspath(workspace))
+
+
 def _path_slug(workspace: str) -> str:
-    ap = os.path.abspath(workspace)
+    ap = _workspace_identity(workspace)
     return re.sub(r"[^A-Za-z0-9]+", "-", ap) or "-"
 
 
 def project_key(workspace: str) -> str:
     """Stable, COLLISION-FREE per-project key: a readable path slug plus a
-    short hash of the absolute path.
+    short hash of the canonical absolute path.
 
     The slug alone (the v0.9.6 scheme) collapses every run of non-alphanumerics
     to '-', so distinct projects whose paths differ only by punctuation —
     /x/my-app, /x/my_app, /x/my.app — all map to ONE key and silently share a
     store (KB, requirements, and loop.json — a gate in one corrupts the other).
-    Appending an 8-char hash of the exact absolute path guarantees every
+    Appending an 8-char hash of the canonical path guarantees every
     distinct path gets its own store while keeping the slug human-readable."""
-    ap = os.path.abspath(workspace)
+    ap = _workspace_identity(workspace)
     slug = _path_slug(workspace)
     return f"{slug}-{hashlib.sha1(ap.encode('utf-8')).hexdigest()[:8]}"
+
+
+def _adopt_alias_store(workspace: str, new_root: str) -> None:
+    """Adopt a pre-canonical store whose metadata names the same checkout."""
+    import shutil
+    projects = os.path.join(store_home(), "projects")
+    if os.path.isdir(new_root) or not os.path.isdir(projects):
+        return
+    identity = _workspace_identity(workspace)
+    for name in sorted(os.listdir(projects)):
+        candidate = os.path.join(projects, name)
+        if candidate == new_root or not os.path.isdir(candidate):
+            continue
+        try:
+            with open(os.path.join(candidate, "meta.json")) as f:
+                meta = json.load(f)
+            owner = meta.get("workspace_realpath") or meta.get("workspace")
+            if not owner or _workspace_identity(owner) != identity:
+                continue
+            os.makedirs(os.path.dirname(new_root), exist_ok=True)
+            shutil.move(candidate, new_root)
+            return
+        except (OSError, ValueError):
+            continue
 
 
 def _adopt_legacy_store(workspace: str, new_root: str) -> None:
@@ -1310,12 +1391,12 @@ def _adopt_legacy_store(workspace: str, new_root: str) -> None:
     legacy_root = os.path.join(store_home(), "projects", _path_slug(workspace))
     if legacy_root == new_root or not os.path.isdir(legacy_root):
         return
-    ap = os.path.abspath(workspace)
+    ap = _workspace_identity(workspace)
     owns = True
     try:
         with open(os.path.join(legacy_root, "meta.json")) as f:
             owner = json.load(f).get("workspace")
-        if owner and os.path.abspath(owner) != ap:
+        if owner and _workspace_identity(owner) != ap:
             owns = False        # belongs to a colliding sibling — don't steal
     except (OSError, ValueError):
         owns = True             # no/unreadable meta: the slug is ours to keep
@@ -1339,6 +1420,7 @@ def external_store_root(workspace: str) -> str:
     private side of `tp share push` and the home of mode.json itself."""
     root = os.path.join(store_home(), "projects", project_key(workspace))
     if not os.path.isdir(root):
+        _adopt_alias_store(workspace, root)
         _adopt_legacy_store(workspace, root)
     return root
 
@@ -1539,6 +1621,7 @@ def write_store_meta(workspace: str) -> dict:
                   cwd=workspace).stdout.strip() or None
     meta = {"key": project_key(workspace),
             "workspace": os.path.abspath(workspace),
+            "workspace_realpath": _workspace_identity(workspace),
             "git_remote": remote}
     try:
         with open(store_meta_path(workspace), "w") as f:

@@ -9,7 +9,7 @@ description: "Use when the user asks how taskplane works or how to get started: 
 for the current folder. If `ready` is **false**, do NOT open with the tour —
 open with setup: tell them this folder isn't set up yet, name the ONE missing
 piece from `next_action` (folder / git / init), and continue directly with the
-`/tp-go` cold-start procedure. Walk folder → git → init, asking before any
+`/taskplane` cold-start procedure. Walk folder → git → init, asking before any
 git initialization or commit; ask whether knowledge stays private or shared
 with the team and show the model-tier map. THEN give whatever tour they asked
 for. A just-installed user's real question is "now what?" — answer that before
@@ -27,29 +27,36 @@ touch, which tools it may use, which commands are denied — enforced by a
 hook BEFORE actions run, not by trust. Work flows through a loop with two
 human gates (plan approval, final sign-off), every step is reviewed by
 context-chosen lenses, and everything learned lands in a knowledge base so
-the next task starts smarter and cheaper.
+the next task starts smarter and cheaper. Requirements and plans carry the
+dependency graph into Ready and Done. Workers submit fingerprinted evidence;
+only the orchestrator can ask the engine to advance a stage.
 
 **Getting started (walk them through it live if they want):**
 
-0. Brand-new / nothing attached? `/tp-go` runs a **cold-start check** first
+0. Brand-new / nothing attached? `/taskplane` runs a **cold-start check** first
    (`tp onboard`) and shows an onboarding dashboard that walks you through
    connecting a folder, putting it under git, and initializing taskplane —
    so you're never staring at a blank slate wondering where to point it.
-1. `/tp-go <goal>` in a connected folder — sets the project up on first run,
+1. `taskplane build <goal>` in a connected folder — sets the project up on first run,
    then: requirement → refinement score + forecast → plan → THEIR approval →
    governed build (parallel if tasks are independent) → lens reviews →
    engineering synthesis → THEIR sign-off → retro.
-2. `/tp-status` anytime — where things stand and who's waiting on whom.
-3. `/tp-product` — the WHAT seat: author/refine/score requirements,
+2. `taskplane review <target>` — read-only full-lens review with dependency
+   impact and requirement/contract evidence.
+3. `taskplane status` anytime — where things stand and who's waiting on whom.
+
+Power-user routes remain available:
+
+4. `/tp-product` — the WHAT seat: author/refine/score requirements,
    change requests, product decisions and debt.
-4. `/tp-engineering` — the SOUND seat: read-only review with the full
+5. `/tp-engineering` — the SOUND seat: read-only review with the full
    lens catalog (architecture & system design always on), impact,
    verdicts, retro, sign-off recommendation.
-5. `/tp-northstar` — the STRATEGY lens, summoned on demand: measures a
+6. `/tp-northstar` — the STRATEGY lens, summoned on demand: measures a
    task/diff/idea against the project's north star and returns one advisory
    note (alignment + Leverage · Reversibility · Opportunity cost · Coherence).
    Never a gate.
-6. `/tp-build` — new features: a north-star check + spec refinement first, visual mock
+7. `/tp-build` — new features: a north-star check + spec refinement first, visual mock
    before building, optional A/B variants with a human selection gate.
 
 **When they ask "what if the agent goes rogue":** show, don't tell — an
@@ -57,18 +64,17 @@ out-of-scope write or a denied command (`git push`) gets blocked with a
 reason and traced to `.taskplane/trace.jsonl`. That block message is the
 product working.
 
-**The whole surface is 7 commands** — say what you want in plain words
-and the right one triggers (`/tp-go` alone covers most days: it picks up
-whatever you prompt and routes to the right persona itself):
+**The normal surface is three prompts.** Specialist skills below are aliases
+for people who want direct control:
 
 | Say | Command | Does |
 |---|---|---|
-| "build X" / "set up taskplane" / anything | `/tp-go` | the whole governed loop — routes to the personas below as needed |
+| "build X" / "set up taskplane" / anything | `taskplane build …` | the whole governed loop — routes internally as needed |
 | "spec this" / "refine the requirement" / "change request" | `/tp-product` | the WHAT seat: requirements, scores, product decisions |
 | "new feature" / "prototype this" / "build it as A/B variants" | `/tp-build` | a north-star check + refinement first, visual mock before build, A/B variants with a selection gate |
-| "review this" / "security review" / "what depends on X" / "run the retro" | `/tp-engineering` | the SOUND seat: full lens catalog (architecture always on), impact, verdicts, retro |
+| "review this" / "security review" / "what depends on X" / "run the retro" | `taskplane review …` | the SOUND seat: full lens catalog (architecture always on), impact, verdicts, retro |
 | "north-star this" / "should we build this" / "does this serve the direction" | `/tp-northstar` | the STRATEGY lens, summoned & advisory: alignment vs the north star + Leverage · Reversibility · Opportunity cost · Coherence |
-| "where are we" | `/tp-status` | loop, tracks, requirements, debt |
+| "where are we" | `taskplane status` | concise progress, current harness state, and decisions needed |
 | "how does X work" | `/tp-help` | this tour + concept explainers |
 
 **Two seats, one bar.** tp-product asks "does it deliver the

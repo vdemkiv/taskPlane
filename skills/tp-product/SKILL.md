@@ -32,6 +32,13 @@ another requirement's realized surface, and every review's impact payload
 names the requirements a change touches (`affected_requirements`) and the
 ones depending on them.
 
+**Contracts are requirement data too.** Add repeatable
+`--contract provides|consumes|changes:NAME` for APIs, events, data schemas,
+trust boundaries, and runtime protocols. Distributed requirements describe
+the contract between entities, not another service's internals. The plan
+cannot become Ready until these boundaries are explicit, and evaluation must
+verify them before Done.
+
 ## Strategy is a separate, summoned seat — not the product's job
 
 "Should we build this given where we're going" is a *strategic* question, and

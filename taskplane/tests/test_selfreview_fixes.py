@@ -42,6 +42,7 @@ def _pass_eval(ws):
                    "lenses": [{"lens": x["id"], "verdict": "pass",
                                "blockers": 0} for x in routed["lenses"]],
                    "failures": []}, f)
+    loop.submit(ws, "pass")
     return loop.gate(ws, "pass")
 
 
@@ -89,8 +90,10 @@ class TestEngine(unittest.TestCase):
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"mode": "ab-selection", "tasks": [
-            {"id": ids[0], "variant": "A", "scope": ["src/**"], "tests": "t"},
-            {"id": ids[1], "variant": "B", "scope": ["src/**"], "tests": "t"}]},
+            {"id": ids[0], "variant": "A", "scope": ["src/**"],
+             "new_modules": ["src"], "tests": "t"},
+            {"id": ids[1], "variant": "B", "scope": ["src/**"],
+             "new_modules": ["src"], "tests": "t"}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
@@ -102,8 +105,10 @@ class TestEngine(unittest.TestCase):
         self._ab_to_selection()
         loop.select(self.ws, "hybrid")
         json.dump({"mode": "ab-selection", "tasks": [
-            {"id": "ga", "variant": "A", "scope": ["src/**"], "tests": "t"},
-            {"id": "gb", "variant": "B", "scope": ["src/**"], "tests": "t"}]},
+            {"id": "ga", "variant": "A", "scope": ["src/**"],
+             "new_modules": ["src"], "tests": "t"},
+            {"id": "gb", "variant": "B", "scope": ["src/**"],
+             "new_modules": ["src"], "tests": "t"}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
@@ -120,9 +125,12 @@ class TestEngine(unittest.TestCase):
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"tasks": [
-            {"id": "t1", "scope": ["a/**"], "tests": "t"},
-            {"id": "t2", "scope": ["b/**"], "deps": ["t1"], "tests": "t"},
-            {"id": "t3", "scope": ["c/**"], "deps": ["t2"], "tests": "t"}]},
+            {"id": "t1", "scope": ["a/**"], "new_modules": ["a"],
+             "tests": "t"},
+            {"id": "t2", "scope": ["b/**"], "new_modules": ["b"],
+             "deps": ["t1"], "tests": "t"},
+            {"id": "t3", "scope": ["c/**"], "new_modules": ["c"],
+             "deps": ["t2"], "tests": "t"}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws); s["step"] = "escalated"; s["current_task"] = 0
@@ -137,8 +145,10 @@ class TestEngine(unittest.TestCase):
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"tasks": [
-            {"id": "t1", "scope": ["a/**"], "tests": "t"},
-            {"id": "t2", "scope": ["b/**"], "deps": ["t1"], "tests": "t"}]},
+            {"id": "t1", "scope": ["a/**"], "new_modules": ["a"],
+             "tests": "t"},
+            {"id": "t2", "scope": ["b/**"], "new_modules": ["b"],
+             "deps": ["t1"], "tests": "t"}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
@@ -160,8 +170,10 @@ class TestEngine(unittest.TestCase):
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"mode": "ab-selection", "tasks": [
-            {"id": "va", "variant": "A", "scope": ["src/**"], "tests": "t"},
-            {"id": "vb", "variant": "B", "scope": ["src/**"], "tests": "t"}]},
+            {"id": "va", "variant": "A", "scope": ["src/**"],
+             "new_modules": ["src"], "tests": "t"},
+            {"id": "vb", "variant": "B", "scope": ["src/**"],
+             "new_modules": ["src"], "tests": "t"}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
         loop.gate(self.ws, "pass")
         self.assertTrue(loop.load(self.ws)["parallel"])

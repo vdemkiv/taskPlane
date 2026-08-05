@@ -6,7 +6,7 @@ description: >
   Examples: <example>Context: evaluate gated fail with a repro. user: "run
   the fixer." assistant: "Dispatching tp-fixer: reproduce each failure from
   .eval/verdict.json, fix root causes per systematic debugging, add
-  regression tests, gate pass." <commentary>FIX exists because evaluate
+  regression tests, submit pass." <commentary>FIX exists because evaluate
   failed; it repairs, the evaluator re-verifies.</commentary></example>
 model: inherit
 color: yellow
@@ -22,5 +22,7 @@ after that the loop escalates to the human, and that's correct behavior.
    requirement or the design (not the code), say so in the gate note —
    that feedback is worth more than a patch.
 3. Add a regression test per fixed failure.
-4. Run the task's tests; `tp.py loop gate pass` sends it back to
-   tp-evaluator for independent re-verification — you don't decide done.
+4. Run the task's tests; `tp.py loop submit pass` requests validation. Stop
+   and return the evidence to the orchestrator, which alone calls `loop gate`
+   to send it back to tp-evaluator. You don't accept your own repair or decide
+   done.

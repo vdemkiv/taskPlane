@@ -47,4 +47,5 @@
 5. Register the first track: `$TP track new <name> "<goal>"`. More
    workstreams later: `track new` / `track switch` / `track close` — the
    KB, graph, and requirements are shared across tracks by design.
-6. Hand off to `/tp-go` for the first governed goal.
+6. Hand off to the `taskplane` façade for the first governed goal; it routes
+   internally to `/tp-go` without exposing the loop choreography.

@@ -21,9 +21,15 @@ step, DoD after), and the single audit trace. The role agents are pluggable
 *step workers*; taskplane is the *engine* that drives them, checks them, and
 records them. Concretely:
 
-- Every loop step = **activate a contract → run the role → run its gate →
-  record the verdict to `.taskplane/trace.jsonl` → transition.**
-- The loop's state lives in one place taskplane manages (`plan/state.json`),
+- Every loop step = **activate a contract → run the role → orchestrator runs
+  the engine gate → clear → transition.** Risk-bearing execute, fix, evaluate,
+  and engineering workers first submit evidence bound to the source state and
+  their exact evidence artifacts, so they cannot accept their own completion
+  claim or alter it after submission. Product and
+  plan return artifacts directly to the orchestrator; the plan's graph DoR
+  remains mechanical and human approval follows.
+- The loop's state lives in one place taskplane manages (the active store's
+  `loop.json`),
   and every transition is a taskplane event. There is one audit log for the
   whole run, not per-role scraps.
 - A step cannot advance unless its DoR passed; a step cannot be called done
@@ -63,24 +69,27 @@ This is the difference from a prompt-driven orchestrator: the loop is
         HUMAN sign-off ──▶ done
 ```
 
-Each arrow is a taskplane contract activate → gate → clear, logged.
+Each arrow is contract activate → role return → orchestrator gate → clear,
+logged. Execute/fix/evaluate/engineering insert a worker submission bound to a
+workspace fingerprint before the orchestrator gate.
 
 ## Per-step contracts (the enforced boundaries)
 
 | Step | Role | Contract | May write | DoR (enter) | DoD (exit) |
 | --- | --- | --- | --- | --- | --- |
-| PM | product-manager | planning | `specs/**`,`docs/**` | goal stated | testable acceptance criteria + handoff |
-| PLAN | loop-planner | read-only + allow `plan/**` | `plan/**` | spec + criteria exist | every criterion → task; each task has a contract |
-| EXECUTE | loop-executor | build (per-task scope) | the task's `scope_paths` | deps done; scope+tests set | task test passes; diff in scope |
-| EVALUATE | loop-evaluator | read-only + allow `.eval/**` | `.eval/**` | impl commits exist | PASS/FAIL + evidence per criterion |
+| PM | product-manager | planning | `specs/**`,`docs/**` | goal stated | testable acceptance criteria + requirement dependencies/contracts |
+| PLAN | loop-planner | read-only + allow `plan/**` | `plan/**` | spec + criteria exist | every criterion → task; scope/tests/deps/contracts/new modules/impact policy pass graph DoR |
+| EXECUTE | loop-executor | build (per-task scope) | the task's `scope_paths` | deps done; scope+tests+graph policy set | task test passes; diff in scope; fingerprinted submission. Realized graph truth is checked at EVALUATE and finalized before EM. |
+| EVALUATE | loop-evaluator | read-only + allow `.eval/**` | `.eval/**` | impl commits exist | PASS/FAIL + evidence per criterion, impacted node, affected requirement, and contract |
 | FIX | loop-fixer | build (same task scope) | the task's `scope_paths` | a reproducible FAIL | failure fixed + regression + re-verified |
-| EM | engineering-manager | read-only review | `.em-review/**` | all tasks PASS | human sign-off (no auto-verdict) |
+| EM | engineering-manager | read-only review | `.em-review/**` | all tasks PASS + final graph true-up | full lens/graph evidence on the current fingerprint; then human sign-off |
 
 ## Artifacts / handoff chain (what each step hands the next)
 
 ```
-goal ─▶ specs/spec.md + handoff block
-      ─▶ plan/plan.md         (tasks: id, scope_paths, test_command, deps, criteria refs)
+goal ─▶ specs/spec.md + handoff block (requirement deps + named contracts)
+      ─▶ plan/plan.md         (tasks: id, scope, tests, deps, criteria,
+                               contracts, new_modules, impact_policy)
       ─▶ <task code changes>  (in scope, DoD-verified)
       ─▶ .eval/verdict.json   (per task: PASS/FAIL + evidence)
       ─▶ .em-review/          (DoD matrix + engineering-quality read-out)
@@ -97,12 +106,14 @@ tp.py loop init  <spec-or-handoff>   # create plan/state.json, seed the run
 tp.py loop next                       # advance ONE step: activate the right
                                       # contract, return which role to run +
                                       # its DoR; the agent does the work; then
-tp.py loop gate  [pass|fail]          # run the step's DoD, record it, transition
+tp.py loop submit [pass|fail]          # worker requests validation; no transition
+tp.py loop gate  [pass|fail]           # orchestrator recomputes evidence and transitions
 tp.py loop status                     # where are we, per-task status, cycles
 ```
 
 The **orchestrator agent** becomes a thin driver: call `loop next` → run the
-named role → call `loop gate` → repeat, until the EM/human step. All state and
+named role → receive its fingerprinted `loop submit` → call `loop gate` →
+repeat, until the EM/human step. All state and
 all gates are taskplane's; the agent only supplies the per-step reasoning.
 (Alternative: the orchestrator agent holds the state in prose and calls the
 existing `tp.py new/ready/dod/clear` per step. Simpler to build, weaker
@@ -158,7 +169,8 @@ Each was settled as the **Recommendation** noted below and is what shipped.
   `loop claim <id> --agent-workspace <worktree>` activates *that task's
   contract in that worktree* — the PreToolUse hook enforces each agent
   individually. The harness is per agent, not per fleet.
-- Workers report `loop gate pass|fail --task <id>`; built tasks are then
+- Workers commit and report `loop submit pass|fail --task <id>`; the
+  orchestrator alone runs the matching gate. Built tasks are then
   evaluated (read-only, in their worktree, routed lenses) one by one; on
   evaluate PASS the driver merges `tp/<id>` and removes the worktree.
 - All tasks passed → EM synthesis on the merged tree → human sign-off.

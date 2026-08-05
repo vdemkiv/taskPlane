@@ -77,6 +77,7 @@ def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
                        acceptance=None, open_questions=None,
                        status: str = "draft", tags=None, context_files=None,
                        links=None, changed_from: str | None = None,
+                       depends_on=None, contracts=None,
                        date: str | None = None) -> dict:
     """Write a requirement record + index entry. Returns the entry.
 
@@ -101,6 +102,8 @@ def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
         "nfr": dict(nfr or {}),
         "acceptance": list(acceptance or []),
         "open_questions": list(open_questions or []),
+        "depends_on": list(depends_on or []),
+        "contracts": list(contracts or []),
         "context_files": list(context_files or []),
         "links": links,
         "file": f"requirements/{rid}-{slug}.md",
@@ -122,6 +125,8 @@ def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
 - tags: {', '.join(entry['tags']) or '—'}
 - context_files: {', '.join(entry['context_files']) or '—'}
 - links: {json.dumps(entry['links']) if entry['links'] else '—'}
+- depends_on: {', '.join(entry['depends_on']) or '—'}
+- contracts: {json.dumps(entry['contracts']) if entry['contracts'] else '—'}
 
 ## Functional requirements
 {bullets(entry['functional'])}
@@ -359,6 +364,13 @@ def render_context(reqs: list) -> str:
         oq = f", {len(r['open_questions'])} open Q" if r.get(
             "open_questions") else ""
         lines.append(f"  [{r['id']}] {r['title']} ({r['status']}{oq})")
+        if r.get("depends_on"):
+            lines.append("    depends on: " + ", ".join(r["depends_on"]))
+        if r.get("contracts"):
+            labels = [c.get("relation", "uses") + ":" + c.get("id", "?")
+                      if isinstance(c, dict) else str(c)
+                      for c in r["contracts"]]
+            lines.append("    contracts: " + ", ".join(labels))
     lines.append("Every task must trace to a requirement id; honor acceptance "
                  "criteria as the DoD.")
     return "\n".join(lines)

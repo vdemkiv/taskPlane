@@ -472,16 +472,20 @@ def _governed_root(cwd: str) -> str:
     not inherit a sibling/parent contract. If no ancestor within the boundary
     is governed, returns the original cwd unchanged (ungoverned stays so)."""
     start = _workspace(cwd)
-    home = os.path.abspath(os.path.expanduser("~"))
+    home = os.path.realpath(os.path.expanduser("~"))
     # git worktree/repo top of cwd — the walk must not climb past it.
     top = tp._run(["git", "rev-parse", "--show-toplevel"], cwd=start).stdout.strip()
-    top = os.path.abspath(top) if top else None
+    # macOS commonly reports the same temp path as /var/... to Python and
+    # /private/var/... to git. Compare real paths or the boundary check misses
+    # the worktree root and can inherit a parent contract.
+    top = os.path.realpath(top) if top else None
     cur = start
     while True:
         if os.path.exists(os.path.join(tp.tp_dir(cur), "active_contract.json")):
             return cur
         parent = os.path.dirname(cur)
-        if parent == cur or cur == home or cur == top:
+        real_cur = os.path.realpath(cur)
+        if parent == cur or real_cur == home or real_cur == top:
             return start
         cur = parent
 
@@ -736,6 +740,9 @@ def cmd_loop(a) -> int:
         print(json.dumps({"initialized": True, "step": st["step"]}, indent=2))
     elif action == "next":
         print(json.dumps(loopmod.next_action(ws), indent=2))
+    elif action == "submit":
+        print(json.dumps(loopmod.submit(ws, a.outcome, note=a.note or "",
+                                        task_id=a.task), indent=2))
     elif action == "gate":
         print(json.dumps(loopmod.gate(ws, a.outcome, note=a.note or "",
                                       task_id=a.task), indent=2))
@@ -912,6 +919,25 @@ def cmd_req(a) -> int:
             print(f"taskplane: --nfr expects LENS=STATEMENT; missing '=' in "
                   f"{bad}", file=sys.stderr)
             return 1
+        contracts = []
+        for raw in (getattr(a, "contract", None) or []):
+            if ":" not in raw:
+                print("taskplane: --contract expects "
+                      "provides|consumes|changes:CONTRACT", file=sys.stderr)
+                return 1
+            relation, cid = raw.split(":", 1)
+            relation = relation.strip().lower()
+            cid = cid.strip()
+            if relation not in ("provides", "consumes", "changes") or not cid:
+                print("taskplane: --contract expects "
+                      "provides|consumes|changes:CONTRACT", file=sys.stderr)
+                return 1
+            node = cid if cid.startswith(("contract:", "resource:")) \
+                else "contract:" + cid
+            contracts.append({"relation": relation, "id": node})
+        deps = list(a.depends or [])
+        if a.changed_from:
+            deps.append(a.changed_from)
         e = req.record_requirement(
             ws, a.title,
             functional=(a.functional or None),
@@ -920,18 +946,20 @@ def cmd_req(a) -> int:
             open_questions=(a.open or None),
             tags=(a.tags.split(",") if a.tags else None),
             context_files=(a.files.split(",") if a.files else None),
-            changed_from=a.changed_from)
+            changed_from=a.changed_from, depends_on=deps,
+            contracts=contracts)
         # Product dependencies land in the graph immediately — a change
         # request also gets a depends edge to its origin requirement.
-        deps = list(a.depends or [])
-        if a.changed_from:
-            deps.append(a.changed_from)
-        if deps:
+        if deps or contracts:
             import depgraph as dg
             for d in deps:
                 dg.link_requirement_dep(ws, e["id"], d)
+            for contract in contracts:
+                dg.record_edge(ws, dg._req_node(e["id"]), contract["id"],
+                               kind=contract["relation"], confidence="high")
         print(json.dumps({"recorded": e["id"], "status": e["status"],
                           "depends": deps or None,
+                          "contracts": contracts or None,
                           "file": e["file"]}, indent=2))
     elif a.req_action == "score":
         r = req.get_requirement(ws, a.id)
@@ -1300,6 +1328,30 @@ def cmd_context(a) -> int:
     return 0
 
 
+def cmd_summary(a) -> int:
+    """User control-plane view: outcome, progress, and decisions only."""
+    import loop as loopmod
+    ws = _workspace(a.workspace)
+    summary = loopmod.user_summary(ws)
+    if getattr(a, "json", False):
+        print(json.dumps(summary, indent=2))
+        return 0
+    print("taskplane: " + summary["headline"])
+    if summary.get("goal"):
+        print("  goal: " + summary["goal"])
+    if summary.get("decision"):
+        print("  ACTION REQUIRED: " + summary["decision"])
+    elif summary.get("state") not in ("done", "not_started"):
+        print("  no action required — agents are working under the harness")
+    graph = summary.get("graph") or {}
+    if graph.get("modules"):
+        print(f"  dependency graph: {graph['modules']} nodes / "
+              f"{graph['edges']} edges")
+    if summary.get("assurance"):
+        print("  assurance: " + summary["assurance"])
+    return 0
+
+
 def cmd_dashboard(a) -> int:
     """Emit the mission-control view. Default: the inline widget fragment
     for mcp__visualize__show_widget (the driver pipes it straight in).
@@ -1425,7 +1477,11 @@ def cmd_graph(a) -> int:
     elif a.graph_action == "impact":
         files = (a.files.split(",") if a.files else
                  _changed_for_impact(ws, a.base))
-        imp = dg.impact(ws, files, max_depth=a.depth)
+        policy = {"local_depth": a.depth,
+                  "boundary_mode": a.boundary,
+                  "contract_depth": a.contract_depth,
+                  "requirement_depth": a.requirement_depth}
+        imp = dg.impact(ws, files, max_depth=a.depth, policy=policy)
         prod = dg.product_impact(ws, files)
         imp["affected_requirements"] = prod["affected_requirements"]
         imp["dependent_requirements"] = prod["dependent_requirements"]
@@ -1433,8 +1489,26 @@ def cmd_graph(a) -> int:
         if a.json:
             print(json.dumps(imp, indent=2))
     elif a.graph_action == "edge":
-        e = dg.record_edge(ws, a.src, a.dst, kind=a.kind, note=a.note or "")
+        e = dg.record_edge(ws, a.src, a.dst, kind=a.kind, note=a.note or "",
+                           confidence=a.confidence)
         print(json.dumps({"recorded": e}, indent=2))
+    elif a.graph_action == "contract":
+        if not a.provider and not (a.consumer or []):
+            print("taskplane: graph contract needs --provider and/or "
+                  "--consumer", file=sys.stderr)
+            return 1
+        node = a.name if a.name.startswith(("contract:", "resource:")) \
+            else "contract:" + a.name
+        edges = []
+        if a.provider:
+            edges.append(dg.record_edge(ws, a.provider, node,
+                                        kind="provides", confidence="high"))
+        for consumer in a.consumer or []:
+            edges.append(dg.record_edge(ws, consumer, node,
+                                        kind="consumes", confidence="high"))
+        print(json.dumps({"contract": node, "edges": edges,
+                          "boundary": "dependency impact stops at the "
+                                      "contract between entities"}, indent=2))
     elif a.graph_action == "link":
         r = dg.link_requirement(ws, a.req, (a.files or "").split(","),
                                 kind=a.kind,
@@ -1569,6 +1643,11 @@ def main(argv=None) -> int:
     lg.add_argument("outcome", choices=["pass", "fail"])
     lg.add_argument("--note", default="")
     lg.add_argument("--task", help="task id (parallel execute waves)")
+    lsu = lsub.add_parser("submit", help="worker submits evidence without "
+                            "transitioning state; the orchestrator gates")
+    lsu.add_argument("outcome", choices=["pass", "fail"])
+    lsu.add_argument("--note", default="")
+    lsu.add_argument("--task", help="task id (parallel execute waves)")
     ls_ = lsub.add_parser("select", help="A/B selection gate: pick the "
                           "variant that ships (or 'hybrid')")
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")
@@ -1669,6 +1748,10 @@ def main(argv=None) -> int:
     rn.add_argument("--depends", action="append", metavar="R-XXXX",
                     help="R-id this requirement depends on (repeatable) — "
                          "recorded as a product edge in the graph")
+    rn.add_argument("--contract", action="append",
+                    metavar="RELATION:CONTRACT",
+                    help="repeatable requirement boundary: provides, consumes, "
+                         "or changes a named API/event/data/runtime contract")
     rs = rqsub.add_parser("score")
     rs.add_argument("id")
     rs.add_argument("--files", help="comma-separated changed-file globs")
@@ -1688,7 +1771,8 @@ def main(argv=None) -> int:
     rqsub.add_parser("list")
     rq.set_defaults(fn=cmd_req)
 
-    gp = sub.add_parser("graph", help="dependency graph: scan/impact/edge/html")
+    gp = sub.add_parser("graph", help="dependency graph: scan, impact, "
+                        "contracts, requirement links, visualization")
     gp.add_argument("--workspace", default=argparse.SUPPRESS)
     gsub = gp.add_subparsers(dest="graph_action", required=True)
     gsub.add_parser("scan")
@@ -1697,11 +1781,22 @@ def main(argv=None) -> int:
                     "(default: git diff + untracked)")
     gi.add_argument("--base", default="HEAD")
     gi.add_argument("--depth", type=int, default=3)
+    gi.add_argument("--boundary", choices=["contract-only", "stop", "expand"],
+                    default="contract-only")
+    gi.add_argument("--contract-depth", type=int, default=1)
+    gi.add_argument("--requirement-depth", type=int, default=1)
     gi.add_argument("--json", action="store_true")
     ge = gsub.add_parser("edge")
     ge.add_argument("src"); ge.add_argument("dst")
     ge.add_argument("--kind", default="runtime")
     ge.add_argument("--note")
+    ge.add_argument("--confidence", choices=["high", "medium", "low"],
+                    default="medium")
+    gc = gsub.add_parser("contract", help="record an explicit distributed "
+                         "boundary; consumers depend on the contract")
+    gc.add_argument("name")
+    gc.add_argument("--provider")
+    gc.add_argument("--consumer", action="append")
     gl = gsub.add_parser("link", help="product layer: link a requirement "
                          "to the modules that plan/realize it")
     gl.add_argument("--req", required=True, metavar="R-XXXX")
@@ -1791,6 +1886,12 @@ def main(argv=None) -> int:
     cx = sub.add_parser("context", help="session-start context summary")
     cx.add_argument("--workspace", default=argparse.SUPPRESS)
     cx.set_defaults(fn=cmd_context)
+
+    us = sub.add_parser("summary", help="simple human view: progress and "
+                        "decisions, while agents keep the detailed harness")
+    us.add_argument("--json", action="store_true")
+    us.add_argument("--workspace", default=argparse.SUPPRESS)
+    us.set_defaults(fn=cmd_summary)
 
     a = p.parse_args(argv)
     if not hasattr(a, "workspace"):

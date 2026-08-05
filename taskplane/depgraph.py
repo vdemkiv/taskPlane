@@ -25,6 +25,7 @@ import sys as _sys
 import json
 import os
 import re
+import time
 
 import taskplane_lite as tp
 
@@ -44,15 +45,55 @@ def _path(ws: str) -> str:
 def load(ws: str) -> dict:
     p = _path(ws)
     if not os.path.exists(p):
-        return {"modules": {}, "edges": [], "files": {}, "recorded": []}
+        return {"modules": {}, "edges": [], "files": {}, "recorded": [],
+                "meta": {}}
     with open(p) as f:
-        return json.load(f)
+        g = json.load(f)
+    g.setdefault("meta", {})
+    g.setdefault("recorded", [])
+    return g
 
 
 def save(ws: str, g: dict) -> None:
     os.makedirs(tp.kb_root(ws), exist_ok=True)
     with open(_path(ws), "w") as f:
         json.dump(g, f, indent=1, sort_keys=True)
+
+
+def _stamp_meta(ws: str, g: dict, *, scanned: bool = False) -> dict:
+    """Bind graph evidence to its exact file/edge material.
+
+    Recorded contract/runtime edges can change between source scans, so their
+    writers must advance the same content fingerprint used by review evidence.
+    ``scanned_at`` remains the time of the deterministic source scan; an edge
+    recording does not pretend the code tree was rescanned.
+    """
+    graph_material = {
+        "files": {p: row.get("hash", "")
+                  for p, row in (g.get("files") or {}).items()},
+        "edges": sorted((e["from"], e["to"], e["kind"],
+                         e.get("source"), e.get("confidence"))
+                        for e in (g.get("edges") or [])),
+    }
+    meta = dict(g.get("meta") or {})
+    meta.update({
+        "schema": 2,
+        "updated_at": int(time.time()),
+        "content_fingerprint": hashlib.sha256(
+            json.dumps(graph_material, sort_keys=True,
+                       separators=(",", ":")).encode()).hexdigest(),
+        "source_counts": {
+            source: sum(1 for e in (g.get("edges") or [])
+                        if e.get("source") == source)
+            for source in sorted({e.get("source", "unknown")
+                                  for e in (g.get("edges") or [])})
+        },
+    })
+    if scanned:
+        meta["scanned_at"] = int(time.time())
+        meta["scanned_head"] = tp.git_head(ws)
+    g["meta"] = meta
+    return g
 
 
 def summary(ws: str) -> dict:
@@ -83,6 +124,16 @@ def module_of(relpath: str) -> str:
     if not d:
         return "(root)"
     parts = d.split("/")
+    # Standard Maven/Gradle layout.  Treating ``src`` as the last meaningful
+    # source root collapses every Java package into one ``main/java`` node and
+    # removes all internal imports as self-edges.  Package tails retain useful
+    # feature boundaries without binding the graph to a particular group id.
+    for marker in (("src", "main", "java"), ("src", "test", "java")):
+        for i in range(0, len(parts) - len(marker) + 1):
+            if tuple(parts[i:i + len(marker)]) == marker:
+                pkg = parts[i + len(marker):]
+                if pkg:
+                    return "/".join(pkg[-2:])
     # last source-root marker in the path
     root_i = None
     for i, p in enumerate(parts):
@@ -94,6 +145,24 @@ def module_of(relpath: str) -> str:
     if root_i is not None:                        # files directly in src/
         return parts[root_i]
     return "/".join(parts[:2])
+
+
+def _node_kind(node: str) -> str:
+    if node.startswith("req:"):
+        return "requirement"
+    if node.startswith("contract:"):
+        return "contract"
+    if node.startswith("resource:"):
+        return "resource"
+    if node.startswith("svc:"):
+        return "infra"
+    if node.startswith("ext:"):
+        return "external"
+    return "module"
+
+
+def _is_boundary(node: str) -> bool:
+    return node.startswith(("contract:", "resource:", "svc:", "ext:"))
 
 
 # ------------------------------------------------------------------ scanners
@@ -446,11 +515,22 @@ def scan(ws: str) -> dict:
                         key=lambda e: (e["from"], e["to"])),
         "files": file_entries,
         "recorded": prev.get("recorded", []),
+        "meta": {},
     }
     # merge agent-recorded edges (never dropped by rescans)
     g["edges"] += [e for e in g["recorded"]
                    if not any(x["from"] == e["from"] and x["to"] == e["to"]
                               and x["kind"] == e["kind"] for x in g["edges"])]
+    # Every edge states its provenance.  High graph priority is only safe when
+    # a reviewer can distinguish deterministic scanner output from a human- or
+    # agent-recorded runtime relationship.
+    for e in g["edges"]:
+        recorded = bool(e.get("recorded"))
+        e.setdefault("source", "recorded" if recorded else "scanner")
+        e.setdefault("confidence", "medium" if recorded else "high")
+        for node in (e["from"], e["to"]):
+            g["modules"].setdefault(
+                node, {"kind": _node_kind(node), "files": 0})
     # v2.0.0: unify ext:X with an INTERNAL module named X. An import the
     # resolver could not map to a file (e.g. `from core import hub` where
     # core/ is a package dir) used to become a dangling ext: node - and
@@ -477,6 +557,7 @@ def scan(ws: str) -> dict:
             seen.add(k)
             uniq.append(e)
     g["edges"] = uniq
+    _stamp_meta(ws, g, scanned=True)
     save(ws, g)
     tp.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]),
              files=len(file_entries))
@@ -484,19 +565,21 @@ def scan(ws: str) -> dict:
 
 
 def record_edge(ws: str, src: str, dst: str, kind: str = "runtime",
-                note: str = "") -> dict:
+                note: str = "", confidence: str = "medium") -> dict:
     """An agent-observed dependency static analysis can't see (HTTP call,
     queue, cron, deploy relationship). Survives rescans."""
     g = load(ws)
+    if confidence not in ("high", "medium", "low"):
+        raise ValueError("confidence must be high, medium, or low")
     e = {"from": src, "to": dst, "kind": kind, "note": note,
-         "recorded": True}
-    g["recorded"].append(e)
-    g["edges"].append(e)
+         "recorded": True, "source": "recorded", "confidence": confidence}
+    same = lambda x: (x.get("from"), x.get("to"), x.get("kind")) == \
+        (src, dst, kind)
+    g["recorded"] = [x for x in g.get("recorded", []) if not same(x)] + [e]
+    g["edges"] = [x for x in g.get("edges", []) if not same(x)] + [e]
     for x in (src, dst):
-        g["modules"].setdefault(
-            x, {"kind": "infra" if x.startswith("svc:") else
-                ("external" if x.startswith("ext:") else "module"),
-                "files": 0})
+        g["modules"].setdefault(x, {"kind": _node_kind(x), "files": 0})
+    _stamp_meta(ws, g)
     save(ws, g)
     tp.trace(ws, "graph_edge_recorded", src=src, dst=dst, kind=kind)
     return e
@@ -541,11 +624,13 @@ def link_requirement(ws: str, rid: str, files, kind: str = "realizes",
         g["recorded"] = [e for e in g["recorded"] if not drop(e)]
         g["edges"] = [e for e in g["edges"] if not drop(e)]
     for m in mods:
-        e = {"from": node, "to": m, "kind": kind, "note": "", "recorded": True}
+        e = {"from": node, "to": m, "kind": kind, "note": "",
+             "recorded": True, "source": "requirement", "confidence": "high"}
         g["recorded"].append(e)
         g["edges"].append(e)
         g["modules"].setdefault(m, {"kind": "module", "files": 0})
     g["modules"].setdefault(node, {"kind": "requirement", "files": 0})
+    _stamp_meta(ws, g)
     save(ws, g)
     tp.trace(ws, "graph_req_link", requirement=node, kind=kind, modules=mods)
     return {"requirement": node, "kind": kind, "modules": mods}
@@ -555,7 +640,7 @@ def link_requirement_dep(ws: str, rid: str, depends_on: str,
                          note: str = "") -> dict:
     """Product dependency: req:rid depends on req:depends_on."""
     return record_edge(ws, _req_node(rid), _req_node(depends_on),
-                       kind="depends", note=note)
+                       kind="depends", note=note, confidence="high")
 
 
 def product_impact(ws: str, changed_files) -> dict:
@@ -582,13 +667,159 @@ def product_impact(ws: str, changed_files) -> dict:
             "modules": sorted(mods)}
 
 
+# -------------------------------------------------------- governance policy
+
+_DISTRIBUTED_TYPES = {"distributed", "system-design", "service", "migration"}
+
+
+def impact_policy(task: dict | None = None) -> dict:
+    """Resolve the task's typed dependency-depth policy.
+
+    A numeric hop count alone cannot express a distributed boundary.  The
+    defaults walk implementation dependencies inside the current entity, but
+    cross an entity only through an explicit contract/resource node.
+    """
+    task = task or {}
+    supplied = dict(task.get("impact_policy") or {})
+    distributed = task.get("type") in _DISTRIBUTED_TYPES
+    base = {
+        "local_depth": 2 if distributed else 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 2 if task.get("high_cost") else 1,
+    }
+    base.update(supplied)
+    return base
+
+
+def readiness(ws: str, tasks) -> dict:
+    """Graph Definition of Ready for a plan.
+
+    Refreshes the deterministic graph and returns per-task policies, unknown
+    surfaces, and fail-closed blockers. A new local module must be explicitly
+    declared by the planner; a distributed task without a named, recorded
+    contract is not implementation-ready.
+    """
+    errors, warnings, rows = [], [], []
+    try:
+        g = scan(ws)
+    except Exception as exc:
+        return {"passed": False, "errors": [f"graph scan failed: {exc}"],
+                "warnings": [], "tasks": [], "graph": {}}
+    for task in tasks or []:
+        tid = task.get("id", "?")
+        policy = impact_policy(task)
+        if policy.get("boundary_mode") not in ("contract-only", "stop", "expand"):
+            errors.append(f"task {tid}: invalid graph boundary_mode")
+        try:
+            local_depth = int(policy.get("local_depth", 0))
+            contract_depth = int(policy.get("contract_depth", 0))
+            requirement_depth = int(policy.get("requirement_depth", 0))
+        except (TypeError, ValueError):
+            local_depth = contract_depth = requirement_depth = 0
+        if local_depth < 1 or contract_depth < 0 or requirement_depth < 0:
+            errors.append(f"task {tid}: invalid dependency depth policy")
+        mods = modules_for_scope(task.get("scope") or [])
+        unknown = sorted(m for m in mods if m not in g.get("modules", {}))
+        declared_new = set(task.get("new_modules") or [])
+        undeclared_unknown = sorted(set(unknown) - declared_new)
+        distributed = task.get("type") in _DISTRIBUTED_TYPES
+        contracts = list(task.get("contracts") or [])
+        contract_ids = [(c.get("id") if isinstance(c, dict) else c)
+                        for c in contracts]
+        contract_ids = [str(c or "").strip() for c in contract_ids
+                        if str(c or "").strip()]
+        if distributed and not contracts:
+            errors.append(f"task {tid}: distributed/system work must declare "
+                          "its API, event, data, trust, or runtime contracts")
+        invalid_contracts = sorted(c for c in contract_ids
+                                   if not c.startswith(("contract:",
+                                                        "resource:")))
+        if invalid_contracts:
+            errors.append(f"task {tid}: contract ids need contract: or "
+                          "resource: prefixes: " + ", ".join(invalid_contracts))
+        missing_contracts = sorted(c for c in contract_ids
+                                   if c not in g.get("modules", {}))
+        if missing_contracts:
+            errors.append(f"task {tid}: contracts are not recorded in the "
+                          "dependency graph: " + ", ".join(missing_contracts))
+        if undeclared_unknown:
+            errors.append(
+                f"task {tid}: new/unknown graph modules were not declared: "
+                + ", ".join(undeclared_unknown))
+        if declared_new - set(unknown):
+            warnings.append(f"task {tid}: declared new_modules already exist: "
+                            + ", ".join(sorted(declared_new - set(unknown))))
+        imp = impact(ws, mods, policy=policy) if mods else None
+        rows.append({"task": tid, "modules": mods, "unknown": unknown,
+                     "declared_new_modules": sorted(declared_new),
+                     "contracts": contracts, "policy": policy,
+                     "impact": imp})
+    return {"passed": not errors, "errors": errors, "warnings": warnings,
+            "tasks": rows, "graph": dict(g.get("meta") or {})}
+
+
+def completion(ws: str, changed_files, planned_modules=None,
+               policy: dict | None = None) -> dict:
+    """Graph Definition of Done read model for one realized change."""
+    files = list(changed_files or [])
+    actual = sorted({module_of(f) for f in files})
+    planned = sorted(set(planned_modules or []))
+    imp = impact(ws, files, policy=policy)
+    contract_files = sorted(f for f in files if re.search(
+        r"(^|/)(openapi|asyncapi|schemas?|contracts?)(/|\.)|"
+        r"\.(proto|avsc)$", f, re.I))
+    errors = []
+    if imp.get("unknown"):
+        errors.append("graph contains unknown realized modules: "
+                      + ", ".join(imp["unknown"]))
+    unexpected = sorted(set(actual) - set(planned)) if planned else []
+    if unexpected:
+        errors.append("realized dependency surface exceeds the approved plan: "
+                      + ", ".join(unexpected))
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "planned_modules": planned,
+        "realized_modules": actual,
+        "unexpected_modules": unexpected,
+        "unrealized_modules": sorted(set(planned) - set(actual)),
+        "contract_files": contract_files,
+        "impact": imp,
+    }
+
+
 # ------------------------------------------------------------------ impact
 
-def impact(ws: str, changed_files, max_depth: int = 3) -> dict:
+def impact(ws: str, changed_files, max_depth: int = 3,
+           policy: dict | None = None) -> dict:
     """Blast radius of a change: the modules touched, then everything that
     depends on them (reverse edges), by depth. This is what a reviewer needs
     BEFORE reading any code — and it costs zero tokens."""
     g = load(ws)
+    policy = dict(policy or {})
+    if policy.get("local_depth") is not None:
+        try:
+            max_depth = max(1, int(policy["local_depth"]))
+        except (TypeError, ValueError):
+            pass
+    resolved_policy = {
+        "local_depth": max_depth,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1,
+    }
+    resolved_policy.update(policy)
+    try:
+        contract_depth = max(0, int(resolved_policy["contract_depth"]))
+    except (TypeError, ValueError):
+        contract_depth = 1
+    try:
+        requirement_depth = max(0, int(resolved_policy["requirement_depth"]))
+    except (TypeError, ValueError):
+        requirement_depth = 1
+    boundary_mode = resolved_policy.get("boundary_mode", "contract-only")
+
     rev = {}
     for e in g["edges"]:
         rev.setdefault(e["to"], []).append((e["from"], e["kind"]))
@@ -600,24 +831,65 @@ def impact(ws: str, changed_files, max_depth: int = 3) -> dict:
     touched = sorted({f if f in g["modules"] else module_of(f)
                       for f in (changed_files or [])})
     seen = {m: 0 for m in touched}
-    frontier, by_depth = list(touched), {}
+    # frontier state carries the number of explicit contract/resource and
+    # requirement boundaries crossed.  This keeps distributed-system impact
+    # at the contract between entities instead of inventing a deep service
+    # implementation graph that the repository cannot prove.
+    frontier = [(m, 0, 0) for m in touched]
+    by_depth, policy_blocked = {}, []
     depth = 0
     while frontier and depth < max_depth:
         depth += 1
         nxt = []
-        for m in frontier:
+        for m, boundary_hops, requirement_hops in frontier:
             for dep, kind in rev.get(m, []):
+                next_boundary = boundary_hops
+                next_requirement = requirement_hops
+                boundary_pair = _is_boundary(m) or _is_boundary(dep)
+                if boundary_pair:
+                    allowed_contract = (m.startswith(("contract:", "resource:"))
+                                        or dep.startswith(("contract:",
+                                                           "resource:")))
+                    if (boundary_mode == "stop"
+                            or (boundary_mode == "contract-only"
+                                and not allowed_contract)):
+                        policy_blocked.append({"module": dep, "via": m,
+                                               "kind": kind,
+                                               "reason": "boundary-policy"})
+                        continue
+                    next_boundary += 1
+                    if next_boundary > contract_depth:
+                        policy_blocked.append({"module": dep, "via": m,
+                                               "kind": kind,
+                                               "reason": "contract-depth"})
+                        continue
+                if m.startswith("req:") or dep.startswith("req:"):
+                    next_requirement += 1
+                    if next_requirement > requirement_depth:
+                        policy_blocked.append({"module": dep, "via": m,
+                                               "kind": kind,
+                                               "reason": "requirement-depth"})
+                        continue
                 if dep not in seen:
                     seen[dep] = depth
                     by_depth.setdefault(depth, []).append(
                         {"module": dep, "via": m, "kind": kind})
-                    nxt.append(dep)
+                    nxt.append((dep, next_boundary, next_requirement))
         frontier = nxt
+    truncated = bool(policy_blocked) or any(
+        dep not in seen for m, _bh, _rh in frontier
+        for dep, _kind in rev.get(m, []))
     return {
         "touched": touched,
         "impacted": by_depth,
         "total_impacted": sum(len(v) for v in by_depth.values()),
         "unknown": [m for m in touched if m not in g["modules"]],
+        "depth_limit": max_depth,
+        "truncated": truncated,
+        "policy": resolved_policy,
+        "policy_blocked": policy_blocked,
+        "boundary_nodes": sorted(m for m in seen if _is_boundary(m)),
+        "graph": dict(g.get("meta") or {}),
     }
 
 
@@ -637,6 +909,15 @@ def render_context(imp: dict) -> str:
     if imp["unknown"]:
         lines.append("  (new modules, not in graph yet: "
                      + ", ".join(imp["unknown"]) + " — rescan after merge)")
+    if imp.get("truncated"):
+        lines.append(f"  traversal stopped at depth {imp.get('depth_limit')} "
+                     "with additional dependents beyond the review radius")
+    policy = imp.get("policy") or {}
+    if policy:
+        lines.append("  policy: local depth "
+                     f"{policy.get('local_depth', imp.get('depth_limit'))}; "
+                     f"boundary {policy.get('boundary_mode', 'contract-only')}; "
+                     f"contract depth {policy.get('contract_depth', 1)}")
     if imp.get("affected_requirements"):
         lines.append(
             "  PRODUCT impact — this change touches the realized surface of: "

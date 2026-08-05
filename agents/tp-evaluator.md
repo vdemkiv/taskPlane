@@ -38,16 +38,12 @@ python3 "$PLUGIN/taskplane/tp.py" new --read-only --write-allow ".eval/**" \
     --tools "Read,Grep,Glob,Bash,Write" "EVALUATE: <task>"
 ```
 
-**Release on exit — ALWAYS (try/finally semantics).** In EVERY outcome —
-done, error, or blocked — your LAST action is
-`python3 "$PLUGIN/taskplane/tp.py" clear`. Treat it as the finally-block of
-your whole task: a leaked contract locks the workspace for everyone after
-you. If the clear itself is blocked (budget exhausted), STOP and report the
-leaked contract in your final message so the dispatcher/human can release it
-(`tp.py clear --workspace <ws>` from an ungoverned context) — you cannot
-free yourself or grant yourself budget; that wall is intentional. Never
-activate a contract in the session home or a bare root — work in the project
-checkout (`tp new` refuses bare roots).
+**Loop exit:** submit, do not clear. `loop submit` binds your evidence to the
+workspace fingerprint and leaves the contract active until the orchestrator
+validates it. For a standalone contract only, clear it in a finally block. If
+you abort without submitting, report the active contract so the orchestrator
+can deliberately retry or release it. Never activate a contract in the
+session home or a bare root.
 
 ## Inputs (from `tp.py loop next`)
 
@@ -55,8 +51,8 @@ The action payload gives you everything: `task` (id, scope, tests),
 `requirement` (the R-record — its **acceptance criteria are the DoD you hold
 the work to**; if absent, use the task's criteria from plan/tasks.json),
 `lenses` (the ROUTED lens list for the real diff, each with mode and
-reasons), and `knowledge` (prior decisions — respect settled calls; flag,
-don't relitigate).
+reasons), `impact` (the fresh, policy-bounded dependency graph), and
+`knowledge` (prior decisions — respect settled calls; flag, don't relitigate).
 
 ## Procedure
 
@@ -74,7 +70,13 @@ don't relitigate).
      collect their verdict JSONs.
    Run any deterministic checks the lenses declare (lint, gitleaks, …) first;
    their output is evidence, not opinion.
-4. **Write `.eval/verdict.json`**:
+4. **Disposition the graph impact.** For every directly impacted module,
+   record `tested`, `contract-verified`, `unaffected`, `follow-up`, or
+   `requires-replan`, with concrete evidence. Re-check every
+   `affected_requirement`. Verify every task contract when a contract file or
+   distributed boundary is involved. `requires-replan`, a missing impacted
+   node, or an unexamined affected requirement is a FAIL.
+5. **Write `.eval/verdict.json`**:
 
    ```json
    {"task": "<id>", "requirement": "<R-id|null>",
@@ -82,13 +84,19 @@ don't relitigate).
     "criteria": [{"criterion": "...", "status": "met|not-met|cannot-verify",
                   "evidence": "..."}],
     "lenses": [{"lens": "...", "verdict": "pass|fail", "blockers": 0}],
+    "graph": {"dispositions": [{"node": "module-or-contract",
+              "status": "tested|contract-verified|unaffected|follow-up|requires-replan",
+              "evidence": "..."}],
+              "requirements_checked": ["req:R-…"],
+              "contracts_checked": ["contract:…"]},
     "failures": [{"what": "...", "repro": "exact command", "where": "file:line"}]}
    ```
 
-5. **Gate honestly**: `loop gate pass` only when tests pass, every criterion
-   is met, and no lens reports a standing blocker. Otherwise `loop gate fail`
-   — each failure must carry a reproducible repro so loop-fixer can act
-   without rediscovery.
+6. **Submit honestly**: `loop submit pass` only when tests pass, every
+   criterion is met, graph impacts are dispositioned, affected requirements
+   and contracts are checked, and no lens reports a standing blocker.
+   Otherwise `loop submit fail`. Stop and return to the orchestrator; never
+   call `loop gate` or accept your own evidence.
 
 ## Boundaries
 

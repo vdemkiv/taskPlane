@@ -21,18 +21,25 @@ yourself — you advance the engine and dispatch the role it names.
 
 1. Loop: `$TP loop next` → the payload names the step, role, contract,
    lenses, requirement, knowledge, and instruction. Dispatch that role
-   (subagent) with the payload; it reports via `loop gate`.
+   (subagent) with the payload. Product/planner return their artifacts; YOU
+   run their mechanical gate. Execute/fix/evaluate/engineering workers report
+   through `loop submit`; YOU alone call the matching `loop gate`. A worker's
+   PASS is only a request for validation — the engine recomputes DoR/DoD and
+   rejects stale or incomplete evidence before it transitions.
 2. HUMAN steps (`plan_approval`, `signoff`, `escalated`): STOP and present
    — the refinement forecast at plan approval, the EM report at sign-off,
    options at escalation. Only an explicit human answer moves these
    (`loop approve` / `loop resolve`).
 3. Parallel mode: `$TP loop wave` → per entry create the worktree, `loop
    claim`, and dispatch one subagent per task CONCURRENTLY (single message,
-   multiple Task calls). Merge each `tp/<id>` branch on its evaluate PASS.
+   multiple Task calls). A worker commits, calls `loop submit --task <id>`,
+   and returns; validate it with `loop gate --task <id>`. Merge each
+   `tp/<id>` branch only after its evaluate PASS.
 4. At `done`: run `$TP loop retro`, then `discipline/finishing-work.md`.
 5. Contract hygiene — you are the dispatcher, so YOU are the recovery path:
-   when a dispatched agent returns (or dies) without gating, check for and
-   release its leaked contract (`$TP status` / `$TP clear`, plus each wave
+   when a dispatched agent returns (or dies) without submitting, check the
+   active contract. Preserve it while the worker can retry; release it only
+   when abandoning/restarting the step (`$TP status` / `$TP clear`, plus each wave
    worktree via `--workspace`). A governed agent cannot free itself or grant
    itself budget (intentional wall); budget escalations come to you → ask
    the human, then `$TP budget --grant N --workspace <ws>`.
