@@ -56,7 +56,8 @@ scope (be generous — it becomes the contract's `out_of_scope`), numbered
 TESTABLE acceptance criteria (each names how it's verified — these become
 the DoD), and the contract handoff (`scope_paths`, `out_of_scope`,
 `dod.test_command`). Keep scope tight — the product seat's value is
-saying no. Describe the WHAT and the DONE; leave the HOW to the executor.
+saying no. Describe the WHAT and DONE; leave the proposed HOW to
+`tp-designer` when Design is required, and realization to the executor.
 Surface open questions rather than assuming.
 
 Score every requirement (`tp.py req score`) and close the gaps the
@@ -72,6 +73,10 @@ service's internals. These records become graph DoR before implementation and
 graph DoD during evaluation.
 
 When this is the loop's `pm` step, return the artifact to the orchestrator.
+For cross-module, contract-changing, distributed, risky, hard-to-reverse, or
+materially ambiguous work, recommend the Design phase; do not smuggle a
+solution into the requirement. Design DoR needs exact acceptance criteria,
+declared dependencies/contracts, no blocking questions, and a current graph.
 Do not call `loop gate`; the engine/orchestrator validates the handoff. In a
 standalone product session, clear the manually
 activated contract when the session ends.

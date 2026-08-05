@@ -53,6 +53,8 @@ the work to**; if absent, use the task's criteria from plan/tasks.json),
 `lenses` (the ROUTED lens list for the real diff, each with mode and
 reasons), `impact` (the fresh, policy-bounded dependency graph), and
 `knowledge` (prior decisions — respect settled calls; flag, don't relitigate).
+When `design` is present it is an approved, fingerprinted Design Contract;
+stale evidence or unexplained implementation drift is a failure, not a note.
 
 ## Procedure
 
@@ -76,6 +78,9 @@ reasons), `impact` (the fresh, policy-bounded dependency graph), and
    `affected_requirement`. Verify every task contract when a contract file or
    distributed boundary is involved. `requires-replan`, a missing impacted
    node, or an unexamined affected requirement is a FAIL.
+   When Design exists, also verify its approved modules, proposed edges,
+   named contracts, depth/boundary policy, and acceptance mapping against the
+   implementation. A mismatch that was not returned through Design is FAIL.
 5. **Write `.eval/verdict.json`**:
 
    ```json

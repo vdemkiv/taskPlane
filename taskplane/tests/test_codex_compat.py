@@ -122,6 +122,26 @@ class TestCodexHookProtocol(unittest.TestCase):
 
 
 class TestSkillPortability(unittest.TestCase):
+    def test_design_skill_and_role_are_packaged_for_both_hosts(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        skill = os.path.join(root, "skills", "tp-design", "SKILL.md")
+        role = os.path.join(root, "agents", "tp-designer.md")
+        self.assertTrue(os.path.isfile(skill))
+        self.assertTrue(os.path.isfile(role))
+        self.assertIn("taskplane.design/v1", open(skill).read())
+        role_text = open(role).read()
+        self.assertIn("model: inherit", role_text)
+        self.assertIn("design/**", role_text)
+
+    def test_design_cli_flags_are_host_neutral(self):
+        result = subprocess.run(
+            [sys.executable, TPPY, "loop", "init", "--help"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--design", result.stdout)
+        self.assertIn("--design-only", result.stdout)
+
     def test_no_bare_claude_plugin_root_in_skills(self):
         # Codex does not set CLAUDE_PLUGIN_ROOT; every skill command must use
         # the ${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}} fallback so the very first

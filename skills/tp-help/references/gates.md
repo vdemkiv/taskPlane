@@ -37,9 +37,29 @@ Every step of the Evaluate-Loop is a gate. Work flows through it only when two q
 | **Evidence of verification** | Build, type-check, and full test suite were run *in this cycle* and their output confirms the claim (`verification-before-completion`) |
 | **Documentation & traceability** | Decision log, business docs (`business-docs-sync`), and any ADRs are updated; breaking changes documented |
 
+## Design gate before implementation (when required)
+
+Design is an optional pre-Plan phase for complex/risky/contract-changing work
+and an explicit standalone deliverable for `taskplane design`.
+
+**Design DoR:** refined requirement with exact acceptance criteria; no blocking
+questions; declared requirement dependencies and named API/event/data/runtime
+contracts; grounded current-state sources; current dependency-graph baseline.
+
+**Design DoD:** at least two concrete alternatives with gains/costs/revisit
+conditions; selected approach; existing/new modules, proposed edges and named
+contracts; bounded local depth and contract-only distributed boundary; graph
+DoR and graph DoD; exact acceptance-to-design-to-validation mapping; risks,
+failure modes, observability, rollout/rollback; passing solution-design lens;
+useful visual or an explicit skip rationale; unchanged as-built graph.
+
+The orchestrator validates these mechanically and a human approves the
+fingerprinted contract. Plan must cover it; Review must prove conformance or
+return drift to Design.
+
 ## Gates Per Loop Step
 
-The loop is `1. PLAN → 2. EVALUATE PLAN → 3. EXECUTE → 4. EVALUATE EXECUTION → 5. FIX`. Each step below lists what must be *ready* to enter (DoR) and what must be *done* to exit (DoD), the level it operates at, and the skill that enforces it.
+The delivery loop is `DESIGN? → APPROVE DESIGN? → PLAN → APPROVE PLAN → EXECUTE → EVALUATE → FIX? → ENGINEERING REVIEW → SIGN-OFF`. Each step below lists what must be *ready* to enter (DoR) and what must be *done* to exit (DoD), the level it operates at, and the skill that enforces it.
 
 ### Step 1 — PLAN  ·  level: track → plan
 

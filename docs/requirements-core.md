@@ -39,6 +39,17 @@ depth policy before approval. Graph DoD compares the actual diff with the
 planned modules and requires evaluators to disposition impacted consumers,
 affected requirements, and contracts with evidence.
 
+When the proposed HOW is not already obvious, the requirement becomes the
+input to Design before it becomes the input to Plan. Design DoR requires exact
+acceptance criteria, no blocking questions, declared requirement dependencies
+and named contracts, current-state sources, and a current graph baseline.
+`design/contract.json` must map every acceptance criterion exactly once to a
+design element and a concrete validation method. Its proposed modules, edges,
+contracts, and local/contract/requirement depth policy form an overlay—not a
+mutation—on the as-built graph. This makes requirements dependency-aware
+before code exists while keeping distributed reasoning at the contract between
+entities.
+
 ## 2. A refinement gate before build (the optimization point)
 
 Before the loop lets EXECUTE start, it scores the requirement's **refinement**
@@ -99,7 +110,7 @@ requirement ─▶ refine (score + NFR-lens coverage + forecast)  ← spend effo
      └─▶ choose mode (quick w/ tracked debt | full)  ← cost decision
                     │
                     ▼
-              plan → execute → evaluate → fix → EM → sign-off
+              design? → approve? → plan → execute → evaluate → fix → EM → sign-off
               (every task anchored to R-id; decisions + debt land in the KB)
 ```
 

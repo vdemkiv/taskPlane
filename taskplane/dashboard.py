@@ -162,7 +162,8 @@ def render(ws: str, out: str | None = None) -> str:
             f'{_esc(", ".join(contract["coding"]["command_policy"]["deny"][:3]))}…'
             f'</code></div></div>')
     else:
-        awaiting = {"plan_approval": "Review the plan, then approve.",
+        awaiting = {"design_approval": "Review the design, then approve.",
+                    "plan_approval": "Review the plan, then approve.",
                     "signoff": "Review the EM report, then sign off.",
                     "done": "Loop complete.", "escalated": "Resolve to continue."}
         agent_cards.append(
@@ -1336,7 +1337,9 @@ def _harness_card(h):
 # one "Build" phase — the per-task LANES below the rail show the non-linear
 # inner loop (build → evaluate ⟲ fix) and what runs in parallel.
 _SPINE = [
-    ("pm", "Define", False), ("plan", "Plan", False),
+    ("pm", "Define", False), ("design", "Design", False),
+    ("design_approval", "Approve design", True),
+    ("plan", "Plan", False),
     ("plan_approval", "Approve", True), ("build", "Build", False),
     ("em", "Review", False), ("signoff", "Sign-off", True),
     ("done", "Done", False),
@@ -1831,7 +1834,9 @@ def _journey(ws):
                 "agent": _loop.STEP_ROLE.get(e.get("step"), "\u2014"),
                 "ts": e.get("ts"), "ts_end": None,
                 "outcome": None, "note": "", "dor": None,
-                "criteria": criteria if e.get("step") == "pm" else None,
+                "criteria": criteria if e.get("step") in ("pm", "design") else None,
+                "design": _loop._design_context(ws, state)
+                if e.get("step") in ("design", "design_approval") else None,
                 "plan": plan_tasks if e.get("step") in
                 ("plan", "plan_approval") else None})
         elif ev == "loop_step" and visits and e.get("dor_ready") is not None:
@@ -1856,7 +1861,10 @@ def _journey(ws):
                     "ts": e.get("ts"), "ts_end": e.get("ts"),
                     "outcome": e.get("outcome"),
                     "note": e.get("note") or "", "dor": None,
-                    "criteria": criteria if step == "signoff" else None,
+                    "criteria": criteria if step in
+                    ("design_approval", "signoff") else None,
+                    "design": _loop._design_context(ws, state)
+                    if step == "design_approval" else None,
                     "plan": plan_tasks if step == "plan_approval"
                     else None})
         elif ev == "loop_resolve":
@@ -2062,7 +2070,7 @@ def headline_loop(ws: str) -> str:
                 "reference"))
     goal = (state.get("goal") or "")[:60]
     gate = " — YOUR GATE: approve/sign-off" if step in (
-        "plan_approval", "signoff", "selection") else ""
+        "design_approval", "plan_approval", "signoff", "selection") else ""
     return (f"taskplane loop: step={step} · tasks {done}/{len(tasks)} · "
             f"\"{goal}\"{gate}")
 
@@ -2117,7 +2125,14 @@ def widget(ws: str) -> str:
     # A/B loop: the Select gate is spliced in before Review — variants never
     # merge, one gets picked. Same splice rule as render(), shared from the
     # engine so the two rails can't drift.
-    spine = _loop.splice_selection(_SPINE, state)
+    spine_rows = list(_SPINE)
+    if not (state or {}).get("design_required"):
+        spine_rows = [row for row in spine_rows
+                      if row[0] not in ("design", "design_approval")]
+    elif (state or {}).get("design_only"):
+        spine_rows = [row for row in spine_rows
+                      if row[0] in ("pm", "design", "design_approval", "done")]
+    spine = _loop.splice_selection(spine_rows, state)
     order = [s[0] for s in spine]
     cur_i = order.index(spine_step) if spine_step in order else -1
 
@@ -2190,7 +2205,22 @@ def widget(ws: str) -> str:
                 f'margin-top:3px">{sub}</div>'
                 f'</div><div style="display:flex;gap:8px">{buttons}</div></div>')
 
-    if step == "plan_approval":
+    if step == "design_approval":
+        _derr = _loop._design_dod_errors(ws, state) if state else [
+            "no design state"]
+        if _derr:
+            _dsub = (f"Design DoD ❌ {len(_derr)} issue(s): "
+                     + _esc("; ".join(_derr)[:150]))
+        else:
+            _dsub = "Design DoD ✅ alternatives, graph, contracts, risks, and acceptance mapped"
+        b = (f'<button style="{prim}" onclick="tpFire(this,\'approve the '
+             f'Design Contract\',\'approved\')"><i class="ti ti-check" '
+             f'aria-hidden="true"></i> approve design</button><button '
+             f'style="{sec}" onclick="tpFire(this,\'send the design back, I '
+             f'want changes\')">request changes</button>')
+        gatebar = gate_box("ti-drafting", "your gate — approve the HOW before "
+                           "planning", _dsub, b, danger=bool(_derr))
+    elif step == "plan_approval":
         n = len(tasks)
         b = (f'<button style="{prim}" onclick="tpFire(this,\'approve the plan\','
              f'\'approved\')"><i class="ti ti-check" aria-hidden="true"></i> '
@@ -2279,8 +2309,11 @@ def widget(ws: str) -> str:
         # "is anything waiting on me?" at a glance, and name the next gate.
         role = STEP_ROLE_LABEL.get(step, step)
         cps = (state or {}).get("checkpoints") or []
-        nxt = ("plan approval" if step in ("pm", "plan")
-               and "plan" in cps else "sign-off")
+        if (state or {}).get("design_required") and step in ("pm", "design"):
+            nxt = "design approval"
+        else:
+            nxt = ("plan approval" if step in ("pm", "plan")
+                   and "plan" in cps else "sign-off")
         gatebar = (
             f'<div style="border:1px solid var(--border);border-radius:6px;'
             f'padding:11px 16px;margin-bottom:14px;display:flex;'
@@ -2396,7 +2429,8 @@ def widget(ws: str) -> str:
     hcards = "".join(_harness_card(h) for h in harness)
     if not hcards:
         why = ("waiting at a human gate — no agent is running"
-               if step in ("plan_approval", "signoff", "escalated", "done")
+               if step in ("design_approval", "plan_approval", "signoff",
+                           "escalated", "done")
                else "no contract active — workspace ungoverned")
         hcards = (f'<div style="font-size:13px;color:var(--text-muted)">'
                   f'{why}</div>')
@@ -2457,7 +2491,9 @@ def widget(ws: str) -> str:
         'function st(b,a){b.style.background=a?"var(--text-primary)":"none";'
         'b.style.color=a?"var(--surface-2)":"var(--text-secondary)";}'
         'st(bs,!on);st(bd,on);}'
-        'var tpMap={pm:["pm"],plan:["plan"],plan_approval:["plan_approval"],'
+        'var tpMap={pm:["pm"],design:["design"],'
+        'design_approval:["design_approval"],plan:["plan"],'
+        'plan_approval:["plan_approval"],'
         'build:["execute","evaluate","fix","escalated","resolve"],'
         'selection:["selection"],em:["em"],signoff:["signoff"],'
         'done:["done"]};'

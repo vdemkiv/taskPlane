@@ -1280,7 +1280,7 @@ def _now() -> float:
 # model); build/verify steps stay `standard`. A planner marks an individual
 # SIMPLE task `"model": "cheap"` in tasks.json to route just that task cheaper.
 STEP_DEFAULT_TIER = {
-    "pm": "deep", "plan": "deep", "em": "deep",
+    "pm": "deep", "design": "deep", "plan": "deep", "em": "deep",
     "execute": "standard", "fix": "standard", "evaluate": "standard",
 }
 

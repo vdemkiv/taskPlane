@@ -20,7 +20,11 @@ work ONLY there.
 
 1. Read the action payload: the task, the requirement's acceptance criteria
    (your DoD), the PRIMED lenses (build so their review finds nothing), and
-   the recalled KB decisions (don't relitigate settled calls).
+   the recalled KB decisions (don't relitigate settled calls). If an approved
+   Design Contract is present, treat its fingerprinted modules, edges,
+   contracts, boundary depth, failure handling, rollout, and validation map as
+   part of the task contract. Stop on a conflict or necessary drift; do not
+   silently redesign during implementation.
 2. TDD per `discipline/tdd.md`: failing test per acceptance criterion →
    smallest passing code → refactor green.
 3. Run the task's declared test command yourself before submitting; a scope

@@ -8,10 +8,11 @@
 
 ## Why the loop first
 
-PM and EM only feel real once there's a loop between them: **PM feeds the
-loop** (it authors the contract the work runs under) and **EM closes it** (it
-reviews the loop's output). So the loop is the connective tissue — building
-its skeleton makes PM's output have a consumer and EM's input have a producer.
+Product and Engineering Review are the loop's bookends: Product defines WHAT
+must be true and Review judges whether the result is sound. For complex work,
+Design now sits before Plan and proposes HOW it should be realized; Build
+implements it. Keeping these responsibilities separate prevents a designer or
+builder from approving its own assumptions.
 
 ## The core principle: the loop runs *through* taskplane
 
@@ -25,9 +26,9 @@ records them. Concretely:
   the engine gate → clear → transition.** Risk-bearing execute, fix, evaluate,
   and engineering workers first submit evidence bound to the source state and
   their exact evidence artifacts, so they cannot accept their own completion
-  claim or alter it after submission. Product and
-  plan return artifacts directly to the orchestrator; the plan's graph DoR
-  remains mechanical and human approval follows.
+  claim or alter it after submission. Product, Design, and Plan return
+  artifacts directly to the orchestrator. Design and Plan each have a
+  mechanical gate followed by explicit human approval.
 - The loop's state lives in one place taskplane manages (the active store's
   `loop.json`),
   and every transition is a taskplane event. There is one audit log for the
@@ -47,6 +48,14 @@ This is the difference from a prompt-driven orchestrator: the loop is
  ┌─ PM ─────────────┐   contract: planning (write specs/** only)
  │  → spec + handoff │   DoR: goal is stated   DoD: testable acceptance criteria
  └─────────┬─────────┘
+           ▼
+ ┌─ DESIGN? ────────┐   contract: read-only toward code; write design/** only
+ │ → alternatives,  │   DoR: refined WHAT + current graph
+ │   selected HOW,   │   DoD: approvable Design Contract + graph overlay,
+ │   graph/contracts │        solution-design evidence, risk/rollout/validation
+ └─────────┬─────────┘
+           ▼
+   HUMAN Design approval       (omitted for simple direct Build)
            ▼
  ┌─ PLAN ───────────┐   contract: read-only + write plan/**
  │  → plan.md        │   DoR: spec+criteria     DoD: every criterion → ≥1 task,
@@ -78,16 +87,19 @@ workspace fingerprint before the orchestrator gate.
 | Step | Role | Contract | May write | DoR (enter) | DoD (exit) |
 | --- | --- | --- | --- | --- | --- |
 | PM | product-manager | planning | `specs/**`,`docs/**` | goal stated | testable acceptance criteria + requirement dependencies/contracts |
+| DESIGN *(optional/explicit)* | tp-designer | read-only toward code | `design/**` | refined requirement, no blocking questions, current graph baseline | `taskplane.design/v1`: alternatives, selected approach, modules/edges/contracts, bounded depth, graph DoR/DoD, acceptance map, risks/failures/observability/rollout, solution-design PASS, conditional visual; then human approval |
 | PLAN | loop-planner | read-only + allow `plan/**` | `plan/**` | spec + criteria exist | every criterion → task; scope/tests/deps/contracts/new modules/impact policy pass graph DoR |
 | EXECUTE | loop-executor | build (per-task scope) | the task's `scope_paths` | deps done; scope+tests+graph policy set | task test passes; diff in scope; fingerprinted submission. Realized graph truth is checked at EVALUATE and finalized before EM. |
 | EVALUATE | loop-evaluator | read-only + allow `.eval/**` | `.eval/**` | impl commits exist | PASS/FAIL + evidence per criterion, impacted node, affected requirement, and contract |
 | FIX | loop-fixer | build (same task scope) | the task's `scope_paths` | a reproducible FAIL | failure fixed + regression + re-verified |
-| EM | engineering-manager | read-only review | `.em-review/**` | all tasks PASS + final graph true-up | full lens/graph evidence on the current fingerprint; then human sign-off |
+| EM | engineering-manager | read-only review | `.em-review/**` | all tasks PASS + final graph true-up | full lens/graph evidence on the current fingerprint; approved Design module/edge/contract conformance and zero unexplained drift when applicable; then human sign-off |
 
 ## Artifacts / handoff chain (what each step hands the next)
 
 ```
 goal ─▶ specs/spec.md + handoff block (requirement deps + named contracts)
+      ─▶ design/design.md + design/contract.json  (optional proposed HOW;
+                                                    human-approved fingerprint)
       ─▶ plan/plan.md         (tasks: id, scope, tests, deps, criteria,
                                contracts, new_modules, impact_policy)
       ─▶ <task code changes>  (in scope, DoD-verified)
@@ -102,7 +114,9 @@ Add a small state machine to taskplane so the loop *is* a taskplane feature,
 not prose in an agent. Proposed CLI (stdlib, same file family as `tp.py`):
 
 ```
-tp.py loop init  <spec-or-handoff>   # create plan/state.json, seed the run
+tp.py loop init [--design] [--design-only] <spec-or-handoff>
+                                      # opt into Design before Plan, or end at
+                                      # an approved Design Contract
 tp.py loop next                       # advance ONE step: activate the right
                                       # contract, return which role to run +
                                       # its DoR; the agent does the work; then
@@ -127,7 +141,8 @@ Per run, the loop needs (some from you, some the PM can derive):
 - **Acceptance criteria** — testable statements (PM drafts if you don't).
 - **Per-task scope + test command** — the planner proposes; you can override.
 - **`max_fix_cycles`** — how many FIX→EVALUATE rounds before escalating.
-- **Human checkpoints** — where the loop pauses for you (see decision #2).
+- **Human checkpoints** — Design approval when used, plan approval, and final
+  sign-off (plus selection/escalation when applicable).
 - **Autonomy on FAIL** — auto-fix then escalate, vs stop on first FAIL.
 
 ## v0.1 scope vs later
@@ -147,7 +162,8 @@ Each was settled as the **Recommendation** noted below and is what shipped.
    owns it.**
 2. **Human checkpoints.** Where does the loop pause for you? (a) only EM at the
    end; (b) also approve the plan before EXECUTE; (c) after every task; (d)
-   configurable per run. **Recommendation: (d), default = plan-approval + EM.**
+   configurable per run. **Recommendation: configurable; direct Build defaults
+   to plan approval + EM, while Design adds its own approval.**
 3. **On FAIL.** Auto-fix up to `max_fix_cycles` then escalate to human, or stop
    on the first FAIL and ask? And what default `max_fix_cycles`? **Rec: auto-fix,
    default 2, then escalate.**

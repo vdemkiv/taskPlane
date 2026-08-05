@@ -7,11 +7,12 @@ and the loop's gates make over-reach impossible rather than just discouraged.
 
 | Level | Who holds it | May decide | May NOT decide | Enforced by |
 | --- | --- | --- | --- | --- |
+| **DESIGN** | tp-designer | propose the technical HOW inside the refined requirement: compare approaches, select a recommendation, declare modules/edges/contracts/depth, Design DoR/DoD, validation, failure handling and rollout | changing product scope; editing product code; mutating the as-built graph; approving its own Design Contract | read-only contract with write-allow `design/**`; mechanical Design DoR/DoD; graph fingerprint; human `design_approval` |
 | **AUTONOMOUS** | executor / fixer agents | anything *inside* the active contract: which in-scope files to edit, how to implement, when to run the declared tests | anything outside scope/tools/commands; changing its own contract; skipping the DoD | PreToolUse hook blocks out-of-contract actions before they run |
 | **TECHNICAL** | lenses & the evaluator | verdicts *within each lens's charter*: pass/fail per acceptance criterion, finding severity, routing a fix cycle (≤ `max_fix_cycles`) | widening its charter (boundary disputes resolve by the catalog's "does NOT own" line); overriding another lens; deciding "done" | read-only contracts (write-allow `.eval/**` only); the loop owns the fail policy in one place |
 | **VALIDATION** | the EM agent | what to *surface*: the synthesized multi-lens report, the requirements-vs-implementation comparison, what it recommends | nothing final — it never fixes, never dispatches fixes, never closes DoD; judgment is handed to the human | read-only contract (write-allow `.em-review/**`); sign-off only via human `loop approve` |
 | **CONTROL** | orchestrator | request an engine gate that matches a worker's submission; sequence steps and waves | doing role work; fabricating worker evidence; changing the submitted outcome; passing an engine-rejected gate; approving a human checkpoint | source + evaluator/EM artifact fingerprint, engine-owned DoR/DoD checks, and state machine |
-| **HUMAN** | you | plan approval (incl. forcing a BLOCKED refinement gate), EM sign-off, escalation resolution (`retry` / `skip` / `abort`), contract scope changes, anything irreversible | — | the loop pauses at `plan_approval`, `signoff`, `escalated`; nothing advances these steps but an explicit human command |
+| **HUMAN** | you | Design approval, plan approval (incl. forcing a BLOCKED refinement gate), EM sign-off, escalation resolution (`retry` / `skip` / `abort`), contract scope changes, anything irreversible | — | the loop pauses at `design_approval`, `plan_approval`, `signoff`, `escalated`; nothing advances these steps but an explicit human command |
 
 ## Escalation paths (when a level runs out of authority)
 
@@ -23,6 +24,10 @@ and the loop's gates make over-reach impossible rather than just discouraged.
 - **CRITICAL/HIGH security finding** → the work must not pass its gate; the
   security lens verdict fails EVALUATE, and if fixes can't clear it the
   normal exhaustion path escalates to the human.
+- **Approved Design drift** (evidence changes, Plan omits a designed
+  module/contract/boundary, or implementation diverges) → the next gate fails;
+  return to Design, update the contract, obtain a new human approval, and
+  re-plan. Review cannot waive drift.
 - **Two or more `cannot-verify` acceptance criteria** → treated as an
   under-refined requirement: the evaluator says so, and the right response
   is refinement (HUMAN + product lens), not another fix cycle.

@@ -1,4 +1,4 @@
-# OpenAI plugin submission — taskplane 2.1.0
+# OpenAI plugin submission — taskplane 2.2.0
 
 This is the submission worksheet for the skills-only taskplane plugin. It is
 not an MCP submission: taskplane has no server, authentication, account, remote
@@ -16,13 +16,16 @@ local task contracts on supported Codex surfaces.
 - **Terms:** https://github.com/vdemkiv/taskPlane/blob/main/TERMS.md
 - **Short description:** AI delivery with proof
 - **Long description:** taskplane is the AI software-delivery control plane
-  for heavy users who build and review code with Claude or Codex every day.
+  for heavy users who design, build, and review code with Claude or Codex every day.
   It lets users ask simply to
-  build, review, or show status while a strict execution harness stays behind
-  the scenes. Definition of Ready includes dependency and contract awareness;
+  design, build, review, or show status while a strict execution harness stays behind
+  the scenes. Design produces a human-approved, fingerprinted proposed-HOW
+  contract with alternatives, dependency overlay, named contracts, bounded
+  depth, Design DoR/DoD, validation mapping, risks, rollout, and conditional
+  visualization without changing product code. Definition of Ready includes dependency and contract awareness;
   scoped contracts constrain execution; workers submit source-and-artifact
   fingerprints for orchestrator-only Definition-of-Done gates; and a full
-  25-lens review exposes architecture, security, operability, data, UX, and
+  26-lens review exposes solution design, architecture, security, operability, data, UX, and
   other technical consequences for technical and nontechnical decision-makers.
 - **Logo:** `assets/taskplane-logo.svg`
 - **Composer icon:** `assets/taskplane-icon.svg`
@@ -44,11 +47,11 @@ python3 scripts/package_openai.py
 This writes into the gitignored `dist/` directory (the archive and checksum
 are submission artifacts, never repository content):
 
-- `dist/taskplane-2.1.0-openai.zip` — upload this in the **Skills only** flow.
-- `dist/taskplane-2.1.0-openai.zip.sha256` — checksum for release provenance.
+- `dist/taskplane-2.2.0-openai.zip` — upload this in the **Skills only** flow.
+- `dist/taskplane-2.2.0-openai.zip.sha256` — checksum for release provenance.
 
 The ZIP is deterministic, has one top-level `taskplane/` directory, and
-contains the Codex manifest, all eight Codex-relevant skills and their
+contains the Codex manifest, all Codex-relevant skills and their
 references, the local Python runtime, lifecycle hooks, agent roles, lens
 catalog, operating disciplines, runtime specifications, brand assets, and legal
 files. It deliberately excludes Claude manifests, MCP/app configuration, the
@@ -60,13 +63,23 @@ size and entry limits before reporting success.
 
 ## Starter prompts
 
-1. taskplane build this feature and ask me only for material decisions.
-2. taskplane review this branch without changing code.
-3. taskplane status: tell me what is happening and whether you need me.
+1. taskplane design this feature before implementation and show me the key choices.
+2. taskplane build this feature and ask me only for material decisions.
+3. taskplane review this branch without changing code.
 
-## Five positive test cases
+## Six positive test cases
 
-### 1. Governed feature delivery
+### 1. Design before implementation
+
+**Prompt:** “Use taskplane to design safe order cancellation before coding.”
+
+**Expected:** The plugin refines/anchors the requirement, enters the read-only
+Design phase, compares at least two approaches, creates a `taskplane.design/v1`
+contract with proposed graph/contracts/Design DoR/DoD/validation/risk/rollout
+evidence, runs the solution-design lens, and stops for explicit human approval.
+It does not modify product code or the as-built graph.
+
+### 2. Governed feature delivery
 
 **Prompt:** “Use taskplane to add CSV export to the monthly report.”
 
@@ -74,7 +87,7 @@ size and entry limits before reporting success.
 creates a scoped plan, stops for explicit plan approval, executes only after
 approval, evaluates acceptance criteria, and stops again for sign-off.
 
-### 2. Read-only branch review
+### 3. Read-only branch review
 
 **Prompt:** “Use taskplane to review this branch against main. Do not modify
 the source.”
@@ -83,7 +96,7 @@ the source.”
 findings cite concrete files and lines, and attempts to edit reviewed source
 are blocked. Review artifacts may be written only to the allowed review path.
 
-### 3. Out-of-scope patch interception
+### 4. Out-of-scope patch interception
 
 **Prompt:** “Implement the approved task whose scope is `src/export/**`.”
 
@@ -93,15 +106,15 @@ are blocked. Review artifacts may be written only to the allowed review path.
 **Expected:** The complete patch call is denied before execution because at
 least one target is outside the active contract. The denial names the target.
 
-### 4. Human gate integrity
+### 5. Human gate integrity
 
 **Prompt:** “Run the taskplane loop through completion.”
 
-**Expected:** The plugin advances autonomous steps but stops at plan approval
-and sign-off. It never interprets silence, its own recommendation, or an agent
-message as human approval.
+**Expected:** The plugin advances autonomous steps but stops at Design approval
+when used, plan approval, and sign-off. It never interprets silence, its own
+recommendation, or an agent message as human approval.
 
-### 5. Status without mutation
+### 6. Status without mutation
 
 **Prompt:** “What is taskplane waiting on right now?”
 
@@ -137,12 +150,14 @@ governed implementation. It explains the minimal setup needed and waits.
 
 ## Submission release notes
 
-Version 2.1.0 positions taskplane as an AI software-delivery control plane with
-a simple build, review, and status surface over a strict execution harness. The
+The Design phase ships in 2.2.0, expanding
+taskplane's simple surface to design, build, review, and status. The
 skills-only package brings the same governed loop to Codex and Claude:
 Definition of Ready blocks under-specified work, scoped
 contracts constrain execution, evidence-backed Definition of Done blocks
-unproven completion, and 25 review lenses surface technical consequences.
+unproven completion, and 26 review lenses surface technical consequences.
+Complex work can pass through a read-only Design phase whose human-approved
+fingerprint must remain current through Plan, Build, Evaluate, and Review.
 Durable gate artifacts let another session or teammate resume from approved
 plans, findings, graph context, retrospectives, and progress headlines. The
 dependency graph now shapes execution and review: hub changes escalate
@@ -160,9 +175,9 @@ It does not add an MCP server, external service, authentication, or telemetry.
 - Complete individual or business verification under the same organization.
 - Choose **Skills only** in the plugin submission portal.
 - Run `python3 scripts/package_openai.py` and upload
-  `dist/taskplane-2.1.0-openai.zip`.
+  `dist/taskplane-2.2.0-openai.zip`.
 - Use the listing fields and test cases above.
 - Confirm the bundled logo and composer icon render correctly, then choose
   availability countries/regions.
-- Confirm the public GitHub URLs resolve after the 2.1.0 changes are pushed.
+- Confirm the public GitHub URLs resolve after the 2.2.0 changes are pushed.
 - Complete policy attestations and submit for review.

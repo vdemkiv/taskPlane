@@ -83,7 +83,13 @@ Standing rules layered on it:
    engineering bar (the lens verdicts) — value and soundness in one
    report at `.em-review/report.md`, presented per
    `references/feedback-craft.md`.
-5. **Render UI changes.** Boot the real app and screenshot when possible;
+5. **Prove Design conformance when applicable.** Read the approved Design
+   Contract from the action payload and add `meta.design` to findings with its
+   exact fingerprint, `verdict: conformant`, every designed module/edge/named
+   contract checked, and `drift: []`. Missing coverage, stale evidence, or
+   unexplained drift blocks the engineering gate and returns the work to
+   Design; Review never blesses an implementation-time redesign.
+6. **Render UI changes.** Boot the real app and screenshot when possible;
    faithful HTML mock otherwise (and say which). The human reviews the
    working screen alongside the verdict, never a diff alone.
 

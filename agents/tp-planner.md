@@ -19,10 +19,13 @@ write-allow `plan/**` — activated by `loop next`; the hook enforces it.
 1. Read the spec/requirement (the action payload carries the R-record and
    recalled KB decisions — honor settled calls), the context docs
    (`knowledge/context/*.md`), and the dependency graph (`tp.py graph
-   impact` on the areas you'll touch) before shaping tasks.
+   impact` on the areas you'll touch) before shaping tasks. If `design` is
+   present, read the approved Design Contract and verify its fingerprint is
+   current before shaping tasks; never silently reinterpret or narrow it.
 2. Write `plan/tasks.json`: `{"tasks":[{"id","scope":[globs],"tests":
    "<command>","req":"R-…","deps":[ids],"type":…,"contracts":[…],
-   "new_modules":[…],"impact_policy":{…},"model":"cheap|standard|deep"}]}`
+   "new_modules":[…],"design_edges":["FROM->TO:KIND"],
+   "impact_policy":{…},"model":"cheap|standard|deep"}]}`
    — every task anchored to a requirement, scope as tight as the work allows
    (the hook will hold the executor to it), tests runnable, deps honest.
    Inherit the requirement's API/event/data/runtime contracts. For a new
@@ -36,6 +39,12 @@ write-allow `plan/**` — activated by `loop next`; the hook enforces it.
    `model` is OPTIONAL: mark a genuinely simple, mechanical task `"cheap"` to
    route it to a cheaper/faster model (omit it for standard). See
    `discipline/model-tiers.md`.
+   When Design is approved, the task set must collectively cover every
+   designed module, named contract, and proposed edge (copied canonically into
+   `design_edges` as `FROM->TO:KIND`), plus the declared depth
+   policy, and acceptance-map criterion. Any needed departure is design
+   drift: return to Design and obtain a new human approval instead of hiding
+   it in plan prose.
 3. Write `plan/plan.md` for the human: what, why, order, risks — riskiest
    first (see `discipline/` refs).
 4. Strategy is not a plan-time lens here — if a direction question surfaces,

@@ -4,7 +4,7 @@ R-0002: structured ADR registry — lifecycle, alternatives w/ trade-offs,
         links, supersede chains; governing decisions ALWAYS injected into
         briefs whose task scope overlaps the decision's modules; dashboard.
 R-0003: three design lenses — tradeoffs, services-selection, time-to-market —
-        catalog 25, routed correctly, prompts carry the D-record instruction.
+        catalog 26, routed correctly, prompts carry the D-record instruction.
 """
 import json
 import os
@@ -132,13 +132,18 @@ class TestGoverningInjection(unittest.TestCase):  # R-0002 AC2+AC3
 
 
 class TestNewLenses(unittest.TestCase):           # R-0003
-    def test_catalog_has_25_with_new_ids(self):
+    def test_catalog_has_26_with_solution_design(self):
         cat = json.load(open(os.path.join(ROOT, "lenses", "catalog.json")))
         lenses = cat["lenses"] if isinstance(cat, dict) else cat
         ids = {x["id"] for x in lenses}
-        self.assertEqual(len(lenses), 25)
+        self.assertEqual(len(lenses), 26)
         self.assertTrue({"tradeoffs", "services-selection",
                          "time-to-market"} <= ids)
+        self.assertIn("solution-design", ids)
+        self.assertNotEqual(
+            next(x for x in lenses if x["id"] == "solution-design")["charter"],
+            next(x for x in lenses if x["id"] == "design")["charter"],
+        )
 
     def test_router_fires_services_selection_on_manifest(self):
         r = lens.route(["package.json"])

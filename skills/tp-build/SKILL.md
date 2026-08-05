@@ -53,14 +53,27 @@ acceptance criteria). Both sides for anything user-facing and structural.
    criteria BEFORE building. Use an inline HTML widget when available;
    otherwise deliver the self-contained HTML artifact. The human corrects a
    mock in seconds; a built feature costs a fix cycle. State what's assumed.
-5. **Loop, governed.** `$TP loop init --req R-XXXX [--parallel]` and drive
-   as in `/tp-go`: plan → human approval → contracted build (TDD, budgets)
+5. **Settle the HOW when complexity earns it.** Add `--design` before Plan
+   when the feature crosses modules/services, changes an API/event/data/runtime
+   contract, has meaningful alternatives, is costly to reverse, or carries
+   migration/security/operational risk. This produces an approved Design
+   Contract: alternatives, selected approach, proposed graph overlay, named
+   contracts, bounded depth, Design DoR/DoD, acceptance-to-validation map,
+   failure/rollout evidence, and a conditional technical visual. Small,
+   local, reversible work with an obvious implementation can skip this phase.
+   This is distinct from the product/UI mock below: Design settles the
+   technical HOW; the mock makes user-facing behavior inspectable.
+6. **Loop, governed.** `$TP loop init --req R-XXXX [--design] [--parallel]` and drive
+   as in `/tp-go`: optional design → human Design approval → plan → human approval → contracted build (TDD, budgets)
    → evaluate → engineering review (full catalog) → visual sign-off.
    Dashboard at every transition (auto-refreshed by gate/next — the payload's `dashboard` field points at the fragment; the step journey + agent→model stats ride along) — visualization is not decoration here,
    it IS the interface the human governs through (the graph tab now shows
    the product layer: requirements ↔ modules, depends edges, shared-surface
    warnings).
-6. **A/B variants (when the design space is wide).** Build the SAME
+   When Design exists, Plan must cover every approved module, contract, graph
+   boundary, and acceptance mapping; Review must report conformance against
+   the approved fingerprint and stop on unexplained drift.
+7. **A/B variants (when the design space is wide).** Build the SAME
    requirement two deliberate ways — different UX, different architecture,
    or both. Full procedure: `references/variants.md`. In short: variants
    are scope-identical so they never merge — one governed agent per
@@ -68,9 +81,10 @@ acceptance criteria). Both sides for anything user-facing and structural.
    an evaluation compare, a side-by-side RENDER of both (live screenshots
    beat mocks), and a human SELECTION gate that replaces the merge. Refine
    the winner (often a hybrid: one variant's engine, the other's face).
-7. **Finish like every loop:** retro, debt recorded, graph trued-up and
+8. **Finish like every loop:** retro, debt recorded, graph trued-up and
    committed with the KB — the next feature starts smarter, and its
    contracts inherit an accurate map of who owns what.
 
-Human gates are non-negotiable: plan approval, (selection if A/B), final
-sign-off with the feature rendered — never a diff alone.
+Human gates are non-negotiable: Design approval when used, plan approval,
+(selection if A/B), final sign-off with the feature rendered — never a diff
+alone.

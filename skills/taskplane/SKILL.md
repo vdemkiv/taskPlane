@@ -1,12 +1,13 @@
 ---
 name: taskplane
-description: "The simple user-facing entry point for taskplane. Use whenever the user says taskplane or asks it to build, implement, review, validate, plan, resume, or show status. The user supplies a goal and decisions; internally taskplane keeps the full strict harness: requirements and contracts, dependency-graph DoR/DoD, scoped execution, independent evidence, 25 review lenses, orchestrator-only gates, and human approval. Routes to tp-go, tp-build, tp-engineering, tp-product, or tp-status without asking the user to learn those internals."
+description: "The simple user-facing entry point for taskplane. Use whenever the user says taskplane or asks it to design, build, implement, review, validate, plan, resume, or show status. The user supplies a goal and decisions; internally taskplane keeps the full strict harness: requirements and contracts, dependency-graph DoR/DoD, scoped execution, independent evidence, 26 review lenses, orchestrator-only gates, and human approval. Routes to tp-design, tp-go, tp-build, tp-engineering, tp-product, or tp-status without asking the user to learn those internals."
 ---
 
 # taskplane — simple for the user, strict for agents
 
 The user should need to say only one of these:
 
+- `taskplane design <new feature, approach, or technical change>`
 - `taskplane build <goal>`
 - `taskplane review <branch, diff, PR, feature, or codebase>`
 - `taskplane status`
@@ -21,9 +22,15 @@ Set `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
 ## Route the request
 
+- Design a new feature or approach before code changes, compare technical
+  options, define system shape, or settle contracts and rollout: follow
+  `../tp-design/SKILL.md`. Design owns the proposed HOW; it is read-only
+  toward product code and ends at an explicit human approval gate.
 - Build, fix, refactor, migrate, or implement: follow `../tp-go/SKILL.md`.
   For a genuinely new feature or A/B request, also apply
-  `../tp-build/SKILL.md`.
+  `../tp-build/SKILL.md`. Route complex, cross-module, contract-changing,
+  distributed, risky, or materially ambiguous Build work through Design;
+  small local reversible work may go directly to Plan/Build.
 - Review, validate, blast radius, architecture/security review, or sign-off:
   follow `../tp-engineering/SKILL.md`; remain read-only toward reviewed code.
 - Requirements, acceptance criteria, or change requests without delivery:
@@ -43,7 +50,7 @@ Codex; do not improvise a shorter worker prompt.
 
 Implementation and review workers never advance their own stage:
 
-1. The execute, fix, evaluate, or engineering worker performs the contracted
+1. The design, execute, fix, evaluate, or engineering worker performs the contracted
    role and writes its required evidence. Product/planner roles return their
    artifacts to the orchestrator, whose plan gate is already mechanical and
    still precedes explicit human approval.
@@ -53,8 +60,8 @@ Implementation and review workers never advance their own stage:
 3. The orchestrator recomputes the submission fingerprint and calls the
    matching `$TP loop gate`. The engine, not worker prose, decides whether
    DoR/DoD evidence is sufficient.
-4. Human checkpoints still stop for an explicit plan approval, A/B selection,
-   escalation decision, or final sign-off.
+4. Human checkpoints still stop for an explicit Design Contract approval,
+   plan approval, A/B selection, escalation decision, or final sign-off.
 
 Never let an implementation/review worker call `loop gate`, approve a human checkpoint, clear its
 contract after a loop submission, weaken tests, silently widen scope, or treat
@@ -66,6 +73,16 @@ Requirements record product dependencies with `--depends R-XXXX` and named
 API/event/data/runtime boundaries with repeatable
 `--contract provides|consumes|changes:NAME`. Plans inherit those boundaries,
 declare deliberately new graph modules, and use a typed impact policy.
+
+When Design is used, its graph declaration is a proposed overlay on the
+current graph, never a mutation of as-built state. Design DoR requires a
+refined requirement, current baseline graph, explicit boundary policy, and no
+blocking questions. Design DoD requires alternatives and trade-offs, a
+selected approach, modules/edges/contracts, bounded depth, graph DoR/DoD,
+acceptance-to-validation mapping, failure/rollout evidence, the mandatory
+solution-design lens, and a useful visual or an explicit reason to skip it.
+Approval fingerprints this evidence; Plan, Build, Evaluate, and Review cannot
+silently drift from it.
 
 The graph DoR refreshes before plan approval and blocks distributed/high-cost
 work whose dependencies, contracts, new surfaces, or depth policy are

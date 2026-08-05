@@ -1,6 +1,6 @@
 ---
 name: tp-go
-description: "The single entry point for governed work — use when the user states a goal and wants taskplane to handle everything: 'go build X', 'implement X with taskplane', 'start governed work', 'run the loop', 'set up taskplane', 'run tasks in parallel', 'dispatch the wave', 'run the retro', 'log tech debt'. Picks up whatever is prompted and executes it as far as possible, routing to the right persona — tp-product (define), tp-build (new features, A/B variants), tp-engineering (validate) — with every step under an enforced contract and every human gate honored."
+description: "The single entry point for governed work — use when the user states a goal and wants taskplane to handle everything: 'go build X', 'implement X with taskplane', 'start governed work', 'run the loop', 'set up taskplane', 'run tasks in parallel', 'dispatch the wave', 'run the retro', 'log tech debt'. Picks up whatever is prompted and executes it as far as possible, routing to the right persona — tp-product (define WHAT), tp-design (propose HOW), tp-build (realize), tp-engineering (validate) — with every step under an enforced contract and every human gate honored."
 ---
 
 # /tp-go — goal in, governed delivery out
@@ -21,17 +21,20 @@ Agent tool's `model` param (omit it when `null`). A planner marks a simple task
 model in agent frontmatter — the pin lives only at the dispatch call, which is
 what keeps taskplane portable. Full detail: `discipline/model-tiers.md`.
 
-**Three personas, one driver — route by the ask, combine freely:**
+**Four user intents, one driver — route by the ask, combine freely:**
 
 | The ask is about… | Persona | Skill |
 |---|---|---|
 | WHAT to build, requirements, change requests | tp-product | `../tp-product/SKILL.md` |
+| HOW a new feature or approach should work before code | tp-designer | `../tp-design/SKILL.md` |
 | BUILDING something new (spec-first, visual-first, optional A/B variants) | tp-build | `../tp-build/SKILL.md` |
 | whether built work is SOUND — review, impact, sign-off, retro | tp-engineering | `../tp-engineering/SKILL.md` |
 
-The loop dispatches them automatically (`pm` step = tp-product, `em` step
-= tp-engineering); reach for tp-build's flow whenever the goal is a new
-feature rather than a fix or review.
+The loop dispatches them automatically (`pm` = tp-product, `design` =
+tp-designer, `em` = tp-engineering). Reach for tp-design when the proposed HOW
+needs alternatives, dependency/contract decisions, or rollout evidence before
+implementation; reach for tp-build whenever the goal is a new feature rather
+than a fix or review.
 
 **SHOW THE WORK — render the live dashboard at every transition.** Use the
 host's inline HTML/widget capability when available. When it is not, relay the
@@ -56,7 +59,8 @@ After each `loop next`, `loop submit`, `loop gate`, `loop wave`, and
    always-on **stats band with the agent→model table** (who ran which
    step/lens on which model — expected vs dispatched).
 1. `$TP dashboard` — prints the mission-control HTML fragment. Four tabs:
-   **loop** (governance rail PM→Plan→Approve→Build→EM→Sign-off→Done; inside
+   **loop** (governance rail PM→Design→Approve Design→Plan→Approve→Build→EM→Sign-off→Done,
+   with Design omitted for simple direct builds; inside
    Build, one lane per task showing its own build → evaluate ⟲ fix
    mini-pipeline — parallel lanes visible side by side — plus live feed and,
    at `plan_approval`/`signoff`/`escalated`, gate buttons wired to
@@ -119,13 +123,20 @@ explicit approval in conversation. Never run the loop silently.
    NEW FEATURE, follow `../tp-build/SKILL.md` instead: a north-star check first for
    significant ones, refine until the forecast is clean, render a visual
    mock of the spec BEFORE building.
-3. **Loop:** `$TP loop init --req R-XXXX "<goal>"` (add `--parallel` when
+3. **Loop:** `$TP loop init --req R-XXXX "<goal>"` (add `--design` for a
+   complex/risky/contract-changing or explicitly requested proposed-HOW phase;
+   add `--design-only` when the deliverable is the approved design itself;
+   add `--parallel` when
    the plan will have independent tasks; `--spec path` if a spec exists).
    Then repeat `$TP loop next` and DO what its `instruction` says, playing
    the named role under its activated contract. On Codex or any host that
    does not register `agents/` as named roles, dispatch a general subagent
    with the action payload's `role_instructions` file; never improvise a
-   reduced role prompt. Plan writes plan/tasks.json
+   reduced role prompt. Design writes `design/contract.json` and
+   `design/design.md`, compares alternatives, declares a proposed graph
+   overlay with bounded contract-level boundaries, runs the mandatory
+   solution-design lens, and stops for human approval. It never changes code
+   or the as-built graph. Plan writes plan/tasks.json
    (each task: id, scope, tests, req, deps, contracts, `new_modules` when
    applicable, and typed `impact_policy`), execute builds TDD-first
    (`discipline/tdd.md`) honoring the primed lenses, evaluate proves
@@ -134,8 +145,13 @@ explicit approval in conversation. Never run the loop silently.
    end with `loop submit`; the orchestrator alone calls `loop gate` and trusts
    only the engine's recomputed evidence. Product/planner return their
    artifacts for the orchestrator's mechanical gate.
-4. **Human gates:** at `plan_approval` present the plan + refinement
-   forecast and WAIT for the user; at `signoff` present the engineering
+   If a Design Contract is approved, each proposed dependency edge is copied
+   into the owning task's `design_edges` as `FROM->TO:KIND`; the plan gate
+   checks the complete set along with modules, contracts, depth, and criteria.
+4. **Human gates:** at `design_approval` present the selected approach,
+   alternatives, modules/edges/contracts, risks/rollout, validation map, and
+   useful visual, then WAIT for the user. At `plan_approval` present the plan
+   + refinement forecast and WAIT; at `signoff` present the engineering
    report and WAIT. `$TP loop approve` only on their explicit yes.
    Escalations: present options, `$TP loop resolve retry|skip|abort` on
    their choice.

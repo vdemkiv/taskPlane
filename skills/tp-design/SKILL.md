@@ -1,0 +1,109 @@
+---
+name: tp-design
+description: "The pre-build solution-design flow of taskplane. Use when the user says 'taskplane design', asks to design a new feature or approach before coding, wants a technical design based on requirements and/or an existing codebase, wants alternatives and trade-offs, or needs dependency/contract/rollout decisions settled before Build. Produces an approved Design Contract with proposed graph, Design DoR/DoD, solution-design evidence, and conditional visualization. It designs the HOW; it does not implement or review current code."
+---
+
+# taskplane Design — settle the HOW before Build
+
+The user provides the goal and material decisions. Keep the interface simple; internally run the same strict taskplane harness as Build and Review.
+
+Resolve the engine once from the installed plugin root:
+
+```bash
+TP="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"
+```
+
+If that path does not exist, locate this skill's plugin root and use its `taskplane/tp.py`. Do not ask the user to run commands.
+
+## Responsibility boundary
+
+- Product owns **WHAT** and why.
+- Design owns the proposed **HOW** before code changes.
+- Build realizes the approved Design Contract.
+- Review judges the realized result and any drift.
+
+Design is read-only toward product code. The `tp-designer` role may write only `design/**`; it never implements, fixes, mutates the as-built dependency graph, or approves its own work.
+
+## Start
+
+Run onboarding first:
+
+```bash
+python3 "$TP" onboard --json
+```
+
+If setup is incomplete, complete the safe setup steps directly. Then ensure the goal is anchored to a refined requirement with testable acceptance criteria and no blocking open questions. Use `tp-product` when the WHAT is not ready; do not let Design silently invent product scope.
+
+Choose one execution form:
+
+- The user asked only for a design: initialize with `loop init --design --design-only --req R-…`.
+- The user wants Design followed by implementation: initialize with `loop init --design --req R-…`.
+- An existing spec may be passed with `--spec`; otherwise the Product step runs first.
+
+## When Build should route through Design
+
+Build should add `--design` when any of these is true:
+
+- multiple modules, components, services, or teams are affected;
+- an API, event, schema, data, runtime, or deployment contract changes;
+- the work is distributed, migratory, security/privacy-sensitive, expensive, hard to reverse, or operationally risky;
+- the requirement admits materially different approaches;
+- current code or settled decisions constrain the solution and the correct shape is not already explicit.
+
+Small, local, reversible, single-module work with an obvious implementation may go directly to Plan/Build. If uncertain, use Design; the extra human gate is cheaper than building the wrong dependency shape.
+
+## Drive the Design phase
+
+Call `loop next`. The Design brief includes the requirement, accepted decisions, current-state inventory, baseline graph fingerprint, bounded impact, and the mandatory `solution-design` lens.
+
+Have `tp-designer` inspect the cited code and write:
+
+- `design/design.md` — concise human design and decision rationale;
+- `design/contract.json` — schema `taskplane.design/v1`;
+- `design/visual.html` only when a visual materially clarifies the choice.
+
+Read [references/design-contract.md](references/design-contract.md) for the exact contract and graph rules.
+
+Then call `loop gate pass`. The orchestrator, not the designer, validates Design DoD. Missing alternatives, acceptance mappings, named contracts, graph policy, graph DoR/DoD, risk/rollout evidence, lens evidence, safe visualization, or graph isolation keeps the loop at Design.
+
+## Human approval
+
+At `design_approval`, show the user:
+
+- selected approach and alternatives rejected;
+- proposed modules, dependency edges, and named contracts;
+- local depth plus cross-entity boundary policy;
+- important failure modes, risks, rollout, rollback, and observability;
+- acceptance-to-validation mapping;
+- the visualization when one was useful;
+- the mechanical Design DoD result.
+
+Wait for an explicit human decision. Record approval with `loop approve --by "<human identity/context and quoted approval>"`. Never infer or self-issue approval.
+
+Approval fingerprints the complete evidence. For design-only work the loop
+ends. For design-before-build it advances to Plan, whose DoR must cover the
+approved modules, contracts, graph depth, acceptance mapping, and every
+proposed edge via canonical task `design_edges` entries (`FROM->TO:KIND`).
+
+## Downstream enforcement
+
+When an approved design exists:
+
+- Plan cannot silently narrow its module/contract/dependency coverage.
+- Execute and Evaluate receive the approved contract and reject stale evidence.
+- Engineering Review must include `meta.design` with the approved fingerprint, every designed module/edge/contract checked, verdict `conformant`, and no unexplained drift.
+- Drift is not papered over. Return to Design, obtain a new approval, and re-plan.
+
+For distributed systems, traverse local implementation dependencies to the declared depth, but cross service/entity boundaries at named `contract:` or `resource:` nodes only. Do not expand into another entity's internals unless the human explicitly changes the boundary policy.
+
+## Visualization is conditional
+
+Choose the smallest useful visual:
+
+- dependency graph for coupling and blast radius;
+- sequence diagram for cross-component interaction;
+- state machine for lifecycle or failure recovery;
+- data-flow diagram for storage, privacy, or migration;
+- UI flow/mock only when interaction is a design decision.
+
+If prose and the graph declaration are clearer, set `visualization.required=false` and record the reason. Never create a decorative visual merely to satisfy a ritual.

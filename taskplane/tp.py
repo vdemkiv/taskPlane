@@ -736,7 +736,8 @@ def cmd_loop(a) -> int:
         st = loopmod.init(ws, " ".join(a.goal or []) or (a.spec or "spec"),
                           spec_path=a.spec, max_fix_cycles=a.max_fix_cycles,
                           checkpoints=[c for c in checkpoints if c],
-                          requirement_id=a.req, parallel=a.parallel)
+                          requirement_id=a.req, parallel=a.parallel,
+                          design=a.design, design_only=a.design_only)
         print(json.dumps({"initialized": True, "step": st["step"]}, indent=2))
     elif action == "next":
         print(json.dumps(loopmod.next_action(ws), indent=2))
@@ -1633,6 +1634,12 @@ def main(argv=None) -> int:
     li.add_argument("--parallel", action="store_true",
                     help="execute waves of scope-disjoint tasks concurrently, "
                          "one governed agent per task")
+    li.add_argument("--design", action="store_true",
+                    help="run the Design Contract + human design approval "
+                         "before implementation planning")
+    li.add_argument("--design-only", action="store_true",
+                    help="stop after the human approves the Design Contract "
+                         "instead of continuing to Plan/Build/Review")
     lsub.add_parser("next")
     lsub.add_parser("wave")
     lc = lsub.add_parser("claim")

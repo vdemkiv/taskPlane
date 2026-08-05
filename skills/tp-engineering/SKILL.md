@@ -15,7 +15,7 @@ All review runs read-only toward code under an enforced contract:
 `$TP new --read-only --write-allow ".em-review/**" "engineering review: <target>"`.
 
 **Every review applies the full catalog — nothing skipped.**
-`$TP lens route --all` returns all 25 lenses: `tier=deep` (summoned by
+`$TP lens route --all` returns all 26 lenses: `tier=deep` (summoned by
 the change — run at full depth) and `tier=sweep` (quick pass of each
 remaining lens's top checks). **Architecture & system design is always
 on** — every code change gets at least a light pass, a structurally
@@ -70,7 +70,11 @@ Walk the diff against EACH acceptance criterion of its R-record
 completeness and scope fidelity (gaps AND creep). Before the EM brief, the
 loop trues-up the product graph (realizes edges + rescan), and the action's
 `impact.graph.content_fingerprint` binds your evidence to that exact map.
-Copy the full impact payload into `meta.impact`. A stale graph revision or an
+Copy the full impact payload into `meta.impact`. When the loop carries an
+approved Design Contract, also copy its approval fingerprint into
+`meta.design`, verify every designed module, edge, and named contract, report
+`verdict: conformant`, and leave `drift: []`. Missing/stale design evidence or
+unexplained drift blocks sign-off and returns the work to Design. A stale graph revision or an
 incomplete/wrong review policy blocks the engineering gate. Per-task
 evaluation separately blocks unknown or undispositioned direct impact,
 unchecked affected requirements, and unverified declared contracts.
@@ -86,7 +90,7 @@ finding (ALL severities, not just the blockers) to `.em-review/findings.json`
 — each `{severity, domain, file, line, title, scenario, fix, status}`, with
 a `meta` block: `title`, `subtitle`, `tests`, `clean:[…]`, a `gate` with
 buttons, and — required (v1.5.4) — `lens_coverage` (the `{id: deep|sweep}`
-map from `tp lens dispatch`, so the dashboard shows all 25 lenses marked
+map from `tp lens dispatch`, so the dashboard shows all 26 lenses marked
 deep / sweep / didn't-fire, and adding a lens to the catalog appears
 automatically) and `impact` (the `tp graph impact` payload, so the
 blast-radius panel renders). Both also fold into the never-skippable

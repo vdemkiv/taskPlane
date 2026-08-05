@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.1.0",
-  "description": "AI software-delivery control plane for Claude and Codex. Build, review, or check status with one simple taskplane prompt while a strict harness enforces dependency-aware Definition of Ready and Done, scoped execution, fingerprinted worker evidence, orchestrator validation, human approvals, 25 review lenses, durable project memory, and a live dashboard.",
+  "version": "2.2.0",
+  "description": "AI software-delivery control plane for Claude and Codex. Design, build, review, or check status with one simple taskplane prompt while a strict harness enforces approved Design Contracts, dependency-aware Definition of Ready and Done, scoped execution, fingerprinted worker evidence, orchestrator validation, human approvals, 26 review lenses, durable project memory, and a live dashboard.",
   "author": {
     "name": "Volodymyr Demkiv"
   },
@@ -14,6 +14,7 @@
     "evaluate-loop",
     "lenses",
     "requirements",
+    "solution-design",
     "knowledge-base",
     "dependency-graph",
     "parallel-agents",

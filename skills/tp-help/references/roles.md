@@ -14,10 +14,16 @@ directory.
 ## The default pipeline
 
 ```
-Product Manager ─▶ (defines the contract: scope + acceptance criteria = DoR/DoD)
+Product Manager ─▶ (defines WHAT: scope + acceptance criteria)
       │
       ▼
-   Executor      ─▶ (does the work under that contract; hook blocks out-of-scope)
+Solution Design ─▶ (proposes HOW: alternatives + graph/contracts + Design DoR/DoD)
+      │             [optional; human approves]
+      ▼
+   Planner       ─▶ (turns approved inputs into scoped, testable tasks)
+      │             [human approves]
+      ▼
+   Executor      ─▶ (realizes the work; hook blocks out-of-scope)
       │
       ▼
 EM code review   ─▶ (read-only DoR + DoD review of the in-scope diff)
@@ -43,14 +49,24 @@ python3 "$PLUGIN/taskplane/tp.py" ready      # DoR entry gate — must pass
 
 Do not proceed past a NOT READY verdict.
 
-### 2 — Executor builds under the contract
+### 2 — Designer settles the proposed HOW when required
+
+For complex, cross-module, distributed, contract-changing, risky, or
+materially ambiguous work, `tp-designer` reads current code and writes only
+`design/**`. Its Design Contract compares alternatives, declares a proposed
+dependency overlay and named contracts, bounds traversal depth, maps every
+acceptance criterion to validation, and defines graph DoR/DoD. The
+orchestrator validates it mechanically; a human approves it. It never mutates
+code or the as-built graph.
+
+### 3 — Planner and executor realize approved inputs
 
 Do the implementation normally. The PreToolUse hook enforces the PM's scope:
 any write outside it, any denied command, any disallowed tool is blocked
 before it runs. If a block is legitimate, the scope was wrong — go back to the
 PM/contract, widen deliberately, and note why.
 
-### 3 — Engineering Manager reviews (Definition of Done)
+### 4 — Engineering Manager reviews (Definition of Done)
 
 Invoke the **em-code-reviewer** agent (read-only) against the in-scope diff.
 It reports engineering-quality (DoR) findings and requirements coverage (DoD),
@@ -71,8 +87,10 @@ makes the final call.
 | Role | Agent | Runs as | Governs |
 | --- | --- | --- | --- |
 | Product Manager | `product-manager` | read-only planning contract | authors DoR: scope + acceptance criteria |
+| Solution Designer | `tp-designer` | read-only toward code; writes `design/**` | proposed HOW, alternatives, graph/contracts, Design DoR/DoD |
+| Planner | `tp-planner` | read-only toward code; writes `plan/**` | scoped realization of approved requirement/design |
 | Executor | (the main agent) | the build contract | bounded by scope/tools; hook-enforced |
-| EM code reviewer | `em-code-reviewer` | read-only review contract | validates DoR (quality) + DoD (requirements) |
+| EM code reviewer | `em-code-reviewer` | read-only review contract | validates DoR/DoD plus Design conformance when present |
 
 ## Adding a new role (iterative improvement)
 

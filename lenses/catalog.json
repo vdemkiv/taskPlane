@@ -407,6 +407,27 @@
       ]
     },
     {
+      "id": "solution-design",
+      "name": "Solution design",
+      "group": "Architecture & systems",
+      "charter": "coherence and implementability of a proposed HOW: requirement-to-decision-to-modules/contracts-to-validation/rollout traceability",
+      "boundary": "component/data-flow correctness -> architecture; alternative quality -> tradeoffs; interaction/visual experience -> design",
+      "looks_for": "unsupported leaps from requirements to components, missing contract ownership, graph boundaries or validation mappings, internally inconsistent failure/rollout choices, designs that cannot be implemented or reviewed as written",
+      "globs": [
+        "design/**",
+        "**/solution-design/**",
+        "**/*.design.md"
+      ],
+      "task_types": [
+        "solution-design"
+      ],
+      "deep_globs": [
+        "design/**",
+        "**/solution-design/**",
+        "**/*.design.md"
+      ]
+    },
+    {
       "id": "services-selection",
       "name": "Tool & services selection",
       "group": "Architecture & systems",

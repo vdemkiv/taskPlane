@@ -81,7 +81,7 @@ class TestAgentFrontmatterPortability(unittest.TestCase):
 
 class TestStepTier(unittest.TestCase):
     def test_reasoning_steps_default_deep(self):
-        for s in ("pm", "plan", "em"):
+        for s in ("pm", "design", "plan", "em"):
             self.assertEqual(tp.step_tier(s), "deep")
 
     def test_build_steps_default_standard(self):

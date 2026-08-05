@@ -34,6 +34,21 @@ without interfering with the rest of the orchestrator.
 | `tp.py screen` | PreToolUse entrypoint (reads the hook event on stdin) |
 | `tp.py dod` | Definition-of-Done exit gate — git scope-diff (fails closed) + test command |
 | `tp.py status` / `tp.py clear` | inspect / deactivate the active contract |
+| `tp.py loop init --design --req R-… GOAL` | run Product/Design, pause for Design approval, then continue to Plan/Build |
+| `tp.py loop init --design --design-only --req R-… GOAL` | produce and approve a Design Contract, then finish without implementation |
+
+## Proposed-HOW Design contracts
+
+Design is read-only toward product code and may write only `design/**`. The
+engine requires `design/contract.json` (`taskplane.design/v1`) plus
+`design/design.md`; a technical visual is conditional. Design DoR checks the
+refined requirement and current graph. Design DoD checks alternatives,
+selected approach, current-state grounding, proposed modules/edges, named
+contracts, bounded dependency depth, graph DoR/DoD, exact acceptance mapping,
+risk/failure/observability/rollout evidence, the mandatory solution-design
+lens, and graph isolation. A human approves the fingerprinted evidence. Plan
+must cover it and Engineering Review must prove conformance or return drift to
+Design.
 
 ## Read-only review contracts (the EM role)
 

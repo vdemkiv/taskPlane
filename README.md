@@ -2,20 +2,20 @@
 
 [![CI](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml/badge.svg)](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml)
 
-**Build and review AI-generated software with evidence, not trust.** taskplane
+**Design, build, and review AI-generated software with evidence, not trust.** taskplane
 is the AI software-delivery control plane for people who ship and review code
-with Claude or Codex every day. You ask it to build, review, or show status;
+with Claude or Codex every day. You ask it to design, build, review, or show status;
 behind that simple request it checks whether the work is ready, keeps every
 agent inside an approved scope, and requires current implementation, test, and
 review evidence before anything can be called done.
 
-![taskplane 2.1 in action — a real safe-order-cancellation project: graph-aware Definition of Ready blocks an undeclared audit module → a human approves the corrected dependency-aware plan → the execution contract blocks a Codex edit outside scope → worker evidence cannot self-advance → an independent evaluator checks acceptance criteria, routed lenses, dependents, and the distributed contract → the full 25-lens review runs → final human sign-off](docs/assets/taskplane-cowork-flow.gif)
+![taskplane 2.1 in action — a real safe-order-cancellation project: graph-aware Definition of Ready blocks an undeclared audit module → a human approves the corrected dependency-aware plan → the execution contract blocks a Codex edit outside scope → worker evidence cannot self-advance → an independent evaluator checks acceptance criteria, routed lenses, dependents, and the distributed contract → the full engineering review runs → final human sign-off](docs/assets/taskplane-cowork-flow.gif)
 
 taskplane is not another prompt collection, review bot, or project tracker. It
 is the governed execution and assurance layer between your intent and
 agent-generated changes. Requirements, dependencies, contracts, implementation,
 and review stay connected from Definition of Ready through Definition of Done.
-A 25-lens engineering review makes architecture, security, data, operability,
+A 26-lens engineering review makes architecture, solution design, security, data, operability,
 UX, and other technical consequences explicit for engineers, EMs, PMs, and
 nontechnical decision-makers.
 
@@ -25,7 +25,9 @@ keeps the machinery — scoped contracts, dependency depth, independent
 submissions, lifecycle gates, durable memory, and the live dashboard — behind
 that interaction without weakening it.
 
-## Three prompts are enough
+## Four prompts are enough
+
+> **taskplane design:** design safe order cancellation before we build it
 
 > **taskplane build:** add CSV export to the monthly report
 
@@ -33,8 +35,8 @@ that interaction without weakening it.
 
 > **taskplane status**
 
-The `taskplane` skill routes those requests to the existing product, build,
-engineering, status, and orchestration skills. You do not need to choose a
+The `taskplane` skill routes those requests to the existing product, design,
+build, engineering, status, and orchestration skills. You do not need to choose a
 persona, remember loop commands, select review lenses, or set dependency
 depth. taskplane reports a concise text summary after each material
 transition and shows the richer dashboard when the host supports it.
@@ -43,12 +45,14 @@ This simplicity does **not** reduce agent work. A worker may only submit a
 result; it cannot advance its own stage. The orchestrator independently runs
 the engine gate, which recomputes source and review-artifact fingerprints and
 rejects missing, stale, out-of-scope, under-tested, or under-reviewed work.
-Human plan approval and final sign-off remain explicit.
+Human Design approval (when used), plan approval, and final sign-off remain
+explicit.
 
 ## What's new
 
 | Version | Highlights |
 | --- | --- |
+| **v2.2.0** | **First-class Design before Build** — `taskplane design` turns a refined requirement plus current code into alternatives and an approvable Design Contract without changing product code. The contract carries a proposed dependency overlay, named API/event/data/runtime contracts, bounded depth, graph DoR/DoD, acceptance-to-validation traceability, risks, failure modes, observability, rollout/rollback, and a conditional technical visual. Complex Build work can route through Design; approved evidence is fingerprinted, Plan must cover it, and Review blocks unexplained drift. A distinct solution-design lens brings the catalog to 26. 456 tests. |
 | **v2.1.0** | **AI software delivery with proof, not agent self-reporting** — one `taskplane` entry point now routes build, review, and status while the strict harness stays behind the scenes. Workers submit source-and-artifact fingerprints but cannot advance their own stage; the orchestrator independently reruns the gate. Requirements and plans carry dependency and contract awareness, every new module must be declared at Ready, and Done verifies the realized graph plus affected consumers and requirements. Distributed review stops at explicit inter-entity contract boundaries by default. Shared agents remain provider-neutral across Claude and Codex. 444 tests. |
 | **v2.0.0** | **One governed delivery plane for Claude and Codex** — the same Definition of Ready, scoped task contracts, evidence-backed Definition of Done, human gates, durable progress artifacts, dependency-aware execution, and 25-lens review run across both hosts. Codex support preserves its sandbox and approval flow while using host-portable role dispatch, model inheritance, onboarding, and dashboard fallbacks. 430 tests. |
 
@@ -147,7 +151,8 @@ checks are green:
    choice; it is not tied to the name of your ChatGPT or Codex subscription.
 6. Let taskplane initialize the context documents, then fill
    `current-state.md` first for an existing project. State the goal; taskplane
-   will stop at plan approval and final sign-off for your explicit decision.
+   will stop at Design approval when that phase is used, plan approval, and
+   final sign-off for your explicit decision.
 
 When inline HTML widgets are unavailable, Codex still relays the plain-text
 `HEADLINE:` and provides `.taskplane/dashboard.html` as the local dashboard
@@ -207,12 +212,32 @@ questions without spending model calls at all.
 
 Then you're governed from the first task.
 
-## Five internal routes (optional power-user surface)
+## Specialist routes (optional power-user surface)
 
-The three prompts above cover normal use. If you want to address a specialist
+The four prompts above cover normal use. If you want to address a specialist
 seat directly, taskplane keeps these routes available:
 
-### 1. Review code, change nothing → `tp-engineering`
+### 1. Design the proposed HOW, change no code → `tp-design`
+
+You have a new feature, architecture change, or approach that should be made
+precise before anyone implements it.
+
+> **tp-design: design safe order cancellation across API and events**
+
+taskplane grounds the design in the refined requirement, accepted decisions,
+current code, and baseline dependency graph. It compares at least two real
+approaches, selects one, and produces a human-readable design plus a mechanical
+Design Contract: modules, proposed edges, named contracts, bounded dependency
+depth, Design and graph DoR/DoD, acceptance-to-validation mapping, risks,
+failure modes, observability, rollout, rollback, and a technical visual only
+when one helps. A distinct `solution-design` lens checks that the proposed HOW
+is coherent, buildable, and reviewable. The designer cannot edit product code,
+mutate the as-built graph, or approve its own work.
+
+*Good for: new features, distributed-system contracts, migrations,
+architecture choices, and expensive-to-reverse decisions.*
+
+### 2. Review code, change nothing → `tp-engineering`
 
 You have a branch, a PR, or a diff and want a thorough review — and the
 confidence that the review itself won't touch a thing.
@@ -220,7 +245,7 @@ confidence that the review itself won't touch a thing.
 > **tp-engineering: review the approvals-reporting PR against main**
 
 taskplane activates a **read-only contract** (the hook blocks any write to
-the reviewed source), routes the **full 25-lens catalog** — deep on what the
+the reviewed source), routes the **full 26-lens catalog** — deep on what the
 change touches, a quick sweep on the rest, and **architecture & system
 design always on** — leads with the dependency-graph **blast radius**,
 checks each acceptance criterion, and hands you a findings report ranked
@@ -229,7 +254,7 @@ get rendered, not just read. You sign off. The code was never touched.
 
 *Good for: PR gating, security review, "is this safe to merge", audits.*
 
-### 2. Build a new feature, refined first → `tp-build`
+### 3. Build a new feature, refined first → `tp-build`
 
 You have an idea and want it built right — or built twice, to choose.
 
@@ -237,7 +262,8 @@ You have an idea and want it built right — or built twice, to choose.
 
 A north-star review on demand for significant features (alignment +
 Leverage · Reversibility · Opportunity cost · Coherence) → requirement refined and scored
-until the forecast is clean → a **visual mock of the spec before any code**
+until the forecast is clean → Design first when system shape, contracts, or
+risk need approval → a **visual mock of the spec before any code**
 → the governed loop with your gates — and when the design space is wide,
 **A/B variants**: the same requirement built two deliberate ways by two
 governed agents in isolated worktrees, evaluated comparatively, rendered
@@ -247,14 +273,14 @@ meters), and decided at a **human selection gate**. Pick A, B, or a hybrid.
 *Good for: new features, prototypes, design decisions that are expensive
 to reverse.*
 
-### 3. Everything else → `tp-go`
+### 4. Everything else → `tp-go`
 
 You have a goal and want it done — visibly, on-scope, one clear thread.
 
 > **tp-go: add CSV export to the monthly report**
 
 Requirement (via `tp-product`) → refinement score with a fix-cycle
-forecast → plan → **your approval** → execution (parallel agents when tasks
+forecast → optional Design → **your Design approval** → plan → **your plan approval** → execution (parallel agents when tasks
 are independent, each kept to its own files) → engineering review (via
 `tp-engineering`) → **your sign-off** → retrospective. You watch it happen on
 the live dashboard; an agent drifting out of its lane or firing a destructive
@@ -264,7 +290,7 @@ quietly make a mess.
 *Good for: shipping features, fixes, refactors, and migrations you can
 actually follow.*
 
-### 4. Own the WHAT → `tp-product`
+### 5. Own the WHAT → `tp-product`
 
 You need the thing defined before anyone builds it — or a product decision
 recorded so it survives the session.
@@ -284,7 +310,7 @@ grades their own spec.
 *Good for: specs, acceptance criteria, prioritization, change requests,
 decision records.*
 
-### 5. A direction check, when you ask for it → `tp-northstar`
+### 6. A direction check, when you ask for it → `tp-northstar`
 
 Before an expensive build — or over any idea, task, diff, or finished
 review — you can summon the strategic lens.
@@ -323,8 +349,9 @@ The whole reason it exists — legibility, focus, and a thread you don't lose:
   lenses, and a review-findings view — updating at every step. When something
   needs you, the dashboard says so with a button; when nothing does, it says
   that too.
-- **Gates that keep the thread**: the loop pauses at plan-approval and
-  sign-off. Nothing advances those but you — so you're never surprised by
+- **Gates that keep the thread**: when Design is used, the loop first pauses
+  for Design approval; it also pauses at plan approval and sign-off. Nothing
+  advances those but you — so you're never surprised by
   what shipped.
 - **A graph-aware Ready/Done bar**: requirements name what they depend on and
   which API/event/data/runtime contracts they provide, consume, or change.
@@ -381,8 +408,9 @@ the model's own calls.
 | Capability | What it does |
 | --- | --- |
 | Enforcement kernel | contracts + lifecycle hook + worker submissions + orchestrator-only DoR/DoD gates + action budget + audit trace |
-| Evaluate-Loop | plan → build → evaluate → fix (≤2) → review → sign-off; serial or parallel waves, one enforced contract per agent |
-| 25 lenses (as agents) | the diff picks the reviewers (security, a11y, DBA, performance, …); each is a governed read-only agent, fanned out in PARALLEL so a wide review runs in one pass — architecture & system design ALWAYS on |
+| Evaluate-Loop | optional design → human Design approval → plan → human plan approval → build → evaluate → fix (≤2) → review → sign-off; serial or parallel waves, one enforced contract per agent |
+| Design Contract | a read-only proposed-HOW phase with alternatives, graph overlay, named contracts, bounded depth, Design/graph DoR/DoD, validation traceability, failure/rollout evidence, conditional visualization, and human approval |
+| 26 lenses (as agents) | the diff picks the reviewers (security, solution design, a11y, DBA, performance, …); each is a governed read-only agent, fanned out in PARALLEL so a wide review runs in one pass — architecture & system design ALWAYS on |
 | Requirements engine | refinement scoring + iteration forecast; requirement dependencies and named contracts; quick-vs-full with tracked debt |
 | Knowledge base | decisions, requirements, debt — retrieved by relevance at every step; plan-aware store: personal plan keeps it in an external per-project store (`~/.taskplane`, out of your repo), Team/Enterprise commits it in-repo (`.taskplane-kb/`) so the team shares one registry |
 | Decision registry | structured ADRs (`tp decision`) with lifecycle, alternatives + trade-offs, and supersede chains — accepted decisions linked to a task's modules are ALWAYS injected into that task's brief |
@@ -390,11 +418,13 @@ the model's own calls.
 | Dependency graph | deterministic scan + provenance/fingerprint + typed local/contract/requirement depth + graph DoR/DoD + interactive blast-radius map |
 | Model tiers | portable `cheap`/`standard`/`deep` capability tiers routed per step, task, and lens — mapped to models by env config, verifiable with `tp loop verify-dispatch` |
 
-**One simple entry point plus eight specialist skills:** `taskplane` routes
-build/review/status without exposing the harness. Power users can call
+**One simple entry point plus specialist skills:** `taskplane` routes
+design/build/review/status without exposing the harness. Power users can call
 `tp-go` (the delivery driver), `tp-product` (the WHAT seat:
 requirements, scores, decisions), `tp-build` (new features: refinement + a
 north-star check first, visual mocks, A/B variants with a selection gate),
+`tp-design` (the proposed HOW seat: alternatives, Design Contract,
+dependency/contract overlay, Design DoR/DoD, approval),
 `tp-engineering` (the SOUND seat: full-catalog review, impact, verdicts,
 retro), `tp-northstar` (the summoned STRATEGY lens — advisory, never a
 gate), `tp-tag` (governed work as your org's @Claude in a Slack channel —
@@ -464,9 +494,9 @@ entry.
 taskplane/
 ├── taskplane/              # the enforcement core (kernel + hook screener)
 ├── hooks/hooks.json        # PreToolUse → taskplane screen
-├── agents/                 # the loop roles — tp-product/tp-engineering + planner/executor/evaluator/fixer/orchestrator + tp-lens (one lens, one governed agent); + tp-northstar (summoned strategy)
-├── skills/                 # taskplane façade + tp-go/product/build/engineering/northstar/tag/status/help
-├── lenses/                 # the 25-lens catalog
+├── agents/                 # product/designer/planner/executor/evaluator/fixer/engineering/orchestrator + tp-lens + tp-northstar
+├── skills/                 # taskplane façade + tp-go/product/design/build/engineering/northstar/tag/status/help
+├── lenses/                 # the 26-lens catalog
 ├── scripts/                # generators (e.g. the lens-catalog doc)
 ├── discipline/             # TDD, debugging, worktrees — the operating disciplines
 ├── docs/                   # state spec + design notes

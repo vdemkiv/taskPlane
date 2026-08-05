@@ -90,7 +90,7 @@ plain `git add` picks up exactly the shared store and nothing else. Committing
 | `.taskplane/` | ACTIVE contract, snapshot ref, `meter.json`, `trace.jsonl` (raw audit events) | live enforcement + telemetry are per-machine; a parallel worker needs its own under `.tp-work/`, and none of it must ever be committed |
 | `.eval/`, `.em-review/`, `.security-review/` | raw review artifacts and scratch | verdict *decisions* go to the KB store; the raw reports don't |
 | `.tp-work/` | parallel workers' worktrees | vehicles, not cargo — work merges via `tp/<task>` branches |
-| `plan/`, `specs/` | the contract SOURCE (per-task scope, tests, deps) and authored specs | these MAY stay in the repo if you want them version-controlled; they carry no generated artifacts |
+| `plan/`, `specs/`, `design/` | authored requirement, proposed-HOW Design Contract/visual, and implementation-plan sources | these MAY stay in the repo if you want them version-controlled; the loop treats them as its own evidence rather than product-code diff |
 
 `.taskplane/` self-ignores via its own `.gitignore`; `tp init` adds the
 rest to the repo-root `.gitignore` (idempotent). On a team plan the gitignore
@@ -110,6 +110,18 @@ each other's in-flight loop.
 whole store (including loop state) is forced in-repo so the next session
 resumes the loop by cloning the branch. There the state machine travels with
 the work precisely because the sandbox is discarded between sessions.
+
+### Design state and evidence
+
+`loop.json` records `design_required`, `design_only`, the baseline graph
+fingerprint captured on entry to Design, and the approved evidence fingerprint.
+The proposed HOW itself lives in `design/contract.json` (schema
+`taskplane.design/v1`) with the human narrative in `design/design.md` and an
+optional `design/visual.html`. Approval fingerprints exactly those files.
+Changing them later makes Plan, Evaluate, and Review fail closed until the
+loop returns through Design and receives a new human approval. Proposed graph
+edges remain an overlay in the contract; the persistent as-built graph is not
+changed during Design.
 
 ## Migration from an in-repo knowledge base
 

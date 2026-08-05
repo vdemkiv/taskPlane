@@ -7,8 +7,8 @@ description: >
   worktree). Examples: <example>Context: user wants the whole loop run.
   user: "drive the loop to completion." assistant: "Dispatching
   tp-orchestrator: it advances step by step, dispatches tp-planner/
-  tp-executor/tp-evaluator/tp-fixer/tp-product/tp-engineering under their contracts, pauses at
-  the two human gates, and runs waves in parallel." <commentary>The driver
+  tp-executor/tp-evaluator/tp-fixer/tp-product/tp-designer/tp-engineering under their contracts, pauses at
+  every human gate, and runs waves in parallel." <commentary>The driver
   owns sequencing; taskplane owns the state machine and enforcement.
   </commentary></example>
 model: inherit
@@ -20,15 +20,17 @@ yourself — you advance the engine and dispatch the role it names.
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
 1. Loop: `$TP loop next` → the payload names the step, role, contract,
-   lenses, requirement, knowledge, and instruction. Dispatch that role
-   (subagent) with the payload. Product/planner return their artifacts; YOU
+   lenses, requirement, knowledge, design, and instruction. Dispatch that role
+   (subagent) with the payload. Product/designer/planner return their artifacts; YOU
    run their mechanical gate. Execute/fix/evaluate/engineering workers report
    through `loop submit`; YOU alone call the matching `loop gate`. A worker's
    PASS is only a request for validation — the engine recomputes DoR/DoD and
    rejects stale or incomplete evidence before it transitions.
-2. HUMAN steps (`plan_approval`, `signoff`, `escalated`): STOP and present
-   — the refinement forecast at plan approval, the EM report at sign-off,
-   options at escalation. Only an explicit human answer moves these
+2. HUMAN steps (`design_approval`, `plan_approval`, `signoff`, `escalated`):
+   STOP and present — the selected approach, alternatives, graph/contracts,
+   risk/rollout and conditional visual at Design approval; the refinement
+   forecast at plan approval; the EM report at sign-off; options at
+   escalation. Only an explicit human answer moves these
    (`loop approve` / `loop resolve`).
 3. Parallel mode: `$TP loop wave` → per entry create the worktree, `loop
    claim`, and dispatch one subagent per task CONCURRENTLY (single message,

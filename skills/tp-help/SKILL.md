@@ -24,8 +24,9 @@ Explain conversationally (adapt to what they asked; don't dump everything):
 **The mental model (30 seconds).** Agents are fast; taskplane makes them
 accountable. Every agent works inside a Task Contract — what files it may
 touch, which tools it may use, which commands are denied — enforced by a
-hook BEFORE actions run, not by trust. Work flows through a loop with two
-human gates (plan approval, final sign-off), every step is reviewed by
+hook BEFORE actions run, not by trust. Complex work can add a read-only Design
+phase with its own human approval before Plan; delivery still stops at plan
+approval and final sign-off. Every step is reviewed by
 context-chosen lenses, and everything learned lands in a knowledge base so
 the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
@@ -37,26 +38,32 @@ only the orchestrator can ask the engine to advance a stage.
    (`tp onboard`) and shows an onboarding dashboard that walks you through
    connecting a folder, putting it under git, and initializing taskplane —
    so you're never staring at a blank slate wondering where to point it.
-1. `taskplane build <goal>` in a connected folder — sets the project up on first run,
+1. `taskplane design <goal>` — turns a refined requirement and current code
+   into alternatives plus an approvable Design Contract: modules, dependency
+   overlay, named contracts, bounded depth, risks/rollout, validation map, and
+   a useful technical visual when one helps. It changes no product code.
+2. `taskplane build <goal>` in a connected folder — sets the project up on first run,
    then: requirement → refinement score + forecast → plan → THEIR approval →
    governed build (parallel if tasks are independent) → lens reviews →
    engineering synthesis → THEIR sign-off → retro.
-2. `taskplane review <target>` — read-only full-lens review with dependency
+3. `taskplane review <target>` — read-only full-lens review with dependency
    impact and requirement/contract evidence.
-3. `taskplane status` anytime — where things stand and who's waiting on whom.
+4. `taskplane status` anytime — where things stand and who's waiting on whom.
 
 Power-user routes remain available:
 
-4. `/tp-product` — the WHAT seat: author/refine/score requirements,
+5. `/tp-product` — the WHAT seat: author/refine/score requirements,
    change requests, product decisions and debt.
-5. `/tp-engineering` — the SOUND seat: read-only review with the full
+6. `/tp-design` — the proposed HOW seat: compare approaches, declare the
+   dependency/contract shape and Design DoR/DoD, then stop for approval.
+7. `/tp-engineering` — the SOUND seat: read-only review with the full
    lens catalog (architecture & system design always on), impact,
    verdicts, retro, sign-off recommendation.
-6. `/tp-northstar` — the STRATEGY lens, summoned on demand: measures a
+8. `/tp-northstar` — the STRATEGY lens, summoned on demand: measures a
    task/diff/idea against the project's north star and returns one advisory
    note (alignment + Leverage · Reversibility · Opportunity cost · Coherence).
    Never a gate.
-7. `/tp-build` — new features: a north-star check + spec refinement first, visual mock
+9. `/tp-build` — new features: a north-star check + spec refinement first, visual mock
    before building, optional A/B variants with a human selection gate.
 
 **When they ask "what if the agent goes rogue":** show, don't tell — an
@@ -64,11 +71,12 @@ out-of-scope write or a denied command (`git push`) gets blocked with a
 reason and traced to `.taskplane/trace.jsonl`. That block message is the
 product working.
 
-**The normal surface is three prompts.** Specialist skills below are aliases
+**The normal surface is four prompts.** Specialist skills below are aliases
 for people who want direct control:
 
 | Say | Command | Does |
 |---|---|---|
+| "design X" / "compare approaches for X" | `taskplane design …` | the proposed HOW: alternatives, approved Design Contract, dependency/contract overlay, Design DoR/DoD, conditional technical visual; no product-code changes |
 | "build X" / "set up taskplane" / anything | `taskplane build …` | the whole governed loop — routes internally as needed |
 | "spec this" / "refine the requirement" / "change request" | `/tp-product` | the WHAT seat: requirements, scores, product decisions |
 | "new feature" / "prototype this" / "build it as A/B variants" | `/tp-build` | a north-star check + refinement first, visual mock before build, A/B variants with a selection gate |
@@ -77,12 +85,15 @@ for people who want direct control:
 | "where are we" | `taskplane status` | concise progress, current harness state, and decisions needed |
 | "how does X work" | `/tp-help` | this tour + concept explainers |
 
-**Two seats, one bar.** tp-product asks "does it deliver the
-requirement?"; tp-engineering asks "is it sound?" — deliberately separate
-so definition is never graded by its own author. Both apply the same lens
-catalog, and architecture & system design is always on — every code
-change gets at least a light pass, because system shape is governance,
-not taste. Neither seat edits code — that's the loop's job.
+**Four responsibilities, one bar.** Product defines the WHAT. Design proposes
+the HOW before code. Build realizes an approved plan/design. Engineering
+Review judges whether the result is sound and conformant. These boundaries
+prevent authors from approving their own output. All use the same lens
+catalog; architecture & system design is always on and the distinct
+solution-design lens tests the coherence and implementability of a proposed
+approach. Every code change gets at least a light architecture pass because
+system shape is governance, not taste. Product, Design, and Review do not edit
+product code; Build does so only under its approved contract.
 
 Concepts on request (don't dump): gates → `references/gates.md`;
 contracts → `references/contracts.md`; roles & the PM handoff →

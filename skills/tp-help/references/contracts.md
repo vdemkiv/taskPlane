@@ -21,6 +21,12 @@ taskplane proxy running a local Claude Code session — see the project README.)
 
 ## Workflow
 
+An approved `taskplane.design/v1` contract is a separate upstream contract:
+it constrains the proposed HOW, graph boundaries, named interfaces, rollout,
+and validation evidence. The task contract below constrains an individual
+implementation step. When both exist, the task scope may refine but must not
+silently contradict or omit the approved Design Contract.
+
 ### 1 — Open a contract (before doing the work)
 
 Ask the user, or infer from their request: what may this task touch, what is
