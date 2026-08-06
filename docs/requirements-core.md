@@ -139,6 +139,6 @@ requirement ─▶ refine (score + NFR-lens coverage + forecast)  ← spend effo
 - `suggest_mode()`, `estimate_cost()`, and tracked `record_debt()`.
 - CLI: `tp req new | score | mode | debt | list`. 13 tests (43 total green).
 
-**Next (loop wiring):** call the refinement `gate()` at the plan→execute
-boundary so the forecast shows before a build starts, and anchor each task to
-its `R-id`.
+**Shipped (loop wiring):** the refinement `gate()` runs at the plan-approval
+boundary — the forecast shows before a build starts — and each task anchors to
+its `R-id` (the acceptance criteria become that task's DoD).

@@ -198,6 +198,7 @@ class TestHigh1FailedPlanGate(unittest.TestCase):
     def test_failed_plan_gate_stays_at_plan(self):
         ws = git_ws(self.tmp, with_tasks=False)  # planner produced nothing
         loop.init(ws, "add feature")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         loop.gate(ws, "pass")                    # pm -> plan
         r = loop.gate(ws, "fail", note="planner failed")
         self.assertIn("error", r)
@@ -208,6 +209,7 @@ class TestHigh1FailedPlanGate(unittest.TestCase):
         # Directly guards loop.py:_step_contract task['id'] on None.
         ws = git_ws(self.tmp)
         loop.init(ws, "g")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         st = loop.load(ws)
         st["step"] = "execute"
         st["tasks"] = []
@@ -219,6 +221,7 @@ class TestHigh1FailedPlanGate(unittest.TestCase):
     def test_passing_plan_still_advances(self):
         ws = git_ws(self.tmp)                     # real tasks.json present
         loop.init(ws, "g")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         loop.gate(ws, "pass")                     # pm -> plan
         loop.gate(ws, "pass")                     # plan -> plan_approval
         self.assertEqual(loop.load(ws)["step"], "plan_approval")

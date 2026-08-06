@@ -31,6 +31,7 @@ class DesignWorkflowTest(unittest.TestCase):
                        check=True)
         self.old_home = os.environ.get("TASKPLANE_HOME")
         os.environ["TASKPLANE_HOME"] = self.home
+        os.environ.pop("TASKPLANE_STORE", None)
         self.req = reqs.record_requirement(
             self.ws, "add design flow",
             functional=["users can design before build"],

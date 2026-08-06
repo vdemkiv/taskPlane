@@ -133,7 +133,11 @@ def module_of(relpath: str) -> str:
             if tuple(parts[i:i + len(marker)]) == marker:
                 pkg = parts[i + len(marker):]
                 if pkg:
-                    return "/".join(pkg[-2:])
+                    # M1 (v2.2.1): a two-segment tail collapsed distinct
+                    # packages sharing their last two segments (com/a/svc/db
+                    # and com/b/svc/db both -> svc/db). Three segments keep
+                    # the disambiguating parent while staying group-id-free.
+                    return "/".join(pkg[-3:])
     # last source-root marker in the path
     root_i = None
     for i, p in enumerate(parts):
@@ -573,8 +577,8 @@ def record_edge(ws: str, src: str, dst: str, kind: str = "runtime",
         raise ValueError("confidence must be high, medium, or low")
     e = {"from": src, "to": dst, "kind": kind, "note": note,
          "recorded": True, "source": "recorded", "confidence": confidence}
-    same = lambda x: (x.get("from"), x.get("to"), x.get("kind")) == \
-        (src, dst, kind)
+    def same(x):
+        return (x.get("from"), x.get("to"), x.get("kind")) == (src, dst, kind)
     g["recorded"] = [x for x in g.get("recorded", []) if not same(x)] + [e]
     g["edges"] = [x for x in g.get("edges", []) if not same(x)] + [e]
     for x in (src, dst):
@@ -605,6 +609,11 @@ def modules_for_scope(scope_globs) -> list:
         mods.add(module_of(prefix) if "." in os.path.basename(prefix)
                  else module_of(prefix + "/_"))
     return sorted(mods)
+
+
+def req_node(rid: str) -> str:
+    """Public requirement-node id (L15, v2.2.1)."""
+    return _req_node(rid)
 
 
 def _req_node(rid: str) -> str:
@@ -672,6 +681,36 @@ def product_impact(ws: str, changed_files) -> dict:
 _DISTRIBUTED_TYPES = {"distributed", "system-design", "service", "migration"}
 
 
+def contract_ids(source) -> list:
+    """Canonical contract-id extraction (M6, v2.2.1). Accepts a task/record
+    dict (reads its `contracts`) or a raw contracts list; entries may be
+    plain ids or {id: ...} rows. One implementation, everywhere."""
+    rows = source.get("contracts") if isinstance(source, dict) else source
+    out = []
+    for row in rows or []:
+        cid = row.get("id") if isinstance(row, dict) else row
+        cid = str(cid or "").strip()
+        if cid:
+            out.append(cid)
+    return out
+
+
+def normalize_policy(policy: dict | None) -> dict:
+    """Coerce a policy's depths to safe ints and its boundary to a known
+    mode (M2, v2.2.1) — consumers trust this output instead of re-coercing."""
+    p = dict(policy or {})
+    for key, default, minimum in (("local_depth", 3, 1),
+                                  ("contract_depth", 1, 0),
+                                  ("requirement_depth", 1, 0)):
+        try:
+            p[key] = max(minimum, int(p.get(key, default)))
+        except (TypeError, ValueError):
+            p[key] = default
+    if p.get("boundary_mode") not in ("contract-only", "stop", "expand"):
+        p["boundary_mode"] = "contract-only"
+    return p
+
+
 def impact_policy(task: dict | None = None) -> dict:
     """Resolve the task's typed dependency-depth policy.
 
@@ -689,7 +728,33 @@ def impact_policy(task: dict | None = None) -> dict:
         "requirement_depth": 2 if task.get("high_cost") else 1,
     }
     base.update(supplied)
-    return base
+    return normalize_policy(base)
+
+
+def aggregate_impact_policy(tasks) -> dict:
+    """One fail-closed review radius for a multi-task final review."""
+    policies = [impact_policy(t) for t in (tasks or [])]
+    if not policies:
+        return impact_policy({})
+    boundary_rank = {"stop": 0, "contract-only": 1, "expand": 2}
+    boundary = max(
+        (p.get("boundary_mode", "contract-only") for p in policies),
+        key=lambda value: boundary_rank.get(value, 1))
+    def number(policy, key, default, minimum):
+        try:
+            return max(minimum, int(policy.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "local_depth": max(number(p, "local_depth", 3, 1)
+                           for p in policies),
+        "boundary_mode": boundary,
+        "contract_depth": max(number(p, "contract_depth", 1, 0)
+                              for p in policies),
+        "requirement_depth": max(number(p, "requirement_depth", 1, 0)
+                                 for p in policies),
+    }
 
 
 def readiness(ws: str, tasks) -> dict:
@@ -708,37 +773,36 @@ def readiness(ws: str, tasks) -> dict:
                 "warnings": [], "tasks": [], "graph": {}}
     for task in tasks or []:
         tid = task.get("id", "?")
+        supplied = dict(task.get("impact_policy") or {})
         policy = impact_policy(task)
-        if policy.get("boundary_mode") not in ("contract-only", "stop", "expand"):
+        if supplied.get("boundary_mode") not in (None, "contract-only",
+                                                 "stop", "expand"):
             errors.append(f"task {tid}: invalid graph boundary_mode")
-        try:
-            local_depth = int(policy.get("local_depth", 0))
-            contract_depth = int(policy.get("contract_depth", 0))
-            requirement_depth = int(policy.get("requirement_depth", 0))
-        except (TypeError, ValueError):
-            local_depth = contract_depth = requirement_depth = 0
-        if local_depth < 1 or contract_depth < 0 or requirement_depth < 0:
-            errors.append(f"task {tid}: invalid dependency depth policy")
+        for _k in ("local_depth", "contract_depth", "requirement_depth"):
+            if _k in supplied:
+                try:
+                    int(supplied[_k])
+                except (TypeError, ValueError):
+                    errors.append(
+                        f"task {tid}: invalid dependency depth policy")
+                    break
         mods = modules_for_scope(task.get("scope") or [])
         unknown = sorted(m for m in mods if m not in g.get("modules", {}))
         declared_new = set(task.get("new_modules") or [])
         undeclared_unknown = sorted(set(unknown) - declared_new)
         distributed = task.get("type") in _DISTRIBUTED_TYPES
         contracts = list(task.get("contracts") or [])
-        contract_ids = [(c.get("id") if isinstance(c, dict) else c)
-                        for c in contracts]
-        contract_ids = [str(c or "").strip() for c in contract_ids
-                        if str(c or "").strip()]
+        task_contract_ids = contract_ids(task)
         if distributed and not contracts:
             errors.append(f"task {tid}: distributed/system work must declare "
                           "its API, event, data, trust, or runtime contracts")
-        invalid_contracts = sorted(c for c in contract_ids
+        invalid_contracts = sorted(c for c in task_contract_ids
                                    if not c.startswith(("contract:",
                                                         "resource:")))
         if invalid_contracts:
             errors.append(f"task {tid}: contract ids need contract: or "
                           "resource: prefixes: " + ", ".join(invalid_contracts))
-        missing_contracts = sorted(c for c in contract_ids
+        missing_contracts = sorted(c for c in task_contract_ids
                                    if c not in g.get("modules", {}))
         if missing_contracts:
             errors.append(f"task {tid}: contracts are not recorded in the "

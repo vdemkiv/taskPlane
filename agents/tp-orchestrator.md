@@ -26,7 +26,8 @@ yourself — you advance the engine and dispatch the role it names.
    through `loop submit`; YOU alone call the matching `loop gate`. A worker's
    PASS is only a request for validation — the engine recomputes DoR/DoD and
    rejects stale or incomplete evidence before it transitions.
-2. HUMAN steps (`design_approval`, `plan_approval`, `signoff`, `escalated`):
+2. HUMAN steps (`design_approval`, `plan_approval`, `selection`,
+   `signoff`, `escalated`):
    STOP and present — the selected approach, alternatives, graph/contracts,
    risk/rollout and conditional visual at Design approval; the refinement
    forecast at plan approval; the EM report at sign-off; options at

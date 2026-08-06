@@ -66,6 +66,7 @@ class TestSafeRemove(unittest.TestCase):
     def test_gate_advances_on_no_unlink_mount(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         with _deny_unlink():
             out = loop.gate(ws, "pass")       # pm -> plan calls tp.clear
         self.assertNotIn("error", out)
@@ -86,6 +87,7 @@ class TestDispatchQueue(unittest.TestCase):
     def test_loop_next_records_expectation(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         loop.next_action(ws)                  # pm brief
         q = tp._load_queue(tp._dispatch_path(ws, "expected_dispatch.json"))
         self.assertTrue(q)
@@ -194,6 +196,7 @@ class TestStatuses(unittest.TestCase):
 
     def _seed(self, ws, statuses):
         loop.init(ws, "g", parallel=True)
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         st = loop.load(ws)
         st["step"] = "execute"
         st["tasks"] = [
@@ -220,6 +223,7 @@ class TestStatuses(unittest.TestCase):
     def test_resolve_defer_sets_external(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         st = loop.load(ws)
         st.update({"step": "escalated", "current_task": 0,
                    "tasks": [{"id": "t1", "scope": ["src/**"],
@@ -232,6 +236,7 @@ class TestStatuses(unittest.TestCase):
     def test_bad_decision_lists_defer(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         st = loop.load(ws)
         st.update({"step": "escalated",
                    "tasks": [{"id": "t1", "status": "running"}],

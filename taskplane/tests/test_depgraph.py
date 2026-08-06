@@ -177,10 +177,18 @@ class TestCSharpJavaRuby(unittest.TestCase):
           "import java.util.List;\n"
           "import org.springframework.web.bind.annotation.RestController;\n"
           "public class Api {}\n")
+        # M1 (v2.2.1): three-segment package tails keep colliding packages
+        # (a/svc/db vs b/svc/db) distinct in the graph.
+        w(self.ws, "src/main/java/com/acme/svc/db/A.java",
+          "package com.acme.svc.db;\npublic class A {}\n")
+        w(self.ws, "src/main/java/org/other/svc/db/B.java",
+          "package org.other.svc.db;\npublic class B {}\n")
         g = dg.scan(self.ws)
         pairs = {(e["from"], e["to"]) for e in g["edges"]}
-        self.assertIn(("shop/api", "shop/data"), pairs)
-        self.assertIn(("shop/api", "ext:org.springframework.web"), pairs)
+        self.assertIn(("com/shop/api", "com/shop/data"), pairs)
+        self.assertIn(("com/shop/api", "ext:org.springframework.web"), pairs)
+        self.assertIn("acme/svc/db", g["modules"])
+        self.assertIn("other/svc/db", g["modules"])   # no collapse
         self.assertFalse(any(t.startswith("ext:com.shop")
                              for _, t in pairs))
         self.assertFalse(any(t.startswith("ext:java") for _, t in pairs))

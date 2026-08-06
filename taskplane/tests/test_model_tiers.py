@@ -145,6 +145,7 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
     def test_plan_step_payload_has_model_fields(self):
         ws = self._git_ws()
         loop.init(ws, "add a feature")     # free-text -> pm
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         loop.gate(ws, "pass")              # pm -> plan
         out = loop.next_action(ws)
         self.assertEqual(out["step"], "plan")
@@ -159,6 +160,7 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
                               "criteria": ["done"], "model": "cheap"}]},
                   open(os.path.join(ws, "plan", "tasks.json"), "w"))
         loop.init(ws, "simple mechanical change")
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
         loop.gate(ws, "pass")              # pm -> plan
         loop.gate(ws, "pass")              # plan -> plan_approval
         loop.approve(ws)                   # -> execute

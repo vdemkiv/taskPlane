@@ -44,7 +44,11 @@ human should watch, not a black box that ends in a report. So:
    generated dashboard artifact. The person sees every
    lens-agent about to run, in parallel, read-only.
 2. Dispatch the agents.
-3. AFTER they land, MERGE every lens's findings into `$TP findings` and
+3. AFTER they land, re-run `$TP lens dispatch --base <ref> --all --dashboard`
+   and render it again — lane status now derives from each lens's
+   findings.json (v2.2.1), so the human SEES the completed fan-out with
+   per-lens counts instead of trusting your narration. Then MERGE every
+   lens's findings into `$TP findings` and
    render THAT. Two renders minimum — the wave forming, then the findings
    — never a single dashboard dumped at the very end. (For a big wave you
    may render an intermediate wave board as agents report.)
@@ -105,7 +109,9 @@ into "part i/n" when a tier is large). Then:
 1. Relay the `HEADLINE:` line to the human as plain text FIRST — this is the
    never-skippable carrier of the numbers, so the decision data lands even if
    a render fails.
-2. With an inline widget tool, render once **per page, in order**, each with a
+2. With an inline widget tool, render once **per page, in order, VERBATIM**
+   — the engine's html byte-for-byte; editing, restyling, or re-authoring a
+   page violates the render contract even when it "improves" it — each with a
    unique title. Without one, save and link every ordered page as an artifact.
    Do NOT collapse pages into one giant widget or replace them with a recap.
 3. If a page errors, retry it once, then fall back to delivering the written

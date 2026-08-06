@@ -126,7 +126,9 @@ class TestApproveBy(_RepoStore):
         loop.approve(self.ws)
         ev = [e for e in self._trace() if e.get("event") == "loop_approve"]
         self.assertTrue(ev)
-        self.assertIsNone(ev[-1].get("by"))   # detectable self-approval
+        # v2.2.1 (L5): an anonymous pass is RECORDED as unattributed —
+        # still detectable as self-approval, now explicit in the trail.
+        self.assertEqual(ev[-1].get("by"), "(unattributed)")
 
     def test_cli_accepts_by_flag(self):
         self._park_at_plan_approval()

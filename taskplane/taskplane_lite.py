@@ -652,9 +652,18 @@ def workspace_fingerprint(workspace: str, snapshot_ref: str | None = None,
     submitted it.  Deleted paths and git metadata-only changes are represented
     explicitly; untracked files are included through ``changed_files``.
     """
+    if not snapshot_ref:
+        # L13 (v2.2.1): a None baseline used to hash to a CONSTANT,
+        # silently disabling tamper detection. Fall back to git HEAD;
+        # a workspace with neither has no attestable baseline.
+        snapshot_ref = git_head(workspace)
+        if not snapshot_ref:
+            raise ValueError(
+                "workspace_fingerprint needs a baseline: no contract "
+                "snapshot and no git HEAD — commit first")
     h = hashlib.sha256()
-    h.update((snapshot_ref or "NO-SNAPSHOT").encode("utf-8"))
-    files = changed_files(workspace, snapshot_ref) if snapshot_ref else []
+    h.update(snapshot_ref.encode("utf-8"))
+    files = changed_files(workspace, snapshot_ref)
     # Runtime-owned paths are deliberately excluded from source-scope DoD,
     # but evaluator/EM evidence must still be immutable between submit and
     # gate. Callers name those exact artifacts here; reject absolute/traversal

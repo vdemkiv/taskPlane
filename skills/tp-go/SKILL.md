@@ -80,7 +80,8 @@ After each `loop next`, `loop submit`, `loop gate`, `loop wave`, and
 plain text, always: it is the never-skippable carrier of step + gate +
 lens/graph coverage, so the status lands even if a render is skipped. For an
 unusually large board use `$TP dashboard --paged` (ordered ≤14 KB pages) and
-render EACH page in order via `show_widget` — never collapse them into one
+render EACH page in order via `show_widget`, each page's html VERBATIM
+(no edits, restyling, or re-authoring) — never collapse them into one
 giant widget and never replace them with a prose recap. The loop board's
 **context tab shows the full lens catalog** (sourced from `catalog.json`, so
 a newly added lens appears automatically) and the **graph tab shows blast

@@ -234,16 +234,24 @@ class TestEngineReleasesOnGate(unittest.TestCase):
                         "commit", "-qm", "i"], cwd=ws)
         return ws
 
-    def test_gate_clears_contract_on_both_outcomes(self):
+    def test_gate_clears_contract_on_pass_keeps_on_governed_retry(self):
+        # v2.2.1 (H4): a rejected pm gate stays AT pm under its contract —
+        # same governed-retry semantics as design/plan rejects. Only an
+        # advancing gate releases the step contract.
         import loop as loopmod
-        for outcome in ("pass", "fail"):
-            ws = self._loop_ws()
-            loopmod.init(ws, "goal", checkpoints=[])
-            loopmod.next_action(ws)                  # activates step contract
-            cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
-            self.assertTrue(os.path.exists(cpath), outcome)
-            loopmod.gate(ws, outcome)
-            self.assertFalse(os.path.exists(cpath), outcome)
+        ws = self._loop_ws()
+        loopmod.init(ws, "goal", checkpoints=[])
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True)
+        open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        loopmod.next_action(ws)                  # activates step contract
+        cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
+        self.assertTrue(os.path.exists(cpath))
+        out = loopmod.gate(ws, "fail")
+        self.assertIn("error", out)              # stays at pm, governed
+        self.assertEqual(loopmod.load(ws)["step"], "pm")
+        self.assertTrue(os.path.exists(cpath))   # retry stays under contract
+        loopmod.gate(ws, "pass")
+        self.assertFalse(os.path.exists(cpath))  # advancing gate releases
 
 
 class TestBareRootRefusal(unittest.TestCase):

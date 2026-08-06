@@ -72,7 +72,8 @@ STEP_ROLE = {
     "fix": "tp-fixer",
     "em": "tp-engineering",
 }
-HUMAN_STEPS = {"design_approval", "plan_approval", "selection", "signoff", "escalated",
+HUMAN_STEPS = {"design_approval", "plan_approval", "selection",
+               "signoff", "escalated",
                "done", "failed"}
 
 # A task is SETTLED when nothing further is owed on it: it passed, or the
@@ -627,10 +628,21 @@ def next_action(ws: str) -> dict:
         tws = (_current_task(state) or {}).get("workspace")
         act_ws = tws if tws and os.path.isdir(tws) else ws
 
-    if step == "design" and not state.get("design_graph_fingerprint"):
-        state["design_graph_fingerprint"] = (
-            depgraph.load(ws).get("meta") or {}).get("content_fingerprint")
-        save(ws, state)
+    if step == "design" and not state.get("design_approved"):
+        # H3 (v2.2.1): until the design is human-approved, the graph
+        # baseline follows the CURRENT scan — capturing once from a stale
+        # graph and then blocking on "rescan" left the stored fingerprint
+        # permanently mismatched (the engine's own remedy deadlocked the
+        # step). A pre-approval rescan re-baselines, with a trace.
+        current_fp = (depgraph.load(ws).get("meta") or {}).get(
+            "content_fingerprint")
+        if state.get("design_graph_fingerprint") != current_fp:
+            if state.get("design_graph_fingerprint"):
+                tp.trace(ws, "design_rebaseline",
+                         old=(state["design_graph_fingerprint"] or "")[:12],
+                         new=(current_fp or "")[:12])
+            state["design_graph_fingerprint"] = current_fp
+            save(ws, state)
 
     contract = _step_contract(step, state)
     snapshot = tp.git_head(act_ws)
@@ -652,6 +664,7 @@ def next_action(ws: str) -> dict:
                 "dor": {"ready": False, "blockers": blockers,
                         "warnings": warnings},
                 "status": status(ws)}
+
     # The graph is an input to evaluation, not a cache refreshed only after
     # review.  Serial work and the final merged-tree review can safely refresh
     # the shared graph here. Parallel task worktrees are deliberately deferred
@@ -667,6 +680,7 @@ def next_action(ws: str) -> dict:
             if state.get("graph_governance"):
                 return {"error": f"graph true-up failed before {step}: {exc}",
                         "step": step, "status": status(ws)}
+            tp.trace(ws, "graph_refresh_failed", step=step, error=str(exc))
     elif step == "evaluate" and not state.get("parallel"):
         try:
             depgraph.scan(ws)
@@ -674,6 +688,7 @@ def next_action(ws: str) -> dict:
             if state.get("graph_governance"):
                 return {"error": f"graph refresh failed before {step}: {exc}",
                         "step": step, "status": status(ws)}
+            tp.trace(ws, "graph_refresh_failed", step=step, error=str(exc))
     tp.activate(act_ws, contract, snapshot=snapshot)
 
     # Inject the handful of prior decisions relevant to this step's work, so
@@ -751,7 +766,7 @@ def next_action(ws: str) -> dict:
             # and which requirements depend on the affected ones.
             prod = depgraph.product_impact(ws, changed)
             own = (task or {}).get("req") or state.get("requirement_id")
-            own = depgraph._req_node(own) if own else None
+            own = depgraph.req_node(own) if own else None
             imp["affected_requirements"] = [
                 r for r in prod["affected_requirements"] if r != own]
             imp["dependent_requirements"] = prod["dependent_requirements"]
@@ -846,10 +861,7 @@ def next_action(ws: str) -> dict:
         "design_graph": ({
             "baseline_fingerprint": state.get("design_graph_fingerprint"),
             "summary": depgraph.summary(ws),
-            "policy": {"local_depth": 3,
-                       "boundary_mode": "contract-only",
-                       "contract_depth": 1,
-                       "requirement_depth": 1},
+            "policy": depgraph.impact_policy({}),
             "rule": "propose modules and edges in design/contract.json; "
                     "do not mutate the as-built graph during Design"
         } if step == "design" else None),
@@ -917,489 +929,40 @@ def _instruction(step: str, state: dict) -> str:
     }[step]
 
 
-def _read_json(path: str) -> tuple[dict | None, list]:
-    try:
-        with open(path) as f:
-            value = json.load(f)
-    except FileNotFoundError:
-        return None, [f"required evidence missing: {path}"]
-    except (OSError, ValueError) as exc:
-        return None, [f"invalid evidence {path}: {exc}"]
-    if not isinstance(value, dict):
-        return None, [f"invalid evidence {path}: root must be an object"]
-    return value, []
+# Design Contract validation lives in design_contract.py (v2.2.1) — thin
+# delegates keep loop's internal API stable for callers and tests.
+import design_contract as _dc
 
-
-# --------------------------------------------------------------- design
-
-DESIGN_SCHEMA = "taskplane.design/v1"
-DESIGN_CONTRACT = os.path.join("design", "contract.json")
-DESIGN_NARRATIVE = os.path.join("design", "design.md")
-
-
-def _design_path(ws: str, rel: str) -> str:
-    return os.path.join(ws, rel)
-
-
-def _design_contract(ws: str) -> tuple[dict | None, list]:
-    return _read_json(_design_path(ws, DESIGN_CONTRACT))
-
-
-def _design_safe_rel(rel) -> str | None:
-    rel = str(rel or "").replace("\\", "/").strip()
-    if (not rel or os.path.isabs(rel) or rel == ".."
-            or rel.startswith("../") or "/../" in rel
-            or not rel.startswith("design/")):
-        return None
-    return rel
-
-
-def _design_evidence_paths(ws: str, contract: dict | None = None) -> list:
-    paths = [DESIGN_CONTRACT, DESIGN_NARRATIVE]
-    contract = contract or (_design_contract(ws)[0] or {})
-    visual = contract.get("visualization") or {}
-    if visual.get("required"):
-        rel = _design_safe_rel(visual.get("path"))
-        if rel:
-            paths.append(rel)
-    return paths
-
-
-def _design_evidence_fingerprint(ws: str,
-                                 contract: dict | None = None) -> str:
-    """Fingerprint exactly the approved design evidence, not source code."""
-    h = hashlib.sha256()
-    for rel in sorted(set(_design_evidence_paths(ws, contract))):
-        h.update(b"\0path\0")
-        h.update(rel.encode("utf-8", errors="surrogateescape"))
-        try:
-            with open(_design_path(ws, rel), "rb") as f:
-                h.update(f.read())
-        except OSError:
-            h.update(b"\0MISSING\0")
-    return h.hexdigest()
-
-
-def _design_current_errors(ws: str, state: dict) -> list:
-    if not state.get("design_required") or not state.get("design_fingerprint"):
-        return []
-    contract, errors = _design_contract(ws)
-    if errors:
-        return ["approved design is unavailable: " + e for e in errors]
-    current = _design_evidence_fingerprint(ws, contract)
-    if current != state.get("design_fingerprint"):
-        return ["approved design evidence changed after approval — return to "
-                "Design and obtain a new human approval"]
-    return []
-
-
-def _design_dor(ws: str, state: dict) -> dict:
-    """Entry gate for the proposed-HOW phase."""
-    blockers, warnings = [], []
-    rid = state.get("requirement_id")
-    rec = reqs.get_requirement(ws, rid) if rid else None
-    if not rid:
-        blockers.append("Design must be anchored to a requirement R-id")
-    elif rec is None:
-        blockers.append(f"Design requirement {rid} does not exist")
-    else:
-        if not rec.get("acceptance"):
-            blockers.append("Design requirement has no acceptance criteria")
-        if rec.get("open_questions"):
-            blockers.append("Design requirement has unresolved questions: "
-                            + "; ".join(rec["open_questions"]))
-    graph = depgraph.load(ws)
-    meta = graph.get("meta") or {}
-    if not meta.get("content_fingerprint"):
-        blockers.append("baseline dependency graph is missing — run graph scan")
-    elif meta.get("scanned_head") and meta.get("scanned_head") != tp.git_head(ws):
-        blockers.append("baseline dependency graph is stale for the current HEAD")
-    if not graph.get("modules"):
-        warnings.append("baseline graph has no source modules; treat this as "
-                        "greenfield and declare every proposed module")
-    if not kb.current_state(ws):
-        warnings.append("current-state inventory is empty; ground the design "
-                        "in cited repository sources and the baseline graph")
-    return {"ready": not blockers, "blockers": blockers,
-            "warnings": warnings}
-
-
-def _design_dod_errors(ws: str, state: dict) -> list:
-    """Mechanical Design Contract completion and graph-isolation proof."""
-    contract, errors = _design_contract(ws)
-    if errors:
-        return errors
-    assert contract is not None
-
-    def text(value) -> bool:
-        return bool(str(value or "").strip())
-
-    def object_field(name: str) -> dict:
-        value = contract.get(name)
-        if not isinstance(value, dict):
-            errors.append(f"design {name} must be an object")
-            return {}
-        return value
-
-    def text_list(value) -> bool:
-        return (isinstance(value, list) and bool(value)
-                and all(text(item) for item in value))
-
-    if contract.get("schema") != DESIGN_SCHEMA:
-        errors.append(f"design schema must be {DESIGN_SCHEMA}")
-    if contract.get("requirement") != state.get("requirement_id"):
-        errors.append("design requirement does not match the loop requirement")
-    for field in ("title", "summary", "decision"):
-        if not text(contract.get(field)):
-            errors.append(f"design {field} is missing")
-
-    current = object_field("current_state")
-    if not text(current.get("summary")) or not text_list(current.get("sources")):
-        errors.append("design current_state needs a summary and cited sources")
-
-    alternatives = contract.get("alternatives") or []
-    if not isinstance(alternatives, list) or len(alternatives) < 2:
-        errors.append("design must compare at least two approaches")
-        alternatives = []
-    alt_ids = set()
-    for alt in alternatives:
-        if not isinstance(alt, dict):
-            errors.append("every design alternative must be an object")
-            continue
-        aid = str(alt.get("id") or "").strip()
-        if not aid or aid in alt_ids:
-            errors.append("design alternatives need unique non-empty ids")
-        alt_ids.add(aid)
-        trade = alt.get("tradeoffs")
-        if not isinstance(trade, dict):
-            trade = {}
-        if (not text(alt.get("name")) or not text(alt.get("description"))
-                or not text_list(trade.get("gains"))
-                or not text_list(trade.get("costs"))
-                or not text(trade.get("revisit_when"))):
-            errors.append(f"alternative {aid or '?'} needs description, "
-                          "gains, costs, and revisit_when")
-    if contract.get("selected_approach") not in alt_ids:
-        errors.append("selected_approach does not name a declared alternative")
-
-    modules = object_field("modules")
-    declared_modules = {str(x).strip() for x in
-                        list(modules.get("existing") or [])
-                        + list(modules.get("new") or []) if str(x).strip()}
-    if not declared_modules:
-        errors.append("design modules must name existing or new modules")
-
-    contracts = contract.get("contracts") or []
-    if not isinstance(contracts, list):
-        errors.append("design contracts must be a list")
-        contracts = []
-    contract_ids = set()
-    for row in contracts:
-        if not isinstance(row, dict) or not text(row.get("id")) \
-                or not text(row.get("relation")) \
-                or not text(row.get("description")):
-            errors.append("every design contract needs relation, id, and description")
-            continue
-        if row.get("relation") not in ("provides", "consumes", "changes"):
-            errors.append("design contract relation must be provides, consumes, or changes")
-        contract_ids.add(str(row["id"]))
-    rec = reqs.get_requirement(ws, state.get("requirement_id"))
-    required_contracts = {
-        str(row.get("id") if isinstance(row, dict) else row)
-        for row in ((rec or {}).get("contracts") or [])
-        if str(row.get("id") if isinstance(row, dict) else row).strip()
-    }
-    missing_contracts = sorted(required_contracts - contract_ids)
-    if missing_contracts:
-        errors.append("design omits requirement contracts: "
-                      + ", ".join(missing_contracts))
-
-    graph = object_field("graph")
-    current_fp = (depgraph.load(ws).get("meta") or {}).get(
-        "content_fingerprint")
-    baseline_fp = state.get("design_graph_fingerprint")
-    if not baseline_fp:
-        errors.append("design graph baseline was not captured by the engine")
-    if current_fp != baseline_fp:
-        errors.append("as-built graph changed during Design; proposed edges "
-                      "must remain an overlay")
-    if graph.get("baseline_fingerprint") != baseline_fp:
-        errors.append("design graph does not cite the captured baseline fingerprint")
-    proposed_modules = {str(x).strip() for x in
-                        (graph.get("proposed_modules") or []) if str(x).strip()}
-    if not proposed_modules:
-        errors.append("design graph has no proposed_modules")
-    if not declared_modules <= proposed_modules:
-        errors.append("design graph does not include every declared module")
-    edges = graph.get("proposed_edges")
-    if not isinstance(edges, list):
-        errors.append("design graph proposed_edges must be a list")
-        edges = []
-    known = set((depgraph.load(ws).get("modules") or {})) | proposed_modules
-    edge_nodes = set()
-    for edge in edges:
-        if not isinstance(edge, dict):
-            errors.append("every proposed graph edge must be an object")
-            continue
-        for end in ("from", "to"):
-            node = str(edge.get(end) or "").strip()
-            if not node:
-                errors.append(f"proposed graph edge is missing {end}")
-            elif node not in known and not node.startswith(
-                    ("contract:", "resource:", "svc:", "ext:")):
-                errors.append(f"proposed graph edge has undeclared node: {node}")
-            else:
-                edge_nodes.add(node)
-        if not text(edge.get("kind")) or not text(edge.get("reason")):
-            errors.append("proposed graph edges need kind and reason")
-    if contract_ids - edge_nodes:
-        errors.append("design contracts are missing from the proposed graph: "
-                      + ", ".join(sorted(contract_ids - edge_nodes)))
-    policy = graph.get("depth_policy")
-    if not isinstance(policy, dict):
-        errors.append("design graph depth_policy must be an object")
-        policy = {}
-    try:
-        local_depth = int(policy.get("local_depth"))
-        contract_depth = int(policy.get("contract_depth"))
-        requirement_depth = int(policy.get("requirement_depth"))
-    except (TypeError, ValueError):
-        local_depth = contract_depth = requirement_depth = -1
-    if not 1 <= local_depth <= 10:
-        errors.append("design graph local_depth must be between 1 and 10")
-    if policy.get("boundary_mode") not in ("stop", "contract-only", "expand"):
-        errors.append("design graph boundary_mode is invalid")
-    if contract_depth < 0 or requirement_depth < 0:
-        errors.append("design graph contract/requirement depth must be non-negative")
-    if policy.get("boundary_mode") == "contract-only" and contract_depth > 1:
-        errors.append("contract-only design may traverse only one contract level")
-    for field in ("dor", "dod"):
-        rows = graph.get(field)
-        if not isinstance(rows, list) or not rows:
-            errors.append(f"design graph {field} checks are missing")
-            continue
-        for row in rows:
-            if not isinstance(row, dict) or not text(row.get("check")) \
-                    or not text(row.get("evidence")):
-                errors.append(f"every graph {field} check needs check and evidence")
-
-    criteria = list((rec or {}).get("acceptance") or [])
-    mapping = contract.get("acceptance_map") or []
-    if not isinstance(mapping, list):
-        errors.append("design acceptance_map must be a list")
-        mapping = []
-    mapped = [row.get("criterion") for row in mapping
-              if isinstance(row, dict)]
-    for criterion in criteria:
-        rows = [row for row in mapping if isinstance(row, dict)
-                and row.get("criterion") == criterion]
-        if len(rows) != 1 or not text(rows[0].get("design_element")) \
-                or not text(rows[0].get("validation")):
-            errors.append("acceptance criterion lacks one complete design mapping: "
-                          + criterion)
-    extras = sorted({str(x) for x in mapped if x not in criteria})
-    if extras:
-        errors.append("design maps unknown acceptance criteria: "
-                      + ", ".join(extras))
-
-    for field, required in (("risks", ("risk", "mitigation", "owner")),
-                            ("failure_modes", ("mode", "detection", "recovery"))):
-        rows = contract.get(field)
-        if not isinstance(rows, list) or not rows:
-            errors.append(f"design {field} evidence is missing")
-            continue
-        for row in rows:
-            if not isinstance(row, dict) or any(not text(row.get(k))
-                                                for k in required):
-                errors.append(f"every {field} row needs " + ", ".join(required))
-    observability = object_field("observability")
-    if not text_list(observability.get("signals")):
-        errors.append("design observability signals are missing")
-    if not text_list(observability.get("alerts")):
-        errors.append("design observability alerts or an explicit none rationale are missing")
-    rollout = object_field("rollout")
-    if not text(rollout.get("strategy")) or not text(rollout.get("rollback")):
-        errors.append("design rollout needs strategy and rollback")
-
-    visual = object_field("visualization")
-    if not isinstance(visual.get("required"), bool):
-        errors.append("design visualization.required must be boolean")
-    elif visual.get("required"):
-        rel = _design_safe_rel(visual.get("path"))
-        if visual.get("kind") not in (
-                "dependency-graph", "sequence", "state-transition",
-                "data-flow", "ui-flow") or not rel:
-            errors.append("required design visualization needs kind and safe design/ path")
-        elif not os.path.isfile(_design_path(ws, rel)) \
-                or os.path.getsize(_design_path(ws, rel)) == 0:
-            errors.append("required design visualization is missing or empty")
-    elif not text(visual.get("reason")):
-        errors.append("skipped design visualization needs a reason")
-
-    lens_evidence = contract.get("lens_evidence") or []
-    if not isinstance(lens_evidence, list):
-        errors.append("design lens_evidence must be a list")
-        lens_evidence = []
-    evidence = [row for row in lens_evidence
-                if isinstance(row, dict)
-                and row.get("lens") == "solution-design"]
-    try:
-        solution_blockers = int(evidence[0].get("blockers") or 0) \
-            if len(evidence) == 1 else -1
-    except (TypeError, ValueError):
-        solution_blockers = -1
-    if (len(evidence) != 1 or evidence[0].get("verdict") != "pass"
-            or solution_blockers != 0
-            or not text(evidence[0].get("evidence"))):
-        errors.append("solution-design lens must pass with evidence and no blockers")
-    if not isinstance(contract.get("open_questions"), list):
-        errors.append("design open_questions must be a list")
-    elif contract.get("open_questions"):
-        errors.append("design has unresolved open_questions")
-    try:
-        with open(_design_path(ws, DESIGN_NARRATIVE), encoding="utf-8") as f:
-            if not f.read().strip():
-                errors.append("design narrative is empty")
-    except OSError:
-        errors.append("design narrative is missing: " + DESIGN_NARRATIVE)
-    return errors
-
-
-def _design_plan_errors(ws: str, state: dict) -> list:
-    """Approved Design Contract → implementation plan conformance."""
-    errors = _design_current_errors(ws, state)
-    if errors or not state.get("design_required"):
-        return errors
-    contract, read_errors = _design_contract(ws)
-    if read_errors:
-        return read_errors
-    assert contract is not None
-    tasks = state.get("tasks") or []
-    planned_modules = set()
-    planned_contracts = set()
-    planned_edges = set()
-    for task in tasks:
-        planned_modules.update(depgraph.modules_for_scope(task.get("scope") or []))
-        planned_modules.update(str(x) for x in (task.get("new_modules") or []))
-        for row in task.get("contracts") or []:
-            cid = row.get("id") if isinstance(row, dict) else row
-            if str(cid or "").strip():
-                planned_contracts.add(str(cid))
-        for row in task.get("design_edges") or []:
-            if isinstance(row, dict):
-                planned_edges.add(
-                    f"{row.get('from')}->{row.get('to')}:{row.get('kind')}")
-            elif str(row or "").strip():
-                planned_edges.add(str(row))
-    graph = contract.get("graph") or {}
-    expected_modules = {str(x) for x in graph.get("proposed_modules") or []}
-    missing_modules = sorted(expected_modules - planned_modules)
-    if missing_modules:
-        errors.append("approved design modules are not covered by the plan: "
-                      + ", ".join(missing_modules))
-    expected_contracts = {
-        str(row.get("id") if isinstance(row, dict) else row)
-        for row in contract.get("contracts") or []
-    }
-    missing_contracts = sorted(expected_contracts - planned_contracts)
-    if missing_contracts:
-        errors.append("approved design contracts are not covered by the plan: "
-                      + ", ".join(missing_contracts))
-    expected_edges = {
-        f"{row.get('from')}->{row.get('to')}:{row.get('kind')}"
-        for row in graph.get("proposed_edges") or [] if isinstance(row, dict)
-    }
-    missing_edges = sorted(expected_edges - planned_edges)
-    if missing_edges:
-        errors.append("approved design edges are not covered by the plan: "
-                      + ", ".join(missing_edges))
-    planned_policy = _aggregate_impact_policy(tasks)
-    expected_policy = graph.get("depth_policy") or {}
-    ranks = {"stop": 0, "contract-only": 1, "expand": 2}
-    if (planned_policy.get("local_depth", 0)
-            < int(expected_policy.get("local_depth", 0) or 0)
-            or planned_policy.get("contract_depth", 0)
-            < int(expected_policy.get("contract_depth", 0) or 0)
-            or planned_policy.get("requirement_depth", 0)
-            < int(expected_policy.get("requirement_depth", 0) or 0)
-            or ranks.get(planned_policy.get("boundary_mode"), 1)
-            < ranks.get(expected_policy.get("boundary_mode"), 1)):
-        errors.append("plan dependency depth policy is narrower than the "
-                      "approved design depth policy")
-    return errors
-
-
-def _design_review_errors(ws: str, state: dict, meta: dict) -> list:
-    """Approved design → final as-built review evidence."""
-    errors = _design_current_errors(ws, state)
-    if errors or not state.get("design_required") or state.get("design_only"):
-        return errors
-    evidence = meta.get("design")
-    if not isinstance(evidence, dict):
-        return ["engineering review is missing approved-design conformance evidence"]
-    if evidence.get("fingerprint") != state.get("design_fingerprint"):
-        errors.append("engineering review uses the wrong design fingerprint")
-    if evidence.get("verdict") != "conformant":
-        errors.append("engineering review reports design drift; return to Design "
-                      "and re-plan before sign-off")
-    for field in ("modules_checked", "edges_checked", "contracts_checked",
-                  "drift"):
-        if not isinstance(evidence.get(field), list):
-            errors.append(f"engineering design evidence {field} must be a list")
-    contract, _ = _design_contract(ws)
-    graph = (contract or {}).get("graph") or {}
-    expected_modules = {str(x) for x in graph.get("proposed_modules") or []}
-    as_built = depgraph.load(ws)
-    actual_modules = set(as_built.get("modules") or {})
-    unrealized_modules = expected_modules - actual_modules
-    if unrealized_modules:
-        errors.append("as-built graph is missing designed modules: "
-                      + ", ".join(sorted(unrealized_modules)))
-    checked_modules = {str(x) for x in evidence.get("modules_checked") or []} \
-        if isinstance(evidence.get("modules_checked"), list) else set()
-    if expected_modules - checked_modules:
-        errors.append("engineering review did not check every designed module: "
-                      + ", ".join(sorted(expected_modules - checked_modules)))
-    expected_edges = {
-        f"{row.get('from')}->{row.get('to')}:{row.get('kind')}"
-        for row in graph.get("proposed_edges") or [] if isinstance(row, dict)
-    }
-    actual_edges = {
-        f"{row.get('from')}->{row.get('to')}:{row.get('kind')}"
-        for row in as_built.get("edges") or [] if isinstance(row, dict)
-    }
-    unrealized_edges = expected_edges - actual_edges
-    if unrealized_edges:
-        errors.append("as-built graph is missing designed edges: "
-                      + ", ".join(sorted(unrealized_edges)))
-    checked_edges = {str(x) for x in evidence.get("edges_checked") or []} \
-        if isinstance(evidence.get("edges_checked"), list) else set()
-    if expected_edges - checked_edges:
-        errors.append("engineering review did not check every designed edge: "
-                      + ", ".join(sorted(expected_edges - checked_edges)))
-    expected_contracts = {
-        str(row.get("id") if isinstance(row, dict) else row)
-        for row in (contract or {}).get("contracts") or []
-    }
-    unrealized_contracts = expected_contracts - actual_modules
-    if unrealized_contracts:
-        errors.append("as-built graph is missing designed contracts: "
-                      + ", ".join(sorted(unrealized_contracts)))
-    checked_contracts = {str(x) for x in evidence.get("contracts_checked") or []} \
-        if isinstance(evidence.get("contracts_checked"), list) else set()
-    if expected_contracts - checked_contracts:
-        errors.append("engineering review did not check every designed contract: "
-                      + ", ".join(sorted(expected_contracts - checked_contracts)))
-    if isinstance(evidence.get("drift"), list) and evidence.get("drift"):
-        errors.append("engineering review contains unexplained design drift")
-    return errors
+_read_json = _dc.read_json
+DESIGN_SCHEMA = _dc.DESIGN_SCHEMA
+DESIGN_CONTRACT = _dc.DESIGN_CONTRACT
+DESIGN_NARRATIVE = _dc.DESIGN_NARRATIVE
+_design_path = _dc.design_path
+_design_contract = _dc.design_contract
+_design_safe_rel = _dc.design_safe_rel
+_design_evidence_paths = _dc.design_evidence_paths
+_design_evidence_fingerprint = _dc.design_evidence_fingerprint
+_design_current_errors = _dc.design_current_errors
+_design_dor = _dc.design_dor
+_design_dod_errors = _dc.design_dod_errors
+_design_plan_errors = _dc.design_plan_errors
+_design_review_errors = _dc.design_review_errors
 
 
 def _design_context(ws: str, state: dict) -> dict | None:
     if not state.get("design_required"):
         return None
     contract, errors = _design_contract(ws)
-    return {"approved": bool(state.get("design_fingerprint")),
+    approved = bool(state.get("design_fingerprint"))
+    stale = _design_current_errors(ws, state) if approved else []
+    if stale:
+        # M8 (v2.2.1): an approved design whose artifacts changed after
+        # approval is NOT served as approved — the same staleness the
+        # gates enforce is reported in every brief that carries it.
+        approved = False
+        errors = list(errors or []) + stale
+    return {"approved": approved,
+            "stale": bool(stale) or None,
             "fingerprint": state.get("design_fingerprint"),
             "contract": contract, "errors": errors}
 
@@ -1421,33 +984,17 @@ def _criteria_for(ws: str, state: dict, task: dict) -> list:
 
 
 def _aggregate_impact_policy(tasks) -> dict:
-    """One fail-closed review radius for a multi-task final review."""
-    policies = [depgraph.impact_policy(t) for t in (tasks or [])]
-    if not policies:
-        return depgraph.impact_policy({})
-    boundary_rank = {"stop": 0, "contract-only": 1, "expand": 2}
-    boundary = max(
-        (p.get("boundary_mode", "contract-only") for p in policies),
-        key=lambda value: boundary_rank.get(value, 1))
-    def number(policy, key, default, minimum):
-        try:
-            return max(minimum, int(policy.get(key, default)))
-        except (TypeError, ValueError):
-            return default
-
-    return {
-        "local_depth": max(number(p, "local_depth", 3, 1)
-                           for p in policies),
-        "boundary_mode": boundary,
-        "contract_depth": max(number(p, "contract_depth", 1, 0)
-                              for p in policies),
-        "requirement_depth": max(number(p, "requirement_depth", 1, 0)
-                                 for p in policies),
-    }
+    return depgraph.aggregate_impact_policy(tasks)
 
 
-def _plan_dor_errors(ws: str, state: dict) -> list:
-    """Definition of Ready for implementation, derived from the plan."""
+def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
+    """Definition of Ready for implementation, derived from the plan.
+
+    M3 (v2.2.1): a Ready CHECK must not mutate. With apply=False
+    (default) this is pure — it inspects and reports. Only the plan
+    GATE passes apply=True, which merges requirement contracts into
+    tasks, records requirement/contract edges, resolves each task's
+    impact policy, and stores the graph DoR verdict on the state."""
     errors = []
     for task in state.get("tasks") or []:
         prefix = f"task {task.get('id', '?')}: "
@@ -1466,32 +1013,33 @@ def _plan_dor_errors(ws: str, state: dict) -> list:
             merged_contracts, seen_contracts = [], set()
             for contract in list(rec.get("contracts") or []) + \
                     list(task.get("contracts") or []):
-                contract_id = (contract.get("id")
-                               if isinstance(contract, dict) else contract)
-                contract_id = str(contract_id or "").strip()
-                if contract_id and contract_id not in seen_contracts:
+                cids = depgraph.contract_ids([contract])
+                cid = cids[0] if cids else ""
+                if cid and cid not in seen_contracts:
                     merged_contracts.append(contract)
-                    seen_contracts.add(contract_id)
-            task["contracts"] = merged_contracts
+                    seen_contracts.add(cid)
+            if apply:
+                task["contracts"] = merged_contracts
             for dep in rec.get("depends_on") or []:
                 if reqs.get_requirement(ws, dep) is None:
                     errors.append(prefix + f"requirement dependency {dep} "
                                   "does not exist")
-                else:
+                elif apply:
                     # Requirements are the source of truth. Reconcile their
                     # product edges before graph Ready instead of depending on
                     # a particular CLI path having populated the derived map.
                     depgraph.link_requirement_dep(ws, rid, dep)
-            for contract in rec.get("contracts") or []:
-                contract_id = (contract.get("id")
-                               if isinstance(contract, dict) else contract)
-                relation = (contract.get("relation", "changes")
-                            if isinstance(contract, dict) else "changes")
-                if str(contract_id or "").strip():
-                    depgraph.record_edge(
-                        ws, depgraph._req_node(rid), str(contract_id),
-                        kind=relation, confidence="high")
-        task["impact_policy"] = depgraph.impact_policy(task)
+            if apply:
+                for contract in rec.get("contracts") or []:
+                    cids = depgraph.contract_ids([contract])
+                    relation = (contract.get("relation", "changes")
+                                if isinstance(contract, dict) else "changes")
+                    if cids:
+                        depgraph.record_edge(
+                            ws, depgraph.req_node(rid), cids[0],
+                            kind=relation, confidence="high")
+        if apply:
+            task["impact_policy"] = depgraph.impact_policy(task)
         if rid and task.get("high_cost"):
             if rec is None:
                 errors.append(prefix + f"requirement {rid} does not exist")
@@ -1499,7 +1047,8 @@ def _plan_dor_errors(ws: str, state: dict) -> list:
                 errors.append(prefix + "requirement has unresolved questions: "
                               + "; ".join(rec["open_questions"]))
     graph_dor = depgraph.readiness(ws, state.get("tasks") or [])
-    state["graph_dor"] = graph_dor
+    if apply:
+        state["graph_dor"] = graph_dor
     errors.extend("graph DoR: " + e for e in graph_dor.get("errors") or [])
     errors.extend("design DoR: " + e for e in _design_plan_errors(ws, state))
     return errors
@@ -1598,7 +1147,7 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
             prod = depgraph.product_impact(ws,
                                            graph_dod.get("realized_modules") or [])
             own = task.get("req") or state.get("requirement_id")
-            own = depgraph._req_node(own) if own else None
+            own = depgraph.req_node(own) if own else None
             affected = sorted(r for r in prod.get("affected_requirements") or []
                               if r != own)
             needs_graph_evidence = bool(
@@ -1721,6 +1270,13 @@ def submit(ws: str, outcome: str, note: str = "",
            task_id: str | None = None) -> dict:
     """Worker submission — evidence request, never a state transition.
 
+    Trust boundary (L12, v2.2.1): "orchestrator-only gating" is a PROTOCOL
+    guarantee, not a process-isolation one — any process with workspace
+    access can call gate(). What holds mechanically is the EVIDENCE: a gate
+    only advances when the fingerprinted submission matches the bytes on
+    disk, so a worker gating itself still cannot pass unproven work. Gate
+    calls are traced for after-the-fact attribution.
+
     The engine, not the worker, computes the changed paths and fingerprint.
     The orchestrator subsequently calls ``gate``; if anything changed between
     submission and validation, the gate rejects the stale evidence.  Repeating
@@ -1732,13 +1288,26 @@ def submit(ws: str, outcome: str, note: str = "",
         return {"error": "no active loop"}
     step = state.get("step")
     if step not in ("execute", "fix", "evaluate", "em"):
-        return {"error": f"step '{step}' is not a worker submission step"}
+        return {"error": f"step '{step}' is not a worker submission step — "
+                         "run `loop next` to see the current role and "
+                         "instruction; submissions happen at execute/fix/"
+                         "evaluate/em"}
     if outcome not in ("pass", "fail"):
         return {"error": "submission outcome must be pass or fail"}
 
     task = _current_task(state)
     act_ws = ws
     parallel_execute = step == "execute" and state.get("parallel")
+    if not parallel_execute and task_id and \
+            task_id != (task or {}).get("id"):
+        # H1 (v2.2.1): outside a parallel EXECUTE wave the engine evaluates
+        # ONE current task — silently dropping a mismatched --task would
+        # record this worker's evidence against a different task.
+        return {"error": f"--task {task_id} does not match the current "
+                         f"task '{(task or {}).get('id')}' at step "
+                         f"'{step}' — a wave worker submits only during "
+                         "parallel EXECUTE; otherwise omit --task or "
+                         "pass the current task's id"}
     if parallel_execute:
         task = next((x for x in state.get("tasks") or []
                      if x.get("id") == task_id), None)
@@ -1776,24 +1345,22 @@ def submit(ws: str, outcome: str, note: str = "",
     with mutate(ws) as locked:
         if locked is None:
             return {"error": "no active loop"}
+        def _same(existing):
+            return existing and all(
+                existing.get(k) == submission.get(k)
+                for k in ("step", "task", "outcome", "fingerprint"))
         if parallel_execute:
             target = next((x for x in locked.get("tasks") or []
                            if x.get("id") == task_id), None)
             if target is None:
                 return {"error": f"no task {task_id}"}
-            existing = target.get("_submission")
-            if existing and all(existing.get(k) == submission.get(k)
-                                for k in ("step", "task", "outcome",
-                                          "fingerprint")):
-                submission = existing
+            if _same(target.get("_submission")):
+                submission = target["_submission"]
             else:
                 target["_submission"] = submission
         else:
-            existing = locked.get("_submission")
-            if existing and all(existing.get(k) == submission.get(k)
-                                for k in ("step", "task", "outcome",
-                                          "fingerprint")):
-                submission = existing
+            if _same(locked.get("_submission")):
+                submission = locked["_submission"]
             else:
                 locked["_submission"] = submission
     tp.trace(ws, "loop_submit", step=step, task=submission.get("task"),
@@ -1901,6 +1468,35 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
         return {"step": "execute", "task": task_id, "built": True,
                 "still_running": running, "status": status(ws)}
 
+    # H4 (v2.2.1): the pm gate was the one fail-open step — it advanced with
+    # no spec and no submission. Symmetric minimal DoD: the authored
+    # requirement must exist before the loop leaves Define.
+    if step == "pm":
+        if outcome != "pass":
+            tp.trace(ws, "loop_gate", step=step, outcome="rejected",
+                     note=note or "pm rejected — staying at pm")
+            return {"error": "pm gate: outcome was not 'pass' — refine the "
+                             "requirement/spec, then gate again",
+                    "step": "pm", "status": status(ws)}
+        spec_rel = state.get("spec_path") or os.path.join("specs", "spec.md")
+        spec_abs = spec_rel if os.path.isabs(spec_rel) \
+            else os.path.join(ws, spec_rel)
+        has_req = bool(state.get("requirement_id"))
+        if not has_req and not (os.path.isfile(spec_abs)
+                                and os.path.getsize(spec_abs) > 0):
+            tp.trace(ws, "loop_gate_blocked", step=step, reason="dod",
+                     errors=["no spec"])
+            return {"error": "pm Definition of Done failed — no requirement "
+                             "was authored. Write a non-empty specs/spec.md "
+                             "(or record a requirement with `tp req new` and "
+                             "attach its R-id), then gate again.",
+                    "step": "pm",
+                    "dod": {"passed": False,
+                            "errors": [f"{spec_rel} missing or empty and no "
+                                       "requirement_id is attached — the pm "
+                                       "step authors the WHAT before the "
+                                       "loop advances"]}}
+
     # Validate the proposed HOW while its read-only contract is active. The
     # designer cannot self-certify or mutate the as-built graph; a complete
     # contract advances only to the human approval gate.
@@ -1940,7 +1536,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                              "no tasks — the plan exists only as words. "
                              "Write plan/tasks.json (+ plan/plan.md for the "
                              "human), then gate again."}
-        dor_errors = _plan_dor_errors(ws, state)
+        dor_errors = _plan_dor_errors(ws, state, apply=True)
         if dor_errors:
             tp.trace(ws, "loop_gate_blocked", step=step, reason="dor",
                      errors=dor_errors)
@@ -1995,74 +1591,107 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
 
     tp.clear(act_ws)
     tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note)
-    state.pop("_submission", None)
 
-    if step == "pm":
-        state["step"] = ("design" if state.get("design_required") else "plan")
-    elif step == "design":
-        state["step"] = "design_approval"
-    elif step == "plan":
-        # Product↔engineering graph, PLANNED side: link each task's
-        # requirement to the modules its scope intends to touch, then
-        # annotate the task with its blast radius (engineering) and any
-        # OTHER requirements whose surface it overlaps (product). The
-        # human approves the plan seeing both; the executor's contract
-        # briefing carries them; evaluation compares against them later.
-        _annotate_plan_graph(ws, state)
-        state["step"] = ("plan_approval" if "plan" in state["checkpoints"]
-                         else "execute")
-        state["current_task"] = 0
-        if state["step"] == "execute":
-            state["baseline"] = tp.git_head(ws)
-    elif step == "execute":
-        # a build always goes to evaluate; a FAILED build is flagged so
-        # evaluate FAILs and routes to fix/escalate — one place owns the fail
-        # policy (so the step transition itself is unconditional).
-        state["step"] = "evaluate"
-        if outcome != "pass":
-            state["_build_failed"] = True
-    elif step == "evaluate":
-        t = _current_task(state)
-        build_failed = state.pop("_build_failed", False) or \
-            t.pop("_build_failed", False)
-        if outcome == "pass" and not build_failed:
-            t["status"] = "passed"
-            # After the LAST task: A/B loops pause at the human SELECTION
-            # gate (variants never merge — one gets picked) — but only
-            # ONCE; a post-selection fix cycle goes back to the review.
-            after_last = ("selection" if state.get("ab")
-                          and not state.get("selection") else "em")
-            if state.get("parallel"):
-                # merge is the driver's job (instruction), state just moves on
-                if all(x.get("status") in SETTLED
-                       for x in state["tasks"]):
-                    state["step"] = after_last
+    # H2 (v2.2.1): validation above ran on a snapshot and can take seconds
+    # (tests, evidence, graph). Apply the transition under the state LOCK to
+    # a FRESH read, so a wave worker's concurrent update to another task is
+    # never clobbered by saving this stale snapshot wholesale. Fields the
+    # VALIDATION itself computed on the snapshot (loaded plan tasks, graph
+    # DoR) are carried over explicitly.
+    _validated = state
+    with mutate(ws) as state:
+        if state is None:
+            return {"error": "no active loop"}
+        if state.get("step") != step:
+            return {"error": f"loop advanced to '{state.get('step')}' while "
+                             "this gate was validating — run loop next and "
+                             "gate again", "step": state.get("step")}
+        if _validated.get("tasks") and not state.get("tasks"):
+            state["tasks"] = _validated["tasks"]
+        if step == "plan":
+            # plan validation recomputed these on the snapshot via
+            # _load_tasks: loaded tasks, the ab flag, the round-scoped
+            # selection reset, and the graph DoR verdict.
+            if _validated.get("tasks"):
+                state["tasks"] = _validated["tasks"]
+            if "ab" in _validated:
+                state["ab"] = _validated["ab"]
+            if "parallel" in _validated:
+                state["parallel"] = _validated["parallel"]
+            if "selection" not in _validated:
+                state.pop("selection", None)
+            if "graph_dor" in _validated:
+                state["graph_dor"] = _validated["graph_dor"]
+        elif "design_graph_fingerprint" in _validated and \
+                "design_graph_fingerprint" not in state:
+            state["design_graph_fingerprint"] = \
+                _validated["design_graph_fingerprint"]
+        state.pop("_submission", None)
+        if step == "pm":
+            state["step"] = ("design" if state.get("design_required") else "plan")
+        elif step == "design":
+            state["step"] = "design_approval"
+        elif step == "plan":
+            # Product↔engineering graph, PLANNED side: link each task's
+            # requirement to the modules its scope intends to touch, then
+            # annotate the task with its blast radius (engineering) and any
+            # OTHER requirements whose surface it overlaps (product). The
+            # human approves the plan seeing both; the executor's contract
+            # briefing carries them; evaluation compares against them later.
+            _annotate_plan_graph(ws, state)
+            state["step"] = ("plan_approval" if "plan" in state["checkpoints"]
+                             else "execute")
+            state["current_task"] = 0
+            if state["step"] == "execute":
+                state["baseline"] = tp.git_head(ws)
+        elif step == "execute":
+            # a build always goes to evaluate; a FAILED build is flagged so
+            # evaluate FAILs and routes to fix/escalate — one place owns the fail
+            # policy (so the step transition itself is unconditional).
+            state["step"] = "evaluate"
+            if outcome != "pass":
+                state["_build_failed"] = True
+        elif step == "evaluate":
+            t = _current_task(state)
+            build_failed = state.pop("_build_failed", False) or \
+                t.pop("_build_failed", False)
+            if outcome == "pass" and not build_failed:
+                t["status"] = "passed"
+                # After the LAST task: A/B loops pause at the human SELECTION
+                # gate (variants never merge — one gets picked) — but only
+                # ONCE; a post-selection fix cycle goes back to the review.
+                after_last = ("selection" if state.get("ab")
+                              and not state.get("selection") else "em")
+                if state.get("parallel"):
+                    # merge is the driver's job (instruction), state just moves on
+                    if all(x.get("status") in SETTLED
+                           for x in state["tasks"]):
+                        state["step"] = after_last
+                    else:
+                        state["step"] = "execute"   # next wave / next built task
                 else:
-                    state["step"] = "execute"   # next wave / next built task
+                    # serial: advance to the next UNSETTLED task, skipping any the
+                    # skip-cascade already closed (else a dependency-failed task
+                    # gets silently built and shipped).
+                    nxt = _next_unsettled_index(state, state["current_task"])
+                    if nxt is not None:
+                        state["current_task"] = nxt
+                        state["step"] = "execute"
+                    else:
+                        state["step"] = after_last
             else:
-                # serial: advance to the next UNSETTLED task, skipping any the
-                # skip-cascade already closed (else a dependency-failed task
-                # gets silently built and shipped).
-                nxt = _next_unsettled_index(state, state["current_task"])
-                if nxt is not None:
-                    state["current_task"] = nxt
-                    state["step"] = "execute"
+                t["fix_cycles"] = t.get("fix_cycles", 0) + 1
+                if t["fix_cycles"] <= state["max_fix_cycles"]:
+                    state["step"] = "fix"
                 else:
-                    state["step"] = after_last
-        else:
-            t["fix_cycles"] = t.get("fix_cycles", 0) + 1
-            if t["fix_cycles"] <= state["max_fix_cycles"]:
-                state["step"] = "fix"
-            else:
-                t["status"] = "failed"
-                state["step"] = "escalated"
-    elif step == "fix":
-        state["step"] = "evaluate"
-    elif step == "em":
-        # The graph was true-d up before the EM brief, so its fingerprint is
-        # part of the evidence being gated rather than a post-review mutation.
-        state["step"] = "signoff"
-    save(ws, state)
+                    t["status"] = "failed"
+                    state["step"] = "escalated"
+        elif step == "fix":
+            state["step"] = "evaluate"
+        elif step == "em":
+            # The graph was true-d up before the EM brief, so its fingerprint is
+            # part of the evidence being gated rather than a post-review mutation.
+            state["step"] = "signoff"
     return {"step": state["step"], "status": status(ws)}
 
 
@@ -2130,7 +1759,7 @@ def _annotate_plan_graph(ws: str, state: dict) -> None:
             or depgraph.impact_policy(t)) if \
             depgraph.load(ws)["modules"] else None
         prod = depgraph.product_impact(ws, mods)
-        own = depgraph._req_node(rid) if rid else None
+        own = depgraph.req_node(rid) if rid else None
         shared = [r for r in prod["affected_requirements"] if r != own]
         t["blast"] = {
             "modules": mods,
@@ -2212,6 +1841,16 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         return {"error": "no active loop"}
     step = state["step"]
     refinement = None
+    attestation_warning = None
+    if not str(by or "").strip() and step in ("plan_approval", "signoff"):
+        # L5 (v2.2.1): symmetric attestation. Design approval hard-requires
+        # --by; these two gates stay compatible but an anonymous pass is
+        # RECORDED as unattributed and warned — not silently equivalent.
+        by = "(unattributed)"
+        attestation_warning = (f"{step} passed without --by — record WHO "
+                               "approved (name + where) for an attributable "
+                               "gate trail")
+        tp.trace(ws, "loop_approve_unattributed", gate=step)
     if step == "design_approval":
         if not str(by or "").strip():
             return {"error": "design approval needs --by with the human's "
@@ -2296,6 +1935,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
     out = {"step": state["step"], "status": status(ws)}
     if refinement:
         out["refinement"] = refinement
+    if attestation_warning:
+        out["warning"] = attestation_warning
     return out
 
 
@@ -2617,7 +2258,7 @@ def status(ws: str) -> dict:
     return out
 
 
-def user_summary(ws: str) -> dict:
+def user_summary(ws: str, host: str | None = None) -> dict:
     """Human control-plane read model over the existing durable artifacts.
 
     It intentionally does not replace loop.json, findings, graph, or trace.
@@ -2642,9 +2283,11 @@ def user_summary(ws: str) -> dict:
     action = decisions.get(step)
     current = _current_task(state)
     graph = depgraph.summary(ws)
-    host = ("codex" if os.environ.get("CODEX_HOME")
-            or os.environ.get("CODEX_THREAD_ID") else
-            "claude-tag" if tp.store_env() == "repo" else "claude")
+    # M10 (v2.2.1): host is injectable — ambient env detection is only the
+    # default, so the control-plane surface is testable deterministically.
+    host = host or ("codex" if os.environ.get("CODEX_HOME")
+                    or os.environ.get("CODEX_THREAD_ID") else
+                    "claude-tag" if tp.store_env() == "repo" else "claude")
     assurance = ("state-and-evidence enforced; tool interception is cooperative"
                  if host == "claude-tag" else
                  "state, evidence, and tool boundaries mechanically enforced")

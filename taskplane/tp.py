@@ -834,15 +834,37 @@ def cmd_lens(a) -> int:
                                         sw.get("model"), ref="sweep")
         if getattr(a, "dashboard", False):
             import dashboard
-            lanes = [{"id": b["id"], "name": b["name"], "status": "running",
-                      "findings": None} for b in briefs["deep"]]
+
+            def _lane(lid, name):
+                # R1 (v2.2.1): status derives from the lens's findings file —
+                # deterministic, zero-token. Re-run `lens dispatch
+                # --dashboard` after agents land and the wave shows DONE
+                # lanes with counts, so the human watches the fan-out
+                # instead of trusting the driver to narrate it.
+                p = os.path.join(ws, ".em-review", f"lens-{lid}",
+                                 "findings.json")
+                if os.path.isfile(p):
+                    try:
+                        with open(p) as f:
+                            n = len(json.load(f).get("findings") or [])
+                    except (OSError, ValueError):
+                        n = None
+                    return {"id": lid, "name": name, "status": "done",
+                            "findings": n}
+                return {"id": lid, "name": name, "status": "running",
+                        "findings": None}
+
+            lanes = [_lane(b["id"], b["name"]) for b in briefs["deep"]]
             if briefs["sweep"]:
-                lanes.append({"id": "sweep", "name": "sweep", "status":
-                              "running", "findings": None})
+                lanes.append(_lane("sweep", "sweep"))
+            done = sum(1 for x in lanes if x["status"] == "done")
             print(dashboard.render_lens_wave(
-                lanes, {"title": "review — lenses running",
-                        "subtitle": f"{len(lanes)} read-only lens-agents, "
-                        f"in parallel · diff vs {briefs['base']}"}))
+                lanes, {"title": ("review — wave complete"
+                                  if done == len(lanes) else
+                                  "review — lenses running"),
+                        "subtitle": f"{done}/{len(lanes)} lens-agents "
+                        f"reported · read-only, in parallel · diff vs "
+                        f"{briefs['base']}"}))
             return 0
         print(json.dumps(briefs, indent=2))
         return 0
@@ -956,7 +978,7 @@ def cmd_req(a) -> int:
             for d in deps:
                 dg.link_requirement_dep(ws, e["id"], d)
             for contract in contracts:
-                dg.record_edge(ws, dg._req_node(e["id"]), contract["id"],
+                dg.record_edge(ws, dg.req_node(e["id"]), contract["id"],
                                kind=contract["relation"], confidence="high")
         print(json.dumps({"recorded": e["id"], "status": e["status"],
                           "depends": deps or None,
@@ -1338,6 +1360,8 @@ def cmd_summary(a) -> int:
         print(json.dumps(summary, indent=2))
         return 0
     print("taskplane: " + summary["headline"])
+    if summary.get("next") and summary.get("state") in ("not_started", "done"):
+        print("  next: " + summary["next"])
     if summary.get("goal"):
         print("  goal: " + summary["goal"])
     if summary.get("decision"):
@@ -1368,7 +1392,8 @@ def cmd_dashboard(a) -> int:
         print(json.dumps({"headline": dashboard.headline_loop(ws),
                           "pages": pages,
                           "render": "call mcp__visualize__show_widget once "
-                          "PER PAGE, in order"}, indent=2))
+                          "PER PAGE, in order, each page's html VERBATIM — "
+                          "no edits, no restyling, no re-authoring"}, indent=2))
         return 0
     print(dashboard.widget(ws))
     return 0
@@ -1422,8 +1447,10 @@ def cmd_findings(a) -> int:
                           dashboard.headline_findings(findings, meta),
                           "pages": pages,
                           "render": "call mcp__visualize__show_widget once "
-                          "PER PAGE, in order — the pages ARE the deliverable, "
-                          "do not summarize them as prose"}, indent=2))
+                          "PER PAGE, in order, each page's html VERBATIM — "
+                          "byte-for-byte, no edits, no restyling, no "
+                          "re-authoring. The pages ARE the deliverable; "
+                          "never summarize them as prose"}, indent=2))
         return 0
     frag = dashboard.render_findings(findings, meta, out=a.out)
     print(frag)

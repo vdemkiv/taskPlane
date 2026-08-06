@@ -42,8 +42,14 @@ class _Base(unittest.TestCase):
         os.environ.pop("TASKPLANE_HOME", None)
         os.environ.pop("TASKPLANE_STORE", None)
 
+    def _spec(self, ws):
+        os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
+        with open(os.path.join(ws, "specs", "spec.md"), "w") as f:
+            f.write("# spec\n")
+
     def _run_to_gate(self):
         loop.init(self.ws, "ship the export feature")
+        self._spec(self.ws)
         loop.gate(self.ws, "pass")  # pm -> plan (publishes)
         return os.path.join(tp.store_root(self.ws), "artifacts",
                             "ship-the-export-feature")
@@ -63,6 +69,7 @@ class TestTeamStorePublish(_Base):
     def test_gate_payload_names_artifacts(self):
         tp.set_mode(self.ws, plan="team")
         loop.init(self.ws, "g2")
+        self._spec(self.ws)
         out = loop.gate(self.ws, "pass")
         self.assertIn("artifacts", out)
         self.assertIn("token cache", out["artifacts"]["note"])
@@ -116,6 +123,7 @@ class TestFailOpen(_Base):
     def test_publish_failure_never_breaks_the_gate(self):
         tp.set_mode(self.ws, plan="team")
         loop.init(self.ws, "g3")
+        self._spec(self.ws)
         orig = tp.store_root
         tp.store_root = lambda w: (_ for _ in ()).throw(OSError("disk"))
         try:
