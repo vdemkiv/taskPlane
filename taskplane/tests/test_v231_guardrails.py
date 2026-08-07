@@ -7,6 +7,10 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import taskplane_lite as tp
 
+# The real repo root — never a machine-specific path (a hardcoded /tmp/... path
+# passes locally but fails on CI, where the checkout lives elsewhere).
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 def _ro():
     return tp.build_contract("review", read_only=True,
@@ -18,7 +22,7 @@ def _build():
 
 
 def _stool(contract, cmd):
-    ok, why = tp.screen_tool(contract, "Bash", {"command": cmd}, "/tmp/fix23")
+    ok, why = tp.screen_tool(contract, "Bash", {"command": cmd}, ROOT)
     return ok
 
 
@@ -57,7 +61,7 @@ def test_tp_cli_allowed_under_readonly_relative():
 
 
 def test_tp_cli_allowed_under_readonly_absolute():
-    cmd = f"python3 {os.path.join('/tmp/fix23', 'taskplane', 'tp.py')} summary"
+    cmd = f"python3 {os.path.join(ROOT, 'taskplane', 'tp.py')} summary"
     assert _stool(_ro(), cmd) is True
 
 
@@ -77,9 +81,9 @@ def test_kb_mutate_uses_file_lock():
     os.environ.setdefault("TASKPLANE_HOME", tempfile.mkdtemp())
     import kb
     d = tempfile.mkdtemp()
-    with kb.mutate("/tmp/fix23", root=d):
+    with kb.mutate(ROOT, root=d):
         pass  # must complete without a raw flock and create no leaked handle
     # the shared lock leaves either a .lock file or a cleaned .lockdir — never
     # proceeds unlocked silently; smoke: a second acquisition still works
-    with kb.mutate("/tmp/fix23", root=d):
+    with kb.mutate(ROOT, root=d):
         pass
