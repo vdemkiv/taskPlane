@@ -75,12 +75,14 @@ API/event/data/runtime boundaries with repeatable
 declare deliberately new graph modules, and use a typed impact policy.
 
 When Design is used, its graph declaration is a proposed overlay on the
-current graph, never a mutation of as-built state. Design DoR requires a
-refined requirement, current baseline graph, explicit boundary policy, and no
-blocking questions. Design DoD requires alternatives and trade-offs, a
-selected approach, modules/edges/contracts, bounded depth, graph DoR/DoD,
-acceptance-to-validation mapping, failure/rollout evidence, the mandatory
-solution-design lens, and a useful visual or an explicit reason to skip it.
+current graph, never a mutation of as-built state. Design DoR (the entry
+gate) requires a refined requirement with acceptance criteria, a current
+baseline graph, and no blocking questions. Design DoD (the exit gate, where
+the engine validates the policy) REQUIRES alternatives and trade-offs, a
+selected approach, modules/edges/contracts, bounded depth with an explicit
+boundary policy, graph DoR/DoD, acceptance-to-validation mapping,
+failure/rollout evidence, the mandatory solution-design lens, and a useful
+visual or an explicit reason to skip it.
 Approval fingerprints this evidence; Plan, Build, Evaluate, and Review cannot
 silently drift from it.
 

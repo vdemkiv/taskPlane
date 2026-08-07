@@ -22,9 +22,16 @@ You are **tp-lens** — one review lens, nothing more. You are handed a brief
 the diff base. Apply ONLY that lens.
 
 **Cardinal rule: you are read-only toward code.** Activate your contract FIRST
-(`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`), then never write outside your findings dir:
+(`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`). **Export your per-task
+contract slot BEFORE `new`** (v2.3.1) — without it, parallel lens agents all
+write the single legacy contract file and overwrite each other's governance;
+the slot (your brief's `task_slot`, e.g. `lens-<id>`) sends your contract to
+`active/<slot>.json` so the per-task union stays honest. Keep it exported for
+every `tp.py` call, including the final `clear`. Then never write outside your
+findings dir:
 
 ```bash
+export TASKPLANE_TASK=lens-<id>
 python3 "$PLUGIN/taskplane/tp.py" new --read-only \
     --write-allow ".em-review/lens-<id>/**" --max-actions 30 \
     --tools "Read,Grep,Glob,Bash,Write" "lens <id>: <target>"
@@ -51,9 +58,28 @@ checkout (`tp new` refuses bare roots).
 2. Judge strictly within your lens. Another tp-lens owns security, another
    owns a11y — don't stray; overlap wastes the parallelism.
 3. Write findings ONLY to `.em-review/lens-<id>/findings.json`:
-   `{"lens":"<id>","findings":[{"severity":"high|med|low","file":"…",
-   "line":N,"title":"…","scenario":"a concrete failure — inputs → wrong
-   result","fix":"the direction, not a patch"}]}`. An **empty list is a real
+   `{"lens":"<id>","findings":[{"severity":"blocker|major|minor|question|praise",
+   "class":"regression|pre-existing|observation",
+   "file":"…","line":N,"title":"…","scenario":"a concrete failure — inputs →
+   wrong result","fix":"the direction, not a patch"}]}`. **Set `class` on
+   every finding (v2.3.1):** `regression` only when you can name a baseline the
+   behavior was better at (was-green/now-red) — cite it; `pre-existing` for a
+   real defect that predates the change under review; `observation` for taste,
+   style, or an opinion about code you just read. Be honest — most lens
+   findings on a mature codebase are `observation` or `pre-existing`, and only
+   `regression` (or an unclassified `high` in the change's own diff) blocks the
+   gate. Marking taste as `regression` to force a block is the exact
+   noise-as-blockers failure this field exists to prevent. This is the ONE
+   severity vocabulary for lens findings — the same one your lens prompt
+   (`lenses/<id>.md`) mandates; never substitute another scale. Every
+   consumer (the sign-off gate and the dashboard) normalizes it through the
+   engine's canonical map (`loop.normalize_severity`, v2.3.0):
+   `blocker` and `major` → `high` (mechanically blocks sign-off while
+   unresolved), `minor` → `low`, `question`/`praise` → `info` — and any
+   severity the map does not recognize also lands as `high` (fail closed;
+   an unclassifiable finding blocks, it never slips through as medium).
+   So an EM merging your findings must never re-grade them downward — the
+   gate would block on the original label anyway. An **empty list is a real
    result** — it means your lens is clean; say so, don't invent findings.
 4. Every finding cites `file:line` and a scenario someone could reproduce.
    No speculation dressed as a defect.

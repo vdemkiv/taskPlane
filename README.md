@@ -50,13 +50,19 @@ explicit.
 
 ## What's new
 
+This table summarizes the three most recent releases.
+[CHANGELOG.md](CHANGELOG.md) is the authoritative, complete history — if the
+two ever disagree, the CHANGELOG wins.
+
 | Version | Highlights |
 | --- | --- |
+| **v2.3.1** | **Graph-scoped regression gate + review discipline** — each change is verified for actual regressions within its dependency-graph blast radius at the DoD gate, right away. Tier 1 runs the radius's tests at the change's baseline vs now and blocks only on a was-green-now-red test; Tier 2 flags an enforcement/public entry point changed with no covering test (how v2.3.0's CI break shipped). Reviews classify findings `regression \| pre-existing \| observation` so only real regressions (and new highs in the diff) block — a 26-lens sweep reads "N block · M to triage", not "100 issues". Opt-in via `dod.regression_gate`; degrades visibly, never crashes the gate. 768 tests. |
+| **v2.3.0** | **Fix all 122 findings from the whole-codebase 26-lens review of v2.2.1** (12 high · 57 med · 53 low) under a binding rule: **no fix reduces a guardrail** — every enforcement change is strict-or-stricter, proven by a 66-case differential battery (zero block→pass regressions) and a `TestNoLoosening` suite. Parallel agents now get per-task contract slots that fail closed to the most-restrictive union; Windows hooks and interpreter escapes (`python file.py`, `sh script.sh`) fail closed; the test suite is isolated for both runners; the EM gate maps unknown/blocker/major severities up to high. One atomic-write + never-silently-lock-free primitive backs every shared state file (graph, mode→private, tracks, meter, requirements index, loop) so a torn write fails closed with a remedy. Plus single-source versioning, `.gitignore`-aware scans, `tp gc`, and doc/CI truth-up. See CHANGELOG.md (authoritative) for the full list. 744 tests. |
 | **v2.2.1** | **Fix all 32 findings from the full 26-lens self-review of v2.2.0** (5 high · 11 med · 16 low, every severity addressed) plus 2 renderer-contract findings the human filed mid-review. Highs: worker submissions can no longer be misattributed across tasks (`--task` is validated everywhere), gate transitions apply under the state lock so a parallel wave worker's update is never clobbered, the design graph baseline re-captures after a legitimate rescan instead of deadlocking, the pm gate is fail-closed (an authored requirement must exist before Define advances), and post-approval design tampering is now pinned by tests at all four gates. Structure: Design Contract validation extracted to `design_contract.py` (loop.py −18%), policy/contract-id normalization unified in depgraph, DoR checks are pure (only the gate applies mutations). Renderer: wave-board lanes derive status from findings files so re-rendering shows the live fan-out, and paged dashboards mandate byte-for-byte verbatim rendering. Java packages no longer collapse across group ids; fingerprints never silently disable (HEAD fallback); anonymous approvals are recorded as `(unattributed)` with a warning. 477 tests. |
-| **v2.2.0** | **First-class Design before Build** — `taskplane design` turns a refined requirement plus current code into alternatives and an approvable Design Contract without changing product code. The contract carries a proposed dependency overlay, named API/event/data/runtime contracts, bounded depth, graph DoR/DoD, acceptance-to-validation traceability, risks, failure modes, observability, rollout/rollback, and a conditional technical visual. Complex Build work can route through Design; approved evidence is fingerprinted, Plan must cover it, and Review blocks unexplained drift. A distinct solution-design lens brings the catalog to 26. 456 tests. |
-| **v2.0.0** | **One governed delivery plane for Claude and Codex** — the same Definition of Ready, scoped task contracts, evidence-backed Definition of Done, human gates, durable progress artifacts, dependency-aware execution, and 25-lens review run across both hosts. Codex support preserves its sandbox and approval flow while using host-portable role dispatch, model inheritance, onboarding, and dashboard fallbacks. 430 tests. |
+| **v2.2.0** | **First-class Design before Build** — `taskplane design` turns a refined requirement plus current code into alternatives and an approvable Design Contract without changing product code. The contract carries a proposed dependency overlay, named API/event/data/runtime contracts, bounded depth, graph DoR/DoD, acceptance-to-validation traceability, risks, failure modes, observability, rollout/rollback, and a conditional technical visual. Complex Build work can route through Design; approved evidence is fingerprinted, Plan must cover it, and Review blocks any recorded drift (drift returns to Design for a new human approval). A distinct solution-design lens brings the catalog to 26. 456 tests. |
+| **v2.1.0** | **AI software delivery with proof, not agent self-reporting** — `taskplane build`, `taskplane review`, and `taskplane status` become the simple entry points over the full harness. Workers submit source-and-artifact fingerprints but cannot advance lifecycle state; the orchestrator independently gates and rejects missing, stale, out-of-scope, under-tested, or under-reviewed work. Requirements carry dependencies and named contracts into planning; graph-aware DoR requires every new module to be declared and bounds distributed traversal at explicit contract/resource nodes; graph-aware DoD checks realized modules, affected consumers and requirements, and a current graph fingerprint. 444 tests. |
 
-Older releases (v1.0.0 – v1.6.0): see [CHANGELOG.md](CHANGELOG.md).
+All earlier releases (v1.0.0 – v2.0.0): see [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
@@ -206,7 +212,8 @@ token bill goes down as the project's memory grows. Where that store lives
 is plan-aware: on a personal plan it stays external (`~/.taskplane`) and
 never touches your repo (nothing to commit or push); on a Team/Enterprise
 plan it lives in-repo at `.taskplane-kb/` and is committed deliberately so
-the team shares one registry. Either way `kb lint` keeps prompt text and
+the team shares one registry. Either way `kb lint` — a marker scan enforced
+fail-closed at the DoD and engineering-review gates — keeps prompt text and
 pricing out of it, and the zero-token dependency graph answers blast-radius
 questions without spending model calls at all.
 
@@ -333,12 +340,19 @@ strategic review of a plan or PR.*
 
 ### Compose them → review, then fix
 
-> **tp-engineering: review this branch** → *(findings land in the
-> knowledge base)* → **tp-go: fix the blockers from the review**
+> **tp-engineering: review this branch** → *(findings written to
+> `.em-review/findings.json` in your working copy)* → **tp-go: fix the
+> blockers from the review**
 
 The review's findings become the fix loop's input: tp-go plans a scoped fix,
 you approve, a governed wave runs, it re-verifies, you sign off. The result
-is a surgical, provably in-scope diff.
+is a surgical, provably in-scope diff. Honest mechanics: `.em-review/` is
+git-ignored scratch local to the checkout — it does not travel with the
+branch. The review protocol records its synthesis as a knowledge-base
+decision, but blockers you intend to fix in a *later session* (or on an
+ephemeral host like Claude Tag, whose sandbox is discarded) should be
+recorded as tracked debt (`tp req debt`) before the session ends, so the fix
+loop has durable input.
 
 ## What you'll see
 
@@ -379,8 +393,8 @@ The whole reason it exists — legibility, focus, and a thread you don't lose:
   your repo (`~/.taskplane/projects/<key>/`) and taskplane's knowledge is
   never committed or pushed with your code; on a Team/Enterprise plan it
   lives in-repo at `.taskplane-kb/` and is committed deliberately so the team
-  shares one registry. Either way `kb lint` keeps prompt text and pricing
-  strategy out of it, and runtime telemetry (the `.taskplane/` trace) stays
+  shares one registry. Either way the `kb lint` gate check keeps prompt text
+  and pricing strategy out of it, and runtime telemetry (the `.taskplane/` trace) stays
   local and git-ignored in both (`docs/state-spec.md`). `tp kb where` shows
   the path.
 
@@ -402,6 +416,15 @@ day. If you ever need a hard boundary, pair taskplane with a restricted
 toolset (no `Bash`, writes via screened `Write`/`Edit`) or OS-level isolation.
 The token/$ budget is cooperative in the same way — a plugin can't intercept
 the model's own calls.
+
+The same precision applies to the gate protocol. "A worker cannot advance
+its own stage" is a **protocol + audit** guarantee, not process isolation:
+any process with workspace access *could* invoke the engine gate, and gate
+calls are traced for after-the-fact attribution. What holds mechanically is
+the **evidence**: a gate only advances on a submission whose fingerprints
+(changed source plus the exact evaluator/engineering evidence bytes) still
+match the workspace, so even a worker invoking the gate itself cannot pass
+unproven, stale, or post-submission-edited work.
 
 ## What's inside
 

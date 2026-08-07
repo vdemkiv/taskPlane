@@ -18,6 +18,7 @@ Pure stdlib. Distinct from the trace (audit) — this is durable memory.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
@@ -47,20 +48,36 @@ def _index_path(ws: str) -> str:
 
 
 def load_index(ws: str) -> dict:
-    p = _index_path(ws)
-    if not os.path.exists(p):
+    # tp.load_json: missing -> fresh default, CORRUPT -> StateError with a
+    # remedy — a torn/tampered index is never silently replaced (v2.3.0).
+    idx = tp.load_json(_index_path(ws), default=None,
+                       what="requirements/KB index")
+    if idx is None:
         return {"decisions": [], "flows": [], "requirements": [], "debt": []}
-    with open(p) as f:
-        idx = json.load(f)
     idx.setdefault("requirements", [])
     idx.setdefault("debt", [])
     return idx
 
 
 def _save_index(ws: str, idx: dict) -> None:
+    # Atomic (v2.3.0): this is the SAME index.json kb.record_decision guards
+    # with flock + tmp/os.replace; a bare open('w') here let a parallel
+    # wave's gate decision race a `tp req new` and drop entries (or tear the
+    # file for every concurrent reader).
     os.makedirs(kb_dir(ws), exist_ok=True)
-    with open(_index_path(ws), "w") as f:
-        json.dump(idx, f, indent=2)
+    tp.atomic_write_json(_index_path(ws), idx, indent=2)
+
+
+@contextlib.contextmanager
+def _index_lock(ws: str):
+    """Serialize index read-modify-write. tp.file_lock locks
+    <kb>/index.json.lock — the SAME lock file kb.mutate flocks — so a gate's
+    record_decision and a requirements/debt write serialize on one lock, and
+    two concurrent `req new` can no longer mint the same R-id. Never
+    silently lock-free (mkdir fallback + StateError on flock-less hosts)."""
+    os.makedirs(kb_dir(ws), exist_ok=True)
+    with tp.file_lock(_index_path(ws)):
+        yield
 
 
 def _slug(title: str) -> str:
@@ -84,16 +101,13 @@ def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
     `nfr` is a dict keyed by NFR lens id, e.g. {"security": "no PII in logs"}.
     A change request is just a requirement with `changed_from` set — same store.
     """
-    idx = load_index(ws)
-    n = len(idx["requirements"]) + 1
-    rid = f"R-{n:04d}"
     slug = _slug(title)
     links = dict(links or {})
     if changed_from:
         links["changed_from"] = changed_from
         status = "changed"
     entry = {
-        "id": rid,
+        "id": None,   # assigned under the index lock below
         "title": title,
         "status": status,
         "date": date or _today(),
@@ -106,10 +120,17 @@ def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
         "contracts": list(contracts or []),
         "context_files": list(context_files or []),
         "links": links,
-        "file": f"requirements/{rid}-{slug}.md",
+        "file": None,   # assigned with the id below
     }
-    idx["requirements"].append(entry)
-    _save_index(ws, idx)
+    # Lock around the whole read-modify-write: id minting AND the append must
+    # be atomic w.r.t. concurrent kb/requirements writers (v2.3.0).
+    with _index_lock(ws):
+        idx = load_index(ws)
+        rid = f"R-{len(idx['requirements']) + 1:04d}"
+        entry["id"] = rid
+        entry["file"] = f"requirements/{rid}-{slug}.md"
+        idx["requirements"].append(entry)
+        _save_index(ws, idx)
 
     os.makedirs(os.path.join(kb_dir(ws), "requirements"), exist_ok=True)
 
@@ -159,11 +180,12 @@ def list_requirements(ws: str) -> list:
 
 
 def set_status(ws: str, rid: str, status: str) -> None:
-    idx = load_index(ws)
-    for r in idx["requirements"]:
-        if r["id"] == rid:
-            r["status"] = status
-    _save_index(ws, idx)
+    with _index_lock(ws):
+        idx = load_index(ws)
+        for r in idx["requirements"]:
+            if r["id"] == rid:
+                r["status"] = status
+        _save_index(ws, idx)
 
 
 # --------------------------------------------------------------- refinement
@@ -301,12 +323,9 @@ def record_debt(ws: str, title: str, *, requirement_id: str | None = None,
                 context_files=None, date: str | None = None) -> dict:
     """Record a tracked debt item for a quick-path task, so 'do it properly
     later' is retrievable and can be scheduled as its own requirement."""
-    idx = load_index(ws)
-    n = len(idx["debt"]) + 1
-    did = f"D-{n:04d}"
     slug = _slug(title)
     entry = {
-        "id": did,
+        "id": None,   # assigned under the index lock below
         "title": title,
         "status": "open",
         "date": date or _today(),
@@ -315,10 +334,15 @@ def record_debt(ws: str, title: str, *, requirement_id: str | None = None,
         "follow_up": follow_up,
         "tags": list(tags or []),
         "context_files": list(context_files or []),
-        "file": f"debt/{did}-{slug}.md",
+        "file": None,
     }
-    idx["debt"].append(entry)
-    _save_index(ws, idx)
+    with _index_lock(ws):
+        idx = load_index(ws)
+        did = f"D-{len(idx['debt']) + 1:04d}"
+        entry["id"] = did
+        entry["file"] = f"debt/{did}-{slug}.md"
+        idx["debt"].append(entry)
+        _save_index(ws, idx)
 
     os.makedirs(os.path.join(kb_dir(ws), "debt"), exist_ok=True)
     body = f"""# {did} · {title}
@@ -348,11 +372,12 @@ def list_debt(ws: str, *, open_only: bool = True) -> list:
 
 
 def resolve_debt(ws: str, did: str) -> None:
-    idx = load_index(ws)
-    for d in idx["debt"]:
-        if d["id"] == did:
-            d["status"] = "resolved"
-    _save_index(ws, idx)
+    with _index_lock(ws):
+        idx = load_index(ws)
+        for d in idx["debt"]:
+            if d["id"] == did:
+                d["status"] = "resolved"
+        _save_index(ws, idx)
 
 
 def render_context(reqs: list) -> str:

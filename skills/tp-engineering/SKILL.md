@@ -77,8 +77,11 @@ loop trues-up the product graph (realizes edges + rescan), and the action's
 Copy the full impact payload into `meta.impact`. When the loop carries an
 approved Design Contract, also copy its approval fingerprint into
 `meta.design`, verify every designed module, edge, and named contract, report
-`verdict: conformant`, and leave `drift: []`. Missing/stale design evidence or
-unexplained drift blocks sign-off and returns the work to Design. A stale graph revision or an
+`verdict: conformant`, and leave `drift: []`. Missing/stale design evidence
+or ANY recorded drift entry blocks sign-off — explained or not — and returns
+the work to Design; the only sanctioned exception is a deviation the human
+explicitly accepts, recorded in `accepted_drift` (each entry needs `drift`,
+`reason`, `accepted_by`) and rendered visibly at the gate. A stale graph revision or an
 incomplete/wrong review policy blocks the engineering gate. Per-task
 evaluation separately blocks unknown or undispositioned direct impact,
 unchecked affected requirements, and unverified declared contracts.
@@ -91,8 +94,35 @@ feedback per `references/feedback-craft.md`.
 has no loop, so `$TP dashboard` (loop state) has nothing to render — that's
 why a review must emit its findings and render them itself. Write every
 finding (ALL severities, not just the blockers) to `.em-review/findings.json`
-— each `{severity, domain, file, line, title, scenario, fix, status}`, with
-a `meta` block: `title`, `subtitle`, `tests`, `clean:[…]`, a `gate` with
+— each `{severity, domain, file, line, title, scenario, fix, status, class}`.
+
+**Classify every finding (v2.3.1) — this is what stops a review from reading
+as "100 blockers."** `class` is one of `regression | pre-existing |
+observation`, orthogonal to severity: a **regression** is a behavior
+verifiably worse than a named baseline (cite the baseline and the
+was-green/now-red evidence) — it always blocks; **pre-existing** is real
+defect or debt that predates the change under review — surface it and record
+it as tracked debt (`tp req debt`), but it does NOT block THIS change's gate;
+**observation** is taste, style, or a design opinion about code just read —
+informational, never a blocker. The engine decides the blocker set through
+`loop.finding_blocks` / `loop.classify_findings`: only `class == regression`,
+or an **unclassified `high` anchored in the change's own diff**, blocks. An
+unknown `class` maps to `unclassified` (taste is never inflated to a blocker),
+but you cannot hide a real `high` by omitting `class` — omission routes
+through the severity rule and a diff-anchored high still blocks. The HEADLINE
+must report the split (`R regressions · H new-high-in-diff · P pre-existing ·
+O observations`) so the human reads "N block · M to triage", not "100 issues".
+Only the blocker set gates sign-off; pre-existing and observation findings are
+handed over as tracked debt and backlog, never as reasons to withhold the gate.
+
+Severity is normalized by every consumer through the engine's canonical map
+(`loop.normalize_severity`, v2.3.0): `critical`, `blocker`, and `major` all
+land as `high` — the class the sign-off gate mechanically blocks while
+unresolved — `medium` → `med`, `minor` → `low`, `question`/`praise` →
+`info`, and any label the map does not recognize also lands as `high`
+(fail closed). So carry lens findings' own vocabulary through verbatim if
+you like, but never re-grade a finding downward — an unknown or softened
+label still blocks. Include a `meta` block: `title`, `subtitle`, `tests`, `clean:[…]`, a `gate` with
 buttons, and — required (v1.5.4) — `lens_coverage` (the `{id: deep|sweep}`
 map from `tp lens dispatch`, so the dashboard shows all 26 lenses marked
 deep / sweep / didn't-fire, and adding a lens to the catalog appears
@@ -138,3 +168,12 @@ decisions. tp-engineering never edits code — a build gap goes back
 through the loop (`loop submit fail` with a reproducible note; the
 orchestrator gates it). Deep persona spec:
 `agents/tp-engineering.md`.
+
+**Persist before you part.** `.em-review/` is git-ignored scratch local to
+the checkout — it does not travel with the branch or survive an ephemeral
+sandbox (Claude Tag). REQUIRED at the end of every standalone review:
+record the review's synthesis as a knowledge-base decision
+(`$TP decision "<review title>" --context … --decision "<verdict +
+headline numbers>" …`), and record every blocker/high finding the human
+intends to fix in a *later session* as tracked debt (`$TP req debt …`) —
+that is what makes "review here, fix next session" actually work.

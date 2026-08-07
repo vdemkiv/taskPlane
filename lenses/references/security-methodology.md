@@ -197,12 +197,26 @@ Each finding is graded; the grade drives the gate (this replaces keyword-based h
 
 ### Verdict: PASS ✅ / PASS-WITH-CONDITIONS ⚠️ / FAIL ❌
 - FAIL if any unresolved CRITICAL or HIGH.
-- PASS-WITH-CONDITIONS if only MEDIUM (conditions logged to metadata.json).
-- [If FAIL, list fix actions for loop-fixer; route CRITICAL/HIGH to Board per authority matrix]
+- PASS-WITH-CONDITIONS if only MEDIUM (each condition recorded as a finding).
+- [If FAIL, state the concrete failures as blocker findings so the evaluate
+  gate fails and the loop's fix cycle (tp-fixer) receives them]
 ```
 
-## Handoff
+## Handoff (taskplane terms)
 
-- **PASS** → return to `loop-execution-evaluator`.
-- **PASS-WITH-CONDITIONS** → return with conditions recorded; Conductor schedules follow-up; does not block.
-- **FAIL (CRITICAL/HIGH)** → return to `loop-execution-evaluator` → Conductor dispatches `loop-fixer`; CRITICAL/HIGH are HIGH_IMPACT and convene the Board (CSO leading), never silently dropped.
+You return findings to the review that dispatched you — you never dispatch
+anyone yourself.
+
+- **PASS** → return the verdict and evidence to the dispatching review
+  (tp-evaluator or the tp-engineering synthesis).
+- **PASS-WITH-CONDITIONS** → return with every condition recorded as a
+  MEDIUM/major finding, and recommend the durable ones be tracked as debt
+  (`tp req debt`) so follow-up survives the session; does not block the gate.
+- **FAIL (CRITICAL/HIGH)** → blocker findings. Per the authority matrix, a
+  CRITICAL/HIGH security finding must not pass its gate: it fails EVALUATE
+  (routing the loop's existing fix cycle to tp-fixer), and at engineering
+  review an unresolved critical/high finding blocks sign-off mechanically.
+  If fix cycles exhaust without clearing it, the loop escalates to the
+  human (`escalated`). Never silently dropped — and never routed to
+  machinery taskplane does not ship (there is no Conductor, Board, or CSO;
+  strategy input is the summoned, advisory `tp-northstar` review only).

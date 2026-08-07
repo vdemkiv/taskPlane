@@ -1,0 +1,82 @@
+{
+  "tasks": [
+    {
+      "id": "T1-design-workflow",
+      "scope": [
+        ".claude-plugin/marketplace.json",
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+        "README.md",
+        "CHANGELOG.md",
+        "agents/**",
+        "docs/authority-matrix.md",
+        "docs/lens-catalog.md",
+        "docs/loop-design.md",
+        "docs/openai-submission.md",
+        "docs/requirements-core.md",
+        "docs/state-spec.md",
+        "lenses/_generate_catalog.py",
+        "lenses/catalog.json",
+        "lenses/solution-design.md",
+        "skills/taskplane/**",
+        "skills/tp-build/**",
+        "skills/tp-design/**",
+        "skills/tp-engineering/**",
+        "skills/tp-go/**",
+        "skills/tp-help/**",
+        "taskplane/README.md",
+        "taskplane/dashboard.py",
+        "taskplane/lens.py",
+        "taskplane/loop.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tests/test_codex_compat.py",
+        "taskplane/tests/test_dashboard_v2.py",
+        "taskplane/tests/test_design_workflow.py",
+        "taskplane/tests/test_model_tiers.py",
+        "taskplane/tests/test_northstar.py",
+        "taskplane/tests/test_v120_coverage.py",
+        "taskplane/tp.py"
+      ],
+      "tests": "TASKPLANE_HOME=/private/tmp/taskplane-test-home PYTHONPATH=taskplane:/private/tmp/taskplane-v21-pytest PYTHONDONTWRITEBYTECODE=1 python3 -m pytest taskplane/tests -q -p no:cacheprovider",
+      "criteria": [
+        "Optional Design and design-approval states are enforced while ordinary Build remains compatible.",
+        "Design DoR/DoD fail closed on incomplete, stale, graph-mutating, or internally inconsistent evidence.",
+        "Planning and final Review are bound to the approved Design Contract, proposed graph, contracts, and depth policy.",
+        "Codex and Claude route taskplane design to the same dedicated tp-design flow and tp-designer role.",
+        "The solution-design lens remains distinct from the existing UX design lens.",
+        "README and marketplace metadata present Design, Build, Review, and Status as the simple surface.",
+        "All tests and package validation pass and every manifest remains at version 2.1.0."
+      ],
+      "req": "R-0001",
+      "deps": [],
+      "type": "architecture",
+      "high_cost": true,
+      "contracts": [
+        {"relation": "changes", "id": "contract:taskplane loop state machine"},
+        {"relation": "provides", "id": "contract:Design Contract artifact"},
+        {"relation": "provides", "id": "contract:proposed dependency graph overlay"},
+        {"relation": "changes", "id": "contract:Codex and Claude intent routing"}
+      ],
+      "new_modules": [
+        "(root)",
+        ".claude-plugin",
+        ".codex-plugin",
+        "agents",
+        "docs",
+        "skills/taskplane",
+        "skills/tp-build",
+        "skills/tp-design",
+        "skills/tp-engineering",
+        "skills/tp-go",
+        "skills/tp-help"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "model": "deep"
+    }
+  ]
+}

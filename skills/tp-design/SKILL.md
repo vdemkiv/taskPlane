@@ -91,8 +91,8 @@ When an approved design exists:
 
 - Plan cannot silently narrow its module/contract/dependency coverage.
 - Execute and Evaluate receive the approved contract and reject stale evidence.
-- Engineering Review must include `meta.design` with the approved fingerprint, every designed module/edge/contract checked, verdict `conformant`, and no unexplained drift.
-- Drift is not papered over. Return to Design, obtain a new approval, and re-plan.
+- Engineering Review must include `meta.design` with the approved fingerprint, every designed module/edge/contract checked, verdict `conformant`, and an empty `drift` list — ANY recorded drift entry blocks sign-off, explained or not.
+- Drift is not papered over. Either return to Design, obtain a new approval, and re-plan, or have the human accept the specific deviation on the record: move it to `accepted_drift` (each entry requires `drift`, `reason`, and `accepted_by`), which the sign-off gate renders visibly rather than burying.
 
 For distributed systems, traverse local implementation dependencies to the declared depth, but cross service/entity boundaries at named `contract:` or `resource:` nodes only. Do not expand into another entity's internals unless the human explicitly changes the boundary policy.
 

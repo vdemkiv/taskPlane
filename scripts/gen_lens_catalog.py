@@ -26,10 +26,8 @@ OPTIONAL = {"cost-finops", "i18n"}
 
 
 def main():
-    lenses = json.load(open(CAT))["lenses"] if isinstance(
-        json.load(open(CAT)), dict) else json.load(open(CAT))
-    # re-read cleanly (json.load consumed above only in the isinstance check)
-    data = json.load(open(CAT))
+    with open(CAT, encoding="utf-8") as f:
+        data = json.load(f)
     lenses = data["lenses"] if isinstance(data, dict) else data
     n = len(lenses)
     by_group = {}
@@ -50,7 +48,9 @@ def main():
              "lens also has a `lenses/<id>.md` stub for its evaluator prompt.\n")
     L.append("> This file is GENERATED from `lenses/catalog.json` by "
              "`scripts/gen_lens_catalog.py`. Edit the catalog (or the "
-             "generator's prose), then regenerate — don't hand-edit.\n")
+             "generator's prose), then regenerate — don't hand-edit. CI "
+             "regenerates and diffs this file (and the other generated lens "
+             "artifacts) on every push, so a stale copy fails the build.\n")
     L.append("## The set, by group\n")
     L.append("| Group | Lens | Charter (what it uniquely owns) |")
     L.append("| --- | --- | --- |")
@@ -103,7 +103,8 @@ def main():
              "`python3 scripts/gen_lens_catalog.py` to refresh this doc. The "
              "router picks the lens up automatically.")
 
-    open(OUT, "w").write("\n".join(L) + "\n")
+    with open(OUT, "w", encoding="utf-8") as f:
+        f.write("\n".join(L) + "\n")
     print(f"wrote {OUT}: {n} lenses across {len(groups)} groups "
           f"({len(board)} advisory)")
 

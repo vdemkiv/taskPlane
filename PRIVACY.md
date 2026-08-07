@@ -28,10 +28,19 @@ taskplane writes only to your own machine, under your control:
     and a fresh clone inherits it. On a team plan the knowledge store IS in
     your repo and IS committed — by design, not by accident.
 
-  In both cases it is *decision data only* — the `kb lint` check mechanically
-  blocks prompt text, raw model content, and pricing/commercial strategy from
-  the store. (`$TASKPLANE_HOME` moves the personal root; `tp kb where` shows
-  the active path.)
+  In both cases the store is meant to hold *decision data only*. The honest
+  mechanics of that rule: `tp kb lint` is a marker-based scan for prompt
+  text, raw model content markers, oversized free-text fields, and
+  pricing/commercial strategy, and it is enforced **fail-closed at the
+  Definition-of-Done exit gate and the engineering-review gate** — governed
+  work cannot pass those gates with a flagged store. It does **not** run at
+  the moment a record is first written (`tp decision` / `tp req`) or when
+  `tp share push` publishes records into the shared store, and marker
+  matching cannot detect every form of sensitive content. On a
+  Team/Enterprise plan, review what you publish before committing
+  `.taskplane-kb/` — publishing is a deliberate human act, and the lint gate
+  is a backstop, not a guarantee. (`$TASKPLANE_HOME` moves the personal
+  root; `tp kb where` shows the active path.)
 - **Local runtime files** (e.g. `.taskplane/` — including the `trace.jsonl`
   audit trace — `.em-review/`, worktrees): the active contract, an
   append-only audit trace of tool decisions, action meters, and scratch

@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" screen",
-            "commandWindows": "py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" screen) else (echo taskplane screen hook: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset - failing closed, contract enforcement unavailable 1>&2 & exit /b 2)",
             "timeout": 15
           }
         ]
@@ -18,7 +18,7 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" screen-dispatch",
-            "commandWindows": "py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen-dispatch",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen-dispatch) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" screen-dispatch) else (echo taskplane dispatch hook: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset - failing closed 1>&2 & exit /b 2)",
             "timeout": 10
           }
         ]
@@ -31,7 +31,7 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" context",
-            "commandWindows": "py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" context",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" context) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" context) else (echo taskplane context hook: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset - failing closed 1>&2 & exit /b 2)",
             "timeout": 10
           }
         ]

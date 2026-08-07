@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
+import design_contract as dc  # noqa: E402
 import lens  # noqa: E402
 import loop  # noqa: E402
 import requirements as reqs  # noqa: E402
@@ -130,18 +131,23 @@ class DesignWorkflowTest(unittest.TestCase):
             "lens_evidence": [
                 {"lens": "solution-design", "verdict": "pass",
                  "blockers": 0,
-                 "evidence": "alternatives, boundaries, and drift policy checked"}
+                 "evidence": "alternatives, boundaries, and drift policy checked",
+                 "produced_by": "tp-lens solution-design run",
+                 "independent": True}
             ],
             "open_questions": []
         }
         os.makedirs(os.path.join(self.ws, "design"), exist_ok=True)
-        with open(os.path.join(self.ws, "design", "contract.json"), "w") as f:
-            json.dump(contract, f, indent=2)
         with open(os.path.join(self.ws, "design", "design.md"), "w") as f:
             f.write("# Governed Design\n\nUse an optional loop state.\n")
         if visualization_required:
             with open(os.path.join(self.ws, "design", "visual.html"), "w") as f:
                 f.write("<div>Product → Design → Approve → Plan</div>\n")
+        # v2.3.0: lens evidence is bound to the exact design content judged.
+        contract["lens_evidence"][0]["content_fingerprint"] = \
+            dc.design_content_fingerprint(self.ws, contract)
+        with open(os.path.join(self.ws, "design", "contract.json"), "w") as f:
+            json.dump(contract, f, indent=2)
         return contract
 
     def test_default_loop_remains_product_to_plan(self):
@@ -278,13 +284,22 @@ class DesignWorkflowTest(unittest.TestCase):
                             "skills/tp-design->taskplane:runtime",
                             "taskplane->contract:design-artifact:provides"],
                         "contracts_checked": ["contract:design-artifact"],
+                        # v2.3.0: the contract: edge is scanner-invisible —
+                        # it needs an explicit realization declaration.
+                        "edge_evidence": [
+                            {"edge": "taskplane->contract:design-artifact"
+                                     ":provides",
+                             "evidence": "loop.py design approval emits the "
+                                         "artifact; regression test passes",
+                             "declared_by": "reviewer — hand-recorded edge"}],
                         "drift": []}})
         self.assertEqual(complete, [])
 
     def test_design_evidence_is_not_silently_scope_exempt(self):
         self.assertIn("design/", lens.LOOP_OWNED)
         self.assertNotIn("design/", tp.RUNTIME_OWNED)
-        self.assertNotIn("specs/", tp.RUNTIME_OWNED)
+        # v2.3.0: specs/ became runtime-owned (the pm step authors it), but
+        # design evidence stays governed — the guardrail this test pins.
 
 
 if __name__ == "__main__":

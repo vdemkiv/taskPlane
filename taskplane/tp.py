@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import taskplane_lite as tp  # noqa: E402
@@ -44,7 +45,8 @@ def north_star(ws: str) -> str | None:
     (parenthetical), so the review can tell the human to fill it in."""
     p = os.path.join(tp.kb_root(ws), "context", "product.md")
     try:
-        text = open(p, encoding="utf-8").read()
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
     except OSError:
         return None
     for line in text.splitlines():
@@ -55,11 +57,6 @@ def north_star(ws: str) -> str | None:
                 return None          # unfilled scaffold placeholder
             return val or None
     return None
-
-
-def _git_head(ws: str) -> str | None:
-    r = tp._run(["git", "rev-parse", "HEAD"], cwd=ws)
-    return r.stdout.strip() or None
 
 
 def _is_commit_sha(head: str | None) -> bool:
@@ -76,11 +73,24 @@ def _bare_root(ws: str) -> bool:
     locked-contract incident started exactly this way). Shared by the
     onboarding report and the `tp new` refusal so both apply ONE rule."""
     home = os.path.abspath(os.path.expanduser("~"))
-    if ws not in (home, "/", "/root", "/home/claude"):
+    # Known agent-sandbox session homes as of v2.x: "/home/claude" is the
+    # Cowork/Claude sandbox session home and "/root" a common container
+    # default — a point-in-time snapshot of the host layouts this plugin has
+    # shipped on (the locked-contract incident started in exactly such a
+    # home). REVISIT TRIGGER: any newly supported host runtime with a
+    # different session home (e.g. /workspace, /home/user). Until then a
+    # deployment can extend the guard without a code change via
+    # TASKPLANE_BARE_ROOT (os.pathsep-separated extra roots); the env var
+    # only ADDS protected roots — the default set is unchanged.
+    bare = {home, "/", "/root", "/home/claude"}
+    for extra in (os.environ.get("TASKPLANE_BARE_ROOT") or "").split(os.pathsep):
+        if extra.strip():
+            bare.add(os.path.abspath(os.path.expanduser(extra.strip())))
+    if ws not in bare:
         return False
     inside_git = tp._run(["git", "rev-parse", "--is-inside-work-tree"],
                          cwd=ws).stdout.strip() == "true"
-    return not (inside_git and _is_commit_sha(_git_head(ws)))
+    return not (inside_git and _is_commit_sha(tp.git_head(ws)))
 
 
 def _onboard_report(ws: str) -> dict:
@@ -91,7 +101,7 @@ def _onboard_report(ws: str) -> dict:
     walk a brand-new user in from a zero state (no folder, no repo)."""
     inside_git = tp._run(["git", "rev-parse", "--is-inside-work-tree"],
                          cwd=ws).stdout.strip() == "true"
-    head = _git_head(ws)
+    head = tp.git_head(ws)
     has_commit = _is_commit_sha(head)
     try:
         entries = [e for e in os.listdir(ws)
@@ -214,13 +224,20 @@ def cmd_new(a) -> int:
         test_command=a.tests or None,
         deny_extra=deny_extra,
         max_actions=(int(a.max_actions)
-                     if getattr(a, "max_actions", None) else None),
+                     if getattr(a, "max_actions", None) is not None
+                     else None),
     )
-    # cooperative dollar advisory (kept on the shared shape as an optional key)
-    c["budget"]["max_cost_usd"] = float(a.budget) if a.budget \
+    # cooperative dollar advisory (kept on the shared shape as an optional
+    # key). `is not None`, NOT truthiness: `--budget 0` means a ZERO ceiling
+    # (maximally strict — any spend is over), never the $3 default.
+    if a.budget is not None and a.budget < 0:
+        print("taskplane: --budget must be >= 0 (0 means no cooperative "
+              "spend allowed).", file=sys.stderr)
+        return 1
+    c["budget"]["max_cost_usd"] = float(a.budget) if a.budget is not None \
         else DEFAULT_MAX_COST_USD
 
-    snapshot = _git_head(ws)
+    snapshot = tp.git_head(ws)
     tp.activate(ws, c, snapshot=snapshot)
 
     mode = "READ-ONLY review" if c.get("read_only") else "build"
@@ -354,7 +371,8 @@ def cmd_decision(a) -> int:
         print(json.dumps(d, indent=2))
         p = os.path.join(_kb.kb_dir(ws), d["file"])
         if os.path.exists(p):
-            print(open(p).read())
+            with open(p) as f:
+                print(f.read())
     elif act == "accept":
         d = _kb.set_status(ws, a.id, "accepted")
         if d is None:                       # unknown id — don't exit 0 silently
@@ -367,6 +385,16 @@ def cmd_decision(a) -> int:
             return 1
         _kb.supersede(ws, a.id, a.by)
         print(json.dumps({"superseded": a.id, "by": a.by}, indent=2))
+    return 0
+
+
+def cmd_gc(a) -> int:
+    """Prune taskplane-minted RUNTIME artifacts only — FUSE tombstones,
+    orphaned .tmp files, stale .lock/.lockdir leftovers. Never governance
+    records (contracts, KB, trace, loop state stay untouched)."""
+    ws = _workspace(a.workspace)
+    out = tp.gc_runtime(ws)
+    print(json.dumps(out, indent=2))
     return 0
 
 
@@ -395,7 +423,8 @@ def cmd_ready(a) -> int:
     snap_path = os.path.join(tp.tp_dir(ws), "snapshot")
     snapshot = None
     if os.path.exists(snap_path):
-        snapshot = open(snap_path).read().strip() or None
+        with open(snap_path) as f:
+            snapshot = f.read().strip() or None
     ready, blockers, warnings = tp.dor_check(c, ws, snapshot)
     tp.trace(ws, "dor", ready=ready, blockers=blockers, warnings=warnings)
     _print_dor(ready, blockers, warnings)
@@ -421,7 +450,8 @@ def _meter_load(ws, strict=False) -> dict:
     p = os.path.join(tp.tp_dir(ws), "meter.json")
     if os.path.exists(p):
         try:
-            return json.load(open(p))
+            with open(p) as f:
+                return json.load(f)
         except (ValueError, OSError):
             if strict:
                 raise MeterCorrupt(p)
@@ -431,27 +461,34 @@ def _meter_load(ws, strict=False) -> dict:
 def _meter_bump(ws, task_id, key) -> dict:
     import time
     now = time.time()
-    try:
-        m = _meter_load(ws, strict=True)
-    except MeterCorrupt:
-        m = {}                      # bumping rebuilds a clean file atomically
-    e = m.setdefault(task_id, {"actions": 0, "denies": 0})
-    e[key] = e.get(key, 0) + 1
-    # last_seen_ts = the owner was alive AT ALL (any screen call, approve or
-    # deny) — used by the orphan idle-backstop to tell a crashed owner (no
-    # calls) from a live one. last_action_ts = last APPROVED action.
-    e["last_seen_ts"] = now
-    if key == "actions":
-        e["last_action_ts"] = now
-    d = tp.tp_dir(ws)
-    os.makedirs(d, exist_ok=True)
-    # Atomic write so a concurrent reader never sees a torn file.
-    path = os.path.join(d, "meter.json")
-    tmp = path + f".tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
-        json.dump(m, f)
-    os.replace(tmp, path)
+    path = os.path.join(tp.tp_dir(ws), "meter.json")
+    # The meter is control-plane (the enforced max_actions ceiling counts
+    # through it), so the read-modify-write is serialized under the shared
+    # file_lock — two concurrent screens must never both read N and both
+    # write N+1 (that undercount silently raises the budget wall). file_lock
+    # never degrades to lock-free; if it can't be acquired it raises
+    # StateError and the screen boundary fails CLOSED (blocks).
+    with tp.file_lock(path):
+        try:
+            m = _meter_load(ws, strict=True)
+        except MeterCorrupt:
+            m = {}                  # bumping rebuilds a clean file atomically
+        e = m.setdefault(task_id, {"actions": 0, "denies": 0})
+        e[key] = e.get(key, 0) + 1
+        # last_seen_ts = the owner was alive AT ALL (any screen call, approve
+        # or deny) — used by the orphan idle-backstop to tell a crashed owner
+        # (no calls) from a live one. last_action_ts = last APPROVED action.
+        e["last_seen_ts"] = now
+        if key == "actions":
+            e["last_action_ts"] = now
+        # Atomic write so a concurrent reader never sees a torn file.
+        tp.atomic_write_json(path, m, indent=None)
     return e
+
+
+# Per-process memo of `git rev-parse --show-toplevel` per cwd — see the
+# comment inside _governed_root. Never persisted.
+_GIT_TOP_CACHE: dict = {}
 
 
 def _governed_root(cwd: str) -> str:
@@ -473,12 +510,23 @@ def _governed_root(cwd: str) -> str:
     is governed, returns the original cwd unchanged (ungoverned stays so)."""
     start = _workspace(cwd)
     home = os.path.realpath(os.path.expanduser("~"))
-    # git worktree/repo top of cwd — the walk must not climb past it.
-    top = tp._run(["git", "rev-parse", "--show-toplevel"], cwd=start).stdout.strip()
-    # macOS commonly reports the same temp path as /var/... to Python and
-    # /private/var/... to git. Compare real paths or the boundary check misses
-    # the worktree root and can inherit a parent contract.
-    top = os.path.realpath(top) if top else None
+    # git worktree/repo top of cwd — the walk must not climb past it. This
+    # shells out to git on EVERY PreToolUse screen event: an accepted
+    # per-action latency cost of the no-server design (fine on a laptop,
+    # noticeable on slow/networked filesystems). Memoized per cwd WITHIN
+    # this process only — a hook invocation is one short-lived process, so
+    # the cache can never go stale across invocations (no cross-invocation
+    # caching by design: a repo can be re-rooted between events).
+    if start in _GIT_TOP_CACHE:
+        top = _GIT_TOP_CACHE[start]
+    else:
+        top = tp._run(["git", "rev-parse", "--show-toplevel"],
+                      cwd=start).stdout.strip()
+        # macOS commonly reports the same temp path as /var/... to Python and
+        # /private/var/... to git. Compare real paths or the boundary check
+        # misses the worktree root and can inherit a parent contract.
+        top = os.path.realpath(top) if top else None
+        _GIT_TOP_CACHE[start] = top
     cur = start
     while True:
         if os.path.exists(os.path.join(tp.tp_dir(cur), "active_contract.json")):
@@ -622,6 +670,29 @@ def cmd_status(a) -> int:
     ws = _workspace(a.workspace)
     c = tp.load_active(ws)
     if c is None:
+        # A corrupt legacy contract file makes load_active return None, but the
+        # enforcement hook BLOCKS on the same file — so "no active contract"
+        # here would tell the human they're ungoverned when they are actually
+        # governed-but-broken. Surface the corruption, fail closed (v2.3.1).
+        legacy = tp.active_contract_path(ws, None)
+        if os.path.exists(legacy):
+            try:
+                with open(legacy) as f:
+                    json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                print(json.dumps({
+                    "active_contract": "CORRUPT",
+                    "path": legacy,
+                    "error": str(e),
+                    "enforcement": "the PreToolUse hook BLOCKS all actions "
+                                   "while this file is unreadable — the "
+                                   "workspace is governed-but-broken, not "
+                                   "ungoverned",
+                    "remedy": "inspect/restore the file (git checkout), or "
+                              "`tp.py clear` from an ungoverned context to "
+                              "reset it",
+                }, indent=2))
+                return 1
         print("taskplane: no active contract in this workspace "
               "(run `tp.py new …`).")
         return 0
@@ -703,7 +774,8 @@ def cmd_dod(a) -> int:
     snap_path = os.path.join(tp.tp_dir(ws), "snapshot")
     snapshot = None
     if os.path.exists(snap_path):
-        snapshot = open(snap_path).read().strip() or None
+        with open(snap_path) as f:
+            snapshot = f.read().strip() or None
 
     errors = tp.dod_check(c, ws, snapshot)
     import kb as kbmod
@@ -730,6 +802,7 @@ def cmd_loop(a) -> int:
     import loop as loopmod
     ws = _workspace(a.workspace)
     action = a.loop_action
+    out = None
     if action == "init":
         checkpoints = (a.checkpoints.split(",") if a.checkpoints is not None
                        else ["plan", "em"])
@@ -737,39 +810,82 @@ def cmd_loop(a) -> int:
                           spec_path=a.spec, max_fix_cycles=a.max_fix_cycles,
                           checkpoints=[c for c in checkpoints if c],
                           requirement_id=a.req, parallel=a.parallel,
-                          design=a.design, design_only=a.design_only)
-        print(json.dumps({"initialized": True, "step": st["step"]}, indent=2))
+                          design=a.design, design_only=a.design_only,
+                          force=getattr(a, "force", False))
+        # Only collapse to the success summary when the engine did NOT refuse.
+        # Previously any dict with a "step" key (including a refusal that also
+        # carries the CURRENT step) was reported as {"initialized": true} with
+        # exit 0, silently swallowing an in-flight-loop refusal or the
+        # --force archive note (v2.3.1). Surface errors/notes verbatim and
+        # exit non-zero on error.
+        if isinstance(st, dict) and st.get("error"):
+            out = st
+        elif isinstance(st, dict) and "step" in st:
+            out = {"initialized": True, "step": st["step"]}
+            for k in ("note", "archived", "warning"):
+                if st.get(k):
+                    out[k] = st[k]
+        else:
+            out = st
     elif action == "next":
-        print(json.dumps(loopmod.next_action(ws), indent=2))
+        out = loopmod.next_action(ws, rid=getattr(a, "req", None))
     elif action == "submit":
-        print(json.dumps(loopmod.submit(ws, a.outcome, note=a.note or "",
-                                        task_id=a.task), indent=2))
+        out = loopmod.submit(ws, a.outcome, note=a.note or "", task_id=a.task)
     elif action == "gate":
-        print(json.dumps(loopmod.gate(ws, a.outcome, note=a.note or "",
-                                      task_id=a.task), indent=2))
+        out = loopmod.gate(ws, a.outcome, note=a.note or "", task_id=a.task,
+                           rid=getattr(a, "req", None))
+        # Tier-routing observability at the gate summary, ON BY DEFAULT: the
+        # cheap/deep routing the briefs resolve is only real if dispatch used
+        # it, so every gate shows expected-vs-observed models. Pure audit —
+        # no new enforcement, never changes the gate outcome or exit code.
+        if isinstance(out, dict):
+            try:
+                rep = tp.dispatch_report(ws)
+                out.setdefault("dispatch_audit", {
+                    "expected": rep["expected"],
+                    "observed": rep["observed"],
+                    "mismatches": rep["mismatches"],
+                    "unobserved": rep["unobserved"],
+                    "hook_active": rep["hook_active"],
+                    "note": rep["note"]})
+            except Exception:
+                pass                 # audit must never break the gate
     elif action == "wave":
-        print(json.dumps(loopmod.wave(ws), indent=2))
+        out = loopmod.wave(ws)
     elif action == "claim":
-        print(json.dumps(loopmod.claim(ws, a.task_id, a.agent_workspace),
-                         indent=2))
+        out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":
-        print(json.dumps(loopmod.approve(ws, force=a.force,
-                                         by=getattr(a, "by", None)),
-                         indent=2))
+        out = loopmod.approve(ws, force=a.force, by=getattr(a, "by", None))
     elif action == "select":
-        print(json.dumps(loopmod.select(ws, a.choice, note=a.note or ""),
-                         indent=2))
+        out = loopmod.select(ws, a.choice, note=a.note or "")
     elif action == "resolve":
-        print(json.dumps(loopmod.resolve(ws, a.decision), indent=2))
+        out = loopmod.resolve(ws, a.decision)
     elif action == "status":
-        print(json.dumps(loopmod.status(ws), indent=2))
+        out = loopmod.status(ws)
     elif action == "retro":
-        print(json.dumps(loopmod.retro(ws), indent=2))
+        out = loopmod.retro(ws)
+        if isinstance(out, dict) and not out.get("error"):
+            try:
+                rep = tp.dispatch_report(ws)
+                if not rep["hook_active"]:
+                    out.setdefault(
+                        "tier_routing",
+                        "UNOBSERVED — no dispatches were verified against "
+                        "the resolved model tiers; the cheap-tier cost "
+                        "saving is unproven for this run. " + (rep["note"]
+                                                               or ""))
+            except Exception:
+                pass
     elif action == "verify-dispatch":
         rep = tp.dispatch_report(ws)
         print(json.dumps(rep, indent=2))
         return 1 if rep["mismatches"] else 0
-    return 0
+    print(json.dumps(out, indent=2))
+    # An engine refusal ({"error": ...}) is a FAILURE: exit nonzero so a
+    # scripted driver (`&&` chain, CI wrapper, Tag thread) can never mistake
+    # a refused gate/submit/wave for success. Matches the convention the
+    # other subcommands (req score, kb lint, share push) already follow.
+    return 1 if isinstance(out, dict) and out.get("error") else 0
 
 
 def cmd_lens(a) -> int:
@@ -822,16 +938,22 @@ def cmd_lens(a) -> int:
         briefs = lensmod.dispatch_briefs(routing, base=a.base,
                                          max_actions=a.max_actions,
                                          impact_context=impact_ctx)
-        for b in briefs.get("deep") or []:
-            tp.record_expected_dispatch(ws, "lens", b.get("agent", "tp-lens"),
-                                        b.get("model_tier", "standard"),
-                                        b.get("model"), ref=b.get("id"))
-        sw = briefs.get("sweep")
-        if sw:
-            tp.record_expected_dispatch(ws, "lens",
-                                        sw.get("agent", "tp-lens"),
-                                        sw.get("model_tier", "cheap"),
-                                        sw.get("model"), ref="sweep")
+        # --dashboard is a PURE VIEW that the driver re-runs as agents land;
+        # recording expectations there would append a fresh unmatched set on
+        # every re-render and turn `loop verify-dispatch` into noise. Only a
+        # real dispatch (JSON briefs) records what SHOULD be dispatched.
+        if not getattr(a, "dashboard", False):
+            for b in briefs.get("deep") or []:
+                tp.record_expected_dispatch(ws, "lens",
+                                            b.get("agent", "tp-lens"),
+                                            b.get("model_tier", "standard"),
+                                            b.get("model"), ref=b.get("id"))
+            sw = briefs.get("sweep")
+            if sw:
+                tp.record_expected_dispatch(ws, "lens",
+                                            sw.get("agent", "tp-lens"),
+                                            sw.get("model_tier", "cheap"),
+                                            sw.get("model"), ref="sweep")
         if getattr(a, "dashboard", False):
             import dashboard
 
@@ -1242,7 +1364,7 @@ def cmd_init(a) -> int:
              ".tp-work/"],
         "taskplane runtime (local-only — see docs/state-spec.md)")
     g = dg.scan(ws)
-    head = _git_head(ws)
+    head = tp.git_head(ws)
     if head and not _is_commit_sha(head):
         head = None    # empty repo: rev-parse echoes "HEAD"
     mode = tp.get_mode(ws)
@@ -1285,16 +1407,19 @@ def cmd_track(a) -> int:
     """Multiple workstreams over one engine; shared KB/graph across tracks."""
     import track as tr
     ws = _workspace(a.workspace)
+    out = None
     if a.track_action == "new":
-        print(json.dumps(tr.new(ws, a.name, " ".join(a.goal or []) or a.name,
-                                requirement_id=a.req), indent=2))
+        out = tr.new(ws, a.name, " ".join(a.goal or []) or a.name,
+                     requirement_id=a.req)
     elif a.track_action == "list":
-        print(json.dumps(tr.list_(ws), indent=2))
+        out = tr.list_(ws)
     elif a.track_action == "switch":
-        print(json.dumps(tr.switch(ws, a.name), indent=2))
+        out = tr.switch(ws, a.name)
     elif a.track_action == "close":
-        print(json.dumps(tr.close(ws, a.name, status=a.status), indent=2))
-    return 0
+        out = tr.close(ws, a.name, status=a.status)
+    print(json.dumps(out, indent=2))
+    # Same exit-code contract as cmd_loop: an engine refusal is nonzero.
+    return 1 if isinstance(out, dict) and out.get("error") else 0
 
 
 def cmd_context(a) -> int:
@@ -1359,7 +1484,15 @@ def cmd_summary(a) -> int:
     if getattr(a, "json", False):
         print(json.dumps(summary, indent=2))
         return 0
-    print("taskplane: " + summary["headline"])
+    headline = summary["headline"]
+    decision = summary.get("decision")
+    if decision and decision in headline:
+        # The ACTION REQUIRED line below carries the decision sentence ONCE;
+        # printing it inside the headline too diluted the four-line surface
+        # whose whole job is to say the one thing needed.
+        headline = (headline.replace(decision, "").strip(" —–-–:.")
+                    or "Decision required")
+    print("taskplane: " + headline)
     if summary.get("next") and summary.get("state") in ("not_started", "done"):
         print("  next: " + summary["next"])
     if summary.get("goal"):
@@ -1513,9 +1646,13 @@ def cmd_graph(a) -> int:
         prod = dg.product_impact(ws, files)
         imp["affected_requirements"] = prod["affected_requirements"]
         imp["dependent_requirements"] = prod["dependent_requirements"]
-        print(dg.render_context(imp) or "no modules touched.")
+        # --json must emit PURE JSON on stdout — the prose context line before
+        # it broke json.load for machine consumers (v2.3.1). Mutually
+        # exclusive, matching cmd_lens/cmd_onboard.
         if a.json:
             print(json.dumps(imp, indent=2))
+        else:
+            print(dg.render_context(imp) or "no modules touched.")
     elif a.graph_action == "edge":
         e = dg.record_edge(ws, a.src, a.dst, kind=a.kind, note=a.note or "",
                            confidence=a.confidence)
@@ -1551,12 +1688,144 @@ def cmd_graph(a) -> int:
 
 
 def _changed_for_impact(ws, base):
-    import subprocess
-    r = subprocess.run(["git", "diff", "--name-only", base or "HEAD"],
-                       cwd=ws, capture_output=True, text=True)
-    u = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
-                       cwd=ws, capture_output=True, text=True)
-    return [f for f in (r.stdout + u.stdout).splitlines() if f]
+    # One implementation, not two: the kernel's changed_files (diff +
+    # untracked, RUNTIME_OWNED bookkeeping excluded, deduped) — so `tp graph
+    # impact` computes the SAME blast radius the loop engine computes for
+    # the same diff, instead of inflating it with .taskplane/, plan/ and
+    # knowledge/ bookkeeping.
+    return tp.changed_files(ws, base or "HEAD")
+
+
+# ------------------------------------------------------------- version
+#
+# Single-source version. Cutting a release used to hand-edit 7+ locations
+# across 6 files, and the unguarded surface drifted exactly as predicted
+# (the v2.2.1 tag still said 2.2.0 throughout docs/openai-submission.md).
+# True single-sourcing across two host manifest formats isn't possible —
+# both hosts insist on their own literal "version" field — so ONE file is
+# authoritative and everything else is mechanically VERIFIED against it:
+# `tp version --verify` (CI-callable, exit 1 on any drift).
+
+def _plugin_repo_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def plugin_version(root: str | None = None) -> str:
+    """The ONE authoritative plugin version: .codex-plugin/plugin.json —
+    the manifest scripts/package_openai.py already packages from. Every
+    other version field is derived and checked, never independently edited."""
+    root = root or _plugin_repo_root()
+    src = os.path.join(root, ".codex-plugin", "plugin.json")
+    data = tp.load_json(src, what="authoritative version manifest")
+    v = data.get("version")
+    if not isinstance(v, str) or not v.strip():
+        raise tp.StateError(src, "manifest has no usable 'version' field",
+                            "restore the authoritative version string")
+    return v.strip()
+
+
+def _walk_versions(obj, prefix=""):
+    """Yield (json_path, value) for every literal 'version' key at any
+    depth — marketplace.json carries the version in TWO places."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            path_ = f"{prefix}.{k}" if prefix else k
+            if k == "version":
+                yield path_, v
+            else:
+                yield from _walk_versions(v, path_)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from _walk_versions(v, f"{prefix}[{i}]")
+
+
+def version_report(root: str | None = None) -> dict:
+    """Cross-check every derived version surface against the single source.
+    Manifests must carry the exact version; docs that exist must mention it
+    (the containment check is what catches the shipped 2.2.0-in-docs drift)."""
+    root = root or _plugin_repo_root()
+    authoritative = plugin_version(root)
+    checks = []
+
+    def _manifest(rel):
+        p = os.path.join(root, rel)
+        try:
+            data = tp.load_json(p, what="version manifest")
+        except tp.StateError as e:
+            checks.append({"file": rel, "field": "(unreadable)",
+                           "found": str(e), "ok": False})
+            return
+        found_any = False
+        for field, v in _walk_versions(data):
+            found_any = True
+            checks.append({"file": rel, "field": field, "found": v,
+                           "ok": v == authoritative})
+        if not found_any:
+            checks.append({"file": rel, "field": "version", "found": None,
+                           "ok": False})
+
+    _manifest(os.path.join(".claude-plugin", "plugin.json"))
+    _manifest(os.path.join(".claude-plugin", "marketplace.json"))
+    _manifest(os.path.join(".codex-plugin", "plugin.json"))
+
+    # Two doc rules:
+    #   - README/CHANGELOG MUST mention the authoritative version — every
+    #     release adds a history row there, so absence means the release
+    #     forgot them.
+    #   - openai-submission.md must never carry a STALE version: any
+    #     version literal it mentions must include the authoritative one,
+    #     but a doc with NO version literals cannot drift and is clean
+    #     (the worksheet dropped its hand-synced version mentions for
+    #     exactly this reason).
+    for rel, must_mention in (
+            ("README.md", True),
+            ("CHANGELOG.md", True),
+            (os.path.join("docs", "openai-submission.md"), False)):
+        p = os.path.join(root, rel)
+        if not os.path.exists(p):
+            continue      # docs aren't packaged into every install shape
+        try:
+            with open(p, encoding="utf-8") as f:
+                body = f.read()
+        except OSError as e:
+            checks.append({"file": rel, "field": "(unreadable)",
+                           "found": str(e), "ok": False})
+            continue
+        if must_mention:
+            needle = "v" + authoritative
+            checks.append({"file": rel, "field": f"mentions '{needle}'",
+                           "found": needle if needle in body else "ABSENT",
+                           "ok": needle in body})
+        else:
+            mentioned = set(re.findall(r"\bv?(\d+\.\d+\.\d+)\b", body))
+            ok = (not mentioned) or (authoritative in mentioned)
+            checks.append({
+                "file": rel,
+                "field": "no stale version literals",
+                "found": (", ".join(sorted(mentioned)) or
+                          "(no version literals — cannot drift)"),
+                "ok": ok})
+
+    mismatches = [c for c in checks if not c["ok"]]
+    return {"version": authoritative,
+            "source": ".codex-plugin/plugin.json (authoritative — edit the "
+                      "version THERE; everything else is verified)",
+            "checks": checks, "mismatches": mismatches,
+            "ok": not mismatches}
+
+
+def cmd_version(a) -> int:
+    if not getattr(a, "verify", False):
+        print(plugin_version())
+        return 0
+    rep = version_report()
+    print(json.dumps(rep, indent=2))
+    if not rep["ok"]:
+        print(f"taskplane: version drift — {len(rep['mismatches'])} "
+              f"surface(s) disagree with the authoritative "
+              f"{rep['version']} (.codex-plugin/plugin.json).",
+              file=sys.stderr)
+    return 0 if rep["ok"] else 1
 
 
 def main(argv=None) -> int:
@@ -1626,6 +1895,11 @@ def main(argv=None) -> int:
     rd.add_argument("--workspace", default=argparse.SUPPRESS)
     rd.set_defaults(fn=cmd_ready)
 
+    gcp = sub.add_parser("gc", help="prune runtime artifacts (tombstones, "
+                         "stale locks, orphaned tmp) — never governance "
+                         "records")
+    gcp.add_argument("--workspace", default=argparse.SUPPRESS)
+    gcp.set_defaults(fn=cmd_gc)
     cl = sub.add_parser("clear", help="deactivate the workspace contract")
     cl.add_argument("--workspace", default=argparse.SUPPRESS)
     cl.set_defaults(fn=cmd_clear)
@@ -1667,7 +1941,12 @@ def main(argv=None) -> int:
     li.add_argument("--design-only", action="store_true",
                     help="stop after the human approves the Design Contract "
                          "instead of continuing to Plan/Build/Review")
-    lsub.add_parser("next")
+    li.add_argument("--force", action="store_true",
+                    help="replace an in-flight loop (the old loop.json is "
+                         "archived first — without this flag re-init refuses)")
+    ln = lsub.add_parser("next")
+    ln.add_argument("--req", help="attach requirement R-id to the loop "
+                    "before DoR evaluation (design anchor)")
     lsub.add_parser("wave")
     lc = lsub.add_parser("claim")
     lc.add_argument("task_id")
@@ -1677,6 +1956,8 @@ def main(argv=None) -> int:
     lg.add_argument("outcome", choices=["pass", "fail"])
     lg.add_argument("--note", default="")
     lg.add_argument("--task", help="task id (parallel execute waves)")
+    lg.add_argument("--req", help="attach requirement R-id to the loop "
+                    "before DoR evaluation (design anchor)")
     lsu = lsub.add_parser("submit", help="worker submits evidence without "
                             "transitioning state; the orchestrator gates")
     lsu.add_argument("outcome", choices=["pass", "fail"])
@@ -1927,10 +2208,59 @@ def main(argv=None) -> int:
     us.add_argument("--workspace", default=argparse.SUPPRESS)
     us.set_defaults(fn=cmd_summary)
 
+    vp = sub.add_parser("version", help="print the plugin version; "
+                        "--verify cross-checks every derived version "
+                        "surface against the single source "
+                        "(.codex-plugin/plugin.json) — CI-callable, "
+                        "exit 1 on drift")
+    vp.add_argument("--verify", action="store_true")
+    vp.set_defaults(fn=cmd_version)
+
     a = p.parse_args(argv)
     if not hasattr(a, "workspace"):
         a.workspace = None      # SUPPRESS leaves it unset when never passed
-    return a.fn(a)
+    # USER-LAYER ERROR BOUNDARY. The "simple front" translates raw
+    # tracebacks into governed messages — but it NEVER swallows: a failure
+    # stays a FAILURE (nonzero exit) and the full detail stays available.
+    #   - tp.StateError: a GOVERNED failure — the message already carries
+    #     the path, the why, and the remedy. One clean line, exit 1.
+    #   - missing git binary: the documented prerequisite — the remedy line,
+    #     exit 1.
+    #   - anything UNEXPECTED: a short reason line PLUS the full traceback
+    #     on stderr (detail preserved, never hidden), exit 70 (EX_SOFTWARE)
+    #     so drivers can tell an internal fault from a governed refusal
+    #     (exit 1) and from success (exit 0).
+    # TASKPLANE_DEBUG=1 re-raises for interactive debugging. (cmd_screen
+    # keeps its own inner fail-closed boundary — the hook protocol needs a
+    # block decision on stdout, which this boundary preserves by never
+    # reaching it.)
+    try:
+        return a.fn(a)
+    except BrokenPipeError:
+        raise                    # handled at the __main__ boundary below
+    except Exception as exc:     # noqa: BLE001 — the user-layer boundary
+        if os.environ.get("TASKPLANE_DEBUG"):
+            raise                # operator asked for the raw exception
+        if isinstance(exc, FileNotFoundError) and \
+                getattr(exc, "filename", None) == "git":
+            # git is the load-bearing external tool of the whole design;
+            # its absence gets the documented remedy, not a stack trace.
+            print(f"taskplane: {a.cmd} failed: git is required — install "
+                  "git and re-run (see README prerequisites).",
+                  file=sys.stderr)
+            return 1
+        if isinstance(exc, tp.StateError):
+            # StateError already carries the path, the why, and the remedy.
+            print(f"taskplane: {a.cmd} failed: {exc}", file=sys.stderr)
+            print("  (set TASKPLANE_DEBUG=1 for the full traceback)",
+                  file=sys.stderr)
+            return 1
+        # Unexpected: short reason first, then the FULL traceback — the
+        # boundary governs the message, it never destroys the evidence.
+        print(f"taskplane: {a.cmd} failed: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return 70
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # taskplane — the governance harness
 
-`taskplane/` is the enforcement core for Conductor roles: a Task Contract
+`taskplane/` is the enforcement core for taskplane personas (tp-product,
+tp-designer, tp-executor, tp-engineering, …): a Task Contract
 bounds what a role may touch, and the plugin's **PreToolUse hook** enforces
 that boundary *before* each Write/Edit/Bash runs. Stdlib-only Python (no pip),
 so it runs anywhere the plugin does.
@@ -59,7 +60,7 @@ python3 taskplane/tp.py new --read-only --write-allow ".em-review/**" \
     --tools "Read,Grep,Glob,Bash,Write,Edit" "EM review: <target>"
 ```
 
-The `engineering-manager` role activates exactly this, so its cardinal rule
+The `tp-engineering` persona activates exactly this, so its cardinal rule
 ("validate, never change") is **mechanically enforced** — writes are confined
 to `.em-review/**` (reports, scratch checkouts, mocks); any Write/Edit or
 shell redirect touching the reviewed source is denied before it runs. Run
@@ -76,4 +77,4 @@ host agent's model calls, so the dollar estimate is advisory (a stop signal),
 not a pre-spend interception. The command screener is a cooperative
 best-effort layer, not an OS security boundary.
 
-Apache-2.0 (taskplane); bundled inside the MIT-licensed plugin.
+Apache-2.0 — the same license as the plugin that bundles it (see LICENSE).

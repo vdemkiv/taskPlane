@@ -27,6 +27,17 @@ not the wall.
 
 Behavior mirrors the audited taskplane hooks/DoD logic so a governed task
 behaves consistently across supported hosts.
+
+Concurrency guarantee (v2.3.0, honest version): every cross-process
+serialization in this kernel goes through ``file_lock`` — advisory
+``fcntl.flock`` where the platform provides it, an atomic-mkdir spin lock
+with staleness recovery where it does not (Windows, some FUSE/network
+mounts), and a raised ``StateError`` when neither can be acquired. It is
+NEVER silently lock-free: on a host without flock the fallback still
+serializes, and an unacquirable lock fails the operation closed instead of
+proceeding unprotected. (Earlier releases wrapped ``import fcntl`` in a
+bare try/except and ran lock-free on Windows while the README advertised
+Windows support — that gap is closed at this one seam.)
 """
 
 from __future__ import annotations
@@ -39,6 +50,141 @@ import posixpath
 import re
 import shlex
 import subprocess
+import time as _time
+import contextlib as _contextlib
+
+
+# ---------------------------------------------------------------------------
+# Durable-state primitives (v2.3.0). Governance files that more than one
+# process can touch (graph.json, mode.json, tracks.json, meter.json, the
+# requirements index, loop.json …) go through these three, so a torn write
+# can never destroy state and concurrency never silently degrades.
+# ---------------------------------------------------------------------------
+
+class StateError(RuntimeError):
+    """A governance state file is unreadable or unprotectable.
+
+    Raised instead of a bare traceback (fail-closed WITH a remedy) — never
+    swallowed into a silent default: masking a corrupt control file is how a
+    user's `private` flag or a track registry quietly disappears."""
+
+    def __init__(self, path: str, why: str, remedy: str = ""):
+        self.path = path
+        msg = f"{why}: {path}"
+        if remedy:
+            msg += f" — {remedy}"
+        super().__init__(msg)
+
+
+def atomic_write_json(path: str, data, *, indent: int = 1,
+                      sort_keys: bool = False) -> None:
+    """Write JSON durably: temp file in the same directory + os.replace.
+
+    A crash mid-write leaves the previous version intact instead of a torn
+    file. Same-directory temp keeps the replace atomic across filesystems."""
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, f".{os.path.basename(path)}.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=indent, sort_keys=sort_keys)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except OSError:
+            pass
+
+
+_LOAD_RAISE = object()
+
+
+def load_json(path: str, default=_LOAD_RAISE, *, what: str = "state file"):
+    """Read a JSON governance file with a strict corruption contract.
+
+    Missing file  -> `default` when given, else StateError (fail closed).
+    Corrupt file  -> ALWAYS StateError naming the path and a remedy — a
+                     corrupt control file must never be silently replaced by
+                     a default (that is fail-open data loss)."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        if default is not _LOAD_RAISE:
+            return default
+        raise StateError(path, f"missing {what}",
+                         "re-run the command that creates it") from None
+    except ValueError as e:
+        raise StateError(
+            path, f"corrupt {what} ({e})",
+            "inspect/restore it (git checkout or delete after review); "
+            "taskplane will not guess its contents") from None
+    except OSError as e:
+        raise StateError(path, f"unreadable {what} ({e})") from None
+
+
+_LOCK_STALE_S = 120.0
+
+
+@_contextlib.contextmanager
+def file_lock(path: str, *, timeout: float = 10.0):
+    """Advisory exclusive lock on <path>.lock — NEVER silently lock-free.
+
+    Primary: fcntl.flock. Where flock is unavailable or refused (Windows,
+    some FUSE/network mounts — exactly the hosts this plugin targets), fall
+    back to an atomic mkdir spin-lock with staleness recovery instead of
+    proceeding unlocked. If even that cannot be acquired within `timeout`,
+    raise StateError: failing closed beats corrupting shared state."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    lock_path = path + ".lock"
+    # ACQUISITION failures fall through to the mkdir lock; an exception
+    # raised by the CALLER'S BODY must propagate unchanged (v2.3.0 — the
+    # earlier shape caught the body's OSError too, then yielded a second
+    # time from the fallback path).
+    lf = None
+    try:
+        lf = open(lock_path, "w")
+        import fcntl
+        fcntl.flock(lf, fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        if lf is not None:
+            lf.close()
+        lf = None     # fall through to the mkdir lock — not to "no lock"
+    if lf is not None:
+        try:
+            yield
+        finally:
+            lf.close()
+        return
+    lockdir = path + ".lockdir"
+    deadline = _time.monotonic() + max(0.1, timeout)
+    while True:
+        try:
+            os.mkdir(lockdir)
+            break
+        except FileExistsError:
+            try:  # steal a lock left behind by a dead process
+                if _time.time() - os.stat(lockdir).st_mtime > _LOCK_STALE_S:
+                    os.rmdir(lockdir)
+                    continue
+            except OSError:
+                pass
+            if _time.monotonic() >= deadline:
+                raise StateError(
+                    lockdir, "could not acquire state lock",
+                    "another process holds it; if it is dead, remove the "
+                    "lockdir") from None
+            _time.sleep(0.05)
+        except OSError as e:
+            raise StateError(lockdir, f"lock unavailable ({e})") from None
+    try:
+        yield
+    finally:
+        try:
+            os.rmdir(lockdir)
+        except OSError:
+            pass
 
 # Host write tools → the input key that carries the path. Codex sends
 # apply_patch with the patch body in ``command``; its targets are extracted
@@ -92,11 +238,56 @@ def _ansi_c_unquote(s: str) -> str:
 # `sudo rm x` all mutate `x`; making them transparent closes the
 # "prefix-a-wrapper" bypass of the write screen.
 _WRAPPERS = {"env", "nohup", "time", "sudo", "doas", "nice", "ionice",
-             "setsid", "stdbuf", "timeout", "chrt", "eatmydata"}
+             "setsid", "stdbuf", "timeout", "chrt", "eatmydata",
+             # shell builtins that exec their trailing argv — `command git
+             # push` / `exec rm x` must screen the real program (v2.3.0)
+             "command", "exec", "builtin"}
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 # Interpreters whose inline-code flag hides arbitrary file writes from argv.
+# awk/ed/ex are interpreters too: `awk 'BEGIN{print>"f"}'` and an `ed`/`ex`
+# script write files at a path named INSIDE the program text, not in a
+# screenable argv slot (v2.3.1 — closed: a read-only contract used to APPROVE
+# `awk 'BEGIN{print>"main.py"}'`). They join the interpreter-opaque class:
+# blocked under read-only, allowed-but-opaque under build (same documented gap
+# as python -c). TRADEOFF (named, per the tradeoffs lens): this screen is
+# defense-in-depth, NOT an OS boundary — console-script entry points
+# (pytest, make, tox, npm) run the same Turing-complete code and remain
+# allowed-opaque by design; a hard guarantee needs a read-only mount/container.
 _INTERPRETERS = {"python", "python2", "python3", "perl", "ruby", "node",
-                 "php", "lua", "Rscript", "deno", "bun"}
+                 "php", "lua", "Rscript", "deno", "bun",
+                 "awk", "gawk", "mawk", "nawk", "ed", "ex"}
+# This package's OWN CLI. A read-only REVIEW contract must still let the review
+# persona run `python3 .../taskplane/tp.py findings|dashboard|graph` — the CLI
+# is the governed tool itself, not an arbitrary interpreter body, so it is
+# exempt from interpreter-opacity (v2.3.1 — the tightening had self-DoS'd the
+# review workflow). Matched by resolved path, so a stray file merely named
+# tp.py elsewhere is NOT exempt.
+_TP_CLI_PATH = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "tp.py"))
+# Archive extractors write files at paths named INSIDE the archive, unscopeable
+# from argv — like `find -delete`. Extraction modes are destructive-opaque
+# (blocked under ANY governing contract); create/list/test modes are not.
+_ARCHIVE_EXTRACTORS = {"tar", "unzip"}
+
+
+def _is_tp_cli(arg: str) -> bool:
+    """True when a python script argument is THIS package's own tp.py — by
+    absolute realpath, or the `taskplane/tp.py` suffix used when invoked
+    relative to the repo root. A stray file merely named tp.py elsewhere
+    (no taskplane/ parent) is not exempt."""
+    a = arg.replace("\\", "/")
+    if os.path.basename(a) != "tp.py":
+        return False
+    if os.path.isabs(a):
+        try:
+            return os.path.realpath(a) == _TP_CLI_PATH
+        except OSError:
+            return False
+    return a.endswith("taskplane/tp.py")
+# The only interpreter argvs that provably run NO user code (v2.3.0): pure
+# version/help probes. Everything else — script file, -m module, stdin —
+# is as un-screenable as `-c` and is treated as interpreter-opaque.
+_INTERPRETER_SAFE_FLAGS = {"--version", "-V", "--help", "-h"}
 # git subcommands that rewrite tracked files in the working tree.
 _GIT_MUTATORS = {"checkout", "reset", "restore", "clean", "stash",
                  "apply", "am", "rebase", "cherry-pick", "revert"}
@@ -315,6 +506,7 @@ _WRAPPER_VALUE_FLAGS = {
     "timeout": {"-s", "-k", "--signal", "--kill-after"},
     "chrt": {"-T", "-P", "--sched-runtime", "--sched-period"},
     "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "exec": {"-a"},
 }
 
 
@@ -404,12 +596,29 @@ def _analyze(command: str, _depth: int = 0):
         args = toks[1:]
 
         if prog in _SHELLS:
-            for i, a in enumerate(args):
-                if a == "-c" and i + 1 < len(args):
-                    t, o = _analyze(args[i + 1], _depth + 1)
-                    targets += t
-                    opaque = opaque or o
-                    break
+            # -c may hide in a short-option cluster (`bash -lc '…'`) — the
+            # old exact `== "-c"` test let a clustered form skip the body
+            # analysis entirely, so `bash -lc 'echo x > src/main.py'`
+            # slipped past even a READ-ONLY contract (v2.3.0).
+            saw_c = any(a == "-c" or (a.startswith("-")
+                                      and not a.startswith("--")
+                                      and "c" in a[1:])
+                        for a in args)
+            body = next((a for a in args if not a.startswith("-")), None) \
+                if saw_c else None
+            if body is not None:
+                t, o = _analyze(body, _depth + 1)
+                targets += t
+                opaque = opaque or o
+            else:
+                # `sh script.sh` / stdin-driven shell: the commands it runs
+                # are as un-screenable as `python file.py` — surface it as
+                # interpreter-opaque so a read-only contract blocks it
+                # (build contracts keep the documented interpreter gap).
+                opaque = opaque or (
+                    "interpreter",
+                    f"`{prog} <script|stdin>` runs commands that can't be "
+                    "screened from argv")
             continue
         if prog == "eval":
             # eval re-parses its args as a shell command — screen what it
@@ -459,13 +668,47 @@ def _analyze(command: str, _depth: int = 0):
                     f"`find … {act} …` mutates matched files at no "
                     "statically-known path")
             continue
+        if prog in _ARCHIVE_EXTRACTORS:
+            # unzip extracts by default; tar extracts only with an x-mode.
+            extract = (prog == "unzip"
+                       and not any(a in ("-l", "-t", "-v", "-p") for a in args)
+                       ) or (prog == "tar" and any(
+                           not a.startswith("--") and a.startswith("-")
+                           and "x" in a or a in ("--extract", "--get")
+                           for a in args))
+            if extract:
+                opaque = opaque or (
+                    "destructive",
+                    f"`{prog}` extracts files to paths named inside the "
+                    "archive, unscopeable from argv")
+            continue
         if prog in _INTERPRETERS:
+            # This package's own CLI is the governed tool, not an arbitrary
+            # body — exempt it so a read-only review can still run tp.py.
+            first_arg = next((a for a in args if not a.startswith("-")), None)
+            if prog.startswith("python") and first_arg \
+                    and _is_tp_cli(first_arg):
+                continue
             if any(a in ("-c", "-e", "-E") or a.startswith("-e")
                    for a in args):
                 opaque = opaque or (
                     "interpreter",
                     f"`{prog} -c/-e …` runs inline code whose file writes "
                     "can't be screened from argv")
+            elif not args or not all(a in _INTERPRETER_SAFE_FLAGS
+                                     for a in args):
+                # v2.3.0 tightening: a script FILE (`python3 file.py`), a
+                # module (`python3 -m mod`), or a bare/stdin invocation is
+                # exactly as un-screenable as `-c` — the body can write
+                # anywhere. Surfaced as interpreter-opaque so a READ-ONLY
+                # contract blocks it (this closed a live bypass: write
+                # evil.py into write_allow, then `python3 evil.py` rewrote
+                # the reviewed source). Build contracts keep the documented
+                # interpreter gap (screen_command only blocks 'destructive').
+                opaque = opaque or (
+                    "interpreter",
+                    f"`{prog} <script|module|stdin>` runs code whose file "
+                    "writes can't be screened from argv")
             continue
         if prog == "git":
             # The subcommand is the first non-option arg — but git's GLOBAL
@@ -500,15 +743,126 @@ def write_targets(command: str) -> list:
     return _analyze(command)[0]
 
 
-def screen_command(cmd: str, coding: dict, workspace: str | None) -> str | None:
+def _deny_tok_eq(tok: str, pat: str) -> bool:
+    """Token equality for deny matching, with one normalization: any all-slash
+    token equals any all-slash pattern token, so `rm -rf //` still matches the
+    `rm -rf /` deny (POSIX treats // as the root too)."""
+    if tok == pat:
+        return True
+    return bool(tok and pat and set(tok) <= {"/"} and set(pat) <= {"/"})
+
+
+def _seg_matches_deny(toks, pat) -> bool:
+    """Does ONE simple command (unwrapped argv) match a deny pattern?
+
+    Anchored subsequence (v2.3.0 precision fix): the pattern's FIRST token
+    must be the invoked program (or its basename — `/usr/bin/git push` is
+    still `git push`), and the remaining pattern tokens must appear in order
+    among that program's OWN arguments. So `git push`, `git -C sub push`,
+    and `git --no-pager push` are denied, while `git commit -m ok && echo
+    push` (separate segments) and `grep "git push" file` (pattern only in a
+    data argument) are not — the old whole-line subsequence + raw substring
+    matched all of them and burned budgets on false denies."""
+    if not pat or not toks:
+        return False
+    head = toks[0]
+    if not (_deny_tok_eq(head, pat[0])
+            or _deny_tok_eq(os.path.basename(head), pat[0])):
+        return False
+    i, rest = 0, toks[1:]
+    for p in pat[1:]:
+        while i < len(rest) and not _deny_tok_eq(rest[i], p):
+            i += 1
+        if i >= len(rest):
+            return False
+        i += 1
+    return True
+
+
+def _deny_segments(command: str, _depth: int = 0):
+    """(segments, unscreenable): the unwrapped argv of every simple command
+    the shell would run — through wrappers, `sh -c` bodies (including
+    clustered short options like `bash -lc`), `eval`, `$()`/backticks and
+    ANSI-C quoting — plus a flag set when the command contains an executor
+    whose body can't be resolved statically (a stdin/script-file shell, an
+    interpreter, xargs, eval). For those, deny patterns ALSO match as raw
+    text: `echo "git push" | sh` must stay blocked (ambiguity stays denied),
+    while plain `echo "never git push"` — no executor — is allowed."""
+    segs: list = []
+    unscreen = False
+    if _depth > 6:
+        return segs, True          # runaway nesting: treat as unscreenable
+    command = _ansi_c_unquote(command.replace(">|", ">"))
+    for m in _SUBST_RE.finditer(command):
+        body = m.group(1) or m.group(2) or ""
+        if body.strip():
+            s, u = _deny_segments(body, _depth + 1)
+            segs += s
+            unscreen = unscreen or u
+    for part in _CMD_SEP_RE.split(command):
+        try:
+            toks = shlex.split(part)
+        except ValueError:
+            toks = part.split()
+        toks = _unwrap(toks)
+        if not toks:
+            continue
+        segs.append(toks)
+        prog = os.path.basename(toks[0])
+        args = toks[1:]
+        if prog in _SHELLS:
+            # -c may hide in a short-option cluster (`bash -lc '…'`)
+            saw_c = any(a == "-c" or (a.startswith("-")
+                                      and not a.startswith("--")
+                                      and "c" in a[1:])
+                        for a in args)
+            body = next((a for a in args if not a.startswith("-")), None) \
+                if saw_c else None
+            if body:
+                s, u = _deny_segments(body, _depth + 1)
+                segs += s
+                unscreen = unscreen or u
+            else:
+                unscreen = True    # stdin-driven or script-file shell
+        elif prog == "eval":
+            s, u = _deny_segments(" ".join(args), _depth + 1)
+            segs += s
+            unscreen = unscreen or u
+        elif prog in _INTERPRETERS or prog == "xargs":
+            unscreen = True
+    return segs, unscreen
+
+
+def deny_violation(cmd: str, deny) -> str | None:
+    """First deny pattern the command matches, or None. See _seg_matches_deny
+    / _deny_segments for the matching rules (v2.3.0)."""
+    if not deny:
+        return None
+    segs, unscreen = _deny_segments(cmd)
     try:
-        tokens = shlex.split(cmd)
+        joined = " ".join(shlex.split(cmd))
     except ValueError:
-        tokens = cmd.split()
-    joined = " ".join(tokens)
-    for pattern in (coding.get("command_policy") or {}).get("deny") or []:
-        if _token_subseq(pattern.split(), tokens) or pattern in joined:
-            return f"command matches deny pattern '{pattern}'"
+        joined = " ".join(cmd.split())
+    for pattern in deny:
+        pat = (pattern or "").split()
+        if not pat:
+            continue
+        if any(_seg_matches_deny(toks, pat) for toks in segs):
+            return pattern
+        # Un-screenable executor present: fall back to the strict raw-text
+        # match so pattern text smuggled through a shell/interpreter body
+        # stays BLOCKED. Without an executor the raw match is dropped —
+        # that's the whole precision gain.
+        if unscreen and pattern in joined:
+            return pattern
+    return None
+
+
+def screen_command(cmd: str, coding: dict, workspace: str | None) -> str | None:
+    pattern = deny_violation(cmd, (coding.get("command_policy")
+                                   or {}).get("deny") or [])
+    if pattern:
+        return f"command matches deny pattern '{pattern}'"
     targets, opaque = _analyze(cmd)
     for target in targets:
         p = norm(target, workspace)
@@ -552,6 +906,19 @@ def write_paths(tool_name: str, tool_input: dict) -> list[str]:
 def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                 workspace: str | None) -> tuple[bool, str]:
     """Return (allow, reason). Mirrors the taskplane PreToolUse hook."""
+    members = contract.get("_union")
+    if members:
+        # Most-restrictive union (v2.3.0): the action passes only if EVERY
+        # active contract approves it. First refusal wins — ambiguity between
+        # parallel contracts always resolves to BLOCK, never to the loosest.
+        for m in members:
+            ok, reason = screen_tool(m, tool_name, tool_input, workspace)
+            if not ok:
+                return False, (f"[{m.get('task_id', '?')}] {reason} "
+                               f"(most-restrictive union of {len(members)} "
+                               "active contracts; set TASKPLANE_TASK to work "
+                               "under a single task's contract)")
+        return True, f"within every active contract ({len(members)}-way union)"
     allowed = contract.get("allowed_tools") or []
     if allowed and not any(name in allowed for name in tool_aliases(tool_name)):
         return False, f"tool '{tool_name}' not in allowed_tools"
@@ -630,7 +997,13 @@ def _run(cmd, cwd, shell=False, timeout=600):
 # decision or a plan would fail every governed task.
 RUNTIME_OWNED = (".taskplane/", ".taskplane_output.json", "knowledge/",
                  "plan/", ".eval/", ".em-review/", ".security-review/",
-                 ".tp-work/", ".taskplane-kb/")
+                 ".tp-work/", ".taskplane-kb/",
+                 # v2.3.0: authored by the loop's own earlier steps / init —
+                 # a pm step writes specs/, init writes .gitignore, context
+                 # docs land in context|docs|requirements/. Counting them as
+                 # a later task's out-of-scope diff failed every execute gate
+                 # in a serial journey.
+                 "specs/", "docs/", "context/", "requirements/", ".gitignore")
 
 
 def changed_files(workspace: str, snapshot_ref: str) -> list:
@@ -797,6 +1170,16 @@ def dod_check(contract: dict, workspace: str,
                 v = scope_violation(p, coding)
                 if v:
                     errors.append("diff_scope: " + v)
+            if any(e.startswith("diff_scope:") for e in errors):
+                # Name the recovery path (v2.3.0) — it existed but was
+                # stated nowhere: committing alone does NOT clear the gate
+                # because the contract snapshot predates the commit.
+                errors.append(
+                    "diff_scope recovery: if these files were authored by an "
+                    "earlier loop step (specs, plan, docs, .gitignore), "
+                    "commit them, re-run `loop next` to refresh the contract "
+                    "snapshot, then submit and gate again; otherwise revert "
+                    "them or widen the task's scope via the human gate")
 
     tc = dod.get("test_command")
     if tc:
@@ -805,6 +1188,28 @@ def dod_check(contract: dict, workspace: str,
             tail = (proc.stdout + proc.stderr).strip().splitlines()[-5:]
             errors.append(f"tests_pass: '{tc}' exited {proc.returncode}: "
                           + " | ".join(tail))
+
+    # Graph-scoped regression gate (v2.3.1) — opt-in via dod.regression_gate.
+    # ADDITIVE: it only adds blockers, never removes an existing DoD check.
+    # Kept off by default until enabled per-contract so it cannot surprise an
+    # existing loop; the loop turns it on for governed changes.
+    if dod.get("regression_gate") and snapshot_ref:
+        try:
+            import regression as _rg
+            changed = changed_files(workspace, snapshot_ref)
+            graph_impacted = None
+            try:
+                import depgraph as _dg
+                graph_impacted = _dg.impact(
+                    workspace, changed).get("impacted") or None
+            except Exception:
+                graph_impacted = None      # sparse/absent graph → import-map only
+            errors.extend(_rg.dod_errors(workspace, snapshot_ref, changed,
+                                         graph_impacted))
+        except Exception as e:
+            # The gate must never crash the DoD it guards — degrade visibly.
+            errors.append(f"regression_gate: could not run ({e.__class__.__name__}"
+                          f": {e}); re-run or disable dod.regression_gate")
     return errors
 
 
@@ -821,7 +1226,7 @@ DEFAULT_MAX_ACTIONS_RO = 40       # read-only review contracts
 
 def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
                    tools=None, test_command=None, deny_extra=None,
-                   max_actions=None) -> dict:
+                   max_actions=None, regression_gate=False) -> dict:
     """Build a contract dict — shared by tp.py new and the loop engine so a
     step's contract is exactly what the hook will enforce. Every contract
     carries an ACTION BUDGET (max_actions): the hook counts each governed
@@ -831,6 +1236,11 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
     if max_actions is None:
         max_actions = DEFAULT_MAX_ACTIONS_RO if read_only \
             else DEFAULT_MAX_ACTIONS
+    max_actions = int(max_actions)
+    if max_actions < 0:
+        raise ValueError(
+            "max_actions must be >= 0 — 0 means a ZERO-action ceiling "
+            "(every governed action blocks); omit it for the default")
     c = {
         "task_id": "task_" + uuid.uuid4().hex[:8],
         "task": task,
@@ -843,7 +1253,8 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
             "out_of_scope_paths": list(DEFAULT_OUT_OF_SCOPE),
             "command_policy": {"deny": DEFAULT_DENY + list(deny_extra or [])},
             "dod": {"test_command": test_command,
-                    "require_clean_scope_diff": not read_only},
+                    "require_clean_scope_diff": not read_only,
+                    "regression_gate": bool(regression_gate)},
         },
     }
     if read_only:
@@ -867,7 +1278,10 @@ def budget_status(contract: dict, used_actions: int) -> tuple[bool, str]:
     raises the ceiling with `tp.py budget --grant N` or ends the task with
     `tp.py clear`."""
     max_a = (contract.get("budget") or {}).get("max_actions")
-    if not max_a:
+    if max_a is None:
+        # ONLY an absent ceiling is unmetered. 0 is a ZERO-action ceiling —
+        # maximally strict, never "no ceiling" (`--max-actions 0` used to
+        # silently create an unmetered contract; v2.3.0).
         return True, "no action ceiling set"
     if used_actions >= int(max_a):
         return False, (f"ACTION BUDGET exhausted ({used_actions}/{max_a}) — "
@@ -893,8 +1307,57 @@ def budget_status(contract: dict, used_actions: int) -> tuple[bool, str]:
 # refuses un-project-like workspaces (bare root / session home).
 
 
+# ---- per-task contract slots (v2.3.0) --------------------------------------
+#
+# The single active_contract.json slot let parallel lens agents overwrite each
+# other's contracts (and one agent's clear released a sibling's). Contracts
+# are now stored PER TASK under .taskplane/active/<slot>.json, selected by the
+# TASKPLANE_TASK env var the dispatch brief exports to each governed agent.
+# Protocol:
+#   * TASKPLANE_TASK unset  -> the legacy single slot (full compatibility).
+#   * TASKPLANE_TASK set + slot file exists -> that contract, and ONLY that
+#     contract, governs this process (activate/clear/snapshot are slot-local).
+#   * TASKPLANE_TASK set + NO slot file -> StateError: REFUSE (fail closed).
+#     Falling back to the legacy slot would let an agent be governed by a
+#     SIBLING's contract — the exact overwrite bug — or escape screening.
+#     The screener's catch-all turns the StateError into a block.
+
+_TASK_SLOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def task_slot() -> str | None:
+    """The per-task contract slot selected by TASKPLANE_TASK, or None for the
+    legacy single slot. An ill-formed value raises StateError (fail closed —
+    it must never silently select the wrong contract)."""
+    v = (os.environ.get("TASKPLANE_TASK") or "").strip()
+    if not v:
+        return None
+    if not _TASK_SLOT_RE.match(v):
+        raise StateError(
+            "TASKPLANE_TASK", f"invalid task slot {v!r}",
+            "use the task id from the dispatch brief "
+            "([A-Za-z0-9][A-Za-z0-9._-]*, max 64 chars) or unset it")
+    return v
+
+
+def active_contract_path(workspace: str, slot: str | None = None) -> str:
+    """Where this process's active contract lives. `slot` overrides the
+    TASKPLANE_TASK resolution (for orchestrators managing several slots)."""
+    slot = task_slot() if slot is None else slot
+    if slot is None:
+        return os.path.join(tp_dir(workspace), "active_contract.json")
+    return os.path.join(tp_dir(workspace), "active", f"{slot}.json")
+
+
 def _active_contract_path(workspace: str) -> str:
-    return os.path.join(tp_dir(workspace), "active_contract.json")
+    return active_contract_path(workspace)
+
+
+def _snapshot_path(workspace: str) -> str:
+    slot = task_slot()
+    if slot is None:
+        return os.path.join(tp_dir(workspace), "snapshot")
+    return os.path.join(tp_dir(workspace), "active", f"{slot}.snapshot")
 
 
 def _pid_alive(pid: int) -> bool:
@@ -939,6 +1402,15 @@ def orphan_status(workspace: str, contract: dict,
     The screener auto-clears an orphaned contract and abstains."""
     import time
     now = time.time() if now is None else now
+    if contract.get("_union"):
+        # A union of parallel contracts is NEVER auto-released: the screener's
+        # clear() would touch only the legacy slot, so "releasing" it would
+        # just drop governance for this action while the member slots stay
+        # active — an escape hatch, not a cleanup. Members orphan-release
+        # individually through their own TASKPLANE_TASK-scoped screeners; a
+        # human clears stale slots with TASKPLANE_TASK=<slot> tp.py clear.
+        return False, ("union of active per-task contracts — never "
+                       "auto-released; clear individual slots")
     pid = contract.get("activated_pid")
     if pid is not None:
         # PID is the AUTHORITATIVE liveness signal. A live owner is NEVER
@@ -977,7 +1449,10 @@ def orphan_status(workspace: str, contract: dict,
     # it degraded to pure-TTL and the exploit was live. Gating on exhaustion
     # closes it without depending on a PID no caller sets.)
     max_a = (contract.get("budget") or {}).get("max_actions")
-    if max_a and used >= int(max_a):
+    # `is not None`, not truthiness: a ZERO-action ceiling (max_actions=0) is
+    # exhausted from the first call and must be a human gate too — never
+    # idle-released (v2.3.0).
+    if max_a is not None and used >= int(max_a):
         return False, ("budget-exhausted — human gate, never idle-released "
                        "(clear/grant from outside the workspace)")
 
@@ -1029,20 +1504,26 @@ def grant_budget(workspace: str, extra: int) -> dict | None:
     c = load_active(workspace)
     if c is None:
         return None
+    if c.get("_union"):
+        # A grant must land on ONE task's contract file — writing the
+        # synthetic union to the legacy slot would mint a phantom contract.
+        raise StateError(
+            _active_contract_path(workspace),
+            "several per-task contracts are active — a blanket grant is "
+            "ambiguous",
+            "re-run with TASKPLANE_TASK=<task_id> to grant that task's "
+            "budget (see .taskplane/active/ for the slots)")
     b = c.setdefault("budget", {})
     old = b.get("max_actions")
-    if not old:
+    if old is None:
         return None   # unmetered contract — nothing to grant against
+    # `is None`, not truthiness: a ZERO-action ceiling is grantable — that's
+    # exactly the human-gate unblock path for --max-actions 0 (v2.3.0).
     b["max_actions"] = int(old) + int(extra)
     # Atomic write: a live screener may load_active concurrently; a torn read
     # of the contract fails CLOSED (block), so the grant meant to UNBLOCK
-    # could momentarily hard-block. temp + os.replace — same as _meter_bump /
-    # loop.save.
-    path = _active_contract_path(workspace)
-    tmp = path + f".tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
-        json.dump(c, f, indent=2)
-    os.replace(tmp, path)
+    # could momentarily hard-block.
+    atomic_write_json(_active_contract_path(workspace), c, indent=2)
     trace(workspace, "budget_granted", extra=int(extra), old=int(old),
           new=b["max_actions"], task_id=c.get("task_id"))
     return c
@@ -1076,14 +1557,25 @@ def activate(workspace: str, contract: dict,
     d = tp_dir(workspace)
     os.makedirs(d, exist_ok=True)
     _ensure_self_ignored(d)
-    with open(os.path.join(d, "active_contract.json"), "w") as f:
-        json.dump(contract, f, indent=2)
-    with open(os.path.join(d, "snapshot"), "w") as f:
+    # Opportunistic GC of taskplane's OWN stale artifacts (rename-tombstones
+    # from safe_remove on unlink-refusing FUSE mounts, orphaned atomic-write
+    # temps, stale locks) — bounded, best-effort, at a moment the workspace
+    # is provably being reused. Never touches user data.
+    _gc_runtime_artifacts(d)
+    _gc_runtime_artifacts(os.path.join(d, "active"))
+    cpath = _active_contract_path(workspace)
+    os.makedirs(os.path.dirname(cpath), exist_ok=True)
+    atomic_write_json(cpath, contract, indent=2)
+    spath = _snapshot_path(workspace)
+    tmp = spath + f".tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
         f.write(snapshot or "")
+    os.replace(tmp, spath)
     trace(workspace, "contract_activated", task_id=contract.get("task_id"),
           task=contract.get("task"), read_only=bool(contract.get("read_only")),
           scope=contract.get("coding", {}).get("scope_paths"),
-          write_allow=contract.get("write_allow"), snapshot=snapshot)
+          write_allow=contract.get("write_allow"), snapshot=snapshot,
+          slot=task_slot())
     return contract
 
 
@@ -1112,16 +1604,93 @@ def safe_remove(path: str) -> None:
     raise last or OSError("safe_remove: could not remove or rename")
 
 
+_TOMBSTONE_RE = re.compile(r"\.removed\.\d+\.\d+$")
+_TMPFILE_RE = re.compile(r"\.tmp\.\d+$")
+_GC_AGE_S = 24 * 3600
+
+
+def _gc_runtime_artifacts(d: str, now: float | None = None) -> int:
+    """Best-effort sweep of taskplane's OWN stale artifacts in the runtime
+    dir: safe_remove rename-tombstones (`*.removed.<pid>.<i>`), orphaned
+    atomic-write temps (`*.tmp.<pid>`), lock files (`*.lock`) untouched for
+    24h, and stale mkdir-fallback lock dirs (`*.lockdir`). ONLY entries
+    matching those exact taskplane-minted patterns are ever deleted — never
+    user data, never governance records (contracts, trace, meter, queues),
+    never live locks (file_lock re-touches its lock file on every acquire,
+    so a 24h-old mtime means 24h without an acquisition), never fresh
+    temps. Returns the count removed."""
+    now = _time.time() if now is None else now
+    removed = 0
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return 0
+    for name in names:
+        p = os.path.join(d, name)
+        if name.endswith(".lockdir"):
+            try:    # mkdir-fallback lock dir: rmdir only, only when stale
+                if os.path.isdir(p) \
+                        and now - os.stat(p).st_mtime > _GC_AGE_S:
+                    os.rmdir(p)
+                    removed += 1
+            except OSError:
+                pass
+            continue
+        stale_lock = name.endswith(".lock")
+        if not (stale_lock or _TOMBSTONE_RE.search(name)
+                or _TMPFILE_RE.search(name)):
+            continue
+        try:
+            if not os.path.isfile(p):
+                continue
+            if now - os.stat(p).st_mtime <= _GC_AGE_S:
+                continue
+            os.unlink(p)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def gc_runtime(workspace: str, now: float | None = None) -> dict:
+    """`tp gc`-callable lifecycle sweep (v2.3.0). Prunes ONLY taskplane's
+    runtime artifacts — FUSE rename-tombstones, orphaned atomic-write temps,
+    stale lock files/dirs — from .taskplane/ and .taskplane/active/, at the
+    conservative 24h age threshold `_gc_runtime_artifacts` enforces.
+    NEVER touches governance records: contracts, snapshots, trace.jsonl
+    (bounded separately by rotation), meter.json, dispatch queues, or
+    anything in the knowledge store. Returns {"removed": n, "dir": path}."""
+    d = tp_dir(workspace)
+    removed = _gc_runtime_artifacts(d, now)
+    removed += _gc_runtime_artifacts(os.path.join(d, "active"), now)
+    return {"removed": removed, "dir": d}
+
+
 def clear(workspace: str) -> None:
-    path = os.path.join(tp_dir(workspace), "active_contract.json")
+    """Release THIS process's contract slot only. With TASKPLANE_TASK set the
+    per-task slot is removed; a sibling task's contract is never touched (the
+    v2.3.0 fix: one agent's clear used to release everyone's contract)."""
+    path = _active_contract_path(workspace)
     if os.path.exists(path):
-        c = load_active(workspace) or {}
+        try:
+            c = load_json(path, default={}, what="active contract")
+        except StateError:
+            c = {}                 # corrupt slot: still clearable
+        if not isinstance(c, dict):
+            c = {}
         safe_remove(path)
-        trace(workspace, "contract_cleared", task_id=c.get("task_id"))
+        slot = task_slot()
+        if slot is not None:
+            try:
+                safe_remove(_snapshot_path(workspace))
+            except OSError:
+                pass
+        trace(workspace, "contract_cleared", task_id=c.get("task_id"),
+              slot=slot)
 
 
 def snapshot_ref(workspace: str) -> str | None:
-    p = os.path.join(tp_dir(workspace), "snapshot")
+    p = _snapshot_path(workspace)
     if os.path.exists(p):
         with open(p) as f:
             return f.read().strip() or None
@@ -1172,9 +1741,7 @@ MODEL_TIERS = ("cheap", "standard", "deep")
 # TASKPLANE_MODEL_CHEAP / _STANDARD / _DEEP (value "inherit" or "" => inherit).
 def _default_tier_models() -> dict:
     """Return defaults that never send another host's model identifier."""
-    is_codex = bool(os.environ.get("CODEX_HOME")
-                    or os.environ.get("CODEX_THREAD_ID"))
-    return {"cheap": None if is_codex else "haiku",
+    return {"cheap": None if host() == "codex" else "haiku",
             "standard": None, "deep": None}
 
 
@@ -1185,25 +1752,9 @@ def _dispatch_path(workspace: str, name: str) -> str:
     return os.path.join(tp_dir(workspace), name)
 
 
-import contextlib as _contextlib
-
-
-@_contextlib.contextmanager
-def _file_lock(path: str):
-    """Advisory exclusive flock on <path>.lock — serialize the dispatch-queue
-    read-modify-write so parallel-wave hooks don't double-consume expectations
-    or clobber each other's appends (v1.5.2)."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    lf = open(path + ".lock", "w")
-    try:
-        try:
-            import fcntl
-            fcntl.flock(lf, fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            pass
-        yield
-    finally:
-        lf.close()
+# _file_lock kept as the historical name; it is the shared file_lock (v2.3.0)
+# — which never silently degrades to lock-free (mkdir fallback + StateError).
+_file_lock = file_lock
 
 
 def _load_queue(path: str) -> list:
@@ -1215,10 +1766,34 @@ def _load_queue(path: str) -> list:
         return []
 
 
+# Dispatch-audit queues are BOUNDED at this many entries (a size/GC trade —
+# a 26-lens wave emits 20+ briefs, multiple waves exceed any small cap).
+# Entries beyond the cap are dropped oldest-first but ALWAYS COUNTED in the
+# <queue>.dropped sidecar, so the audit names what it lost instead of
+# silently undercounting unobserved/mismatched dispatches (v2.3.0).
+_QUEUE_CAP = 200
+
+
+def _queue_dropped(path: str) -> int:
+    """Cumulative dropped-entry count for a queue (0 when never truncated).
+    Corrupt sidecar -> StateError (audit state is never silently guessed)."""
+    d = load_json(path + ".dropped", default={"dropped": 0},
+                  what="dispatch-audit drop counter")
+    try:
+        return int((d or {}).get("dropped", 0))
+    except (TypeError, ValueError):
+        raise StateError(path + ".dropped",
+                         "corrupt dispatch-audit drop counter")
+
+
 def _save_queue(path: str, q: list) -> None:
+    dropped = max(0, len(q) - _QUEUE_CAP)
+    if dropped:
+        atomic_write_json(path + ".dropped",
+                          {"dropped": _queue_dropped(path) + dropped})
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
-        json.dump(q[-200:], f, indent=1)
+        json.dump(q[-_QUEUE_CAP:], f, indent=1)
     os.replace(tmp, path)
 
 
@@ -1267,16 +1842,34 @@ def record_observed_dispatch(workspace: str, agent: str, model: str | None,
 def dispatch_report(workspace: str) -> dict:
     """Audit: per emitted brief, did a dispatch with the right model land?
     This is the by-hand trace.jsonl analysis, mechanized."""
-    exp = _load_queue(_dispatch_path(workspace, "expected_dispatch.json"))
-    obs = _load_queue(_dispatch_path(workspace, "observed_dispatch.json"))
+    exp_path = _dispatch_path(workspace, "expected_dispatch.json")
+    obs_path = _dispatch_path(workspace, "observed_dispatch.json")
+    exp = _load_queue(exp_path)
+    obs = _load_queue(obs_path)
     mismatches = [o for o in obs if not o.get("ok")]
     unobserved = [e for e in exp if not e.get("matched")]
-    return {"expected": len(exp), "observed": len(obs),
-            "mismatches": mismatches, "unobserved": len(unobserved),
-            "hook_active": bool(obs),
-            "note": None if obs else
-            "no dispatches observed — enable the check with "
-            "TASKPLANE_ENFORCE_DISPATCH=warn|strict (PreToolUse Task hook)"}
+    exp_dropped = _queue_dropped(exp_path)
+    obs_dropped = _queue_dropped(obs_path)
+    truncated = bool(exp_dropped or obs_dropped
+                     or len(exp) >= _QUEUE_CAP or len(obs) >= _QUEUE_CAP)
+    rep = {"expected": len(exp), "observed": len(obs),
+           "mismatches": mismatches, "unobserved": len(unobserved),
+           "hook_active": bool(obs),
+           "expected_dropped": exp_dropped,
+           "observed_dropped": obs_dropped,
+           "truncated": truncated,
+           "note": None if obs else
+           "no dispatches observed — enable the check with "
+           "TASKPLANE_ENFORCE_DISPATCH=warn|strict (PreToolUse Task hook)"}
+    if truncated:
+        # An audit that silently forgets is worse than one that says it
+        # forgot: name the confidence bound on this run's numbers.
+        rep["truncated_note"] = (
+            f"dispatch-audit queues are capped at {_QUEUE_CAP} entries — "
+            f"{exp_dropped} expected / {obs_dropped} observed entries were "
+            "dropped, so 'unobserved' and 'mismatches' are a LOWER BOUND "
+            "for this run")
+    return rep
 
 
 def _now() -> float:
@@ -1401,26 +1994,49 @@ def _adopt_legacy_store(workspace: str, new_root: str) -> None:
     if legacy_root == new_root or not os.path.isdir(legacy_root):
         return
     ap = _workspace_identity(workspace)
-    owns = True
-    try:
+    owns = None                 # True=provably ours, False=sibling's,
+    try:                        # None=unprovable (no/unreadable meta)
         with open(os.path.join(legacy_root, "meta.json")) as f:
             owner = json.load(f).get("workspace")
-        if owner and _workspace_identity(owner) != ap:
-            owns = False        # belongs to a colliding sibling — don't steal
+        if owner:
+            owns = _workspace_identity(owner) == ap
     except (OSError, ValueError):
-        owns = True             # no/unreadable meta: the slug is ours to keep
-    if owns:
-        try:
-            os.makedirs(os.path.dirname(new_root), exist_ok=True)
+        owns = None
+    if owns is False:
+        return                  # belongs to a colliding sibling — don't steal
+    try:
+        os.makedirs(os.path.dirname(new_root), exist_ok=True)
+        if owns:
             shutil.move(legacy_root, new_root)
-        except OSError:
-            pass
+        else:
+            # Ownership unprovable (pre-meta store; two punctuation-colliding
+            # projects share this slug). COPY and leave the original in place
+            # so a rightful sibling never silently loses its KB to a
+            # destructive move (v2.3.0).
+            shutil.copytree(legacy_root, new_root)
+    except OSError:
+        pass
 
 
 def store_env() -> str:
     """The TASKPLANE_STORE override, normalized ('repo' | 'external' | '').
     One reader so the kernel and loop can't drift on how the env is parsed."""
     return os.environ.get("TASKPLANE_STORE", "").strip().lower()
+
+
+def host(env=None) -> str:
+    """'codex' | 'claude-tag' | 'claude' — THE host-detection seam (v2.3.0).
+
+    Previously re-implemented in three places (_default_tier_models,
+    tp._onboard_report, loop.user_summary) with divergent results; every
+    host probe now goes through this one function. `env` is injectable for
+    tests (defaults to os.environ)."""
+    e = os.environ if env is None else env
+    if e.get("CODEX_HOME") or e.get("CODEX_THREAD_ID"):
+        return "codex"
+    if (e.get("TASKPLANE_STORE") or "").strip().lower() == "repo":
+        return "claude-tag"
+    return "claude"
 
 
 def external_store_root(workspace: str) -> str:
@@ -1465,19 +2081,23 @@ def _remote_mode_file(workspace: str) -> str | None:
 
 def _read_personal_mode(workspace: str) -> tuple[dict, bool]:
     """(settings, found) — path-keyed mode.json first; the remote-keyed
-    fallback (which shells out to git) is consulted only on a miss."""
-    try:
-        with open(_mode_file(workspace)) as f:
-            return json.load(f), True
-    except (OSError, ValueError):
-        pass
-    rp = _remote_mode_file(workspace)
-    if rp:
+    fallback (which shells out to git) is consulted only on a miss.
+
+    FAIL SAFE (v2.3.0): a mode file that EXISTS but won't read/parse is a
+    damaged privacy control, not "no setting recorded". Resolve it as
+    private=True — the more restrictive residency — so corruption can never
+    silently downgrade a user's `share set private` to the committed SHARED
+    in-repo store. (set_mode heals the file on the next explicit setting.)"""
+    for p in (_mode_file(workspace), _remote_mode_file(workspace)):
+        if not p:
+            continue
         try:
-            with open(rp) as f:
+            with open(p) as f:
                 return json.load(f), True
+        except FileNotFoundError:
+            continue
         except (OSError, ValueError):
-            pass
+            return {"private": True}, True   # corrupt/unreadable -> private
     return {}, False
 
 
@@ -1557,9 +2177,10 @@ def set_mode(workspace: str, plan: str | None = None,
     wrote_any, last_err = False, None
     for p in targets:
         try:
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            with open(p, "w") as f:
-                json.dump(cfg, f, indent=2)
+            # Atomic (v2.3.0): mode.json is the private-vs-shared CONTROL
+            # file — a torn write must keep the old file, never drop the
+            # user's `private` flag.
+            atomic_write_json(p, cfg, indent=2)
             wrote_any = True
         except OSError as e:
             last_err = e
@@ -1656,29 +2277,187 @@ def migrate_store(workspace: str) -> dict:
     return {"moved": moved, "store": ext, "legacy": legacy}
 
 
-def load_active(workspace: str) -> dict | None:
-    path = os.path.join(tp_dir(workspace), "active_contract.json")
-    if not os.path.exists(path):
-        return None
+def list_task_slots(workspace: str) -> list:
+    """Names of the per-task contract slots currently active under
+    .taskplane/active/ (tombstones, snapshots and atomic-write temps are not
+    slots)."""
+    d = os.path.join(tp_dir(workspace), "active")
     try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
+        names = os.listdir(d)
+    except OSError:
+        return []
+    return sorted(n[:-5] for n in names
+                  if n.endswith(".json") and not n.startswith("."))
+
+
+def _union_contract(contracts: list) -> dict:
+    """The MOST RESTRICTIVE union of several active contracts — what governs
+    a process that carries no TASKPLANE_TASK while per-task contracts are
+    active. An action passes only if EVERY member contract approves it
+    (screen_tool recurses over ``_union``); the budget ceiling is the
+    minimum of the members'; read_only if ANY member is. Never pick one
+    contract arbitrarily — that re-opens the exact overwrite/void-enforcement
+    bug the per-task slots fixed (v2.3.0)."""
+    ids = sorted(str(c.get("task_id") or "?") for c in contracts)
+    ceilings = [c.get("budget", {}).get("max_actions") for c in contracts
+                if isinstance(c.get("budget"), dict)]
+    defined = [int(x) for x in ceilings if x is not None]
+    u = {
+        "task_id": "union-" + hashlib.sha1(
+            "+".join(ids).encode("utf-8")).hexdigest()[:8],
+        "task": ("most-restrictive union of active contracts: "
+                 + ", ".join(ids)),
+        "_union": list(contracts),
+        "activated_at": max((float(c.get("activated_at") or 0)
+                             for c in contracts), default=0) or _time.time(),
+    }
+    if any(c.get("read_only") for c in contracts):
+        u["read_only"] = True
+    if defined:
+        u["budget"] = {"max_actions": min(defined),
+                       "note": "minimum ceiling across the union's members"}
+    return u
+
+
+def load_active(workspace: str) -> dict | None:
+    """The contract governing THIS process (see task_slot / the per-task
+    contract-slot protocol).
+
+    TASKPLANE_TASK set: the per-task slot is authoritative. A MISSING or
+    CORRUPT slot raises StateError — REFUSE, never silently fall back to the
+    legacy slot (that would govern this agent by a sibling's contract, or by
+    nothing). The screener's fail-closed boundary turns the raise into a
+    block.
+
+    TASKPLANE_TASK unset: the legacy single slot when no per-task slots are
+    active (unchanged: None on missing/corrupt; the CLI screener detects the
+    corrupt-legacy-file case itself and blocks). When per-task contracts ARE
+    active, the process is governed by their MOST RESTRICTIVE UNION (plus
+    the legacy slot if present) — never left ungoverned, never governed by
+    one slot picked arbitrarily. A corrupt slot raises StateError (fail
+    closed) rather than being silently dropped from the union."""
+    slot = task_slot()                       # may raise (ill-formed value)
+    path = active_contract_path(workspace, slot)
+    if slot is not None:
+        if not os.path.exists(path):
+            raise StateError(
+                path, f"unknown TASKPLANE_TASK slot '{slot}' — no per-task "
+                "contract activated for it",
+                "activate this task's contract (tp.py new / loop dispatch) "
+                "or unset TASKPLANE_TASK; refusing to fall back to another "
+                "task's contract")
+        return load_json(path, what="active contract")   # corrupt -> raise
+    legacy = None
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                legacy = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            legacy = None
+    members = []
+    for s in list_task_slots(workspace):
+        # corrupt slot -> StateError -> the screener blocks (fail closed);
+        # a torn sibling contract must not quietly weaken the union.
+        c = load_json(active_contract_path(workspace, s),
+                      what=f"active contract (slot {s})")
+        if isinstance(c, dict):
+            members.append(c)
+    if not members:
+        return legacy
+    if isinstance(legacy, dict):
+        members.append(legacy)
+    if len(members) == 1:
+        return members[0]
+    return _union_contract(members)
+
+
+# One warning per process when the audit trail goes dark (v2.3.0) — a trace
+# that silently stops recording lets a later incident review mistake "denies
+# happened but tracing was broken" for "no denies happened".
+_TRACE_FAILED_WARNED = False
+# Rotation bound for the only-growing trace.jsonl: past this size the file is
+# archived to trace.jsonl.1 (one generation kept, replacing the previous) and
+# the new file opens with a trace_rotated record naming the archive — the log
+# is bounded AND says what it moved aside.
+_TRACE_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _maybe_rotate_trace(path: str) -> bool:
+    try:
+        if os.path.getsize(path) <= _TRACE_MAX_BYTES:
+            return False
+        os.replace(path, path + ".1")
+        return True
+    except OSError:
+        return False
+
+
+def screen_liveness(workspace: str, contract: dict | None = None,
+                    now: float | None = None) -> dict:
+    """Is the enforcement hook actually running for this governed workspace?
+
+    The cheap "is the wall actually up?" probe (v2.3.0), mirroring
+    dispatch_report.hook_active: compares the meter's last_seen_ts for the
+    active contract against its activated_at. Returns {"governed",
+    "hook_seen", "warning"} — `warning` is set when a governed workspace
+    shows ZERO screen activity well after activation (matcher regression,
+    PLUGIN_ROOT unset, hook timeout), i.e. governance may be silently
+    absent. CLI surfaces (tp ready / tp status) print the warning; the rule
+    lives here in the kernel."""
+    c = contract if contract is not None else load_active(workspace)
+    if not c:
+        return {"governed": False, "hook_seen": False, "warning": None}
+    now = _time.time() if now is None else now
+    tid = c.get("task_id", "_")
+    last_seen = 0.0
+    try:
+        with open(os.path.join(tp_dir(workspace), "meter.json")) as f:
+            last_seen = float((json.load(f).get(tid) or {})
+                              .get("last_seen_ts") or 0)
+    except (OSError, ValueError, TypeError):
+        pass
+    if last_seen:
+        return {"governed": True, "hook_seen": True, "warning": None}
+    age = now - float(c.get("activated_at") or now)
+    warning = None
+    if age > 60:
+        warning = (f"contract {tid} has been active {int(age)}s with ZERO "
+                   "screen activity — the PreToolUse hook may not be running "
+                   "(PLUGIN_ROOT unset, matcher regression, or timeout) and "
+                   "governance may be silently absent; verify the hook "
+                   "before trusting this session's audit trail")
+    return {"governed": True, "hook_seen": False, "warning": warning}
 
 
 def trace(workspace: str, event: str, **data) -> None:
     import time
-    d = tp_dir(workspace)
-    os.makedirs(d, exist_ok=True)
-    _ensure_self_ignored(d)
+    global _TRACE_FAILED_WARNED
     # Every record carries a monotonic wall-clock ts so the mission-control
     # feed can order events across parallel worker trace files by TIME, not
     # by which file they happened to be concatenated from.
     rec = {"event": event, "ts": time.time()}
     rec.update(data)
     try:
-        with open(os.path.join(d, "trace.jsonl"), "a") as f:
+        d = tp_dir(workspace)
+        os.makedirs(d, exist_ok=True)
+        _ensure_self_ignored(d)
+        path = os.path.join(d, "trace.jsonl")
+        rotated = _maybe_rotate_trace(path)
+        with open(path, "a") as f:
+            if rotated:
+                f.write(json.dumps(
+                    {"event": "trace_rotated", "ts": time.time(),
+                     "archived_to": path + ".1",
+                     "note": "earlier events moved aside, not lost"}) + "\n")
             f.write(json.dumps(rec, default=str) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        # NEVER crash the hook over a broken audit log — but never go dark
+        # silently either: one stderr warning per process (v2.3.0).
+        if not _TRACE_FAILED_WARNED:
+            _TRACE_FAILED_WARNED = True
+            import sys
+            print(f"taskplane: WARNING — audit trace write failed ({e}); "
+                  "governance events are NO LONGER being recorded for "
+                  f"{workspace}. Fix the .taskplane dir (disk/permissions) "
+                  "before trusting this session's audit trail.",
+                  file=sys.stderr)

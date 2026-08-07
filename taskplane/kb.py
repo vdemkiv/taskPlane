@@ -68,16 +68,13 @@ def mutate(ws: str, root: str | None = None):
     kb_dir)."""
     d = root or kb_dir(ws)
     os.makedirs(d, exist_ok=True)
-    lf = open(os.path.join(d, "index.json.lock"), "w")
-    try:
-        try:
-            import fcntl
-            fcntl.flock(lf, fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            pass
+    # Shared never-silently-lock-free primitive (v2.3.1): the old inline flock
+    # swallowed ImportError/OSError and proceeded UNLOCKED on exactly the
+    # flock-less hosts (Windows / some FUSE) this plugin targets — the
+    # lost-update the lock exists to prevent. tp.file_lock falls back to an
+    # atomic mkdir lock instead of running lock-free.
+    with tp.file_lock(os.path.join(d, "index.json")):
         yield
-    finally:
-        lf.close()
 
 
 def _is_shared_store(ws: str) -> bool:
@@ -89,6 +86,40 @@ def _is_shared_store(ws: str) -> bool:
             os.path.realpath(tp.repo_store_root(ws)))
     except OSError:
         return False
+
+
+def _max_id(entries) -> int:
+    """Highest numeric id prefix among index entries (0 when empty)."""
+    top = 0
+    for e in entries or []:
+        m = re.match(r"(\d+)", str(e.get("id", "")))
+        if m:
+            top = max(top, int(m.group(1)))
+    return top
+
+
+def _next_seq(entries) -> int:
+    """Deletion-safe seq: max existing numeric id prefix + 1, NOT
+    len(entries)+1 — len+1 re-mints an existing id the moment any entry is
+    compacted, archived or hand-removed from the index."""
+    return _max_id(entries) + 1
+
+
+def _mint_decision_seq(idx: dict) -> int:
+    """Collision-safe decision id mint: a MONOTONIC counter stored in the
+    index (advanced on every mint) combined with max-existing-id+1 for
+    pre-counter indexes — never len+1. This guarantees an id is never reused
+    even after entries are compacted/archived/hand-removed, including the
+    highest ones. Deletion-safe minting is the prerequisite that makes the
+    optional archival path (see archive()) safe: the hot index can shrink
+    without any risk of an old id being re-minted."""
+    try:
+        counter = int((idx.get("id_counters") or {}).get("decisions", 0))
+    except (TypeError, ValueError):
+        counter = 0
+    seq = max(counter, _max_id(idx.get("decisions"))) + 1
+    idx.setdefault("id_counters", {})["decisions"] = seq
+    return seq
 
 
 def _slug(title: str) -> str:
@@ -119,7 +150,7 @@ def _record_decision_locked(ws, title, *, context, decision, rationale,
                             alternatives, tags, context_files, links,
                             status, date) -> dict:
     idx = load_index(ws)
-    seq = len(idx["decisions"]) + 1
+    seq = _mint_decision_seq(idx)
     slug = _slug(title)
     # In the shared in-repo store, mint a collision-free id (dense seq + a
     # content hash) so two teammates recording on different branches don't
@@ -274,7 +305,7 @@ def _publish_locked(ws, src_kb, dst_kb, ids):
                 malformed.append({"private": d.get("id"),
                                   "problem": "decision file missing"})
                 continue
-            new_id = _shared_id(len(dst_idx[kind]) + 1, d)
+            new_id = _shared_id(_next_seq(dst_idx[kind]), d)
             slug = re.sub(r"^\d+-", "", os.path.basename(d["file"]))
             new_file = os.path.join(subdir, f"{new_id}-{slug}")
             with open(os.path.join(dst_kb, new_file), "w") as f:
@@ -303,6 +334,72 @@ def _publish_locked(ws, src_kb, dst_kb, ids):
                            "publish covers decisions and flows",
             "next": "commit .taskplane-kb/ to make this visible to the "
                     "team" if pushed else "nothing new to push"}
+
+
+# Statuses closed enough to leave the hot index (superseded-by-* matches by
+# prefix). Everything else — notably `accepted` decisions, which are LIVE
+# constraints retrieved into briefs — stays hot.
+_ARCHIVABLE_STATUSES = ("rejected", "withdrawn", "done")
+
+
+def archive(ws: str, ids=None) -> dict:
+    """OPTIONAL compaction (v2.3.0): move closed decisions (superseded-by-*/
+    rejected/withdrawn/done, or an explicit `ids` list) from the hot
+    index.json into index-archive.json in the same store — so list/retrieve
+    and the SessionStart context hook stop paying full-parse cost for
+    history, without the index growing forever.
+
+    Id-safe by construction: minting is a monotonic counter (see
+    _mint_decision_seq), advanced here over every id leaving the index, so
+    an archived id is NEVER re-minted. ADR .md files are never touched
+    (append-only store) — only index entries move, and archived entries stay
+    readable in index-archive.json. Crash-safe ordering: the archive file is
+    written BEFORE the shrunk index, so a crash in between duplicates an
+    entry (harmless — dedup on next archive) rather than dropping one.
+    A corrupt existing archive refuses (fail-closed) instead of being
+    overwritten."""
+    with mutate(ws):
+        idx = load_index(ws)
+        want = set(ids) if ids else None
+        keep, moved = [], []
+        for d in idx.get("decisions", []):
+            status = str(d.get("status", ""))
+            eligible = (d.get("id") in want) if want is not None else (
+                status.startswith("superseded")
+                or status in _ARCHIVABLE_STATUSES)
+            (moved if eligible else keep).append(d)
+        if not moved:
+            return {"archived": [], "remaining": len(keep),
+                    "archive": "index-archive.json"}
+        arch_p = os.path.join(kb_dir(ws), "index-archive.json")
+        arch = {"decisions": [], "flows": []}
+        if os.path.exists(arch_p):
+            try:
+                with open(arch_p) as f:
+                    arch = json.load(f)
+            except ValueError:
+                return {"error": "index-archive.json is corrupt — repair or "
+                                 f"restore it before archiving: {arch_p}",
+                        "archived": [], "remaining": len(idx["decisions"])}
+        arch.setdefault("decisions", [])
+        already = {d.get("id") for d in arch["decisions"]}
+        arch["decisions"].extend(d for d in moved
+                                 if d.get("id") not in already)
+        # advance the mint counter over EVERY id in the pre-archive index so
+        # the ids leaving the hot index can never be re-minted
+        counters = idx.setdefault("id_counters", {})
+        try:
+            cur = int(counters.get("decisions", 0))
+        except (TypeError, ValueError):
+            cur = 0
+        counters["decisions"] = max(cur, _max_id(idx.get("decisions")))
+        idx["decisions"] = keep
+        _atomic_json(arch_p, arch)          # archive first …
+        _save_index(ws, idx)                # … then the shrunk hot index
+    out_ids = [d.get("id") for d in moved]
+    tp.trace(ws, "kb_archived", count=len(moved), ids=out_ids)
+    return {"archived": out_ids, "remaining": len(keep),
+            "archive": "index-archive.json"}
 
 
 def supersede(ws: str, old_id: str, by_id: str) -> None:
@@ -479,6 +576,62 @@ SENSITIVE_MARKERS = ("price per", "per-seat", "per seat", "per governed-agent",
 _MAX_FIELD = 4000   # decision fields are dense facts, not essays
 
 
+# Per-process lint memo: path -> ((mtime_ns, size), [violations]). lint()
+# runs at every DoD check AND inside signoff, over a store that only grows —
+# re-reading every historical record twice per command is pure waste. The
+# memo is validated per file by stat on EVERY call, so strictness is intact:
+# every record that would have been linted still contributes its violations
+# (from the memo when byte-identical, re-scanned the moment mtime/size
+# moves), and new files are always scanned. No cross-process cache.
+_LINT_CACHE: dict[str, tuple] = {}
+
+
+def _lint_file(p: str, rel: str) -> list:
+    """All violations for ONE file (same checks as always)."""
+    out = []
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return out
+    low = text.lower()
+    for m in PROMPT_MARKERS:
+        if m in low:
+            out.append({"file": rel,
+                        "problem": f"prompt marker {m!r} — "
+                        "committed store holds decision data "
+                        "only (docs/state-spec.md)"})
+            break
+    for m in SENSITIVE_MARKERS:
+        if m in low:
+            out.append({"file": rel,
+                        "problem": f"commercial/pricing marker "
+                        f"{m!r} — the committed store ships "
+                        "publicly; keep pricing & commercialization "
+                        "strategy out of the repo"})
+            break
+    if p.endswith(".json"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            out.append({"file": rel, "problem": "invalid JSON"})
+            return out
+        def big(v, key=""):
+            if isinstance(v, str) and len(v) > _MAX_FIELD:
+                out.append({"file": rel, "problem":
+                            f"field {key or '(root)'} exceeds "
+                            f"{_MAX_FIELD} chars — distill to a "
+                            "decision, don't dump text"})
+            elif isinstance(v, dict):
+                for k, x in v.items():
+                    big(x, k)
+            elif isinstance(v, list):
+                for x in v:
+                    big(x, key)
+        big(data)
+    return out
+
+
 def lint(ws: str) -> list:
     """Scan the committed decision store for prompt data. Returns
     violations [{file, problem}]; empty list = clean."""
@@ -499,43 +652,15 @@ def lint(ws: str) -> list:
                 p = os.path.join(dirpath, fn)
                 rel = os.path.relpath(p, root)
                 try:
-                    with open(p, encoding="utf-8", errors="replace") as f:
-                        text = f.read()
+                    st = os.stat(p)
+                    sig = (st.st_mtime_ns, st.st_size)
                 except OSError:
                     continue
-                low = text.lower()
-                for m in PROMPT_MARKERS:
-                    if m in low:
-                        out.append({"file": rel,
-                                    "problem": f"prompt marker {m!r} — "
-                                    "committed store holds decision data "
-                                    "only (docs/state-spec.md)"})
-                        break
-                for m in SENSITIVE_MARKERS:
-                    if m in low:
-                        out.append({"file": rel,
-                                    "problem": f"commercial/pricing marker "
-                                    f"{m!r} — the committed store ships "
-                                    "publicly; keep pricing & commercialization "
-                                    "strategy out of the repo"})
-                        break
-                if fn.endswith(".json"):
-                    try:
-                        data = json.loads(text)
-                    except ValueError:
-                        out.append({"file": rel, "problem": "invalid JSON"})
-                        continue
-                    def big(v, key=""):
-                        if isinstance(v, str) and len(v) > _MAX_FIELD:
-                            out.append({"file": rel, "problem":
-                                        f"field {key or '(root)'} exceeds "
-                                        f"{_MAX_FIELD} chars — distill to a "
-                                        "decision, don't dump text"})
-                        elif isinstance(v, dict):
-                            for k, x in v.items():
-                                big(x, k)
-                        elif isinstance(v, list):
-                            for x in v:
-                                big(x, key)
-                    big(data)
+                hit = _LINT_CACHE.get(p)
+                if hit is not None and hit[0] == sig:
+                    out.extend(hit[1])
+                    continue
+                violations = _lint_file(p, rel)
+                _LINT_CACHE[p] = (sig, violations)
+                out.extend(violations)
     return out

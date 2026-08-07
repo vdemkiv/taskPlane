@@ -1,4 +1,11 @@
-# OpenAI plugin submission — taskplane 2.2.0
+# OpenAI plugin submission — taskplane
+
+This worksheet is deliberately **version-agnostic**: "the current release"
+always means the top entry of [CHANGELOG.md](../CHANGELOG.md), and the
+artifact name is stamped by the packager from the manifest version
+(`.codex-plugin/plugin.json`) — never hand-pinned here. Wherever
+`<version>` appears below, the packager's own output line names the exact
+file.
 
 This is the submission worksheet for the skills-only taskplane plugin. It is
 not an MCP submission: taskplane has no server, authentication, account, remote
@@ -47,8 +54,11 @@ python3 scripts/package_openai.py
 This writes into the gitignored `dist/` directory (the archive and checksum
 are submission artifacts, never repository content):
 
-- `dist/taskplane-2.2.0-openai.zip` — upload this in the **Skills only** flow.
-- `dist/taskplane-2.2.0-openai.zip.sha256` — checksum for release provenance.
+- `dist/taskplane-<version>-openai.zip` — upload this in the **Skills only**
+  flow (`<version>` comes from the manifest; the packager prints the exact
+  path on success).
+- `dist/taskplane-<version>-openai.zip.sha256` — checksum for release
+  provenance (the build is deterministic; CI re-verifies reproducibility).
 
 The ZIP is deterministic, has one top-level `taskplane/` directory, and
 contains the Codex manifest, all Codex-relevant skills and their
@@ -150,7 +160,12 @@ governed implementation. It explains the minimal setup needed and waits.
 
 ## Submission release notes
 
-The Design phase ships in 2.2.0, expanding
+Compose the notes fresh for each submission: lead with the current release's
+highlights taken from its CHANGELOG entry (the top row), then the durable
+capability description below. Do not reuse a previous submission's
+version-specific first paragraph.
+
+The Design phase expanded
 taskplane's simple surface to design, build, review, and status. The
 skills-only package brings the same governed loop to Codex and Claude:
 Definition of Ready blocks under-specified work, scoped
@@ -174,10 +189,10 @@ It does not add an MCP server, external service, authentication, or telemetry.
 - Obtain **Apps Management: Write** in the publishing OpenAI organization.
 - Complete individual or business verification under the same organization.
 - Choose **Skills only** in the plugin submission portal.
-- Run `python3 scripts/package_openai.py` and upload
-  `dist/taskplane-2.2.0-openai.zip`.
+- Run `python3 scripts/package_openai.py` and upload the
+  `dist/taskplane-<version>-openai.zip` it reports.
 - Use the listing fields and test cases above.
 - Confirm the bundled logo and composer icon render correctly, then choose
   availability countries/regions.
-- Confirm the public GitHub URLs resolve after the 2.2.0 changes are pushed.
+- Confirm the public GitHub URLs resolve after the release changes are pushed.
 - Complete policy attestations and submit for review.

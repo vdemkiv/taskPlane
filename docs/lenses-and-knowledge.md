@@ -1,5 +1,21 @@
 # Reshape — lenses, context routing, and a knowledge base
 
+> **Status: HISTORICAL DESIGN RECORD (superseded in detail).** This is the
+> original draft that produced the lens/knowledge model; the ideas shipped,
+> but several concrete paths and layouts below are no longer what runs:
+>
+> - lens subagents write `.em-review/lens-<id>/**`, not `.review/<lens>/`
+>   (see `agents/tp-lens.md` and `docs/authority-matrix.md`);
+> - the knowledge base is NOT the in-repo `knowledge/` directory sketched
+>   here — the shipped store is plan-aware: external
+>   `~/.taskplane/projects/<key>/` on a personal plan, in-repo
+>   `.taskplane-kb/` on Team/Enterprise (see `docs/state-spec.md`);
+> - the shipped lens catalog is `lenses/catalog.json` (26 lenses; the
+>   generated doc is `docs/lens-catalog.md`), not the starter table below.
+>
+> Read this the way `docs/loop-design.md` reads: as the design record, with
+> the shipped docs above as the current truth.
+
 Draft for your input. This reworks three things you flagged into one model, and
 adds the knowledge base as its own layer. taskplane stays the spine throughout.
 

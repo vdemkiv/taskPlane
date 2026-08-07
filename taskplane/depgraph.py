@@ -20,7 +20,9 @@ Nodes are MODULES (directory-level, e.g. `src/auth`) plus INFRA components
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
+import subprocess
 import sys as _sys
 import json
 import os
@@ -32,8 +34,13 @@ import taskplane_lite as tp
 GRAPH_FILE = "graph.json"
 CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".go",
             ".cs", ".java", ".rb")
+# Non-git fallback skip list (in a git work tree the scan enumerates via
+# `git ls-files`, which honors .gitignore). Covers vendored and build trees
+# (vendor/ for Go, target/ for Rust/Java) so third-party code never becomes
+# graph modules and pollutes blast radius.
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".taskplane", ".tp-work",
-             "venv", ".venv", "dist", "build", ".eval", ".em-review",
+             "venv", ".venv", "dist", "build", "target", "vendor",
+             ".tox", ".mypy_cache", ".pytest_cache", ".eval", ".em-review",
              ".security-review"}
 
 
@@ -42,22 +49,120 @@ def _path(ws: str) -> str:
     return os.path.join(tp.kb_root(ws), GRAPH_FILE)
 
 
+def _empty() -> dict:
+    return {"modules": {}, "edges": [], "files": {}, "recorded": [],
+            "meta": {}}
+
+
+# Corruption blocks gates (fail-closed) WITH this remedy. It must steer the
+# operator to inspect/restore, never to delete-and-rescan: a re-scan only
+# rebuilds SCANNED edges — agent-recorded manual edges (runtime/queue/deploy
+# relationships, req: links) live only in this file's "recorded" section and
+# would be silently lost, shrinking every future review's blast radius.
+_CORRUPT_REMEDY = (
+    "inspect or restore graph.json in the knowledge store (from a backup/"
+    "snapshot, or git if the store is versioned). Do NOT delete it and "
+    "re-scan: a re-scan only rebuilds scanned edges — recorded manual edges "
+    "live in this file's 'recorded' section and would be lost")
+
+
+# Per-process read memo: graph.json is parsed by many consumers per command
+# (impact, product_impact, summary, hub_signal, design context …); each parse
+# of a multi-MB file is pure waste when nothing changed. The memo is validated
+# against the file's stat signature on EVERY load, so there is no cross-process
+# cache: another process's atomic save (os.replace → new inode/mtime) is
+# always picked up. save() refreshes the entry.
+_GRAPH_CACHE: dict[str, tuple] = {}
+# Active batched mutations: abs graph path -> the in-flight graph dict.
+# See batch().
+_BATCH: dict[str, dict] = {}
+
+
+def _stat_sig(p: str):
+    st = os.stat(p)
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
 def load(ws: str) -> dict:
-    p = _path(ws)
-    if not os.path.exists(p):
-        return {"modules": {}, "edges": [], "files": {}, "recorded": [],
-                "meta": {}}
-    with open(p) as f:
-        g = json.load(f)
+    """Read the graph. Missing file → a legitimate empty default (a project
+    that was never scanned has no graph). Corrupt file → StateError with a
+    remedy, NEVER a silent empty rebuild: an empty graph would weaken graph
+    DoR/DoD gating and silently shrink every review's blast radius.
+
+    Callers must treat the returned dict as READ-ONLY — it may be a shared
+    per-process memo. Mutate only via scan/record_edge/link_requirement or
+    inside a batch() block."""
+    p = os.path.abspath(_path(ws))
+    if p in _BATCH:                       # a batch sees its own mutations
+        return _BATCH[p]
+    try:
+        sig = _stat_sig(p)
+    except OSError:
+        return _empty()
+    hit = _GRAPH_CACHE.get(p)
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    try:
+        g = tp.load_json(p, default=None,
+                         what="dependency graph (graph.json)")
+    except tp.StateError:
+        raise tp.StateError(p, "corrupt dependency graph (graph.json)",
+                            _CORRUPT_REMEDY) from None
+    if g is None:
+        return _empty()
+    if not isinstance(g, dict):
+        raise tp.StateError(
+            p, "corrupt dependency graph (not a JSON object)",
+            _CORRUPT_REMEDY)
+    g.setdefault("modules", {})
+    g.setdefault("edges", [])
+    g.setdefault("files", {})
     g.setdefault("meta", {})
     g.setdefault("recorded", [])
+    _GRAPH_CACHE[p] = (sig, g)
     return g
 
 
 def save(ws: str, g: dict) -> None:
-    os.makedirs(tp.kb_root(ws), exist_ok=True)
-    with open(_path(ws), "w") as f:
-        json.dump(g, f, indent=1, sort_keys=True)
+    """Atomic write (tmp + os.replace, same pattern as loop.save) — a
+    concurrent reader never sees a torn graph.json mid-write."""
+    p = os.path.abspath(_path(ws))
+    tp.atomic_write_json(p, g, indent=1, sort_keys=True)
+    try:
+        _GRAPH_CACHE[p] = (_stat_sig(p), g)
+    except OSError:
+        _GRAPH_CACHE.pop(p, None)
+
+
+@contextlib.contextmanager
+def batch(ws: str):
+    """One locked load → N in-memory mutations → ONE atomic flush.
+
+    Callers that record many edges in one command (e.g. the plan gate's
+    per-requirement/per-contract annotation) wrap the calls in
+    ``with depgraph.batch(ws):`` — record_edge/link_requirement/scan detect
+    the active batch and mutate the shared in-memory graph instead of doing
+    a full load→save cycle each. The flush is stamped, atomic and performed
+    under the same graph.json lock, so nothing is cached across processes.
+    On an exception nothing is flushed and the read memo is dropped (the
+    in-memory graph may hold partial mutations)."""
+    p = os.path.abspath(_path(ws))
+    if p in _BATCH:                        # nested: the outer batch flushes
+        yield _BATCH[p]
+        return
+    with tp.file_lock(p):
+        _GRAPH_CACHE.pop(p, None)          # re-read under the lock
+        g = load(ws)
+        _BATCH[p] = g
+        try:
+            yield g
+        except BaseException:
+            _GRAPH_CACHE.pop(p, None)      # partial mutations — not truth
+            raise
+        finally:
+            _BATCH.pop(p, None)
+        _stamp_meta(ws, g)
+        save(ws, g)
 
 
 def _stamp_meta(ws: str, g: dict, *, scanned: bool = False) -> dict:
@@ -345,25 +450,83 @@ def _compose_services(src: str) -> list:
 
 # ------------------------------------------------------------------ scan
 
+def _git_candidates(ws: str) -> list | None:
+    """Candidate files honoring .gitignore: tracked + untracked-unignored,
+    minus deleted-but-tracked. None when `ws` is not a git work tree (or git
+    is unusable) — the caller falls back to the os.walk. Enumerating via git
+    keeps vendored/build trees (vendor/, target/, generated output …) out of
+    the graph on any repo with a sane .gitignore, and turns the per-gate
+    full-tree walk into one git call."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", ws, "ls-files", "-z", "--cached", "--others",
+             "--exclude-standard"],
+            capture_output=True, timeout=60)
+        if r.returncode != 0:
+            return None
+        names = {n for n in r.stdout.decode("utf-8", "replace").split("\0")
+                 if n}
+        d = subprocess.run(["git", "-C", ws, "ls-files", "-z", "--deleted"],
+                           capture_output=True, timeout=60)
+        if d.returncode == 0:
+            names -= {n for n in d.stdout.decode("utf-8", "replace")
+                      .split("\0") if n}
+        return sorted(names)
+    except Exception:
+        return None
+
+
+_GO_LIMITATION = (
+    "internal Go imports are not resolved to modules — the Go scanner "
+    "records external (ext:) edges only, so intra-repo Go dependencies are "
+    "absent and impact()/hub signals under-count for Go code. Record "
+    "intra-repo Go edges explicitly (record_edge / `tp graph edge`).")
+
+
 def scan(ws: str) -> dict:
     """Build/refresh the graph. Incremental: unchanged files (by content
-    hash) keep their cached edges — a rescan after a small diff is cheap."""
+    hash) keep their cached edges — a rescan after a small diff is cheap.
+    The read-modify-write is serialized under the graph.json lock so a
+    concurrent record_edge/link_requirement is never lost."""
+    p = os.path.abspath(_path(ws))
+    if p in _BATCH:                        # inside batch(): lock already held
+        return _scan_locked(ws, into=_BATCH[p])
+    with tp.file_lock(p):
+        return _scan_locked(ws)
+
+
+def _scan_locked(ws: str, into: dict | None = None) -> dict:
     prev = load(ws)
     files, code_files = {}, []
-    for root, dirs, names in os.walk(ws):
-        # Sort in place so the walk order is deterministic — otherwise the
-        # first-seen-wins basename/namespace maps below depend on filesystem
-        # order, making a bare `import utils` resolve non-reproducibly when
-        # two files share a basename.
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS
-                         and not d.startswith(".tp-"))
-        for n in sorted(names):
-            rel = os.path.relpath(os.path.join(root, n), ws)
+    listed = _git_candidates(ws)
+    if listed is not None:
+        # Git work tree: .gitignore is authoritative. Still drop the
+        # loop-owned/runtime dirs and any COMMITTED vendored tree.
+        for rel in listed:
+            parts = rel.split("/")
+            if any(seg in SKIP_DIRS or seg.startswith(".tp-")
+                   for seg in parts[:-1]):
+                continue
             if rel.startswith("knowledge/"):
                 continue
-            if n.endswith(CODE_EXT):
+            if rel.endswith(CODE_EXT):
                 code_files.append(rel)
             files[rel] = True
+    else:
+        for root, dirs, names in os.walk(ws):
+            # Sort in place so the walk order is deterministic — otherwise
+            # the first-seen-wins basename/namespace maps below depend on
+            # filesystem order, making a bare `import utils` resolve
+            # non-reproducibly when two files share a basename.
+            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS
+                             and not d.startswith(".tp-"))
+            for n in sorted(names):
+                rel = os.path.relpath(os.path.join(root, n), ws)
+                if rel.startswith("knowledge/"):
+                    continue
+                if n.endswith(CODE_EXT):
+                    code_files.append(rel)
+                files[rel] = True
 
     # stem/dir → module map for python import resolution: covers
     # `import src.db.conn`, `from src.db import conn` (package dir), and
@@ -433,6 +596,15 @@ def scan(ws: str) -> dict:
         elif rel.endswith(".py"):
             imports = _py_imports(src, rel, known_stems)
         elif rel.endswith(".go"):
+            # KNOWN LIMITATION (mirrors the Ruby autoloading note): internal
+            # Go imports are NOT resolved to modules — unlike the Python
+            # (known_stems), JS (file index) and C#/Java (namespace map)
+            # scanners, EVERY import lands as ext:<last-segment>, so a Go
+            # repo gets no intra-repo edges from this scanner. Do NOT
+            # fabricate edges here; the partial coverage is disclosed in
+            # meta.scanners.go.limitation (see below) so impact consumers
+            # can see it, and intra-repo Go edges can be recorded with
+            # record_edge / `tp graph edge`.
             imports = set()
             for block, single in re.findall(
                     r'import\s+\(([^)]*)\)|import\s+"([^"]+)"', src, re.S):
@@ -512,6 +684,14 @@ def scan(ws: str) -> dict:
             else:
                 modules.setdefault(x, {"kind": "module", "files": 0})
 
+    # Scanner-coverage disclosure lives IN the graph payload so any impact
+    # consumer (readiness/impact return meta; dashboards read it) can see
+    # when coverage is partial rather than trusting a near-empty blast
+    # radius. It never blocks DoR — honesty, not a new gate.
+    scanners_meta = {}
+    if any(rel.endswith(".go") for rel in code_files):
+        scanners_meta["go"] = {"coverage": "external-only",
+                               "limitation": _GO_LIMITATION}
     g = {
         "modules": modules,
         "edges": sorted([{"from": a, "to": b, "kind": k}
@@ -519,7 +699,7 @@ def scan(ws: str) -> dict:
                         key=lambda e: (e["from"], e["to"])),
         "files": file_entries,
         "recorded": prev.get("recorded", []),
-        "meta": {},
+        "meta": {"scanners": scanners_meta} if scanners_meta else {},
     }
     # merge agent-recorded edges (never dropped by rescans)
     g["edges"] += [e for e in g["recorded"]
@@ -561,30 +741,57 @@ def scan(ws: str) -> dict:
             seen.add(k)
             uniq.append(e)
     g["edges"] = uniq
+    if into is not None:
+        # Active batch: replace the batched graph's contents in place so the
+        # batch's single flush persists this scan (identity preserved).
+        into.clear()
+        into.update(g)
+        g = into
     _stamp_meta(ws, g, scanned=True)
-    save(ws, g)
+    if into is None:
+        save(ws, g)
     tp.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]),
              files=len(file_entries))
     return g
+
+
+@contextlib.contextmanager
+def _mutation(ws: str):
+    """One graph read-modify-write: honor an active batch() (mutate its
+    in-memory graph, defer the flush) or lock + load + stamp + atomic save.
+    Serializing under the graph.json lock is what stops a concurrent
+    scan() + record_edge() pair from silently losing the recorded edge."""
+    p = os.path.abspath(_path(ws))
+    if p in _BATCH:
+        yield _BATCH[p]
+        return
+    with tp.file_lock(p):
+        _GRAPH_CACHE.pop(p, None)          # re-read under the lock
+        g = load(ws)
+        try:
+            yield g
+        except BaseException:
+            _GRAPH_CACHE.pop(p, None)      # partial mutations — not truth
+            raise
+        _stamp_meta(ws, g)
+        save(ws, g)
 
 
 def record_edge(ws: str, src: str, dst: str, kind: str = "runtime",
                 note: str = "", confidence: str = "medium") -> dict:
     """An agent-observed dependency static analysis can't see (HTTP call,
     queue, cron, deploy relationship). Survives rescans."""
-    g = load(ws)
     if confidence not in ("high", "medium", "low"):
         raise ValueError("confidence must be high, medium, or low")
     e = {"from": src, "to": dst, "kind": kind, "note": note,
          "recorded": True, "source": "recorded", "confidence": confidence}
     def same(x):
         return (x.get("from"), x.get("to"), x.get("kind")) == (src, dst, kind)
-    g["recorded"] = [x for x in g.get("recorded", []) if not same(x)] + [e]
-    g["edges"] = [x for x in g.get("edges", []) if not same(x)] + [e]
-    for x in (src, dst):
-        g["modules"].setdefault(x, {"kind": _node_kind(x), "files": 0})
-    _stamp_meta(ws, g)
-    save(ws, g)
+    with _mutation(ws) as g:
+        g["recorded"] = [x for x in g.get("recorded", []) if not same(x)] + [e]
+        g["edges"] = [x for x in g.get("edges", []) if not same(x)] + [e]
+        for x in (src, dst):
+            g["modules"].setdefault(x, {"kind": _node_kind(x), "files": 0})
     tp.trace(ws, "graph_edge_recorded", src=src, dst=dst, kind=kind)
     return e
 
@@ -627,20 +834,19 @@ def link_requirement(ws: str, rid: str, files, kind: str = "realizes",
     edges of this kind (the true-up), so the product side never goes stale."""
     node = _req_node(rid)
     mods = sorted(set(modules_for_scope(files)))
-    g = load(ws)
-    if replace:
-        drop = lambda e: e["from"] == node and e["kind"] == kind
-        g["recorded"] = [e for e in g["recorded"] if not drop(e)]
-        g["edges"] = [e for e in g["edges"] if not drop(e)]
-    for m in mods:
-        e = {"from": node, "to": m, "kind": kind, "note": "",
-             "recorded": True, "source": "requirement", "confidence": "high"}
-        g["recorded"].append(e)
-        g["edges"].append(e)
-        g["modules"].setdefault(m, {"kind": "module", "files": 0})
-    g["modules"].setdefault(node, {"kind": "requirement", "files": 0})
-    _stamp_meta(ws, g)
-    save(ws, g)
+    with _mutation(ws) as g:
+        if replace:
+            drop = lambda e: e["from"] == node and e["kind"] == kind
+            g["recorded"] = [e for e in g["recorded"] if not drop(e)]
+            g["edges"] = [e for e in g["edges"] if not drop(e)]
+        for m in mods:
+            e = {"from": node, "to": m, "kind": kind, "note": "",
+                 "recorded": True, "source": "requirement",
+                 "confidence": "high"}
+            g["recorded"].append(e)
+            g["edges"].append(e)
+            g["modules"].setdefault(m, {"kind": "module", "files": 0})
+        g["modules"].setdefault(node, {"kind": "requirement", "files": 0})
     tp.trace(ws, "graph_req_link", requirement=node, kind=kind, modules=mods)
     return {"requirement": node, "kind": kind, "modules": mods}
 
@@ -808,9 +1014,14 @@ def readiness(ws: str, tasks) -> dict:
             errors.append(f"task {tid}: contracts are not recorded in the "
                           "dependency graph: " + ", ".join(missing_contracts))
         if undeclared_unknown:
+            # Name the exact remedy field: without it a planner can only
+            # discover `new_modules` by reading source.
             errors.append(
                 f"task {tid}: new/unknown graph modules were not declared: "
-                + ", ".join(undeclared_unknown))
+                + ", ".join(undeclared_unknown)
+                + " — declare them in the task's \"new_modules\" field in "
+                  "plan/tasks.json (e.g. \"new_modules\": "
+                + json.dumps(undeclared_unknown) + ")")
         if declared_new - set(unknown):
             warnings.append(f"task {tid}: declared new_modules already exist: "
                             + ", ".join(sorted(declared_new - set(unknown))))

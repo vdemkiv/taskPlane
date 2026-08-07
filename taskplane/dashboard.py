@@ -42,16 +42,42 @@ EVENT_STYLE = {
     "loop_retro": ("🔁", "retrospective", "human"),
     "loop_resolve": ("⚖", "human resolved", "human"),
     "debt_recorded": ("📌", "debt tracked", "kb"),
+    "trace_rotated": ("🗂", "trace rotated", "info"),
 }
 
 # Role label per step — sourced from the engine (loop.STEP_ROLE), not a
 # second hand-maintained copy.
 STEP_ROLE_LABEL = _loop.STEP_ROLE
 
+# trace.jsonl is the AUDIT RECORD — the dashboard never rotates, truncates
+# or deletes it. Past this size the renderer TAIL-READS (parses only the
+# last TRACE_TAIL_BYTES) and says so with a visible "showing recent events"
+# notice; the full history stays on disk, untouched.
+TRACE_TAIL_BYTES = 2 * 1024 * 1024
 
-def _read_trace(ws: str, limit: int = 24) -> list:
-    """Main trace + any parallel worker traces (.tp-work/*/.taskplane),
-    so mission control shows EVERY agent's events, blocks included."""
+
+def _read_trace_all(ws: str, stats: dict | None = None) -> list:
+    """Parse the main trace + every parallel worker trace ONCE, returning the
+    full CHRONOLOGICAL event list. Render entry points call this a single
+    time per invocation and slice/reuse the parsed list — the trace is not
+    re-parsed 4-5x per transition.
+
+    Robustness is centralized HERE so no consumer can crash the dashboard:
+      - a line that is not valid JSON (truncated worker write) is skipped
+        and COUNTED (stats["unparseable"]) — surfaced, never silent;
+      - a valid-JSON dict missing the "event" key (malformed/legacy record)
+        renders as a DEGRADED-BUT-VISIBLE row (event "(unrecorded)"),
+        counted in stats["degraded"];
+      - a file larger than TRACE_TAIL_BYTES is tail-read (stats["tail"]),
+        with the skipped byte count in stats["tail_skipped_bytes"] — the
+        trace itself is the audit record and is never rotated or deleted.
+    `stats` (optional dict) is filled in place for the caller's notice."""
+    if stats is None:
+        stats = {}
+    stats.setdefault("unparseable", 0)
+    stats.setdefault("degraded", 0)
+    stats.setdefault("tail", False)
+    stats.setdefault("tail_skipped_bytes", 0)
     paths = [os.path.join(tp.tp_dir(ws), "trace.jsonl")]
     workroot = os.path.join(ws, ".tp-work")
     if os.path.isdir(workroot):
@@ -64,20 +90,162 @@ def _read_trace(ws: str, limit: int = 24) -> list:
         if not os.path.exists(p):
             continue
         tag = os.path.basename(os.path.dirname(os.path.dirname(p)))
-        with open(p) as f:
-            for ln in f:
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            continue
+        with open(p, "rb") as f:
+            if size > TRACE_TAIL_BYTES:
+                f.seek(size - TRACE_TAIL_BYTES)
+                dropped = f.readline()       # partial first line after seek
+                stats["tail"] = True
+                stats["tail_skipped_bytes"] += (size - TRACE_TAIL_BYTES
+                                                + len(dropped))
+            for raw in f:
+                ln = raw.decode("utf-8", "replace")
                 if not ln.strip():
                     continue
                 try:
                     e = json.loads(ln)
                 except ValueError:
-                    continue   # a truncated/partial worker record — skip it,
-                               # don't crash the whole render on one bad line
+                    stats["unparseable"] += 1
+                    continue   # a truncated/partial record — skip it, don't
+                               # crash the whole render; COUNTED for the
+                               # visible notice, never silently dropped
+                if not isinstance(e, dict):
+                    stats["unparseable"] += 1
+                    continue
+                if "event" not in e:
+                    # valid JSON minus the event field — render it as a
+                    # degraded-but-visible row instead of hiding it
+                    e = dict(e)
+                    e["event"] = "(unrecorded)"
+                    stats["degraded"] += 1
                 if tag != ".taskplane":
                     e["_agent"] = tag
                 evts.append(e)
     evts.sort(key=lambda e: e.get("ts", 0))
-    return evts[-limit:][::-1]
+    return evts
+
+
+def _trace_notice(stats: dict | None) -> str:
+    """Visible disclosure when the trace view is partial: N unparseable
+    lines skipped, M malformed records shown degraded, and/or tail-read of
+    an oversized audit log. Empty string when the view is complete."""
+    stats = stats or {}
+    bits = []
+    if stats.get("unparseable"):
+        bits.append(_msg("trace_unparseable", n=stats["unparseable"]))
+    if stats.get("degraded"):
+        bits.append(_msg("trace_degraded", n=stats["degraded"]))
+    if stats.get("tail"):
+        mb = stats.get("tail_skipped_bytes", 0) / (1024.0 * 1024.0)
+        bits.append(_msg("trace_tail", mb=f"{mb:.1f}"))
+    if not bits:
+        return ""
+    return (f'<div id="tp-trace-notice" role="note" style="border:1px solid '
+            f'var(--border-strong);border-radius:6px;padding:7px 12px;'
+            f'margin-bottom:12px;font-family:var(--font-mono);'
+            f'font-size:11px;color:var(--text-secondary)">⚠ '
+            + _esc(" · ".join(bits)) + '</div>')
+
+
+def _read_trace(ws: str, limit: int = 24) -> list:
+    """Newest-first tail of the merged trace (main + workers). Kept for
+    callers that need a one-off slice; render paths use _read_trace_all once
+    and slice the parsed list themselves."""
+    return _read_trace_all(ws)[-limit:][::-1]
+
+
+# ------------------------------------------------------- message catalog
+# One assembly point for every counted / composed phrase (i18n readiness):
+# each entry is a FULL template with named placeholders and ICU-shaped
+# plural selection, so extraction hands a translator whole sentences whose
+# segment order lives in the template — never in code flow. English-only
+# for now; the call sites survive extraction unchanged.
+
+import re as _re
+
+_PLURAL_RE = _re.compile(
+    r"\{(\w+),\s*plural,\s*one\s*\{(.*?)\}\s*other\s*\{(.*?)\}\}")
+
+_MESSAGES = {
+    "n_lenses": "{n} {n, plural, one {lens} other {lenses}}",
+    "n_findings": "{n} {n, plural, one {finding} other {findings}}",
+    "n_agents": "{verb} {n} {n, plural, one {agent} other {agents}}",
+    "n_tasks_planned": "{n} {n, plural, one {task} other {tasks}} planned",
+    "n_warnings": " · {n} {n, plural, one {warning} other {warnings}}",
+    "no_ceiling": "{n} {n, plural, one {action} other {actions}} · "
+                  "no ceiling set",
+    "dependent_modules": "{n} dependent {n, plural, one {module} other "
+                         "{modules}} within 3 hops",
+    "plan_all_tasks": "execution plan — all {n} {n, plural, one {task} "
+                      "other {tasks}}, for review",
+    "tasks_progress": "{done}/{total} {total, plural, one {task} other "
+                      "{tasks}} passed · {actions} actions metered · "
+                      "{blocked} blocked",
+    "design_dod_fail": "Design DoD ❌ {n} {n, plural, one {issue} other "
+                       "{issues}}: {details}",
+    "signoff_dod_fail": "all tasks reviewed · DoD ❌ {n} {n, plural, "
+                        "one {issue} other {issues}}: {details}",
+    # never-skippable headlines — one full template each; optional segments
+    # are named placeholders rendered from their own catalog entries (or "")
+    "headline_findings": "{title}: {high} high · {med} med · {low} low "
+                         "({total} {total, plural, one {finding} other "
+                         "{findings}}){unrated}{notes}{tests}{coverage}"
+                         "{impact}{rec}",
+    "headline_findings_unrated": " · {n} unrated → counted high",
+    "headline_findings_notes": " · {n} {n, plural, one {note} other "
+                               "{notes}} (question/praise, not defects)",
+    "headline_findings_tests": " · {tests}",
+    "headline_findings_coverage": " · lenses {deep} deep/{sweep} sweep "
+                                  "of {total}",
+    "headline_findings_impact": " · touches {n} {n, plural, one {module} "
+                                "other {modules}}",
+    "headline_findings_rec": " · {rec}",
+    "headline_loop": "taskplane loop: step={step} · tasks {done}/{total} · "
+                     "\"{goal}\"{gate}{budget}",
+    "headline_loop_gate": " — YOUR GATE: approve/sign-off",
+    "headline_loop_budget": " — ACTION BUDGET EXHAUSTED ({used}/{max}): "
+                            "the agent is blocked; grant more actions",
+    "dor_warnings": "{n} {n, plural, one {warning} other {warnings}}: "
+                    "{details}",
+    # trace-view disclosure (the trace is the audit record — a partial view
+    # must SAY it is partial, and why)
+    "trace_unparseable": "{n} unparseable trace {n, plural, one {line} "
+                         "other {lines}} skipped",
+    "trace_degraded": "{n} malformed trace {n, plural, one {record} other "
+                      "{records}} shown degraded",
+    "trace_tail": "showing recent events only — {mb} MB of older trace "
+                  "not shown (full history preserved in trace.jsonl)",
+}
+
+
+def _msg(key: str, **kw) -> str:
+    t = _MESSAGES[key]
+
+    def _pl(m):
+        return m.group(2) if kw.get(m.group(1)) == 1 else m.group(3)
+
+    return _PLURAL_RE.sub(_pl, t).format(**kw)
+
+
+# Directional glyphs go through ONE helper so an RTL locale can flip flow
+# arrows in a single place instead of a whole-file rewrite.
+def _arrow(back: bool = False) -> str:
+    return "←" if back else "→"
+
+
+def _fmt_ts(ts) -> str:
+    """Timestamps render as ISO-8601 UTC with the offset explicit ('Z') —
+    never the server's local wall clock in a bare 24h pattern, which reads
+    as the VIEWER's time with no marker. One helper so a future client-side
+    Intl formatting swap is one change."""
+    import time as _t
+    try:
+        return _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(float(ts)))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return str(ts)
 
 
 def _load_loop(ws: str) -> dict | None:
@@ -96,20 +264,10 @@ def _counts(ws: str) -> dict:
             "edges": g["edges"]}
 
 
-def render(ws: str, out: str | None = None) -> str:
-    state = _load_loop(ws)
-    trace = _read_trace(ws)
-    counts = _counts(ws)
-    contract = tp.load_active(ws)
-
-    step = (state or {}).get("step", "—")
-    goal = (state or {}).get("goal", "no active loop")
-    tasks = (state or {}).get("tasks") or []
-    parallel = bool((state or {}).get("parallel"))
-    denials = sum(1 for e in _read_trace(ws, 9999) if e["event"] == "hook_deny")
-
-    # pipeline: mark done / current / gate-waiting. Derived from the engine's
-    # single source (loop.display_pipeline) — fix is a side-loop, hidden here.
+def _render_pipeline(state, step) -> str:
+    """The full-page pipeline strip. Each node carries a visually-hidden
+    state word (done/current/pending, + human gate), so step state is not
+    conveyed by dot color alone."""
     main = [(s, lbl, h) for s, lbl, h in _loop.display_pipeline(state)
             if s != "fix"]
     order = [s[0] for s in main]
@@ -121,13 +279,38 @@ def render(ws: str, out: str | None = None) -> str:
         if gate:
             cls += " gate"
         wait = " · waiting on you" if (i == cur_i and gate) else ""
+        st_word = ("done" if cls.startswith("done")
+                   else "current step" if i == cur_i else "pending")
+        if gate:
+            st_word += " · human gate"
+        sr = f'<span class="sr"> — {st_word}</span>'
         pipe_html.append(
             f'<div class="node {cls}"><span class="dot"></span>'
-            f'<span class="nl">{label}{wait}</span></div>')
+            f'<span class="nl">{label}{wait}{sr}</span></div>')
         if i < len(main) - 1:
             pipe_html.append('<div class="conn"></div>')
     if step == "fix":
         pipe_html.append('<div class="fixflag">↻ FIX cycle in progress</div>')
+    return "".join(pipe_html)
+
+
+def render(ws: str, out: str | None = None) -> str:
+    tstats = {}
+    all_ev = _read_trace_all(ws, stats=tstats)   # trace parsed ONCE/render
+    state = _load_loop(ws)
+    trace = all_ev[-24:][::-1]
+    counts = _counts(ws)
+    contract = tp.load_active(ws)
+
+    step = (state or {}).get("step", "—")
+    goal = (state or {}).get("goal", "no active loop")
+    tasks = (state or {}).get("tasks") or []
+    parallel = bool((state or {}).get("parallel"))
+    denials = sum(1 for e in all_ev if e["event"] == "hook_deny")
+
+    # pipeline: mark done / current / gate-waiting. Derived from the engine's
+    # single source (loop.display_pipeline) — fix is a side-loop, hidden here.
+    pipe = _render_pipeline(state, step)
 
     # agents/contract panel
     agent_cards = []
@@ -191,15 +374,14 @@ def render(ws: str, out: str | None = None) -> str:
             e["event"], ("·", e["event"], "info"))
         extra = ""
         if e["event"] == "loop_step":
-            extra = f' → {e.get("step","")} ({e.get("role","")})'
+            extra = f' {_arrow()} {e.get("step","")} ({e.get("role","")})'
         elif e["event"] == "hook_deny":
             who = f'[{e["_agent"]}] ' if e.get("_agent") else ""
             extra = f' {who}{e.get("tool","")}: {str(e.get("reason",""))[:50]}'
         elif e["event"] == "loop_gate":
             extra = f' {e.get("step","")} = {e.get("outcome","")}'
         elif e["event"] == "lens_route":
-            ls = e.get("lenses", [])
-            extra = f' {len(ls)} lens(es)'
+            extra = " " + _msg("n_lenses", n=len(e.get("lenses", [])))
         elif e["event"] == "loop_wave":
             extra = f' ready: {", ".join(e.get("ready", []))}'
         elif e["event"] == "refinement_gate":
@@ -223,7 +405,8 @@ def render(ws: str, out: str | None = None) -> str:
     html = _TEMPLATE.replace("__GOAL__", _esc(goal[:80])) \
         .replace("__STEP__", _esc(step)) \
         .replace("__MODE__", "parallel waves" if parallel else "serial") \
-        .replace("__PIPE__", "".join(pipe_html)) \
+        .replace("__NOTICE__", _trace_notice(tstats)) \
+        .replace("__PIPE__", pipe) \
         .replace("__AGENTS__", "".join(agent_cards)) \
         .replace("__ROSTER__", roster) \
         .replace("__FEED__", feed_html) \
@@ -235,11 +418,15 @@ def render(ws: str, out: str | None = None) -> str:
     return out
 
 
-_TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
+_TEMPLATE = """<!DOCTYPE html><html lang="en" dir="auto"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>taskplane — mission control</title><style>
 *{box-sizing:border-box;margin:0}
 body{font:13.5px/1.5 -apple-system,'Segoe UI',Inter,sans-serif;
 background:#14140f;color:#e8e8e2;padding:18px 22px}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 h1{font-size:15px;letter-spacing:.3px;color:#fff;display:flex;
 align-items:center;gap:10px}
 h1 .live{width:8px;height:8px;border-radius:50%;background:#1baf7a;
@@ -254,7 +441,7 @@ padding:14px 16px;margin-bottom:14px}
 .node{display:flex;align-items:center;gap:7px;padding:6px 10px;
 border-radius:8px}
 .node .dot{width:11px;height:11px;border-radius:50%;background:#44443a;flex:none}
-.node .nl{font-size:12.5px;white-space:nowrap;color:#8a8a80}
+.node .nl{font-size:12.5px;color:#8a8a80}
 .node.done .dot{background:#1baf7a}.node.done .nl{color:#c9c9c2}
 .node.cur{background:#26261c}.node.cur .dot{background:#eda100;
 animation:pulse 1.2s infinite;box-shadow:0 0 0 4px rgba(237,161,0,.15)}
@@ -264,33 +451,36 @@ animation:pulse 1.2s infinite;box-shadow:0 0 0 4px rgba(237,161,0,.15)}
 box-shadow:0 0 0 4px rgba(227,73,72,.2)}
 .node.gate.cur .nl{color:#ff9d6e}
 .conn{flex:1;min-width:10px;height:2px;background:#33332a}
-.fixflag{color:#eb6834;font-size:12px;font-weight:600;margin-left:10px;
-padding:5px 10px;background:#2a1a12;border-radius:7px}
+.fixflag{color:#eb6834;font-size:12px;font-weight:600;
+margin-inline-start:10px;padding:5px 10px;background:#2a1a12;border-radius:7px}
 /* grid */
 .grid{display:grid;grid-template-columns:1.1fr 1fr;gap:14px}
+@media (max-width:560px){.grid{grid-template-columns:1fr}}
 .card{background:#1c1c15;border:1px solid #33332a;border-radius:6px;padding:14px}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:.8px;
-color:#77776c;margin-bottom:11px}
+.card h2{font-size:11px;letter-spacing:.8px;
+color:#94948a;margin-bottom:11px}
 /* agents */
 .agent{border:1px solid #33332a;border-radius:9px;padding:10px 12px;
-margin-bottom:9px;border-left:4px solid #44443a}
-.agent.running{border-left-color:#1baf7a}.agent.built{border-left-color:#eda100}
-.agent.passed{border-left-color:#1baf7a}.agent.failed{border-left-color:#e34948}
-.agent.idle{border-left-color:#44443a}
+margin-bottom:9px;border-inline-start:4px solid #44443a}
+.agent.running{border-inline-start-color:#1baf7a}
+.agent.built{border-inline-start-color:#eda100}
+.agent.passed{border-inline-start-color:#1baf7a}
+.agent.failed{border-inline-start-color:#e34948}
+.agent.idle{border-inline-start-color:#44443a}
 .ah{display:flex;justify-content:space-between;align-items:center;
 margin-bottom:5px}.ah b{color:#fff;font-size:13.5px}
 .ameta{color:#9a9a90;font-size:11.5px;margin-top:2px}
 .ameta code{background:#26261c;color:#c9c9a2;padding:1px 5px;border-radius:4px;
 font-size:11px}
 .badge{font-size:10.5px;padding:2px 8px;border-radius:99px;font-weight:600;
-text-transform:uppercase;letter-spacing:.4px}
+letter-spacing:.4px}
 .badge.running{background:#123a2b;color:#3fd99a}
 .badge.built,.badge.pending,.badge.queued{background:#3a2f12;color:#f0c04a}
 .badge.passed{background:#123a2b;color:#3fd99a}
 .badge.failed{background:#3a1616;color:#ff7a78}
 .badge.idle{background:#26261c;color:#9a9a90}
 .roster{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
-.roster th{text-align:left;color:#77776c;font-weight:600;padding:4px 8px;
+.roster th{text-align:start;color:#94948a;font-weight:600;padding:4px 8px;
 border-bottom:1px solid #33332a}
 .roster td{padding:5px 8px;border-bottom:1px solid #26261c}
 /* feed */
@@ -309,17 +499,18 @@ padding:9px 16px;text-align:center;min-width:96px}
 .stat b{display:block;font-size:20px;color:#fff}
 .stat span{font-size:11px;color:#8a8a80}
 .stat .hot{color:#ff7a78}
-.legend{color:#66665c;font-size:11px;margin-top:12px}
+.legend{color:#94948a;font-size:11px;margin-top:12px}
 </style></head><body>
 <h1><span class="live"></span> taskplane — mission control
 <span style="color:#77776c;font-weight:400;font-size:12px">· step
 <b style="color:#eda100">__STEP__</b> · __MODE__</span></h1>
 <div class="goal">goal: <b>__GOAL__</b></div>
+__NOTICE__
 <div class="pipe">__PIPE__</div>
 <div class="grid">
  <div class="card"><h2>Agents &amp; contracts</h2>__AGENTS____ROSTER__</div>
  <div class="card"><h2>Live feed (newest first)</h2>
-  <ul class="feed">__FEED__</ul></div>
+  <ul class="feed" aria-live="polite" aria-atomic="false">__FEED__</ul></div>
 </div>
 <div class="stats">__STATS__</div>
 <div class="legend">green = passed/running · amber = current step / built ·
@@ -485,7 +676,7 @@ def render_strategy_note(note, out=None):
         f'<div style="font-size:13px;color:var(--text-secondary);'
         f'line-height:1.6">{_esc(al.get("note",""))}</div>'
         f'{"".join(rows)}{tension_html}</div>'
-        f'<div style="{_CARD};margin-top:8px;border-left:3px solid {rcol};'
+        f'<div style="{_CARD};margin-top:8px;border-inline-start:3px solid {rcol};'
         f'border-radius:0 6px 6px 0"><span style="{_MICRO}">recommendation'
         f'</span> <span style="font-weight:500;font-size:13.5px;color:{rcol}">'
         f'{_esc(rec or "—")}</span>{rationale}</div>'
@@ -506,12 +697,80 @@ def render_strategy_note(note, out=None):
 _SEV = {  # order high→low; each: (rank, label, dot-color, accent-border)
     "blocker": (0, "blocker", "var(--text-danger)", "var(--border-danger)"),
     "high": (1, "high", "var(--text-danger)", "var(--border-danger)"),
+    "major": (2, "major", "var(--text-primary)", "var(--border-strong)"),
     "med": (2, "medium", "var(--text-primary)", "var(--border-strong)"),
     "medium": (2, "medium", "var(--text-primary)", "var(--border-strong)"),
+    "minor": (3, "minor", "var(--text-muted)", "var(--border)"),
     "low": (3, "low", "var(--text-muted)", "var(--border)"),
+    "question": (4, "question", "var(--text-muted)", "var(--border)"),
+    "praise": (4, "praise", "var(--text-muted)", "var(--border)"),
 }
-_SEV_KEY = {"blocker": "high", "high": "high", "med": "med",
-            "medium": "med", "low": "low"}
+# Both findings schemas are first-class: the dispatched-agent schema
+# (high|med|low) AND the lens-charter verdict schema (blocker|major|minor|
+# question|praise). question/praise are NOT defects — they bucket to "info"
+# and are excluded from defect counts (but still rendered and counted in
+# the headline as notes, so nothing is silently dropped).
+#
+# v2.3.1: bucket classification no longer has its own map here (a former
+# _SEV_KEY duplicated — and drifted from — loop.normalize_severity, e.g.
+# mapping 'major' to 'med' while the gate blocks it as 'high'). _sev_info()
+# now sources the bucket from loop.normalize_severity directly; _SEV above
+# only supplies rank/label/dot/accent for known lens-charter words.
+
+
+def _sev_info(sev):
+    """(bucket, rank, label, dot, accent, flagged) for a severity value.
+    GUARDRAIL: severity rendering never downgrades — an UNKNOWN severity
+    renders in the HIGH bucket, flagged as unrated, never as medium.
+
+    v2.3.1: the BUCKET (high/med/low/info) is sourced from
+    loop.normalize_severity — the same function the sign-off gate uses to
+    decide what blocks — never from a second, dashboard-local mapping. A
+    local map can drift from the engine (it had: 'major' -> med here vs.
+    'major' -> high at the gate), which would let a gate-blocking finding
+    render in a lesser bucket than the one that actually blocks. Only the
+    richer display LABEL (and rank/dot/accent for known lens-charter
+    words) still come from the local table."""
+    s = str(sev).lower()
+    bucket = _loop.normalize_severity(sev)
+    if s in _SEV:
+        rank, label, dot, accent = _SEV[s]
+        return bucket, rank, label, dot, accent, False
+    return (bucket, 1, f"{s or 'unrated'} ⚠ unrated → {bucket}",
+            "var(--text-danger)", "var(--border-danger)", True)
+
+
+def _alias(f):
+    """Bridge the lens-charter verdict fields (issue/why/suggestion) to the
+    renderer's fields (title/scenario/fix) so charter-schema findings render
+    with their content instead of empty cards."""
+    if not isinstance(f, dict):
+        return f
+    out = dict(f)
+    if not out.get("title") and out.get("issue"):
+        out["title"] = out["issue"]
+    if not out.get("scenario") and out.get("why"):
+        out["scenario"] = out["why"]
+    if not out.get("fix") and out.get("suggestion"):
+        out["fix"] = out["suggestion"]
+    return out
+
+
+# Shared gate-button JS: feature-detect the chat bridge FIRST. In the
+# standalone HTML artifact (tp dashboard --out / Codex fallback) there is no
+# window.sendPrompt — a click must never pretend success; instead the exact
+# reply to type in chat is revealed next to the button.
+_SEND_JS = (
+    'function tpHint(b,m){if(b._tph)return;b._tph=1;'
+    'var d=document.createElement("div");'
+    'd.style.cssText="margin-top:8px;padding:6px 10px;border-radius:6px;'
+    'background:var(--surface-0);color:var(--text-primary);'
+    'font-family:var(--font-mono);font-size:11.5px;flex-basis:100%";'
+    'd.setAttribute("role","note");'
+    'd.textContent="no chat bridge in this static view — reply in chat: "+m;'
+    'b.parentNode.appendChild(d);}'
+    'function tpSend(b,m){if(window.sendPrompt){sendPrompt(m);}'
+    'else{tpHint(b,m);}}')
 
 # Render-reliability contract (v1.5.3): a dashboard's data is too valuable to
 # depend on a single big widget that might get skipped. Three guarantees:
@@ -520,31 +779,49 @@ _SEV_KEY = {"blocker": "high", "high": "high", "med": "med",
 #  2. render_findings_paged() — splits a large fragment into ordered,
 #     self-contained pages each under PAGE_BUDGET, rendered one after another.
 #  3. the skills instruct the driver to render EVERY page and never summarize.
-PAGE_BUDGET = 14000     # max chars per inline fragment — safe to pass through
+PAGE_BUDGET = 14000     # max UTF-8 BYTES per inline fragment (ENFORCED in
+                        # v2.3.0: a page over budget is a bug — split
+                        # further; content only ever leaves a page via an
+                        # explicit '+N more' marker, never silently)
 
 
 def headline_findings(findings, meta=None) -> str:
     """The never-skippable text line. Key counts + tests + recommendation, so
-    the numbers reach the human even if every widget render is skipped."""
+    the numbers reach the human even if every widget render is skipped.
+    Composed from ONE full template ("headline_findings") whose optional
+    segments are named placeholders — no code-flow concatenation. Additive
+    only: question/praise entries move out of the defect counts into an
+    explicit notes segment; unrated severities are counted HIGH and named."""
     meta = meta or {}
-    c = {"high": 0, "med": 0, "low": 0}
+    c = {"high": 0, "med": 0, "low": 0, "info": 0}
+    unrated = 0
     for f in findings or []:
-        c[_SEV_KEY.get(str(f.get("severity", "med")).lower(), "med")] += 1
-    t = meta.get("title") or "review findings"
-    line = (f"{t}: {c['high']} high · {c['med']} med · {c['low']} low "
-            f"({sum(c.values())} findings)")
-    if meta.get("tests"):
-        line += f" · {meta['tests']}"
+        bucket, _, _, _, _, flagged = _sev_info(f.get("severity", "med"))
+        c[bucket] += 1
+        if flagged:
+            unrated += 1
+    cov_seg = ""
     if meta.get("lens_coverage") is not None:
         cov = lens_coverage(meta["lens_coverage"])
-        line += (f" · lenses {cov['deep']} deep/{cov['sweep']} sweep of "
-                 f"{cov['total']}")
-    if meta.get("impact"):
-        line += f" · touches {meta['impact'].get('total_impacted', 0)} modules"
+        cov_seg = _msg("headline_findings_coverage", deep=cov["deep"],
+                       sweep=cov["sweep"], total=cov["total"])
     rec = meta.get("headline") or meta.get("recommendation")
-    if rec:
-        line += f" · {rec}"
-    return line
+    return _msg(
+        "headline_findings",
+        title=meta.get("title") or "review findings",
+        high=c["high"], med=c["med"], low=c["low"],
+        total=c["high"] + c["med"] + c["low"],
+        unrated=_msg("headline_findings_unrated", n=unrated)
+        if unrated else "",
+        notes=_msg("headline_findings_notes", n=c["info"])
+        if c["info"] else "",
+        tests=_msg("headline_findings_tests", tests=meta["tests"])
+        if meta.get("tests") else "",
+        coverage=cov_seg,
+        impact=_msg("headline_findings_impact",
+                    n=meta["impact"].get("total_impacted", 0))
+        if meta.get("impact") else "",
+        rec=_msg("headline_findings_rec", rec=rec) if rec else "")
 
 
 def headline_northstar(note) -> str:
@@ -564,8 +841,8 @@ def _ptitle(t):
 
 
 def _compact_card(f, open_=True):
-    sev = str(f.get("severity", "med")).lower()
-    _, slabel, dot, accent = _SEV.get(sev, _SEV["med"])
+    f = _alias(f)
+    _, _, slabel, dot, accent, _ = _sev_info(f.get("severity", "med"))
     loc = ""
     if f.get("file"):
         ln = f":{f['line']}" if f.get("line") not in (None, "") else ""
@@ -577,13 +854,19 @@ def _compact_card(f, open_=True):
     det = ""
     if open_ and (f.get("scenario") or f.get("fix")):
         parts = []
+        # truncate the RAW text, then escape — a slice after escaping can
+        # bisect an HTML entity (a dangling '&am') and eat far more visible
+        # characters than intended on entity-heavy text.
         if f.get("scenario"):
             parts.append(f'<b style="color:var(--text-primary);'
-                         f'font-weight:500">fail</b> {_esc(f["scenario"])[:260]}')
+                         f'font-weight:500">fail</b> '
+                         f'{_esc(str(f["scenario"])[:260])}')
         if f.get("fix"):
             parts.append(f'<b style="color:var(--text-primary);'
-                         f'font-weight:500">fix</b> {_esc(f["fix"])[:220]}')
-        det = (f'<div style="padding:3px 0 2px 88px;font-size:11.5px;'
+                         f'font-weight:500">fix</b> '
+                         f'{_esc(str(f["fix"])[:220])}')
+        det = (f'<div style="padding:3px 0 2px;padding-inline-start:88px;'
+               f'font-size:11.5px;'
                f'color:var(--text-secondary);line-height:1.5">'
                + "<br>".join(parts) + "</div>")
     return (f'<div style="border-top:.5px solid var(--border)">'
@@ -593,12 +876,43 @@ def _compact_card(f, open_=True):
             f'color:{dot}"> {_esc(slabel)}</span>{loc}</span></div>{det}</div>')
 
 
+# Reserved headroom per page for the wrapper (outer div + sr heading +
+# part title) so the greedy packer's guarantee covers the ASSEMBLED page,
+# not just the sum of its rows.
+_PAGE_RESERVE = 500
+
+
+def _truncate_marked(html, budget):
+    """Last-resort fit: cut at the last complete block boundary and append
+    an EXPLICIT '+N more' marker. Over-budget content is never dropped
+    silently — the marker names exactly how much was omitted and where the
+    complete view lives."""
+    if len(html) <= budget:
+        return html
+
+    def _marker(omitted):
+        return (f'<div style="font-family:var(--font-mono);font-size:11px;'
+                f'color:var(--text-danger);padding:6px 0">… +{omitted} more '
+                f'characters truncated to honor the page budget — open '
+                f'.taskplane/dashboard.html for the complete view</div>')
+
+    kept = html
+    for _ in range(64):
+        m = _marker(len(html) - len(kept))
+        if len(kept) + len(m) <= budget:
+            return kept + m
+        cut = kept.rfind("</div>", 0, max(0, budget - len(m)))
+        kept = kept[:cut + 6] if cut > 0 else kept[:max(0, budget - len(m))]
+    m = _marker(len(html) - len(kept))
+    return kept[:max(0, budget - len(m))] + m
+
+
 def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
-    """Ordered, self-contained fragments each <= budget. If the full rich
-    fragment already fits, returns it as a single page (no behavior change for
-    small reviews). Otherwise splits by MEANING: summary → high cards →
-    medium → low. Each page carries a 'part i/n' title. Returns
-    [{"title","html"}]."""
+    """Ordered, self-contained fragments each <= budget INCLUDING the page
+    wrapper. If the full rich fragment already fits, returns it as a single
+    page (no behavior change for small reviews). Otherwise splits by
+    MEANING: summary → high cards → medium → low → notes (question/praise).
+    Each page carries a 'part i/n' title. Returns [{"title","html"}]."""
     meta = meta or {}
     full = render_findings(findings, meta)
     if len(full) <= budget:
@@ -606,23 +920,28 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
 
     norm = []
     for f in findings or []:
-        k = _SEV_KEY.get(str(f.get("severity", "med")).lower(), "med")
+        f = _alias(f)
+        k, _, _, _, _, _ = _sev_info(f.get("severity", "med"))
         norm.append({**f, "_key": k})
     buckets = {k: [f for f in norm if f["_key"] == k]
-               for k in ("high", "med", "low")}
+               for k in ("high", "med", "low", "info")}
     c = {k: len(v) for k, v in buckets.items()}
     pages = []
 
     # page 1 — summary: title, counts, tests, clean, gate
+    chip_defs = [
+        ("high", "high", "var(--bg-danger)", "var(--text-danger)"),
+        ("med", "med", "var(--bg-warning,var(--surface-1))",
+         "var(--text-warning,var(--text-primary))"),
+        ("low", "low", "var(--surface-1)", "var(--text-secondary)")]
+    if c["info"]:
+        chip_defs.append(("info", "notes", "var(--surface-1)",
+                          "var(--text-muted)"))
     chips = "".join(
         f'<span style="font-family:var(--font-mono);font-size:11px;'
-        f'padding:2px 9px;border-radius:12px;margin-right:6px;background:'
-        f'{bg};color:{fg}">{lbl} {c[k]}</span>'
-        for k, lbl, bg, fg in (
-            ("high", "high", "var(--bg-danger)", "var(--text-danger)"),
-            ("med", "med", "var(--bg-warning,var(--surface-1))",
-             "var(--text-warning,var(--text-primary))"),
-            ("low", "low", "var(--surface-1)", "var(--text-secondary)")))
+        f'padding:2px 9px;border-radius:12px;margin-inline-end:6px;'
+        f'background:{bg};color:{fg}">{lbl} {c[k]}</span>'
+        for k, lbl, bg, fg in chip_defs)
     clean = meta.get("clean") or []
     clean_html = ""
     if clean:
@@ -631,31 +950,81 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
                       f'clean — {len(clean)} areas:</b> '
                       + "; ".join(_esc(x) for x in clean[:12]) + "</div>")
     rec = meta.get("headline") or meta.get("recommendation") or ""
-    rec_html = (f'<div style="border-left:3px solid var(--border-danger);'
+    rec_html = (f'<div style="border-inline-start:3px solid '
+                f'var(--border-danger);'
                 f'padding:8px 12px;margin-top:12px;background:var(--surface-1);'
                 f'border-radius:0 8px 8px 0;font-size:12.5px">{_esc(rec)}</div>'
                 if rec else "")
     sub = _esc(meta.get("subtitle", ""))
     tests = (f' · {_esc(meta["tests"])}' if meta.get("tests") else "")
-    summary = (
-        f'<div style="padding:.5rem 0;font-family:var(--font-sans);'
-        f'color:var(--text-primary)"><div style="font-size:16px;'
+    summary_h2 = (
+        f'<h2 class="sr-only">Review findings summary: {c["high"]} high, '
+        f'{c["med"]} medium, {c["low"]} low'
+        + (f', {c["info"]} notes' if c["info"] else "") + '.</h2>')
+    summary_core = (
+        f'<div style="font-size:16px;'
         f'font-weight:500">{_esc(meta.get("title","review findings"))}</div>'
         f'<div style="font-size:12px;color:var(--text-secondary);'
-        f'margin-bottom:10px">{sub}{tests}</div>{chips}{clean_html}{rec_html}'
-        f'</div>')
-    pages.append({"title": "summary", "html": summary})
+        f'margin-bottom:10px">{sub}{tests}</div>{chips}{clean_html}{rec_html}')
+
+    def _wrap_summary(body):
+        return (summary_h2 + '<div style="padding:.5rem 0;font-family:'
+                'var(--font-sans);color:var(--text-primary)">' + body
+                + '</div>')
+
+    # v2.3.1 (H3&H4): a PAGED review must never make the human's primary
+    # action (the sign-off gate) unreachable, nor drop lens coverage / the
+    # blast-radius graph / the trailing note — render_findings_paged used
+    # to render NONE of these on any page. gate_html is the sign-off
+    # buttons; it (plus the note) is a FIXED tail — never truncated away —
+    # exactly as widget_paged protects its trailing <script> (finding #1):
+    # the truncatable part is only the summary's title/chips/clean/rec.
+    gate_html = _gate_box(meta)
+    coverage_html = (render_lens_coverage(meta.get("lens_coverage"))
+                      if meta.get("lens_coverage") is not None else "")
+    graph_html = (render_review_graph(meta["ws"], meta.get("impact"))
+                  if meta.get("ws") else "")
+    note_html = (f'<div style="{_MICRO};margin-top:10px">'
+                 f'{_esc(meta["note"])}</div>' if meta.get("note") else "")
+    # the gate buttons call tpSend(...) — wire it on this page (paged
+    # fragments are otherwise self-contained and never include it).
+    gate_js = f'<script>{_SEND_JS}</script>' if gate_html else ""
+
+    fixed_tail = gate_html + note_html + gate_js
+    fixed_bytes = (_page_bytes(_wrap_summary("")) + _page_bytes(fixed_tail))
+    fitted_core = _fit_page(summary_core, max(256, budget - fixed_bytes))
+
+    extras = coverage_html + graph_html
+    extras_fit_on_summary = False
+    if extras:
+        with_extras = _wrap_summary(fitted_core + extras + fixed_tail)
+        extras_fit_on_summary = _page_bytes(with_extras) <= budget
+    summary_page = (with_extras if extras_fit_on_summary
+                     else _wrap_summary(fitted_core + fixed_tail))
+    pages.append({"title": "summary", "html": summary_page})
+    if extras and not extras_fit_on_summary:
+        # coverage + graph didn't fit alongside the gate on page 1 — they
+        # still land on their OWN page rather than being dropped silently.
+        pages.append({
+            "title": "lens coverage & graph",
+            "html": ('<h3 class="sr-only">Lens coverage and dependency '
+                      'graph.</h3><div style="padding:.5rem 0;'
+                      'font-family:var(--font-sans);'
+                      f'color:var(--text-primary)">{extras}</div>')})
 
     def chunk(bucket, label, open_):
-        rows, buf, part = [], "", 1
+        effective = max(1000, budget - _PAGE_RESERVE)
+        rows = []
         for f in bucket:
-            rows.append(_compact_card(f, open_))
-        # greedily pack rows into pages under budget
-        cur = []
-        cur_len = 0
-        packed = []
+            r = _compact_card(f, open_)
+            if len(r) > effective:   # one pathological card — marked, never
+                r = _truncate_marked(r, effective)          # silently over
+            rows.append(r)
+        # greedily pack rows against budget MINUS the wrapper reserve, so
+        # the assembled page (wrapper included) honors the guarantee
+        cur, cur_len, packed = [], 0, []
         for r in rows:
-            if cur and cur_len + len(r) > budget:
+            if cur and cur_len + len(r) > effective:
                 packed.append(cur)
                 cur, cur_len = [], 0
             cur.append(r)
@@ -664,12 +1033,14 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
             packed.append(cur)
         for i, grp in enumerate(packed, 1):
             suffix = f" (part {i}/{len(packed)})" if len(packed) > 1 else ""
-            pages.append({
-                "title": f"{label}{suffix}",
-                "html": (f'<div style="padding:.5rem 0;font-family:'
-                         f'var(--font-sans);color:var(--text-primary)">'
-                         + _ptitle(f"{label} · {len(bucket)}{suffix}")
-                         + "".join(grp) + "</div>")})
+            html = (f'<h3 class="sr-only">{_esc(label)} findings'
+                    f'{_esc(suffix)} — {len(bucket)} total.</h3>'
+                    f'<div style="padding:.5rem 0;font-family:'
+                    f'var(--font-sans);color:var(--text-primary)">'
+                    + _ptitle(f"{label} · {len(bucket)}{suffix}")
+                    + "".join(grp) + "</div>")
+            pages.append({"title": f"{label}{suffix}",
+                          "html": _truncate_marked(html, budget)})
 
     if buckets["high"]:
         chunk(buckets["high"], "high — fix first", True)
@@ -677,10 +1048,15 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
         chunk(buckets["med"], "medium", False)
     if buckets["low"]:
         chunk(buckets["low"], "low", False)
+    if buckets["info"]:
+        chunk(buckets["info"], "notes", False)
 
     n = len(pages)
     for i, p in enumerate(pages, 1):
         p["title"] = f"{p['title']} — {i}/{n}"
+        # ENFORCED byte budget: the guarantee covers the emitted UTF-8
+        # size of the assembled page, wrapper included.
+        p["html"] = _fit_page(p["html"], budget)
     return pages
 
 
@@ -791,6 +1167,35 @@ def render_review_graph(ws, impact=None, tasks=None):
             f'</summary>{body}</details>')
 
 
+def _gate_box(meta):
+    """The sign-off gate box: banner + buttons (tpSend), the human's PRIMARY
+    ACTION at a review gate. Factored out (v2.3.1) so render_findings_paged
+    can fold the SAME markup onto the summary page instead of dropping it —
+    a paged review must never make the gate unreachable. Returns "" when
+    meta['gate'] is falsy."""
+    if not meta.get("gate"):
+        return ""
+    return (
+        f'<div style="background:var(--text-primary);border-radius:6px;'
+        f'padding:14px 16px;margin-top:14px;display:flex;'
+        f'justify-content:space-between;align-items:center;gap:12px;'
+        f'flex-wrap:wrap"><div style="font-weight:500;color:'
+        f'var(--surface-2)"><i class="ti ti-writing-sign" '
+        f'aria-hidden="true"></i> {_esc(meta.get("gate_title", "your call — the review is the deliverable"))}'
+        f'</div><div style="display:flex;gap:8px;flex-wrap:wrap">'
+        + "".join(
+            f'<button onclick="tpSend(this,'
+            f'&#39;{_jsattr(b["prompt"])}&#39;)" style="border:'
+            f'{"none" if b.get("primary") else "1px solid var(--surface-2)"};'
+            f'border-radius:6px;padding:9px 15px;font-size:13px;'
+            f'font-weight:500;cursor:pointer;font-family:var(--font-sans);'
+            f'background:{"var(--surface-2)" if b.get("primary") else "none"};'
+            f'color:{"var(--text-primary)" if b.get("primary") else "var(--surface-2)"}">'
+            f'{_esc(b["label"])}</button>'
+            for b in meta.get("gate_buttons", []))
+        + '</div></div>')
+
+
 def render_findings(findings, meta=None, out=None):
     """Render a REVIEW findings dashboard — every severity, each finding an
     expandable card, filterable by severity. Independent of the loop (a pure
@@ -804,13 +1209,13 @@ def render_findings(findings, meta=None, out=None):
     meta = meta or {}
     norm = []
     for f in findings or []:
-        sev = str(f.get("severity", "med")).lower()
-        key = _SEV_KEY.get(sev, "med")
-        norm.append({**f, "_key": key, "_rank": _SEV.get(sev, _SEV["med"])[0]})
+        f = _alias(f)
+        key, rank, _, _, _, _ = _sev_info(f.get("severity", "med"))
+        norm.append({**f, "_key": key, "_rank": rank})
     norm.sort(key=lambda x: (x["_rank"], str(x.get("domain", "")),
                              str(x.get("file", ""))))
     counts = {k: sum(1 for f in norm if f["_key"] == k)
-              for k in ("high", "med", "low")}
+              for k in ("high", "med", "low", "info")}
     total = len(norm)
 
     # severity filter chips (all / high / med / low) — click filters via JS
@@ -833,13 +1238,14 @@ def render_findings(findings, meta=None, out=None):
     chips = (chip("all", "all", total)
              + chip("high", "high", counts["high"], danger=True)
              + chip("med", "medium", counts["med"])
-             + chip("low", "low", counts["low"]))
+             + chip("low", "low", counts["low"])
+             + (chip("info", "notes", counts["info"])
+                if counts["info"] else ""))
 
     # one card per finding
     cards = []
     for i, f in enumerate(norm):
-        sev = str(f.get("severity", "med")).lower()
-        _, slabel, dot, accent = _SEV.get(sev, _SEV["med"])
+        _, _, slabel, dot, accent, _ = _sev_info(f.get("severity", "med"))
         loc = ""
         if f.get("file"):
             ln = f":{f['line']}" if f.get("line") not in (None, "") else ""
@@ -880,13 +1286,14 @@ def render_findings(findings, meta=None, out=None):
             if body else "")
         cards.append(
             f'<div class="tpf-card" data-sev="{f["_key"]}" style="{_CARD};'
-            f'border-left:3px solid {accent};border-radius:0 6px 6px 0;'
+            f'border-inline-start:3px solid {accent};'
+            f'border-radius:0 6px 6px 0;'
             f'margin-bottom:8px">'
             f'<div style="display:flex;align-items:baseline;gap:9px;'
             f'flex-wrap:wrap"><span style="width:8px;height:8px;border-radius:'
             f'50%;background:{dot};flex:none;align-self:center"></span>'
             f'<span style="font-family:var(--font-mono);font-size:10px;'
-            f'letter-spacing:1px;color:{dot}">{_esc(slabel).upper()}</span>'
+            f'letter-spacing:1px;color:{dot}">{_esc(slabel)}</span>'
             f'{dom}<span style="font-weight:500;font-size:14px;flex:1;'
             f'min-width:180px">{_esc(f.get("title",""))}</span>{sbadge}</div>'
             f'<div style="margin-top:5px">{loc}{toggle}</div>{details}</div>')
@@ -910,30 +1317,10 @@ def render_findings(findings, meta=None, out=None):
     tests_pill = (
         f'<span style="border:1px solid var(--border-strong);color:'
         f'var(--text-primary);border-radius:20px;padding:4px 12px;'
-        f'font-family:var(--font-mono);font-size:11.5px;white-space:nowrap">'
+        f'font-family:var(--font-mono);font-size:11.5px">'
         f'{_esc(tests)}</span>' if tests else "")
 
-    gate_html = ""
-    if meta.get("gate"):
-        gate_html = (
-            f'<div style="background:var(--text-primary);border-radius:6px;'
-            f'padding:14px 16px;margin-top:14px;display:flex;'
-            f'justify-content:space-between;align-items:center;gap:12px;'
-            f'flex-wrap:wrap"><div style="font-weight:500;color:'
-            f'var(--surface-2)"><i class="ti ti-writing-sign" '
-            f'aria-hidden="true"></i> {_esc(meta.get("gate_title", "your call — the review is the deliverable"))}'
-            f'</div><div style="display:flex;gap:8px;flex-wrap:wrap">'
-            + "".join(
-                f'<button onclick="if(window.sendPrompt)sendPrompt('
-                f'&#39;{_jsattr(b["prompt"])}&#39;)" style="border:'
-                f'{"none" if b.get("primary") else "1px solid var(--surface-2)"};'
-                f'border-radius:6px;padding:9px 15px;font-size:13px;'
-                f'font-weight:500;cursor:pointer;font-family:var(--font-sans);'
-                f'background:{"var(--surface-2)" if b.get("primary") else "none"};'
-                f'color:{"var(--text-primary)" if b.get("primary") else "var(--surface-2)"}">'
-                f'{_esc(b["label"])}</button>'
-                for b in meta.get("gate_buttons", []))
-            + '</div></div>')
+    gate_html = _gate_box(meta)
 
     title = _esc(meta.get("title", "review findings"))
     subtitle = _esc(meta.get("subtitle", ""))
@@ -951,9 +1338,12 @@ def render_findings(findings, meta=None, out=None):
 
     frag = (
         f'<h2 class="sr-only">Review findings: {counts["high"]} high, '
-        f'{counts["med"]} medium, {counts["low"]} low. Filter by severity '
+        f'{counts["med"]} medium, {counts["low"]} low'
+        + (f', {counts["info"]} notes' if counts["info"] else "")
+        + '. Filter by severity '
         f'and expand each for the failure scenario and fix.</h2>'
-        f'<div style="padding:0.5rem 0;font-family:var(--font-sans);color:'
+        f'<div dir="auto" style="padding:0.5rem 0;'
+        f'font-family:var(--font-sans);color:'
         f'var(--text-primary)">'
         f'<div style="display:flex;justify-content:space-between;'
         f'align-items:flex-start;gap:12px;margin-bottom:12px"><div>'
@@ -964,7 +1354,7 @@ def render_findings(findings, meta=None, out=None):
         f'id="tpf-chips">{chips}</div>'
         f'<div id="tpf-list">{cards_html}</div>'
         f'{coverage_html}{graph_html}{clean_html}{gate_html}{note}'
-        f'<script>'
+        f'<script>{_SEND_JS}'
         f'function tpFilter(s){{'
         f'document.querySelectorAll(".tpf-card").forEach(function(c){{'
         f'c.style.display=(s==="all"||c.dataset.sev===s)?"block":"none";}});'
@@ -1016,7 +1406,7 @@ def render_lens_wave(lenses, meta=None, out=None):
         if st == "done":
             n = x.get("findings")
             dot, lab = "var(--text-primary)", (
-                f'{n} finding{"s" if n != 1 else ""}' if n
+                _msg("n_findings", n=n) if n
                 else "clean") if n is not None else "done"
             badge = (f'<span style="font-family:var(--font-mono);font-size:'
                      f'10.5px;color:{"var(--text-danger)" if n else "var(--text-muted)"}">'
@@ -1063,8 +1453,9 @@ def render_lens_wave(lenses, meta=None, out=None):
         f'align-items:flex-start;gap:12px;margin-bottom:4px"><div>'
         f'<div style="font-size:16px;font-weight:500">{title}</div>'
         f'<div style="font-size:13px;color:var(--text-secondary)">{sub}</div>'
-        f'</div><span style="font-family:var(--font-mono);font-size:11px;'
-        f'color:var(--text-muted);white-space:nowrap">{_esc(phase)}</span>'
+        f'</div><span aria-live="polite" style="font-family:var(--font-mono);'
+        f'font-size:11px;'
+        f'color:var(--text-muted)">{_esc(phase)}</span>'
         f'</div>'
         f'<div style="height:5px;background:var(--surface-0);border-radius:3px;'
         f'overflow:hidden;margin:12px 0 14px"><span style="display:block;'
@@ -1120,7 +1511,7 @@ def render_onboarding(report, out=None):
             f'color:{"var(--text-primary)" if ok else "var(--text-primary)"}">'
             f'{_esc(c.get("label",""))}<span style="font-family:'
             f'var(--font-mono);font-size:11px;color:var(--text-muted);'
-            f'font-weight:400;margin-left:8px">{_esc(c.get("detail",""))}'
+            f'font-weight:400;margin-inline-start:8px">{_esc(c.get("detail",""))}'
             f'</span></div>'
             + ('' if ok else
                f'<div style="font-size:12.5px;color:var(--text-secondary);'
@@ -1137,8 +1528,11 @@ def render_onboarding(report, out=None):
            'color:var(--text-primary);border:1px solid var(--border-strong)')
 
     def b(style, label, prompt):
-        return (f'<button style="{style}" onclick="if(window.sendPrompt)'
-                f'sendPrompt(&#39;{_jsattr(prompt)}&#39;)">{_esc(label)}</button>')
+        # tpSend feature-detects the chat bridge: with sendPrompt it fires
+        # the prompt; in the static artifact it reveals the exact reply to
+        # type in chat instead of dead-clicking with zero feedback.
+        return (f'<button style="{style}" onclick="tpSend(this,'
+                f'&#39;{_jsattr(prompt)}&#39;)">{_esc(label)}</button>')
 
     if nxt == "attach_folder":
         headline = "Let's give taskplane a place to work"
@@ -1194,7 +1588,7 @@ def render_onboarding(report, out=None):
         f'<div style="display:flex;gap:8px;flex-wrap:wrap">{actions}</div>'
         f'<div style="{_MICRO};margin-top:14px">taskplane runs locally — it '
         f'reads and writes only inside the folder you connect. Nothing leaves '
-        f'your machine.</div></div>')
+        f'your machine.</div><script>{_SEND_JS}</script></div>')
 
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
@@ -1203,11 +1597,13 @@ def render_onboarding(report, out=None):
     return frag
 
 
-def _run_metrics(ws, tasks, contract):
+def _run_metrics(ws, tasks, contract, events=None):
     """Real run metrics from the trace (agents, steps, waves, fixes, blocks)
     + the advisory budget. Model tokens are COOPERATIVE in the plugin — the
-    paid proxy runtime measures real spend; here we surface the ceiling."""
-    full = _read_trace(ws, 99999)
+    paid proxy runtime measures real spend; here we surface the ceiling.
+    `events`: a pre-parsed trace list (any order) so the render path parses
+    the trace once and reuses it."""
+    full = events if events is not None else _read_trace(ws, 99999)
     ev = lambda k: sum(1 for e in full if e["event"] == k)
     budget = "—"
     if contract:
@@ -1293,8 +1689,8 @@ def _meter_bar(used, mx):
     """Budget meter, monochrome: primary fill on a hairline track; the ONE
     signal color (danger) appears only at the ceiling."""
     if not mx:
-        return (f'<div style="{_MICRO};margin-top:6px">{used} action(s) · '
-                f'no ceiling set</div>')
+        return (f'<div style="{_MICRO};margin-top:6px">'
+                f'{_msg("no_ceiling", n=used)}</div>')
     pct = min(100, int(100 * used / mx))
     at_cap = used >= mx
     col = "var(--text-danger)" if at_cap else "var(--text-primary)"
@@ -1412,7 +1808,7 @@ def _lane(t, loop_step, meter=None):
         f'display:flex;align-items:center">{rail}</span><span style="'
         f'background:{bg};color:{fg};border:1px solid var(--border);'
         f'border-radius:20px;padding:2px 9px;font-family:var(--font-mono);'
-        f'font-size:10.5px">{lbl}</span></div><div style="font-size:12px;'
+        f'font-size:10.5px">{_esc(lbl)}</span></div><div style="font-size:12px;'
         f'color:var(--text-secondary);margin-top:4px"><code style="'
         f'font-family:var(--font-mono);font-size:11px">{scope}</code>'
         f'{wait}</div>{bar}</div>')
@@ -1444,13 +1840,14 @@ def _graph_panel(ws, tasks):
     mx = hubs[0][1] if hubs else 1
     bars = "".join(
         f'<div style="display:flex;align-items:center;gap:8px;font-size:12px;'
-        f'padding:3px 0"><span style="flex:none;width:150px;overflow:hidden;'
+        f'padding:3px 0"><span style="flex:1 1 96px;min-width:0;'
+        f'max-width:150px;overflow:hidden;'
         f'text-overflow:ellipsis;white-space:nowrap;color:var(--text-'
         f'secondary)">{_esc(m)}</span><span style="flex:1;height:8px;'
         f'background:var(--surface-0);border-radius:4px;overflow:hidden">'
         f'<span style="display:block;height:100%;width:{int(100 * d / mx)}%;'
         f'background:var(--text-primary);border-radius:2px"></span></span>'
-        f'<span style="flex:none;width:26px;text-align:right;color:'
+        f'<span style="flex:none;width:26px;text-align:end;color:'
         f'var(--text-muted)">{d}</span></div>' for m, d in hubs)
     tile3 = (
         f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
@@ -1487,7 +1884,8 @@ def _graph_panel(ws, tasks):
             rows = "".join(
                 f'<div style="font-size:12px;color:var(--text-secondary);'
                 f'padding:2px 0">{_esc(e.get("module", ""))} <span style="'
-                f'color:var(--text-muted)">({_esc(e.get("kind", ""))} ← '
+                f'color:var(--text-muted)">({_esc(e.get("kind", ""))} '
+                f'{_arrow(back=True)} '
                 f'{_esc(e.get("via", ""))})</span></div>' for e in d1[:6])
             more = (f'<div style="font-size:12px;color:var(--text-muted);'
                     f'padding:2px 0">…+{len(d1) - 6} more at depth 1</div>'
@@ -1500,8 +1898,9 @@ def _graph_panel(ws, tasks):
                 f'current scope</div><div style="display:flex;gap:6px;'
                 f'flex-wrap:wrap;margin-bottom:8px">{chips}</div>'
                 f'<div style="font-size:13px;color:var(--text-secondary);'
-                f'margin-bottom:6px">{im.get("total_impacted", 0)} dependent '
-                f'module(s) within 3 hops</div>{rows}{more}</div>')
+                f'margin-bottom:6px">'
+                + _msg("dependent_modules", n=im.get("total_impacted", 0))
+                + f'</div>{rows}{more}</div>')
         except Exception:
             imp_html = ""
 
@@ -1529,7 +1928,7 @@ def _graph_panel(ws, tasks):
                 f'<span style="border:1px solid var(--border-strong);'
                 f'color:var(--text-secondary);border-radius:20px;'
                 f'padding:1px 8px;font-family:var(--font-mono);'
-                f'font-size:10.5px;margin-left:4px">→ {_esc(r)}</span>'
+                f'font-size:10.5px;margin-inline-start:4px">{_arrow()} {_esc(r)}</span>'
                 for r in d["depends"][:4]))
             rows.append(
                 f'<div style="display:flex;align-items:baseline;gap:8px;'
@@ -1666,7 +2065,7 @@ def _context_panel(ws, state, trace_all):
             f';font-size:13px;padding:4px 0;border-bottom:1px solid '
             f'var(--border)"><span>{_esc(d.get("id", ""))} '
             f'{_esc(d.get("title", ""))[:44]}</span><span style="color:'
-            f'var(--text-muted);font-size:12px;white-space:nowrap">'
+            f'var(--text-muted);font-size:12px">'
             f'{_esc(", ".join((d.get("tags") or [])[:2]))}</span></div>'
             for d in decs)
         parts.append(
@@ -1786,17 +2185,17 @@ def _agents_hero(harness, tasks, step, parallel):
             f'</span><span style="font-weight:500;font-size:13px;overflow:'
             f'hidden;text-overflow:ellipsis;white-space:nowrap">{_esc(c["id"])}'
             f'</span><span style="flex:1"></span>{flag}</div><div style="'
-            f'{_MICRO};margin-top:4px;padding-left:15px">{_esc(act)}</div>'
+            f'{_MICRO};margin-top:4px;padding-inline-start:15px">{_esc(act)}</div>'
             f'<div style="font-size:11px;color:var(--text-secondary);margin-'
-            f'top:2px;padding-left:15px"><code style="font-family:var(--font-'
+            f'top:2px;padding-inline-start:15px"><code style="font-family:var(--font-'
             f'mono);font-size:10.5px">{scope}</code></div>{budget}</div>')
     return (
         f'<div style="border:1px solid var(--border-strong);border-radius:6px;'
         f'padding:12px 14px;margin-bottom:14px"><div style="display:flex;'
         f'align-items:center;gap:8px;margin-bottom:10px"><i class="ti ti-'
         f'arrows-split" aria-hidden="true" style="color:var(--text-primary)">'
-        f'</i><span style="font-weight:500;font-size:14px">{verb} {head_n} '
-        f'agent{"s" if head_n != 1 else ""}</span>'
+        f'</i><span style="font-weight:500;font-size:14px">'
+        f'{_msg("n_agents", verb=verb, n=head_n)}</span>'
         f'{"" if not parallel else "<span style=" + chr(34) + _MICRO + chr(34) + ">· parallel wave</span>"}'
         f'<span style="flex:1"></span>'
         f'<span style="{_MICRO}">{n_done}/{head_n} done</span></div>'
@@ -1806,15 +2205,17 @@ def _agents_hero(harness, tasks, step, parallel):
 
 # --- Dashboard v2 (R-0001): step journey, model table, always-on stats ---
 
-def _journey(ws):
+def _journey(ws, events=None, state=None):
     """Ordered step visits reconstructed from the trace — the single source
     of truth (no new state files). A model_tier event opens a visit; the
-    matching loop_gate closes it; loop_step DoR detail enriches it."""
-    full = _read_trace(ws, 99999)[::-1]          # chronological
+    matching loop_gate closes it; loop_step DoR detail enriches it.
+    `events` (chronological) and `state` are passed by the render path so
+    the trace is parsed once per render, not once per panel."""
+    full = events if events is not None else _read_trace_all(ws)
     # Artifacts for review: the requirement's FULL acceptance criteria and
     # the FULL execution plan — attached to the steps that produced them,
     # from the same sources the gates use (loop state + requirements store).
-    state = _load_loop(ws) or {}
+    state = (state if state is not None else _load_loop(ws)) or {}
     req = None
     if state.get("requirement_id"):
         try:
@@ -1905,7 +2306,6 @@ def render_journey(visits, suffix="s"):
     reveals that step's execution + decision detail. Pure inline JS."""
     if not visits:
         return ""
-    import time as _t
     items, details = [], []
     for i, v in enumerate(visits):
         oid = f"tpj{suffix}{i}"
@@ -1924,7 +2324,8 @@ def render_journey(visits, suffix="s"):
                      f'({_esc(v["model"] or "session")})')
         items.append(
             f'<div onclick="tpJ(\'{suffix}\',{i})" id="{oid}-b" '
-            f'role="button" tabindex="0" '
+            f'role="button" tabindex="0" aria-expanded="false" '
+            f'aria-controls="{oid}" '
             f'aria-label="step {_attr(v["step"] or "")} — show execution '
             f'detail" onkeydown="{_KEYCLICK}" '
             f'data-step="{_attr(v["step"] or "")}" '
@@ -1933,7 +2334,8 @@ def render_journey(visits, suffix="s"):
             f'border:1px solid transparent">'
             f'<span style="width:8px;height:8px;border-radius:50%;flex:none;'
             f'background:{dot}"></span><span>{label}</span>'
-            f'<span style="margin-left:auto;font-family:var(--font-mono);'
+            f'<span style="margin-inline-start:auto;'
+            f'font-family:var(--font-mono);'
             f'font-size:10px;color:var(--text-muted)">{meta}</span></div>')
         kv = []
         def _row(k, val):
@@ -1941,10 +2343,10 @@ def render_journey(visits, suffix="s"):
                       f'space-between;gap:12px;font-size:12px;padding:4px 0;'
                       f'border-bottom:1px solid var(--border)">'
                       f'<span style="color:var(--text-muted)">{k}</span>'
-                      f'<span style="text-align:right">{val}</span></div>')
+                      f'<span style="text-align:end">{val}</span></div>')
         _row("agent", _esc(v["agent"] or "\u2014"))
         if v.get("tier"):
-            _row("model", f'tier {_esc(v["tier"])} \u2192 '
+            _row("model", f'tier {_esc(v["tier"])} {_arrow()} '
                           f'{_esc(v["model"] or "inherit (session)")}')
         _row("outcome", _esc(oc or "in progress"))
         if v.get("note"):
@@ -1953,14 +2355,14 @@ def render_journey(visits, suffix="s"):
             d = v["dor"]
             _row("DoR", ("ready \u2713" if d["ready"] else "NOT READY: "
                          + _esc("; ".join(d["blockers"])))
-                 + (f' \u00b7 {len(d["warnings"])} warning(s)'
+                 + (_msg("n_warnings", n=len(d["warnings"]))
                     if d["warnings"] else ""))
         if v.get("ts"):
-            when = _t.strftime("%H:%M:%S", _t.localtime(v["ts"]))
+            when = _fmt_ts(v["ts"])
             dur = ""
             if v.get("ts_end"):
                 dur = f' \u00b7 {max(0, int(v["ts_end"] - v["ts"]))}s'
-            _row("when", _esc(when) + dur)
+            _row("when", _esc(when) + " UTC" + dur)
         artifacts = ""
         if v.get("criteria"):
             lis = "".join(f'<li style="margin:3px 0">{_esc(str(a))}</li>'
@@ -1968,8 +2370,8 @@ def render_journey(visits, suffix="s"):
             artifacts += (
                 f'<div style="{_MICRO};margin:10px 0 4px">acceptance '
                 f'criteria \u2014 all {len(v["criteria"])}, for review'
-                f'</div><ol style="margin:0;padding-left:18px;font-size:'
-                f'12px;line-height:1.45">{lis}</ol>')
+                f'</div><ol style="margin:0;padding-inline-start:18px;'
+                f'font-size:12px;line-height:1.45">{lis}</ol>')
         if v.get("plan"):
             trs = ""
             for t in v["plan"]:
@@ -1984,13 +2386,13 @@ def render_journey(visits, suffix="s"):
                     f'var(--font-mono);font-size:11px">{_tsc}</td>'
                     f'<td style="padding:3px 6px">{_tdp}</td>'
                     f'<td style="padding:3px 6px">{_tst}</td></tr>')
-            th = ("font-size:9.5px;text-transform:uppercase;"
+            th = ("font-size:9.5px;"
                   "letter-spacing:.6px;color:var(--text-muted);text-align:"
-                  "left;padding:3px 6px;border-bottom:1px solid "
+                  "start;padding:3px 6px;border-bottom:1px solid "
                   "var(--border)")
             artifacts += (
-                f'<div style="{_MICRO};margin:10px 0 4px">execution plan '
-                f'\u2014 all {len(v["plan"])} task(s), for review</div>'
+                f'<div style="{_MICRO};margin:10px 0 4px">'
+                + _esc(_msg("plan_all_tasks", n=len(v["plan"]))) + '</div>'
                 f'<table style="width:100%;border-collapse:collapse;'
                 f'font-size:12px"><tr><th style="{th}">task</th>'
                 f'<th style="{th}">scope</th><th style="{th}">deps</th>'
@@ -1998,20 +2400,27 @@ def render_journey(visits, suffix="s"):
         details.append(
             f'<div id="{oid}" style="display:none;padding:2px 4px">'
             + "".join(kv) + artifacts + '</div>')
+    # tpJ marks the active step with aria-current + aria-expanded (not
+    # color alone): SR users hear which step's details are showing.
     js = ('<script>function tpJ(sfx,i){var n=0;'
           'while(document.getElementById("tpj"+sfx+n)){'
           'var d=document.getElementById("tpj"+sfx+n),'
           'b=document.getElementById("tpj"+sfx+n+"-b");'
-          'd.style.display=n===i?"block":"none";'
-          'b.style.borderColor=n===i?"var(--border-strong)":"transparent";'
-          'b.style.background=n===i?"var(--surface-0)":"none";'
+          'var on=n===i;'
+          'd.style.display=on?"block":"none";'
+          'b.style.borderColor=on?"var(--border-strong)":"transparent";'
+          'b.style.background=on?"var(--surface-0)":"none";'
+          'b.setAttribute("aria-expanded",on?"true":"false");'
+          'if(on){b.setAttribute("aria-current","true");}'
+          'else{b.removeAttribute("aria-current");}'
           'n++;}}</script>')
     return (
         f'<div id="tp-journey-{suffix}" style="border:1px solid '
         f'var(--border);border-radius:6px;padding:12px 14px;margin-bottom:'
         f'14px"><div style="{_MICRO};margin-bottom:8px">step journey \u2014 '
         f'click a step for its execution &amp; decisions</div>'
-        f'<div style="display:grid;grid-template-columns:minmax(220px,38%) '
+        f'<div class="tp-jgrid" style="display:grid;'
+        f'grid-template-columns:minmax(220px,38%) '
         f'1fr;gap:12px"><div>{"".join(items)}</div>'
         f'<div>{"".join(details)}'
         f'<div style="font-size:11px;color:var(--text-muted);padding:4px">'
@@ -2042,8 +2451,8 @@ def render_stats(ws, metrics, denials, suffix="s"):
             f'<td style="padding:4px 6px;font-family:var(--font-mono);'
             f'font-size:11px">{_esc(r["dispatched"])}</td></tr>'
             for r in rows[-14:])
-        th = ('font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;'
-              'color:var(--text-muted);text-align:left;padding:3px 6px;'
+        th = ('font-size:9.5px;letter-spacing:.6px;'
+              'color:var(--text-muted);text-align:start;padding:3px 6px;'
               'border-bottom:1px solid var(--border)')
         tbl = (
             f'<table id="tp-models-{suffix}" style="width:100%;'
@@ -2059,7 +2468,10 @@ def render_stats(ws, metrics, denials, suffix="s"):
 
 def headline_loop(ws: str) -> str:
     """Never-skippable text line for the loop dashboard: step, task progress,
-    open gate. Printed to chat so status survives a skipped render (v1.5.3)."""
+    open gate. Printed to chat so status survives a skipped render (v1.5.3).
+    GOVERNANCE CARRIER: it also discloses a blocked-on-budget run — when the
+    contract meter hits its ceiling the headline SAYS so instead of reading
+    as an idle loop. Composed from one full template ("headline_loop")."""
     state = _load_loop(ws)
     if not state:
         return "taskplane: no active loop"
@@ -2069,58 +2481,39 @@ def headline_loop(ws: str) -> str:
                ("passed", "done", "external", "skipped", "not_selected",
                 "reference"))
     goal = (state.get("goal") or "")[:60]
-    gate = " — YOUR GATE: approve/sign-off" if step in (
+    gate = _msg("headline_loop_gate") if step in (
         "design_approval", "plan_approval", "signoff", "selection") else ""
-    return (f"taskplane loop: step={step} · tasks {done}/{len(tasks)} · "
-            f"\"{goal}\"{gate}")
+    exhausted, used, mx = _budget_state(ws, tp.load_active(ws))
+    budget = (_msg("headline_loop_budget", used=used, max=mx)
+              if exhausted else "")
+    return _msg("headline_loop", step=step, done=done, total=len(tasks),
+                goal=goal, gate=gate, budget=budget)
 
 
-def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
-    """The loop dashboard as ordered pages (v1.5.3). It is usually one widget;
-    returned as a single page when it fits, so the driver's render contract is
-    uniform across findings and loop dashboards."""
-    html = widget(ws)
-    return [{"title": "mission control", "html": html}]
+def _budget_state(ws, contract):
+    """(exhausted, used, max) for the active contract's action budget.
+    Budget exhaustion is a HUMAN gate, but the loop step is unchanged — so
+    without this the banner reads "no action needed" while the run is
+    actually blocked waiting on the human to grant more actions. Shared by
+    the widget gatebar AND headline_loop, so the never-skippable line
+    discloses the blocked state too."""
+    if not (contract and (contract.get("budget") or {}).get("max_actions")):
+        return False, 0, 0
+    budget_max = int(contract["budget"]["max_actions"])
+    _tid = contract.get("task_id", "_")
+    try:
+        _mp = os.path.join(tp.tp_dir(ws), "meter.json")
+        with open(_mp) as _f:
+            budget_used = int((json.load(_f).get(_tid) or {})
+                              .get("actions", 0))
+    except (OSError, ValueError, TypeError):
+        budget_used = 0
+    return budget_used >= budget_max, budget_used, budget_max
 
 
-def widget(ws: str) -> str:
-    """Return an inline HTML fragment for mcp__visualize__show_widget. Opens
-    with a live parallel-agents hero band on top (when agents are active),
-    then simple/detailed views. Gate buttons grey out on click."""
-    state = _load_loop(ws)
-    trace = _read_trace(ws, 8)
-    contract = tp.load_active(ws)
-    step = (state or {}).get("step", "—")
-    goal = _esc((state or {}).get("goal", "no active loop"))[:80]
-    tasks = (state or {}).get("tasks") or []
-    parallel = bool((state or {}).get("parallel"))
-    full_trace = _read_trace(ws, 9999)
-    denials = sum(1 for e in full_trace
-                  if e["event"] in ("hook_deny", "budget_deny"))
-    metrics = _run_metrics(ws, tasks, contract)
-    harness = _harness_agents(ws)
-    hmap = {h["tag"]: h for h in harness if h["tag"]}
-    hmain = next((h for h in harness if not h["tag"]), None)
-    totals = _meter_totals(ws)
-
-    # Budget exhaustion is a HUMAN gate, but the loop step is unchanged — so
-    # without this the banner reads "no action needed" while the run is
-    # actually blocked waiting on the human to grant more actions. Detect it
-    # from the active contract's meter and surface it (see the gatebar below).
-    budget_exhausted = False
-    budget_used = budget_max = 0
-    if contract and (contract.get("budget") or {}).get("max_actions"):
-        budget_max = int(contract["budget"]["max_actions"])
-        _tid = contract.get("task_id", "_")
-        try:
-            _mp = os.path.join(tp.tp_dir(ws), "meter.json")
-            with open(_mp) as _f:
-                budget_used = int((json.load(_f).get(_tid) or {})
-                                  .get("actions", 0))
-        except (OSError, ValueError, TypeError):
-            budget_used = 0
-        budget_exhausted = budget_used >= budget_max
-
+def _widget_spine(state, step, tasks, sfx="s"):
+    """The governance spine (rail) — pipe html + caption. `sfx` ("s"/"d")
+    keeps DOM ids unique across the simple/detailed copies of the rail."""
     spine_step = "build" if step in _BUILD_STEPS else step
     # A/B loop: the Select gate is spliced in before Review — variants never
     # merge, one gets picked. Same splice rule as render(), shared from the
@@ -2156,7 +2549,10 @@ def widget(ws: str) -> str:
             dot = "background:none;border:1.5px solid var(--border-strong)"
             col, wt, bg = "var(--text-muted)", "", ""
         visited = cur_i >= 0 and i <= cur_i
-        click = (f' onclick="tpSpine(\'{sid}\')" id="tp-spine-{sid}" '
+        # ids are per-view (s/d suffix): the rail renders once in the simple
+        # view and once in the detailed view, and duplicate DOM ids made
+        # tpSpine highlight the HIDDEN copy.
+        click = (f' onclick="tpSpine(\'{sid}\')" id="tp-spine-{sfx}-{sid}" '
                  f'role="button" tabindex="0" onkeydown="{_KEYCLICK}" '
                  f'aria-label="stage {sid} — see how it was executed" '
                  f'class="tp-spine-n" title="see how this '
@@ -2177,14 +2573,18 @@ def widget(ws: str) -> str:
     if tasks:
         caption = (
             f'<div style="{_MICRO};margin:-8px 0 14px;padding:0 4px">inside '
-            f'build each task runs build → evaluate ⟲ fix (≤2) — lanes run '
+            f'build each task runs build {_arrow()} evaluate ⟲ fix (≤2) — '
+            f'lanes run '
             f'in parallel when scope-disjoint and deps are clear</div>')
-    pipe = ('<div style="display:flex;align-items:center;gap:2px;border:'
+    return ('<div style="display:flex;align-items:center;gap:2px;border:'
             '1px solid var(--border);border-radius:6px;'
             'padding:12px 14px;margin-bottom:14px;flex-wrap:wrap">'
             + "".join(nodes) + "</div>" + caption)
 
-    # gate action bar — buttons grey out on click via tpFire()
+
+def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used,
+                    budget_max):
+    """The gate action bar — buttons grey out on click via tpFire()."""
     gatebar = ""
     btn = ('border:none;border-radius:6px;padding:9px 16px;font-size:'
            '13px;font-weight:500;cursor:pointer;font-family:var(--font-sans)')
@@ -2209,8 +2609,8 @@ def widget(ws: str) -> str:
         _derr = _loop._design_dod_errors(ws, state) if state else [
             "no design state"]
         if _derr:
-            _dsub = (f"Design DoD ❌ {len(_derr)} issue(s): "
-                     + _esc("; ".join(_derr)[:150]))
+            _dsub = _msg("design_dod_fail", n=len(_derr),
+                         details=_esc("; ".join(_derr)[:150]))
         else:
             _dsub = "Design DoD ✅ alternatives, graph, contracts, risks, and acceptance mapped"
         b = (f'<button style="{prim}" onclick="tpFire(this,\'approve the '
@@ -2227,7 +2627,7 @@ def widget(ws: str) -> str:
              f'approve plan</button><button style="{sec}" onclick="tpFire(this,'
              f'\'send the plan back, I want changes\')">request changes</button>')
         gatebar = gate_box("ti-hand-stop", "your gate — nothing builds until "
-                           "you approve", f"{n} task(s) planned", b)
+                           "you approve", _msg("n_tasks_planned", n=n), b)
     elif step == "signoff":
         b = (f'<button style="{prim}" onclick="tpFire(this,\'sign off on this\','
              f'\'signed off\')"><i class="ti ti-check" aria-hidden="true"></i> '
@@ -2240,8 +2640,8 @@ def widget(ws: str) -> str:
         if _dod["passed"]:
             _dsub = "all tasks reviewed · DoD ✅ diff in scope, KB lint clean"
         else:
-            _dsub = (f"all tasks reviewed · DoD ❌ {len(_dod['errors'])} "
-                     f"issue(s): {_esc('; '.join(_dod['errors'])[:150])}")
+            _dsub = _msg("signoff_dod_fail", n=len(_dod["errors"]),
+                         details=_esc("; ".join(_dod["errors"])[:150]))
         gatebar = gate_box("ti-writing-sign", "your gate — EM review done, "
                            "final sign-off", _dsub, b,
                            danger=not _dod["passed"])
@@ -2325,8 +2725,11 @@ def widget(ws: str) -> str:
             f'<span style="font-family:var(--font-mono);font-size:11.5px;'
             f'color:var(--text-muted)">{_esc(role)} is on {_esc(step)} · '
             f'next human gate: {nxt}</span></div>')
+    return gatebar
 
-    # build lanes — one per task, each its own mini-pipeline + live meter
+
+def _widget_lanes(state, step, tasks, contract, hmap, hmain):
+    """Build lanes — one per task, each its own mini-pipeline + live meter."""
     cur_id = (tasks[(state or {}).get("current_task", 0)].get("id")
               if tasks and (state or {}).get("current_task", 0) < len(tasks)
               else None)
@@ -2349,10 +2752,13 @@ def widget(ws: str) -> str:
             f'size:12px;color:var(--text-secondary);margin-top:3px">'
             f'{"read-only" if ro else "build"} · <code style="font-family:'
             f'var(--font-mono);font-size:11px">{sc}</code></div></div>')
-    cards_html = "".join(cards) or ('<div style="font-size:13px;color:var('
-                                    '--text-muted)">no active tasks</div>')
+    return "".join(cards) or ('<div style="font-size:13px;color:var('
+                              '--text-muted)">no active tasks</div>')
 
-    # live feed
+
+def _widget_feed(trace):
+    """The live feed — newest events first, one degraded-but-visible row per
+    event (unknown events render with a fallback icon, never crash)."""
     feed = []
     for e in trace:
         ic, cc = _ICON.get(e["event"], ("ti-point", "s"))
@@ -2368,7 +2774,7 @@ def widget(ws: str) -> str:
         elif e["event"] == "loop_gate":
             detail = f'{e.get("step","")} = {e.get("outcome","")}'
         elif e["event"] == "lens_route":
-            detail = f'{len(e.get("lenses",[]))} lens(es)'
+            detail = _msg("n_lenses", n=len(e.get("lenses", [])))
         elif e["event"] == "loop_wave":
             detail = f'ready: {", ".join(e.get("ready",[]))}'
         elif e["event"] == "refinement_gate":
@@ -2382,22 +2788,19 @@ def widget(ws: str) -> str:
             f'<i class="ti {ic}" style="color:{_ICOLOR[cc]}" aria-hidden='
             f'"true"></i><span>{_esc(label)} <span style="color:var(--text-'
             f'secondary)">{_esc(detail)}</span></span></div>')
-    feed_html = "".join(feed) or ('<div style="font-size:13px;color:var(--'
-                                  'text-muted)">no events yet</div>')
+    return "".join(feed) or ('<div style="font-size:13px;color:var(--'
+                             'text-muted)">no events yet</div>')
 
-    lanes_title = ("build lanes · parallel" if parallel and len(tasks) > 1
-                   else "build lanes" if len(tasks) > 1 else
-                   "build lane" if tasks else "tasks &amp; contracts")
 
-    # run stats as a compact side strip inside the loop tab (no own tab) —
-    # oversized mono numerals, the monochrome way
+def _widget_ministats(metrics, totals):
+    """Run stats as a compact strip — oversized mono numerals."""
     def cell(v, l, hot=False):
         col = "var(--text-danger)" if hot else "var(--text-primary)"
         return (f'<div style="padding:8px 6px;text-align:center"><div style='
                 f'"font-size:17px;font-weight:500;font-family:var(--font-'
                 f'mono);color:{col}">{v}</div><div style="{_MICRO}">{l}'
                 f'</div></div>')
-    ministats = (
+    return (
         f'<div style="{_CARD};padding:8px;margin-bottom:12px"><div style="'
         f'display:grid;grid-template-columns:repeat(3,1fr)">'
         + cell(metrics["agents"], "agents") + cell(metrics["waves"], "waves")
@@ -2406,23 +2809,174 @@ def widget(ws: str) -> str:
         + cell(metrics["blocks"], "blocks", hot=bool(metrics["blocks"]))
         + cell(metrics["steps"], "steps") + '</div></div>')
 
+
+def _widget_dor(full_trace, step):
+    """DoR strip — the entry-gate verdict for the CURRENT step, surfaced
+    from the latest loop_step trace. `full_trace` is newest-first."""
+    dor_ev = next((e for e in full_trace
+                   if e.get("event") == "loop_step"), None)
+    if dor_ev is None or step in ("done", "failed") \
+            or dor_ev.get("dor_ready") is None:
+        return ""
+    _rdy = dor_ev.get("dor_ready")
+    _blk = dor_ev.get("dor_blockers") or []
+    _wrn = dor_ev.get("dor_warnings") or []
+    if not _rdy:
+        _dc, _dl, _dd = ("var(--text-danger)", "NOT READY",
+                         _esc("; ".join(_blk)))
+    elif _wrn:
+        _dc, _dl, _dd = ("var(--text-warning,var(--text-primary))",
+                         "ready", _msg("dor_warnings", n=len(_wrn),
+                                       details=_esc("; ".join(_wrn))))
+    else:
+        _dc, _dl, _dd = ("var(--text-success,var(--text-primary))",
+                         "ready", "")
+    return (
+        f'<div style="border:1px solid var(--border);border-radius:6px;'
+        f'padding:8px 13px;margin-bottom:14px;display:flex;align-items:'
+        f'center;gap:9px;flex-wrap:wrap"><span style="{_MICRO}">DoR</span>'
+        f'<span style="font-size:12.5px;font-weight:500;color:{_dc}">'
+        f'{_dl}</span>'
+        + (f'<span style="font-size:12px;color:var(--text-secondary)">'
+           f'{_dd}</span>' if _dd else "")
+        + f'<span style="{_MICRO};margin-inline-start:auto">entry gate · '
+          f'{_esc(step)}</span></div>')
+
+
+# The widget's client-side controller — a static block (moved out of the
+# 494-line widget() megafunction). tpFire feature-detects the chat bridge
+# FIRST: in the standalone artifact (no window.sendPrompt) a click reveals
+# the exact reply to type in chat (via tpHint) instead of falsely rendering
+# "✓ approved" for a message that never went anywhere.
+_WIDGET_JS = (
+    '<script>' + _SEND_JS +
+    'function tpFire(b,m,l){'
+    'if(!window.sendPrompt){tpHint(b,m);return;}'
+    'b.disabled=true;'
+    'b.style.background="var(--surface-0)";'
+    'b.style.color="var(--text-muted)";b.style.border="none";'
+    'b.style.cursor="default";'
+    'if(l)b.innerHTML="<i class=\'ti ti-check\'></i> "+l;'
+    'Array.from(b.parentNode.querySelectorAll("button")).forEach('
+    'function(x){if(x!==b){x.disabled=true;x.style.opacity="0.45";'
+    'x.style.cursor="default";}});sendPrompt(m);}'
+    'function tpTab(w){["loop","map"].forEach('
+    'function(k){var p=document.getElementById("tp-panel-"+k),'
+    'b=document.getElementById("tp-tab-"+k);if(!p||!b)return;'
+    'var on=k===w;p.style.display=on?"block":"none";'
+    'b.style.background=on?"var(--text-primary)":"none";'
+    'b.style.color=on?"var(--surface-2)":"var(--text-secondary)";'
+    # non-color active cues: aria-selected for SRs, weight+underline for
+    # low vision — parity with the findings filter chips (v2.2.1).
+    'b.setAttribute("aria-selected",on?"true":"false");'
+    'b.style.textDecoration=on?"underline":"none";});}'
+    'function tpView(v){var s=document.getElementById("tp-simple"),'
+    'd=document.getElementById("tp-detail"),'
+    'bs=document.getElementById("tp-vb-simple"),'
+    'bd=document.getElementById("tp-vb-detail");'
+    'if(!s||!d||!bs||!bd)return;var on=v==="detail";'
+    's.style.display=on?"none":"block";d.style.display=on?"block":"none";'
+    'function st(b,a){b.style.background=a?"var(--text-primary)":"none";'
+    'b.style.color=a?"var(--surface-2)":"var(--text-secondary)";'
+    'b.setAttribute("aria-pressed",a?"true":"false");'
+    'b.style.textDecoration=a?"underline":"none";}'
+    'st(bs,!on);st(bd,on);}'
+    'var tpMap={pm:["pm"],design:["design"],'
+    'design_approval:["design_approval"],plan:["plan"],'
+    'plan_approval:["plan_approval"],'
+    'build:["execute","evaluate","fix","escalated","resolve"],'
+    'selection:["selection"],em:["em"],signoff:["signoff"],'
+    'done:["done"]};'
+    'function tpSpine(sid){var steps=tpMap[sid]||[sid];'
+    'var td=document.getElementById("tp-detail");'
+    'var sfx=td&&td.style.display==='
+    '"block"?"d":"s";var j=document.getElementById("tp-journey-"+sfx);'
+    'if(!j)return;var best=-1,n=0;'
+    'while(true){var b=document.getElementById("tpj"+sfx+n+"-b");'
+    'if(!b)break;if(steps.indexOf(b.getAttribute("data-step"))>=0)'
+    'best=n;n++;}'
+    'if(best>=0){tpJ(sfx,best);'
+    # spine node ids are per-view (tp-spine-<sfx>-<sid>) — the same rail is
+    # rendered in both the simple and detailed views, and highlighting must
+    # land on the VISIBLE copy, not a hidden duplicate id.
+    'var ns=document.getElementsByClassName("tp-spine-n");'
+    'for(var q=0;q<ns.length;q++){if(ns[q].style.background.indexOf('
+    '"text-primary")<0){ns[q].style.background="none";'
+    'ns[q].removeAttribute("aria-current");}}'
+    'var me=document.getElementById("tp-spine-"+sfx+"-"+sid);'
+    'if(me){me.setAttribute("aria-current","true");'
+    'if(me.style.background.indexOf("text-primary")<0)'
+    'me.style.background="var(--surface-0)";}'
+    'j.scrollIntoView({behavior:"smooth",block:"nearest"});}}'
+    'tpView("simple");tpTab("loop");</script>')
+
+# Responsive fallback for the widget's fixed two-column grids: inline styles
+# win over stylesheet rules, so the collapse uses !important — below ~640px
+# the loop panel and journey grids degrade to one column instead of forcing
+# horizontal overflow on phones / narrow sidebars.
+_WIDGET_CSS = (
+    '<style>@media (max-width:640px){.tp-grid2,.tp-jgrid{'
+    'grid-template-columns:1fr!important}}</style>')
+
+
+def _widget_parts(ws: str) -> dict:
+    """Load state ONCE and build every named part of the loop dashboard.
+    widget() assembles them into one fragment; widget_paged() assembles the
+    same parts into ordered pages under the byte budget — one source of
+    truth for both render paths."""
+    state = _load_loop(ws)
+    contract = tp.load_active(ws)
+    step = (state or {}).get("step", "—")
+    goal = _esc((state or {}).get("goal", "no active loop"))[:80]
+    tasks = (state or {}).get("tasks") or []
+    parallel = bool((state or {}).get("parallel"))
+    tstats = {}
+    all_ev = _read_trace_all(ws, stats=tstats)   # the trace: parsed ONCE
+    trace = all_ev[-8:][::-1]
+    full_trace = all_ev[::-1]
+    denials = sum(1 for e in full_trace
+                  if e["event"] in ("hook_deny", "budget_deny"))
+    metrics = _run_metrics(ws, tasks, contract, events=all_ev)
+    harness = _harness_agents(ws)
+    hmap = {h["tag"]: h for h in harness if h["tag"]}
+    hmain = next((h for h in harness if not h["tag"]), None)
+    totals = _meter_totals(ws)
+    budget_exhausted, budget_used, budget_max = _budget_state(ws, contract)
+
+    pipe_s = _widget_spine(state, step, tasks, "s")
+    pipe_d = _widget_spine(state, step, tasks, "d")
+    gatebar = _widget_gatebar(ws, state, step, tasks, budget_exhausted,
+                              budget_used, budget_max)
+    cards_html = _widget_lanes(state, step, tasks, contract, hmap, hmain)
+    feed_html = _widget_feed(trace)
+
+    lanes_title = ("build lanes · parallel" if parallel and len(tasks) > 1
+                   else "build lanes" if len(tasks) > 1 else
+                   "build lane" if tasks else "tasks &amp; contracts")
+    ministats = _widget_ministats(metrics, totals)
+    feed_panel = (f'<div style="{_CARD}"><div style="{_MICRO};'
+                  f'margin-bottom:10px">live feed</div>'
+                  f'<div aria-live="polite" aria-atomic="false">'
+                  f'{feed_html}</div></div>')
+    lanes_panel = (f'<div style="{_CARD}"><div style="{_MICRO};margin-'
+                   f'bottom:10px">{lanes_title}</div><div style="display:'
+                   f'flex;flex-direction:column;gap:8px">{cards_html}'
+                   f'</div></div>')
     loop_panel = (
-        f'<div style="display:grid;grid-template-columns:1.25fr 1fr;'
-        f'gap:12px"><div style="{_CARD}"><div style="{_MICRO};margin-'
-        f'bottom:10px">{lanes_title}</div><div style="display:flex;flex-'
-        f'direction:column;gap:8px">{cards_html}</div></div><div>'
-        f'{ministats}<div style="{_CARD}"><div style="{_MICRO};'
-        f'margin-bottom:10px">live feed</div>'
-        f'{feed_html}</div></div></div>')
+        f'<div class="tp-grid2" style="display:grid;'
+        f'grid-template-columns:1.25fr 1fr;'
+        f'gap:12px">{lanes_panel}<div>'
+        f'{ministats}{feed_panel}</div></div>')
 
     # graph + context merged into one "map" tab — the codebase context
     # (hubs, blast radius) above the work context (requirement, lenses, KB)
-    map_panel = (
-        _graph_panel(ws, tasks)
-        + '<div style="height:14px"></div>'
-        + _context_panel(ws, state, full_trace)
+    graph_html = _graph_panel(ws, tasks)
+    context_html = (
+        _context_panel(ws, state, full_trace)
         + f'<div style="{_MICRO};margin-top:10px">action budgets are '
         'hook-enforced; dollar spend stays cooperative in the plugin.</div>')
+    map_panel = (graph_html + '<div style="height:14px"></div>'
+                 + context_html)
 
     # ---- simple view: the focus points only — where we are, your gate,
     # and each agent's harness (on topic + within budget)
@@ -2436,8 +2990,10 @@ def widget(ws: str) -> str:
                   f'{why}</div>')
     n_pass = sum(1 for t in tasks if t.get("status") == "passed")
     prog = (f'<div style="font-size:12px;color:var(--text-muted);margin-top:'
-            f'10px">{n_pass}/{len(tasks)} task(s) passed · {totals["actions"]}'
-            f' actions metered · {denials} blocked</div>' if tasks else "")
+            f'10px">'
+            + _msg("tasks_progress", done=n_pass, total=len(tasks),
+                   actions=totals["actions"], blocked=denials)
+            + '</div>' if tasks else "")
     hero = _agents_hero(harness, tasks, step, parallel)
     harness_panel = (
         f'<div style="background:none;border:1px solid '
@@ -2452,11 +3008,14 @@ def widget(ws: str) -> str:
               'padding:6px 14px;cursor:pointer;border-radius:20px;'
               'color:var(--text-secondary)')
     tabs = "".join(
-        f'<button id="tp-tab-{k}" style="{tabbtn}'
-        + (';background:var(--text-primary);color:var(--surface-2)'
-           if k == "loop" else "")
+        f'<button id="tp-tab-{k}" role="tab" '
+        f'aria-selected="{"true" if k == "loop" else "false"}" '
+        f'style="{tabbtn}'
+        + (';background:var(--text-primary);color:var(--surface-2);'
+           'text-decoration:underline' if k == "loop" else "")
         + f'" onclick="tpTab(\'{k}\')">{lbl}</button>'
         for k, lbl in (("loop", "loop"), ("map", "graph &amp; context")))
+    tabs = f'<div role="tablist" style="display:flex;gap:6px">{tabs}</div>'
     vbtn = ('border:none;background:none;font-family:var(--font-mono);'
             'font-size:11.5px;letter-spacing:.8px;font-weight:500;'
             'padding:4px 11px;cursor:pointer;border-radius:20px;'
@@ -2464,98 +3023,22 @@ def widget(ws: str) -> str:
     toggle = (
         f'<div style="display:flex;gap:2px;border:1px solid var(--border);'
         f'border-radius:20px;padding:2px"><button id="tp-vb-simple" '
+        f'aria-pressed="true" '
         f'style="{vbtn}" onclick="tpView(\'simple\')">simple</button>'
-        f'<button id="tp-vb-detail" style="{vbtn}" '
+        f'<button id="tp-vb-detail" aria-pressed="false" '
+        f'style="{vbtn}" '
         f'onclick="tpView(\'detail\')">detailed</button></div>')
     step_badge = _esc(step.replace("_", " "))
-    script = (
-        '<script>function tpFire(b,m,l){b.disabled=true;'
-        'b.style.background="var(--surface-0)";'
-        'b.style.color="var(--text-muted)";b.style.border="none";'
-        'b.style.cursor="default";'
-        'if(l)b.innerHTML="<i class=\'ti ti-check\'></i> "+l;'
-        'Array.from(b.parentNode.querySelectorAll("button")).forEach('
-        'function(x){if(x!==b){x.disabled=true;x.style.opacity="0.45";'
-        'x.style.cursor="default";}});if(window.sendPrompt)sendPrompt(m);}'
-        'function tpTab(w){["loop","map"].forEach('
-        'function(k){var p=document.getElementById("tp-panel-"+k),'
-        'b=document.getElementById("tp-tab-"+k);if(!p||!b)return;'
-        'var on=k===w;p.style.display=on?"block":"none";'
-        'b.style.background=on?"var(--text-primary)":"none";'
-        'b.style.color=on?"var(--surface-2)":"var(--text-secondary)";});}'
-        'function tpView(v){var s=document.getElementById("tp-simple"),'
-        'd=document.getElementById("tp-detail"),'
-        'bs=document.getElementById("tp-vb-simple"),'
-        'bd=document.getElementById("tp-vb-detail");var on=v==="detail";'
-        's.style.display=on?"none":"block";d.style.display=on?"block":"none";'
-        'function st(b,a){b.style.background=a?"var(--text-primary)":"none";'
-        'b.style.color=a?"var(--surface-2)":"var(--text-secondary)";}'
-        'st(bs,!on);st(bd,on);}'
-        'var tpMap={pm:["pm"],design:["design"],'
-        'design_approval:["design_approval"],plan:["plan"],'
-        'plan_approval:["plan_approval"],'
-        'build:["execute","evaluate","fix","escalated","resolve"],'
-        'selection:["selection"],em:["em"],signoff:["signoff"],'
-        'done:["done"]};'
-        'function tpSpine(sid){var steps=tpMap[sid]||[sid];'
-        'var sfx=document.getElementById("tp-detail").style.display==='
-        '"block"?"d":"s";var j=document.getElementById("tp-journey-"+sfx);'
-        'if(!j)return;var best=-1,n=0;'
-        'while(true){var b=document.getElementById("tpj"+sfx+n+"-b");'
-        'if(!b)break;if(steps.indexOf(b.getAttribute("data-step"))>=0)'
-        'best=n;n++;}'
-        'if(best>=0){tpJ(sfx,best);'
-        'var ns=document.getElementsByClassName("tp-spine-n");'
-        'for(var q=0;q<ns.length;q++){if(ns[q].style.background.indexOf('
-        '"text-primary")<0)ns[q].style.background="none";}'
-        'var me=document.getElementById("tp-spine-"+sid);'
-        'if(me&&me.style.background.indexOf("text-primary")<0)'
-        'me.style.background="var(--surface-0)";'
-        'j.scrollIntoView({behavior:"smooth",block:"nearest"});}}'
-        'tpView("simple");tpTab("loop");</script>')
-    # DoR strip — the entry-gate verdict for the CURRENT step, surfaced from
-    # the latest loop_step trace (was computed every `loop next` but never
-    # shown). Ready/blocked/warnings, so the human sees readiness at a glance.
-    dor_html = ""
-    dor_ev = next((e for e in full_trace
-                   if e.get("event") == "loop_step"), None)
-    if dor_ev is not None and step not in ("done", "failed") \
-            and dor_ev.get("dor_ready") is not None:
-        _rdy = dor_ev.get("dor_ready")
-        _blk = dor_ev.get("dor_blockers") or []
-        _wrn = dor_ev.get("dor_warnings") or []
-        if not _rdy:
-            _dc, _dl, _dd = ("var(--text-danger)", "NOT READY",
-                             _esc("; ".join(_blk)))
-        elif _wrn:
-            _dc, _dl, _dd = ("var(--text-warning,var(--text-primary))",
-                             "ready", f"{len(_wrn)} warning(s): "
-                             + _esc("; ".join(_wrn)))
-        else:
-            _dc, _dl, _dd = ("var(--text-success,var(--text-primary))",
-                             "ready", "")
-        dor_html = (
-            f'<div style="border:1px solid var(--border);border-radius:6px;'
-            f'padding:8px 13px;margin-bottom:14px;display:flex;align-items:'
-            f'center;gap:9px;flex-wrap:wrap"><span style="{_MICRO}">DoR</span>'
-            f'<span style="font-size:12.5px;font-weight:500;color:{_dc}">'
-            f'{_dl}</span>'
-            + (f'<span style="font-size:12px;color:var(--text-secondary)">'
-               f'{_dd}</span>' if _dd else "")
-            + f'<span style="{_MICRO};margin-left:auto">entry gate · '
-              f'{_esc(step)}</span></div>')
+    dor_html = _widget_dor(full_trace, step)
 
     # Dashboard v2 (R-0001): journey navigator + always-on stats band.
-    visits = _journey(ws)
+    visits = _journey(ws, events=all_ev, state=state)
     journey_s = render_journey(visits, "s")
     journey_d = render_journey(visits, "d")
     stats_html = render_stats(ws, metrics, denials, "s")
 
-    return (
-        f'<h2 class="sr-only">taskplane mission control: the governed loop is '
-        f'at step {step_badge} for goal {goal}.</h2>'
-        f'<div style="padding:0.5rem 0;font-family:var(--font-sans);color:'
-        f'var(--text-primary)"><div style="display:flex;justify-content:'
+    header = (
+        f'<div style="display:flex;justify-content:'
         f'space-between;align-items:flex-start;margin-bottom:12px;gap:12px">'
         f'<div><div style="font-size:16px;font-weight:500">taskplane mission '
         f'control</div><div style="font-size:13px;color:var(--text-'
@@ -2565,15 +3048,169 @@ def widget(ws: str) -> str:
         f'var(--text-primary);border-radius:20px;padding:4px 12px;'
         f'font-family:var(--font-mono);font-size:11.5px;letter-spacing:.8px;'
         f'font-weight:500;white-space:nowrap">step: {step_badge}</span>'
-        f'{toggle}</div></div>'
-        f'{hero}'
-        f'{gatebar}'
-        f'{dor_html}'
-        f'{stats_html}'
-        f'<div id="tp-simple">{pipe}{journey_s}{harness_panel}</div>'
-        f'<div id="tp-detail">'
-        f'<div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:'
-        f'1px solid var(--border);padding-bottom:10px">{tabs}</div>'
-        f'<div id="tp-panel-loop">{pipe}{journey_d}{loop_panel}</div>'
-        f'<div id="tp-panel-map">{map_panel}</div></div></div>'
-        + script)
+        f'{toggle}</div></div>')
+    sr = (f'<h2 class="sr-only">taskplane mission control: the governed loop '
+          f'is at step {step_badge} for goal {goal}.'
+          + (' The action budget is exhausted — a human must grant more '
+             'actions.' if budget_exhausted else '') + '</h2>')
+    notice = _trace_notice(tstats)
+    return {
+        "sr": sr, "header": header, "notice": notice, "hero": hero,
+        "gatebar": gatebar, "dor": dor_html, "stats": stats_html,
+        "pipe_s": pipe_s, "pipe_d": pipe_d,
+        "journey_s": journey_s, "journey_d": journey_d,
+        "harness_panel": harness_panel, "loop_panel": loop_panel,
+        "lanes_panel": lanes_panel, "ministats": ministats,
+        "feed_panel": feed_panel, "graph": graph_html,
+        "context": context_html, "map_panel": map_panel, "tabs": tabs,
+        "step_badge": step_badge, "goal": goal, "visits": visits,
+    }
+
+
+def widget(ws: str) -> str:
+    """Return an inline HTML fragment for mcp__visualize__show_widget. Opens
+    with a live parallel-agents hero band on top (when agents are active),
+    then simple/detailed views. Gate buttons grey out on click (only when the
+    chat bridge exists — in the static artifact they reveal the reply to type
+    instead). Composition of the named parts from _widget_parts()."""
+    p = _widget_parts(ws)
+    return (
+        p["sr"] + _WIDGET_CSS
+        + f'<div dir="auto" style="padding:0.5rem 0;'
+          f'font-family:var(--font-sans);color:'
+          f'var(--text-primary)">' + p["header"]
+        + p["notice"]
+        + p["hero"]
+        + p["gatebar"]
+        + p["dor"]
+        + p["stats"]
+        + f'<div id="tp-simple">{p["pipe_s"]}{p["journey_s"]}'
+          f'{p["harness_panel"]}</div>'
+        + f'<div id="tp-detail">'
+          f'<div style="margin-bottom:14px;border-bottom:'
+          f'1px solid var(--border);padding-bottom:10px">{p["tabs"]}</div>'
+          f'<div id="tp-panel-loop">{p["pipe_d"]}{p["journey_d"]}'
+          f'{p["loop_panel"]}</div>'
+          f'<div id="tp-panel-map">{p["map_panel"]}</div></div></div>'
+        + _WIDGET_JS)
+
+
+def _page_bytes(html: str) -> int:
+    """The ENFORCED budget unit: UTF-8 bytes of the emitted fragment."""
+    return len(html.encode("utf-8"))
+
+
+def _fit_page(html: str, budget: int) -> str:
+    """Guarantee a page fits the BYTE budget. Content is only ever removed
+    via _truncate_marked (an explicit '+N more' marker naming the omission
+    and pointing at the full dashboard.html) — never silently."""
+    if _page_bytes(html) <= budget:
+        return html
+    char_budget = budget
+    for _ in range(32):
+        out = _truncate_marked(html, char_budget)
+        over = _page_bytes(out) - budget
+        if over <= 0:
+            return out
+        char_budget -= max(over, 16)
+    return _truncate_marked(html, max(256, budget // 2))
+
+
+def _wrap_page(sr: str, body: str) -> str:
+    """A self-contained paged fragment: sr heading + widget chrome."""
+    return (sr + _WIDGET_CSS
+            + '<div dir="auto" style="padding:0.5rem 0;'
+              'font-family:var(--font-sans);color:var(--text-primary)">'
+            + body + '</div>')
+
+
+def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
+    """The loop dashboard as ordered pages (v1.5.3 contract, ENFORCED in
+    v2.3.0): every page is a self-contained fragment whose emitted UTF-8
+    size — wrapper included — is <= budget. When the full widget fits it is
+    returned as ONE page (no behavior change for small states); otherwise it
+    is split by MEANING: status+gate+spine → journey → lanes+feed →
+    graph → context, splitting further (journey by visits) when a page is
+    still too big. Content leaves a page only via an explicit '+N more'
+    marker — never silently. Returns [{"title","html"}]."""
+    full = widget(ws)
+    if _page_bytes(full) <= budget:
+        return [{"title": "mission control", "html": full}]
+
+    p = _widget_parts(ws)
+    pages = []
+
+    def add(title, body, sr_text=None):
+        sr = (f'<h2 class="sr-only">{_esc(sr_text or title)}</h2>'
+              if sr_text is not False else "")
+        pages.append({"title": title, "html": _wrap_page(sr, body)})
+
+    # page 1 — status & gate: header, notices, hero, gate banner, DoR,
+    # stats, spine, harnesses. The governance carriers (gate banner, budget
+    # exhaustion, DoR) all live on the FIRST page.
+    #
+    # v2.3.1: the <style>/<script> CHROME is fixed — kept OUTSIDE the
+    # truncatable region — so a byte-fit trim can only ever remove panel
+    # content, never cut off _WIDGET_JS (which wires the gate buttons:
+    # tpFire/tpSend/tpView/tpTab). Without this, a page 1 over budget got
+    # tail-truncated by _fit_page straight through the trailing <script>,
+    # leaving the emitted gate buttons calling undefined functions.
+    p1_prefix = (p["sr"] + _WIDGET_CSS
+                 + '<div dir="auto" style="padding:0.5rem 0;'
+                   'font-family:var(--font-sans);'
+                   'color:var(--text-primary)">')
+    p1_suffix = '</div>' + _WIDGET_JS
+    p1_fixed_bytes = _page_bytes(p1_prefix) + _page_bytes(p1_suffix)
+    p1_body = (p["header"] + p["notice"] + p["hero"] + p["gatebar"]
+               + p["dor"] + p["stats"] + p["pipe_s"] + p["harness_panel"])
+    p1_body = _fit_page(p1_body, max(256, budget - p1_fixed_bytes))
+    pages.append({"title": "mission control — status & gate",
+                  "html": p1_prefix + p1_body + p1_suffix})
+
+    # page 2+ — the step journey (split by visits when oversized)
+    visits = p["visits"]
+    if visits:
+        j = _wrap_page("", render_journey(visits, "s"))
+        if _page_bytes(j) <= budget:
+            add("step journey", render_journey(visits, "s"),
+                "step journey — every traversed step with its decisions.")
+        else:
+            n_chunks = 2
+            while n_chunks <= max(2, len(visits)):
+                size = max(1, (len(visits) + n_chunks - 1) // n_chunks)
+                chunks = [visits[i:i + size]
+                          for i in range(0, len(visits), size)]
+                rendered = [_wrap_page("", render_journey(c, f"s{ci}"))
+                            for ci, c in enumerate(chunks)]
+                if all(_page_bytes(r) <= budget for r in rendered) \
+                        or size == 1:
+                    for ci, c in enumerate(chunks):
+                        add(f"step journey (part {ci + 1}/{len(chunks)})",
+                            render_journey(c, f"s{ci}"),
+                            f"step journey part {ci + 1} of {len(chunks)}.")
+                    break
+                n_chunks += 1
+
+    # build lanes + live feed (split apart if together they exceed budget)
+    lanes_feed = p["lanes_panel"] + '<div style="height:12px"></div>' \
+        + p["ministats"] + p["feed_panel"]
+    if _page_bytes(_wrap_page("", lanes_feed)) <= budget:
+        add("build lanes & live feed", lanes_feed,
+            "build lanes and the live event feed.")
+    else:
+        add("build lanes", p["lanes_panel"], "build lanes.")
+        add("live feed", p["ministats"] + p["feed_panel"],
+            "run stats and the live event feed.")
+
+    # graph, then context (already the two natural halves of the map tab)
+    add("dependency graph", p["graph"], "dependency graph.")
+    add("context", p["context"],
+        "requirement, lenses, decisions and debt context.")
+
+    n = len(pages)
+    for i, page in enumerate(pages, 1):
+        page["title"] = f"{page['title']} — {i}/{n}"
+        # ENFORCED: no page ships over the byte budget; last-resort trims
+        # are explicit '+N more' markers, never silent drops.
+        page["html"] = _fit_page(page["html"], budget)
+    return pages

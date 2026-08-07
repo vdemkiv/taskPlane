@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.2.1",
+  "version": "2.3.1",
   "description": "AI software-delivery control plane for Claude and Codex: simple design, build, review, and status prompts backed by dependency-aware readiness, scoped execution, fingerprinted evidence, 26-lens review, and human approval.",
   "author": {
     "name": "Volodymyr Demkiv",
@@ -10,12 +10,21 @@
   "homepage": "https://github.com/vdemkiv/taskPlane",
   "repository": "https://github.com/vdemkiv/taskPlane",
   "license": "Apache-2.0",
-  "keywords": ["software-delivery", "ai-agents", "governance", "task-contract", "code-review", "requirements", "human-in-the-loop", "guardrails"],
+  "keywords": [
+    "software-delivery",
+    "ai-agents",
+    "governance",
+    "task-contract",
+    "code-review",
+    "requirements",
+    "human-in-the-loop",
+    "guardrails"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "taskplane",
     "shortDescription": "AI delivery with proof",
-    "longDescription": "taskplane is the AI software-delivery control plane for heavy users who design, build, and review code with Claude or Codex every day. Ask simply to design, build, review, or show status while a strict execution harness stays behind the scenes. Design turns a refined requirement and current code into alternatives plus a human-approved, fingerprinted Design Contract with a proposed graph overlay, named contracts, bounded depth, Design DoR/DoD, validation traceability, risks, rollout, and conditional visualization—without changing product code. Definition of Ready blocks under-specified or dependency-ambiguous work; scoped contracts constrain execution; workers submit fingerprinted evidence for orchestrator-only Definition-of-Done gates; and a full 26-lens engineering review exposes solution design, architecture, security, operability, data, UX, and other consequences for technical and nontechnical decision-makers. Distributed-system reasoning stops at explicit contracts between entities by default.",
+    "longDescription": "taskplane is the AI software-delivery control plane for heavy users who design, build, and review code with Claude or Codex every day. Ask simply to design, build, review, or show status while a strict execution harness stays behind the scenes. Design turns a refined requirement and current code into alternatives plus a human-approved, fingerprinted Design Contract with a proposed graph overlay, named contracts, bounded depth, Design DoR/DoD, validation traceability, risks, rollout, and conditional visualization\u2014without changing product code. Definition of Ready blocks under-specified or dependency-ambiguous work; scoped contracts constrain execution; workers submit fingerprinted evidence for orchestrator-only Definition-of-Done gates; and a full 26-lens engineering review exposes solution design, architecture, security, operability, data, UX, and other consequences for technical and nontechnical decision-makers. Distributed-system reasoning stops at explicit contracts between entities by default.",
     "developerName": "Volodymyr Demkiv",
     "category": "Developer Tools",
     "capabilities": [
@@ -27,7 +36,8 @@
       "Gate dependency and contract impact at Ready and Done",
       "Separate worker submissions from orchestrator validation",
       "Review code and solution designs through 26 engineering lenses",
-      "Publish progress artifacts for team handoff"
+      "Publish progress artifacts for team handoff",
+      "Show status on demand: current step, gates, and what taskplane is waiting on"
     ],
     "websiteURL": "https://github.com/vdemkiv/taskPlane",
     "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",

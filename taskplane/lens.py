@@ -25,8 +25,12 @@ _CATALOG_CACHE: dict | None = None
 # configured a `deep` model; the rest of the deep-tier lenses run `standard`
 # and the quick full-catalog sweep runs `cheap`. All resolve to inherit until
 # an operator sets TASKPLANE_MODEL_* — see taskplane_lite.model_for_tier.
+# Every entry MUST be a real lenses/catalog.json id (a drift test asserts
+# this): v2.3.0 fixed the dead 'concurrency' entry — the catalog lens that
+# owns that reasoning (idempotency, transactions, races at service
+# boundaries) is `backend`.
 _HARD_LENSES = {"security", "architecture", "scalability", "data-safety",
-                "concurrency", "dba", "sre", "privacy-compliance"}
+                "backend", "dba", "sre", "privacy-compliance"}
 
 
 def _lens_tier(lens_id: str, brief_tier: str) -> str:
@@ -108,14 +112,29 @@ def hub_signal(workspace, files) -> int:
         import depgraph
         g = depgraph.load(workspace)
         if not g.get("modules"):
-            return 0
+            return 0        # legitimately empty graph — no hub evidence
         rev = {}
         for e in g.get("edges") or []:
             rev.setdefault(e["to"], set()).add(e["from"])
         touched = {depgraph.module_of(f) for f in files or []}
         return max((len(rev.get(m, ())) for m in touched), default=0)
-    except Exception:
-        return 0
+    except Exception as exc:
+        # Fail toward MORE review coverage, never less — and never silently.
+        # A corrupt graph (depgraph.load raises StateError) or a malformed
+        # edge row used to return 0 here, quietly switching off the hub
+        # escalation forever. Warn on stderr, trace it, and return the
+        # full-pass threshold so architecture review escalates instead of
+        # a broken graph shrinking the review.
+        import sys
+        print(f"taskplane: hub signal unavailable ({exc}) — escalating "
+              "architecture review to a full pass (fail-safe: more review "
+              "coverage, not less). Repair the dependency graph to restore "
+              "precise hub routing.", file=sys.stderr)
+        try:
+            tp.trace(workspace, "hub_signal_failed", error=str(exc))
+        except Exception:
+            pass
+        return _HUB_FULL
 
 
 def architecture_effort(files, task_type, large: bool,
@@ -340,8 +359,9 @@ def lens_brief(lens_id: str, catalog: dict | None = None) -> dict | None:
 # human, and the orphan auto-release (dead PID / idle TTL) is the backstop.
 CLEAR_ALWAYS = (
     "FINALLY — ALWAYS, in every outcome (done, error, or blocked): release "
-    "your contract as your LAST action: "
-    '`python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" '
+    "your contract as your LAST action, with your slot still exported: "
+    '`TASKPLANE_TASK=$TASKPLANE_TASK python3 '
+    '"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" '
     'clear`. Treat this as '
     "the finally-block of your whole task — a leaked contract locks the "
     "workspace for everyone after you. If the clear itself is blocked "
@@ -349,6 +369,20 @@ CLEAR_ALWAYS = (
     "message so the dispatcher/human can release it (`tp.py clear "
     "--workspace <ws>` from an ungoverned context); never try to work "
     "around the block.")
+
+
+def _slot_instr(slot: str) -> str:
+    """Per-task contract-slot activation (v2.3.1). WITHOUT this, every parallel
+    lens agent's `tp.py new` writes the single legacy active_contract.json and
+    the agents overwrite each other's contracts — the exact multi-writer defect
+    the per-task-slot protocol exists to close, which shipped un-wired in
+    v2.3.0. Each agent exports a UNIQUE slot so its contract lands in
+    active/<slot>.json and the union stays honest."""
+    return (
+        f"FIRST — before you activate any contract — export your unique "
+        f"per-task contract slot so parallel lens agents cannot overwrite each "
+        f"other's governance: `export TASKPLANE_TASK={slot}`. Keep it set for "
+        f"every `tp.py` call you make (new / screen / clear).\n")
 
 
 def _lens_prompt(entry: dict, base: str) -> str:
@@ -387,11 +421,13 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         briefs.append({
             "id": lid, "name": x["name"], "tier": "deep", "agent": "tp-lens",
             "model_tier": mtier, "model": tp.model_for_tier(mtier),
+            "task_slot": f"lens-{lid}",
             "output": f".em-review/lens-{lid}/findings.json",
             "contract": {"read_only": True,
+                         "task_slot": f"lens-{lid}",
                          "write_allow": [f".em-review/lens-{lid}/**"],
                          "max_actions": max_actions},
-            "prompt": _lens_prompt(x, base) + (
+            "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base) + (
                 "\nBLAST RADIUS (from the dependency graph - factor "
                 "these dependents into your verdict):\n"
                 + impact_context + "\n" if impact_context else ""),
@@ -403,11 +439,13 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         sweep_brief = {
             "ids": [s["id"] for s in sweep], "agent": "tp-lens",
             "model_tier": "cheap", "model": tp.model_for_tier("cheap"),
+            "task_slot": "lens-sweep",
             "output": ".em-review/lens-sweep/findings.json",
             "contract": {"read_only": True,
+                         "task_slot": "lens-sweep",
                          "write_allow": [".em-review/lens-sweep/**"],
                          "max_actions": max_actions},
-            "prompt": (
+            "prompt": _slot_instr("lens-sweep") + (
                 f"Quick SWEEP of these lenses against the diff vs `{base}`: "
                 f"{names}. Run each lens's top checks only — flag or clear in "
                 f"one line each. READ-ONLY: write findings (with a `lens` "

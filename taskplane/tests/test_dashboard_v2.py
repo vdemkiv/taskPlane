@@ -204,8 +204,11 @@ class TestArtifactsInDetail(unittest.TestCase):   # sign-off feedback r2
 
     def test_grey_selection_on_journey_and_spine(self):
         frag = dashboard.widget(self.ws)
-        self.assertIn('b.style.background=n===i?"var(--surface-0)"', frag)
-        self.assertIn("tp-spine-pm", frag)
+        self.assertIn('b.style.background=on?"var(--surface-0)"', frag)
+        # v2.3.0: spine ids are per-view (s/d) — the old shared id was a
+        # duplicate-DOM-id bug that highlighted the hidden copy.
+        self.assertIn("tp-spine-s-pm", frag)
+        self.assertIn("tp-spine-d-pm", frag)
         self.assertIn('me.style.background="var(--surface-0)"', frag)
 
 

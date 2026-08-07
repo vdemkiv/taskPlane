@@ -87,8 +87,10 @@ Standing rules layered on it:
    Contract from the action payload and add `meta.design` to findings with its
    exact fingerprint, `verdict: conformant`, every designed module/edge/named
    contract checked, and `drift: []`. Missing coverage, stale evidence, or
-   unexplained drift blocks the engineering gate and returns the work to
-   Design; Review never blesses an implementation-time redesign.
+   ANY recorded drift entry blocks the engineering gate and returns the work
+   to Design (a human-accepted deviation lives in `accepted_drift` with
+   drift/reason/accepted_by and is rendered at the gate); Review never
+   blesses an implementation-time redesign.
 6. **Render UI changes.** Boot the real app and screenshot when possible;
    faithful HTML mock otherwise (and say which). The human reviews the
    working screen alongside the verdict, never a diff alone.

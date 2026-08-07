@@ -13,13 +13,23 @@ Two layers:
     (the v0.9.6 bug: test_external_store teardowns popped the var, so every
     later test wrote into the developer's real store).
 """
-import os
-import tempfile
-
 import pytest
 
-_SESSION_HOME = tempfile.mkdtemp(prefix="tp-store-test-")
-os.environ.setdefault("TASKPLANE_HOME", _SESSION_HOME)
+# Session-level belt lives in taskplane/tests/__init__.py so the plain
+# `python -m unittest discover` runner (which never reads conftest.py) gets
+# the same isolation. Import it here too — but DEFENSIVELY: when pytest is run
+# as `cd taskplane && pytest tests/`, the repo root isn't on sys.path and
+# `import taskplane.tests` raises ModuleNotFoundError while LOADING conftest,
+# which aborts the whole run before a single test collects (v2.3.1 — this was
+# the documented CI break). Add the repo root to sys.path first so the import
+# resolves regardless of the working directory the runner was launched from.
+import os as _os
+import sys as _sys
+_repo_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(
+    _os.path.abspath(__file__))))
+if _repo_root not in _sys.path:
+    _sys.path.insert(0, _repo_root)
+from taskplane.tests import _SESSION_HOME  # noqa: F401,E402
 
 
 @pytest.fixture(autouse=True)

@@ -30,7 +30,10 @@ Sharing is a deliberate act, not an accident of `git push`.
 Every writer resolves the store location through one seam — the kernel's
 `get_mode()` / `kb_root(ws)` — so there is a single source of truth for where
 knowledge lives. `tp kb where` prints the active path; `tp share status` shows
-the resolved mode. Precedence, highest first:
+the resolved mode. (`TASKPLANE_STORE` and `TASKPLANE_HOME` are two of the
+behavior-changing environment variables — the full reference, with defaults
+and enforcement relevance, is `docs/configuration.md`.) Precedence, highest
+first:
 
 1. **`TASKPLANE_STORE` env** — e.g. `TASKPLANE_STORE=repo` forces the in-repo
    store (used by Claude Tag; see below).
@@ -87,7 +90,9 @@ plain `git add` picks up exactly the shared store and nothing else. Committing
 
 | Path | Contents | Why local |
 | --- | --- | --- |
-| `.taskplane/` | ACTIVE contract, snapshot ref, `meter.json`, `trace.jsonl` (raw audit events) | live enforcement + telemetry are per-machine; a parallel worker needs its own under `.tp-work/`, and none of it must ever be committed |
+| `.taskplane/` | ACTIVE contract(s), snapshot ref, `meter.json`, `trace.jsonl` (raw audit events) | live enforcement + telemetry are per-machine; a parallel worker needs its own under `.tp-work/`, and none of it must ever be committed |
+| `.taskplane/active_contract.json` | the legacy SINGLE active contract (when no per-task slots are in use) | one governed process per workspace, the common case |
+| `.taskplane/active/<slot>.json` | PER-TASK contract slots (v2.3.1) | when several governed agents share one workspace (a parallel wave, a fanned-out lens review), each exports `TASKPLANE_TASK=<slot>` and gets its OWN contract file, so agents can't overwrite each other's governance. A process with `TASKPLANE_TASK` set is bound to exactly its slot (a missing/corrupt slot fails closed); with it unset, the process is governed by the **most-restrictive union** of every active slot plus the legacy file — never left ungoverned, never governed by one slot picked arbitrarily |
 | `.eval/`, `.em-review/`, `.security-review/` | raw review artifacts and scratch | verdict *decisions* go to the KB store; the raw reports don't |
 | `.tp-work/` | parallel workers' worktrees | vehicles, not cargo — work merges via `tp/<task>` branches |
 | `plan/`, `specs/`, `design/` | authored requirement, proposed-HOW Design Contract/visual, and implementation-plan sources | these MAY stay in the repo if you want them version-controlled; the loop treats them as its own evidence rather than product-code diff |
@@ -111,10 +116,40 @@ whole store (including loop state) is forced in-repo so the next session
 resumes the loop by cloning the branch. There the state machine travels with
 the work precisely because the sandbox is discarded between sessions.
 
-### Design state and evidence
+### What `loop.json` actually contains (v2.2.1)
 
-`loop.json` records `design_required`, `design_only`, the baseline graph
-fingerprint captured on entry to Design, and the approved evidence fingerprint.
+`loop.json` is the whole per-track state machine, not just flags. As shipped
+it persists:
+
+- **Run identity/config** (set at `loop init`): `governance_revision`,
+  `submission_required`, `graph_governance`, `goal`, `parallel`,
+  `design_required`, `design_only`, `requirement_id`, `spec_path`,
+  `max_fix_cycles`, `checkpoints`, `step`, `current_task`; an A/B build
+  additionally carries `ab` and, once the human decides, the recorded
+  `selection`.
+- **Tasks** (`tasks`): each with id, scope, tests, deps, status,
+  fix-cycle count, and — in a parallel wave — the claimed worktree
+  `workspace` path.
+- **Worker `_submission` evidence blocks** — top-level for serial runs and
+  per-task in parallel waves. Each block records `step`, `task`, `outcome`,
+  `note`, the submitting `workspace` (an **absolute path**), the git
+  `snapshot`, the workspace `fingerprint`, the `changed_files` list, the
+  `evidence_paths`, an optional `graph_fingerprint`, and `submitted_at`.
+  Privacy note for `TASKPLANE_STORE=repo` (Claude Tag): these blocks —
+  absolute paths and changed-file lists included — are committed with the
+  branch.
+- **Design state**: `design_required`, `design_only`,
+  `design_graph_fingerprint` (the baseline graph fingerprint — see below),
+  and after approval `design_approved`, `design_fingerprint` (the approved
+  evidence fingerprint) and `design_approved_by`.
+
+Baseline capture is **not** a one-shot "on entry to Design": since v2.2.1
+(H3), while the design is still unapproved the graph baseline follows the
+CURRENT scan — every pre-approval rescan re-baselines
+`design_graph_fingerprint` (with a `design_rebaseline` trace event), so a
+legitimate rescan can't deadlock the step. Only human approval freezes the
+evidence fingerprint.
+
 The proposed HOW itself lives in `design/contract.json` (schema
 `taskplane.design/v1`) with the human narrative in `design/design.md` and an
 optional `design/visual.html`. Approval fingerprints exactly those files.

@@ -1,0 +1,132 @@
+[
+ {
+  "severity": "high",
+  "file": ".claude-plugin/plugin.json",
+  "line": 3,
+  "title": "No single-source version: a release hand-edits the version in 7+ locations across 6 files, and the drift this invites has already shipped",
+  "scenario": "Cutting v2.2.1 required manual edits at .claude-plugin/plugin.json:3, .claude-plugin/marketplace.json:13 AND :32, .codex-plugin/plugin.json:3, a new README 'What's new' row (README.md:55), a new CHANGELOG row, and six version references in docs/openai-submission.md (lines 1, 50, 51, 153, 178, 182). CI's validate-plugin job (.github/workflows/ci.yml:40-57) cross-checks only the four manifest fields \u2014 and the unguarded surface drifted exactly as predicted: at the v2.2.1 tag, docs/openai-submission.md still says 2.2.0 throughout. Every future release repeats this toil and this risk on the critical path to shipping.",
+  "fix": "Single-source the version (e.g. .codex-plugin/plugin.json, which package_openai.py already reads at scripts/package_openai.py:123) and add `scripts/release.py bump X.Y.Z` that rewrites the other manifests and stamps README/openai-submission.md; extend the existing CI validate step to grep README and docs/openai-submission.md for the manifest version so any remaining drift fails the build.",
+  "domain": "time-to-market",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "taskplane/tp.py",
+  "line": 772,
+  "title": "loop/track engine errors exit 0 \u2014 error dicts are printed but never propagated to the exit code",
+  "scenario": "loopmod.gate()/submit()/wave()/claim() return {\"error\": ...} (e.g. loop.py:1407 'worker evidence was not submitted', loop.py:1440 'Definition of Done failed'), cmd_loop prints the JSON and falls through to `return 0` (tp.py:772); cmd_track does the same for tr.new/switch/close error dicts (tp.py:1284-1297). A scripted driver (Claude Tag thread, CI wrapper, shell `&&` chain) checks $? , sees success, and proceeds as if the gate passed \u2014 while inconsistent siblings (`req score`, `kb lint`, `share push`, `loop verify-dispatch`) DO exit 1 on failure.",
+  "fix": "In cmd_loop and cmd_track, after computing the result dict, `return 1 if isinstance(out, dict) and out.get(\"error\") else 0` \u2014 one check, matching the exit-code convention the other subcommands already follow.",
+  "domain": "backend + integrability",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "taskplane/tp.py",
+  "line": 271,
+  "title": "Cheap-tier routing is unmonitored by default \u2014 nothing observes whether the resolved model ever reaches dispatch",
+  "scenario": "The tier system resolves models into briefs correctly (loop.py:822-827, lens.py:386-389: sweep=cheap, hard lenses=deep) and even ships a verification hook \u2014 but cmd_screen_dispatch returns early unless TASKPLANE_ENFORCE_DISPATCH=warn|strict is exported (tp.py:265-271), and no skill/doc sets it by default. So in the default install a driver that ignores brief[\"model\"] runs the 18-lens sweep and every cheap-marked task on the expensive session model; `loop verify-dispatch` reports only 'no dispatches observed' (taskplane_lite.py:1277-1279). The cost saving the tiering promises is unverifiable exactly where it matters: at dispatch.",
+  "fix": "Default the dispatch hook to 'warn' (non-blocking systemMessage on mismatch, still zero-cost when models match) and keep 'strict' opt-in; alternatively have `loop retro` surface hook_active=false as an explicit 'tier routing unobserved' cost warning.",
+  "domain": "cost-finops",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "taskplane/tp.py",
+  "line": 431,
+  "title": "meter.json read-modify-write is unserialized \u2014 concurrent screens lose action counts on the enforced budget",
+  "scenario": "_meter_bump (tp.py:431-454) does an unlocked _meter_load \u2192 increment \u2192 atomic-replace. The dispatch queues got _file_lock for exactly this race (taskplane_lite.py:1191-1206) but the meter \u2014 which the code itself calls control-plane (tp.py:553-556) \u2014 did not. Two governed tool calls screened concurrently (parallel Bash calls in one session, or two agents sharing a workspace) both read actions=N and both write N+1: the enforced max_actions ceiling undercounts and a budget wall of 30 effectively becomes 35+, weakening the one budget that is supposed to be mechanical.",
+  "fix": "Wrap _meter_bump's load-bump-save in tp._file_lock(meter_path) \u2014 the locking helper already exists and the write is already atomic; only the read-modify-write needs the lock.",
+  "domain": "dba",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "taskplane/tp.py",
+  "line": 1936,
+  "title": "The 'simple front' leaks raw Python tracebacks: main() has no user-layer error boundary (only BrokenPipeError is caught)",
+  "scenario": "In Claude Tag / team mode the loop state lives in-repo (TASKPLANE_STORE=repo, README v1.4.0). A git merge leaves conflict markers in the state JSON; the user runs `tp summary` (or the skill runs it after a transition) and loop.load() at taskplane/loop.py:155 does a bare json.load() -> json.JSONDecodeError propagates through cmd_summary and main(), dumping a full Python traceback with internal paths at the layer the README (line 22, 'Simple for the user; strict for the agents') promises is simple. No recovery guidance is offered.",
+  "fix": "Wrap `a.fn(a)` in main() (tp.py:1932) with a catch-all that prints one line to stderr \u2014 'taskplane: <command> failed: <error> (state file <path> unreadable; see tp help / TASKPLANE_DEBUG=1 for details)' \u2014 and exit 1; keep the traceback behind TASKPLANE_DEBUG. Additionally make loop.load() raise a typed, message-bearing error naming the corrupt file and the repair step.",
+  "domain": "product",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": ".codex-plugin/plugin.json",
+  "line": 35,
+  "title": "The fourth promised prompt ('taskplane status') is missing from every Codex discovery surface",
+  "scenario": "README line 28 promises 'Four prompts are enough' (design / build / review / status), and skills/taskplane/SKILL.md routes all four. But the Codex manifest's defaultPrompt array (lines 35-39) and the submission worksheet's 'Starter prompts' (docs/openai-submission.md:64) teach only three \u2014 status is absent. A Codex user who discovers taskplane through starter prompts never learns the one entry point that is guaranteed non-mutating ('What is taskplane waiting on right now?' is even the worksheet's own positive test case 6), so mid-run they poke the loop with build/review phrasing instead.",
+  "fix": "Add 'taskplane status' (e.g. 'taskplane status \u2014 what is waiting on me?') as a fourth entry in defaultPrompt and in the worksheet's starter-prompt list, matching the four-prompt promise.",
+  "domain": "product",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "taskplane/tp.py",
+  "line": 220,
+  "title": "`tp new --budget 0` silently becomes the $3.00 default (falsy check instead of None check)",
+  "scenario": "`c[\"budget\"][\"max_cost_usd\"] = float(a.budget) if a.budget else DEFAULT_MAX_COST_USD` \u2014 an operator passing `--budget 0` to mean 'no cooperative spend allowed' gets a $3.00 ceiling recorded; `tp status` then shows 3.0 and `tp budget --spent 1` reports under-ceiling.",
+  "fix": "Use `if a.budget is not None`, and reject negative values explicitly.",
+  "domain": "backend",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "taskplane/tp.py",
+  "line": 826,
+  "title": "`lens dispatch --dashboard` re-records dispatch expectations on every re-render \u2014 the progress view is not idempotent",
+  "scenario": "cmd_lens records record_expected_dispatch() for every deep brief and the sweep BEFORE branching on --dashboard (tp.py:826-834). The R1 comment (tp.py:841-846) tells the driver to re-run `lens dispatch --dashboard` after agents land to show DONE lanes \u2014 each re-run appends a fresh set of unmatched expectations, so `loop verify-dispatch` reports an ever-growing 'unobserved' count and the dispatch audit becomes noise.",
+  "fix": "Skip record_expected_dispatch when --dashboard is passed (it is a pure view), or dedupe unmatched expectations by (kind, agent, ref) in record_expected_dispatch.",
+  "domain": "backend",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "taskplane/tp.py",
+  "line": 60,
+  "title": "Duplicated git helpers: _git_head clones tp.git_head; _changed_for_impact re-implements changed_files minus the RUNTIME_OWNED filter",
+  "scenario": "tp.py:_git_head (60-62) is byte-for-byte taskplane_lite.git_head (1051-1053). tp.py:_changed_for_impact (1553-1559) re-implements taskplane_lite.changed_files (636-642) but WITHOUT the RUNTIME_OWNED exclusion and dedupe - so `tp graph impact` (default file set) counts .taskplane/, plan/, knowledge/ bookkeeping as changed files while every loop-internal impact call filters them, giving the CLI a different (inflated) blast radius than the engine computes for the same diff.",
+  "fix": "Delete both copies and call tp.git_head / tp.changed_files (optionally with an include_runtime flag if the unfiltered behavior is ever wanted intentionally).",
+  "domain": "code-quality",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "taskplane/tp.py",
+  "line": 398,
+  "title": "Bare open().read() without context managers on several read paths",
+  "scenario": "tp.py:398 (cmd_ready), tp.py:706 (cmd_dod), tp.py:357 (cmd_decision show), tp.py:47 (north_star), loop.py:2364 (_publish_artifacts), kb.py:369 (current_state) and the dashboard's json.load(open(p)) sites open files without `with`, relying on CPython refcounting; on alternative runtimes or exception paths handles linger, and it diverges from the codebase's own dominant `with open(...)` idiom used everywhere else.",
+  "fix": "Mechanical sweep: wrap each in `with open(...) as f:` - no behavior change, closes the resource on every exit path.",
+  "domain": "code-quality",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "taskplane/tp.py",
+  "line": 1368,
+  "title": "`tp summary` prints the same decision sentence twice back-to-back at every gate",
+  "scenario": "At plan_approval, user_summary sets headline='Decision required \u2014 Review and approve the implementation plan.' and decision='Review and approve the implementation plan.' cmd_summary prints the headline (tp.py:1362) and then 'ACTION REQUIRED: Review and approve the implementation plan.' (tp.py:1368) \u2014 the identical sentence twice in a four-line output, diluting the scannability of the surface whose whole job is to say the one thing needed.",
+  "fix": "When a decision is present, shorten the headline to 'Decision required' (progress context only) and let the ACTION REQUIRED line carry the sentence once \u2014 or drop the ACTION REQUIRED line when it string-matches the headline suffix.",
+  "domain": "design",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "taskplane/tp.py",
+  "line": 61,
+  "title": "The git hard dependency is honestly documented, but absence degrades to raw tracebacks and every screen event pays a git subprocess",
+  "scenario": "git is the load-bearing external tool of the whole design (snapshots, DoD diffs, worktrees) and README.md:105 declares it plainly ('Requires `git` in your workspace... Nothing else to set up') - a clean selection rationale. Two rough edges remain in how the dependency is worn: (1) if the git binary is missing, _run's subprocess.run raises FileNotFoundError uncaught, so `tp new`/`tp init`/`tp onboard` die with a traceback instead of the onboarding message the zero-state flow otherwise provides (cmd_screen alone survives via its fail-closed catch-all, tp.py:609); (2) _governed_root shells `git rev-parse --show-toplevel` on EVERY PreToolUse screen event (tp.py:477), an accepted-but-unnamed per-action latency cost of the no-server choice - fine on a laptop, noticeable on slow/networked filesystems.",
+  "fix": "Catch FileNotFoundError in taskplane_lite._run and re-raise as a one-line 'git is required (see README prerequisites)' error so every CLI path fails with the documented remedy; add a comment at the _governed_root git call naming the per-event subprocess cost as accepted (or memoize the toplevel per cwd within a process).",
+  "domain": "services-selection",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "taskplane/tp.py",
+  "line": 79,
+  "title": "_bare_root hardcodes '/home/claude' - host-specific safety constant with no named rationale or revisit condition",
+  "scenario": "_bare_root treats exactly `home, '/', '/root', '/home/claude'` as bare roots (tp.py:78-79). '/home/claude' is the Cowork/sandbox session home - a sensible guard given the locked-contract incident - but the list is a point-in-time snapshot of one vendor's container layout, embedded with no comment saying why these paths or when to extend them (another host's session home, e.g. '/workspace' or '/home/user', gets no protection from the exact incident this code exists to prevent). The neighboring lesson block (taskplane_lite.py:884-894) documents the incident thoroughly; the concrete path list it produced is the one part left unexplained.",
+  "fix": "Comment the provenance ('known agent-sandbox session homes as of v2.x; extend when a host adds one') and/or read extra roots from an env var (TASKPLANE_BARE_ROOTS) so new hosts get the guard without a code change; record the revisit trigger: any new supported host runtime.",
+  "domain": "tradeoffs",
+  "status": "open"
+ }
+]

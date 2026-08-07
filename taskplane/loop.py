@@ -59,6 +59,18 @@ def _state_dir(ws: str) -> str:
         return legacy
     return ext
 
+
+def state_dir(ws: str) -> str:
+    """THE exported owner of the loop-state location rule (v2.3.0).
+
+    Any module that touches per-user coordination state (loop.json,
+    tracks.json — see docs/state-spec.md, 'Loop coordination state is
+    per-user') must resolve its directory HERE instead of re-deriving via
+    tp.kb_root/store_root: re-derivation is exactly how track state ended up
+    in the committed team store on a team plan. TASKPLANE_STORE=repo remains
+    the single exception, and this function owns it."""
+    return _state_dir(ws)
+
 # Per-step contract recipes. Non-build steps are read-only with a write-allow
 # so they can only touch their own artifact dir; build steps get a real scope.
 # pm and em are two deliberate personas (split in v0.8.0): tp-product owns
@@ -158,23 +170,21 @@ def load(ws: str) -> dict | None:
         p = _legacy_loop_path(ws)          # pre-spec state, read once
         if not os.path.exists(p):
             return None
-    with open(p) as f:
-        return json.load(f)
+    # v2.3.0: a corrupt loop.json fails CLOSED with a typed error naming the
+    # file and a remedy (tp.StateError) — never a bare JSONDecodeError
+    # traceback, and never a silent default that would mask the corruption.
+    return tp.load_json(p, what="loop state file")
 
 
 def save(ws: str, state: dict) -> None:
     os.makedirs(_state_dir(ws), exist_ok=True)
-    # Atomic write: parallel wave workers gate concurrently against the shared
-    # loop.json — a torn read of a half-written file is a corrupt loop that
-    # stalls everyone. Write a temp file and rename so a reader only ever sees
-    # a complete state. (Lost-update races between concurrent read-modify-write
-    # are serialized by `mutate()` below, which holds an exclusive lock across
-    # the whole load→change→save.)
-    p = _loop_path(ws)
-    tmp = p + f".tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
-        json.dump(state, f, indent=2)
-    os.replace(tmp, p)
+    # Atomic write (tp.atomic_write_json): parallel wave workers gate
+    # concurrently against the shared loop.json — a torn read of a
+    # half-written file is a corrupt loop that stalls everyone; a reader only
+    # ever sees a complete state. (Lost-update races between concurrent
+    # read-modify-write are serialized by `mutate()` below, which holds an
+    # exclusive lock across the whole load→change→save.)
+    tp.atomic_write_json(_loop_path(ws), state, indent=2)
     legacy = _legacy_loop_path(ws)         # migrate: single source of truth
     if os.path.exists(legacy):
         tp.safe_remove(legacy)
@@ -192,30 +202,53 @@ def mutate(ws: str):
         with loop.mutate(ws) as st:
             task = next(t for t in st['tasks'] if t['id'] == tid)
             task['status'] = 'built'
+
+    v2.3.0: the lock is tp.file_lock — where flock is unavailable or refused
+    (Windows, FUSE/NFS/SMB mounts, exactly the hosts this plugin targets) it
+    falls back to an atomic mkdir spin-lock, and if even that cannot be
+    acquired it raises tp.StateError. Wave serialization is therefore never
+    SILENTLY lost the way the old `except OSError: pass` fallback lost it.
     """
     os.makedirs(_state_dir(ws), exist_ok=True)
-    lock_path = _loop_path(ws) + ".lock"
-    lf = open(lock_path, "w")
-    try:
-        try:
-            import fcntl
-            fcntl.flock(lf, fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            pass                            # best-effort on platforms w/o flock
+    with tp.file_lock(_loop_path(ws)):
         st = load(ws)
         yield st
         if st is not None:
             save(ws, st)
-    finally:
-        lf.close()
+
+
+TERMINAL_STEPS = ("done", "failed")
 
 
 def init(ws: str, goal: str, spec_path: str | None = None,
          max_fix_cycles: int = 2, checkpoints=None,
          requirement_id: str | None = None, parallel: bool = False,
-         design: bool = False, design_only: bool = False) -> dict:
+         design: bool = False, design_only: bool = False,
+         force: bool = False) -> dict:
     checkpoints = list(checkpoints if checkpoints is not None else
                        ["plan", "em"])
+    # v2.3.0: init over an IN-FLIGHT loop refuses by default — one mistyped
+    # init must not silently reset a governed session's step, tasks,
+    # approvals and baseline. `force` discards deliberately, and even then
+    # the prior state file is archived (visible, recoverable), never erased.
+    existing = load(ws)
+    archived_to = None
+    if existing and existing.get("step") not in TERMINAL_STEPS:
+        if not force:
+            return {"error": "an active loop already exists at step="
+                             f"'{existing.get('step')}' — refusing to discard "
+                             "its progress. Finish or abort it first "
+                             "(`loop resolve abort`), or re-run init with "
+                             "force to archive the current state and restart.",
+                    "refused": True, "step": existing.get("step")}
+        src = _loop_path(ws) if os.path.exists(_loop_path(ws)) \
+            else _legacy_loop_path(ws)
+        archived_to = _loop_path(ws) + time.strftime(
+            ".replaced-%Y%m%d-%H%M%S") + f".{os.getpid()}"
+        os.makedirs(_state_dir(ws), exist_ok=True)
+        os.replace(src, archived_to)
+        tp.trace(ws, "loop_init_replaced", prior_step=existing.get("step"),
+                 archived_to=archived_to)
     state = {
         "governance_revision": 2,
         # Workers submit evidence; only the driver asks the engine to evaluate
@@ -240,18 +273,22 @@ def init(ws: str, goal: str, spec_path: str | None = None,
              first_step=state["step"], max_fix_cycles=max_fix_cycles,
              checkpoints=checkpoints, design=bool(design or design_only),
              design_only=bool(design_only))
+    out = dict(state)
+    if archived_to:
+        out["previous_loop_archived"] = archived_to
+        out["note"] = f"previous in-flight loop archived to {archived_to}"
     # v2.0.0: point the driver at prior gate snapshots (context cache) -
     # read the published state instead of re-deriving it.
     with contextlib.suppress(Exception):
         art = os.path.join(tp.store_root(ws), "artifacts")
         tracks = sorted(os.listdir(art)) if os.path.isdir(art) else []
         if tracks:
-            return {**state, "prior_artifacts": {
+            out["prior_artifacts"] = {
                 "path": art, "tracks": tracks,
                 "note": "prior gate snapshots (dashboard, plan, "
                         "findings, graph, HEADLINES) - read these "
-                        "before re-deriving context"}}
-    return state
+                        "before re-deriving context"}
+    return out
 
 
 # --------------------------------------------------------------- contracts
@@ -334,8 +371,17 @@ def _edge_nudges(ws: str, changed, base: str) -> list:
                 "record the producer with --kind provides. Dependency edges "
                 "point from the dependent to the contract so contract changes "
                 "impact consumers in the correct direction")
-    except Exception:
-        pass
+    except (OSError, _sp.SubprocessError, UnicodeDecodeError) as e:
+        # Degraded nudging must be VISIBLE, never silent (v2.3.0): the
+        # reviewer loses side-effect-channel hints, so say so once.
+        import sys as _sys
+        print(f"taskplane: edge-nudge scan degraded ({e.__class__.__name__}: "
+              f"{e}) — record runtime edges manually via `tp graph edge`",
+              file=_sys.stderr)
+        try:
+            tp.trace(ws, "edge_nudges_failed", error=str(e))
+        except Exception:
+            pass
     return nudges
 
 
@@ -510,8 +556,41 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     (worktree). From here the worker's PreToolUse hook enforces this task's
     scope/tools/commands — the core invariant: every parallel agent runs
     under the harness, individually."""
+    # v2.3.0 (scalability): the DoR preparation shells out to git in the
+    # WORKER'S OWN worktree (git_head + dor_check's `git status`), which on a
+    # large repo takes seconds — holding the global loop lock across it
+    # serialized a whole wave's startup behind one worker. Prepare OUTSIDE
+    # the lock, then commit the claim under the lock with a RE-CHECK of the
+    # task's status, so two workers still cannot both win the same task.
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop"}
+    t = next((x for x in state.get("tasks") or [] if x["id"] == task_id),
+             None)
+    if t is None:
+        return {"error": f"no task {task_id}"}
+    if t.get("status") not in ("pending", "running"):
+        return {"error": f"task {task_id} is {t.get('status')} — "
+                         "not claimable"}
+    contract = tp.build_contract(
+        f"EXECUTE: {t['id']}", scope=t.get("scope"),
+        test_command=t.get("tests"),
+        tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
+               "MultiEdit"])
+    agent_ws = os.path.abspath(agent_ws)
+    snapshot = tp.git_head(agent_ws)
+    dor_ready, blockers, warnings = tp.dor_check(
+        contract, agent_ws, snapshot)
+    if not dor_ready:
+        tp.trace(ws, "loop_claim_blocked", task=task_id,
+                 agent_workspace=agent_ws, dor_blockers=blockers)
+        return {"error": "Definition of Ready failed — task was not "
+                         "claimed", "task": task_id,
+                "dor": {"ready": False, "blockers": blockers,
+                        "warnings": warnings}}
     # Two workers claiming concurrently must not both win the same task —
-    # serialize the claim's read-check-write under the shared lock.
+    # only the cheap read-check-write of the claim itself runs under the
+    # shared lock, and the claimability check is REPEATED on the fresh read.
     with mutate(ws) as state:
         if state is None:
             return {"error": "no active loop"}
@@ -522,22 +601,6 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         if t.get("status") not in ("pending", "running"):
             return {"error": f"task {task_id} is {t.get('status')} — "
                              "not claimable"}
-        contract = tp.build_contract(
-            f"EXECUTE: {t['id']}", scope=t.get("scope"),
-            test_command=t.get("tests"),
-            tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
-                   "MultiEdit"])
-        agent_ws = os.path.abspath(agent_ws)
-        snapshot = tp.git_head(agent_ws)
-        dor_ready, blockers, warnings = tp.dor_check(
-            contract, agent_ws, snapshot)
-        if not dor_ready:
-            tp.trace(ws, "loop_claim_blocked", task=task_id,
-                     agent_workspace=agent_ws, dor_blockers=blockers)
-            return {"error": "Definition of Ready failed — task was not "
-                             "claimed", "task": task_id,
-                    "dor": {"ready": False, "blockers": blockers,
-                            "warnings": warnings}}
         tp.activate(agent_ws, contract, snapshot=snapshot)
         t["status"] = "running"
         t["workspace"] = agent_ws
@@ -552,12 +615,27 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
 
 # --------------------------------------------------------------- next / gate
 
-def next_action(ws: str) -> dict:
+def next_action(ws: str, rid: str | None = None) -> dict:
     """Advance to the current step's work: activate its contract and return
     what the driver should run. Human steps pause without activating."""
     state = load(ws)
     if state is None:
         return {"error": "no active loop — run `tp.py loop init` first"}
+    # v2.3.0 wiring: attach a requirement BEFORE the design DoR evaluates —
+    # the sanctioned mid-loop exit for a loop started without --req. The
+    # validator (design_contract.design_attach_requirement) enforces the same
+    # completeness the DoR demands; failure blocks, success persists.
+    if rid:
+        attach_errors: list = []
+        with mutate(ws) as st:
+            if st is None:
+                return {"error": "no active loop — run `tp.py loop init` "
+                                 "first"}
+            attach_errors = _dc.design_attach_requirement(ws, st, rid)
+        if attach_errors:
+            return {"error": "requirement attach failed",
+                    "blockers": attach_errors}
+        state = load(ws)
     step = state["step"]
 
     if step in HUMAN_STEPS:
@@ -592,23 +670,52 @@ def next_action(ws: str) -> dict:
             # Run the MECHANICAL Definition-of-Done here so the human signs off
             # seeing both the EM's read-out AND the scope-diff/lint verdict.
             out["dod"] = _signoff_dod(ws, state)
+            # v2.3.0 wiring: accepted design drift and hand-declared edge
+            # realizations are VISIBLE at sign-off, not dead-on-pass.
+            findings, _errs = _read_json(
+                os.path.join(ws, ".em-review", "findings.json"))
+            notices = _dc.design_review_notices(
+                (findings or {}).get("meta") or {})
+            if notices:
+                out["notices"] = notices
         if step == "design_approval":
             design_errors = _design_dod_errors(ws, state)
             out["dod"] = {"passed": not design_errors,
                           "errors": design_errors,
                           "fingerprint": _design_evidence_fingerprint(ws)}
+            # v2.3.0 wiring: self-attested lens evidence is surfaced AT the
+            # human gate instead of being silently accepted.
+            notices = _dc.design_approval_notices(ws)
+            if notices:
+                out["notices"] = notices
         return out
 
     # Parallel mode: EXECUTE is a wave (dispatch handled by `wave`/`claim`);
     # once workers report built, evaluate them one by one (read-only).
+    # v2.3.0: the built→evaluate flip is a read-modify-write of the SHARED
+    # loop.json while wave workers gate concurrently — apply it under
+    # mutate() to a FRESH read (the same lost-update class H2 closed in
+    # gate()), so a worker's just-gated status is never clobbered by saving
+    # this function's earlier unlocked snapshot.
     if step == "execute" and state.get("parallel"):
-        built = [i for i, t in enumerate(state.get("tasks") or [])
-                 if t.get("status") == "built"]
-        if built:
-            state["current_task"] = built[0]
-            state["step"] = step = "evaluate"
-            save(ws, state)
-        else:
+        moved = False
+        with mutate(ws) as fresh:
+            if fresh is None:
+                return {"error": "no active loop — run `tp.py loop init` "
+                                 "first"}
+            if fresh.get("step") != "execute" or not fresh.get("parallel"):
+                moved = True                # advanced under us — re-dispatch
+            else:
+                built = [i for i, t in enumerate(fresh.get("tasks") or [])
+                         if t.get("status") == "built"]
+                if built:
+                    fresh["current_task"] = built[0]
+                    fresh["step"] = "evaluate"
+            state = fresh
+        if moved:
+            return next_action(ws)
+        step = state["step"]
+        if step == "execute":
             return wave(ws)
 
     # Defence in depth: a per-task step must have a current task. If the loop
@@ -637,12 +744,19 @@ def next_action(ws: str) -> dict:
         current_fp = (depgraph.load(ws).get("meta") or {}).get(
             "content_fingerprint")
         if state.get("design_graph_fingerprint") != current_fp:
-            if state.get("design_graph_fingerprint"):
-                tp.trace(ws, "design_rebaseline",
-                         old=(state["design_graph_fingerprint"] or "")[:12],
-                         new=(current_fp or "")[:12])
-            state["design_graph_fingerprint"] = current_fp
-            save(ws, state)
+            # v2.3.0: persist the rebaseline under the state lock on a fresh
+            # read — a bare save() here could clobber a concurrent update.
+            with mutate(ws) as fresh:
+                if fresh is not None and fresh.get("step") == "design" \
+                        and fresh.get("design_graph_fingerprint") != current_fp:
+                    if fresh.get("design_graph_fingerprint"):
+                        tp.trace(
+                            ws, "design_rebaseline",
+                            old=(fresh["design_graph_fingerprint"] or "")[:12],
+                            new=(current_fp or "")[:12])
+                    fresh["design_graph_fingerprint"] = current_fp
+                if fresh is not None:
+                    state = fresh
 
     contract = _step_contract(step, state)
     snapshot = tp.git_head(act_ws)
@@ -825,8 +939,18 @@ def next_action(ws: str) -> dict:
              task=(task or {}).get("id"), tier=model_tier, model=model)
     tp.record_expected_dispatch(ws, "step", STEP_ROLE[step], model_tier,
                                 model, ref=(task or {}).get("id") or step)
+    # v2.3.0 (cost visibility): a non-standard tier that resolves to
+    # inherit (e.g. 'cheap' on Codex hosts) means the planned cost routing
+    # has NO effect — say so in the brief, at the moment it costs money.
+    model_note = None
+    if model is None and (model_tier or "standard") != "standard":
+        model_note = (f"tier '{model_tier}' resolves to inherit on this "
+                      f"host — the planned routing has no effect; set "
+                      f"TASKPLANE_MODEL_{str(model_tier).upper()} to "
+                      "activate it")
 
     return {
+        **({"model_note": model_note} if model_note else {}),
         "step": step,
         "role": STEP_ROLE[step],
         "role_instructions": os.path.join(
@@ -1186,6 +1310,107 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     return errors
 
 
+# One canonical severity vocabulary (v2.3.0). Producers disagree — the lens
+# brief says high|med|low, the lens catalog's verdict schema says
+# blocker|major|minor|question|praise, free-form reviews say critical —
+# so every CONSUMER normalizes through this map. Enforcement rule: unknown
+# or foreign severities map UP to 'high'; a finding a gate cannot classify
+# must BLOCK, never pass or render as medium (fail closed).
+SEVERITY_CANONICAL = ("high", "med", "low", "info")
+_SEVERITY_MAP = {
+    "high": "high", "critical": "high", "blocker": "high", "major": "high",
+    "sev1": "high", "p0": "high", "p1": "high",
+    "med": "med", "medium": "med", "moderate": "med",
+    "low": "low", "minor": "low", "trivial": "low",
+    "info": "info", "question": "info", "praise": "info", "note": "info",
+    "nit": "info",
+}
+
+
+def normalize_severity(value) -> str:
+    """Map any producer's severity onto the canonical enum — UNKNOWN maps UP
+    to 'high' so an unclassifiable finding blocks rather than slips through.
+    Shared consumption point for the EM gate and the dashboard renderer."""
+    return _SEVERITY_MAP.get(str(value or "").strip().lower(), "high")
+
+
+# Review discipline (v2.3.1). A finding's CLASS decides whether it gates a
+# change, orthogonally to how bad it is. This is what stops a whole-tree
+# 26-lens sweep (which always yields ~100 observations) from reading as "100
+# blockers": only a regression, or a NEW high defect in the change's own diff,
+# blocks — pre-existing debt and taste are surfaced but never block the change.
+FINDING_CLASSES = ("regression", "pre-existing", "observation")
+_CLASS_MAP = {
+    "regression": "regression", "regressed": "regression",
+    "pre-existing": "pre-existing", "preexisting": "pre-existing",
+    "pre_existing": "pre-existing", "existing": "pre-existing",
+    "debt": "pre-existing", "legacy": "pre-existing",
+    "observation": "observation", "taste": "observation",
+    "style": "observation", "nit": "observation", "opinion": "observation",
+    "suggestion": "observation", "enhancement": "observation",
+}
+
+
+def normalize_finding_class(value) -> str:
+    """Canonical finding class, or 'unclassified' when absent/foreign.
+
+    Unlike severity, an unknown class maps to 'unclassified' (NOT up to
+    'regression') — taste must never be inflated to a blocker. But an absent
+    class does NOT let a high slip through either: `finding_blocks` routes an
+    unclassified finding through the severity rule, so you cannot hide a real
+    high defect merely by omitting the class."""
+    v = str(value or "").strip().lower()
+    return _CLASS_MAP.get(v, "unclassified")
+
+
+def _finding_in_diff(finding: dict, changed_files) -> bool:
+    if changed_files is None:
+        return True                      # no diff context → cannot exclude
+    f = str(finding.get("file") or "").replace("\\", "/")
+    return f in {str(c).replace("\\", "/") for c in changed_files}
+
+
+def finding_blocks(finding: dict, changed_files=None) -> bool:
+    """Does this finding block THIS change's gate?
+
+      regression                     -> always blocks
+      pre-existing / observation     -> never blocks (surfaced, tracked)
+      unclassified + high + in-diff  -> blocks (a new high defect in the
+                                        change's own surface — fail closed)
+      unclassified + high + no diff  -> blocks (cannot prove it's old)
+      anything else                  -> does not block
+    """
+    cls = normalize_finding_class(finding.get("class"))
+    if cls == "regression":
+        return True
+    if cls in ("pre-existing", "observation"):
+        return False
+    # unclassified: fall back to the severity rule (danger fails closed)
+    if normalize_severity(finding.get("severity")) != "high":
+        return False
+    return _finding_in_diff(finding, changed_files)
+
+
+def classify_findings(findings, changed_files=None) -> dict:
+    """Split a findings list into the blocker set and the triage buckets, so a
+    review headline reads '7 block · 93 to triage' instead of '100 issues'."""
+    out = {"blockers": [], "regressions": [], "pre_existing": [],
+           "observations": [], "unclassified": []}
+    for f in findings or []:
+        cls = normalize_finding_class(f.get("class"))
+        if cls == "regression":
+            out["regressions"].append(f)
+        elif cls == "pre-existing":
+            out["pre_existing"].append(f)
+        elif cls == "observation":
+            out["observations"].append(f)
+        else:
+            out["unclassified"].append(f)
+        if finding_blocks(f, changed_files):
+            out["blockers"].append(f)
+    return out
+
+
 def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     """Require full-catalog lens evidence before the EM gate can pass."""
     path = os.path.join(ws, ".em-review", "findings.json")
@@ -1250,19 +1475,24 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
         errors.append("engineering review is missing test evidence")
     gate = meta.get("gate") or {}
     if gate.get("verdict") not in ("pass", "recommend-pass"):
-        errors.append("engineering review does not recommend sign-off")
+        errors.append("engineering review does not recommend sign-off — "
+                      'set meta.gate.verdict to "pass" or "recommend-pass" '
+                      "in .em-review/findings.json")
     rows = findings.get("findings") or []
     if not isinstance(rows, list):
         errors.append("engineering findings must be a list")
         rows = []
     for finding in rows:
+        # v2.3.0: severities are normalized through the canonical map —
+        # 'blocker'/'major'/'critical' (and anything unknown) count as high
+        # and BLOCK sign-off; the old raw check let them pass the gate.
         if (isinstance(finding, dict)
-                and str(finding.get("severity", "")).lower() in ("critical", "high")
+                and normalize_severity(finding.get("severity")) == "high"
                 and str(finding.get("status", "open")).lower()
                 not in ("resolved", "accepted", "closed")):
             errors.append("engineering review has an unresolved "
-                          f"{finding.get('severity')} finding: "
-                          f"{finding.get('title', 'untitled')}")
+                          f"{finding.get('severity') or 'unclassified'} "
+                          f"finding: {finding.get('title', 'untitled')}")
     return errors
 
 
@@ -1387,12 +1617,40 @@ def _submission_staleness(ws: str, submission: dict) -> str | None:
     return None
 
 
-def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> dict:
+def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
+         rid: str | None = None) -> dict:
     """Record the current step's outcome, transition, and clear its contract."""
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
+    # v2.3.0 wiring: `--req R-xxxx` attaches a requirement to the in-flight
+    # loop through the SANCTIONED validator (design_contract.design_attach_
+    # requirement) — it validates exactly what the design DoR demands and
+    # refuses to swap an anchored requirement; nothing downstream is skipped.
+    if rid:
+        attach_errors: list = []
+        with mutate(ws) as st:
+            if st is None:
+                return {"error": "no active loop"}
+            attach_errors = _dc.design_attach_requirement(ws, st, rid)
+        if attach_errors:
+            return {"error": "requirement attach failed — the gate was not "
+                             "evaluated", "blockers": attach_errors}
+        state = load(ws)
     step = state["step"]
+
+    # v2.3.0: validate --task FIRST in a parallel wave. An unknown id used to
+    # fall through to "worker evidence was not submitted", telling the driver
+    # to submit for a task that does not exist (mirrors H1's submit-side
+    # validation).
+    if step == "execute" and state.get("parallel"):
+        members = [str(x.get("id")) for x in state.get("tasks") or []]
+        if not task_id:
+            return {"error": "parallel gate needs --task <id> of a wave "
+                             "member", "step": step}
+        if task_id not in members:
+            return {"error": f"unknown task id '{task_id}' — wave members: "
+                             + ", ".join(members), "step": step}
 
     if state.get("submission_required") and step in \
             ("execute", "fix", "evaluate", "em"):
@@ -1445,17 +1703,21 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                              "the tp/<task> branch carries nothing yet. "
                              "`git add -A && git commit` in the worktree, "
                              "then gate again."}
-        if state.get("submission_required"):
-            stale = _submission_staleness(ws, submission)
-            if stale:
-                return {"error": stale + " during gate validation — submit "
-                                 "the final state again", "step": step}
         with mutate(ws) as locked:
             t = next((x for x in (locked.get("tasks") or [])
                       if x["id"] == task_id), None)
             if t is None:
                 return {"error": "parallel gate needs --task <id> of a wave "
                                  "member"}
+            # v2.3.0: the final staleness re-attest runs INSIDE the lock,
+            # immediately before the status commits — no TOCTOU window
+            # between the attest and the transition.
+            if state.get("submission_required"):
+                stale = _submission_staleness(ws, submission)
+                if stale:
+                    return {"error": stale + " during gate validation — "
+                                     "submit the final state again",
+                            "step": step}
             tp.clear(t.get("workspace") or ws)
             t["status"] = "built"
             t.pop("_submission", None)
@@ -1579,19 +1841,6 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
                              "is not available", "step": step,
                     "dod": {"passed": False, "errors": review_errors}}
 
-    # Tests and evidence validation may take long enough for another process
-    # to modify the workspace or graph. Re-attest immediately before the
-    # transition; a worker's pre-validation fingerprint is not enough.
-    if state.get("submission_required") and step in \
-            ("execute", "fix", "evaluate", "em"):
-        stale = _submission_staleness(ws, submission)
-        if stale:
-            return {"error": stale + " during gate validation — submit the "
-                             "final state again", "step": step}
-
-    tp.clear(act_ws)
-    tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note)
-
     # H2 (v2.2.1): validation above ran on a snapshot and can take seconds
     # (tests, evidence, graph). Apply the transition under the state LOCK to
     # a FRESH read, so a wave worker's concurrent update to another task is
@@ -1606,6 +1855,18 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
             return {"error": f"loop advanced to '{state.get('step')}' while "
                              "this gate was validating — run loop next and "
                              "gate again", "step": state.get("step")}
+        # v2.3.0: the final staleness re-attest runs INSIDE the state lock,
+        # immediately before the transition commits — the old pre-lock check
+        # left a TOCTOU window in which a workspace edit got blessed by a
+        # gate whose evidence was attested against different bytes. (The
+        # contract is cleared AFTER the locked transition, below, so a
+        # refused gate also leaves the workspace governed.)
+        if _validated.get("submission_required") and step in \
+                ("execute", "fix", "evaluate", "em"):
+            stale = _submission_staleness(ws, submission)
+            if stale:
+                return {"error": stale + " during gate validation — submit "
+                                 "the final state again", "step": step}
         if _validated.get("tasks") and not state.get("tasks"):
             state["tasks"] = _validated["tasks"]
         if step == "plan":
@@ -1692,6 +1953,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None) -> d
             # The graph was true-d up before the EM brief, so its fingerprint is
             # part of the evidence being gated rather than a post-review mutation.
             state["step"] = "signoff"
+    # Release the step's contract only AFTER the locked transition committed
+    # (v2.3.0): clearing before the lock left the workspace ungoverned during
+    # the commit window; a refused gate above leaves it governed for retry.
+    tp.clear(act_ws)
+    tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note)
     return {"step": state["step"], "status": status(ws)}
 
 
@@ -1732,6 +1998,41 @@ def _signoff_dod(ws: str, state: dict) -> dict:
                       + problem.get("problem", ""))
     return {"passed": not errors, "errors": errors,
             "scope": scopes, "baseline": baseline}
+
+
+def _record_design_contracts(ws: str, state: dict, contract: dict | None) -> list:
+    """The sanctioned mechanical path for DESIGN-introduced contracts into
+    the dependency graph (v2.3.0).
+
+    A design may legitimately propose a NEW boundary (e.g.
+    contract:order-cancelled-v2) that is not declared on the requirement.
+    Only requirement contracts were auto-recorded, the designer is forbidden
+    to mutate the graph, and the planner's contract has no Bash tool — so
+    graph readiness blocked with 'contracts are not recorded in the
+    dependency graph' and no in-band remedy. At the human design-approval
+    gate-PASS the engine records each approved design contract as a
+    req→contract edge (registering the contract node), recorded + traced.
+    Plan DoR is NOT weakened: it still independently verifies every declared
+    contract is recorded — this only provides the governed path that records
+    them. Returns the recorded contract ids."""
+    rid = state.get("requirement_id")
+    if not rid:
+        return []
+    applied = []
+    for row in (contract or {}).get("contracts") or []:
+        cids = depgraph.contract_ids([row])
+        if not cids:
+            continue
+        relation = (row.get("relation", "changes")
+                    if isinstance(row, dict) else "changes")
+        depgraph.record_edge(ws, depgraph.req_node(rid), cids[0],
+                             kind=relation, confidence="high",
+                             note="approved design contract")
+        applied.append(cids[0])
+    if applied:
+        tp.trace(ws, "design_contracts_recorded", gate="design_approval",
+                 requirement=rid, contracts=applied)
+    return applied
 
 
 def _annotate_plan_graph(ws: str, state: dict) -> None:
@@ -1842,6 +2143,7 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
     step = state["step"]
     refinement = None
     attestation_warning = None
+    gate_notices: list = []
     if not str(by or "").strip() and step in ("plan_approval", "signoff"):
         # L5 (v2.2.1): symmetric attestation. Design approval hard-requires
         # --by; these two gates stay compatible but an anonymous pass is
@@ -1868,12 +2170,20 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         state["step"] = "done" if state.get("design_only") else "plan"
         tp.trace(ws, "loop_approve", gate="design", by=by,
                  fingerprint=state["design_fingerprint"][:12])
+        # v2.3.0 wiring: notices (e.g. self-attested lens evidence) surface
+        # in the approval response AND in the recorded approval decision.
+        gate_notices = _dc.design_approval_notices(ws, contract)
+        # v2.3.0: the sanctioned mechanical path for design-introduced
+        # contracts into the graph — recorded + traced at the human
+        # gate-pass (see _record_design_contracts). Plan DoR is unchanged.
+        _record_design_contracts(ws, state, contract)
         modules = ((contract or {}).get("graph") or {}).get(
             "proposed_modules") or []
         kb.record_decision(
             ws, f"Design approved: {state['goal'][:60]}",
             context=f"Goal: {state['goal']}\nApproved by: {by}\n"
-                    f"Fingerprint: {state['design_fingerprint']}",
+                    f"Fingerprint: {state['design_fingerprint']}"
+                    + ("".join("\nNotice: " + n for n in gate_notices)),
             decision=(contract or {}).get("decision", "Design approved."),
             tags=["design-approval", "solution-design"],
             context_files=list(modules),
@@ -1917,12 +2227,19 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
                     "step": "signoff", "dod": dod}
         state["step"] = "done"
         tp.trace(ws, "loop_approve", gate="em_signoff", final="done", by=by)
+        # v2.3.0 wiring: the sign-off payload carries the review's design
+        # notices (accepted drift, declared edge realizations) when present.
+        findings, _errs = _read_json(
+            os.path.join(ws, ".em-review", "findings.json"))
+        gate_notices = _dc.design_review_notices(
+            (findings or {}).get("meta") or {})
         scope = sorted({g for t in (state.get("tasks") or [])
                         for g in t.get("scope", [])})
         kb.record_decision(
             ws, f"Accepted: {state['goal'][:60]}",
             context=f"Goal: {state['goal']}"
-                    + (f"\nApproved by: {by}" if by else ""),
+                    + (f"\nApproved by: {by}" if by else "")
+                    + ("".join("\nNotice: " + n for n in gate_notices)),
             decision="EM review passed and the human signed off — shipped.",
             tags=["accepted", "em-signoff"], context_files=scope,
             links={"loop": "signoff"})
@@ -1931,12 +2248,26 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
                          "approve — `loop select <variant|task-id|hybrid>`"}
     else:
         return {"error": f"nothing to approve at step '{step}'"}
-    save(ws, state)
+    # Commit under the lock with a compare-and-swap on the entry step (v2.3.1):
+    # approve() runs seconds of unlocked validation (signoff DoD runs every
+    # task's tests, refinement, kb writes); an unlocked save could clobber a
+    # concurrent gate() transition (the lost-update class the H2 fix closed in
+    # gate()). If the on-disk step advanced while we worked, abort instead.
+    with mutate(ws) as locked:
+        if locked.get("step") != step:
+            return {"error": "the loop advanced concurrently during this "
+                             f"approval (was '{step}', now "
+                             f"'{locked.get('step')}') — re-run `loop next`",
+                    "step": locked.get("step")}
+        locked.clear()
+        locked.update(state)
     out = {"step": state["step"], "status": status(ws)}
     if refinement:
         out["refinement"] = refinement
     if attestation_warning:
         out["warning"] = attestation_warning
+    if gate_notices:
+        out["notices"] = gate_notices
     return out
 
 
@@ -2018,7 +2349,13 @@ def select(ws: str, choice: str, note: str = "") -> dict:
         context_files=sorted({g for t in variants
                               for g in t.get("scope", [])}),
         links={"loop": "selection"})
-    save(ws, state)
+    with mutate(ws) as locked:                       # v2.3.1: locked commit
+        if locked.get("step") != "selection":
+            return {"error": "the loop advanced concurrently during selection "
+                             f"(now '{locked.get('step')}') — re-run",
+                    "step": locked.get("step")}
+        locked.clear()
+        locked.update(state)
     return {"step": state["step"], "selection": state["selection"],
             "instruction": instruction, "status": status(ws)}
 
@@ -2101,7 +2438,13 @@ def resolve(ws: str, decision: str) -> dict:
     else:
         return {"error": "decision must be retry|skip|defer|abort"}
     tp.trace(ws, "loop_resolve", decision=decision, task=t.get("id"))
-    save(ws, state)
+    with mutate(ws) as locked:                       # v2.3.1: locked commit
+        if locked.get("step") != "escalated":
+            return {"error": "the loop advanced concurrently during resolve "
+                             f"(now '{locked.get('step')}') — re-run",
+                    "step": locked.get("step")}
+        locked.clear()
+        locked.update(state)
     return {"step": state["step"], "status": status(ws)}
 
 
@@ -2282,6 +2625,32 @@ def user_summary(ws: str, host: str | None = None) -> dict:
     }
     action = decisions.get(step)
     current = _current_task(state)
+    # v2.3.0 (H): budget exhaustion is a HUMAN gate the loop step does not
+    # encode — without this, the plain-text surface (primary on Codex/Tag)
+    # says "no action required" while the run is blocked waiting on the
+    # human to grant more actions. Same detection the rich widget uses:
+    # active contract's budget.max_actions vs the live meter.
+    budget = None
+    budget_blocked = False
+    try:
+        _contract = tp.load_active(ws)
+    except Exception:
+        _contract = None
+    if _contract and (_contract.get("budget") or {}).get("max_actions"):
+        _b_max = int(_contract["budget"]["max_actions"])
+        _tid = _contract.get("task_id", "_")
+        try:
+            with open(os.path.join(tp.tp_dir(ws), "meter.json")) as _f:
+                _b_used = int((json.load(_f).get(_tid) or {})
+                              .get("actions", 0))
+        except (OSError, ValueError, TypeError):
+            _b_used = 0
+        budget = {"used": _b_used, "max": _b_max,
+                  "exhausted": _b_used >= _b_max}
+        if budget["exhausted"] and step not in TERMINAL_STEPS and not action:
+            action = ("Grant more actions (tp budget --grant N) or clear "
+                      "the contract")
+            budget_blocked = True
     graph = depgraph.summary(ws)
     # M10 (v2.2.1): host is injectable — ambient env detection is only the
     # default, so the control-plane surface is testable deterministically.
@@ -2293,6 +2662,9 @@ def user_summary(ws: str, host: str | None = None) -> dict:
                  "state, evidence, and tool boundaries mechanically enforced")
     if step == "done":
         headline = f"Complete — {settled}/{len(tasks)} task(s) settled."
+    elif budget_blocked:
+        headline = ("Blocked — action budget exhausted "
+                    f"({budget['used']}/{budget['max']}).")
     elif action:
         headline = f"Decision required — {action}"
     else:
@@ -2300,6 +2672,7 @@ def user_summary(ws: str, host: str | None = None) -> dict:
         headline = (f"In progress — {settled}/{len(tasks)} task(s) settled; "
                     f"current: {label} ({step}).")
     return {
+        **({"budget": budget} if budget else {}),
         "state": step,
         "goal": state.get("goal"),
         "progress": {"settled": settled, "total": len(tasks)},
@@ -2352,17 +2725,47 @@ def _publish_artifacts(ws: str) -> str | None:
         with contextlib.suppress(Exception):
             g = depgraph.load(ws)
             if g and g.get("modules"):
-                with open(os.path.join(root, "graph.json"), "w") as f:
-                    json.dump(g, f, indent=1)
+                # v2.3.0 (scalability): re-copy the graph snapshot only when
+                # its content fingerprint changed — dumping megabytes into a
+                # committed store on EVERY transition was pure churn.
+                gp = os.path.join(root, "graph.json")
+                new_fp = (g.get("meta") or {}).get("content_fingerprint")
+                old_fp = None
+                if new_fp and os.path.exists(gp):
+                    try:
+                        with open(gp) as f:
+                            old_fp = (json.load(f).get("meta") or {}).get(
+                                "content_fingerprint")
+                    except (OSError, ValueError):
+                        old_fp = None
+                if not new_fp or old_fp != new_fp:
+                    with open(gp, "w") as f:
+                        json.dump(g, f, indent=1)
         with contextlib.suppress(Exception):
+            # Late import BY DESIGN: dashboard.py imports loop at module top,
+            # so a top-level `import dashboard` here would close an import
+            # cycle and break every entry point. DEBT (v2.3.0, noted at the
+            # extraction seam): rendering/publishing belongs in the
+            # CLI/driver layer (tp.cmd_loop) with evidence validation split
+            # into evidence.py — until that extraction, imports of the view
+            # from this engine stay local to these two functions.
             import dashboard as _dash
             line = _dash.headline_loop(ws)
             if line:
                 p = os.path.join(root, "HEADLINES.md")
                 prev = ""
+                size = 0
                 if os.path.exists(p):
-                    lines = open(p).read().rstrip().splitlines()
-                    prev = lines[-1] if lines else ""
+                    # v2.3.0 (scalability): read only the TAIL to find the
+                    # last line — HEADLINES.md is append-forever, and a full
+                    # read per gate made cumulative reads quadratic.
+                    with open(p, "rb") as f:
+                        f.seek(0, os.SEEK_END)
+                        size = f.tell()
+                        f.seek(max(0, size - 8192))
+                        tail = f.read().decode("utf-8", "replace")
+                    tail_lines = tail.rstrip().splitlines()
+                    prev = tail_lines[-1] if tail_lines else ""
                 if not prev.endswith(line):        # skip consecutive repeats
                     with open(p, "a") as f:
                         if not prev:
@@ -2371,6 +2774,19 @@ def _publish_artifacts(ws: str) -> str | None:
                         stamp = _time.strftime("%Y-%m-%d %H:%M UTC",
                                                _time.gmtime())
                         f.write(f"- {stamp} · {line}\n")
+                    # Cap the log: keep the header + the last 500 entries.
+                    # Amortized — the full-file pass runs only past 256 KiB.
+                    if size > 262144:
+                        with open(p) as f:
+                            all_lines = f.read().splitlines()
+                        head = [l for l in all_lines[:2]
+                                if l.startswith("#") or not l.strip()]
+                        body = [l for l in all_lines[len(head):] if l.strip()]
+                        if len(body) > 500:
+                            tmp = f"{p}.tmp.{os.getpid()}"
+                            with open(tmp, "w") as f:
+                                f.write("\n".join(head + body[-500:]) + "\n")
+                            os.replace(tmp, p)
         return root
     except Exception:
         return None

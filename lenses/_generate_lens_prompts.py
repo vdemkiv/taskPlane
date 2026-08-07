@@ -520,10 +520,21 @@ def build(lz):
     return "\n".join(lines)
 
 
+# Lenses whose prompt file is deliberately hand-authored (richer than this
+# template can express). The generator leaves them alone but still fails on a
+# catalog lens that has NEITHER a guide here NOR a hand-authored prompt file.
+HAND_AUTHORED = {"solution-design"}
+
 cat = json.load(open(os.path.join(HERE, "catalog.json")))
-missing = [lz["id"] for lz in cat["lenses"] if lz["id"] not in GUIDES]
+missing = [lz["id"] for lz in cat["lenses"]
+           if lz["id"] not in GUIDES and lz["id"] not in HAND_AUTHORED]
 assert not missing, f"no review guide for: {missing}"
-for lz in cat["lenses"]:
+for lid in HAND_AUTHORED:
+    assert os.path.isfile(os.path.join(HERE, lid + ".md")), \
+        f"hand-authored lens prompt missing: lenses/{lid}.md"
+generated = [lz for lz in cat["lenses"] if lz["id"] not in HAND_AUTHORED]
+for lz in generated:
     with open(os.path.join(HERE, lz["id"] + ".md"), "w") as f:
         f.write(build(lz))
-print(f"wrote {len(cat['lenses'])} lens prompts")
+print(f"wrote {len(generated)} lens prompts "
+      f"({len(HAND_AUTHORED)} hand-authored, left alone)")

@@ -72,7 +72,9 @@ acceptance criteria). Both sides for anything user-facing and structural.
    warnings).
    When Design exists, Plan must cover every approved module, contract, graph
    boundary, and acceptance mapping; Review must report conformance against
-   the approved fingerprint and stop on unexplained drift.
+   the approved fingerprint and stop on ANY recorded drift (a human-accepted
+   deviation must be moved to `accepted_drift` with drift, reason, and
+   accepted_by — it is rendered at sign-off, never silent).
 7. **A/B variants (when the design space is wide).** Build the SAME
    requirement two deliberate ways — different UX, different architecture,
    or both. Full procedure: `references/variants.md`. In short: variants
