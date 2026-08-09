@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: CI only reads the checkout. Without this block the jobs
+# would inherit the repository default GITHUB_TOKEN scope (often read-write).
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      # Third-party actions are pinned to full commit SHAs (tag as comment) so
+      # a moved/compromised tag cannot change what runs in the release-trust path.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
+        run: pip install "pytest==8.*"
+
+      - name: Configure git (the gates and tests need commit identity)
+        run: |
+          git config --global user.email "ci@taskplane"
+          git config --global user.name "taskplane-ci"
+
+      # Run from the repo ROOT (not `working-directory: taskplane`): conftest.py
+      # imports the `taskplane` package for shared store isolation, which only
+      # resolves when the repo root is on sys.path. Running inside taskplane/
+      # aborted collection with ModuleNotFoundError (v2.3.1 fix).
+      - name: Run the suite (pytest)
+        run: python -m pytest taskplane/tests -q
+
+      # The 'dual-runner store isolation' work is only real if CI actually
+      # exercises the second runner. This leg fails if `python -m unittest`
+      # ever regresses or leaks into the real store (v2.3.1).
+      - name: Run the suite (unittest discover)
+        run: python -m unittest discover -s taskplane/tests -t .
+
+  # Advisory portability leg: hooks/hooks.json ships Windows hook commands
+  # (`py -3 …`) and the kernel has fcntl-less lock fallbacks, but the suite has
+  # only ever run on Linux. continue-on-error keeps this leg from gating merges
+  # until the POSIX-only tests carry `skipif` markers; promote it to required
+  # (drop continue-on-error) once it is green. It only ADDS signal — the
+  # required ubuntu matrix above is unchanged.
+  tests-portability:
+    name: tests advisory (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
+        run: pip install "pytest==8.*"
+      - name: Configure git (the gates and tests need commit identity)
+        run: |
+          git config --global user.email "ci@taskplane"
+          git config --global user.name "taskplane-ci"
+      - name: Run the suite
+        run: python -m pytest taskplane/tests -q
+
+  validate-plugin:
+    name: plugin manifest validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: JSON manifests parse and versions agree
+        run: |
+          python - <<'PY'
+          import json, re, sys, glob
+          pj = json.load(open(".claude-plugin/plugin.json"))
+          cj = json.load(open(".codex-plugin/plugin.json"))
+          mp = json.load(open(".claude-plugin/marketplace.json"))
+          hooks = json.load(open("hooks/hooks.json"))
+          versions = {pj["version"], cj["version"],
+                      mp["plugins"][0]["version"], mp["version"]}
+          assert len(versions) == 1, f"version drift: {sorted(versions)}"
+          assert cj["name"] == pj["name"] == mp["plugins"][0]["name"]
+          assert cj["skills"] == "./skills/"
+          assert "PreToolUse" in hooks["hooks"]
+          for f in glob.glob("skills/*/SKILL.md"):
+              desc = re.search(r'description:\s*"(.*)"', open(f).read())
+              if desc and ("<" in desc.group(1) or ">" in desc.group(1)):
+                  sys.exit(f"{f}: XML tags in description break plugin validation")
+          print("manifests ok:", pj["name"], pj["version"])
+          PY
+
+      # Makes the CHANGELOG's 'single-source versioning, CI-gated' claim
+      # literally true (v2.3.1): the single source is .codex-plugin/plugin.json
+      # and every other surface is verified against it here, independently of
+      # the pytest jobs.
+      - name: Version is single-sourced (tp version --verify)
+        run: python3 taskplane/tp.py version --verify
+
+      - name: Generated lens artifacts match their sources (no drift)
+        run: |
+          python3 lenses/_generate_catalog.py
+          python3 lenses/_generate_lens_prompts.py
+          python3 scripts/gen_lens_catalog.py
+          git diff --exit-code -- lenses/ docs/lens-catalog.md
+
+      - name: Build and validate OpenAI marketplace package
+        run: python scripts/package_openai.py
+
+      # dist/ is gitignored (submission artifacts never live in the repo), so
+      # there is no committed zip to compare against; what release provenance
+      # relies on instead is DETERMINISM — the published .sha256 must be
+      # reproducible from the tree. Build twice and require identical bytes.
+      - name: OpenAI package build is deterministic (release provenance)
+        run: |
+          python3 scripts/package_openai.py --output-dir /tmp/tp-pkg-a
+          python3 scripts/package_openai.py --output-dir /tmp/tp-pkg-b
+          a=$(sha256sum /tmp/tp-pkg-a/*.zip | cut -d' ' -f1)
+          b=$(sha256sum /tmp/tp-pkg-b/*.zip | cut -d' ' -f1)
+          echo "build A: $a"; echo "build B: $b"
+          test "$a" = "$b"
+
+  # t6 (R-0002): the Codex-parity guard, REQUIRED and independent of the
+  # workflow-path tests. Frozen brief fixtures replay through the dispatch
+  # path and byte-compare against checked-in goldens, so a deliberate (or
+  # accidental) change to the Task-dispatch payload shape fails THIS leg
+  # even when the workflow path still works. A second named step runs t1's
+  # detector-fixture completeness discipline (every catalog lens must keep
+  # positive+negative fixtures) as an explicit CI signal rather than a line
+  # lost inside the full-suite run. Kept out of validate-plugin on purpose:
+  # that job is stdlib-only by design and this one needs pytest.
+  codex-parity:
+    name: codex dispatch parity + detector fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
+        run: pip install "pytest==8.*"
+      - name: Configure git (the parity tests build throwaway fixture repos)
+        run: |
+          git config --global user.email "ci@taskplane"
+          git config --global user.name "taskplane-ci"
+      # Run from the repo ROOT (same rule as the tests job): conftest.py
+      # resolves the taskplane package only when the root is on sys.path.
+      - name: Codex dispatch parity (frozen briefs vs goldens)
+        run: python3 -m pytest taskplane/tests/test_dispatch_parity.py -q
+      - name: Detector-fixture completeness (positive+negative per lens)
+        run: python3 -m pytest taskplane/tests/test_lens_signals_fixtures.py -q

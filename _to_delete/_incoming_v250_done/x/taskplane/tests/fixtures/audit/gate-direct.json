@@ -1,0 +1,28 @@
+{
+  "errors": [
+    "router regression blocks sign-off: router regression: n/a lens 'i18n' produced a finding \u2014 detector missed a real signal"
+  ],
+  "errors_after_resolve": [],
+  "errors_rerun": [
+    "router regression blocks sign-off: router regression: n/a lens 'i18n' produced a finding \u2014 detector missed a real signal"
+  ],
+  "rerun_bytes_identical": true,
+  "trace_after_all_runs": [
+    {
+      "count": 1,
+      "event": "router_regression_filed",
+      "lenses": [
+        "router+i18n"
+      ]
+    }
+  ],
+  "trace_after_first_run": [
+    {
+      "count": 1,
+      "event": "router_regression_filed",
+      "lenses": [
+        "router+i18n"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,396 @@
+{
+  "schema": "taskplane.design/v1",
+  "requirement": "R-0001",
+  "title": "v3 Phase 1: intelligent lens routing + workflow review wave",
+  "summary": "Replace filename-glob-only lens routing with a deterministic per-lens applicability engine (content + graph + requirement signals, verdict deep|light|n/a-with-negative-evidence, budget 5-7 deep / hard cap 8, security and architecture floors), stage lens profiles as catalog data, an honest coverage map + HEADLINE, and a detector-fixture + full-catalog-audit discipline that auto-files router regressions. Ship the review wave as a Claude plugin workflow (workflows/review-wave.js) consuming the same dispatch briefs, with capability detection and a MANDATORY byte-identical fallback to today's Task-based dispatch (Codex has no workflow runtime).",
+  "decision": "Adopt a detector-per-lens applicability engine in a new stdlib-only module taskplane/lens_signals.py, wired into lens.route() as an opt-in v2 path gated on stage_profiles catalog data (legacy path byte-identical when absent); render routing honesty in dashboard coverage map + HEADLINE; formalize the brief handoff as contract:lens-brief and the findings shape as contract:findings-v2 so the workflow path (workflows/review-wave.js) and the Task-dispatch path consume identical briefs and produce byte-equivalent artifacts, with capability detection, path tracing, and a CI Codex parity guard.",
+  "current_state": {
+    "summary": "lens.route() selects deep lenses from file globs, task type, artifact type, a code baseline flag, and the graph hub score only (taskplane/lens.py:164-274); hub signal and its fail-toward-more-coverage behavior at taskplane/lens.py:108-137; architecture floor (never skip on code) at taskplane/lens.py:216-219; breadth='all' sweeps every non-routed lens (taskplane/lens.py:248-261) and is mandated at the em step (taskplane/loop.py:853-856); dispatch briefs with per-task TASKPLANE_TASK slots and read-only contracts are built in lens.dispatch_briefs (taskplane/lens.py:405-480), slot activation at taskplane/lens.py:374-385, findings shape prose-pinned at taskplane/lens.py:397-401; the catalog holds 26 lenses with globs/task_types/baseline and no stage or content awareness (lenses/catalog.json); the dashboard renders coverage only as deep/sweep/did-not-fire (taskplane/dashboard.py:1076-1128) with the HEADLINE segment at taskplane/dashboard.py:201 and 804-806; depgraph nodes are directory-level modules plus boundary nodes prefixed contract:/resource:/svc:/ext: (taskplane/depgraph.py:222-274) \u2014 no lens-relevance data on nodes. Claude hosts ship Dynamic Workflows (schema-validated agent(), journaled, resumable); Codex has NO workflow runtime, so Task dispatch is the Codex path (docs/v3-strategy-flows-lenses-onboarding.md, addendum). Measured dogfood: ~1.3-1.5M tokens per breadth=all review.",
+    "sources": [
+      "taskplane/lens.py:164-274 (route: glob/task-type/baseline/hub routing only)",
+      "taskplane/lens.py:108-137 (hub_signal + fail-toward-more-coverage precedent)",
+      "taskplane/lens.py:216-219 (architecture governance floor on code)",
+      "taskplane/lens.py:248-261 (breadth=all full-catalog sweep)",
+      "taskplane/lens.py:360-401 (CLEAR_ALWAYS, _slot_instr, findings shape in _lens_prompt)",
+      "taskplane/lens.py:405-480 (dispatch_briefs: per-lens read-only contracts, task slots, sweep batch)",
+      "taskplane/loop.py:818-859 (per-step lens wiring; em mandates breadth=all at 853-856)",
+      "taskplane/loop.py:1239-1259 (evaluate verdict checked against routed lenses)",
+      "lenses/catalog.json (26 lenses; keys deep_threshold_files/code_extensions/lenses; no stage data)",
+      "taskplane/dashboard.py:1076-1128 (lens_coverage + render_lens_coverage: deep/sweep/\u2014 only)",
+      "taskplane/dashboard.py:201,804-806 (HEADLINE coverage segment)",
+      "taskplane/depgraph.py:222-256 (module_of: directory-level modules)",
+      "taskplane/depgraph.py:259-274 (node kinds; boundary prefixes contract:/resource:/svc:/ext:)",
+      "docs/v3-strategy-flows-lenses-onboarding.md (WS2 layers 1+2; R-W addendum: Claude Dynamic Workflows, Codex has no workflow runtime \u2014 verified Aug 2026)",
+      "specs/spec.md (scope, non-negotiables, measured 1.3-1.5M token baseline)"
+    ]
+  },
+  "alternatives": [
+    {
+      "id": "A",
+      "name": "Detector-per-lens applicability engine (deterministic, stdlib-only)",
+      "description": "Per lens, a cheap deterministic detector computes {score, evidence[], negative_evidence[]} from content (bounded text scans: i18n, UI markup, SQL, HTTP/queue clients, auth/PII, concurrency, platform APIs), graph (component kind, hub score, boundary contracts), and requirement (acceptance-criteria keywords) signals; the router maps scores to deep|light|n/a-with-negative-evidence within the active stage profile, under a 5-7 deep budget (hard cap 8, overflow demoted to light) and security/architecture floors.",
+      "tradeoffs": {
+        "gains": [
+          "Deterministic and explainable: same inputs always produce the same routing, every verdict carries machine-checkable evidence",
+          "50-70% projected token reduction per review with higher precision (fewer observation-class findings from irrelevant lenses)",
+          "Honesty is enforceable: n/a requires negative evidence, the coverage map shows every disposition, the audit sweep auto-files misses as router regressions",
+          "Zero new dependencies (stdlib re/os/json), testable with plain positive/negative fixtures"
+        ],
+        "costs": [
+          "26 detectors to author and maintain; detector false negatives become a new regression surface (mitigated by mandatory fixtures + the audit backstop)",
+          "Bounded content scanning adds I/O per route (capped at 64KB/file, 200 files, <1s per component, perf-tested)"
+        ],
+        "revisit_when": "Detector maintenance cost exceeds the measured token savings, or the audit loop sustains repeated escapes (>0 per release) indicating the deterministic signal model cannot keep up with the codebase"
+      }
+    },
+    {
+      "id": "B",
+      "name": "LLM-classifier routing per review",
+      "description": "Ask a cheap model at review time which lenses apply to the diff and route on its answer.",
+      "tradeoffs": {
+        "gains": [
+          "No detector code to maintain",
+          "Adapts to novel content without writing new detectors"
+        ],
+        "costs": [
+          "Nondeterministic: the same diff can route differently across runs, breaking fixture tests, the audit loop's ground truth, and coverage-map verifiability",
+          "Costs tokens to save tokens: a classifier pass on every review",
+          "Negative evidence would be model prose, not machine-checkable \u2014 violates the standing rule that skipping a lens is only legal with machine-checkable negative evidence"
+        ],
+        "revisit_when": "A host ships a free, deterministic, reproducible classification primitive whose outputs can be pinned in fixtures"
+      }
+    },
+    {
+      "id": "C",
+      "name": "Static per-directory lens config",
+      "description": "A checked-in map from directories/globs to lens sets (e.g. lens-map.yaml) that the router reads instead of computing applicability.",
+      "tradeoffs": {
+        "gains": [
+          "Trivially deterministic and near-zero runtime cost",
+          "Easy to read and diff"
+        ],
+        "costs": [
+          "Rots: the map encodes yesterday's contents and nothing invalidates it when code changes (a directory that gains SQL keeps its stale lens set)",
+          "No evidence: an n/a is a config line, not a checkable claim about the code, so the no-silent-skip rule cannot be enforced",
+          "Per-repo authoring burden pushes users to over-broad maps (back to sweeping) or under-broad maps (silent narrowing \u2014 the killer risk)"
+        ],
+        "revisit_when": "Operators need a pinning/override layer ON TOP of detectors; never as the primary mechanism"
+      }
+    }
+  ],
+  "selected_approach": "A",
+  "modules": {
+    "existing": [
+      "taskplane",
+      "lenses",
+      "taskplane/tests"
+    ],
+    "new": [
+      "workflows"
+    ]
+  },
+  "contracts": [
+    {
+      "id": "contract:stage-profiles",
+      "relation": "provides",
+      "description": "New stage_profiles data block in lenses/catalog.json mapping stage (design/build/review) to the candidate lens-id set; the router is restricted to the active stage's profile; adding a lens to a profile is a data change with no code change; a drift test pins every profile id to a real catalog lens id."
+    },
+    {
+      "id": "contract:lens-brief",
+      "relation": "changes",
+      "description": "The dispatch-brief payload emitted by lens.dispatch_briefs (id, name, tier, agent, model_tier, task_slot, output, read-only contract spec, verbatim prompt) extended additively with the routing verdict, score, and evidence. It is the single handoff consumed by BOTH the workflow path (workflows/review-wave.js via args) and the Task-dispatch path (Codex), which is what makes the two paths byte-equivalent by construction."
+    },
+    {
+      "id": "contract:findings-v2",
+      "relation": "provides",
+      "description": "Schema-pinned findings.json shape per lens agent: lens id + findings[{severity, class, file, line, title, scenario, fix}] plus meta.lens_coverage carrying the full routing decision {lens: {verdict, score, evidence|negative_evidence}}. Enforced as the agent() output schema on the workflow path (retry-on-mismatch) and validated at merge on both paths; dashboard renders both the v2 and legacy coverage shapes."
+    }
+  ],
+  "graph": {
+    "baseline_fingerprint": "02d962449d1414b934179154d55b342134b859f8b1b51ae94ace4f3d8ba496fd",
+    "proposed_modules": [
+      "taskplane",
+      "lenses",
+      "workflows",
+      "taskplane/tests"
+    ],
+    "proposed_edges": [
+      {
+        "from": "taskplane",
+        "to": "contract:stage-profiles",
+        "kind": "consumes",
+        "reason": "route v2 (taskplane/lens.py) restricts the candidate set to the active stage's profile read from lenses/catalog.json stage_profiles"
+      },
+      {
+        "from": "lenses",
+        "to": "contract:stage-profiles",
+        "kind": "provides",
+        "reason": "lenses/catalog.json carries the stage_profiles data block (data-only change surface for profile membership)"
+      },
+      {
+        "from": "taskplane",
+        "to": "contract:lens-brief",
+        "kind": "provides",
+        "reason": "lens.dispatch_briefs emits the brief payload (verdict/score/evidence added additively) that both review paths consume"
+      },
+      {
+        "from": "workflows",
+        "to": "contract:lens-brief",
+        "kind": "consumes",
+        "reason": "workflows/review-wave.js receives the briefs via workflow args and runs one agent() per deep brief using the brief prompt verbatim"
+      },
+      {
+        "from": "workflows",
+        "to": "contract:findings-v2",
+        "kind": "provides",
+        "reason": "each workflow agent() output is schema-pinned to findings-v2 (retry-on-mismatch) and merged into .em-review/"
+      },
+      {
+        "from": "taskplane",
+        "to": "contract:findings-v2",
+        "kind": "consumes",
+        "reason": "the findings merge, dashboard coverage map/HEADLINE, and the audit sweep (auto-filing n/a-lens findings as router regressions) read the schema-pinned findings + routing meta"
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:findings-v2",
+        "kind": "validates",
+        "reason": "byte-equivalence parity fixtures compare workflow-path and dispatch-path artifacts; the CI Codex parity leg replays frozen briefs through the dispatch path against goldens"
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "taskplane",
+        "kind": "imports",
+        "reason": "detector positive/negative fixture tests, determinism and <1s perf tests import taskplane/lens_signals.py and lens.py route v2"
+      }
+    ],
+    "depth_policy": {
+      "local_depth": 2,
+      "boundary_mode": "contract-only",
+      "contract_depth": 1,
+      "requirement_depth": 1
+    },
+    "dor": [
+      {
+        "check": "baseline dependency graph captured and current for HEAD",
+        "evidence": "graph meta content_fingerprint 02d962449d1414b934179154d55b342134b859f8b1b51ae94ace4f3d8ba496fd matches the loop's design_graph_fingerprint and scanned_head d001c97b25ca7596f13fb37b506a285c5ee7ef27 equals current HEAD"
+      },
+      {
+        "check": "every declared module resolves to a depgraph node name the scanner can produce",
+        "evidence": "taskplane, lenses, taskplane/tests exist in the as-built graph today; 'workflows' is the depgraph.module_of result for workflows/review-wave.js (directory-level module, taskplane/depgraph.py:222-256)"
+      },
+      {
+        "check": "every boundary node uses a plan-readiness-legal prefix",
+        "evidence": "all three declared contracts use the contract: prefix (CONTRACT_ID_PREFIXES, taskplane/design_contract.py:46); no svc:/ext: nodes are proposed"
+      },
+      {
+        "check": "traversal depth is bounded and contract-only",
+        "evidence": "depth_policy local_depth=2, boundary_mode=contract-only with contract_depth=1, requirement_depth=1 \u2014 inspection stops at the named contracts"
+      }
+    ],
+    "dod": [
+      {
+        "check": "designed modules realized in the as-built graph",
+        "evidence": "post-build graph scan shows the new 'workflows' module and retains taskplane/lenses/taskplane/tests; review lists each in modules_checked"
+      },
+      {
+        "check": "scanner-invisible contract edges explicitly declared as realized",
+        "evidence": "each proposed edge with a contract: endpoint gets an edge_evidence row citing file:line or a test (e.g. dispatch_briefs emitting verdict fields; review-wave.js args parsing; agent() schema block; audit-sweep auto-filing test), declared_by the reviewing agent \u2014 the scanner cannot see contract nodes (taskplane/design_contract.py:48-51), so presence in graph.json alone is not proof"
+      },
+      {
+        "check": "no drift between approved design and as-built behavior",
+        "evidence": "engineering review compares realized modules/edges/contracts against this contract under the pinned design fingerprint; any drift entry blocks sign-off (design_review_errors); legacy-path byte-identity proven by the existing lens/loop test suite passing unchanged plus the CI Codex parity leg"
+      },
+      {
+        "check": "guardrails strict-or-stricter",
+        "evidence": "review verifies: breadth=all preserved, architecture floor intact (route v2 test), security floor test present, n/a-without-negative-evidence rejected by unit test, engine-failure path falls back to breadth=all (fail-open test)"
+      }
+    ]
+  },
+  "acceptance_map": [
+    {
+      "criterion": "Stage lens profiles exist as catalog data and the router is restricted to the active stage's profile (design-stage route never selects code-quality)",
+      "design_element": "stage_profiles data block in lenses/catalog.json (contract:stage-profiles) + route v2 stage parameter restricting the candidate set",
+      "validation": "Unit test: a design-stage route over a code diff never yields code-quality; test with a modified catalog proves adding a lens to a profile changes routing with zero code change; catalog drift test pins profile ids to real lens ids"
+    },
+    {
+      "criterion": "Every lens in the active profile gets a deterministic applicability verdict deep|light|n/a computed from content+graph+requirement signals in under 1s per component",
+      "design_element": "taskplane/lens_signals.py detector registry (one detector or always/inherit marker per catalog lens) with bounded content scans (64KB/file, 200 files, stdlib re, sorted iteration), graph signals via hub_signal/boundary nodes, requirement keyword signals; verdict thresholds deep>=0.6, light>=0.2",
+      "validation": "Registry-vs-catalog drift test; determinism test (two identical runs produce byte-identical routing); perf test asserting <1s per component on the largest fixture; per-detector fixture tests"
+    },
+    {
+      "criterion": "An n/a verdict always carries machine-checkable negative evidence (e.g. '0 i18n signals: no locale files, no i18n imports, no user-facing string literals')",
+      "design_element": "Signal.negative_evidence is required whenever score==0; the router refuses to emit an n/a verdict without it (raises, falling back to light)",
+      "validation": "Unit test: constructing an n/a routing entry without negative evidence is rejected; the i18n detector on taskPlane's own repo yields n/a with the exact negative-evidence string (negative fixture)"
+    },
+    {
+      "criterion": "Deep set is capped at 8 (ranked by score, overflow demoted to light, never dropped) with floors: security cannot be n/a on enforcement/boundary-touching diffs; architecture is at least light on any code change",
+      "design_element": "Budget ranker in lens_signals (target 5-7 deep, hard cap 8, overflow demoted to light) with floor rules applied post-ranking: security floor triggered by enforcement/boundary surfaces (hooks/**, auth globs, contract-screen code, boundary-contract edges in impact); architecture floor preserves taskplane/lens.py:216-219 semantics",
+      "validation": "Test: a max-signal fixture yields exactly 8 deep with every remaining profile lens light or n/a (none absent); test: an enforcement-touching diff can never route security to n/a even with a zero content score; test: any code diff keeps architecture >= light; forced-lens test runs a lens despite n/a"
+    },
+    {
+      "criterion": "Coverage map and HEADLINE show all 26 lenses as deep/light/n-a-with-reason; findings meta carries the full routing decision with evidence; --lens forces any lens; --breadth all still available",
+      "design_element": "Coverage-map v2 shape {lens: {verdict, score, evidence|negative_evidence}} in findings meta.lens_coverage; dashboard.lens_coverage/render_lens_coverage accept both v2 and legacy shapes and render a reason on every n/a chip; new pinned HEADLINE segment 'lenses N deep \u00b7 N light \u00b7 N n/a (evidenced) of 26'; --lens force recorded as 'deep (forced)'; breadth=all sweep path untouched",
+      "validation": "Render test: coverage map lists a reason string for every n/a lens and all 26 chips appear; HEADLINE format pinned by test; legacy-shape metas still render (compat test); --lens force test; existing breadth=all tests pass unchanged"
+    },
+    {
+      "criterion": "Every detector has at least one positive and one negative fixture test; a full-catalog audit run diffs findings against the routing decision and auto-files any finding from an n/a lens as a router regression",
+      "design_element": "taskplane/tests/fixtures/detectors/<lens>/{positive,negative} fixture pairs enforced by a CI completeness test; audit sweep (every Nth review, default 5, or release review) runs breadth=all and diffs merged findings against the routing decision, auto-filing findings from n/a-routed lenses as class:regression owner:router",
+      "validation": "CI test asserts every detector registry id has both fixture directories with at least one case each; audit test with a deliberately-broken detector on a fixture repo auto-files the router-regression finding with class regression and owner router"
+    }
+  ],
+  "secondary_requirements": [
+    {
+      "id": "R-0002",
+      "note": "depends_on R-0001; designed in this same contract because its consumer surface is contract:lens-brief. Mapped here for full-criteria traceability; the strict acceptance_map above is scoped to the anchored requirement R-0001 by the DoD validator.",
+      "acceptance_map": [
+        {
+          "criterion": "workflows/review-wave.js ships in the plugin, consumes lens dispatch briefs via args, runs one agent per routed lens with a schema pinning the findings.json shape, honors per-brief TASKPLANE_TASK contract slots",
+          "design_element": "workflows/review-wave.js consuming contract:lens-brief via args; one agent() per deep brief using the brief prompt VERBATIM (which already contains the export TASKPLANE_TASK=lens-<id> slot activation, taskplane/lens.py:374-385, and CLEAR_ALWAYS); agent() output schema = contract:findings-v2 with retry-on-mismatch; sweep brief as one more agent(); merge to .em-review/",
+          "validation": "Workflow fixture run: one agent per deep brief, slot exported per prompt, an injected schema violation retries instead of writing an invalid findings file, merged output lands in .em-review/; stop/resume test re-uses completed lenses' cached results"
+        },
+        {
+          "criterion": "Workflow-path artifacts are byte-equivalent to the dispatch-path artifacts for the same briefs (fixture-verified)",
+          "design_element": "Both paths consume the identical contract:lens-brief payload and identical verbatim prompts; the workflow adds no content of its own to findings",
+          "validation": "Parity fixture: the same frozen briefs run through both paths; artifacts byte-compared equal"
+        },
+        {
+          "criterion": "Capability detection: absent/disabled workflows or Codex host routes the identical stage through today's Task-based dispatch with zero behavior change; the chosen path is traced; no gate is reachable only via workflows",
+          "design_element": "Capability probe (host workflow feature + org toggle; Codex has no workflow runtime \u2014 verified in docs addendum); em dispatch payload selects /taskplane:review-wave or today's Task instruction over the SAME briefs; trace event review_dispatch_path {path, reason}",
+          "validation": "Full review journey test with workflows disabled AND on Codex fixtures produces today's outputs unchanged; trace asserted to contain the path decision; property test walks every gate and asserts reachability on the dispatch path alone"
+        },
+        {
+          "criterion": "CI carries a leg asserting the dispatch path's artifacts stay identical (Codex parity guard)",
+          "design_element": "CI job replaying frozen brief fixtures through the Task-dispatch path and byte-comparing against goldens, independent of the workflow-path tests",
+          "validation": "CI leg present and required; a deliberate dispatch-path change in a test branch fails the leg even when workflow-path tests pass"
+        }
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Silent narrowing: a detector false negative routes a relevant lens to n/a and real findings are missed (the killer risk)",
+      "mitigation": "Three independent guards: n/a requires machine-generated negative evidence (evidence-less n/a is rejected in code); the coverage map + HEADLINE render every disposition so a human sees each skip; the periodic full-catalog audit sweep diffs findings vs routing and auto-files any n/a-lens finding as a class:regression owned by router",
+      "owner": "router (taskplane/lens_signals.py) + audit sweep"
+    },
+    {
+      "risk": "Codex/dispatch path drifts as workflow support lands, breaking byte-identity",
+      "mitigation": "Both paths consume one contract:lens-brief payload with verbatim prompts; the CI Codex parity leg replays frozen briefs through the dispatch path against goldens and fails independently of workflow-path tests",
+      "owner": "taskplane/tests parity leg"
+    },
+    {
+      "risk": "Detector content scans blow the <1s budget or behave nondeterministically on large diffs",
+      "mitigation": "Hard bounds (64KB/file, 200 files, stdlib re, sorted iteration, no time/random), a perf test on the largest fixture, and a determinism test comparing two identical runs byte-for-byte",
+      "owner": "taskplane/lens_signals.py"
+    },
+    {
+      "risk": "Stage profiles mis-scoped (a lens missing from a profile can never route in that stage)",
+      "mitigation": "Profiles are data (one-line change to fix); the review profile is the FULL catalog so final reviews can never be profile-narrowed; unknown stage falls open to the full catalog; catalog drift test pins profile ids",
+      "owner": "lenses/catalog.json + catalog drift test"
+    },
+    {
+      "risk": "Applicability engine itself fails at runtime (bug, malformed catalog) and quietly shrinks review coverage",
+      "mitigation": "Fail toward MORE coverage, mirroring hub_signal (taskplane/lens.py:121-137): any engine exception falls back to breadth=all, warns on stderr, and traces the failure; a fail-open test pins this behavior",
+      "owner": "taskplane/lens.py route v2"
+    }
+  ],
+  "failure_modes": [
+    {
+      "mode": "Detector engine raises or returns malformed signals during routing",
+      "detection": "Exception caught at the route v2 boundary; stderr warning + lens_engine_failed trace event",
+      "recovery": "Automatic fallback to breadth=all for that review (more coverage, never less); the trace surfaces the failure for repair; no state is corrupted"
+    },
+    {
+      "mode": "Workflow run dies mid-wave (credit cutoff, host kill)",
+      "detection": "Workflow journal shows incomplete agents; missing .em-review/lens-<id>/findings.json for unfinished lenses",
+      "recovery": "Resume the journaled run \u2014 completed agents return cached results; on hosts without workflows this failure class is unchanged from today (re-dispatch the missing briefs); leaked contracts are released via the existing orphan auto-release backstop"
+    },
+    {
+      "mode": "A workflow agent emits findings that violate the pinned schema",
+      "detection": "agent() schema validation on the workflow runtime rejects the output",
+      "recovery": "Retry-on-mismatch (runtime feature); after retry exhaustion the lens is reported failed rather than merging an invalid findings file \u2014 the merge step refuses partial invalid input"
+    },
+    {
+      "mode": "Capability probe misdetects (claims workflows available where disabled by org policy)",
+      "detection": "Workflow launch fails immediately; review_dispatch_path trace shows the attempted path",
+      "recovery": "Fall back to the Task-dispatch path over the same briefs (mandatory fallback is always wired); the fallback is traced with the failure reason"
+    },
+    {
+      "mode": "Audit sweep finds findings from an n/a-routed lens (router regression)",
+      "detection": "Post-merge diff of findings vs the routing decision in the audit run",
+      "recovery": "Auto-file the finding as class:regression owner:router; the detector's negative fixture set is extended to reproduce the miss before the router change ships"
+    }
+  ],
+  "observability": {
+    "signals": [
+      "lens_route trace event extended with per-lens verdict, score, and evidence/negative_evidence (today it logs only [id, mode] \u2014 taskplane/loop.py:857-859)",
+      "review_dispatch_path trace event: {path: workflow|dispatch, reason} on every review wave",
+      "lens_engine_failed trace event + stderr warning on any applicability-engine failure (fail-open to breadth=all)",
+      "router_regression_filed trace event whenever the audit sweep auto-files an n/a-lens finding",
+      "HEADLINE coverage segment (lenses N deep \u00b7 N light \u00b7 N n/a (evidenced) of 26) and the coverage map with a reason per n/a on every findings dashboard",
+      "audit-run marker in findings meta (breadth=all + audit=true) so token/precision impact is measurable against the 1.3-1.5M baseline"
+    ],
+    "alerts": [
+      "Router regression auto-filed: any finding from an n/a-routed lens in an audit run is filed as class:regression owner:router and surfaces as a blocking finding on the review dashboard \u2014 this is the actionable alert for detector misses",
+      "Engine fail-open: lens_engine_failed + stderr warning alerts the operator that routing degraded to breadth=all and the engine needs repair (mirrors the existing hub_signal fail-safe alert at taskplane/lens.py:128-133)",
+      "Parity break: the CI Codex parity leg fails the build when dispatch-path artifacts drift from goldens"
+    ]
+  },
+  "rollout": {
+    "strategy": "Additive and gated by data: land taskplane/lens_signals.py + route v2 behind the presence of the stage_profiles key in lenses/catalog.json (absent key = legacy routing byte-identical, existing tests prove it); land the coverage-map v2 + HEADLINE with dual-shape rendering; ship workflows/review-wave.js with capability detection so the dispatch path remains the default wherever workflows are absent/disabled (all of Codex); dogfood on the next taskPlane review with the audit sweep forced on (breadth=all) to baseline detector honesty before relying on routed reviews; then enable routed reviews with the every-5th-review audit cadence.",
+    "rollback": "Remove the stage_profiles key from lenses/catalog.json (data-only) to restore legacy routing immediately, or revert the commits \u2014 route v2 is a superset that degrades to the legacy path by design, no data migration in either direction; deleting workflows/review-wave.js (or org-disabling workflows) reverts all hosts to the Task-dispatch path, which is CI-guarded byte-identical throughout."
+  },
+  "visualization": {
+    "required": false,
+    "reason": "The material structure is the brief/findings contract flow, which is fully captured as graph.proposed_edges (8 edges over 3 named contracts) and the two tables in design.md sections 3 and 6; a rendered dependency or data-flow diagram would restate that edge list without adding decision-relevant information for the approval gate."
+  },
+  "edge_evidence": [
+    {
+      "edge": "taskplane->contract:stage-profiles:consumes",
+      "evidence": "Will be realized in lens.route v2 reading catalog['stage_profiles'] (extension of load_catalog use at taskplane/lens.py:180-184); realization proof at review: the design-stage restriction test plus the file:line of the profile lookup",
+      "declared_by": "tp-designer"
+    },
+    {
+      "edge": "lenses->contract:stage-profiles:provides",
+      "evidence": "Will be realized as the stage_profiles top-level key in lenses/catalog.json next to deep_threshold_files/code_extensions/lenses; realization proof at review: the key present with design/build/review profiles and the catalog drift test pinning its ids",
+      "declared_by": "tp-designer"
+    },
+    {
+      "edge": "taskplane->contract:lens-brief:provides",
+      "evidence": "Will be realized in lens.dispatch_briefs (taskplane/lens.py:405-480) emitting verdict/score/evidence fields additively on each brief; realization proof at review: file:line of the added fields plus the parity fixture consuming the payload on both paths",
+      "declared_by": "tp-designer"
+    },
+    {
+      "edge": "workflows->contract:lens-brief:consumes",
+      "evidence": "Will be realized as the args ingestion at the top of workflows/review-wave.js (briefs JSON via workflow args); realization proof at review: file:line of the args parse plus the workflow fixture run",
+      "declared_by": "tp-designer"
+    },
+    {
+      "edge": "workflows->contract:findings-v2:provides",
+      "evidence": "Will be realized as the schema object passed to every agent() call in workflows/review-wave.js (retry-on-mismatch); realization proof at review: file:line of the schema block plus the injected-violation retry test",
+      "declared_by": "tp-designer"
+    },
+    {
+      "edge": "taskplane->contract:findings-v2:consumes",
+      "evidence": "Will be realized in the findings merge + dashboard coverage rendering (extending taskplane/dashboard.py:1076-1128) and the audit sweep's findings-vs-routing diff; realization proof at review: file:line of the v2-shape consumption plus the render test asserting a reason per n/a chip",
+      "declared_by": "tp-designer"
+    },
+    {
+      "edge": "taskplane/tests->contract:findings-v2:validates",
+      "evidence": "Will be realized as the parity fixtures (workflow vs dispatch byte-compare) and the CI Codex parity leg; realization proof at review: the test files and the CI job definition",
+      "declared_by": "tp-designer"
+    }
+  ],
+  "lens_evidence": [
+    {
+      "lens": "solution-design",
+      "verdict": "pass",
+      "blockers": 0,
+      "produced_by": "tp-designer (claude-fable-5)",
+      "self_attested": true,
+      "content_fingerprint": "3715a5d3e66143795d183a832c7d984a4cb7dbfa4cac9fb2d394ee20795296c7",
+      "evidence": "Approach coherence: one selected mechanism (deterministic detectors) carries all four in-scope capabilities \u2014 stage profiles bound candidates, detectors produce verdicts+evidence, the coverage map renders them, the audit sweep polices them; the workflow wave reuses the existing brief payload rather than inventing a second dispatch model. Dependency boundaries: three named contracts (stage-profiles, lens-brief, findings-v2) isolate catalog data, the router/wave handoff, and the findings shape; all proposed modules are depgraph-scannable directory nodes; depth bounded contract-only. Trade-offs: three real alternatives compared with gains/costs/revisit_when; B and C rejected on determinism/evidence grounds tied to standing rules. Failure modes: five concrete modes with detection+recovery, all failing toward more coverage, never less. Verifiable delivery: every R-0001 criterion has exactly one acceptance_map row with a concrete test-level validation, and all four R-0002 criteria are mapped in secondary_requirements; guardrail preservation (breadth=all, architecture floor, security floor, byte-identical Codex path) is itself test-pinned. Self-attested: I am the designer; no independent lens agent ran against this contract \u2014 surfaced at the approval gate per policy."
+    }
+  ],
+  "open_questions": []
+}

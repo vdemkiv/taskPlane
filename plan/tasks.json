@@ -1,0 +1,336 @@
+{
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Decomposition engine: taskplane/decompose.py (hybrid derivation, floors, components.yaml override) + graph.json components layer + `graph scan --decompose` + fingerprint cache",
+   "scope": [
+    "taskplane/decompose.py",
+    "taskplane/depgraph.py",
+    "taskplane/tp.py",
+    "taskplane/tests/test_decompose.py",
+    "taskplane/tests/fixtures/decompose/**"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_decompose.py taskplane/tests/test_depgraph.py -q",
+   "req": "R-0003",
+   "deps": [],
+   "contracts": [
+    "contract:component-map"
+   ],
+   "new_modules": [
+    "taskplane/decompose.py"
+   ],
+   "design_edges": [
+    "taskplane->contract:component-map:provides",
+    "taskplane/tests->contract:component-map:validates",
+    "taskplane/tests->taskplane:imports"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design acceptance_map rows 1-3 (R-0003): `graph scan --decompose` on this repo yields >=3 components for taskplane/dashboard.py with pairwise-distinct dependency sets (test_dashboard_yields_three_plus_components); no-change rescan is a no-op with byte-identical graph.json and recompute counter 0 (test_rescan_no_change_is_noop); lens maps computed by the shipped lens_signals.route_verdicts recompute ONLY on component fingerprint change (test_single_component_recompute)",
+    "components are a LAYER: modules/edges sections of graph.json byte-untouched by decomposition; absent key = byte-identical behavior for every existing consumer; floor constants named in decompose.py and overridable via components.yaml; component ids use `<module>::<cluster>` (no namespace collision); graph_decompose trace {components, recomputed, cache_hits, floor_folded, error?} emitted",
+    "no guardrail loosened; guardrail battery green (decomposition read-only toward code, never blocks a scan or a gate on failure)"
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Route v2 component assembly (capped union of touched components' cached maps, floors on live diff, fail-open superset) + component_attribution on briefs/findings meta + dashboard/graph component-layer rendering",
+   "scope": [
+    "taskplane/lens.py",
+    "taskplane/depgraph.py",
+    "taskplane/dashboard.py",
+    "taskplane/tests/test_decompose.py",
+    "taskplane/tests/fixtures/decompose/**"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_decompose.py taskplane/tests/test_lens_route_v2.py taskplane/tests/test_lens.py -q",
+   "req": "R-0003",
+   "deps": [
+    "t1"
+   ],
+   "contracts": [
+    "contract:component-map",
+    "contract:lens-brief"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:component-map:consumes",
+    "taskplane->contract:lens-brief:provides",
+    "taskplane/tests->contract:component-map:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design acceptance_map rows 4-7 (R-0003): a single-component diff routes that component's lenses plus floors, with meta.component_attribution naming the contributing component per routed lens (test_single_component_diff_routes_component_lenses); depgraph.to_html + dashboard render the component layer with HEADLINE/coverage formats unchanged (test_dashboard_renders_component_layer); fail-open ladder only WIDENS — broken/absent/stale layer routes a superset of the component route with component_layer_failed traced (test_fail_open_superset)",
+    "floors and cap-8 demote-never-drop run AFTER assembly on the REAL diff ctx, never from cached maps; unevidenced n/a refused; --lens force applies post-assembly; component path engages only when the components key exists and every changed file maps — otherwise byte-identical Phase 1 route (existing route v2 suites green unchanged)",
+    "component_attribution is ADDITIVE on contract:lens-brief — undecomposed dispatch stdout stays byte-identical (Phase 1 parity goldens green untouched in this task)",
+    "no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t3",
+   "title": "Stage workflow files: workflows/execute-wave.js, evaluate-wave.js, fix-wave.js on the review-wave.js pattern (pure-literal meta, schema-pinned agent() outputs, deterministic, zero gate verbs) + static pins",
+   "scope": [
+    "workflows/execute-wave.js",
+    "workflows/evaluate-wave.js",
+    "workflows/fix-wave.js",
+    "taskplane/tests/test_stage_waves.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_stage_waves.py -q",
+   "req": "R-0004",
+   "deps": [],
+   "contracts": [
+    "contract:wave-workflow",
+    "contract:lens-brief",
+    "contract:findings-v2"
+   ],
+   "new_modules": [
+    "workflows/execute-wave.js",
+    "workflows/evaluate-wave.js",
+    "workflows/fix-wave.js"
+   ],
+   "design_edges": [
+    "workflows->contract:wave-workflow:consumes",
+    "workflows->contract:lens-brief:consumes",
+    "workflows->contract:findings-v2:provides"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design secondary R-0004 rows 1 (workflow-files half) and the schema half of row 7: one workflow FILE per stage; static scans pin pure-literal meta, determinism (no Date.now/Math.random/dynamic import/process.), and ZERO gate verbs (approve/gate/signoff/resolve) in each file; execute/fix agent() outputs schema-pinned to receipts[{task, outcome, note}], evaluate agents to contract:findings-v2, retry-on-mismatch",
+    "workflow agents consume verbatim Task-path prompts via args (per-brief export TASKPLANE_TASK=<slot> line and the claim/submit/CLEAR protocol present verbatim); workers submit and never advance state; gates stay conversation-level by construction",
+    "no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t4",
+   "title": "tp.py stage emitter behind workflow_available() (wrap-not-rewrite, kill-switch matrix, stage_dispatch_path trace) + resume fixture + adversarial every-gate walk + extended parity goldens + CI parity/Codex legs",
+   "scope": [
+    "taskplane/tp.py",
+    "taskplane/tests/test_stage_waves.py",
+    "taskplane/tests/fixtures/briefs/**",
+    ".github/workflows/ci.yml"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_stage_waves.py taskplane/tests/test_dispatch_parity.py taskplane/tests/test_codex_compat.py -q",
+   "req": "R-0004",
+   "deps": [
+    "t3"
+   ],
+   "contracts": [
+    "contract:wave-workflow",
+    "contract:lens-brief",
+    "contract:findings-v2"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:wave-workflow:provides",
+    "taskplane/tests->contract:wave-workflow:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design secondary R-0004 rows 1 (emitter half), 2, 3, 4, 5, 6, 7: at most ONE workflow run per stage between human gates; emitter calls tp.workflow_available directly (single detector — no second env parse); kill-switch matrix (0/false/no/off/FALSE/' Off ' -> task; 1/true/yes/on -> workflow; Codex markers always win; conservative default) mirroring TestWorkflowAvailable; stage_dispatch_path {stage, path, reason} traced on both rails, printed on neither task stdout",
+    "MANDATORY byte-identical fallback: --emit task and bare default stdout byte-identical to today's stage dispatch payloads; parity goldens extended from review-wave to the three stage waves with R-0002 scrub rules, captured via the documented regen path; Codex-env cases assert task bytes with no workflow keys even with TASKPLANE_WORKFLOWS=1; CI parity + Codex fixture legs cover the new goldens",
+    "resume fixture: killed-mid-stage journal replays with completed agents cached, incomplete re-run; engine-side idempotence pinned (double-submit); test_every_gate_reachable_without_workflows walks init->pm->design->plan->execute->evaluate->em->signoff with TASKPLANE_WORKFLOWS=0 and reaches every gate via dispatch; workflow-agnostic module scan still pins loop.py and lens.py (emitter lives in tp.py only)",
+    "no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t5",
+   "title": "Audit extraction (D-0004): capture byte-frozen differential corpus FIRST from unmodified loop.py, then move loop.py:1426-1680 audit machinery to taskplane/audit.py with re-exported public names; loop.py shrink pinned",
+   "scope": [
+    "taskplane/audit.py",
+    "taskplane/loop.py",
+    "taskplane/tests/test_audit_extraction.py",
+    "taskplane/tests/fixtures/audit/**"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_audit_extraction.py taskplane/tests/test_audit_sweep.py taskplane/tests/test_loop.py -q",
+   "req": "R-0006",
+   "deps": [],
+   "contracts": [
+    "contract:findings-v2"
+   ],
+   "new_modules": [
+    "taskplane/audit.py"
+   ],
+   "design_edges": [
+    "taskplane->contract:findings-v2:consumes",
+    "taskplane/tests->contract:findings-v2:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "SEQUENCING (design constraint): the differential corpus (cadence states x release flags x meta shapes x findings sets -> _audit_brief dict, router_audit list, _router_audit_gate error list, rewritten findings.json BYTES) is captured as goldens from the UNMODIFIED loop.py BEFORE any extraction edit — this task has no deps and is the sole wave-1 owner of loop.py; t7 (the only other loop.py task) depends on it",
+    "Realizes design secondary R-0006 row 5 and the extraction half of row 7: post-move differential replay asserts identical outcomes and artifact bytes; loop.py re-exports the public names (audit_every, audit_counter, record_audit_review, audit_due, router_audit, _router_audit_gate, _audit_brief — zero caller churn); loop.py line-count assertion pins the shrink; audit.py joins the workflow-agnostic module scan (pinned set grows)",
+    "em gate behavior byte-frozen: n/a-without-evidence block, router-regression sign-off block, and audit cadence move VERBATIM; existing em gate tests green against the relocated code",
+    "no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t6",
+   "title": "Fixtures-path discount x0.25 in lens_signals (D-0002) + detector fixture pair + parity goldens regenerated ONCE via regen.py + routed-audit hybrid measurement and D-record (D-0003)",
+   "scope": [
+    "taskplane/lens_signals.py",
+    "taskplane/tests/test_lens_signals.py",
+    "taskplane/tests/test_lens_signals_fixtures.py",
+    "taskplane/tests/test_debt_burndown.py",
+    "taskplane/tests/fixtures/detectors/**",
+    "taskplane/tests/fixtures/briefs/**"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_lens_signals.py taskplane/tests/test_lens_signals_fixtures.py taskplane/tests/test_debt_burndown.py taskplane/tests/test_dispatch_parity.py -q",
+   "req": "R-0006",
+   "deps": [
+    "t2",
+    "t4",
+    "t5"
+   ],
+   "contracts": [
+    "contract:lens-brief"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:lens-brief:provides",
+    "taskplane/tests->contract:findings-v2:validates",
+    "taskplane/tests->taskplane:imports"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design secondary R-0006 rows 2, 3, 4 and 6 (store half flips at sign-off): fixture-path classifier (segments fixtures/testdata/goldens, .golden extension); path/content/density hits whose ONLY support is fixture-path files score x0.25 with the discount named in the evidence string; negative fixture — fixture-only diff scores i18n/mobile below deep; positive fixture — real locale-file diff still routes i18n deep unchanged",
+    "SEQUENCING (design constraint): this task runs AFTER every brief-shape-affecting change (t2 attribution, t4 stage goldens, t5 relocation) so parity goldens regenerate exactly ONCE, only via taskplane/tests/fixtures/briefs/regen.py (env/path scrub, sorted keys, provenance banner), reviewed as a diff; CI parity leg (dispatch byte-identity + Codex fixtures) green after regen; hand-edited goldens remain a finding",
+    "routed-audit hybrid (D-0003): measurement compares full breadth=all audit vs routed-deep + batched negative-evidence verification sweep on the dogfood/replay corpus, emitting audit_hybrid_measured {tokens_full, tokens_hybrid, escaped_findings}; decision recorded in the registry against the bar (adopt only if >=30% token reduction AND zero escaped n/a-lens findings; default DECLINE) with the measured numbers; test_debt_burndown.py asserts D-0003 is linked to the recorded decision and pins the D-0002 fixture pair; audit execution unchanged either way this phase",
+    "discount only re-weights scores — never suppresses evidence or drops a lens below the floors; em full-catalog mandate untouched",
+    "no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t7",
+   "title": "Evaluate consumes routed briefs: loop.py evaluate wiring passes stage='build' (R-0001 budget inherited verbatim, component assembly engaged); em full-catalog literal, audit cadence, and router-regression block pinned untouched",
+   "scope": [
+    "taskplane/loop.py",
+    "taskplane/tests/test_evaluate_routing.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_evaluate_routing.py taskplane/tests/test_audit_sweep.py taskplane/tests/test_loop.py -q",
+   "req": "R-0006",
+   "deps": [
+    "t2",
+    "t5"
+   ],
+   "contracts": [
+    "contract:lens-brief",
+    "contract:findings-v2"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:findings-v2:consumes",
+    "taskplane->contract:lens-brief:provides"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design secondary R-0006 row 1 and the evaluate half of row 7: evaluate passes stage='build' into route_git_diff (build-profile candidates, R-0001 budget 5-7/cap-8 inherited verbatim per the design's decided open question 2, component assembly from R-0003 engaged); the evaluate brief carries the routed dispatch payload (deep briefs + one light batch) like the em step's does today",
+    "em surface untouched: the '\"all\" if step == \"em\" else \"routed\"' literal, TASKPLANE_AUDIT_EVERY cadence, and _router_audit_gate sign-off blocking pinned by tests against the relocated audit.py (post-t5 differential stays green)",
+    "no guardrail loosened; guardrail battery green (floored lenses survive build-profile narrowing per the shipped route v2 rule; n/a-with-evidence unchanged)"
+   ]
+  },
+  {
+   "id": "t8",
+   "title": "Install truth (separable, unblocked): README account-type decision tree + per-host quickstarts + tp onboard truth-up + CI grep/link legs + marketplace copy alignment",
+   "scope": [
+    "README.md",
+    "taskplane/tp.py",
+    "taskplane/tests/test_onboarding_docs.py",
+    ".github/workflows/ci.yml",
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    ".codex-plugin/plugin.json"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_onboarding_docs.py -q",
+   "req": "R-0005",
+   "deps": [],
+   "contracts": [],
+   "new_modules": [
+    "(root)",
+    ".claude-plugin",
+    ".codex-plugin"
+   ],
+   "design_edges": [],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design secondary R-0005 rows 1, 2, 4 and 6: install decision tree by account type — Personal (marketplace/GitHub URL), Org admin (Organization settings -> Plugins -> GitHub sync -> vdemkiv/taskPlane -> Available/Required + auto-update note), Org member (curated list or admin file-upload ONLY, ask-your-admin link, try-on-personal fallback) — zero dead-end member instructions; CI grep leg fails on any member-installs-from-GitHub phrasing repo-wide across public copy (README, marketplace jsons, launch snippets); README link check in CI",
+    "three per-host quickstarts (Claude Code / Cowork / Codex) runnable as written; Codex quickstart references no workflow-only feature (test_codex_quickstart_no_workflow_features grep); quickstart commands smoke-checked against the CLI parser",
+    "tp onboard truth-up: org-managed install path printed where host markers expose the context, by-account-type triage otherwise; onboard fixture tests per detected context (org-managed, personal, undetectable) assert no member-inaccessible step is ever printed",
+    "docs never instruct weakening (no step suggests disabling the contract screen, hooks, or gates; member guidance never routes around admin curation); no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t9",
+   "title": "v3 feature docs: routing v2 / review wave + fallback / decomposition + components.yaml / stage flows + kill-switch, each with a dogfood example; what's-new 3-row pin; docs-drift CI extension",
+   "scope": [
+    "README.md",
+    "docs/*.md",
+    "taskplane/tests/test_onboarding_docs.py",
+    ".github/workflows/ci.yml"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_onboarding_docs.py taskplane/tests/test_v230_docs.py -q",
+   "req": "R-0005",
+   "deps": [
+    "t1",
+    "t2",
+    "t3",
+    "t4",
+    "t6",
+    "t7",
+    "t8"
+   ],
+   "contracts": [],
+   "new_modules": [
+    "(root)"
+   ],
+   "design_edges": [],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "Realizes design secondary R-0005 rows 3 and 5: every user-facing flag, command, and artifact added in v2.4.0+Phase 2 (routing v2 coverage map / n/a-with-evidence / --lens, review wave + mandatory dispatch fallback, graph scan --decompose + components.yaml + fail-open, stage flows + TASKPLANE_WORKFLOWS kill-switch) appears in the docs tree with one honest dogfood example each (test_onboarding_docs.py string assertions); existing CI docs-drift check extended to the new sections so drift fails CI",
+    "README what's-new table rewritten for this release at exactly 3 data rows (test_whats_new_exactly_three_rows); CHANGELOG.md stays the stated authoritative full history",
+    "docs never instruct weakening any enforcement surface; no guardrail loosened; guardrail battery green"
+   ]
+  }
+ ]
+}

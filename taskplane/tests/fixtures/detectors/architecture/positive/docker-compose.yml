@@ -1,0 +1,5 @@
+services:
+  api:
+    build: .
+  queue:
+    image: rabbitmq

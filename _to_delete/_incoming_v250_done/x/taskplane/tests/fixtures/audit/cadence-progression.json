@@ -1,0 +1,35 @@
+{
+  "counter_after": 6,
+  "sequence": [
+    {
+      "counter": 0,
+      "due": false,
+      "recorded": 1
+    },
+    {
+      "counter": 1,
+      "due": false,
+      "recorded": 2
+    },
+    {
+      "counter": 2,
+      "due": false,
+      "recorded": 3
+    },
+    {
+      "counter": 3,
+      "due": false,
+      "recorded": 4
+    },
+    {
+      "counter": 4,
+      "due": true,
+      "recorded": 5
+    },
+    {
+      "counter": 5,
+      "due": false,
+      "recorded": 6
+    }
+  ]
+}

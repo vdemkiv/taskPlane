@@ -1,0 +1,33 @@
+{
+  "by_value": {
+    "-3": {
+      "due_fresh": true,
+      "every": 1
+    },
+    "0": {
+      "due_fresh": true,
+      "every": 1
+    },
+    "1": {
+      "due_fresh": true,
+      "every": 1
+    },
+    "2": {
+      "due_fresh": false,
+      "every": 2
+    },
+    "7": {
+      "due_fresh": false,
+      "every": 7
+    },
+    "<unset-like-blank>": {
+      "due_fresh": false,
+      "every": 5
+    },
+    "often": {
+      "due_fresh": false,
+      "every": 5
+    }
+  },
+  "default": 5
+}

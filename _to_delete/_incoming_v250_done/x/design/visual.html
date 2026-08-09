@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v3 Phase 2 — routing fail-open ladder &amp; stage dispatch data flow</title>
+<style>
+  body{margin:0;font:14px/1.5 -apple-system,'Segoe UI',sans-serif;background:#fcfcfb;color:#1a1a18;padding:24px}
+  h1{font-size:18px;margin:0 0 4px}
+  h2{font-size:15px;margin:28px 0 8px}
+  .sub{color:#6b6b66;font-size:12.5px;margin-bottom:18px}
+  svg{display:block;max-width:980px;width:100%;height:auto;background:#fff;border:1px solid #e3e3de;border-radius:8px}
+  .cap{max-width:980px;color:#44443f;font-size:12.5px;margin:8px 0 0}
+  text{font:12.5px -apple-system,'Segoe UI',sans-serif;fill:#1a1a18}
+  .small{font-size:11px;fill:#6b6b66}
+  .mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:11.5px}
+  .box{fill:#f6f6f2;stroke:#9a9a94;stroke-width:1.2;rx:8}
+  .boxsel{fill:#eef3fb;stroke:#2a78d6;stroke-width:1.6;rx:8}
+  .boxfail{fill:#fdf3ee;stroke:#c96a2e;stroke-width:1.4;rx:8}
+  .boxgate{fill:#fff;stroke:#1a1a18;stroke-width:1.8;rx:20}
+  .arrow{stroke:#44443f;stroke-width:1.6;fill:none;marker-end:url(#ah)}
+  .arrowfail{stroke:#c96a2e;stroke-width:1.6;fill:none;stroke-dasharray:6 4;marker-end:url(#ahf)}
+  .lane{stroke:#dcdcd7;stroke-width:1;stroke-dasharray:2 4}
+</style>
+</head>
+<body>
+<h1>taskPlane v3 Phase 2 — design data flow</h1>
+<div class="sub">R-0003 component-routed reviews with the fail-open ladder · R-0004 stage waves with the mandatory dispatch fallback. Every failure edge (dashed, orange) points toward MORE coverage or the reference path — never narrower, never workflow-only.</div>
+
+<h2>1 · Routing fail-open ladder (R-0003 / R-0006)</h2>
+<svg viewBox="0 0 980 400" role="img" aria-label="Three-rung routing ladder: component-routed assembly falls open to module-level route v2, which falls open to legacy breadth=all. Every rung keeps floors, cap-8 demote-never-drop, and n/a-with-evidence.">
+  <defs>
+    <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="#44443f"/></marker>
+    <marker id="ahf" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="#c96a2e"/></marker>
+  </defs>
+  <rect class="box" x="20" y="30" width="180" height="76" rx="8"/>
+  <text x="110" y="60" text-anchor="middle">diff (changed files)</text>
+  <text x="110" y="78" text-anchor="middle" class="small">+ requirement text + graph payload</text>
+
+  <rect class="boxsel" x="270" y="20" width="300" height="96" rx="8"/>
+  <text x="420" y="44" text-anchor="middle" font-weight="600">Rung 1 · component-routed (NEW)</text>
+  <text x="420" y="62" text-anchor="middle" class="small">files → touched components (graph.json components)</text>
+  <text x="420" y="78" text-anchor="middle" class="small">verdicts = union of cached per-component lens maps,</text>
+  <text x="420" y="94" text-anchor="middle" class="small">re-evidenced on the live diff · attribution per lens</text>
+
+  <rect class="box" x="270" y="160" width="300" height="80" rx="8"/>
+  <text x="420" y="184" text-anchor="middle" font-weight="600">Rung 2 · module route v2 (v2.4.0)</text>
+  <text x="420" y="202" text-anchor="middle" class="small">whole-diff detector scoring (lens_signals)</text>
+  <text x="420" y="218" text-anchor="middle" class="small">stage profile · superset of rung 1 by signal monotonicity</text>
+
+  <rect class="box" x="270" y="284" width="300" height="80" rx="8"/>
+  <text x="420" y="308" text-anchor="middle" font-weight="600">Rung 3 · legacy breadth=all</text>
+  <text x="420" y="326" text-anchor="middle" class="small">full catalog: routed deep + everything else swept</text>
+  <text x="420" y="342" text-anchor="middle" class="small">the maximal-coverage floor (hub_signal precedent)</text>
+
+  <rect class="box" x="680" y="20" width="280" height="96" rx="8"/>
+  <text x="820" y="46" text-anchor="middle" font-weight="600">invariants on EVERY rung</text>
+  <text x="820" y="64" text-anchor="middle" class="small">security + architecture floors on the real diff ctx</text>
+  <text x="820" y="80" text-anchor="middle" class="small">cap 8 · overflow demoted to light, never dropped</text>
+  <text x="820" y="96" text-anchor="middle" class="small">n/a only with negative evidence · --lens force wins</text>
+
+  <rect class="box" x="680" y="284" width="280" height="80" rx="8"/>
+  <text x="820" y="310" text-anchor="middle" font-weight="600">em audit backstop (unchanged)</text>
+  <text x="820" y="328" text-anchor="middle" class="small">breadth=all every Nth review (TASKPLANE_AUDIT_EVERY)</text>
+  <text x="820" y="344" text-anchor="middle" class="small">n/a-lens finding → auto-filed router regression, blocks</text>
+
+  <path class="arrow" d="M200 68 L266 68"/>
+  <path class="arrowfail" d="M420 116 L420 156"/>
+  <text x="432" y="140" class="small" fill="#c96a2e">layer absent / stale fingerprint / any error → WIDEN (trace: component_layer_failed)</text>
+  <path class="arrowfail" d="M420 240 L420 280"/>
+  <text x="432" y="264" class="small" fill="#c96a2e">engine failure → WIDEN (trace: lens_engine_failed)</text>
+  <path class="arrow" d="M574 68 L676 68"/>
+  <path class="arrow" d="M574 324 L676 324"/>
+</svg>
+<p class="cap">Rung 1 can only narrow relative to rung 2 (per-component file sets are subsets of the whole diff and every detector signal is existential or count-monotone over files), so the pinned fail-open test — broken layer ⇒ routed set is a superset — holds structurally, not just empirically.</p>
+
+<h2>2 · Stage waves: one workflow run per stage, gates outside, dispatch is the reference (R-0004)</h2>
+<svg viewBox="0 0 980 430" role="img" aria-label="Each governed stage between human gates compiles to one workflow run when workflow_available says yes; otherwise the byte-identical Task dispatch path runs. Gates are never inside a run.">
+  <line class="lane" x1="20" y1="96" x2="960" y2="96"/>
+  <text x="24" y="88" class="small">conversation level (humans + orchestrator — gates live ONLY here)</text>
+
+  <rect class="boxgate" x="20" y="20" width="150" height="52"/>
+  <text x="95" y="42" text-anchor="middle" font-weight="600">plan approval</text>
+  <text x="95" y="58" text-anchor="middle" class="small">human gate</text>
+  <rect class="boxgate" x="430" y="20" width="150" height="52"/>
+  <text x="505" y="42" text-anchor="middle" font-weight="600">task gates</text>
+  <text x="505" y="58" text-anchor="middle" class="small">orchestrator gate()</text>
+  <rect class="boxgate" x="810" y="20" width="150" height="52"/>
+  <text x="885" y="42" text-anchor="middle" font-weight="600">sign-off</text>
+  <text x="885" y="58" text-anchor="middle" class="small">human gate</text>
+
+  <rect class="box" x="20" y="120" width="270" height="88" rx="8"/>
+  <text x="155" y="144" text-anchor="middle" font-weight="600">stage emitter (tp.py)</text>
+  <text x="155" y="162" text-anchor="middle" class="small mono">loop wave / stage briefs --emit auto|workflow|task</text>
+  <text x="155" y="178" text-anchor="middle" class="small">reuses workflow_available() — Codex always task;</text>
+  <text x="155" y="194" text-anchor="middle" class="small">TASKPLANE_WORKFLOWS=0/false/no/off → task</text>
+
+  <rect class="boxsel" x="360" y="120" width="290" height="120" rx="8"/>
+  <text x="505" y="144" text-anchor="middle" font-weight="600">workflow path (optimization)</text>
+  <text x="505" y="162" text-anchor="middle" class="small mono">execute-wave.js · evaluate-wave.js · fix-wave.js</text>
+  <text x="505" y="180" text-anchor="middle" class="small">one journaled run per stage · agent() per brief,</text>
+  <text x="505" y="196" text-anchor="middle" class="small">prompt VERBATIM from the brief · schema-pinned output</text>
+  <text x="505" y="212" text-anchor="middle" class="small">kill/resume: completed agents return cached results</text>
+  <text x="505" y="230" text-anchor="middle" class="small">zero gate verbs in any generated run (test-scanned)</text>
+
+  <rect class="box" x="360" y="280" width="290" height="104" rx="8"/>
+  <text x="505" y="304" text-anchor="middle" font-weight="600">Task-dispatch path (REFERENCE)</text>
+  <text x="505" y="322" text-anchor="middle" class="small">today's wave()/briefs — stdout byte-identical,</text>
+  <text x="505" y="338" text-anchor="middle" class="small">pinned by extended parity goldens (regen.py only)</text>
+  <text x="505" y="354" text-anchor="middle" class="small">the ONLY path on Codex (CI fixture leg asserts</text>
+  <text x="505" y="370" text-anchor="middle" class="small">no workflow runtime invoked)</text>
+
+  <rect class="box" x="720" y="120" width="240" height="120" rx="8"/>
+  <text x="840" y="144" text-anchor="middle" font-weight="600">worker agents (either path)</text>
+  <text x="840" y="162" text-anchor="middle" class="small mono">export TASKPLANE_TASK=&lt;slot&gt;</text>
+  <text x="840" y="178" text-anchor="middle" class="small">claim → .tp-work/&lt;task&gt; worktree,</text>
+  <text x="840" y="194" text-anchor="middle" class="small">PreToolUse contract screen fires unchanged,</text>
+  <text x="840" y="210" text-anchor="middle" class="small">tp loop submit — evidence only,</text>
+  <text x="840" y="226" text-anchor="middle" class="small">NEVER a state transition</text>
+
+  <path class="arrow" d="M95 72 L95 116"/>
+  <path class="arrow" d="M290 152 L356 152"/>
+  <text x="300" y="146" class="small">available</text>
+  <path class="arrow" d="M290 190 C320 190 330 310 356 314"/>
+  <text x="266" y="230" class="small">unavailable / kill-switch / Codex</text>
+  <path class="arrowfail" d="M505 244 L505 276"/>
+  <text x="516" y="264" class="small" fill="#c96a2e">runtime failure → same briefs re-dispatched (fallback always wired)</text>
+  <path class="arrow" d="M654 168 L716 168"/>
+  <path class="arrow" d="M654 322 C690 322 700 230 716 216"/>
+  <path class="arrow" d="M840 116 C840 90 700 76 584 60"/>
+  <text x="676" y="92" class="small">submissions surface at conversation-level gates only</text>
+</svg>
+<p class="cap">The workflow rail is an optimization that can disappear at any moment (org kill-switch, Codex, runtime failure) with zero governance change: both rails consume identical briefs with verbatim prompts, workers submit under the same contracts, and every gate is reachable with workflows disabled (adversarial test).</p>
+</body>
+</html>
