@@ -32,6 +32,31 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
+**What routing looks like now (v2.5).** Reviews don't run all 26 lenses
+blindly: the router scores each lens against the ACTUAL diff — paths,
+content, density, the dependency graph — and stage profiles (design/build/
+review) narrow the candidates, so a typical review runs 5-8 lenses deep with
+the rest as evidenced light passes or n/a-with-proof ("0 i18n markers").
+Security and architecture are floored, never dropped. The graph can also be
+DECOMPOSED into components (`tp graph scan --decompose`): each component
+carries its own lens map, a diff routes the components it touches, and any
+routing failure only ever WIDENS coverage (component → module → full
+catalog). Test fixtures no longer inflate routing (×0.25 discount). Every
+Nth review runs as a full-catalog audit that diffs findings against the
+routing — a finding on an n/a'd lens auto-files as a router regression and
+blocks sign-off. The DoD can run a graph-scoped regression gate: the blast
+radius's tests at the change's baseline vs now; only was-green-now-red
+blocks. Full detail: `docs/routing-and-flows.md`.
+
+**Waves as workflows (Claude) — Task dispatch everywhere.** On Claude Code
+hosts with Dynamic Workflows, the review fan-out and the execute/evaluate/
+fix waves can each run as ONE journaled, resumable workflow
+(`--emit workflow|task|auto` on `tp lens dispatch`, `loop wave`,
+`loop next`; opt in with TASKPLANE_WORKFLOWS=1). The Task-dispatch path
+stays byte-identical and is the only path on Codex — same contracts, same
+gates, same evidence; workflows are an optimization, never a dependency.
+Human gates always stay conversation-level.
+
 **Getting started (walk them through it live if they want):**
 
 0. Brand-new / nothing attached? `/taskplane` runs a **cold-start check** first
@@ -97,7 +122,10 @@ product code; Build does so only under its approved contract.
 
 Concepts on request (don't dump): gates → `references/gates.md`;
 contracts → `references/contracts.md`; roles & the PM handoff →
-`references/roles.md`, `references/product-manager.md`. Power users: the
+`references/roles.md`, `references/product-manager.md`; routing v2,
+decomposition, waves & audits → `docs/routing-and-flows.md`; install paths
+by account type (org members cannot install from GitHub — admin catalog or
+file upload) → `README.md` Install section. Power users: the
 full CLI is `python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" --help`.
 
 **Licensing if asked:** free and open source under Apache License 2.0 — any
