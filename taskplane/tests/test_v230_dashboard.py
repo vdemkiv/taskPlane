@@ -37,7 +37,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -55,7 +55,7 @@ def _loop_ws(tmp, step="plan_approval", n_tasks=3):
         acceptance=["criterion one", "criterion two", "criterion three"])
     loop.init(ws, "fixture goal", requirement_id=rec["id"])
     os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
-    open(os.path.join(ws, "specs", "spec.md"), "w").write("# spec\n")
+    open(os.path.join(ws, "specs", "spec.md"), "w", encoding="utf-8").write("# spec\n")
     loop.next_action(ws)
     loop.gate(ws, "pass", note="spec ok")
     st = loop.load(ws)
@@ -143,13 +143,13 @@ class TestTraceRobustness(unittest.TestCase):
         self.ws = _repo(self.tmp)
         loop.init(self.ws, "g")
         os.makedirs(os.path.join(self.ws, "specs"), exist_ok=True)
-        open(os.path.join(self.ws, "specs", "spec.md"), "w").write("# s\n")
+        open(os.path.join(self.ws, "specs", "spec.md"), "w", encoding="utf-8").write("# s\n")
 
     def _trace_path(self):
         return os.path.join(tp.tp_dir(self.ws), "trace.jsonl")
 
     def test_record_without_event_key_never_crashes_any_render(self):
-        with open(self._trace_path(), "a") as f:
+        with open(self._trace_path(), "a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": 1}) + "\n")
         frag = dashboard.widget(self.ws)          # must not raise KeyError
         dashboard.render(self.ws, out=os.path.join(self.tmp, "d.html"))
@@ -158,14 +158,14 @@ class TestTraceRobustness(unittest.TestCase):
         self.assertIn("(unrecorded)", frag)
 
     def test_corrupt_lines_are_skipped_with_a_visible_notice(self):
-        with open(self._trace_path(), "a") as f:
+        with open(self._trace_path(), "a", encoding="utf-8") as f:
             f.write("{{{not json\n")
             f.write("also not json\n")
         frag = dashboard.widget(self.ws)
         self.assertIn("tp-trace-notice", frag)
         self.assertIn("2 unparseable trace lines skipped", frag)
         page = open(dashboard.render(
-            self.ws, out=os.path.join(self.tmp, "d.html"))).read()
+            self.ws, out=os.path.join(self.tmp, "d.html")), encoding="utf-8").read()
         self.assertIn("unparseable", page)
 
     def test_clean_trace_shows_no_notice(self):
@@ -173,7 +173,7 @@ class TestTraceRobustness(unittest.TestCase):
         self.assertNotIn("tp-trace-notice", frag)
 
     def test_stats_counts_are_reported(self):
-        with open(self._trace_path(), "a") as f:
+        with open(self._trace_path(), "a", encoding="utf-8") as f:
             f.write("junk\n")
             f.write(json.dumps({"ts": 2}) + "\n")
         stats = {}
@@ -193,7 +193,7 @@ class TestTraceTailReadNeverRotates(unittest.TestCase):
         self._old = dashboard.TRACE_TAIL_BYTES
         dashboard.TRACE_TAIL_BYTES = 2048
         p = os.path.join(tp.tp_dir(self.ws), "trace.jsonl")
-        with open(p, "a") as f:
+        with open(p, "a", encoding="utf-8") as f:
             for i in range(200):
                 f.write(json.dumps({"event": "loop_step", "ts": i,
                                     "step": "execute"}) + "\n")
@@ -273,9 +273,9 @@ class TestBudgetExhaustionDisclosure(unittest.TestCase):
                         "command_policy": {"deny": ["rm", "curl", "wget"]}},
              "budget": {"max_actions": max_actions}}
         with open(os.path.join(tp.tp_dir(self.ws),
-                               "active_contract.json"), "w") as f:
+                               "active_contract.json"), "w", encoding="utf-8") as f:
             json.dump(c, f)
-        with open(os.path.join(tp.tp_dir(self.ws), "meter.json"), "w") as f:
+        with open(os.path.join(tp.tp_dir(self.ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({"t2": {"actions": used}}, f)
 
     def test_widget_shows_distinct_exhausted_banner_not_idle(self):
@@ -430,7 +430,7 @@ class TestRtlAndResponsive(unittest.TestCase):
         self.ws = _loop_ws(self.tmp)
         self.frag = dashboard.widget(self.ws)
         self.page = open(dashboard.render(
-            self.ws, out=os.path.join(self.tmp, "d.html"))).read()
+            self.ws, out=os.path.join(self.tmp, "d.html")), encoding="utf-8").read()
 
     def test_document_root_carries_lang_and_dir(self):
         self.assertIn('lang="en"', self.page)
@@ -463,7 +463,7 @@ class TestFullPageA11y(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.mkdtemp()
         self.page = open(dashboard.render(
-            _loop_ws(tmp), out=os.path.join(tmp, "d.html"))).read()
+            _loop_ws(tmp), out=os.path.join(tmp, "d.html")), encoding="utf-8").read()
 
     def test_pipeline_state_has_sr_text_not_color_only(self):
         self.assertIn("current step", self.page)

@@ -19,13 +19,13 @@ def git_ws(tmp, tasks):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
     os.makedirs(os.path.join(ws, "src", "todo"))
-    open(os.path.join(ws, "src", "todo", "a.py"), "w").write("x=1\n")
+    open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
     subprocess.run(["git", "init", "-q"], cwd=ws)
     subprocess.run(["git", "config", "user.email", "e@e"], cwd=ws)
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
-    json.dump({"tasks": tasks}, open(os.path.join(ws, "plan", "tasks.json"), "w"))
+    json.dump({"tasks": tasks}, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 
 
@@ -63,7 +63,7 @@ def write_verdict(ws):
                 if r != own]
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w") as f:
+    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump({"task": task["id"], "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified by test"}
@@ -89,14 +89,14 @@ def pass_eval(ws):
 def pass_em(ws):
     coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-    with open(os.path.join(ws, ".em-review", "report.md"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
         f.write("# Engineering review\n\nAll required evidence passed.\n")
     state = loop.load(ws)
     changed = [f for f in loop._diff_files(
         ws, state.get("baseline") or "HEAD")
         if not f.startswith(lens.LOOP_OWNED)]
     impact = depgraph.impact(ws, changed)
-    with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": {"lens_coverage": coverage, "impact": impact,
                             "tests": ["true"],
                             "gate": {"verdict": "recommend-pass"}},
@@ -142,7 +142,7 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(loop.load(ws)["step"], "plan")     # did NOT advance
         # writing a real plan unblocks the same gate
         json.dump({"tasks": [TASK]},
-                  open(os.path.join(ws, "plan", "tasks.json"), "w"))
+                  open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.next_action(ws)
         r = loop.gate(ws, "pass")
         self.assertNotIn("error", r)
@@ -280,7 +280,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, "plan"))
         os.makedirs(os.path.join(ws, "src", "auth"))
-        with open(os.path.join(ws, "src", "auth", "a.py"), "w") as f:
+        with open(os.path.join(ws, "src", "auth", "a.py"), "w", encoding="utf-8") as f:
             f.write("x=1\n")
         for c in (["init", "-q"], ["add", "-A"]):
             subprocess.run(["git", *c], cwd=ws)
@@ -295,7 +295,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
                 acceptance=["valid creds -> session"],
                 context_files=[scope])
             task["req"] = r["id"]
-        with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+        with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [task]}, f)
         loop.init(ws, "auth work", spec_path="s", checkpoints=["plan"])
         loop.next_action(ws)
@@ -320,7 +320,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         loop.approve(ws)
         loop.next_action(ws)
         # the "build": touch an auth file, uncommitted
-        with open(os.path.join(ws, "src", "auth", "b.py"), "w") as f:
+        with open(os.path.join(ws, "src", "auth", "b.py"), "w", encoding="utf-8") as f:
             f.write("y=2\n")
         submit_gate(ws, "pass")                   # execute -> evaluate
         act = loop.next_action(ws)
@@ -382,7 +382,7 @@ class TestParallelExecution(unittest.TestCase):
         os.makedirs(os.path.join(ws, "plan"))
         for d in ("src/a", "src/b", "src/c"):
             os.makedirs(os.path.join(ws, d))
-            with open(os.path.join(ws, d, "m.py"), "w") as f:
+            with open(os.path.join(ws, d, "m.py"), "w", encoding="utf-8") as f:
                 f.write("x=1\n")
         subprocess.run(["git", "init", "-q"], cwd=ws)
         subprocess.run(["git", "add", "-A"], cwd=ws)
@@ -395,7 +395,7 @@ class TestParallelExecution(unittest.TestCase):
             {"id": "t4", "scope": ["src/c/**"], "tests": "true",
              "deps": ["t1"]},
         ]
-        with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+        with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": tasks}, f)
         loop.init(ws, "parallel goal", spec_path="s", checkpoints=["plan"],
                   parallel=True)
@@ -486,7 +486,7 @@ class TestParallelCommitDiscipline(unittest.TestCase):
         subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
                         "tp/t1"], cwd=ws)
         loop.claim(ws, "t1", agent_ws)
-        with open(os.path.join(agent_ws, "src", "a", "new.py"), "w") as f:
+        with open(os.path.join(agent_ws, "src", "a", "new.py"), "w", encoding="utf-8") as f:
             f.write("y=2\n")
         loop.submit(ws, "pass", task_id="t1")
         out = loop.gate(ws, "pass", task_id="t1")
@@ -520,7 +520,7 @@ class TestSerialClaimRefusal(unittest.TestCase):
 
     def _trace(self, ws):
         path = os.path.join(ws, ".taskplane", "trace.jsonl")
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return [json.loads(line) for line in f]
 
     def test_two_serial_claims_both_refused_with_remedy_and_trace(self):
@@ -582,7 +582,7 @@ class TestPlanOrderingGate(unittest.TestCase):
         os.makedirs(os.path.join(ws, "taskplane", "tests", "fixtures",
                                  "briefs"), exist_ok=True)
         for f in ("lens.py",):
-            open(os.path.join(ws, "taskplane", f), "w").write("x=1\n")
+            open(os.path.join(ws, "taskplane", f), "w", encoding="utf-8").write("x=1\n")
         subprocess.run(["git", "add", "-A"], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "surfaces"], cwd=ws)
@@ -591,7 +591,7 @@ class TestPlanOrderingGate(unittest.TestCase):
         return ws
 
     def _trace_events(self, ws, event):
-        with open(os.path.join(ws, ".taskplane", "trace.jsonl")) as f:
+        with open(os.path.join(ws, ".taskplane", "trace.jsonl"), encoding="utf-8") as f:
             return [json.loads(line) for line in f
                     if f'"{event}"' in line]
 
@@ -767,7 +767,7 @@ class TestPlanOrderingGate(unittest.TestCase):
 
 
 def _trace_events(ws, event=None):
-    with open(os.path.join(ws, ".taskplane", "trace.jsonl")) as f:
+    with open(os.path.join(ws, ".taskplane", "trace.jsonl"), encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     return [r for r in rows if event is None or r.get("event") == event]
 

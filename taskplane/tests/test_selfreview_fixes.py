@@ -24,7 +24,7 @@ def _repo(prefix="tp-fix-"):
     ws = tempfile.mkdtemp(prefix=prefix)
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "t@t"); _git(ws, "config", "user.name", "t")
-    open(os.path.join(ws, "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "add", "-A"); _git(ws, "commit", "-qm", "base")
     return ws
 
@@ -35,7 +35,7 @@ def _pass_eval(ws):
     routed = lens.route_git_diff(ws, base=state.get("baseline") or "HEAD",
                                  task_type=task.get("type"), breadth="routed")
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-    with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
+    with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump({"task": task["id"], "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified"}
@@ -51,7 +51,7 @@ class TestKernel(unittest.TestCase):
     def setUp(self):
         self.ws = _repo()
         os.makedirs(os.path.join(self.ws, "server"))
-        open(os.path.join(self.ws, "server", "ok.py"), "w").close()
+        open(os.path.join(self.ws, "server", "ok.py"), "w", encoding="utf-8").close()
 
     def test_rm_screened_as_write_readonly(self):
         c = {"read_only": True, "write_allow": [".em-review/**"], "coding": {}}
@@ -95,7 +95,7 @@ class TestEngine(unittest.TestCase):
              "new_modules": ["src"], "tests": "t"},
             {"id": ids[1], "variant": "B", "scope": ["src/**"],
              "new_modules": ["src"], "tests": "t"}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
+            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
         for t in s["tasks"]:
@@ -110,7 +110,7 @@ class TestEngine(unittest.TestCase):
              "new_modules": ["src"], "tests": "t"},
             {"id": "gb", "variant": "B", "scope": ["src/**"],
              "new_modules": ["src"], "tests": "t"}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
+            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
@@ -132,7 +132,7 @@ class TestEngine(unittest.TestCase):
              "deps": ["t1"], "tests": "t"},
             {"id": "t3", "scope": ["c/**"], "new_modules": ["c"],
              "deps": ["t2"], "tests": "t"}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
+            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws); s["step"] = "escalated"; s["current_task"] = 0
         loop.save(self.ws, s)
@@ -150,7 +150,7 @@ class TestEngine(unittest.TestCase):
              "tests": "t"},
             {"id": "t2", "scope": ["b/**"], "new_modules": ["b"],
              "deps": ["t1"], "tests": "t"}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
+            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
         # t1 skipped directly (not via cascade), t2 left pending → deadlock
@@ -175,15 +175,15 @@ class TestEngine(unittest.TestCase):
              "new_modules": ["src"], "tests": "t"},
             {"id": "vb", "variant": "B", "scope": ["src/**"],
              "new_modules": ["src"], "tests": "t"}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
+            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass")
         self.assertTrue(loop.load(self.ws)["parallel"])
 
     def test_shared_requirement_keeps_all_edges(self):
         os.makedirs(os.path.join(self.ws, "src", "auth"))
         os.makedirs(os.path.join(self.ws, "src", "pay"))
-        open(os.path.join(self.ws, "src", "auth", "a.py"), "w").write("x=1\n")
-        open(os.path.join(self.ws, "src", "pay", "p.py"), "w").write("y=1\n")
+        open(os.path.join(self.ws, "src", "auth", "a.py"), "w", encoding="utf-8").write("x=1\n")
+        open(os.path.join(self.ws, "src", "pay", "p.py"), "w", encoding="utf-8").write("y=1\n")
         depgraph.scan(self.ws)
         reqs.record_requirement(
             self.ws, "shared requirement", acceptance=["shared edges stay"])
@@ -193,7 +193,7 @@ class TestEngine(unittest.TestCase):
         json.dump({"tasks": [
             {"id": "t1", "req": "R-0001", "scope": ["src/auth/**"], "tests": "t"},
             {"id": "t2", "req": "R-0001", "scope": ["src/pay/**"], "tests": "t"}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
+            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass")
         g = depgraph.load(self.ws)
         planned = {e["to"] for e in g["edges"]
@@ -206,14 +206,14 @@ class TestKernelFailClosed(unittest.TestCase):
     def test_corrupt_contract_blocks(self):
         ws = _repo()
         os.makedirs(os.path.join(ws, ".taskplane"))
-        open(os.path.join(ws, ".taskplane", "active_contract.json"), "w").write("{bad")
+        open(os.path.join(ws, ".taskplane", "active_contract.json"), "w", encoding="utf-8").write("{bad")
         r = subprocess.run(
             [sys.executable, os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "tp.py"), "screen"],
             input=json.dumps({"cwd": ws, "tool_name": "Write",
                               "tool_input": {"file_path": "x"}}),
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8")
         self.assertIn('"decision": "block"', r.stdout)
 
     def test_no_contract_abstains(self):
@@ -228,7 +228,7 @@ class TestKernelFailClosed(unittest.TestCase):
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "tp.py"), "screen"],
             input=json.dumps({"cwd": ws, "tool_name": "Write"}),
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.stdout.strip(), "")          # no forced decision
         self.assertNotIn('"decision"', r.stdout)
 
@@ -241,7 +241,7 @@ class TestSurface(unittest.TestCase):
         tp.trace(ws, "hook_deny", tool="Bash",
                  reason="<img src=x onerror=alert(1)>")
         out = dashboard.render(ws, out=os.path.join(ws, "d.html"))
-        html = open(out).read()
+        html = open(out, encoding="utf-8").read()
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertNotIn("<img src=x onerror", html)
         self.assertIn("&lt;script&gt;", html)
@@ -301,7 +301,7 @@ class TestOnboarding(unittest.TestCase):
 
     def test_files_no_git_prompts_init_git(self):
         ws = tempfile.mkdtemp(prefix="tp-ob-files-")
-        open(os.path.join(ws, "app.py"), "w").write("x=1\n")
+        open(os.path.join(ws, "app.py"), "w", encoding="utf-8").write("x=1\n")
         r = self._report(ws)
         self.assertTrue(r["looks_like_project"])
         self.assertEqual(r["next_action"], "init_git")
@@ -318,7 +318,7 @@ class TestOnboarding(unittest.TestCase):
         _git(ws, "init", "-q")
         _git(ws, "config", "user.email", "t@t")
         _git(ws, "config", "user.name", "t")
-        open(os.path.join(ws, ".gitignore"), "w").write(".taskplane/\n")
+        open(os.path.join(ws, ".gitignore"), "w", encoding="utf-8").write(".taskplane/\n")
         _git(ws, "add", "-A")
         _git(ws, "commit", "-qm", "base")
         r = self._report(ws)
@@ -333,7 +333,7 @@ class TestOnboarding(unittest.TestCase):
             [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))), "tp.py"), "context",
              "--workspace", ws],
-            capture_output=True, text=True, env=env, check=False)
+            capture_output=True, text=True, env=env, check=False, encoding="utf-8")
         self.assertEqual(p.returncode, 0)
         self.assertIn("no project folder is connected yet", p.stdout)
         self.assertIn("set up taskplane", p.stdout)
@@ -446,7 +446,7 @@ def _screen_once(ws, tool_name, tool_input):
         [sys.executable, _TP_PY, "screen"],
         input=json.dumps({"cwd": ws, "tool_name": tool_name,
                           "tool_input": tool_input}),
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8")
     return r.stdout
 
 
@@ -499,17 +499,17 @@ class TestKernelCorrectness(unittest.TestCase):
     def test_is_dirty_ignores_runtime_owned(self):
         ws = _repo()
         os.makedirs(os.path.join(ws, "knowledge"), exist_ok=True)
-        open(os.path.join(ws, "knowledge", "index.json"), "w").write("{}")
+        open(os.path.join(ws, "knowledge", "index.json"), "w", encoding="utf-8").write("{}")
         # only a runtime-owned file is uncommitted → NOT dirty
         self.assertEqual(tl.is_dirty(ws), [])
         # a real source change IS dirty
-        open(os.path.join(ws, "b.py"), "w").write("y=2\n")
+        open(os.path.join(ws, "b.py"), "w", encoding="utf-8").write("y=2\n")
         self.assertTrue(tl.is_dirty(ws))
 
     def test_trace_records_carry_timestamp(self):
         ws = _repo()
         tl.trace(ws, "unit_event", k="v")
-        line = open(os.path.join(ws, ".taskplane", "trace.jsonl")).readlines()[-1]
+        line = open(os.path.join(ws, ".taskplane", "trace.jsonl"), encoding="utf-8").readlines()[-1]
         rec = json.loads(line)
         self.assertIn("ts", rec)
         self.assertIsInstance(rec["ts"], (int, float))
@@ -524,7 +524,7 @@ class TestContractSchemaUnified(unittest.TestCase):
         tl.activate(ws, c)
         for verb in (["status"], ["budget", "--spent", "1"]):
             r = subprocess.run([sys.executable, _TP_PY, *verb],
-                               cwd=ws, capture_output=True, text=True)
+                               cwd=ws, capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn("KeyError", r.stderr)
 
@@ -532,7 +532,7 @@ class TestContractSchemaUnified(unittest.TestCase):
         ws = _repo()
         r = subprocess.run([sys.executable, _TP_PY, "req", "new", "t",
                             "--nfr", "security"], cwd=ws,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8")
         self.assertNotEqual(r.returncode, 0)
         self.assertNotIn("Traceback", r.stderr)
         self.assertIn("LENS=STATEMENT", r.stderr)
@@ -548,7 +548,7 @@ class TestContractSchemaUnified(unittest.TestCase):
         import tp as tpcli
         # a populated dir that is NOT a committed git tree, treated as $HOME
         ws = tempfile.mkdtemp(prefix="tp-home-")
-        open(os.path.join(ws, "app.py"), "w").write("x=1\n")
+        open(os.path.join(ws, "app.py"), "w", encoding="utf-8").write("x=1\n")
         orig = os.path.expanduser
         try:
             os.path.expanduser = lambda p: ws if p == "~" else orig(p)
@@ -648,7 +648,7 @@ class TestLoopSerialSkipAndSelection(unittest.TestCase):
         loop.init(ws, "g", parallel=False)
         d = os.path.join(ws, ".taskplane")
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "trace.jsonl"), "a") as f:
+        with open(os.path.join(d, "trace.jsonl"), "a", encoding="utf-8") as f:
             f.write('{"event":"loop_init","ts":1}\n')
             f.write("{truncated partial line\n")   # must not crash retro
         out = loop.retro(ws)
@@ -699,7 +699,7 @@ class TestDepgraphIncremental(unittest.TestCase):
         import depgraph as dg
         ws = tempfile.mkdtemp(prefix="tp-dg-")
         os.makedirs(os.path.join(ws, "src"))
-        open(os.path.join(ws, "src", "x.py"), "w").write("import os\n")
+        open(os.path.join(ws, "src", "x.py"), "w", encoding="utf-8").write("import os\n")
         g1 = dg.scan(ws); dg.save(ws, g1)
         g2 = dg.scan(ws)
         self.assertEqual(sorted(map(tuple, g1["edges"])),
@@ -718,7 +718,7 @@ class TestKBSensitiveGuard(unittest.TestCase):
         ws = tempfile.mkdtemp(prefix="tp-kb-")
         os.makedirs(os.path.join(ws, "knowledge", "decisions"))
         open(os.path.join(ws, "knowledge", "decisions", "0001-x.md"),
-             "w").write("Paid SKU ~15-25k/yr, ACV 25-75k. Monetize later.")
+             "w", encoding="utf-8").write("Paid SKU ~15-25k/yr, ACV 25-75k. Monetize later.")
         problems = kb.lint(ws)
         self.assertTrue(any("commercial" in p["problem"] for p in problems))
 

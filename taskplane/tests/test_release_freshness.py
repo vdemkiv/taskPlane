@@ -70,7 +70,7 @@ def _read(rel):
 
 
 def _current_minor():
-    v = json.load(open(os.path.join(ROOT, ".codex-plugin", "plugin.json")))["version"]
+    v = json.load(open(os.path.join(ROOT, ".codex-plugin", "plugin.json"), encoding="utf-8"))["version"]
     return ".".join(v.split(".")[:2])
 
 
@@ -353,7 +353,7 @@ class TestGeneratedCliReference(unittest.TestCase):
 
     def _generate(self):
         run = subprocess.run([sys.executable, self.TPPY, "help", "--md"],
-                             capture_output=True, text=True, cwd=ROOT)
+                             capture_output=True, text=True, cwd=ROOT, encoding="utf-8")
         self.assertEqual(run.returncode, 0,
                          f"`tp help --md` refused: {run.stderr}")
         self.assertTrue(run.stdout.strip(),

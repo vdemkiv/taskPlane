@@ -66,7 +66,7 @@ def write_ws(spec):
     for rel, content in spec.items():
         p = os.path.join(ws, rel)
         os.makedirs(os.path.dirname(p) or ws, exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(content)
     return ws
 
@@ -748,7 +748,7 @@ def _b4_ws(tmp):
     def w(rel, txt):
         p = os.path.join(ws, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(txt)
 
     w("svc/api/handlers/h1.py",

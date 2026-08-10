@@ -575,7 +575,7 @@ def cmd_decision(a) -> int:
         print(json.dumps(d, indent=2))
         p = os.path.join(_kb.kb_dir(ws), d["file"])
         if os.path.exists(p):
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 print(f.read())
     elif act == "accept":
         d = _kb.set_status(ws, a.id, "accepted")
@@ -643,7 +643,7 @@ def cmd_ready(a) -> int:
     snap_path = os.path.join(tp.tp_dir(ws), "snapshot")
     snapshot = None
     if os.path.exists(snap_path):
-        with open(snap_path) as f:
+        with open(snap_path, encoding="utf-8") as f:
             snapshot = f.read().strip() or None
     ready, blockers, warnings = tp.dor_check(c, ws, snapshot)
     tp.trace(ws, "dor", ready=ready, blockers=blockers, warnings=warnings)
@@ -670,7 +670,7 @@ def _meter_load(ws, strict=False) -> dict:
     p = os.path.join(tp.tp_dir(ws), "meter.json")
     if os.path.exists(p):
         try:
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 return json.load(f)
         except (ValueError, OSError):
             if strict:
@@ -897,7 +897,7 @@ def cmd_status(a) -> int:
         legacy = tp.active_contract_path(ws, None)
         if os.path.exists(legacy):
             try:
-                with open(legacy) as f:
+                with open(legacy, encoding="utf-8") as f:
                     json.load(f)
             except (OSError, json.JSONDecodeError) as e:
                 print(json.dumps({
@@ -994,7 +994,7 @@ def cmd_dod(a) -> int:
     snap_path = os.path.join(tp.tp_dir(ws), "snapshot")
     snapshot = None
     if os.path.exists(snap_path):
-        with open(snap_path) as f:
+        with open(snap_path, encoding="utf-8") as f:
             snapshot = f.read().strip() or None
 
     errors = tp.dod_check(c, ws, snapshot)
@@ -1541,7 +1541,7 @@ def cmd_lens(a) -> int:
                                  "findings.json")
                 if os.path.isfile(p):
                     try:
-                        with open(p) as f:
+                        with open(p, encoding="utf-8") as f:
                             n = len(json.load(f).get("findings") or [])
                     except (OSError, ValueError):
                         n = None
@@ -1793,11 +1793,11 @@ def _ensure_gitignored(ws, entries, header) -> list:
     gi_path = os.path.join(ws, ".gitignore")
     existing = ""
     if os.path.exists(gi_path):
-        with open(gi_path) as f:
+        with open(gi_path, encoding="utf-8") as f:
             existing = f.read()
     missing = [e for e in entries if e not in existing]
     if missing:
-        with open(gi_path, "a") as f:
+        with open(gi_path, "a", encoding="utf-8") as f:
             f.write("\n# " + header + "\n" + "\n".join(missing) + "\n")
     return missing
 
@@ -1821,11 +1821,11 @@ def _migrate_kb(ws) -> dict:
     # unanchored line in place.
     gi_path = os.path.join(ws, ".gitignore")
     if os.path.exists(gi_path):
-        with open(gi_path) as f:
+        with open(gi_path, encoding="utf-8") as f:
             body = f.read()
         fixed = re.sub(r'(?m)^knowledge/\s*$', '/knowledge/', body)
         if fixed != body:
-            with open(gi_path, "w") as f:
+            with open(gi_path, "w", encoding="utf-8") as f:
                 f.write(fixed)
     ignored = _ensure_gitignored(
         ws, ["/knowledge/"],
@@ -1851,7 +1851,7 @@ def cmd_share(a) -> int:
         unpublished = unpub_flows = 0
         try:
             with open(os.path.join(tp.external_store_root(ws),
-                                   "knowledge", "index.json")) as f:
+                                   "knowledge", "index.json"), encoding="utf-8") as f:
                 pidx = json.load(f)
             unpublished = sum(1 for d in pidx.get("decisions", [])
                               if not d.get("published_as"))
@@ -1956,7 +1956,7 @@ def cmd_init(a) -> int:
                        ("current-state.md", CURRENT_STATE_MD)):
         p = os.path.join(ctx, name)
         if not os.path.exists(p):
-            with open(p, "w") as f:
+            with open(p, "w", encoding="utf-8") as f:
                 f.write(body)
             wrote.append(f"context/{name}")
     # Runtime paths that stay LOCAL to the checkout — never committed.
@@ -2166,7 +2166,7 @@ def cmd_findings(a) -> int:
     path = a.file or os.path.join(_workspace(a.workspace), ".em-review",
                                   "findings.json")
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
         print(f"taskplane: cannot read findings {path}: {e}", file=sys.stderr)
@@ -2207,7 +2207,7 @@ def cmd_northstar(a) -> int:
     if a.render:
         import dashboard
         try:
-            with open(a.render) as f:
+            with open(a.render, encoding="utf-8") as f:
                 note = json.load(f)
         except (OSError, ValueError) as e:
             print(f"taskplane: cannot read note {a.render}: {e}",
@@ -2651,7 +2651,25 @@ def cmd_help(a) -> int:
     return 0
 
 
+def _utf8_streams() -> None:
+    """Make stdout/stderr UTF-8 regardless of the host's console codepage.
+
+    Windows consoles default to a legacy codepage (cp1252 on en-US), and
+    taskplane's own output carries arrows and em dashes — `tp kb migrate`
+    and `tp northstar` died mid-print with UnicodeEncodeError, taking the
+    command's exit code with them. The text is ours and it is UTF-8; the
+    stream should say so. Guarded: a stream may be replaced by a test
+    harness or a wrapper with no reconfigure().
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv=None) -> int:
+    _utf8_streams()
     p = argparse.ArgumentParser(prog="tp.py")
     sub = p.add_subparsers(dest="cmd", required=True)
 

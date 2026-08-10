@@ -14,7 +14,7 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def _load(name):
-    with open(os.path.join(FIXTURES, name)) as f:
+    with open(os.path.join(FIXTURES, name), encoding="utf-8") as f:
         return json.load(f)
 
 

@@ -31,7 +31,7 @@ CATALOG = os.path.join(ROOT, "lenses", "catalog.json")
 
 
 def _lenses():
-    c = json.load(open(CATALOG))
+    c = json.load(open(CATALOG, encoding="utf-8"))
     return c["lenses"] if isinstance(c, dict) else c
 
 

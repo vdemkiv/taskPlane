@@ -20,7 +20,7 @@ import taskplane_lite as tp  # noqa: E402
 
 def _git(ws, *args):
     return subprocess.run(["git", *args], cwd=ws, capture_output=True,
-                          text=True, check=False)
+                          text=True, check=False, encoding="utf-8")
 
 
 class TestGovernanceV2(unittest.TestCase):
@@ -31,7 +31,7 @@ class TestGovernanceV2(unittest.TestCase):
         self.ws = tempfile.mkdtemp(prefix="tp-v2-ws-")
         os.makedirs(os.path.join(self.ws, "src", "core"))
         os.makedirs(os.path.join(self.ws, "plan"))
-        with open(os.path.join(self.ws, "src", "core", "a.py"), "w") as f:
+        with open(os.path.join(self.ws, "src", "core", "a.py"), "w", encoding="utf-8") as f:
             f.write("VALUE = 1\n")
         _git(self.ws, "init", "-q")
         _git(self.ws, "config", "user.email", "test@example.com")
@@ -54,7 +54,7 @@ class TestGovernanceV2(unittest.TestCase):
         loop.init(self.ws, "governed change", spec_path="specs/spec.md",
                   checkpoints=["em"])
         loop.next_action(self.ws)
-        with open(os.path.join(self.ws, "plan", "tasks.json"), "w") as f:
+        with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [task]}, f)
         result = loop.gate(self.ws, "pass")
         self.assertNotIn("error", result)
@@ -64,7 +64,7 @@ class TestGovernanceV2(unittest.TestCase):
         self._plan_to_execute()
         loop.next_action(self.ws)
         path = os.path.join(self.ws, "src", "core", "a.py")
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("VALUE_2 = 2\n")
 
         missing = loop.gate(self.ws, "pass")
@@ -75,7 +75,7 @@ class TestGovernanceV2(unittest.TestCase):
         self.assertEqual(loop.load(self.ws)["step"], "execute")
         self.assertIsNotNone(tp.load_active(self.ws))
 
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("VALUE_3 = 3\n")
         stale = loop.gate(self.ws, "pass")
         self.assertIn("changed after worker submission", stale["error"])
@@ -91,7 +91,7 @@ class TestGovernanceV2(unittest.TestCase):
         loop.next_action(self.ws)
         evidence_dir = os.path.join(self.ws, ".eval")
         os.makedirs(evidence_dir, exist_ok=True)
-        with open(os.path.join(evidence_dir, "verdict.json"), "w") as f:
+        with open(os.path.join(evidence_dir, "verdict.json"), "w", encoding="utf-8") as f:
             json.dump({"task": "t1", "verdict": "pass"}, f)
         loop.submit(self.ws, "pass")
         depgraph.record_edge(self.ws, "core", "contract:late-change",
@@ -118,10 +118,10 @@ class TestGovernanceV2(unittest.TestCase):
         evidence_dir = os.path.join(self.ws, ".eval")
         os.makedirs(evidence_dir, exist_ok=True)
         verdict = os.path.join(evidence_dir, "verdict.json")
-        with open(verdict, "w") as f:
+        with open(verdict, "w", encoding="utf-8") as f:
             json.dump({"task": "t1", "verdict": "pass"}, f)
         loop.submit(self.ws, "pass")
-        with open(verdict, "w") as f:
+        with open(verdict, "w", encoding="utf-8") as f:
             json.dump({"task": "t1", "verdict": "fail"}, f)
         stale = loop.gate(self.ws, "pass")
         self.assertIn("changed after worker submission", stale["error"])
@@ -151,7 +151,7 @@ class TestGovernanceV2(unittest.TestCase):
                 "tests": "true"}
         loop.init(self.ws, "g", spec_path="specs/spec.md")
         loop.next_action(self.ws)
-        with open(os.path.join(self.ws, "plan", "tasks.json"), "w") as f:
+        with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [task]}, f)
         blocked = loop.gate(self.ws, "pass")
         self.assertIn("requirement dependency R-9999", " ".join(

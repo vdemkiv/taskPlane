@@ -36,7 +36,7 @@ EMPTY_GRAPH = {"hub_dependents": 0, "boundary_contracts": [], "modules": []}
 def write(root, rel, text):
     p = os.path.join(root, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f:
+    with open(p, "w", encoding="utf-8") as f:
         f.write(text)
     return rel
 

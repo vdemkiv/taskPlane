@@ -37,14 +37,14 @@ def load_index(ws: str) -> dict:
     p = _index_path(ws)
     if not os.path.exists(p):
         return {"decisions": [], "flows": []}
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _atomic_json(path: str, obj) -> None:
     """tmp + os.replace — a reader never sees a torn index (v1.5.1)."""
     tmp = path + f".tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2)
     os.replace(tmp, path)
 
@@ -195,7 +195,7 @@ def _record_decision_locked(ws, title, *, context, decision, rationale,
 ## Alternatives considered
 {alternatives or '—'}
 """
-    with open(os.path.join(kb_dir(ws), entry["file"]), "w") as f:
+    with open(os.path.join(kb_dir(ws), entry["file"]), "w", encoding="utf-8") as f:
         f.write(body)
     tp.trace(ws, "decision_recorded", id=did, title=title, tags=entry["tags"])
     return entry
@@ -211,7 +211,7 @@ def _load_index_at(root: str, *, strict: bool):
     if not os.path.exists(p):
         return {"decisions": [], "flows": []}
     try:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             idx = json.load(f)
     except ValueError:
         if strict:
@@ -299,7 +299,7 @@ def _publish_locked(ws, src_kb, dst_kb, ids):
                                              "private store"})
                 continue
             try:
-                with open(fpath) as f:
+                with open(fpath, encoding="utf-8") as f:
                     body = f.read()
             except OSError:
                 malformed.append({"private": d.get("id"),
@@ -308,7 +308,7 @@ def _publish_locked(ws, src_kb, dst_kb, ids):
             new_id = _shared_id(_next_seq(dst_idx[kind]), d)
             slug = re.sub(r"^\d+-", "", os.path.basename(d["file"]))
             new_file = os.path.join(subdir, f"{new_id}-{slug}")
-            with open(os.path.join(dst_kb, new_file), "w") as f:
+            with open(os.path.join(dst_kb, new_file), "w", encoding="utf-8") as f:
                 f.write(body)
             shared = dict(d)
             shared.update({"id": new_id, "file": new_file,
@@ -375,7 +375,7 @@ def archive(ws: str, ids=None) -> dict:
         arch = {"decisions": [], "flows": []}
         if os.path.exists(arch_p):
             try:
-                with open(arch_p) as f:
+                with open(arch_p, encoding="utf-8") as f:
                     arch = json.load(f)
             except ValueError:
                 return {"error": "index-archive.json is corrupt — repair or "

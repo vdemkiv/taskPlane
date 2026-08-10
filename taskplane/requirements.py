@@ -211,7 +211,7 @@ def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
 ## Open questions
 {bullets(entry['open_questions'])}
 """
-    with open(os.path.join(kb_dir(ws), entry["file"]), "w") as f:
+    with open(os.path.join(kb_dir(ws), entry["file"]), "w", encoding="utf-8") as f:
         f.write(body)
     tp.trace(ws, "requirement_recorded", id=rid, title=title,
              status=entry["status"], changed_from=changed_from)
@@ -493,7 +493,7 @@ def record_debt(ws: str, title: str, *, requirement_id: str | None = None,
 ## Full follow-up (do it properly)
 {follow_up or '—'}
 """
-    with open(os.path.join(kb_dir(ws), entry["file"]), "w") as f:
+    with open(os.path.join(kb_dir(ws), entry["file"]), "w", encoding="utf-8") as f:
         f.write(body)
     tp.trace(ws, "debt_recorded", id=did, title=title,
              requirement_id=requirement_id)

@@ -57,7 +57,7 @@ HOOKS_JSON = os.path.join(ROOT, "hooks", "hooks.json")
 def _git_repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
     for a in (["init", "-q"], ["config", "user.email", "e@e"],
               ["config", "user.name", "t"], ["add", "-A"],
@@ -349,7 +349,7 @@ class TestPerTaskContractSlots(_StoreIsolated):
     def test_corrupt_slot_fails_closed_even_in_union(self):
         self._activate("tA", scope=["src/**"])
         act = os.path.join(tpl.tp_dir(self._tmp), "active")
-        with open(os.path.join(act, "tC.json"), "w") as f:
+        with open(os.path.join(act, "tC.json"), "w", encoding="utf-8") as f:
             f.write("{torn")
         os.environ.pop("TASKPLANE_TASK", None)
         with self.assertRaises(tpl.StateError):
@@ -416,7 +416,7 @@ class TestPerTaskContractSlots(_StoreIsolated):
                  "tool_input": {"command": "echo hi"}}
         r = subprocess.run([sys.executable, TPPY, "screen"],
                            input=json.dumps(event), capture_output=True,
-                           text=True, env=env)
+                           text=True, env=env, encoding="utf-8")
         d = json.loads(r.stdout)
         self.assertEqual(d["decision"], "block")
 
@@ -447,7 +447,7 @@ class TestRequirementsIndexLocking(_StoreIsolated):
     def test_index_write_is_atomic_and_corruption_raises(self):
         reqs.record_requirement(self._tmp, "one")
         p = os.path.join(reqs.kb_dir(self._tmp), "index.json")
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write("{torn")
         with self.assertRaises(tpl.StateError):
             reqs.load_index(self._tmp)
@@ -475,7 +475,7 @@ class TestScopeDiffLoopArtifacts(unittest.TestCase):
         os.makedirs(os.path.join(ws, "context"))
         for rel in ("specs/spec.md", "docs/a.md", "context/b.md",
                     ".gitignore"):
-            with open(os.path.join(ws, rel), "w") as f:
+            with open(os.path.join(ws, rel), "w", encoding="utf-8") as f:
                 f.write("loop artifact\n")
         errors = tpl.dod_check(c, ws, head)
         self.assertEqual(errors, [], errors)
@@ -487,7 +487,7 @@ class TestScopeDiffLoopArtifacts(unittest.TestCase):
         head = tpl.git_head(ws)
         c = tpl.build_contract("t", scope=["src/**"])
         os.makedirs(os.path.join(ws, "other"))
-        with open(os.path.join(ws, "other", "x.py"), "w") as f:
+        with open(os.path.join(ws, "other", "x.py"), "w", encoding="utf-8") as f:
             f.write("rogue\n")
         errors = tpl.dod_check(c, ws, head)
         self.assertTrue(any("diff_scope: 'other/x.py'" in e for e in errors))
@@ -521,7 +521,7 @@ class TestUnittestRunnerIsolation(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "-m", "unittest",
              "taskplane.tests.test_requirements"],
-            cwd=ROOT, capture_output=True, text=True, env=env)
+            cwd=ROOT, capture_output=True, text=True, env=env, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         self.assertFalse(
             os.path.exists(os.path.join(fake_home, ".taskplane")),
@@ -538,7 +538,7 @@ class TestModeFailsTowardPrivate(_StoreIsolated):
         tpl.set_mode(self._tmp, private=True)
         self.assertTrue(tpl.get_mode(self._tmp)["private"])
         mode_file = tpl._mode_file(self._tmp)
-        with open(mode_file, "w") as f:
+        with open(mode_file, "w", encoding="utf-8") as f:
             f.write("{torn")                     # simulate the torn write
         m = tpl.get_mode(self._tmp)
         self.assertTrue(m["private"],
@@ -548,10 +548,10 @@ class TestModeFailsTowardPrivate(_StoreIsolated):
     def test_corrupt_mode_beats_committed_shared_config(self):
         os.makedirs(tpl.repo_store_root(self._tmp), exist_ok=True)
         with open(os.path.join(tpl.repo_store_root(self._tmp),
-                               "config.json"), "w") as f:
+                               "config.json"), "w", encoding="utf-8") as f:
             json.dump({"plan": "team", "store": "repo"}, f)
         tpl.set_mode(self._tmp, private=True)
-        with open(tpl._mode_file(self._tmp), "w") as f:
+        with open(tpl._mode_file(self._tmp), "w", encoding="utf-8") as f:
             f.write("not json")
         m = tpl.get_mode(self._tmp)
         self.assertTrue(m["private"])
@@ -566,7 +566,7 @@ class TestModeFailsTowardPrivate(_StoreIsolated):
     def test_inherited_shared_store_carries_the_notice(self):
         os.makedirs(tpl.repo_store_root(self._tmp), exist_ok=True)
         with open(os.path.join(tpl.repo_store_root(self._tmp),
-                               "config.json"), "w") as f:
+                               "config.json"), "w", encoding="utf-8") as f:
             json.dump({"plan": "team", "store": "repo"}, f)
         m = tpl.get_mode(self._tmp)              # no personal setting
         self.assertEqual(m["store"], "repo")
@@ -669,11 +669,11 @@ class TestRuntimeGC(_StoreIsolated):
                 os.path.join("active", "tB.json")]
         for rel in stale + keep:
             p = os.path.join(d, rel)
-            with open(p, "w") as f:
+            with open(p, "w", encoding="utf-8") as f:
                 f.write("{}")
             self._old(p)
         fresh = os.path.join(d, "fresh.json.removed.9.0")
-        with open(fresh, "w") as f:
+        with open(fresh, "w", encoding="utf-8") as f:
             f.write("{}")
         lockdir = os.path.join(d, "graph.json.lockdir")
         os.makedirs(lockdir)
@@ -691,7 +691,7 @@ class TestRuntimeGC(_StoreIsolated):
         d = tpl.tp_dir(self._tmp)
         os.makedirs(d, exist_ok=True)
         tomb = os.path.join(d, "x.json.removed.5.0")
-        with open(tomb, "w") as f:
+        with open(tomb, "w", encoding="utf-8") as f:
             f.write("{}")
         self._old(tomb)
         tpl.activate(self._tmp, tpl.build_contract("t", scope=["src/**"]),
@@ -744,7 +744,7 @@ class TestTraceDarknessWarning(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         blocker = os.path.join(tmp, "afile")
-        with open(blocker, "w") as f:
+        with open(blocker, "w", encoding="utf-8") as f:
             f.write("x")
         ws = os.path.join(blocker, "ws")         # makedirs will fail
         old = tpl._TRACE_FAILED_WARNED
@@ -771,10 +771,10 @@ class TestLegacyStoreAdoption(_StoreIsolated):
         legacy = os.path.join(tpl.store_home(), "projects",
                               tpl._path_slug(ws))
         os.makedirs(os.path.join(legacy, "knowledge"), exist_ok=True)
-        with open(os.path.join(legacy, "knowledge", "index.json"), "w") as f:
+        with open(os.path.join(legacy, "knowledge", "index.json"), "w", encoding="utf-8") as f:
             json.dump({"decisions": []}, f)
         if meta_workspace is not None:
-            with open(os.path.join(legacy, "meta.json"), "w") as f:
+            with open(os.path.join(legacy, "meta.json"), "w", encoding="utf-8") as f:
                 json.dump({"workspace": meta_workspace}, f)
         return legacy
 
@@ -830,7 +830,7 @@ class TestHostSeam(unittest.TestCase):
 
 class TestHookWiring(unittest.TestCase):
     def _entries(self):
-        with open(HOOKS_JSON) as f:
+        with open(HOOKS_JSON, encoding="utf-8") as f:
             cfg = json.load(f)
         for group in cfg["hooks"].values():
             for matcher in group:
@@ -866,7 +866,7 @@ class TestHookWiring(unittest.TestCase):
         self.assertFalse(out["hook_seen"])
         self.assertIn("ZERO screen activity", out["warning"])
         os.makedirs(tpl.tp_dir(tmp), exist_ok=True)
-        with open(os.path.join(tpl.tp_dir(tmp), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(tmp), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": 2,
                                       "last_seen_ts": time.time()}}, f)
         out = tpl.screen_liveness(tmp, contract=c)

@@ -1571,6 +1571,6 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
             .replace("__DATA__", safe_data))
     out = out or os.path.join(ws, ".taskplane", "depgraph.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     return out

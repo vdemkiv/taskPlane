@@ -90,7 +90,7 @@ def _path(stage: str) -> str:
 
 
 def _js(stage: str) -> str:
-    with open(_path(stage)) as f:
+    with open(_path(stage), encoding="utf-8") as f:
         return f.read()
 
 
@@ -119,7 +119,7 @@ def _contracts() -> list:
     verbatim from the Phase 2 contract that shipped these workflows
     (`git show 6a3d581:design/contract.json`, the `contracts` table) and
     changes ONLY when a shipped contract deliberately changes shape."""
-    with open(os.path.join(BRIEFS, "shipped_contracts.json")) as f:
+    with open(os.path.join(BRIEFS, "shipped_contracts.json"), encoding="utf-8") as f:
         contracts = json.load(f)["contracts"]
     if any(c["id"] == "contract:wave-workflow" for c in contracts):
         return contracts
@@ -255,7 +255,7 @@ class TestSchemaPins:
         fix_schema = _schema_block(_js("fix-wave"), "RECEIPT_SCHEMA",
                                    "fix-wave")
         assert exec_schema == fix_schema
-        with open(os.path.join(WF_DIR, "review-wave.js")) as f:
+        with open(os.path.join(WF_DIR, "review-wave.js"), encoding="utf-8") as f:
             review_src = f.read()
         review_schema = _schema_block(review_src, "FINDINGS_SCHEMA",
                                       "review-wave")
@@ -340,7 +340,7 @@ def _trace_events(ws, event):
     p = os.path.join(ws, ".taskplane", "trace.jsonl")
     if not os.path.isfile(p):
         return []
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         return [json.loads(l) for l in f
                 if l.strip() and json.loads(l).get("event") == event]
 
@@ -719,7 +719,7 @@ def test_resume_fixture():
     re-run. Journal keying is valid ONLY because each stage workflow labels
     its agents with the deterministic literal rule '<prefix>:' + brief id;
     the fixture is bound to that rule programmatically."""
-    with open(os.path.join(BRIEFS, "stage_journal_killed.json")) as f:
+    with open(os.path.join(BRIEFS, "stage_journal_killed.json"), encoding="utf-8") as f:
         fx = json.load(f)
     stage = fx["workflow"]
     assert stage in STAGES
@@ -765,7 +765,7 @@ def test_double_submit_same_outcome_is_a_noop(tmp_path, monkeypatch):
     aws = os.path.join(ws, ".tp-work", "t1")
     stage_fixture._git(ws, "worktree", "add", "-q", aws, "-b", "tp/t1")
     assert loop.claim(ws, "t1", aws)["claimed"] == "t1"
-    with open(os.path.join(aws, "src", "alpha", "m.py"), "w") as f:
+    with open(os.path.join(aws, "src", "alpha", "m.py"), "w", encoding="utf-8") as f:
         f.write("x = 2\n")
     stage_fixture._git(aws, "add", "-A")
     stage_fixture._git(aws, "commit", "-qm", "t1")
@@ -788,7 +788,7 @@ def _walk_repo(tmp: str) -> str:
     import subprocess
     ws = os.path.join(tmp, "walk")
     os.makedirs(os.path.join(ws, "src", "core"))
-    with open(os.path.join(ws, "src", "core", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "core", "a.py"), "w", encoding="utf-8") as f:
         f.write("VALUE = 1\n")
     for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "init"]):
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
@@ -858,11 +858,11 @@ def _walk_design_contract(ws, req):
         "open_questions": [],
     }
     os.makedirs(os.path.join(ws, "design"), exist_ok=True)
-    with open(os.path.join(ws, "design", "design.md"), "w") as f:
+    with open(os.path.join(ws, "design", "design.md"), "w", encoding="utf-8") as f:
         f.write("# Governed walk\n\nOptional design phase.\n")
     contract["lens_evidence"][0]["content_fingerprint"] = \
         dc.design_content_fingerprint(ws, contract)
-    with open(os.path.join(ws, "design", "contract.json"), "w") as f:
+    with open(os.path.join(ws, "design", "contract.json"), "w", encoding="utf-8") as f:
         json.dump(contract, f, indent=2)
     return contract
 
@@ -886,7 +886,7 @@ def _walk_pass_eval(ws):
                      and not str(e.get("module")).startswith("req:")})
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w") as f:
+    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump({"task": task["id"], "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
@@ -914,7 +914,7 @@ def _walk_pass_em(ws, state):
                          kind="provides")
     coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-    with open(os.path.join(ws, ".em-review", "report.md"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
         f.write("# Engineering review\n\nAll required evidence passed.\n")
     changed = [f for f in loop._diff_files(
         ws, state.get("baseline") or "HEAD")
@@ -936,7 +936,7 @@ def _walk_pass_em(ws, state):
                                  "regression test passes",
                      "declared_by": "reviewer — hand-recorded edge"}],
                 "drift": []}}
-    with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "findings": []}, f)
     assert loop.submit(ws, "pass")["submitted"]
     return loop.gate(ws, "pass")
@@ -995,9 +995,9 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
                                 "contract_depth": 1,
                                 "requirement_depth": 1}}]
     os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-    with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+    with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
         json.dump({"tasks": tasks}, f, indent=2)
-    with open(os.path.join(ws, "plan", "plan.md"), "w") as f:
+    with open(os.path.join(ws, "plan", "plan.md"), "w", encoding="utf-8") as f:
         f.write("# Plan\n\nOne task realizes the approved design.\n")
     assert loop.gate(ws, "pass")["step"] == "plan_approval"    # plan gate
     assert nxt("plan_approval")["paused"]                      # human gate
@@ -1035,7 +1035,7 @@ class TestWorkflowAgnosticModulesExtended:
         audit.py: the stage emitter lives in tp.py ONLY, so no gate can
         ever be reachable only via workflows."""
         for mod in ("loop.py", "lens.py", "audit.py"):
-            with open(os.path.join(ROOT, "taskplane", mod)) as f:
+            with open(os.path.join(ROOT, "taskplane", mod), encoding="utf-8") as f:
                 src = f.read()
             assert "workflow" not in src.lower(), \
                 f"taskplane/{mod} must stay workflow-agnostic"

@@ -31,13 +31,13 @@ def git_ws(tmp, tasks):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
     os.makedirs(os.path.join(ws, "src", "todo"))
-    open(os.path.join(ws, "src", "todo", "a.py"), "w").write("x=1\n")
+    open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
     subprocess.run(["git", "init", "-q"], cwd=ws)
     subprocess.run(["git", "config", "user.email", "e@e"], cwd=ws)
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
-    json.dump({"tasks": tasks}, open(os.path.join(ws, "plan", "tasks.json"), "w"))
+    json.dump({"tasks": tasks}, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 
 
@@ -60,7 +60,7 @@ class _AtEvaluate(unittest.TestCase):
         loop.gate(self.ws, "pass")               # plan → plan_approval
         loop.approve(self.ws, "plan")
         loop.next_action(self.ws)                # execute
-        open(os.path.join(self.ws, "src", "todo", "a.py"), "a").write("y=2\n")
+        open(os.path.join(self.ws, "src", "todo", "a.py"), "a", encoding="utf-8").write("y=2\n")
         submit_gate(self.ws, "pass")             # execute → evaluate
         loop.next_action(self.ws)
 
@@ -158,7 +158,7 @@ class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
                 b["graph"].pop("contracts_to_verify")
         b["verdict"] = "pass"
         os.makedirs(os.path.join(self.ws, ".eval"), exist_ok=True)
-        with open(os.path.join(self.ws, ".eval", "verdict.json"), "w") as f:
+        with open(os.path.join(self.ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
             json.dump(b, f)
         result = submit_gate(self.ws, "pass")
         self.assertNotIn("error", result)
@@ -168,11 +168,11 @@ class TestWriteIsNonDestructive(_AtEvaluate):
     def test_an_existing_verdict_is_never_overwritten(self):
         path = os.path.join(self.ws, ".eval", "verdict.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump({"authored": "by the agent"}, f)
         out = self.bundle(write=True)
         self.assertFalse(out["written"])
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             self.assertEqual(json.load(f), {"authored": "by the agent"})
 
     def test_without_write_nothing_is_written(self):
@@ -220,7 +220,7 @@ class TestTheSuiteIsCitedNotRerun(_AtEvaluate):
     def test_the_bundle_is_traced(self):
         self.bundle()
         path = os.path.join(tp.tp_dir(self.ws), "trace.jsonl")
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             events = [json.loads(x) for x in f if x.strip()]
         rows = [e for e in events if e.get("event") == "evidence_bundle"]
         self.assertTrue(rows)

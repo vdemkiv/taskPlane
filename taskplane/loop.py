@@ -361,7 +361,7 @@ def _edge_nudges(ws: str, changed, base: str) -> list:
                 "tp graph edge <consumer-module> <db-module> --kind data")
         diff = _sp.run(["git", "diff", "-U0", base, "--", *changed[:50]],
                        cwd=ws, capture_output=True, text=True
-                       ).stdout[:60000]
+                       , encoding="utf-8").stdout[:60000]
         added = "\n".join(l for l in diff.splitlines()
                            if l.startswith("+"))
         if _re.search(r"https?://|requests\.|urllib|fetch\(|axios"
@@ -398,7 +398,7 @@ def _diff_files(ws: str, base: str) -> list:
 
     def run(args):
         return subprocess.run(["git", *args], cwd=ws, capture_output=True,
-                              text=True).stdout
+                              text=True, encoding="utf-8").stdout
     return [f for f in (run(["diff", "--name-only", base])
                         + run(["ls-files", "--others",
                                "--exclude-standard"])).splitlines() if f]
@@ -2624,7 +2624,7 @@ def retro(ws: str) -> dict:
     trace_path = os.path.join(tp.tp_dir(ws), "trace.jsonl")
     events = []
     if os.path.exists(trace_path):
-        with open(trace_path) as f:
+        with open(trace_path, encoding="utf-8") as f:
             for ln in f:
                 if not ln.strip():
                     continue
@@ -2699,7 +2699,7 @@ def retro(ws: str) -> dict:
                 lines.append(f"- **{k}**: {v}")
         for l in (report.get("lessons") or []):
             lines.append(f"- lesson: {l if isinstance(l, str) else json.dumps(l)}")
-        with open(os.path.join(tp.tp_dir(ws), "retro.md"), "w") as f:
+        with open(os.path.join(tp.tp_dir(ws), "retro.md"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
     return report
 
@@ -2709,7 +2709,7 @@ def _load_tasks(ws: str, state: dict) -> None:
     if not os.path.exists(path):
         state["tasks"] = []
         return
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     tasks = data.get("tasks", data) if isinstance(data, dict) else data
     for t in tasks:
@@ -2807,7 +2807,7 @@ def user_summary(ws: str, host: str | None = None) -> dict:
         _b_max = int(_contract["budget"]["max_actions"])
         _tid = _contract.get("task_id", "_")
         try:
-            with open(os.path.join(tp.tp_dir(ws), "meter.json")) as _f:
+            with open(os.path.join(tp.tp_dir(ws), "meter.json"), encoding="utf-8") as _f:
                 _b_used = int((json.load(_f).get(_tid) or {})
                               .get("actions", 0))
         except (OSError, ValueError, TypeError):
@@ -2896,13 +2896,13 @@ def _publish_artifacts(ws: str) -> str | None:
                 old_fp = None
                 if new_fp and os.path.exists(gp):
                     try:
-                        with open(gp) as f:
+                        with open(gp, encoding="utf-8") as f:
                             old_fp = (json.load(f).get("meta") or {}).get(
                                 "content_fingerprint")
                     except (OSError, ValueError):
                         old_fp = None
                 if not new_fp or old_fp != new_fp:
-                    with open(gp, "w") as f:
+                    with open(gp, "w", encoding="utf-8") as f:
                         json.dump(g, f, indent=1)
         with contextlib.suppress(Exception):
             # Late import BY DESIGN: dashboard.py imports loop at module top,
@@ -2930,7 +2930,7 @@ def _publish_artifacts(ws: str) -> str | None:
                     tail_lines = tail.rstrip().splitlines()
                     prev = tail_lines[-1] if tail_lines else ""
                 if not prev.endswith(line):        # skip consecutive repeats
-                    with open(p, "a") as f:
+                    with open(p, "a", encoding="utf-8") as f:
                         if not prev:
                             f.write(f"# {state.get('goal', 'track')} — "
                                     "progress log\n\n")
@@ -2940,14 +2940,14 @@ def _publish_artifacts(ws: str) -> str | None:
                     # Cap the log: keep the header + the last 500 entries.
                     # Amortized — the full-file pass runs only past 256 KiB.
                     if size > 262144:
-                        with open(p) as f:
+                        with open(p, encoding="utf-8") as f:
                             all_lines = f.read().splitlines()
                         head = [l for l in all_lines[:2]
                                 if l.startswith("#") or not l.strip()]
                         body = [l for l in all_lines[len(head):] if l.strip()]
                         if len(body) > 500:
                             tmp = f"{p}.tmp.{os.getpid()}"
-                            with open(tmp, "w") as f:
+                            with open(tmp, "w", encoding="utf-8") as f:
                                 f.write("\n".join(head + body[-500:]) + "\n")
                             os.replace(tmp, p)
         return root
@@ -2966,7 +2966,7 @@ def _with_dashboard(fn):
                 frag = _dash.widget(ws)
                 p = os.path.join(tp.tp_dir(ws), "dashboard.html")
                 tmp = f"{p}.tmp.{os.getpid()}"
-                with open(tmp, "w") as f:
+                with open(tmp, "w", encoding="utf-8") as f:
                     f.write(frag)
                 os.replace(tmp, p)
                 out["dashboard"] = {

@@ -420,7 +420,7 @@ def render(ws: str, out: str | None = None) -> str:
         .replace("__STATS__", stats)
     out = out or os.path.join(tp.tp_dir(ws), "dashboard.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     return out
 
@@ -1150,7 +1150,7 @@ def _catalog():
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "lenses", "catalog.json")
     try:
-        c = json.load(open(p))
+        c = json.load(open(p, encoding="utf-8"))
         return c["lenses"] if isinstance(c, dict) else c
     except (OSError, ValueError):
         return []
@@ -1625,7 +1625,7 @@ def render_findings(findings, meta=None, out=None):
 
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-        with open(out, "w") as fh:
+        with open(out, "w", encoding="utf-8") as fh:
             fh.write(frag)
     return frag
 
@@ -1718,7 +1718,7 @@ def render_lens_wave(lenses, meta=None, out=None):
         f'</div>')
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-        with open(out, "w") as fh:
+        with open(out, "w", encoding="utf-8") as fh:
             fh.write(frag)
     return frag
 
@@ -1842,7 +1842,7 @@ def render_onboarding(report, out=None):
 
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-        with open(out, "w") as fh:
+        with open(out, "w", encoding="utf-8") as fh:
             fh.write(frag)
     return frag
 
@@ -1890,7 +1890,7 @@ def _harness_agents(ws):
         p = os.path.join(tp.tp_dir(w), "meter.json")
         if os.path.exists(p):
             try:
-                m = json.load(open(p)).get(tid, {})
+                m = json.load(open(p, encoding="utf-8")).get(tid, {})
             except (ValueError, OSError):
                 m = {}
         sc = (c.get("coding") or {}).get("scope_paths") or \
@@ -1927,7 +1927,7 @@ def _meter_totals(ws):
         if not os.path.exists(p):
             continue
         try:
-            for e in json.load(open(p)).values():
+            for e in json.load(open(p, encoding="utf-8")).values():
                 tot["actions"] += e.get("actions", 0)
                 tot["denies"] += e.get("denies", 0)
         except (ValueError, OSError):
@@ -2753,7 +2753,7 @@ def _budget_state(ws, contract):
     _tid = contract.get("task_id", "_")
     try:
         _mp = os.path.join(tp.tp_dir(ws), "meter.json")
-        with open(_mp) as _f:
+        with open(_mp, encoding="utf-8") as _f:
             budget_used = int((json.load(_f).get(_tid) or {})
                               .get("actions", 0))
     except (OSError, ValueError, TypeError):

@@ -36,7 +36,7 @@ def _screen(ws, tool_name, tool_input, env=None):
     e.update(env or {})
     r = subprocess.run([sys.executable, TP, "screen"],
                        input=json.dumps(event), capture_output=True,
-                       text=True, env=e)
+                       text=True, env=e, encoding="utf-8")
     if not r.stdout.strip():
         return {"decision": None}
     return json.loads(r.stdout)
@@ -60,7 +60,7 @@ class TestOrphanPidAuthoritative(unittest.TestCase):
         c["orphan_ttl_seconds"] = 1
         c["activated_at"] = time.time() - 99999   # ancient
         cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
-        with open(cpath, "w") as f:
+        with open(cpath, "w", encoding="utf-8") as f:
             json.dump(c, f)
         old = time.time() - 99999
         os.utime(cpath, (old, old))
@@ -79,11 +79,11 @@ class TestOrphanPidAuthoritative(unittest.TestCase):
         ws, c = _governed_ws(max_actions=1)
         # RECENT activation so the deny screen doesn't auto-release first —
         # we only want to observe the meter effect of a deny.
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": 1, "denies": 0}}, f)
         d = _screen(ws, "Bash", {"command": "echo hi"})   # blocked (exhausted)
         self.assertEqual(d["decision"], "block")
-        m = json.load(open(os.path.join(tpl.tp_dir(ws), "meter.json")))
+        m = json.load(open(os.path.join(tpl.tp_dir(ws), "meter.json"), encoding="utf-8"))
         self.assertEqual(m[c["task_id"]]["denies"], 1)
         self.assertNotIn("last_action_ts", m[c["task_id"]])
 
@@ -96,7 +96,7 @@ class TestOrphanPidAuthoritative(unittest.TestCase):
         c.pop("activated_pid", None)
         c["orphan_ttl_seconds"] = 30
         c["activated_at"] = time.time() - 9999
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": 3, "denies": 1}}, f)
         orphaned, why = tpl.orphan_status(ws, c)
         self.assertTrue(orphaned, why)
@@ -104,7 +104,7 @@ class TestOrphanPidAuthoritative(unittest.TestCase):
     def test_approved_action_stamps_and_refreshes_clock(self):
         ws, c = _governed_ws(max_actions=10, scope=("**",))
         _screen(ws, "Bash", {"command": "echo hi"})   # approved → stamps ts
-        m = json.load(open(os.path.join(tpl.tp_dir(ws), "meter.json")))
+        m = json.load(open(os.path.join(tpl.tp_dir(ws), "meter.json"), encoding="utf-8"))
         self.assertIn("last_action_ts", m[c["task_id"]])
         # fresh approved activity → not orphaned even with a short TTL
         c2 = tpl.load_active(ws)
@@ -162,7 +162,7 @@ class TestMeterAtomic(unittest.TestCase):
         d = tpl.tp_dir(ws)
         leftovers = [f for f in os.listdir(d) if f.startswith("meter.json.tmp")]
         self.assertEqual(leftovers, [])
-        json.load(open(os.path.join(d, "meter.json")))   # parses cleanly
+        json.load(open(os.path.join(d, "meter.json"), encoding="utf-8"))   # parses cleanly
 
 
 # ------------------------------------------------ H: ancestor contract walk

@@ -182,7 +182,7 @@ def _b5_ws(tmp):
     def w(rel, txt):
         p = os.path.join(tmp, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(txt)
 
     w("app/fixtures/tokens.py", body)
@@ -315,7 +315,7 @@ def _fixture_tree_with_incoming_edges(tmp):
     def w(rel, txt):
         p = os.path.join(tmp, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(txt)
 
     compose = ("services:\n  api:\n    image: nginx\n"
@@ -413,9 +413,9 @@ class TestB5FixtureTreeWithIncomingEdgesStaysDiscounted(unittest.TestCase):
         real = os.path.join(self.tmp, "prod", "locales")
         os.makedirs(real, exist_ok=True)
         src = os.path.join(self.ws, self.DEEP_FIX)
-        with open(src) as f:
+        with open(src, encoding="utf-8") as f:
             body = f.read()
-        with open(os.path.join(real, "en.json"), "w") as f:
+        with open(os.path.join(real, "en.json"), "w", encoding="utf-8") as f:
             f.write(body)
         plain = ls.detect("i18n", ls.make_ctx(self.ws,
                                               ["prod/locales/en.json"]))
@@ -506,7 +506,7 @@ class TestB5Guard3AFixtureCannotVouchForAFixture(unittest.TestCase):
         def w(rel, txt):
             path = os.path.join(tmp, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(txt)
 
         w("fixtures/__init__.py", "")

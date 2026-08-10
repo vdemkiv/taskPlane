@@ -43,7 +43,7 @@ WF = os.path.join(ROOT, "workflows", "review-wave.js")
 
 
 def _js() -> str:
-    with open(WF) as f:
+    with open(WF, encoding="utf-8") as f:
         return f.read()
 
 
@@ -106,7 +106,7 @@ class TestWorkflowFile:
         (git show 6a3d581:design/contract.json, `contracts` table)."""
         snap = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "fixtures", "briefs", "shipped_contracts.json")
-        with open(snap) as f:
+        with open(snap, encoding="utf-8") as f:
             contracts = json.load(f)["contracts"]
         spec = next(c for c in contracts if c["id"] == "contract:findings-v2")
         m = re.search(r"findings\[\{([^}]+)\}\]", spec["description"])
@@ -228,15 +228,15 @@ class TestWorkflowAvailable:
 def _repo(tmp_path) -> str:
     ws = os.path.join(str(tmp_path), "ws")
     os.makedirs(os.path.join(ws, "src"))
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
     for a in (["init", "-q"], ["config", "user.email", "e@e"],
               ["config", "user.name", "t"], ["add", "-A"],
               ["commit", "-qm", "base"]):
         subprocess.run(["git", *a], cwd=ws, capture_output=True)
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 2\n")
-    with open(os.path.join(ws, "src", "b.py"), "w") as f:
+    with open(os.path.join(ws, "src", "b.py"), "w", encoding="utf-8") as f:
         f.write("y = 1\n")
     return ws
 
@@ -252,7 +252,7 @@ def _trace_events(ws):
     p = os.path.join(ws, ".taskplane", "trace.jsonl")
     if not os.path.isfile(p):
         return []
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         return [json.loads(l) for l in f if l.strip()]
 
 
@@ -360,13 +360,13 @@ class TestNoWorkflowOnlyGate:
         The loop engine and the brief builder must not know workflows
         exist — the em step instruction text is untouched by t5."""
         for mod in ("loop.py", "lens.py"):
-            with open(os.path.join(ROOT, "taskplane", mod)) as f:
+            with open(os.path.join(ROOT, "taskplane", mod), encoding="utf-8") as f:
                 src = f.read()
             assert "workflow" not in src.lower(), \
                 f"taskplane/{mod} must stay workflow-agnostic"
             assert "review-wave" not in src
 
     def test_em_step_still_mandates_breadth_all_dispatch(self):
-        with open(os.path.join(ROOT, "taskplane", "loop.py")) as f:
+        with open(os.path.join(ROOT, "taskplane", "loop.py"), encoding="utf-8") as f:
             src = f.read()
         assert '"all" if step == "em" else "routed"' in src

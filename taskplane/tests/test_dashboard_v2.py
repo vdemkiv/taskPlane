@@ -28,7 +28,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -44,23 +44,23 @@ class TestAutoRender(unittest.TestCase):          # AC1
     def test_gate_refreshes_fragment_and_payload(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         out = loop.gate(ws, "pass")               # pm -> plan
         self.assertIn("dashboard", out)
         p = os.path.join(tp.tp_dir(ws), "dashboard.html")
         self.assertTrue(os.path.exists(p))
-        self.assertIn("mission control", open(p).read())
+        self.assertIn("mission control", open(p, encoding="utf-8").read())
 
     def test_next_action_refreshes_fragment(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.gate(ws, "pass")
         p = os.path.join(tp.tp_dir(ws), "dashboard.html")
-        before = open(p).read()
+        before = open(p, encoding="utf-8").read()
         out = loop.next_action(ws)                # plan brief
         self.assertIn("dashboard", out)
-        after = open(p).read()
+        after = open(p, encoding="utf-8").read()
         self.assertNotEqual(before, after)        # refreshed, not stale
 
     def test_error_payloads_skip_dashboard(self):
@@ -75,7 +75,7 @@ class TestJourney(unittest.TestCase):             # AC2
         self.tmp = tempfile.mkdtemp()
         self.ws = _repo(self.tmp)
         loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.next_action(self.ws)                 # pm visit (model_tier)
         loop.gate(self.ws, "pass", note="spec ok")  # closes pm, -> plan
         loop.next_action(self.ws)                 # plan visit
@@ -119,7 +119,7 @@ class TestStatsAlways(unittest.TestCase):         # AC3
 
     def test_model_table_joins_expected_and_observed(self):
         loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.next_action(self.ws)                 # records expectation
         exp = tp._load_queue(
             tp._dispatch_path(self.ws, "expected_dispatch.json"))
@@ -132,7 +132,7 @@ class TestStatsAlways(unittest.TestCase):         # AC3
 
     def test_rows_without_observation_show_dash(self):
         loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.next_action(self.ws)
         rows = dashboard._model_rows(self.ws)
         self.assertTrue(rows)
@@ -144,7 +144,7 @@ class TestSpineNavigation(unittest.TestCase):     # AC2 addendum (sign-off feedb
         self.tmp = tempfile.mkdtemp()
         self.ws = _repo(self.tmp)
         loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.next_action(self.ws)
         loop.gate(self.ws, "pass")                # pm done -> plan
         loop.next_action(self.ws)
@@ -178,7 +178,7 @@ class TestArtifactsInDetail(unittest.TestCase):   # sign-off feedback r2
             acceptance=["criterion one: gate works", "criterion two: table",
                         "criterion three: escaped", "criterion four: tests"])
         loop.init(self.ws, "g", requirement_id=rec["id"])
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.next_action(self.ws)                 # pm visit
         loop.gate(self.ws, "pass")                # -> plan
         st = loop.load(self.ws)
@@ -217,7 +217,7 @@ class TestEscaping(unittest.TestCase):            # security NFR
         tmp = tempfile.mkdtemp()
         ws = _repo(tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.next_action(ws)
         loop.gate(ws, "pass", note="<script>alert(1)</script>")
         frag = dashboard.widget(ws)
@@ -254,7 +254,7 @@ class TestDepgraphComponentLayer(unittest.TestCase):
         dg = self.dg
         dg.scan(self.ws)
         p = dg._path(self.ws)
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = json.load(f)
         comps = []
         for mod, n in sorted(per_module.items()):
@@ -264,10 +264,10 @@ class TestDepgraphComponentLayer(unittest.TestCase):
                               "files": [f"{mod}/f{i}.py"], "symbols": [],
                               "deps": []})
         raw["components"] = comps
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             json.dump(raw, f)
         out = dg.to_html(self.ws, out=os.path.join(self.tmp, "g.html"))
-        html = open(out).read()
+        html = open(out, encoding="utf-8").read()
         blob = html.split("const G=", 1)[1].split(";\n", 1)[0]
         return html, json.loads(blob.replace("\\u003c", "<"))
 

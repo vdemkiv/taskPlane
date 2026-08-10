@@ -21,7 +21,7 @@ import taskplane_lite as tp
 
 def read_json(path: str) -> tuple[dict | None, list]:
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             value = json.load(f)
     except FileNotFoundError:
         return None, [f"required evidence missing: {path}"]

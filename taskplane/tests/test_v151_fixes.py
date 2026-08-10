@@ -30,7 +30,7 @@ def _cli(ws, *args, env=None):
     return subprocess.run([sys.executable, TPPY, *args,
                            "--workspace", ws],
                           capture_output=True, text=True,
-                          env={**os.environ, **(env or {})})
+                          env={**os.environ, **(env or {})}, encoding="utf-8")
 
 
 class _Ws(unittest.TestCase):
@@ -38,7 +38,7 @@ class _Ws(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.ws = os.path.join(self.tmp, "ws")
         os.makedirs(os.path.join(self.ws, "src"))
-        open(os.path.join(self.ws, "src", "a.py"), "w").write("x=1\n")
+        open(os.path.join(self.ws, "src", "a.py"), "w", encoding="utf-8").write("x=1\n")
         subprocess.run(["git", "init", "-q"], cwd=self.ws)
         subprocess.run(["git", "config", "user.email", "e@e"], cwd=self.ws)
         subprocess.run(["git", "config", "user.name", "t"], cwd=self.ws)
@@ -102,9 +102,9 @@ class TestConfigWriteHygiene(_Ws):
     def test_plan_personal_does_not_rewrite_team_config(self):
         tp.set_mode(self.ws, plan="team")
         cfg_p = os.path.join(self.ws, ".taskplane-kb", "config.json")
-        before = open(cfg_p).read()
+        before = open(cfg_p, encoding="utf-8").read()
         tp.set_mode(self.ws, plan="personal")
-        self.assertEqual(open(cfg_p).read(), before,
+        self.assertEqual(open(cfg_p, encoding="utf-8").read(), before,
                          "one user's personal plan must not mutate the "
                          "committed team file")
 
@@ -143,7 +143,7 @@ class TestPublishHardening(_Ws):
     def test_corrupt_shared_index_aborts_push(self):
         dst = os.path.join(self.ws, ".taskplane-kb", "knowledge")
         os.makedirs(dst, exist_ok=True)
-        open(os.path.join(dst, "index.json"), "w").write("{truncated")
+        open(os.path.join(dst, "index.json"), "w", encoding="utf-8").write("{truncated")
         out = kb.publish(self.ws)
         self.assertIn("error", out)
         self.assertEqual(out["pushed"], [])
@@ -158,15 +158,15 @@ class TestPublishHardening(_Ws):
     def test_lost_marker_repaired_not_duplicated(self):
         kb.publish(self.ws)
         # simulate the crash window: private markers lost after dst write
-        idx = json.load(open(self.src_idx))
+        idx = json.load(open(self.src_idx, encoding="utf-8"))
         for d in idx["decisions"]:
             d.pop("published_as", None)
-        json.dump(idx, open(self.src_idx, "w"))
+        json.dump(idx, open(self.src_idx, "w", encoding="utf-8"))
         out = kb.publish(self.ws)
         self.assertEqual(out["pushed"], [], "content-based idempotency: "
                          "retry must repair, not duplicate")
         self.assertEqual(len(out["already_published"]), 2)
-        idx = json.load(open(self.src_idx))
+        idx = json.load(open(self.src_idx, encoding="utf-8"))
         self.assertTrue(all(d.get("published_as")
                             for d in idx["decisions"]))
 
@@ -176,11 +176,16 @@ class TestPublishHardening(_Ws):
         r = _cli(self.ws, "share", "push", "--ids", "9999")
         self.assertEqual(r.returncode, 1)
 
+    @unittest.skipUnless(
+        "utf" in sys.getfilesystemencoding().lower(),
+        "needs a UTF-8 filesystem encoding: this case carries non-ASCII "
+        "through argv/paths, which a C-locale host cannot represent at all "
+        "(a harness limit, not a product limit — Windows paths are UTF-16)")
     def test_missing_file_and_traversal_reported_as_malformed(self):
-        idx = json.load(open(self.src_idx))
+        idx = json.load(open(self.src_idx, encoding="utf-8"))
         idx["decisions"][0]["file"] = "decisions/ного-such.md"
         idx["decisions"][1]["file"] = "../../../../etc/hostname"
-        json.dump(idx, open(self.src_idx, "w"))
+        json.dump(idx, open(self.src_idx, "w", encoding="utf-8"))
         out = kb.publish(self.ws)
         problems = {m["problem"] for m in out["malformed"]}
         self.assertEqual(len(out["malformed"]), 2)
@@ -196,7 +201,7 @@ class TestShareUX(_Ws):
     def test_bare_share_is_usage_error_not_traceback(self):
         r = subprocess.run([sys.executable, TPPY, "share"],
                            capture_output=True, text=True,
-                           env={**os.environ})
+                           env={**os.environ}, encoding="utf-8")
         self.assertNotEqual(r.returncode, 0)
         self.assertNotIn("Traceback", r.stderr)
 
@@ -205,7 +210,7 @@ class TestShareUX(_Ws):
         os.makedirs(os.path.join(self.ws, ".taskplane-kb"), exist_ok=True)
         json.dump({"plan": "team", "store": "repo"},
                   open(os.path.join(self.ws, ".taskplane-kb",
-                                    "config.json"), "w"))
+                                    "config.json"), "w", encoding="utf-8"))
         prev = os.environ.get("TASKPLANE_HOME")
         os.environ["TASKPLANE_HOME"] = tempfile.mkdtemp()  # fresh user
         try:
@@ -238,9 +243,9 @@ class TestSelfIgnoreContent(unittest.TestCase):
     def test_permissive_planted_gitignore_is_rewritten(self):
         d = tempfile.mkdtemp()
         gi = os.path.join(d, ".gitignore")
-        open(gi, "w").write("!trace.jsonl\n")     # planted by a repo
+        open(gi, "w", encoding="utf-8").write("!trace.jsonl\n")     # planted by a repo
         tp._ensure_self_ignored(d)
-        self.assertIn("*", open(gi).read().splitlines())
+        self.assertIn("*", open(gi, encoding="utf-8").read().splitlines())
 
 
 if __name__ == "__main__":

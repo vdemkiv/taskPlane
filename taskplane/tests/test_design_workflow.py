@@ -20,7 +20,7 @@ class DesignWorkflowTest(unittest.TestCase):
         self.ws = os.path.join(self.tmp, "ws")
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(os.path.join(self.ws, "src", "core"))
-        with open(os.path.join(self.ws, "src", "core", "a.py"), "w") as f:
+        with open(os.path.join(self.ws, "src", "core", "a.py"), "w", encoding="utf-8") as f:
             f.write("VALUE = 1\n")
         subprocess.run(["git", "init", "-q"], cwd=self.ws, check=True)
         subprocess.run(["git", "config", "user.email", "e@example.com"],
@@ -146,15 +146,15 @@ class DesignWorkflowTest(unittest.TestCase):
             "open_questions": []
         }
         os.makedirs(os.path.join(self.ws, "design"), exist_ok=True)
-        with open(os.path.join(self.ws, "design", "design.md"), "w") as f:
+        with open(os.path.join(self.ws, "design", "design.md"), "w", encoding="utf-8") as f:
             f.write("# Governed Design\n\nUse an optional loop state.\n")
         if visualization_required:
-            with open(os.path.join(self.ws, "design", "visual.html"), "w") as f:
+            with open(os.path.join(self.ws, "design", "visual.html"), "w", encoding="utf-8") as f:
                 f.write("<div>Product → Design → Approve → Plan</div>\n")
         # v2.3.0: lens evidence is bound to the exact design content judged.
         contract["lens_evidence"][0]["content_fingerprint"] = \
             dc.design_content_fingerprint(self.ws, contract)
-        with open(os.path.join(self.ws, "design", "contract.json"), "w") as f:
+        with open(os.path.join(self.ws, "design", "contract.json"), "w", encoding="utf-8") as f:
             json.dump(contract, f, indent=2)
         return contract
 
@@ -257,7 +257,7 @@ class DesignWorkflowTest(unittest.TestCase):
         contract["graph"] = []
         contract["observability"] = "trust me"
         contract["lens_evidence"][0]["blockers"] = "not-a-number"
-        with open(os.path.join(self.ws, "design", "contract.json"), "w") as f:
+        with open(os.path.join(self.ws, "design", "contract.json"), "w", encoding="utf-8") as f:
             json.dump(contract, f)
         gated = loop.gate(self.ws, "pass")
         self.assertEqual(gated["step"], "design")

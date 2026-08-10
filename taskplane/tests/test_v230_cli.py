@@ -39,7 +39,7 @@ TPPY = os.path.join(ROOT, "taskplane", "tp.py")
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
     for a in (["init", "-q"], ["config", "user.email", "e@e"],
               ["config", "user.name", "t"], ["add", "-A"],
@@ -64,7 +64,7 @@ def _version_fixture(tmp, v="9.9.9", drift=None):
     def w(rel, body):
         p = os.path.join(tmp, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(body)
     codex = drift.get("codex", v) if drift else v
     claude = drift.get("claude", v) if drift else v
@@ -120,7 +120,7 @@ class TestVersionSingleSource(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _version_fixture(tmp, "1.2.3", drift={"docs": ""})
             with open(os.path.join(tmp, "docs", "openai-submission.md"),
-                      "w") as f:
+                      "w", encoding="utf-8") as f:
                 f.write("submission worksheet — no version literals here\n")
             rep = cli.version_report(tmp)
             self.assertTrue(rep["ok"], rep["mismatches"])
@@ -139,7 +139,7 @@ class TestVersionSingleSource(unittest.TestCase):
 
     def test_cli_version_prints_and_exits_zero(self):
         r = subprocess.run([sys.executable, TPPY, "version"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), cli.plugin_version(ROOT))
 
@@ -180,7 +180,7 @@ class TestEngineErrorsExitNonzero(unittest.TestCase):
             ws = _repo(tmp)
             r = subprocess.run([sys.executable, TPPY, "loop", "--workspace",
                                 ws, "gate", "pass"],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(r.returncode, 1)
             self.assertIn("error", json.loads(r.stdout))
 
@@ -311,13 +311,13 @@ class TestUserLayerErrorBoundary(unittest.TestCase):
             ws = _repo(tmp)
             d = os.path.join(ws, ".taskplane")
             os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, "loop.json"), "w") as f:
+            with open(os.path.join(d, "loop.json"), "w", encoding="utf-8") as f:
                 f.write("<<<<<<< merge conflict garbage")
             env = {**os.environ}
             env.pop("TASKPLANE_DEBUG", None)
             r = subprocess.run(
                 [sys.executable, TPPY, "summary", "--workspace", ws],
-                capture_output=True, text=True, env=env)
+                capture_output=True, text=True, env=env, encoding="utf-8")
             self.assertNotIn("Traceback", r.stderr + r.stdout)
             if r.returncode != 0:
                 # boundary path: the reason must be printed
@@ -373,13 +373,13 @@ class TestLensDashboardIdempotent(unittest.TestCase):
         p = os.path.join(tpl.tp_dir(ws), "expected_dispatch.json")
         if not os.path.exists(p):
             return 0
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             return len(json.load(f))
 
     def test_dashboard_rerender_records_no_expectations(self):
         with tempfile.TemporaryDirectory() as tmp:
             ws = _repo(tmp)
-            with open(os.path.join(ws, "src", "a.py"), "a") as f:
+            with open(os.path.join(ws, "src", "a.py"), "a", encoding="utf-8") as f:
                 f.write("y = 2\n")
             rc, _, _ = _capture(cli.main, ["lens", "dispatch", "--all",
                                            "--workspace", ws])
@@ -406,9 +406,9 @@ class TestGitHelperConsolidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ws = _repo(tmp)
             os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-            with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+            with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
                 f.write("{}")
-            with open(os.path.join(ws, "src", "new.py"), "w") as f:
+            with open(os.path.join(ws, "src", "new.py"), "w", encoding="utf-8") as f:
                 f.write("z = 3\n")
             files = cli._changed_for_impact(ws, "HEAD")
             self.assertIn("src/new.py", files)

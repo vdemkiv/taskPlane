@@ -6,7 +6,7 @@ class TestRuntimeOwnedExcludedFromDoD(__import__("unittest").TestCase):
         import taskplane_lite as tpl
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, "src"))
-        with open(os.path.join(ws, "src", "a.py"), "w") as f:
+        with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
             f.write("x=1\n")
         subprocess.run(["git", "init", "-q"], cwd=ws)
         subprocess.run(["git", "add", "-A"], cwd=ws)
@@ -16,9 +16,9 @@ class TestRuntimeOwnedExcludedFromDoD(__import__("unittest").TestCase):
         # runtime writes during the task: KB record + plan — NOT task changes
         os.makedirs(os.path.join(ws, "knowledge"))
         os.makedirs(os.path.join(ws, "plan"))
-        open(os.path.join(ws, "knowledge", "index.json"), "w").write("{}")
-        open(os.path.join(ws, "plan", "tasks.json"), "w").write("{}")
-        with open(os.path.join(ws, "src", "a.py"), "w") as f:
+        open(os.path.join(ws, "knowledge", "index.json"), "w", encoding="utf-8").write("{}")
+        open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8").write("{}")
+        with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
             f.write("x=2\n")   # the actual in-scope change
         c = tpl.build_contract("t", scope=["src/**"])
         errors = tpl.dod_check(c, ws, head)
@@ -36,5 +36,5 @@ class TestRuntimeDirSelfIgnored(__import__("unittest").TestCase):
                      snapshot=None)
         subprocess.run(["git", "add", "-A"], cwd=ws)
         out = subprocess.run(["git", "status", "--porcelain"], cwd=ws,
-                             capture_output=True, text=True).stdout
+                             capture_output=True, text=True, encoding="utf-8").stdout
         self.assertNotIn(".taskplane", out)   # runtime never staged

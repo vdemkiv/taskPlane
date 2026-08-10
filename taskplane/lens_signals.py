@@ -185,7 +185,7 @@ def load_catalog(root: str | None = None) -> dict:
     up an import cycle."""
     key = root or _plugin_root()
     if key not in _CATALOG_CACHE:
-        with open(os.path.join(key, "lenses", "catalog.json")) as f:
+        with open(os.path.join(key, "lenses", "catalog.json"), encoding="utf-8") as f:
             _CATALOG_CACHE[key] = json.load(f)
     return _CATALOG_CACHE[key]
 

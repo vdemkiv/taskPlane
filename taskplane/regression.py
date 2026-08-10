@@ -109,7 +109,7 @@ def _git_candidates(ws: str) -> list[str] | None:
     try:
         probe = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"], cwd=ws,
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8")
     except (OSError, subprocess.SubprocessError) as exc:
         if marker:
             raise RegressionDiscoveryError(
@@ -127,7 +127,7 @@ def _git_candidates(ws: str) -> list[str] | None:
         proc = subprocess.run(
             ["git", "ls-files", "--cached", "--others",
              "--exclude-standard", "-z"], cwd=ws, capture_output=True,
-            text=True)
+            text=True, encoding="utf-8")
     except (OSError, subprocess.SubprocessError) as exc:
         raise RegressionDiscoveryError(
             f"Git file discovery failed: {exc}") from exc
@@ -616,7 +616,7 @@ def run_pytest(ws: str, test_files) -> set:
     try:
         with tempfile.TemporaryDirectory(prefix="tp-regenv-") as home:
             proc = subprocess.run(cmd, cwd=ws, capture_output=True, text=True,
-                                  env=_runner_env(home))
+                                  env=_runner_env(home), encoding="utf-8")
     except (OSError, subprocess.SubprocessError) as exc:
         raise RegressionRunnerError(
             f"could not start pytest with {sys.executable}: {exc}") from exc
@@ -646,7 +646,7 @@ def _baseline_failures(ws: str, base_ref: str, radius) -> set | None:
     wt = os.path.join(tmp, "wt")
     try:
         r = subprocess.run(["git", "worktree", "add", "--detach", wt, base_ref],
-                           cwd=ws, capture_output=True, text=True)
+                           cwd=ws, capture_output=True, text=True, encoding="utf-8")
         if r.returncode != 0:
             return None
         present = [t for t in radius if os.path.exists(os.path.join(wt, t))]
@@ -659,7 +659,7 @@ def _baseline_failures(ws: str, base_ref: str, radius) -> set | None:
         return None
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", wt],
-                       cwd=ws, capture_output=True, text=True)
+                       cwd=ws, capture_output=True, text=True, encoding="utf-8")
         shutil.rmtree(tmp, ignore_errors=True)
 
 

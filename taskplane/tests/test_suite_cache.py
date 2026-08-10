@@ -30,7 +30,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -41,7 +41,7 @@ def _repo(tmp):
 
 def _head(ws):
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws,
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
 class _CacheCase(unittest.TestCase):
@@ -64,7 +64,7 @@ class _CacheCase(unittest.TestCase):
 
     def runs(self):
         try:
-            with open(self.sentinel) as f:
+            with open(self.sentinel, encoding="utf-8") as f:
                 return len([x for x in f if x.strip()])
         except OSError:
             return 0
@@ -87,28 +87,28 @@ class TestCacheHitsOnlyOnIdenticalContent(_CacheCase):
     def test_a_tracked_edit_invalidates_and_re_executes(self):
         self.dod()
         self.assertEqual(self.runs(), 1)
-        open(os.path.join(self.ws, "src", "a.py"), "a").write("y = 2\n")
+        open(os.path.join(self.ws, "src", "a.py"), "a", encoding="utf-8").write("y = 2\n")
         self.dod()
         self.assertEqual(self.runs(), 2, "changed content must re-run")
 
     def test_an_untracked_file_invalidates_and_re_executes(self):
         self.dod()
-        open(os.path.join(self.ws, "src", "new.py"), "w").write("z = 3\n")
+        open(os.path.join(self.ws, "src", "new.py"), "w", encoding="utf-8").write("z = 3\n")
         self.dod()
         self.assertEqual(self.runs(), 2,
                          "an untracked file is part of the tree identity")
 
     def test_untracked_file_content_change_invalidates(self):
-        open(os.path.join(self.ws, "src", "new.py"), "w").write("z = 3\n")
+        open(os.path.join(self.ws, "src", "new.py"), "w", encoding="utf-8").write("z = 3\n")
         self.dod()
-        open(os.path.join(self.ws, "src", "new.py"), "w").write("z = 4\n")
+        open(os.path.join(self.ws, "src", "new.py"), "w", encoding="utf-8").write("z = 4\n")
         self.dod()
         self.assertEqual(self.runs(), 2,
                          "same path, different bytes, is a different tree")
 
     def test_a_new_commit_invalidates(self):
         self.dod()
-        open(os.path.join(self.ws, "src", "b.py"), "w").write("b = 1\n")
+        open(os.path.join(self.ws, "src", "b.py"), "w", encoding="utf-8").write("b = 1\n")
         _git(self.ws, "add", "-A")
         _git(self.ws, "commit", "-qm", "second")
         tp.dod_check(self.contract(), self.ws, _head(self.ws))
@@ -140,7 +140,7 @@ class TestFailuresAreCachedHonestly(_CacheCase):
 
     def test_a_failing_tree_that_is_fixed_re_executes(self):
         self.assertTrue(self.dod(exit_code=1))
-        open(os.path.join(self.ws, "src", "a.py"), "a").write("fixed = 1\n")
+        open(os.path.join(self.ws, "src", "a.py"), "a", encoding="utf-8").write("fixed = 1\n")
         self.assertEqual(self.dod(exit_code=0), [])
         self.assertEqual(self.runs(), 2)
 
@@ -163,7 +163,7 @@ class TestFailClosedPaths(_CacheCase):
     def test_a_non_git_workspace_is_uncacheable_and_always_runs(self):
         bare = os.path.join(self.tmp, "bare")
         os.makedirs(os.path.join(bare, "src"))
-        open(os.path.join(bare, "src", "a.py"), "w").write("x = 1\n")
+        open(os.path.join(bare, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
         self.assertIsNone(tp.tree_fingerprint(bare),
                           "no git means no honest content identity")
         c = tp.build_contract("t1", test_command=self.cmd())
@@ -182,7 +182,7 @@ class TestFailClosedPaths(_CacheCase):
         self.dod()
         d = os.path.join(self.store, "suite-cache")
         for name in os.listdir(d):
-            with open(os.path.join(d, name), "w") as f:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
                 f.write("{not json")
         self.dod()
         self.assertEqual(self.runs(), 2)
@@ -250,7 +250,7 @@ class TestTheHitIsAuditable(_CacheCase):
         self.dod()
         self.dod()
         path = os.path.join(tp.tp_dir(self.ws), "trace.jsonl")
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             events = [__import__("json").loads(x) for x in f if x.strip()]
         hits = [e for e in events if e.get("event") == "suite_cache_hit"]
         self.assertEqual(len(hits), 1)
@@ -261,7 +261,7 @@ class TestTheHitIsAuditable(_CacheCase):
     def test_a_real_run_is_traced_with_its_cost(self):
         self.dod()
         path = os.path.join(tp.tp_dir(self.ws), "trace.jsonl")
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             events = [__import__("json").loads(x) for x in f if x.strip()]
         runs = [e for e in events if e.get("event") == "suite_run"]
         self.assertEqual(len(runs), 1)

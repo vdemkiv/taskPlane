@@ -40,7 +40,7 @@ def _pop_store(case):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x=1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x=1\n")
     for a in (["init", "-q"], ["config", "user.email", "e@e"],
               ["config", "user.name", "t"], ["add", "-A"],
               ["commit", "-qm", "base"]):
@@ -86,7 +86,7 @@ class TestDepgraphXSS(unittest.TestCase):
             depgraph.to_html(ws, changed_files=["src/a.py"], out=out)
         finally:
             depgraph.load = orig
-        html = open(out).read()
+        html = open(out, encoding="utf-8").read()
         self.assertNotIn("<img src=x onerror", html)   # raw tag never forms
         # exactly one </script> — the legitimate closer, none injected
         self.assertEqual(html.count("</script>"), 1)
@@ -166,7 +166,7 @@ class TestGitignoreAnchor(unittest.TestCase):
         # the anchored pattern must NOT ignore the shared store
         r = subprocess.run(["git", "check-ignore",
                             ".taskplane-kb/knowledge/index.json"],
-                           cwd=ws, capture_output=True, text=True)
+                           cwd=ws, capture_output=True, text=True, encoding="utf-8")
         self.assertNotEqual(r.returncode, 0,
                             "shared store must be committable (not ignored)")
 
@@ -182,7 +182,7 @@ class TestShareGuards(unittest.TestCase):
         return subprocess.run([sys.executable, TPPY, *args,
                                "--workspace", self.ws],
                               capture_output=True, text=True,
-                              env={**os.environ})
+                              env={**os.environ}, encoding="utf-8")
 
     def test_push_on_personal_plan_is_guarded(self):
         r = self._run("share", "push")
@@ -208,7 +208,7 @@ class TestSetModePersistFailure(unittest.TestCase):
         prev = os.environ.get("TASKPLANE_HOME")
         # point HOME at a path that can't be created (a file, not a dir)
         clash = os.path.join(tmp, "afile")
-        open(clash, "w").write("x")
+        open(clash, "w", encoding="utf-8").write("x")
         os.environ["TASKPLANE_HOME"] = os.path.join(clash, "store")
         try:
             with self.assertRaises(OSError):

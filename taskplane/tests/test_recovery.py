@@ -37,7 +37,7 @@ def _screen(ws, tool_name, tool_input, env=None):
     e.update(env or {})
     r = subprocess.run([sys.executable, TP, "screen"],
                        input=json.dumps(event), capture_output=True,
-                       text=True, env=e)
+                       text=True, env=e, encoding="utf-8")
     # Empty stdout = ABSTAIN (ungoverned / auto-released → defer to Claude
     # Code's normal permission flow, no forced decision).
     if not r.stdout.strip():
@@ -51,7 +51,7 @@ def _governed_ws(max_actions=3, exhaust=False):
     c = tpl.build_contract("t", scope=["src/**"], max_actions=max_actions)
     tpl.activate(ws, c, snapshot=None)
     if exhaust:
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": max_actions, "denies": 0}},
                       f)
     return ws, c
@@ -105,7 +105,7 @@ class TestBudgetGrantHumanGate(unittest.TestCase):
         # the human / ungoverned main session runs the CLI directly
         r = subprocess.run([sys.executable, TP, "budget", "--grant", "20",
                             "--workspace", ws], capture_output=True,
-                           text=True)
+                           text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("ceiling now 23", r.stdout)
         self.assertEqual(tpl.load_active(ws)["budget"]["max_actions"], 23)
@@ -124,22 +124,22 @@ class TestBudgetGrantHumanGate(unittest.TestCase):
         ws, _ = _governed_ws()
         r = subprocess.run([sys.executable, TP, "budget", "--grant", "0",
                             "--workspace", ws], capture_output=True,
-                           text=True)
+                           text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 1)
 
     def test_budget_without_spent_or_grant_errors(self):
         ws, _ = _governed_ws()
         r = subprocess.run([sys.executable, TP, "budget",
                             "--workspace", ws], capture_output=True,
-                           text=True)
+                           text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 1)
         self.assertIn("--grant", r.stderr)
 
     def test_grant_traced_for_audit(self):
         ws, _ = _governed_ws()
         subprocess.run([sys.executable, TP, "budget", "--grant", "5",
-                        "--workspace", ws], capture_output=True, text=True)
-        trace = open(os.path.join(tpl.tp_dir(ws), "trace.jsonl")).read()
+                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
+        trace = open(os.path.join(tpl.tp_dir(ws), "trace.jsonl"), encoding="utf-8").read()
         self.assertIn("budget_granted", trace)
 
 
@@ -153,7 +153,7 @@ class TestOrphanAutoRelease(unittest.TestCase):
         p.wait()
         cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
         c["activated_pid"] = p.pid
-        with open(cpath, "w") as f:
+        with open(cpath, "w", encoding="utf-8") as f:
             json.dump(c, f)
         d = _screen(ws, "Bash", {"command": "echo hi"})
         self.assertIsNone(d["decision"])              # abstain → normal flow
@@ -166,7 +166,7 @@ class TestOrphanAutoRelease(unittest.TestCase):
         p.wait()
         cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
         c["activated_pid"] = p.pid
-        with open(cpath, "w") as f:
+        with open(cpath, "w", encoding="utf-8") as f:
             json.dump(c, f)
         d = _screen(ws, "Bash", {"command": "echo hi"})
         self.assertIsNone(d["decision"])              # abstain → normal flow
@@ -176,7 +176,7 @@ class TestOrphanAutoRelease(unittest.TestCase):
         ws, c = _governed_ws()
         cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
         c["activated_pid"] = os.getpid()              # this test process
-        with open(cpath, "w") as f:
+        with open(cpath, "w", encoding="utf-8") as f:
             json.dump(c, f)
         d = _screen(ws, "Write", {"file_path": os.path.join(ws, "x.md"),
                                   "content": "x"})
@@ -188,7 +188,7 @@ class TestOrphanAutoRelease(unittest.TestCase):
         cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
         c["activated_at"] = time.time() - 9999
         c["orphan_ttl_seconds"] = 60
-        with open(cpath, "w") as f:
+        with open(cpath, "w", encoding="utf-8") as f:
             json.dump(c, f)
         old = time.time() - 9999
         os.utime(cpath, (old, old))
@@ -207,10 +207,10 @@ class TestOrphanAutoRelease(unittest.TestCase):
         p.wait()
         c["activated_pid"] = p.pid
         with open(os.path.join(tpl.tp_dir(ws), "active_contract.json"),
-                  "w") as f:
+                  "w", encoding="utf-8") as f:
             json.dump(c, f)
         _screen(ws, "Bash", {"command": "echo hi"})
-        trace = open(os.path.join(tpl.tp_dir(ws), "trace.jsonl")).read()
+        trace = open(os.path.join(tpl.tp_dir(ws), "trace.jsonl"), encoding="utf-8").read()
         self.assertIn("contract_orphan_released", trace)
 
     def test_orphan_status_kernel_rule(self):
@@ -227,7 +227,7 @@ class TestEngineReleasesOnGate(unittest.TestCase):
 
     def _loop_ws(self):
         ws = tempfile.mkdtemp()
-        open(os.path.join(ws, "a.py"), "w").write("x=1\n")
+        open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x=1\n")
         subprocess.run(["git", "init", "-q"], cwd=ws)
         subprocess.run(["git", "add", "-A"], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
@@ -242,7 +242,7 @@ class TestEngineReleasesOnGate(unittest.TestCase):
         ws = self._loop_ws()
         loopmod.init(ws, "goal", checkpoints=[])
         os.makedirs(os.path.join(ws, 'specs'), exist_ok=True)
-        open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loopmod.next_action(ws)                  # activates step contract
         cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
         self.assertTrue(os.path.exists(cpath))
@@ -262,7 +262,7 @@ class TestBareRootRefusal(unittest.TestCase):
         env = dict(os.environ, HOME=fake_home)
         r = subprocess.run([sys.executable, TP, "new", "--scope", "src/**",
                             "--workspace", fake_home, "goal"],
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=env, encoding="utf-8")
         self.assertEqual(r.returncode, 1)
         self.assertIn("REFUSING", r.stderr)
         self.assertFalse(os.path.exists(
@@ -273,14 +273,14 @@ class TestBareRootRefusal(unittest.TestCase):
         workspace (mirrors the onboarding rule) — not refused."""
         fake_home = tempfile.mkdtemp()
         subprocess.run(["git", "init", "-q"], cwd=fake_home)
-        open(os.path.join(fake_home, "a.py"), "w").write("x=1\n")
+        open(os.path.join(fake_home, "a.py"), "w", encoding="utf-8").write("x=1\n")
         subprocess.run(["git", "add", "-A"], cwd=fake_home)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=fake_home)
         env = dict(os.environ, HOME=fake_home)
         r = subprocess.run([sys.executable, TP, "new", "--scope", "src/**",
                             "--workspace", fake_home, "goal"],
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=env, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
 
 

@@ -28,7 +28,7 @@ TPPY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 def _repo():
     ws = tempfile.mkdtemp()
     os.makedirs(os.path.join(ws, "src"))
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
     subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
     subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
@@ -106,7 +106,7 @@ class TestCodexHookProtocol(unittest.TestCase):
     def _run(self, event):
         return subprocess.run([sys.executable, TPPY, "screen"],
                               cwd=self.ws, input=json.dumps(event), text=True,
-                              capture_output=True)
+                              capture_output=True, encoding="utf-8")
 
     def test_codex_allow_is_silent(self):
         event = {"turn_id": "turn-1", "cwd": self.ws,
@@ -142,7 +142,7 @@ class TestCodexSubagentLifecycle(unittest.TestCase):
     def _run(self, command, event):
         return subprocess.run([sys.executable, TPPY, command], cwd=self.ws,
                               input=json.dumps(event), text=True,
-                              capture_output=True)
+                              capture_output=True, encoding="utf-8")
 
     def test_start_traces_and_injects_bounded_contract_context(self):
         event = {"hook_event_name": "SubagentStart", "turn_id": "turn-1",
@@ -157,7 +157,7 @@ class TestCodexSubagentLifecycle(unittest.TestCase):
                       hook["additionalContext"])
         self.assertIn("PreToolUse", hook["additionalContext"])
         self.assertLess(len(hook["additionalContext"]), 1000)
-        trace = open(os.path.join(tp.tp_dir(self.ws), "trace.jsonl")).read()
+        trace = open(os.path.join(tp.tp_dir(self.ws), "trace.jsonl"), encoding="utf-8").read()
         self.assertIn('"event": "subagent_start"', trace)
         self.assertNotIn("last_assistant_message", trace)
 
@@ -170,7 +170,7 @@ class TestCodexSubagentLifecycle(unittest.TestCase):
         result = self._run("subagent-stop", event)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {})
-        trace = open(os.path.join(tp.tp_dir(self.ws), "trace.jsonl")).read()
+        trace = open(os.path.join(tp.tp_dir(self.ws), "trace.jsonl"), encoding="utf-8").read()
         self.assertIn('"event": "subagent_stop"', trace)
         self.assertNotIn(secret, trace)
 
@@ -243,15 +243,15 @@ class TestSkillPortability(unittest.TestCase):
         role = os.path.join(root, "agents", "tp-designer.md")
         self.assertTrue(os.path.isfile(skill))
         self.assertTrue(os.path.isfile(role))
-        self.assertIn("taskplane.design/v1", open(skill).read())
-        role_text = open(role).read()
+        self.assertIn("taskplane.design/v1", open(skill, encoding="utf-8").read())
+        role_text = open(role, encoding="utf-8").read()
         self.assertIn("model: inherit", role_text)
         self.assertIn("design/**", role_text)
 
     def test_design_cli_flags_are_host_neutral(self):
         result = subprocess.run(
             [sys.executable, TPPY, "loop", "init", "--help"],
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--design", result.stdout)
         self.assertIn("--design-only", result.stdout)
@@ -266,7 +266,7 @@ class TestSkillPortability(unittest.TestCase):
         offenders = []
         for f in glob.glob(os.path.join(root, "skills", "**", "*.md"),
                            recursive=True):
-            body = open(f).read()
+            body = open(f, encoding="utf-8").read()
             bare = body.replace(
                 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}", "")
             if "${CLAUDE_PLUGIN_ROOT}" in bare:
@@ -282,7 +282,7 @@ class TestSkillPortability(unittest.TestCase):
             os.path.abspath(__file__))))
         offenders = []
         for f in glob.glob(os.path.join(root, "agents", "*.md")):
-            body = open(f).read()
+            body = open(f, encoding="utf-8").read()
             bare = body.replace(
                 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}", "")
             if "${CLAUDE_PLUGIN_ROOT}" in bare:
@@ -297,7 +297,7 @@ class TestSkillPortability(unittest.TestCase):
     def test_codex_subagent_hooks_are_bundled(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))))
-        hooks = json.load(open(os.path.join(root, "hooks", "hooks.json")))
+        hooks = json.load(open(os.path.join(root, "hooks", "hooks.json"), encoding="utf-8"))
         self.assertIn("SubagentStart", hooks["hooks"])
         self.assertIn("SubagentStop", hooks["hooks"])
         dispatch_matcher = hooks["hooks"]["PreToolUse"][1]["matcher"]
@@ -344,7 +344,7 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
     def _lens_ws(self):
         """A repo with an uncommitted diff so `lens dispatch` routes."""
         ws = _repo()
-        with open(os.path.join(ws, "src", "a.py"), "w") as f:
+        with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
             f.write("x = 2\n")
         return ws
 
@@ -352,7 +352,7 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         p = os.path.join(ws, ".taskplane", "trace.jsonl")
         if not os.path.isfile(p):
             return []
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             return [json.loads(l) for l in f
                     if l.strip() and json.loads(l).get("event") == event]
 
@@ -600,7 +600,7 @@ class TestCodexOnboarding(unittest.TestCase):
                "TASKPLANE_HOME": tempfile.mkdtemp()}
         result = subprocess.run(
             [sys.executable, TPPY, "onboard", "--json", "--workspace", ws],
-            capture_output=True, text=True, env=env)
+            capture_output=True, text=True, env=env, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["host"], "codex")

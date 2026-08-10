@@ -78,7 +78,7 @@ def _bigfile_ws(tmp, *, broken=False):
         out.append("def broken(:\n    pass\n")
     src = "".join(out)
     assert src.count("\n") >= 600, "fixture must trip the big-file floor"
-    with open(os.path.join(d, "huge.py"), "w") as f:
+    with open(os.path.join(d, "huge.py"), "w", encoding="utf-8") as f:
         f.write(src)
     return ws
 
@@ -96,7 +96,7 @@ def _symbolless_bigfile_ws(tmp):
            + "".join("ROW_%d = {'id': %d, 'label': 'row %d'}\n" % (i, i, i)
                      for i in range(700)))
     assert src.count("\n") >= dc.BIG_FILE_LINES, "fixture must trip the floor"
-    with open(os.path.join(d, "table.py"), "w") as f:
+    with open(os.path.join(d, "table.py"), "w", encoding="utf-8") as f:
         f.write(src)
     return ws
 
@@ -109,7 +109,7 @@ def _decompose_traces(ws):
     p = os.path.join(tpl.tp_dir(ws), "trace.jsonl")
     if not os.path.exists(p):
         return []
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         recs = [json.loads(line) for line in f if line.strip()]
     return [r for r in recs if r.get("event") == "graph_decompose"]
 
@@ -247,7 +247,7 @@ class TestComponentsYaml(unittest.TestCase):
 
     def test_overrides_floors(self):
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("# raise the floors so nothing decomposes\n"
                     "floors:\n"
                     "  candidate_min_files: 99\n"
@@ -259,7 +259,7 @@ class TestComponentsYaml(unittest.TestCase):
 
     def test_malformed_yaml_fails_open_to_defaults(self):
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors: {{{:::not yaml\n\t???")
         g = dg.scan(ws)
         comps, _stats = dc.derive(ws, g)   # must not raise
@@ -273,7 +273,7 @@ class TestComponentsYaml(unittest.TestCase):
         value) as a `degraded:` marker in the error channel, per the
         fail-open convention: proceed on safe values, never silently."""
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors:\n"
                     "  cluster_min_files: 0\n"
                     "  big_file_lines: -3\n")
@@ -290,7 +290,7 @@ class TestComponentsYaml(unittest.TestCase):
 
     def test_valid_positive_floors_load_unchanged_without_marker(self):
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors:\n"
                     "  cluster_min_files: 3\n"
                     "  big_file_lines: 900\n")
@@ -314,7 +314,7 @@ class TestComponentsYaml(unittest.TestCase):
         """A non-integer floor value cannot be clamped — the file fails
         OPEN to the defaults with the existing `ignored` marker."""
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors:\n"
                     "  big_file_lines: lots\n")
         floors, err = dc.load_floors(ws)
@@ -327,10 +327,10 @@ class TestComponentsYaml(unittest.TestCase):
         pinning a floor at 0 and one pinning it at 1 are the same
         configuration."""
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors:\n  cluster_min_files: 0\n")
         clamped_hash = dc.floors_hash(ws)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors:\n  cluster_min_files: 1\n")
         self.assertEqual(dc.floors_hash(ws), clamped_hash)
 
@@ -339,7 +339,7 @@ class TestComponentsYaml(unittest.TestCase):
         the same channel depgraph forwards into the graph_decompose
         trace — and the scan still completes on the clamped floors."""
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors:\n  candidate_min_files: -1\n")
         g = dg.scan(ws)
         comps, stats = dc.derive(ws, g)    # must not raise
@@ -378,7 +378,7 @@ class TestCacheAndNoop(unittest.TestCase):
         ws = _miniapp(self.tmp)
         g1 = dg.scan(ws, decompose=True)
         before = _by_id(g1["components"])
-        with open(os.path.join(ws, "engine/mod/views/list.py"), "a") as f:
+        with open(os.path.join(ws, "engine/mod/views/list.py"), "a", encoding="utf-8") as f:
             f.write("\n# touched\n")
         g2 = dg.scan(ws, decompose=True)
         after = _by_id(g2["components"])
@@ -475,7 +475,7 @@ class TestAdditiveSchema(unittest.TestCase):
     def test_plain_scan_has_legacy_keys_only(self):
         ws = _miniapp(self.tmp)
         dg.scan(ws)
-        with open(dg._path(ws)) as f:
+        with open(dg._path(ws), encoding="utf-8") as f:
             raw = json.load(f)
         self.assertEqual(set(raw),
                          {"modules", "edges", "files", "recorded", "meta"})
@@ -530,7 +530,7 @@ class TestCli(unittest.TestCase):
 
     def _run(self, *args):
         r = subprocess.run([sys.executable, TPPY, *args],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=120, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 
@@ -603,7 +603,7 @@ def _layer_traces(ws):
     p = os.path.join(tpl.tp_dir(ws), "trace.jsonl")
     if not os.path.exists(p):
         return []
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         recs = [json.loads(line) for line in f if line.strip()]
     return [r for r in recs if r.get("event") == "component_layer_failed"]
 
@@ -626,10 +626,10 @@ class _WebshopBase(unittest.TestCase):
     def doctor(self, fn):
         """Mutate the persisted graph.json (cache-poisoning harness)."""
         p = dg._path(self.ws)
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             raw = json.load(f)
         fn(raw)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             json.dump(raw, f)
 
     def doctor_component(self, suffix, fn):
@@ -839,7 +839,7 @@ class TestComponentFailOpen(_WebshopBase):
 
     def test_unmapped_changed_file_widens_to_module_route(self):
         newf = os.path.join(self.ws, "shop/webapp/newfile.py")
-        with open(newf, "w") as f:
+        with open(newf, "w", encoding="utf-8") as f:
             f.write("x = 1\n")
         r = self.route(["shop/webapp/newfile.py"])
         self.assertNotIn("component_route", r["context"])
@@ -849,7 +849,7 @@ class TestComponentFailOpen(_WebshopBase):
                       _layer_traces(self.ws)[-1]["error"])
 
     def test_stale_fingerprint_widens_to_module_route(self):
-        with open(os.path.join(self.ws, RENDER_DIFF[0]), "a") as f:
+        with open(os.path.join(self.ws, RENDER_DIFF[0]), "a", encoding="utf-8") as f:
             f.write("// edited after the scan\n")
         r = self.route(RENDER_DIFF)
         self.assertNotIn("component_route", r["context"])
@@ -913,7 +913,7 @@ class TestComponentLayerRendering(_WebshopBase):
         # panel names the layer; HEADLINE/coverage FORMATS are pinned
         # unchanged by test_dashboard_coverage_v2 (legacy path untouched).
         out = dg.to_html(self.ws, ["shop/webapp/renderer/screen.tsx"])
-        with open(out) as f:
+        with open(out, encoding="utf-8") as f:
             html = f.read()
         for cid in ("shop/webapp::renderer", "shop/webapp::dbio",
                     "shop/webapp::gateway", "shop/webapp::core"):
@@ -931,7 +931,7 @@ class TestComponentLayerRendering(_WebshopBase):
     def test_undecomposed_graph_html_has_no_component_layer(self):
         self.doctor(lambda raw: raw.pop("components"))
         out = dg.to_html(self.ws, ["shop/webapp/renderer/screen.tsx"])
-        with open(out) as f:
+        with open(out, encoding="utf-8") as f:
             html = f.read()
         self.assertNotIn('"components":', html)
         self.assertNotIn("decomposed component node", html)
@@ -967,7 +967,7 @@ class TestPhase2EmFixes(_WebshopBase):
         # components layer — repo data. Escapes must return None (-> stale
         # -> the wider route), exactly like decompose._read_text.
         outside = os.path.join(self.tmp, "secret.txt")
-        open(outside, "w").write("SECRET")
+        open(outside, "w", encoding="utf-8").write("SECRET")
         self.assertIsNone(lens._scan_hash(self.ws, "../secret.txt"))
         self.assertIsNone(lens._scan_hash(self.ws, outside))
         os.symlink(outside, os.path.join(self.ws, "link.txt"))
@@ -981,7 +981,7 @@ class TestPhase2EmFixes(_WebshopBase):
         # workspace makes the layer STALE (widens) instead of reading the
         # foreign file.
         outside = os.path.join(self.tmp, "host_file")
-        open(outside, "w").write("x")
+        open(outside, "w", encoding="utf-8").write("x")
 
         def poison(raw):
             raw["components"][0]["files"].append("../host_file")
@@ -1050,7 +1050,7 @@ class TestB3SymbollessBigFile(unittest.TestCase):
                 for rel, row in (g.get("files") or {}).items()}
 
     def test_fixture_really_trips_the_big_file_floor_with_no_symbols(self):
-        src = open(os.path.join(self.ws, self.rel)).read()
+        src = open(os.path.join(self.ws, self.rel), encoding="utf-8").read()
         self.assertGreaterEqual(src.count("\n"), dc.BIG_FILE_LINES)
         floors, _e = dc.load_floors(self.ws)
         clusters, residual, tops, _tree, _folded = dc._symbol_clusters(
@@ -1160,7 +1160,7 @@ class TestE4DocstringTruth(unittest.TestCase):
 
     def test_whole_file_fails_open_to_defaults_and_is_reported(self):
         ws = _miniapp(self.tmp)
-        with open(os.path.join(ws, "components.yaml"), "w") as f:
+        with open(os.path.join(ws, "components.yaml"), "w", encoding="utf-8") as f:
             f.write("floors:\n  - candidate_min_files: 8\n")
         floors, err = dc.load_floors(ws)
         self.assertEqual(floors["candidate_min_files"],
@@ -1172,7 +1172,7 @@ class TestE4DocstringTruth(unittest.TestCase):
         ws = _bigfile_ws(self.tmp)
         rel = "bigapp/gen/huge.py"
         floors, _e = dc.load_floors(ws)
-        text = open(os.path.join(ws, rel)).read()
+        text = open(os.path.join(ws, rel), encoding="utf-8").read()
         out = dc._symbol_clusters(text, rel, floors)
         self.assertEqual(len(out), 5)
         clusters, residual, tops, tree, folded = out

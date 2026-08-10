@@ -32,7 +32,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -72,7 +72,7 @@ class TestRepoStoreMode(_RepoStore):
         _git(self.ws, "add", ".taskplane-kb")
         _git(self.ws, "commit", "-qm", "kb")
         r = subprocess.run(["git", "ls-files", ".taskplane-kb"],
-                           cwd=self.ws, capture_output=True, text=True)
+                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8")
         self.assertIn("index.json", r.stdout)   # NOT gitignored — by design
 
     def test_loop_state_survives_home_teardown(self):
@@ -106,7 +106,7 @@ class TestApproveBy(_RepoStore):
 
     def _trace(self):
         p = os.path.join(self.ws, ".taskplane", "trace.jsonl")
-        return [json.loads(x) for x in open(p)] if os.path.exists(p) else []
+        return [json.loads(x) for x in open(p, encoding="utf-8")] if os.path.exists(p) else []
 
     def test_approve_by_recorded_in_trace_and_kb(self):
         self._park_at_plan_approval()
@@ -118,7 +118,7 @@ class TestApproveBy(_RepoStore):
         # the KB decision carries the approver too
         ds = kb.list_decisions(self.ws)
         body = open(os.path.join(kb.kb_dir(self.ws),
-                                 ds[-1]["file"])).read()
+                                 ds[-1]["file"]), encoding="utf-8").read()
         self.assertIn("Approved by: Dana R.", body)
 
     def test_approve_without_by_still_works_but_records_none(self):
@@ -130,6 +130,11 @@ class TestApproveBy(_RepoStore):
         # still detectable as self-approval, now explicit in the trail.
         self.assertEqual(ev[-1].get("by"), "(unattributed)")
 
+    @unittest.skipUnless(
+        "utf" in sys.getfilesystemencoding().lower(),
+        "needs a UTF-8 filesystem encoding: this case carries non-ASCII "
+        "through argv/paths, which a C-locale host cannot represent at all "
+        "(a harness limit, not a product limit — Windows paths are UTF-16)")
     def test_cli_accepts_by_flag(self):
         self._park_at_plan_approval()
         tppy = os.path.join(ROOT, "taskplane", "tp.py")
@@ -137,7 +142,7 @@ class TestApproveBy(_RepoStore):
                             "--by", "Leo — 'ship it'",
                             "--workspace", self.ws],
                            capture_output=True, text=True,
-                           env={**os.environ})
+                           env={**os.environ}, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         ev = [e for e in self._trace() if e.get("event") == "loop_approve"]
         self.assertEqual(ev[-1].get("by"), "Leo — 'ship it'")
@@ -147,7 +152,7 @@ class TestTagSkill(unittest.TestCase):
     def test_skill_exists_with_protocol(self):
         p = os.path.join(ROOT, "skills", "tp-tag", "SKILL.md")
         self.assertTrue(os.path.exists(p))
-        body = open(p).read()
+        body = open(p, encoding="utf-8").read()
         for must in ("TASKPLANE_STORE=repo", "--by",
                      "Do not run `loop approve`",
                      "Never approves a human gate"):

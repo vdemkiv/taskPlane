@@ -36,7 +36,7 @@ def _screen(ws, tool_name, tool_input, env=None):
     e.update(env or {})
     r = subprocess.run([sys.executable, TP, "screen"],
                        input=json.dumps(event), capture_output=True,
-                       text=True, env=e)
+                       text=True, env=e, encoding="utf-8")
     if not r.stdout.strip():
         return {"decision": None}
     return json.loads(r.stdout)
@@ -91,7 +91,7 @@ class TestDashboardJsEscape(unittest.TestCase):
         import loop
         ws = tempfile.mkdtemp()
         subprocess.run(["git", "init", "-q"], cwd=ws)
-        open(os.path.join(ws, "a.py"), "w").write("x=1\n")
+        open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x=1\n")
         subprocess.run(["git", "add", "-A"], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
@@ -121,7 +121,7 @@ class TestExhaustedContractNeverIdleReleased(unittest.TestCase):
         c.pop("activated_pid", None)
         c["orphan_ttl_seconds"] = 1
         c["activated_at"] = time.time() - 9999
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": 2, "denies": 5,
                                       "last_seen_ts": time.time() - 9999}}, f)
         orphaned, why = tpl.orphan_status(ws, c)
@@ -136,9 +136,9 @@ class TestExhaustedContractNeverIdleReleased(unittest.TestCase):
         c["orphan_ttl_seconds"] = 1
         c["activated_at"] = time.time() - 9999
         c.pop("activated_pid", None)
-        with open(cpath, "w") as f:
+        with open(cpath, "w", encoding="utf-8") as f:
             json.dump(c, f)
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": 2, "denies": 0,
                                       "last_seen_ts": time.time() - 9999}}, f)
         d = _screen(ws, "Bash", {"command": "echo hi"})
@@ -154,9 +154,9 @@ class TestExhaustedContractNeverIdleReleased(unittest.TestCase):
         c["orphan_ttl_seconds"] = 1
         c["activated_at"] = time.time() - 9999
         c.pop("activated_pid", None)
-        with open(cpath, "w") as f:
+        with open(cpath, "w", encoding="utf-8") as f:
             json.dump(c, f)
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": 3, "denies": 0,
                                       "last_seen_ts": time.time() - 9999}}, f)
         d = _screen(ws, "Bash", {"command": "echo hi"})
@@ -168,7 +168,7 @@ class TestExhaustedContractNeverIdleReleased(unittest.TestCase):
         ws, c = _governed_ws(max_actions=60)
         c.pop("activated_pid", None)
         c["orphan_ttl_seconds"] = 3600
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({c["task_id"]: {"actions": 3, "denies": 0,
                                       "last_seen_ts": time.time()}}, f)
         self.assertFalse(tpl.orphan_status(ws, c)[0])
@@ -178,7 +178,7 @@ class TestExhaustedContractNeverIdleReleased(unittest.TestCase):
 class TestMeterFailsClosed(unittest.TestCase):
     def test_corrupt_meter_blocks_governed_action(self):
         ws, c = _governed_ws(max_actions=5)
-        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             f.write("{not valid json")
         d = _screen(ws, "Bash", {"command": "echo hi"})
         self.assertEqual(d["decision"], "block")
@@ -229,7 +229,7 @@ class TestAncestorWalkWorktreeBoundary(unittest.TestCase):
         child = os.path.join(parent, "child")
         os.makedirs(child)
         subprocess.run(["git", "init", "-q"], cwd=child)
-        open(os.path.join(child, "a.py"), "w").write("x=1\n")
+        open(os.path.join(child, "a.py"), "w", encoding="utf-8").write("x=1\n")
         subprocess.run(["git", "add", "-A"], cwd=child)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=child)

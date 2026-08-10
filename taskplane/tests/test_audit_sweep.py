@@ -32,14 +32,14 @@ def git_ws(tmp, tasks):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
     os.makedirs(os.path.join(ws, "src", "todo"))
-    open(os.path.join(ws, "src", "todo", "a.py"), "w").write("x=1\n")
+    open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
     subprocess.run(["git", "init", "-q"], cwd=ws)
     subprocess.run(["git", "config", "user.email", "e@e"], cwd=ws)
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
     json.dump({"tasks": tasks},
-              open(os.path.join(ws, "plan", "tasks.json"), "w"))
+              open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 
 
@@ -63,7 +63,7 @@ def pass_eval(ws):
         task_type=task.get("type"), breadth="routed")
     criteria = loop._criteria_for(ws, state, task)
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w") as f:
+    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump({"task": task["id"], "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
@@ -78,14 +78,14 @@ def pass_em(ws, coverage=None, findings_rows=None):
     if coverage is None:
         coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-    with open(os.path.join(ws, ".em-review", "report.md"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
         f.write("# Engineering review\n\nAll required evidence passed.\n")
     state = loop.load(ws)
     changed = [f for f in loop._diff_files(
         ws, state.get("baseline") or "HEAD")
         if not f.startswith(lens.LOOP_OWNED)]
     impact = depgraph.impact(ws, changed)
-    with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": {"lens_coverage": coverage, "impact": impact,
                             "tests": ["true"],
                             "gate": {"verdict": "recommend-pass"}},
@@ -197,7 +197,7 @@ class TestAuditCadence(AuditBase):
         ws = self.ws()
         path = loop._audit_path(ws)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "w").write("{not json")
+        open(path, "w", encoding="utf-8").write("{not json")
         self.assertTrue(loop.audit_due(ws))       # more coverage, never less
         with self.assertRaises(tp.StateError):
             loop.audit_counter(ws)                # but the read fails closed
@@ -277,9 +277,9 @@ def em_review_ws(na=("i18n",), findings_rows=(), audit=True):
             "tests": "pytest -q: pass", "gate": {"verdict": "recommend-pass"}}
     if audit:
         meta["audit"] = True
-    with open(os.path.join(d, "findings.json"), "w") as f:
+    with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "findings": list(findings_rows)}, f)
-    with open(os.path.join(d, "report.md"), "w") as f:
+    with open(os.path.join(d, "report.md"), "w", encoding="utf-8") as f:
         f.write("# review\nok\n")
     return ws
 
@@ -289,7 +289,7 @@ class TestGateIntegration(AuditBase):
     change to finding_blocks (integration-style, fixture findings.json)."""
 
     def _rows(self, ws):
-        with open(os.path.join(ws, ".em-review", "findings.json")) as f:
+        with open(os.path.join(ws, ".em-review", "findings.json"), encoding="utf-8") as f:
             return json.load(f)["findings"]
 
     def test_na_lens_finding_blocks_the_gate(self):
@@ -320,11 +320,11 @@ class TestGateIntegration(AuditBase):
             {"lens": "i18n", "severity": "low", "title": "missed"}])
         loop._engineering_review_errors(ws, None)
         p = os.path.join(ws, ".em-review", "findings.json")
-        doc = json.load(open(p))
+        doc = json.load(open(p, encoding="utf-8"))
         for r in doc["findings"]:
             if r.get("owner") == "router":
                 r["status"] = "accepted"
-        json.dump(doc, open(p, "w"))
+        json.dump(doc, open(p, "w", encoding="utf-8"))
         errs = loop._engineering_review_errors(ws, None)
         self.assertFalse(any("router regression" in e for e in errs), errs)
 
@@ -344,14 +344,14 @@ class TestGateIntegration(AuditBase):
         d = os.path.join(ws, ".em-review")
         os.makedirs(d)
         coverage = {e["id"]: "sweep" for e in lens.load_catalog()["lenses"]}
-        with open(os.path.join(d, "findings.json"), "w") as f:
+        with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
             json.dump({"meta": {"lens_coverage": coverage,
                                 "impact": {"touched": []},
                                 "tests": "ok",
                                 "gate": {"verdict": "recommend-pass"}},
                        "findings": [{"lens": "i18n", "severity": "low",
                                      "title": "note"}]}, f)
-        with open(os.path.join(d, "report.md"), "w") as f:
+        with open(os.path.join(d, "report.md"), "w", encoding="utf-8") as f:
             f.write("ok\n")
         errs = loop._engineering_review_errors(ws, None)
         self.assertEqual(errs, [])
@@ -419,7 +419,7 @@ class TestUnattributedFindingWarnRows(AuditBase):
     unchanged (see test_unrouted_or_lensless_findings_are_ignored above)."""
 
     def _rows(self, ws):
-        with open(os.path.join(ws, ".em-review", "findings.json")) as f:
+        with open(os.path.join(ws, ".em-review", "findings.json"), encoding="utf-8") as f:
             return json.load(f)["findings"]
 
     def _warn_rows(self, ws):
@@ -430,7 +430,7 @@ class TestUnattributedFindingWarnRows(AuditBase):
         path = os.path.join(ws, ".taskplane", "trace.jsonl")
         if not os.path.exists(path):
             return []
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return [json.loads(line) for line in f]
 
     def test_lensless_finding_surfaces_as_warn_row_and_does_not_block(self):
@@ -598,7 +598,7 @@ class TestMachineryWarnCostumeCannotEvadeTheBackstop(AuditBase):
     row's key while carrying a severity of its own (light3 finding #4)."""
 
     def _rows(self, ws):
-        with open(os.path.join(ws, ".em-review", "findings.json")) as f:
+        with open(os.path.join(ws, ".em-review", "findings.json"), encoding="utf-8") as f:
             return json.load(f)["findings"]
 
     def _warn_rows(self, ws):
@@ -695,12 +695,12 @@ class TestMachineryWarnCostumeCannotEvadeTheBackstop(AuditBase):
              "file": "src/a.py", "line": 3}])
         self.assertEqual(len(loop._engineering_review_errors(ws, None)), 1)
         path = os.path.join(ws, ".em-review", "findings.json")
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             doc = json.load(f)
         for r in doc["findings"]:
             if not r.get("warn"):
                 r["status"] = "resolved"       # triage the original
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(doc, f)
         self.assertEqual(loop._engineering_review_errors(ws, None), [])
 

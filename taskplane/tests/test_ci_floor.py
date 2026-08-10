@@ -55,15 +55,15 @@ _RATCHET_MANIFEST = frozenset({
 def _run_script(*args, cwd=None):
     return subprocess.run([sys.executable, SCRIPT, *args],
                           capture_output=True, text=True,
-                          cwd=cwd or ROOT)
+                          cwd=cwd or ROOT, encoding="utf-8")
 
 
 def _mk_tree(base, files):
     """Write a synthetic repo root: <base>/taskplane/tests/{__init__,*}.py."""
     tdir = os.path.join(base, "taskplane", "tests")
     os.makedirs(tdir, exist_ok=True)
-    open(os.path.join(base, "taskplane", "__init__.py"), "w").close()
-    open(os.path.join(tdir, "__init__.py"), "w").close()
+    open(os.path.join(base, "taskplane", "__init__.py"), "w", encoding="utf-8").close()
+    open(os.path.join(tdir, "__init__.py"), "w", encoding="utf-8").close()
     for name, body in files.items():
         with open(os.path.join(tdir, name), "w", encoding="utf-8") as f:
             f.write(textwrap.dedent(body))
@@ -210,7 +210,7 @@ class TestFloorScriptAgainstTheRealTree(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "-m", "unittest",
              "taskplane.tests.test_v097_fixes.TestHigh5StoreIsolation", "-v"],
-            capture_output=True, text=True, cwd=ROOT, env=env)
+            capture_output=True, text=True, cwd=ROOT, env=env, encoding="utf-8")
         self.assertEqual(
             r.returncode, 0,
             "store isolation regressed under `python -m unittest`:\n"
@@ -296,7 +296,7 @@ class TestEnvMutationGuardSelfTest(unittest.TestCase):
             [sys.executable, "-m", "pytest", "-q",
              *[os.path.join("tests", f) for f in files]],
             capture_output=True, text=True, cwd=self.tmp,
-            env={**os.environ, "PYTHONPATH": ROOT})
+            env={**os.environ, "PYTHONPATH": ROOT}, encoding="utf-8")
 
     def _write(self, name, body):
         with open(os.path.join(self.tdir, name), "w", encoding="utf-8") as f:

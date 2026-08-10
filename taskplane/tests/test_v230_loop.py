@@ -38,14 +38,14 @@ def git_ws(tasks=None):
     ws = tempfile.mkdtemp()
     os.makedirs(os.path.join(ws, "plan"))
     os.makedirs(os.path.join(ws, "src", "todo"))
-    open(os.path.join(ws, "src", "todo", "a.py"), "w").write("x=1\n")
+    open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
     subprocess.run(["git", "init", "-q"], cwd=ws)
     subprocess.run(["git", "config", "user.email", "e@e"], cwd=ws)
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
     if tasks is not None:
-        with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+        with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": tasks}, f)
     return ws
 
@@ -55,7 +55,7 @@ def read_trace(ws):
     if not os.path.exists(p):
         return []
     out = []
-    for ln in open(p):
+    for ln in open(p, encoding="utf-8"):
         with contextlib.suppress(ValueError):
             if ln.strip():
                 out.append(json.loads(ln))
@@ -68,7 +68,7 @@ class TestStateDirOwnership(unittest.TestCase):
     def test_team_plan_keeps_loop_and_track_state_private(self):
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, ".taskplane-kb"))
-        with open(os.path.join(ws, ".taskplane-kb", "config.json"), "w") as f:
+        with open(os.path.join(ws, ".taskplane-kb", "config.json"), "w", encoding="utf-8") as f:
             json.dump({"plan": "team", "store": "repo"}, f)
         # t9 (R-0011 E2): this pop is a real mutation of the caller's env —
         # restore it, or an exported TASKPLANE_STORE vanishes for every
@@ -110,7 +110,7 @@ class TestStateDirOwnership(unittest.TestCase):
         ws = tempfile.mkdtemp()
         legacy = os.path.join(ws, "knowledge", "state")
         os.makedirs(legacy)
-        with open(os.path.join(legacy, "loop.json"), "w") as f:
+        with open(os.path.join(legacy, "loop.json"), "w", encoding="utf-8") as f:
             json.dump({"step": "pm", "goal": "g", "tasks": None,
                        "current_task": 0, "max_fix_cycles": 2,
                        "checkpoints": []}, f)
@@ -131,7 +131,7 @@ class TestBudgetExhaustionVisible(unittest.TestCase):
                                      max_actions=max_actions)
         tp.activate(ws, contract)
         tid = contract.get("task_id", "_")
-        with open(os.path.join(tp.tp_dir(ws), "meter.json"), "w") as f:
+        with open(os.path.join(tp.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
             json.dump({tid: {"actions": used, "denies": 0}}, f)
         return ws
 
@@ -171,7 +171,7 @@ class TestCorruptStateFailsClosed(unittest.TestCase):
     def test_corrupt_loop_json_raises_state_error(self):
         ws = git_ws()
         loop.init(ws, "g")
-        with open(loop._loop_path(ws), "w") as f:
+        with open(loop._loop_path(ws), "w", encoding="utf-8") as f:
             f.write("{ truncated")
         with self.assertRaises(tp.StateError) as cm:
             loop.load(ws)
@@ -183,13 +183,13 @@ class TestCorruptStateFailsClosed(unittest.TestCase):
     def test_mutate_fails_closed_and_preserves_the_corrupt_file(self):
         ws = git_ws()
         loop.init(ws, "g")
-        with open(loop._loop_path(ws), "w") as f:
+        with open(loop._loop_path(ws), "w", encoding="utf-8") as f:
             f.write("{ torn")
         with self.assertRaises(tp.StateError):
             with loop.mutate(ws):
                 pass
         # the corrupt bytes are still there for forensics — NOT re-inited
-        self.assertEqual(open(loop._loop_path(ws)).read(), "{ torn")
+        self.assertEqual(open(loop._loop_path(ws), encoding="utf-8").read(), "{ torn")
 
     def test_missing_loop_json_still_returns_none(self):
         self.assertIsNone(loop.load(tempfile.mkdtemp()))
@@ -197,7 +197,7 @@ class TestCorruptStateFailsClosed(unittest.TestCase):
     def test_corrupt_track_registry_raises_state_error(self):
         ws = git_ws()
         os.makedirs(track._state_dir(ws), exist_ok=True)
-        with open(track._reg_path(ws), "w") as f:
+        with open(track._reg_path(ws), "w", encoding="utf-8") as f:
             f.write("not json")
         with self.assertRaises(tp.StateError) as cm:
             track.list_(ws)
@@ -255,9 +255,9 @@ class TestSeverityCanonical(unittest.TestCase):
                 "tests": "pytest -q: pass"}
         if gate is not None:
             meta["gate"] = gate
-        with open(os.path.join(d, "findings.json"), "w") as f:
+        with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
             json.dump({"meta": meta, "findings": findings_rows}, f)
-        with open(os.path.join(d, "report.md"), "w") as f:
+        with open(os.path.join(d, "report.md"), "w", encoding="utf-8") as f:
             f.write("# review\nok\n")
         return ws
 
@@ -301,7 +301,7 @@ class TestInitOverInflight(unittest.TestCase):
         self.assertEqual(out["goal"], "second goal")
         archived = out["previous_loop_archived"]
         self.assertTrue(os.path.exists(archived))
-        self.assertEqual(json.load(open(archived))["goal"], "first goal")
+        self.assertEqual(json.load(open(archived, encoding="utf-8"))["goal"], "first goal")
         self.assertTrue(any(e["event"] == "loop_init_replaced"
                             for e in read_trace(ws)))
 
@@ -360,13 +360,13 @@ class TestGateStalenessInsideLock(unittest.TestCase):
         loop.init(ws, "g", spec_path="s", checkpoints=[])
         loop.gate(ws, "pass")                       # plan → execute
         self.assertEqual(loop.load(ws)["step"], "execute")
-        with open(os.path.join(ws, "src", "todo", "a.py"), "a") as f:
+        with open(os.path.join(ws, "src", "todo", "a.py"), "a", encoding="utf-8") as f:
             f.write("y=2\n")
         self.assertTrue(loop.submit(ws, "pass")["submitted"])
         orig = loop._task_dod_errors
 
         def sabotage(*a, **k):
-            with open(os.path.join(ws, "src", "todo", "a.py"), "a") as f:
+            with open(os.path.join(ws, "src", "todo", "a.py"), "a", encoding="utf-8") as f:
                 f.write("z=3\n")                    # eager editor mid-gate
             return []
         loop._task_dod_errors = sabotage
@@ -430,7 +430,7 @@ class TestClaimLockShrink(unittest.TestCase):
         orig_dor = tp.dor_check
 
         def concurrent_winner(contract, w, snap):
-            st = json.load(open(loop._loop_path(ws)))
+            st = json.load(open(loop._loop_path(ws), encoding="utf-8"))
             st["tasks"][0]["status"] = "passed"     # settled while preparing
             tp.atomic_write_json(loop._loop_path(ws), st, indent=2)
             return orig_dor(contract, w, snap)
@@ -569,7 +569,7 @@ class TestPlanGateCarryOverConcurrency(unittest.TestCase):
         orig = depgraph.readiness
 
         def concurrent(w, tasks):
-            s = json.load(open(loop._loop_path(ws)))
+            s = json.load(open(loop._loop_path(ws), encoding="utf-8"))
             s["_concurrent_marker"] = 1               # another writer lands
             tp.atomic_write_json(loop._loop_path(ws), s, indent=2)
             return orig(w, tasks)
@@ -611,13 +611,13 @@ class TestPublishArtifactsChurn(unittest.TestCase):
             self.assertTrue(os.path.exists(gp))
             marker = {"meta": {"content_fingerprint": "fp1"},
                       "modules": {"m": {}}, "marker": True}
-            with open(gp, "w") as f:
+            with open(gp, "w", encoding="utf-8") as f:
                 json.dump(marker, f)
             loop._publish_artifacts(ws)             # same fp → no rewrite
-            self.assertTrue(json.load(open(gp)).get("marker"))
+            self.assertTrue(json.load(open(gp, encoding="utf-8")).get("marker"))
             fake["meta"]["content_fingerprint"] = "fp2"
             loop._publish_artifacts(ws)             # new fp → rewritten
-            self.assertNotIn("marker", json.load(open(gp)))
+            self.assertNotIn("marker", json.load(open(gp, encoding="utf-8")))
         finally:
             depgraph.load = orig
 
@@ -628,13 +628,13 @@ class TestPublishArtifactsChurn(unittest.TestCase):
         os.makedirs(root, exist_ok=True)
         p = os.path.join(root, "HEADLINES.md")
         filler = "- 2026-01-01 00:00 UTC · old line " + "x" * 480
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write("# pub goal — progress log\n\n")
             for i in range(600):
                 f.write(f"{filler} {i}\n")
         self.assertGreater(os.path.getsize(p), 262144)
         self.assertIsNotNone(loop._publish_artifacts(ws))
-        lines = open(p).read().splitlines()
+        lines = open(p, encoding="utf-8").read().splitlines()
         body = [l for l in lines if l.strip() and not l.startswith("#")]
         self.assertLessEqual(len(body), 500)
         self.assertIn("taskplane loop", body[-1])   # newest line survived
@@ -742,7 +742,7 @@ class TestDesignWiringHooks(unittest.TestCase):
         ws = git_ws([TASK])
         loop.init(ws, "free-text goal", checkpoints=[])   # → pm
         os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
-        open(os.path.join(ws, "specs", "spec.md"), "w").write("# spec\n")
+        open(os.path.join(ws, "specs", "spec.md"), "w", encoding="utf-8").write("# spec\n")
         rid = reqs.record_requirement(ws, "Gate attach",
                                       acceptance=["done"])["id"]
         out = loop.gate(ws, "pass", rid=rid)
@@ -839,7 +839,7 @@ class TestDesignWiringHooks(unittest.TestCase):
         loop.save(ws, st)
         d = os.path.join(ws, ".em-review")
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "findings.json"), "w") as f:
+        with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
             json.dump({"meta": {"design": {"accepted_drift": [
                 {"drift": "renamed module", "reason": "clearer",
                  "accepted_by": "Dana"}]}}, "findings": []}, f)

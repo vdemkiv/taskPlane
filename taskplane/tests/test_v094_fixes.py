@@ -84,8 +84,8 @@ class TestDepgraphStaleEdgeFilter(unittest.TestCase):
     def test_deleted_module_edge_dropped_despite_import_cache(self):
         ws = self._ws()
         os.makedirs(os.path.join(ws, "src"))
-        open(os.path.join(ws, "src", "a.py"), "w").write("import helper\n")
-        open(os.path.join(ws, "helper.py"), "w").write("x = 1\n")
+        open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("import helper\n")
+        open(os.path.join(ws, "helper.py"), "w", encoding="utf-8").write("x = 1\n")
         g1 = dg.scan(ws)
         self.assertTrue(any(e["to"] == "(root)" or "helper" in e["to"]
                             for e in g1["edges"]) or g1["edges"] == [],
@@ -110,8 +110,8 @@ class TestDepgraphStaleEdgeFilter(unittest.TestCase):
         known_stems but NOT a leaf module-with-files — it must be kept."""
         ws = self._ws()
         os.makedirs(os.path.join(ws, "src", "db"))
-        open(os.path.join(ws, "src", "db", "conn.py"), "w").write("x=1\n")
-        open(os.path.join(ws, "main.py"), "w").write("import src\n")
+        open(os.path.join(ws, "src", "db", "conn.py"), "w", encoding="utf-8").write("x=1\n")
+        open(os.path.join(ws, "main.py"), "w", encoding="utf-8").write("import src\n")
         g1 = dg.scan(ws)
         e1 = {(e["from"], e["to"]) for e in g1["edges"]}
         self.assertIn(("(root)", "src"), e1, g1["edges"])
@@ -123,9 +123,9 @@ class TestDepgraphStaleEdgeFilter(unittest.TestCase):
     def test_compose_defined_in_edge_survives_filter(self):
         ws = self._ws()
         os.makedirs(os.path.join(ws, "deploy"))
-        open(os.path.join(ws, "deploy", "docker-compose.yml"), "w").write(
+        open(os.path.join(ws, "deploy", "docker-compose.yml"), "w", encoding="utf-8").write(
             "services:\n  api:\n    image: x\n")
-        open(os.path.join(ws, "app.py"), "w").write("x=1\n")
+        open(os.path.join(ws, "app.py"), "w", encoding="utf-8").write("x=1\n")
         g = dg.scan(ws)
         self.assertIn(("svc:api", "deploy"),
                       {(e["from"], e["to"]) for e in g["edges"]}, g["edges"])
@@ -139,7 +139,7 @@ class TestLoopStateLegacyFallback(unittest.TestCase):
         legacy_state = os.path.join(ws, "knowledge", "state")
         os.makedirs(legacy_state)
         st = {"step": "execute", "goal": "legacy", "tasks": []}
-        with open(os.path.join(legacy_state, "loop.json"), "w") as f:
+        with open(os.path.join(legacy_state, "loop.json"), "w", encoding="utf-8") as f:
             json.dump(st, f)
         got = loopmod.load(ws)
         self.assertIsNotNone(got)
@@ -153,7 +153,7 @@ class TestLoopStateLegacyFallback(unittest.TestCase):
     def test_pre_spec_taskplane_loop_json_still_read(self):
         ws = tempfile.mkdtemp()
         os.makedirs(tpl.tp_dir(ws))
-        with open(os.path.join(tpl.tp_dir(ws), "loop.json"), "w") as f:
+        with open(os.path.join(tpl.tp_dir(ws), "loop.json"), "w", encoding="utf-8") as f:
             json.dump({"step": "plan", "goal": "prespec", "tasks": []}, f)
         got = loopmod.load(ws)
         self.assertIsNotNone(got)

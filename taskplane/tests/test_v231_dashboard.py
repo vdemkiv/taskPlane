@@ -43,7 +43,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -64,7 +64,7 @@ def _loop_ws_at_action_ceiling(tmp, n_tasks=40):
         acceptance=["criterion one", "criterion two", "criterion three"])
     loop.init(ws, "fixture goal", requirement_id=rec["id"])
     os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
-    open(os.path.join(ws, "specs", "spec.md"), "w").write("# spec\n")
+    open(os.path.join(ws, "specs", "spec.md"), "w", encoding="utf-8").write("# spec\n")
     loop.next_action(ws)
     loop.gate(ws, "pass", note="spec ok")
     st = loop.load(ws)
@@ -82,9 +82,9 @@ def _loop_ws_at_action_ceiling(tmp, n_tasks=40):
          "coding": {"scope_paths": ["src/**"],
                     "command_policy": {"deny": []}},
          "budget": {"max_actions": 5}}
-    with open(os.path.join(tp.tp_dir(ws), "active_contract.json"), "w") as f:
+    with open(os.path.join(tp.tp_dir(ws), "active_contract.json"), "w", encoding="utf-8") as f:
         json.dump(c, f)
-    with open(os.path.join(tp.tp_dir(ws), "meter.json"), "w") as f:
+    with open(os.path.join(tp.tp_dir(ws), "meter.json"), "w", encoding="utf-8") as f:
         json.dump({"t2": {"actions": 5}}, f)
     return ws
 
