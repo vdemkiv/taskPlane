@@ -1,0 +1,383 @@
+{
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Engine gate hardening: A1 serial-mode claim refusal + A2 per-task DoD LOOP_OWNED exclusion (dod_check ignore_prefixes) + A3 slot-env strip in dod_check + A5 router_audit unattributed warn rows + B2 plan-gate brief-shape-before-golden-regen ordering rule",
+   "scope": [
+    "taskplane/loop.py",
+    "taskplane/taskplane_lite.py",
+    "taskplane/audit.py",
+    "taskplane/tests/test_loop.py",
+    "taskplane/tests/test_dor_dod.py",
+    "taskplane/tests/test_audit_sweep.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_loop.py taskplane/tests/test_dor_dod.py taskplane/tests/test_audit_sweep.py -q",
+   "req": "R-0007",
+   "deps": [],
+   "contracts": [
+    "contract:loop-gate",
+    "contract:findings-v2"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:loop-gate:provides",
+    "taskplane/tests->contract:loop-gate:validates",
+    "taskplane->contract:findings-v2:consumes",
+    "taskplane/tests->contract:findings-v2:validates",
+    "taskplane/tests->taskplane:imports"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "A1 (design acceptance row 1): loop.claim refuses fail-closed when state.parallel is false, BEFORE any contract build/DoR work; remedy names `loop init --parallel` or a plan amendment; traced loop_claim_blocked reason=serial_mode; test_loop.py replays decision 0011 — two claims under serial mode both refused, statuses still pending, no contract slot activated, no .tp-work worktree; parallel-mode claim behavior byte-unchanged (existing claim tests green)",
+    "A2 (row 2): taskplane_lite.dod_check gains ignore_prefixes: tuple = () consumed only by the scope-diff loop; loop._task_dod_errors and the parallel-execute gate pass lens.LOOP_OWNED (the same tuple the sign-off aggregate filters at loop.py:2113); test_dor_dod.py — a task whose only diff is design/+plan/+specs/ passes the per-task DoD with zero diff_scope errors and no re-claim; a real out-of-scope product file still fails; parity case pins the aggregate's LOOP_OWNED filtering byte-unchanged; non-loop dod_check callers unchanged (default ())",
+    "A3 (row 3): dod_check builds child_env = dict(os.environ) with TASKPLANE_TASK deleted and passes env=child_env to _run for the DoD test command; parent env never mutated; test_dor_dod.py slot-canary — under TASKPLANE_TASK=<slot>, a canary test that fails if the slot is present in its env passes under the gate",
+    "A5 (row 5, contract:findings-v2 CONSUMES — shape untouched): router_audit replaces the silent skip at audit.py:149-150 with warn rows — severity preserved, class 'observation', owner 'router', domain 'router+unattributed' / 'router+unknown:<lens>', original finding nested, warn: true — appended idempotently by _router_audit_gate via the existing key mechanism, traced router_audit_unattributed {count}; test_audit_sweep.py: lens-less and unknown-lens findings both yield warn rows appended in findings.json (idempotent across gate re-runs); attributed-finding behavior byte-identical; deep-lens findings pass through untouched",
+    "B2 (R-0008 row 2, realized in contract:loop-gate): _plan_dor_errors gains the ordering rule — BRIEF_SHAPE_SURFACES = (taskplane/lens.py, taskplane/lens_signals.py, taskplane/tp.py), GOLDEN_PREFIX = taskplane/tests/fixtures/briefs/; every task whose scope stems intersect BRIEF_SHAPE_SURFACES must appear (transitively) in the deps of every task touching GOLDEN_PREFIX, else the plan is refused naming both task ids; test_loop.py replays the t6-parallel-t7 fixture refused, the deps-corrected plan passes, plans with no goldens task or no brief-shape task pass byte-unchanged (THIS phase's own plan conforms: t10 transitively depends on t1..t9)",
+    "no guardrail loosened; guardrail battery green (every change refuses more, excludes only orchestrator-authored loop artifacts the aggregate already excludes, removes an env leak, or surfaces what was silently skipped); contract:lens-brief and contract:findings-v2 shapes untouched"
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "A4 gate/engine version-skew refusal (decision 0018, option c): engine_fingerprint stamped at loop submit, compared at the evaluate gate BEFORE _evaluation_errors, fail-closed refusal with named merge-then-resubmit remedy — the most delicate change in the phase, isolated in its own task",
+   "scope": [
+    "taskplane/loop.py",
+    "taskplane/tp.py",
+    "taskplane/taskplane_lite.py",
+    "taskplane/tests/test_loop.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_loop.py taskplane/tests/test_evaluate_routing.py -q",
+   "req": "R-0007",
+   "deps": [
+    "t1",
+    "t3"
+   ],
+   "contracts": [
+    "contract:loop-gate"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:loop-gate:provides",
+    "taskplane/tests->contract:loop-gate:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "A4 (design acceptance row 4, decision 0018): tp.engine_fingerprint() = sha256 over sorted (module, sha256(module-file bytes)) of the validator-surface modules loaded by the running process (loop, lens, lens_signals, depgraph, audit, taskplane_lite, design_contract, decompose, requirements — via __file__); loop.submit stamps engine_fingerprint into the submission (additive field); the evaluate gate compares it to its own fingerprint BEFORE _evaluation_errors and REFUSES on mismatch or absence — no transition, traced loop_gate_blocked reason=engine_skew {submitted, validator}, error text carries the named remedy: merge tp/<task> into the primary so one engine owns production and validation, then loop submit again",
+    "t7-REPLAY CRITERION (pinned): test_loop.py replays the recorded Phase 2 t7 skew scenario — a submission stamped with a different engine_fingerprint is refused with the remedy text and the trace event, state unchanged; after simulated merge (fingerprints equal) the SAME gate passes on the identical submission path — a re-evaluation can never be stranded",
+    "NON-SKEW BYTE-UNCHANGED DIFFERENTIAL: an explicit equal-fingerprint case asserts gate flow and outputs byte-identical to today; ALL existing evaluate-gate tests green unchanged; the comparison is a pure pre-check that can only refuse more, never validate less; stamp and comparison land together (the field is meaningless alone); rollback = one revert, unknown keys ignored by older gates",
+    "stated design limit carried into the test docstring: this detects producer-process vs validator-process skew (the t7 topology); third-engine hand-authored evidence remains covered by staleness + DoD (escalation path: stamp into .eval/verdict.json)",
+    "no guardrail loosened; guardrail battery green; gate ordering for all non-skew paths byte-unchanged; the L12 trust boundary untouched (the gate still validates with code the worker cannot author)"
+   ]
+  },
+  {
+   "id": "t3",
+   "title": "Emitter fail-open + refusals and floor clamp: A6 malformed-wave-entry degrade to the Task path + C3 explicit --emit workflow refusal on workflow-less hosts + E5 emission-time slot-charset validation (tp.py) + A7 components.yaml floor clamping (decompose.py) — all well-formed/default paths byte-unchanged, NO brief-byte changes in this task",
+   "scope": [
+    "taskplane/tp.py",
+    "taskplane/decompose.py",
+    "taskplane/tests/test_stage_waves.py",
+    "taskplane/tests/test_codex_compat.py",
+    "taskplane/tests/test_decompose.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_stage_waves.py taskplane/tests/test_codex_compat.py taskplane/tests/test_decompose.py taskplane/tests/test_dispatch_parity.py -q",
+   "req": "R-0007",
+   "deps": [],
+   "contracts": [
+    "contract:wave-workflow",
+    "contract:component-map"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:wave-workflow:provides",
+    "taskplane/tests->contract:wave-workflow:validates",
+    "taskplane->contract:component-map:provides",
+    "taskplane/tests->contract:component-map:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "A6 (design acceptance row 6): _stage_wave_run validates every wave entry (isinstance dict, task dict, non-empty id) before composing briefs; any malformed entry aborts workflow wrapping and degrades to the mandatory Task-path fallback with the reason surfaced to _emit_stage, traced stage_dispatch_path {stage, path: 'task', reason: 'malformed wave entry: <detail>'} — never an uncaught KeyError; test_stage_waves.py negative fixture: entry missing task.id under --emit auto/workflow yields Task-path stdout bytes, traced reason, exit 0, no exception; well-formed payloads byte-compare against existing goldens UNCHANGED (goldens not touched in this task)",
+    "A7 (row 7): load_floors clamps parsed floor values <=0 to 1 and returns the clamp set as a degraded marker (per-key, with given value); derive() carries degraded_floors in stats and the graph_decompose trace; floors_hash hashes the CLAMPED values; test_decompose.py: cluster_min_files: 0 and big_file_lines: -3 load as 1 with degraded_floors naming both keys and given values; positive overrides and the no-file default path byte-identical to today",
+    "C3 (R-0009 row 3, recorded product decision): when emit == 'workflow' and workflow_available() is false, BOTH surfaces (_emit_stage tp.py:1112-1115 and the review dispatch tp.py:1239-1250) refuse — self-describing stderr reason naming the detector's reason and the Task-path fallback (--emit task / default auto, byte-identical, the only Codex path), exit nonzero, no payload on stdout, traced stage_dispatch_path / review_dispatch_path {path: 'refused', reason}; test_codex_compat.py: CODEX_HOME + --emit workflow -> exit != 0 with the reason; default auto and --emit task byte-identical to goldens; the every-gate-reachable-without-workflows walk stays green; workflow_available stays the single detector",
+    "E5 (R-0011 row 5): every task id is validated against taskplane_lite._TASK_SLOT_RE at emission BEFORE any prompt line is composed; an invalid id (e.g. 't1;rm') refuses the emission loudly — exit nonzero, reason naming the id and the charset, traced stage_dispatch_path {path: 'refused'}, NO export line composed anywhere — never sanitized; all-valid payloads emit byte-identically to goldens",
+    "no guardrail loosened; guardrail battery green (crashes and uninvokable force-prints become loud refusals or the traced reference rail; A7 clamps toward MORE decomposition); test_dispatch_parity green UNCHANGED in this task — this task makes zero brief-byte changes (C1's byte change is deliberately excluded and lands with the single goldens regen in t10)"
+   ]
+  },
+  {
+   "id": "t4",
+   "title": "B1 forecast recalibration: class-weighted forecast_detail (functional 0.5 / NFR 0.1 only when functional complete / security+data-safety never discounted) + versioned 17-task two-phase calibration corpus fixture + pinned no-under-warn synthetic negative corpus",
+   "scope": [
+    "taskplane/requirements.py",
+    "taskplane/tests/test_requirements.py",
+    "taskplane/tests/fixtures/calibration/**"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_requirements.py -q",
+   "req": "R-0008",
+   "deps": [],
+   "contracts": [],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane/tests->taskplane:imports"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "B1 (design R-0008 row 1): taskplane/tests/fixtures/calibration/phase1-2-corpus.json checked in as a versioned fixture (schema tag + phase provenance) recording the 17 tasks' requirement axes, gap sets, predicted friction, and observed fix cycles from the phase 1+2 retros; requirements.forecast gains the structured companion forecast_detail(gaps, functional_complete) -> {friction, cycles, note} with the string form derived from it (score_refinement shape unchanged); class weights: functional gaps 0.5 cycles each; NFR gaps 0.1 each ONLY when the functional axis is complete; security/data-safety NFR gaps NEVER discounted (always 0.5)",
+    "test_requirements.py re-scores the corpus: well-scoped-wave rows forecast friction < 0.33; 2-3 synthetic under-specified requirements (missing acceptance; open questions; missing security NFR on an enforcement-touching change) are PINNED negative cases — each new friction >= its today-friction computed with the old weights in the test as the floor; the corpus file is schema-checked so future retros append outcomes and re-score",
+    "forecast weighting only — no routing change, no scorer-axis removal, both axes and every warning path preserved; scorer flattening is mechanically impossible while the no-under-warn corpus is green",
+    "no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t5",
+   "title": "Component-map precision + rendering honesty: B3 symbol-less big-file ::core fold + B4 live requirement-keyword union at assembly + B5 graph-informed fixture-discount exception + E3 dashboard component-node Escape handler and count-scaled ring radius + E4 decompose docstring truth",
+   "scope": [
+    "taskplane/decompose.py",
+    "taskplane/lens.py",
+    "taskplane/lens_signals.py",
+    "taskplane/depgraph.py",
+    "taskplane/tests/test_decompose.py",
+    "taskplane/tests/test_lens_route_v2.py",
+    "taskplane/tests/test_lens_signals_fixtures.py",
+    "taskplane/tests/test_dashboard_v2.py",
+    "taskplane/tests/fixtures/decompose/**",
+    "taskplane/tests/fixtures/detectors/**"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_decompose.py taskplane/tests/test_lens_route_v2.py taskplane/tests/test_lens_signals_fixtures.py taskplane/tests/test_dashboard_v2.py taskplane/tests/test_lens.py -q",
+   "req": "R-0008",
+   "deps": [
+    "t3"
+   ],
+   "contracts": [
+    "contract:component-map",
+    "contract:lens-brief"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:component-map:provides",
+    "taskplane->contract:component-map:consumes",
+    "taskplane/tests->contract:component-map:validates",
+    "taskplane->contract:lens-brief:provides"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "B3 (design R-0008 row 3): a >=BIG_FILE_LINES Python file with no earning clusters and no residual symbols joins ::core as a whole-file member (file, hash, '') replacing the decompose.py:492 exclusion; when nothing else earns a node the module folds to the single ::core honestly — no fixture in the suite yields ::core with empty members; test_decompose.py: a 600+-line symbol-less fixture lands in ::core with its (file, hash) member and the layer engaged (a diff touching it component-routes instead of widening on 'maps to no component'); the ::core-routed set is a SUPERSET of the set the file's own signals produce; component node shape {id, module, files, symbols, fingerprint, deps, lens_map} UNCHANGED",
+    "B4 (row 4): _assemble_components re-runs the requirement-keyword detector live on the ctx it already builds with requirement_text and UNIONS lenses with live keyword support into `proposed` (attributed 'requirement-keywords' in component_attribution) BEFORE the narrowing at lens.py:459-464; the union only ever widens; floors/budget still run after on the live ctx; test_lens_route_v2.py: requirement_text naming a concern no touched component's cached map proposes -> the component-path routed set contains that lens with attribution ['requirement-keywords']; superset assertion vs the module path's keyword contribution; without requirement_text routing byte-unchanged",
+    "B5 (row 5): the discount application point in lens_signals gains a graph-informed exception computed at ctx construction — a fixture-classed path whose containing graph module has >=1 dependents keeps FULL weight with the exemption named in the evidence line; the exception can ONLY restore weight, never deepen a discount; is_fixture_path itself unchanged; test_lens_signals_fixtures.py: positive (product fixtures/ module with dependents routes full weight) + negative (tests/fixtures/ with no dependents stays discounted x0.25 — D-0002 pin retained)",
+    "E3 (R-0011 row 3): depgraph component nodes gain the module-node keydown/Escape tooltip dismissal (depgraph.py:1381 pattern applied at 1404-1416); ring radius r(m)+24 becomes r(m)+f(component count), f monotonically increasing (named constants); test_dashboard_v2.py: Escape handler present on compnode elements; a 12-component fixture renders a strictly larger radius than a 2-component fixture; no fixed '+24' remains; renderer stays host-portable",
+    "E4 (row 4): decompose.py module docstring corrected (unsupported components.yaml LINE SHAPES raise ValueError, whole file fails open to defaults, reported); _symbol_clusters docstring documents the real 5-tuple; behavior does NOT move; test_decompose.py pins the raise + fail-open, unpacks the 5-tuple, and asserts the corrected docstring sentences so doc/behavior drift is unreachable",
+    "no routed set narrower than today (B4/B5 only widen or restore weight; B3 preserves the folded file's own signal set); brief PAYLOAD shape untouched; any routed-set change in parity-golden-covered scenarios is avoided here or lands only via t10's single regen.py regeneration; no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t6",
+   "title": "C2 deny-family widening: components.yaml joins DEFAULT_OUT_OF_SCOPE (strict-or-stricter, deliberately NOT sacred) with the plan-minted literal-override positive case and the deny case in the same test file",
+   "scope": [
+    "taskplane/taskplane_lite.py",
+    "taskplane/tests/test_governance_invariants.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_governance_invariants.py taskplane/tests/test_governance_v2.py -q",
+   "req": "R-0009",
+   "deps": [
+    "t2"
+   ],
+   "contracts": [
+    "contract:default-out-of-scope"
+   ],
+   "new_modules": [],
+   "model": "cheap",
+   "design_edges": [
+    "taskplane->contract:default-out-of-scope:provides",
+    "taskplane/tests->contract:default-out-of-scope:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "C2 (design R-0009 row 2): 'components.yaml' appended to taskplane_lite.DEFAULT_OUT_OF_SCOPE (taskplane_lite.py:1241-1246); precedence machinery UNTOUCHED — scope_violation's plan-minted literal override applies, wildcard globs never override, and components.yaml does NOT join _SACRED_OUT_OF_SCOPE (Phase 2 shipped decomposition through plan-minted writes; sacredness would re-create the scope-precedence deadlock)",
+    "test_governance_invariants.py, BOTH cases in this one file: deny — a tp new --scope contract (no plan provenance) is blocked from writing components.yaml; precedence positive — a plan-minted contract with the literal 'components.yaml' scope entry still writes it; existing deny-family cases byte-unchanged",
+    "deny-family WIDENING only — gains a file, loses nothing; no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t7",
+   "title": "D1-D4 skills truth-up: five skills to v2.5 reality + tp-go facade/driver phrasing + references/harness-rules.md single source with keyword-coverage drift check + tp-go pinned to the current minor (freshness gate extension)",
+   "scope": [
+    "skills/taskplane/SKILL.md",
+    "skills/tp-go/SKILL.md",
+    "skills/tp-status/SKILL.md",
+    "skills/tp-product/SKILL.md",
+    "skills/tp-tag/SKILL.md",
+    "skills/tp-northstar/SKILL.md",
+    "references/harness-rules.md",
+    "taskplane/tests/test_release_freshness.py",
+    "taskplane/tests/test_onboarding_docs.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_release_freshness.py taskplane/tests/test_onboarding_docs.py -q",
+   "req": "R-0010",
+   "deps": [],
+   "contracts": [],
+   "new_modules": [
+    "skills/taskplane",
+    "skills/tp-go",
+    "skills/tp-status",
+    "skills/tp-product",
+    "skills/tp-tag",
+    "skills/tp-northstar",
+    "references"
+   ],
+   "design_edges": [],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "D1 (design R-0010 row 1): tp-go, tp-status, tp-product, tp-tag, tp-northstar rewritten to v2.5 reality; test_release_freshness.py gains the per-skill required-mentions table (tp-go: stage waves, --emit, routing v2, graph scan --decompose, audit cadence; tp-status: component layer; tp-product: requirement scoring/debt/decision surfaces; tp-tag: v2.5 loop surface; tp-northstar: current positioning) plus a stale-phrase denylist; TestSkillDocPointersExist green over the rewritten skills",
+    "D2 (row 2): tp-go SKILL.md description rewritten to the internal-delivery-driver phrasing (invoked via the taskplane facade, or when the user explicitly drives the loop); the 'implement X with taskplane' trigger phrases live exclusively in skills/taskplane/SKILL.md; test_onboarding_docs.py pins both directions (driver phrasing present + facade triggers absent in tp-go; facade carries them)",
+    "D3 (row 3): references/harness-rules.md is the ONE canonical statement of the harness invariants (workers submit evidence and never advance state; only the orchestrator evaluates loop gate; evidence not assertion advances; human checkpoints are conversation-level and never inside a workflow run; no agent approves its own work), quoted from the stricter of the two current statements; both skills replace restatements with a pointer + at most a one-sentence summary; test_release_freshness.py drift check: the file exists and contains every pinned invariant keyword (submit, never advances, orchestrator, gate, human, approve, evidence); both skills carry the pointer; the restatement detector caps canonical-phrase repetition",
+    "D4 (row 4): TestTpGoFreshness mirrors TestTpHelpFreshness (test_release_freshness.py:37-44) — _current_minor() from .codex-plugin/plugin.json must appear as v<minor> in skills/tp-go/SKILL.md; green after the D1 rewrite, red on the next version bump until tp-go moves",
+    "no harness invariant dropped or weakened in extraction (keyword coverage proves it); docs never instruct weakening any enforcement surface; new test additions are unittest.TestCase-style (the E1 manifest must not grow); no guardrail loosened; guardrail battery green"
+   ]
+  },
+  {
+   "id": "t8",
+   "title": "D5 generated CLI reference: new `tp help --md` walks the live argparse tree (refuses empty help text), committed docs/cli-reference.md, CI drift leg on the generated-artifacts pattern, _LEGACY_UNDOCUMENTED burned to empty, debt D-0005 resolution evidence",
+   "scope": [
+    "taskplane/tp.py",
+    "docs/cli-reference.md",
+    ".github/workflows/ci.yml",
+    "taskplane/tests/test_release_freshness.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_release_freshness.py taskplane/tests/test_onboarding_docs.py -q",
+   "req": "R-0010",
+   "deps": [
+    "t2",
+    "t7"
+   ],
+   "contracts": [],
+   "new_modules": [],
+   "design_edges": [],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "D5 (design R-0010 row 5, recorded decision): `tp help --md` walks the live argparse tree and prints a deterministic markdown CLI reference (every subcommand, every long flag, its help text); the generator REFUSES any flag with empty/missing help text — the new-flag ratchet gets STRICTER; output committed as docs/cli-reference.md; a CI drift step (the ci.yml:113-118 generated-artifacts pattern) regenerates and git-diff --exit-codes",
+    "test_release_freshness.py passes with _LEGACY_UNDOCUMENTED == set() (asserted empty — the freshness corpus already globs docs/*.md, so every flag gains its mention mechanically); a generator unit test pins determinism (two runs byte-identical) and the empty-help refusal; the CI drift leg fails on a stale committed reference; sign-off evidence marks D-0005 resolved in the store",
+    "the tp.py change adds the help subcommand ONLY — no dispatch/emitter surface moves, stage/review emission byte-unchanged (test_dispatch_parity untouched and green in CI); .github/workflows/ci.yml appears as an exact wildcard-free literal in this scope (plan-minted override of the default deny family)",
+    "no guardrail loosened; guardrail battery green; new test additions unittest.TestCase-style (E1 manifest must not grow)"
+   ]
+  },
+  {
+   "id": "t9",
+   "title": "E1+E2+E6 hygiene: unittest-discover CI leg floor + pytest-only-files manifest ratchet (scripts/ci_unittest_floor.py) + suite-wide env-mutation sweep with conftest guard + audit seam-comment truth with the patch-based late-binding regression test",
+   "scope": [
+    "taskplane/loop.py",
+    "scripts/ci_unittest_floor.py",
+    ".github/workflows/ci.yml",
+    "taskplane/tests/conftest.py",
+    "taskplane/tests/test_ci_floor.py",
+    "taskplane/tests/test_*.py"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_ci_floor.py taskplane/tests/test_debt_burndown.py taskplane/tests/test_audit_extraction.py -q && python3 scripts/ci_unittest_floor.py",
+   "req": "R-0011",
+   "deps": [
+    "t4",
+    "t6",
+    "t8"
+   ],
+   "contracts": [
+    "contract:findings-v2"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:findings-v2:consumes",
+    "taskplane/tests->contract:findings-v2:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "E1 (design R-0011 row 1, recorded decision: floor + manifest, convert NOTHING): scripts/ci_unittest_floor.py runs unittest discovery programmatically, fails below the pinned floor (995 at design time; the landing value pinned at merge) AND asserts the set of test files with zero unittest.TestCase equals the named 10-file manifest — a NEW pytest-only file fails the leg; ci.yml's discover step invokes the script; floor only rises, manifest only shrinks; test_ci_floor.py (unittest-style) drives the script against a synthetic below-floor tree (nonzero exit) and a manifest-violating tree (failure); current tree passes at the pinned values",
+    "E2 (row 2): test_debt_burndown.py:219's bare TASKPLANE_HOME assignment becomes save-and-addCleanup-restore; conftest-level guard snapshots os.environ before each test module and asserts byte-identity after, naming the offending module and keys; any other unrestored mutation the sweep finds across taskplane/tests/test_*.py is fixed in this task (the reason for the narrow test-file glob); a self-test seeds a deliberate leak in a scratch module and asserts the guard names it; guard passes over the whole suite",
+    "E6 (row 6, decision: fix the comment, don't widen the seam): loop.py:1449-1456 rewritten to name the REAL seams — audit.<name> for the machinery (audit_due resolves audit_counter module-locally), loop.finding_blocks/normalize_finding_class/load/_state_dir for the late-bound gate math (audit._loop, audit.py:41-51); test_audit_extraction.py: patching audit.audit_counter changes loop.audit_due's observed result; patching loop.finding_blocks changes _router_audit_gate's blocking behavior; a comment-text assertion requires the loop.py comment to name 'audit.' as the machinery seam; the byte-frozen differential replay stays green (loop.py change is comment-only)",
+    "this task touches NO brief/dispatch surface (loop.py is not in BRIEF_SHAPE_SURFACES; the change is a comment) and NO goldens; .github/workflows/ci.yml appears as an exact wildcard-free literal in this scope (plan-minted override); suite count only goes up (unittest >= floor, pytest > 1122)",
+    "no guardrail loosened; guardrail battery green (floor/manifest only ratchet tighter; env guard adds a check; seam test makes a stale comment unreachable)"
+   ]
+  },
+  {
+   "id": "t10",
+   "title": "C1 Windows slot activation line in stage briefs + THE single goldens regeneration via regen.py (the only sanctioned brief-byte change of the phase, last task, after every brief-shape surface has landed) + union-screen fallback pin",
+   "scope": [
+    "taskplane/tp.py",
+    "taskplane/tests/test_stage_waves.py",
+    "taskplane/tests/test_codex_compat.py",
+    "taskplane/tests/fixtures/briefs/**"
+   ],
+   "tests": "python3 -m pytest taskplane/tests/test_stage_waves.py taskplane/tests/test_codex_compat.py taskplane/tests/test_dispatch_parity.py -q",
+   "req": "R-0009",
+   "deps": [
+    "t2",
+    "t5",
+    "t8",
+    "t9"
+   ],
+   "contracts": [
+    "contract:wave-workflow",
+    "contract:lens-brief"
+   ],
+   "new_modules": [],
+   "design_edges": [
+    "taskplane->contract:wave-workflow:provides",
+    "taskplane/tests->contract:wave-workflow:validates",
+    "taskplane->contract:lens-brief:provides",
+    "taskplane/tests->contract:lens-brief:validates"
+   ],
+   "impact_policy": {
+    "local_depth": 2,
+    "boundary_mode": "contract-only",
+    "contract_depth": 1,
+    "requirement_depth": 1
+   },
+   "criteria": [
+    "C1 (design R-0009 row 1): _stage_agent_prompt emits a labelled Windows-alternative activation line `set TASKPLANE_TASK=<slot>` (cmd form, the hooks.json commandWindows precedent) beside the POSIX export, for the SAME slot after the E5 validation t3 landed; test_stage_waves.py: every emitted stage prompt carries both activation lines with identical slot",
+    "SINGLE GOLDENS REGENERATION (Lesson B2, honored by this plan and enforced by the B2 rule t1 ships): parity/stage goldens under taskplane/tests/fixtures/briefs/ regenerate exactly ONCE this phase, here, via taskplane/tests/fixtures/briefs/regen.py (env/path scrub, provenance banner) — never by hand; this task transitively depends on every task whose scope touches taskplane/lens.py, taskplane/lens_signals.py, or taskplane/tp.py (t2, t3, t5, t8); the regenerated goldens land as their own reviewed diff; CI parity + Codex fixture legs green after regen; hand-edited goldens remain a finding",
+    "union-screen pin (no silent behavior change): test_codex_compat.py asserts a process with TASKPLANE_TASK unset while per-task contracts are active is governed by the most-restrictive union (taskplane_lite.py:938-943), and with the slot set via the Windows form the per-task contract governs — the Windows path's failure mode is documented behavior",
+    "contract:lens-brief PAYLOAD shape untouched (the C1 line lives in the stage prompt, contract:wave-workflow's surface); loop.py/lens.py stay workflow-agnostic (pin extended); the Task path remains the mandatory byte-identical fallback and the only Codex path",
+    "no guardrail loosened; guardrail battery green; full battery green on both runners at phase end (unittest discover >= the E1 floor, pytest > 1122)"
+   ]
+  }
+ ]
+}

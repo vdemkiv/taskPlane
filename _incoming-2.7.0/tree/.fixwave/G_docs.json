@@ -1,0 +1,272 @@
+[
+ {
+  "severity": "med",
+  "file": ".github/workflows/ci.yml",
+  "line": 16,
+  "title": "CI matrix omits Windows (and macOS) although the plugin ships Windows-specific hook commands and fcntl-less code paths",
+  "scenario": "hooks/hooks.json ships `commandWindows: py -3 ...` for every hook (lines 10, 21, 34) and the kernel has dedicated no-fcntl fallbacks (loop.py:203, kb.py:76), yet the only runner is ubuntu-latest with python 3.10-3.12 (ci.yml:12-16). A regression in Windows path normalization (norm() vs backslashes), the `py -3` launcher, or the ImportError lock fallback ships completely untested; the first signal is a user's locked workspace on a host CI never exercised. 477 tests exist \u2014 they just never run where half the hook config points.",
+  "fix": "Add `windows-latest` (and ideally `macos-latest`) to the tests job matrix; mark the few POSIX-only tests with skipif rather than skipping the platform.",
+  "domain": "devops",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": ".github/workflows/ci.yml",
+  "line": 18,
+  "title": "Build inputs pinned only by mutable tag: actions @v4/@v5 and an unversioned `pip install pytest`",
+  "scenario": "actions/checkout@v4 (line 18) and actions/setup-python@v5 (line 20) are floating tags a compromised or breaking release can move; `pip install pytest` (line 25) takes whatever major pytest ships next. The same jobs validate the release package (package_openai.py runs here, line 63), so a moved tag is inside the release-trust path. A pytest 9 behavior change can also flip CI red/green with zero repo change, breaking the reproducibility the project's own DevOps lens charter demands.",
+  "fix": "Pin actions to full commit SHAs (with the tag as a comment) and pytest to a version range (`pip install \"pytest==8.*\"`); Dependabot can keep the SHAs fresh.",
+  "domain": "devops",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": ".github/workflows/ci.yml",
+  "line": 9,
+  "title": "No `permissions:` block \u2014 jobs run with the default GITHUB_TOKEN scope though both only read contents",
+  "scenario": "Neither the tests job nor validate-plugin needs anything beyond contents: read, but with no permissions block the workflow inherits the repository default, which on many repos is read-write. Combined with the unpinned third-party actions above, a malicious action update would hold a token able to push. Least-privilege here is a two-line change.",
+  "fix": "Add top-level `permissions: { contents: read }` to ci.yml.",
+  "domain": "devops",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": ".github/workflows/ci.yml",
+  "line": 62,
+  "title": "CI rebuilds the OpenAI zip but never compares it to the committed dist/ artifact \u2014 released-artifact drift is undetected",
+  "scenario": "The packager is fully deterministic (fixed zip timestamps, sorted members, fixed modes \u2014 verified: a fresh rebuild at c8b6c9f reproduces sha256 da40a274bad84d991175cdfd0754f16cf46f113b3b373303f435d9b3d4d020b5, byte-identical to dist/taskplane-2.2.1-openai.zip.sha256), yet CI writes its build to dist/ on a checkout and asserts nothing about the committed zip. A skills edit merged without re-running scripts/package_openai.py leaves a stale dist/ artifact that users/marketplace download, with green CI.",
+  "fix": "In validate-plugin, build to a temp dir and `cmp` the fresh zip's sha256 against dist/*.sha256, failing on mismatch \u2014 determinism makes this a one-line gate.",
+  "domain": "devops + time-to-market",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "PRIVACY.md",
+  "line": 31,
+  "title": "PRIVACY.md claims kb lint 'mechanically blocks' sensitive content from the store, but lint gates nothing at write or publish time",
+  "scenario": "PRIVACY.md:31 tells the user the committed knowledge store is 'decision data only \u2014 the `kb lint` check mechanically blocks prompt text, raw model content, and pricing/commercial strategy from the store.' In reality `kb.lint` is only invoked at the DoD exit gate (tp.py:710) and the EM gate (loop.py:1730). It is NOT called by `kb.record_decision` (kb.py:104, which writes the ADR + index directly) nor by `kb.publish`/`tp share push` (kb.py:206, which copies decisions into the committed `.taskplane-kb/` shared store). So on a team/enterprise plan a user can `tp req`/record decisions containing prompt text, raw model output, PII, or pricing strategy, and `tp share push` will publish them into the git-committed, team-visible (potentially public) store WITHOUT lint ever running \u2014 the policy's central mechanical guarantee does not exist on the path where it matters most. It is also substring-marker matching only, which cannot actually detect 'raw model content' or personal data.",
+  "fix": "Run `kb.lint` (at minimum the PROMPT_MARKERS/SENSITIVE_MARKERS scan) inside `kb.publish._publish_locked` before copying each entry to the shared store, and reject/skip flagged entries; ideally also lint at `record_decision` write time. If enforcement is intentionally gate-only, correct PRIVACY.md to say lint 'flags such content at the DoD/EM gate' rather than 'mechanically blocks it from the store', so the policy statement matches actual behavior.",
+  "domain": "privacy-compliance",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "README.md",
+  "line": 337,
+  "title": "Compose-them promise overclaims: review findings do NOT land in the knowledge base",
+  "scenario": "README's 'Compose them -> review, then fix' section states '(findings land in the knowledge base)' and 'The review's findings become the fix loop's input'. In code, a standalone tp-engineering review writes only .em-review/findings.json, which `tp init` explicitly adds to .gitignore (tp.py:1241); no code path in kb.py, tp.py, or loop.py records .em-review content into the KB (grep for 'em-review' in kb.py: zero hits; _publish_artifacts fires only on loop gates). On Claude Tag \u2014 whose sandbox is ephemeral and whose persistence story is exactly 'the KB travels with the branch' (README line 465) \u2014 a review followed by 'tp-go: fix the blockers' in the next session finds no findings at all: the git-ignored file died with the sandbox.",
+  "fix": "Smallest fix: have the tp-engineering skill end a review by recording a findings digest into the KB (`tp kb record` or per-blocker `tp req debt` entries), which also makes the claim true on Tag; or soften the README sentence to 'findings persist in .em-review/ in your working copy'.",
+  "domain": "product",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "SUPPORT.md",
+  "line": 4,
+  "title": "No issue/PR templates or CONTRIBUTING guide, though SUPPORT.md routes everyone to GitHub issues with a required-info list",
+  "scenario": ".github/ contains only workflows/ci.yml \u2014 no ISSUE_TEMPLATE, no PULL_REQUEST_TEMPLATE, no CONTRIBUTING.md anywhere in the repo. SUPPORT.md (line 4) directs all defect/feature traffic to GitHub issues and then enumerates what a report must include (taskplane version, host + host version, OS, command/workflow, minimal repro) \u2014 a list the reporter only sees if they happen to read SUPPORT.md first. Result: unstructured issues missing the triage fields the maintainer already specified, and a new contributor has no documented way to even run the test suite (pytest invocation is discoverable only inside ci.yml).",
+  "fix": "Add .github/ISSUE_TEMPLATE/bug_report.yml encoding SUPPORT.md's field list (plus a feature-request form), and a minimal CONTRIBUTING.md: clone, `cd taskplane && python -m pytest tests/ -q`, style expectations, and the release/regeneration steps.",
+  "domain": "project-management",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "agents/tp-lens.md",
+  "line": 54,
+  "title": "Three conflicting severity vocabularies across lens prompts, the tp-lens agent, and the EM gate",
+  "scenario": "lenses/*.md mandate the shared verdict format with severity 'blocker|major|minor|question|praise' (e.g. lenses/tech-writer.md:50); agents/tp-lens.md:54 mandates 'high|med|low'; and the EM gate treats only 'critical'/'high' as blocking (taskplane/loop.py:1258-1265). An EM that faithfully copies a lens's 'blocker' finding into .em-review/findings.json passes `loop gate` with that blocker unresolved, because 'blocker' is not in the gate's severity set.",
+  "fix": "Pick one severity taxonomy (or publish an explicit mapping) and apply it consistently in lenses/*.md, agents/tp-lens.md, and _engineering_review_errors \u2014 at minimum make the gate treat 'blocker' as blocking.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "docs/authority-matrix.md",
+  "line": 15,
+  "title": "HUMAN row omits the A/B `selection` gate the engine enforces",
+  "scenario": "A reader auditing decision authority before enabling A/B builds reads 'the loop pauses at design_approval, plan_approval, signoff, escalated; nothing advances these steps but an explicit human command' and concludes variant selection is agent-decidable. The shipped engine adds `selection` to HUMAN_STEPS (taskplane/loop.py:75-77), parks the loop there, refuses `loop approve` for it (loop.py:1929-1931), and requires an explicit human `loop select`.",
+  "fix": "Add `selection` (A/B pick of what ships) to the HUMAN row's 'May decide' list and to the pause list, and add the selection gate to the Escalation paths section.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "docs/authority-matrix.md",
+  "line": 47,
+  "title": "Attribution rules absent: design approval hard-requires --by; anonymous plan/signoff approvals are recorded '(unattributed)'",
+  "scenario": "A team writes its gate-audit policy from the matrix's Audit section, which lists 'human sign-offs' as traced but says nothing about attribution. In v2.2.1, `loop approve` at design_approval errors without --by, while plan_approval/signoff accept an anonymous approve, substitute by='(unattributed)', emit only a warning, and trace loop_approve_unattributed (taskplane/loop.py:1845-1857). An auditor expecting uniformly attributed gate passes finds unattributed entries the doc never mentioned.",
+  "fix": "Document the per-gate attribution asymmetry in the HUMAN row and the Audit section: design approval requires --by; plan approval and sign-off record '(unattributed)' with a warning when --by is omitted.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "docs/loop-design.md",
+  "line": 89,
+  "title": "PM row's DoD overstates what the shipped (v2.2.1 fail-closed) pm gate enforces",
+  "scenario": "The doc frames the loop as 'mechanically gated, not honor-system' (line 40) and its per-step table gives PM the DoD 'testable acceptance criteria + requirement dependencies/contracts'. The shipped pm gate (taskplane/loop.py:1474-1498, the v2.2.1 H4 fix) mechanically enforces only 'a non-empty specs/spec.md exists OR a requirement_id is attached' \u2014 a one-line untestable spec passes the gate. A reader relying on the table believes criteria quality is machine-checked at pm.",
+  "fix": "Update the PM row (and the state-machine diagram's PM DoD annotation) to state the actual minimal fail-closed check, noting that testable-criteria quality is the role's obligation validated later by the refinement gate, not the pm gate.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "docs/openai-submission.md",
+  "line": 50,
+  "title": "The submission worksheet is stale at 2.2.0 while the release is 2.2.1 \u2014 its checklist points at an artifact the build can no longer produce",
+  "scenario": "The worksheet's build section (lines 50-51) and portal checklist (line 178) instruct uploading `dist/taskplane-2.2.0-openai.zip`, but scripts/package_openai.py names the archive from the manifest version (package_openai.py:365), which is 2.2.1 \u2014 the local dist/ actually holds taskplane-2.2.1-openai.zip. The 'Submission release notes' (line 153) describe 2.2.0, omitting every 2.2.1 fix, and line 182 says to confirm URLs 'after the 2.2.0 changes are pushed'. A person executing this runbook today either stalls hunting for a nonexistent file or submits release notes for the wrong version.",
+  "fix": "Re-stamp the worksheet to 2.2.1 (title, artifact names, release notes, checklist) as part of the release procedure, and \u2014 per the time-to-market lens \u2014 parameterize the artifact name ('dist/taskplane-<manifest version>-openai.zip') so the doc stops embedding a hardcoded version.",
+  "domain": "project-management",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "lenses/references/security-methodology.md",
+  "line": 207,
+  "title": "Shipped security-lens reference escalates to machinery that does not exist in taskplane (Conductor, the Board, a CSO)",
+  "scenario": "Lines 207-208 of the security lens's deep-audit reference instruct: PASS-WITH-CONDITIONS -> 'Conductor schedules follow-up'; FAIL -> 'return to loop-execution-evaluator -> Conductor dispatches loop-fixer; CRITICAL/HIGH ... convene the Board (CSO leading)'. taskplane ships no Conductor, no Board, no CSO, and its evaluator/fixer agents are named tp-evaluator/tp-fixer \u2014 the project even explicitly disavows executive simulation (tp-northstar: 'no executive cosplay'). A security tp-lens subagent dutifully following its own reference at the verdict step tries to invoke undefined roles, producing confusion or hallucinated escalation in the findings it returns.",
+  "fix": "Rewrite the escalation table in taskplane terms: PASS-WITH-CONDITIONS -> record conditions as findings + `tp req debt`; FAIL (critical/high) -> blocker findings that fail the evaluate gate and route to tp-fixer via the loop's existing fix cycle.",
+  "domain": "project-management",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "skills/tp-design/SKILL.md",
+  "line": 94,
+  "title": "'No unexplained drift' wording contradicts the shipped gate, which blocks ANY recorded drift",
+  "scenario": "README.md:56, the CHANGELOG v2.2.0 row, and this skill ('no unexplained drift') tell a reviewer that explained drift can coexist with sign-off. The gate fails on any non-empty meta.design.drift list (taskplane/design_contract.py:503-504) \u2014 a reviewer who dutifully records an explained, accepted deviation is blocked, while skills/tp-design/references/design-contract.md:145 correctly says 'Any drift blocks sign-off'. The doc surfaces disagree with each other and with the engine.",
+  "fix": "Align README, CHANGELOG, and SKILL wording with the mechanism: any recorded drift blocks sign-off and routes back through Design; drop the 'unexplained' qualifier (or implement an accepted-drift path first).",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "med",
+  "file": "taskplane/README.md",
+  "line": 3,
+  "title": "The enforcement-core README speaks a pre-rename vocabulary ('Conductor roles', 'engineering-manager role') and misstates the plugin license as MIT",
+  "scenario": "A new contributor opening taskplane/README.md \u2014 the doc for the very core they'd modify \u2014 reads at line 3 that this is 'the enforcement core for Conductor roles' (the ancestor project's name, appearing nowhere else in shipped docs), later an 'engineering-manager role' that shipped as tp-engineering, and at line 79 'Apache-2.0 (taskplane); bundled inside the MIT-licensed plugin' \u2014 while LICENSE, .claude-plugin/plugin.json, and .codex-plugin/plugin.json all say Apache-2.0 and no MIT license exists in the repo. The contributor is left unsure which role names are real and which license governs their contribution.",
+  "fix": "One sweep of taskplane/README.md: replace 'Conductor roles' with 'taskplane roles (tp-*)', 'engineering-manager' with 'tp-engineering', and correct line 79 to state the whole plugin is Apache-2.0.",
+  "domain": "project-management",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": ".github/workflows/ci.yml",
+  "line": 41,
+  "title": "Generated lens catalog is not checked for drift against its markdown sources",
+  "scenario": "lenses/catalog.json drives all routing/dispatch, and generators exist to derive artifacts from the lens sources (scripts/gen_lens_catalog.py, lenses/_generate_catalog.py, lenses/_generate_lens_prompts.py), but CI never regenerates and diffs. Editing lenses/backend.md's checks without re-running the generator leaves the router dispatching stale checks \u2014 silently, since manifest validation only parses JSON. Evidence such drift already happens: lens.py:_HARD_LENSES names a 'concurrency' lens absent from the 26-entry catalog.",
+  "fix": "Add a CI step: run the catalog/prompt generators and `git diff --exit-code lenses/` so generated artifacts provably match their sources.",
+  "domain": "devops",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "CHANGELOG.md",
+  "line": 3,
+  "title": "README/CHANGELOG cross-references disagree, leaving v2.1.0 unreachable from the README",
+  "scenario": "CHANGELOG.md:3 says 'The two most recent releases are summarized in the README', but README's table holds three (2.2.1, 2.2.0, 2.0.0) \u2014 and skips v2.1.0 entirely. README.md:59's pointer covers only 'Older releases (v1.0.0 \u2013 v1.6.0)', so v2.1.0 \u2014 a real feature release (evidence/fingerprint gating) \u2014 is invisible to anyone navigating from the README: not in the table, not in the pointer's stated range.",
+  "fix": "Change README.md:59 to 'All earlier releases: see CHANGELOG.md', fix CHANGELOG.md:3 to match the actual policy (or adopt 'latest N releases' wording), and either add the v2.1.0 row or accept the pointer as the single path to it.",
+  "domain": "project-management",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "README.md",
+  "line": 46,
+  "title": "'A worker cannot advance its own stage' is stated as mechanical; the engine documents it as a protocol guarantee",
+  "scenario": "README says a worker 'cannot advance its own stage. The orchestrator independently runs the engine gate', and the bullet at line 369 says 'only the orchestrator invokes the state-transition gate'. loop.py:1273-1279 (the v2.2.1 L12 note) states this is a PROTOCOL guarantee: any process with workspace access can call gate(); what holds mechanically is the evidence fingerprint. The 'Honest about what the guardrails are' section covers the hook but not this nuance, so a reader assumes caller identity is enforced.",
+  "fix": "Add one sentence to the honest-limits section mirroring the L12 note: orchestrator-only gating is protocol + trace attribution; the mechanical guarantee is that a gate only advances on fingerprint-matching evidence.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "README.md",
+  "line": 53,
+  "title": "Release notes are hand-maintained in two places (README 'What's new' table + CHANGELOG) and have already diverged",
+  "scenario": "Every release writes the same prose twice: a row in README's 'What's new' (line 53) and a row in CHANGELOG.md. The two copies already disagree structurally \u2014 CHANGELOG.md:3 promises 'the two most recent releases' appear in the README while the README table carries three (2.2.1, 2.2.0, 2.0.0) \u2014 and the v2.2.1 texts differ between files, so a reader can't tell which is canonical. Double authoring on the release critical path, drift as the steady state.",
+  "fix": "Follow the repo's own generator pattern (scripts/gen_lens_catalog.py): derive the README rows from the top N CHANGELOG entries via a small script run at release, or replace the table with a two-line summary plus a link to CHANGELOG.md.",
+  "domain": "time-to-market",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "docs/authority-matrix.md",
+  "line": 12,
+  "title": "TECHNICAL row says lenses' write-allow is '.eval/** only'; lens subagents write .em-review/lens-<id>/**",
+  "scenario": "A reader verifying the enforcement claims checks a tp-lens agent's contract during an EM review and finds write-allow '.em-review/lens-<id>/**' (agents/tp-lens.md:29,53), not '.eval/**' \u2014 the matrix's 'Enforced by' cell for 'lenses & the evaluator' describes only the evaluator's contract.",
+  "fix": "State both write-allows in the row: evaluator \u2192 .eval/**, lens subagents \u2192 .em-review/lens-<id>/**.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "docs/lens-catalog.md",
+  "line": 5,
+  "title": "Generated lens-catalog doc has no CI freshness check \u2014 regeneration is a manual step that can be silently skipped",
+  "scenario": "docs/lens-catalog.md:5 declares itself GENERATED from lenses/catalog.json by scripts/gen_lens_catalog.py ('regenerate \u2014 don't hand-edit'), but no ci.yml step regenerates and diffs it. Add or amend a lens without rerunning the script and the shipped catalog doc silently disagrees with the machine catalog \u2014 the exact drift class v1.5.4's notes say kept happening \u2014 discovered only when a user counts lenses.",
+  "fix": "Add one CI step: run `python3 scripts/gen_lens_catalog.py` and `git diff --exit-code docs/lens-catalog.md`, failing the build when the doc is stale (same pattern as the existing manifest-agreement check).",
+  "domain": "time-to-market",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "docs/lenses-and-knowledge.md",
+  "line": 1,
+  "title": "Historical draft shipped without a status banner; superseded details read as current",
+  "scenario": "Unlike loop-design.md (which opens 'Status: SHIPPED' and explains how to read it), this doc still opens 'Draft for your input' and describes subagent lenses writing to '.review/<lens>/' (line 196) and an in-repo 'knowledge/' layout (line 110) \u2014 both superseded (.em-review/lens-<id>/ and the plan-aware store). Only decision 3 carries a supersession note; a reader takes the rest as shipped behavior.",
+  "fix": "Add a status header matching loop-design.md's pattern (design record; superseded paths noted) and correct or annotate the .review/<lens>/ and knowledge/ references.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "docs/openai-submission.md",
+  "line": 1,
+  "title": "Submission worksheet still pinned to 2.2.0 in the 2.2.1 release",
+  "scenario": "The doc is titled 'taskplane 2.2.0' and instructs uploading dist/taskplane-2.2.0-openai.zip, but the release ships dist/taskplane-2.2.1-openai.zip \u2014 a maintainer following the worksheet verbatim looks for an artifact name the packager no longer produces.",
+  "fix": "Bump the versioned title and artifact names as part of the release checklist (or make them version-neutral: 'dist/taskplane-<version>-openai.zip').",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "docs/state-spec.md",
+  "line": 30,
+  "title": "The env-var surface (9+ variables) is scattered and mostly undocumented \u2014 integrators discover knobs by reading source",
+  "scenario": "Behavior-changing environment variables span TASKPLANE_HOME, TASKPLANE_STORE, TASKPLANE_ORPHAN_TTL, TASKPLANE_AGENT_PID, TASKPLANE_MODEL_CHEAP/_STANDARD/_DEEP, TASKPLANE_ENFORCE_DISPATCH, plus the host probes CODEX_HOME/CODEX_THREAD_ID and the hook roots PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT. state-spec.md documents only TASKPLANE_STORE and TASKPLANE_HOME; ORPHAN_TTL, AGENT_PID and ENFORCE_DISPATCH exist only in code comments/help strings. An embedder wiring taskplane into another harness (e.g. a CI sandbox needing a longer orphan TTL, or wanting strict dispatch enforcement) has no reference page and no way to see which values are in effect \u2014 a wrong TASKPLANE_STORE silently redirects the whole knowledge store.",
+  "fix": "Add an 'Environment variables' table to docs/state-spec.md (name, default, consumer, effect) and surface the RESOLVED values in one introspection point \u2014 extend `tp onboard --json` (which already reports model_tiers) with store/orphan_ttl/enforce_dispatch/host.",
+  "domain": "integrability",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "docs/state-spec.md",
+  "line": 117,
+  "title": "loop.json field description is stale for v2.2.1: `_submission` blocks unlisted, 'captured on entry to Design' no longer accurate",
+  "scenario": "Someone auditing what a repo-committed loop.json contains in Claude Tag mode (TASKPLANE_STORE=repo) reads the 'Design state and evidence' section and expects design flags plus fingerprints. The shipped file also persists worker `_submission` evidence blocks \u2014 absolute workspace paths, changed-file lists, fingerprints (taskplane/loop.py:1330-1365) \u2014 and since v2.2.1 (H3) the design graph baseline re-captures on every pre-approval rescan (loop.py:631-645), not once 'on entry to Design'.",
+  "fix": "Refresh the section: enumerate the v2.2.1 loop.json keys including `_submission`, and describe the pre-approval rebaseline behavior.",
+  "domain": "tech-writer",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "scripts/gen_lens_catalog.py",
+  "line": 29,
+  "title": "Dead code: catalog loaded three times, first result immediately discarded",
+  "scenario": "Lines 29-30 compute `lenses` by opening and json.load-ing catalog.json three times in one expression; lines 32-33 then re-read the file and overwrite `lenses`, with a comment admitting the first statement is vestigial. The dead statement still executes (3 extra parses, 4 unclosed file handles including line 106's open(OUT,'w').write) and misleads a reader into thinking the double-read is load-bearing.",
+  "fix": "Delete lines 29-31, keep the clean read at 32-33, and use `with open(...)` for both the read and the final write.",
+  "domain": "code-quality",
+  "status": "open"
+ },
+ {
+  "severity": "low",
+  "file": "skills/taskplane/SKILL.md",
+  "line": 79,
+  "title": "Claims Design DoR requires an 'explicit boundary policy'; the engine checks that at DoD",
+  "scenario": "The skill says 'Design DoR requires a refined requirement, current baseline graph, explicit boundary policy, and no blocking questions'. design_dor() (taskplane/design_contract.py:104-132) checks requirement/acceptance/open-questions/graph baseline/current-state only; depth_policy and boundary_mode are validated by design_dod_errors. A driver checking the boundary policy before letting Design start is checking something the entry gate never evaluates.",
+  "fix": "Move 'explicit boundary policy' from the DoR sentence to the DoD sentence in this skill.",
+  "domain": "tech-writer",
+  "status": "open"
+ }
+]

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">taskplane icon</title>
+  <desc id="desc">A compact stack of task planes with a completion check.</desc>
+  <rect width="512" height="512" rx="112" fill="#2563EB"/>
+  <path d="M104 146h304l-48 54H104c-23 0-42-12-42-27s19-27 42-27Zm0 84h206l48 54H104c-23 0-42-12-42-27s19-27 42-27Zm0 84h142l-48 54h-94c-23 0-42-12-42-27s19-27 42-27Z" fill="#FFFFFF"/>
+  <path d="m270 331 43 43 100-119" fill="none" stroke="#BFDBFE" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

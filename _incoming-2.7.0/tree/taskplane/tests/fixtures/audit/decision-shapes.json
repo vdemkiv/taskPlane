@@ -1,0 +1,100 @@
+{
+  "from_meta_decision": {
+    "architecture": {
+      "evidence": [
+        "governance floor"
+      ],
+      "score": 0,
+      "verdict": "deep (forced)"
+    },
+    "backend": {
+      "evidence": [
+        "weak signal"
+      ],
+      "score": 1,
+      "verdict": "light"
+    },
+    "i18n": {
+      "negative_evidence": [
+        "no user-facing strings detected"
+      ],
+      "score": 0,
+      "verdict": "n/a"
+    },
+    "mobile": {
+      "negative_evidence": [
+        "no mobile surface"
+      ],
+      "score": 0,
+      "verdict": "n/a"
+    },
+    "security": {
+      "evidence": [
+        "auth surface"
+      ],
+      "score": 4,
+      "verdict": "deep"
+    }
+  },
+  "from_meta_legacy": {},
+  "from_meta_none": {},
+  "from_meta_v2_coverage": {
+    "i18n": {
+      "negative_evidence": [
+        "none"
+      ],
+      "score": 0,
+      "verdict": "n/a"
+    },
+    "qa": {
+      "evidence": [
+        "e"
+      ],
+      "score": 3,
+      "verdict": "deep"
+    }
+  },
+  "is_regression": [
+    true,
+    false,
+    false,
+    false
+  ],
+  "of_empty": null,
+  "of_legacy": null,
+  "of_v2": {
+    "i18n": {
+      "negative_evidence": [
+        "no strings"
+      ],
+      "score": 0,
+      "verdict": "n/a"
+    },
+    "qa": {
+      "evidence": [
+        "fallback reasons"
+      ],
+      "score": 1,
+      "verdict": "light"
+    },
+    "security": {
+      "evidence": [
+        "auth"
+      ],
+      "score": 4,
+      "verdict": "deep"
+    }
+  },
+  "regression_key": [
+    "router+i18n",
+    "t",
+    "f.py",
+    7
+  ],
+  "regression_key_bare": [
+    "router+x",
+    null,
+    null,
+    null
+  ]
+}

@@ -1,0 +1,634 @@
+# GOLDEN — frozen stage-wave Task-dispatch payload (t4, R-0004 /
+# contract:wave-workflow). The Task path is the MANDATORY byte-identical
+# fallback and the only Codex path: any change to a stage dispatch payload
+# fails CI's stage parity leg even when the workflow path still works.
+# Regenerate ONLY for a deliberate shape change:
+#     python3 taskplane/tests/fixtures/briefs/regen.py
+# Scrub rules (stage_fixture.py docstring): env scrub (CODEX_*/
+# TASKPLANE_MODEL_*/TASKPLANE_WORKFLOWS/CLAUDE_CODE_WORKFLOWS/
+# TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path tokens; unix times
+# zeroed; git shas + graph fingerprints -> <SHA>; calendar dates ->
+# <DATE>; sorted keys; indent=2.
+{
+  "artifacts": {
+    "note": "gate-state snapshot (dashboard, plan, findings, graph, HEADLINES.md) \u2014 on a team store commit it with the work so the org sees progress; future sessions read it instead of re-deriving (token cache)",
+    "path": "<STORE>/artifacts/stage-wave-fixture"
+  },
+  "audit": null,
+  "codex_dispatch": "Dispatch a general Codex subagent with the role_instructions file plus this action payload when the named role is not registered.",
+  "contract": {
+    "read_only": true,
+    "scope": [],
+    "tests": null,
+    "write_allow": [
+      ".eval/**"
+    ]
+  },
+  "dashboard": {
+    "path": ".taskplane/dashboard.html",
+    "render": "refreshed for this transition \u2014 show it (mcp__visualize__show_widget) before proceeding; the dashboard is the interface the human governs through"
+  },
+  "design": null,
+  "design_graph": null,
+  "dor": {
+    "blockers": [],
+    "ready": true,
+    "warnings": []
+  },
+  "impact": {
+    "affected_requirements": [],
+    "boundary_nodes": [],
+    "context": "Change blast radius (dependency graph, no re-derivation needed): touches alpha.\n  policy: local depth 3; boundary contract-only; contract depth 1",
+    "dependent_requirements": [],
+    "depth_limit": 3,
+    "graph": {
+      "content_fingerprint": "<SHA>",
+      "scanned_at": 0,
+      "scanned_head": "<SHA>",
+      "schema": 2,
+      "source_counts": {},
+      "updated_at": 0
+    },
+    "impacted": {},
+    "policy": {
+      "boundary_mode": "contract-only",
+      "contract_depth": 1,
+      "local_depth": 3,
+      "requirement_depth": 1
+    },
+    "policy_blocked": [],
+    "total_impacted": 0,
+    "touched": [
+      "alpha"
+    ],
+    "truncated": false,
+    "unknown": []
+  },
+  "instruction": "Run the tp-evaluator (read-only) on task t1: START with `tp loop evidence --write` \u2014 one call returns the suite result, the diff, and the exact criteria, routed-lens and graph obligations this gate demands, judgment slots empty; do NOT rebuild those by hand. Then do what the engine cannot: prove each criterion against real behavior, apply each ROUTED lens (prompt at lenses/<id>.md) \u2014 inline ones yourself, one governed read-only subagent per subagent-mode lens \u2014 and disposition graph impact + affected requirements; reject stale Design evidence. Fill the empty slots in .eval/verdict.json (submitted unchanged, it is refused). Then `loop submit pass|fail`; only the orchestrator calls `loop gate`.",
+  "knowledge": {
+    "context": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
+    "current_state": null,
+    "decisions": [
+      {
+        "context_files": [
+          "src/alpha/**",
+          "src/beta/**"
+        ],
+        "date": "<DATE>",
+        "file": "decisions/0001-plan-approved-stage-wave-fixture.md",
+        "id": "0001",
+        "links": {
+          "loop": "plan"
+        },
+        "status": "accepted",
+        "tags": [
+          "plan-approval"
+        ],
+        "title": "Plan approved: stage wave fixture"
+      }
+    ],
+    "governing_decisions": []
+  },
+  "lenses": [
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "product",
+      "looks_for": "requirements met, scope creep/gaps, user-journey completeness, success metrics",
+      "mode": "none",
+      "name": "Product",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 product signals: no spec/requirements files, no acceptance-criteria markers, no product keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 product signals: no spec/requirements files, no acceptance-criteria markers, no product keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [
+        "gitleaks",
+        "semgrep --config auto",
+        "dependency audit"
+      ],
+      "evidence": [],
+      "id": "security",
+      "looks_for": "secrets, authz gaps, injection, unsafe input, vulnerable deps",
+      "mode": "none",
+      "name": "Security",
+      "negative_evidence": [
+        "0 security signals: no auth/secrets/enforcement paths, no auth or secret markers, no unsafe-input surface, no boundary contracts in impact, no security keywords in the requirement"
+      ],
+      "reasons": [
+        "0 security signals: no auth/secrets/enforcement paths, no auth or secret markers, no unsafe-input surface, no boundary contracts in impact, no security keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [
+        "lint",
+        "typecheck",
+        "jscpd (copy-paste/duplication)"
+      ],
+      "evidence": [
+        "path: code change (src/alpha/m.py)"
+      ],
+      "id": "code-quality",
+      "looks_for": "clarity, error handling, dead code, naming, duplication",
+      "mode": "inline",
+      "name": "Code quality",
+      "reasons": [
+        "baseline (any code change)",
+        "path: code change (src/alpha/m.py)"
+      ],
+      "score": 0.35,
+      "tier": "light",
+      "verdict": "light"
+    },
+    {
+      "checks": [
+        "coverage"
+      ],
+      "evidence": [
+        "path: code change (src/alpha/m.py)"
+      ],
+      "id": "testability",
+      "looks_for": "coverage of new paths, seams/mockability, hidden globals, non-determinism",
+      "mode": "inline",
+      "name": "Testability",
+      "reasons": [
+        "baseline (any code change)",
+        "path: code change (src/alpha/m.py)"
+      ],
+      "score": 0.35,
+      "tier": "light",
+      "verdict": "light"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "design",
+      "looks_for": "UX flow, loading/empty/error states, visual consistency, hierarchy",
+      "mode": "none",
+      "name": "Design & UX",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 design signals: no UI component files, no UI markup, no UX keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 design signals: no UI component files, no UI markup, no UX keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "scalability",
+      "looks_for": "N+1 / unbounded queries, blocking calls, resource ceilings, hot paths",
+      "mode": "none",
+      "name": "Scalability & performance",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 scalability signals: no api/db/services paths, no query or client code, no remote calls in loops, no hub module in the graph, no scalability keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 scalability signals: no api/db/services paths, no query or client code, no remote calls in loops, no hub module in the graph, no scalability keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "integrability",
+      "looks_for": "API/data contracts, versioning, error codes, error recovery, schema hygiene",
+      "mode": "none",
+      "name": "Integrability",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 integrability signals: no api/schema/contract paths, no contract or schema markers, no boundary contracts in impact"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 integrability signals: no api/schema/contract paths, no contract or schema markers, no boundary contracts in impact"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "data-safety",
+      "looks_for": "additive/rollback-safe migrations, nullable/defaulted columns, backfill, cascades",
+      "mode": "none",
+      "name": "Data & migration safety",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 data-safety signals: no migration/schema files, no DDL or backfill markers, no migration keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 data-safety signals: no migration/schema files, no DDL or backfill markers, no migration keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "tech-writer",
+      "looks_for": "README/API-doc/changelog accuracy & completeness, ADR clarity, examples that run",
+      "mode": "none",
+      "name": "Technical writing",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 tech-writer signals: no docs/markdown files, no document structure, no documentation keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 tech-writer signals: no docs/markdown files, no document structure, no documentation keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "qa",
+      "looks_for": "test strategy, coverage adequacy, regression risk, edge/negative cases, E2E paths",
+      "mode": "none",
+      "name": "QA",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 qa signals: no test files, no test constructs, no QA keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 qa signals: no test files, no test constructs, no QA keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [
+        "terraform validate",
+        "hadolint",
+        "actionlint"
+      ],
+      "evidence": [],
+      "id": "devops",
+      "looks_for": "pipeline correctness, build reproducibility, IaC hygiene, env parity, secrets in config",
+      "mode": "none",
+      "name": "DevOps",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 devops signals: no CI/container/IaC files, no pipeline or build markers, no devops keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 devops signals: no CI/container/IaC files, no pipeline or build markers, no devops keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "dba",
+      "looks_for": "normalization, indexes, query plans, constraints/keys, data types, partitioning",
+      "mode": "none",
+      "name": "DBA",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 dba signals: no sql/models/schema files, no DDL or index markers, no query patterns, no ORM models"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 dba signals: no sql/models/schema files, no DDL or index markers, no query patterns, no ORM models"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "sre",
+      "looks_for": "observability (logs/metrics/traces/alerts), retries/timeouts/circuit-breakers, failure modes, runbooks, error budgets",
+      "mode": "none",
+      "name": "SRE",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 sre signals: no monitoring/alerts/runbook files, no observability or resilience markers, no SRE keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 sre signals: no monitoring/alerts/runbook files, no observability or resilience markers, no SRE keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "project-management",
+      "looks_for": "dependency order, cross-team impact, timeline/risk, rollout & rollback plan, delivery readiness",
+      "mode": "none",
+      "name": "Project / delivery",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 project-management signals: no plan/roadmap files, no milestone or rollout structure, no delivery keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 project-management signals: no plan/roadmap files, no milestone or rollout structure, no delivery keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "frontend",
+      "looks_for": "component architecture, state mgmt, render/bundle perf, browser/device compat, FE error/loading handling",
+      "mode": "none",
+      "name": "Front-end engineering",
+      "negative_evidence": [
+        "0 frontend signals: no frontend files, no component markup, no state management, no render/bundle-perf markers"
+      ],
+      "reasons": [
+        "0 frontend signals: no frontend files, no component markup, no state management, no render/bundle-perf markers"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "backend",
+      "looks_for": "API design, business-logic correctness, data-access patterns, service boundaries, idempotency, transactions",
+      "mode": "none",
+      "name": "Back-end engineering",
+      "negative_evidence": [
+        "0 backend signals: no api/services/handlers paths, no route handlers, no transaction or idempotency markers, no concurrency primitives"
+      ],
+      "reasons": [
+        "0 backend signals: no api/services/handlers paths, no route handlers, no transaction or idempotency markers, no concurrency primitives"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "tradeoffs",
+      "looks_for": "unexamined single-option designs, hidden costs of the chosen path, missing revisit conditions, decisions made in code but never recorded",
+      "mode": "none",
+      "name": "Design trade-offs",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 tradeoffs signals: no adr/design/plan files, no alternatives or decision markers, no trade-off keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 tradeoffs signals: no adr/design/plan files, no alternatives or decision markers, no trade-off keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "solution-design",
+      "looks_for": "unsupported leaps from requirements to components, missing contract ownership, graph boundaries or validation mappings, internally inconsistent failure/rollout choices, designs that cannot be implemented or reviewed as written",
+      "mode": "none",
+      "name": "Solution design",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 solution-design signals: no design/ files, no design-contract markers, no solution-design keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 solution-design signals: no design/ files, no design-contract markers, no solution-design keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "services-selection",
+      "looks_for": "new dependencies/services without a selection rationale, lock-in with no exit path, self-hosting what a managed service does better (and vice versa), license risk",
+      "mode": "none",
+      "name": "Tool & services selection",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 services-selection signals: no dependency manifests, no dependency additions, no selection keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 services-selection signals: no dependency manifests, no dependency additions, no selection keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "time-to-market",
+      "looks_for": "over-engineering vs the stated goal, deferrable work inside the critical path, scope that could ship in halves, missing debt records for deliberate cuts",
+      "mode": "none",
+      "name": "Time to market",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 time-to-market signals: no plan/spec files, no scope or phasing markers, no time-to-market keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 time-to-market signals: no plan/spec files, no scope or phasing markers, no time-to-market keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [
+        "floor: architecture promoted to light \u2014 code change (src/alpha/m.py)"
+      ],
+      "floor": "floor: architecture promoted to light \u2014 code change (src/alpha/m.py)",
+      "id": "architecture",
+      "looks_for": "component/service decomposition, data flow & coupling, state & consistency, scaling & failure modes, tech-choice fit",
+      "mode": "inline",
+      "name": "System design & architecture",
+      "reasons": [
+        "floor: architecture promoted to light \u2014 code change (src/alpha/m.py)"
+      ],
+      "score": 0.0,
+      "tier": "light",
+      "verdict": "light"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "mobile",
+      "looks_for": "iOS/Android specifics, offline/sync, battery/network, app lifecycle, permissions, store guidelines, native perf",
+      "mode": "none",
+      "name": "Mobile engineering",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 mobile signals: no ios/android files, no platform APIs, no lifecycle or permission markers, no offline/battery markers"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 mobile signals: no ios/android files, no platform APIs, no lifecycle or permission markers, no offline/battery markers"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [
+        "axe",
+        "a11y-lint"
+      ],
+      "evidence": [],
+      "id": "accessibility",
+      "looks_for": "keyboard nav, ARIA/screen-reader, contrast, focus management, alt text, WCAG",
+      "mode": "none",
+      "name": "Accessibility (a11y)",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 accessibility signals: no UI files, no ARIA/alt/focus markers, no accessibility keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 accessibility signals: no UI files, no ARIA/alt/focus markers, no accessibility keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "privacy-compliance",
+      "looks_for": "PII handling, consent, data residency/retention, GDPR/CCPA, license/legal exposure",
+      "mode": "none",
+      "name": "Privacy & compliance",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 privacy-compliance signals: no privacy/analytics/consent paths, no PII or consent markers, no privacy keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 privacy-compliance signals: no privacy/analytics/consent paths, no PII or consent markers, no privacy keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "cost-finops",
+      "looks_for": "right-sizing, waste, egress, over-provisioning, autoscaling bounds",
+      "mode": "none",
+      "name": "Cost / FinOps (optional)",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 cost-finops signals: no IaC/k8s files, no provisioning or cost markers, no cost keywords in the requirement"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 cost-finops signals: no IaC/k8s files, no provisioning or cost markers, no cost keywords in the requirement"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    },
+    {
+      "checks": [],
+      "evidence": [],
+      "id": "i18n",
+      "looks_for": "externalized strings, locale formatting, pluralization, RTL, timezone/currency",
+      "mode": "none",
+      "name": "Localization / i18n (optional)",
+      "negative_evidence": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 i18n signals: no locale files, no i18n imports, no user-facing string literals in scope"
+      ],
+      "reasons": [
+        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
+        "0 i18n signals: no locale files, no i18n imports, no user-facing string literals in scope"
+      ],
+      "score": 0.0,
+      "tier": "n/a",
+      "verdict": "n/a"
+    }
+  ],
+  "model": null,
+  "model_tier": "standard",
+  "requirement": null,
+  "role": "tp-evaluator",
+  "role_instructions": "<PLUGIN>/agents/tp-evaluator.md",
+  "step": "evaluate",
+  "task": {
+    "blast": {
+      "dependent_requirements": [],
+      "impacted": 0,
+      "modules": [
+        "alpha"
+      ],
+      "policy": {
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "local_depth": 3,
+        "requirement_depth": 1
+      },
+      "shared_with": [],
+      "truncated": false,
+      "unknown": []
+    },
+    "criteria": [
+      "alpha updated"
+    ],
+    "fix_cycles": 0,
+    "id": "t1",
+    "impact_policy": {
+      "boundary_mode": "contract-only",
+      "contract_depth": 1,
+      "local_depth": 3,
+      "requirement_depth": 1
+    },
+    "scope": [
+      "src/alpha/**"
+    ],
+    "status": "built",
+    "tests": "true",
+    "workspace": "<WS>/.tp-work/t1"
+  }
+}

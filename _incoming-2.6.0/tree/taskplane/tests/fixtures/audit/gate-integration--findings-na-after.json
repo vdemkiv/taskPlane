@@ -1,0 +1,224 @@
+{
+  "meta": {
+    "lens_coverage": {
+      "product": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "security": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "code-quality": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "testability": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "design": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "scalability": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "integrability": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "data-safety": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "tech-writer": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "qa": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "devops": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "dba": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "sre": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "project-management": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "frontend": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "backend": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "tradeoffs": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "solution-design": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "services-selection": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "time-to-market": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "architecture": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "mobile": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "accessibility": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "privacy-compliance": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "cost-finops": {
+        "verdict": "deep",
+        "score": 3,
+        "evidence": [
+          "signal"
+        ]
+      },
+      "i18n": {
+        "verdict": "n/a",
+        "score": 0,
+        "negative_evidence": [
+          "no signal detected"
+        ]
+      }
+    },
+    "impact": {
+      "touched": []
+    },
+    "tests": "pytest -q: pass",
+    "gate": {
+      "verdict": "recommend-pass"
+    },
+    "audit": true
+  },
+  "findings": [
+    {
+      "lens": "i18n",
+      "severity": "med",
+      "class": "observation",
+      "title": "hardcoded locale string",
+      "file": "src/a.py"
+    },
+    {
+      "severity": "med",
+      "class": "regression",
+      "owner": "router",
+      "domain": "router+i18n",
+      "title": "router regression: n/a lens 'i18n' produced a finding \u2014 detector missed a real signal",
+      "claim": {
+        "trigger": "route this diff, read lens 'i18n' as n/a, then review the same diff with it applied",
+        "outcome": "lens 'i18n' yields a real finding the router said could not apply, so the routing decision under-covered this change",
+        "repro": "tp lens route --base <baseline>, then compare the 'i18n' verdict against this finding: hardcoded locale string"
+      },
+      "finding": {
+        "lens": "i18n",
+        "severity": "med",
+        "class": "observation",
+        "title": "hardcoded locale string",
+        "file": "src/a.py"
+      }
+    }
+  ]
+}

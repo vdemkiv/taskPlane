@@ -1,0 +1,200 @@
+{
+  "brief": {
+    "due": true,
+    "every": 5,
+    "mandate": "AUDIT review: run the full catalog (breadth=all \u2014 the standing em mandate) and record the routing decision below in .em-review/findings.json meta (meta.routing_decision, or v2 meta.lens_coverage) so any finding from an n/a-routed lens is auto-filed as a router regression at the gate.",
+    "reason": "audit cadence state unreadable \u2014 auditing (fail toward more coverage)",
+    "reviews_completed": null,
+    "routing_decision": {
+      "accessibility": {
+        "negative_evidence": [
+          "0 accessibility signals: no UI files, no ARIA/alt/focus markers, no accessibility keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "architecture": {
+        "negative_evidence": [
+          "0 architecture signals: no architecture/adr/infra files, no infra topology, no architecture docs, no service-boundary code, no hub module or boundary contract in the graph"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "backend": {
+        "negative_evidence": [
+          "0 backend signals: no api/services/handlers paths, no route handlers, no transaction or idempotency markers, no concurrency primitives"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "code-quality": {
+        "negative_evidence": [
+          "0 code-quality signals: no code files changed, no code constructs in scope"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "cost-finops": {
+        "negative_evidence": [
+          "0 cost-finops signals: no IaC/k8s files, no provisioning or cost markers, no cost keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "data-safety": {
+        "negative_evidence": [
+          "0 data-safety signals: no migration/schema files, no DDL or backfill markers, no migration keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "dba": {
+        "negative_evidence": [
+          "0 dba signals: no sql/models/schema files, no DDL or index markers, no query patterns, no ORM models"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "design": {
+        "negative_evidence": [
+          "0 design signals: no UI component files, no UI markup, no UX keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "devops": {
+        "negative_evidence": [
+          "0 devops signals: no CI/container/IaC files, no pipeline or build markers, no devops keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "frontend": {
+        "negative_evidence": [
+          "0 frontend signals: no frontend files, no component markup, no state management, no render/bundle-perf markers"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "i18n": {
+        "negative_evidence": [
+          "0 i18n signals: no locale files, no i18n imports, no user-facing string literals in scope"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "integrability": {
+        "negative_evidence": [
+          "0 integrability signals: no api/schema/contract paths, no contract or schema markers, no boundary contracts in impact"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "mobile": {
+        "negative_evidence": [
+          "0 mobile signals: no ios/android files, no platform APIs, no lifecycle or permission markers, no offline/battery markers"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "privacy-compliance": {
+        "negative_evidence": [
+          "0 privacy-compliance signals: no privacy/analytics/consent paths, no PII or consent markers, no privacy keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "product": {
+        "negative_evidence": [
+          "0 product signals: no spec/requirements files, no acceptance-criteria markers, no product keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "project-management": {
+        "negative_evidence": [
+          "0 project-management signals: no plan/roadmap files, no milestone or rollout structure, no delivery keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "qa": {
+        "negative_evidence": [
+          "0 qa signals: no test files, no test constructs, no QA keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "scalability": {
+        "negative_evidence": [
+          "0 scalability signals: no api/db/services paths, no query or client code, no remote calls in loops, no hub module in the graph, no scalability keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "security": {
+        "negative_evidence": [
+          "0 security signals: no auth/secrets/enforcement paths, no auth or secret markers, no unsafe-input surface, no boundary contracts in impact, no security keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "services-selection": {
+        "negative_evidence": [
+          "0 services-selection signals: no dependency manifests, no dependency additions, no selection keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "solution-design": {
+        "negative_evidence": [
+          "0 solution-design signals: no design/ files, no design-contract markers, no solution-design keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "sre": {
+        "negative_evidence": [
+          "0 sre signals: no monitoring/alerts/runbook files, no observability or resilience markers, no SRE keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "tech-writer": {
+        "negative_evidence": [
+          "0 tech-writer signals: no docs/markdown files, no document structure, no documentation keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "testability": {
+        "negative_evidence": [
+          "0 testability signals: no code files changed, no test files, no seam or non-determinism markers"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "time-to-market": {
+        "negative_evidence": [
+          "0 time-to-market signals: no plan/spec files, no scope or phasing markers, no time-to-market keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      },
+      "tradeoffs": {
+        "negative_evidence": [
+          "0 tradeoffs signals: no adr/design/plan files, no alternatives or decision markers, no trade-off keywords in the requirement"
+        ],
+        "score": 0.0,
+        "verdict": "n/a"
+      }
+    }
+  },
+  "counter_after_reset": 1,
+  "counter_error": {
+    "mentions_corrupt": true,
+    "type": "StateError"
+  },
+  "due": true,
+  "record_after_corrupt": 1
+}

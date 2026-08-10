@@ -1,0 +1,1013 @@
+[
+ {
+  "group": "Product & delivery",
+  "id": "product",
+  "name": "Product",
+  "charter": "user value, requirement quality and satisfaction, scope fidelity, journey completeness",
+  "boundary": "delivery timing/dependencies \u2192 project-management; state wording & visual treatment \u2192 design; metric pipeline reliability \u2192 sre",
+  "looks_for": "requirements met, requirement QUALITY (verifiable, singular, unambiguous acceptance criteria), scope gaps/creep, journey completeness incl. non-happy states, existing-user regression, success metrics with baseline + guardrail + decision rule, user-facing naming",
+  "globs": [
+   "**/specs/**",
+   "specs/**",
+   "**/*.spec.md",
+   "**/requirements/**",
+   "**/PRD*",
+   "**/*.feature",
+   "**/acceptance/**",
+   "**/user-stories/**"
+  ],
+  "task_types": [
+   "feature",
+   "screens",
+   "prototype",
+   "greenfield"
+  ],
+  "baseline": null,
+  "deep_globs": [],
+  "checks": []
+ },
+ {
+  "group": "Quality & verification",
+  "id": "security",
+  "name": "Security",
+  "charter": "confidentiality, integrity, authz, safe inputs, supply chain & build integrity",
+  "boundary": "reliability/uptime \u2192 sre; general error-handling quality \u2192 code-quality; infra posture beyond what the diff touches \u2192 devops",
+  "looks_for": "secrets (exposure = compromise, rotate not delete), authz gaps incl. object-level/IDOR, injection, SSRF, unsafe input, security misconfiguration, supply-chain & build integrity (deps, lockfiles, CI workflows, install scripts, pinning), fail-open error paths, AI/agent surface risk",
+  "globs": [
+   "**/auth/**",
+   "**/api/**",
+   "**/secrets/**",
+   "**/*.sql",
+   "**/*.env*",
+   "**/.github/workflows/**",
+   "**/.github/actions/**",
+   "**/Dockerfile*",
+   "**/docker-compose*.y*ml",
+   "**/*.tf",
+   "**/*.tfvars",
+   "**/*.lock",
+   "**/package.json",
+   "**/package-lock.json",
+   "**/pnpm-lock.yaml",
+   "**/yarn.lock",
+   "**/go.mod",
+   "**/go.sum",
+   "**/requirements*.txt",
+   "**/pyproject.toml",
+   "**/.npmrc",
+   "**/.pre-commit-config.yaml",
+   "**/*mcp*.json",
+   "**/k8s/**",
+   "**/helm/**",
+   "**/nginx*.conf"
+  ],
+  "task_types": [
+   "auth",
+   "api",
+   "integration",
+   "backend",
+   "data",
+   "migration",
+   "deploy",
+   "devops",
+   "infra"
+  ],
+  "baseline": "code",
+  "deep_globs": [
+   "**/auth/**",
+   "**/*.sql",
+   "**/*.env*"
+  ],
+  "checks": [
+   "gitleaks",
+   "semgrep --config auto",
+   "dependency audit",
+   "zizmor (GitHub Actions workflows, when `.github/**` is in the diff)"
+  ]
+ },
+ {
+  "group": "Engineering craft",
+  "id": "code-quality",
+  "name": "Code quality",
+  "charter": "cross-cutting craft: clarity, correctness, maintainability",
+  "boundary": "surface specifics \u2192 frontend/backend/mobile; test adequacy \u2192 qa; structure & decomposition \u2192 architecture; over-engineering vs the delivery goal \u2192 time-to-market; exploitability \u2192 security",
+  "looks_for": "logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality",
+  "globs": [],
+  "task_types": [],
+  "baseline": "code",
+  "deep_globs": [
+   "the diff exceeds the catalog's `deep_threshold_files`  code files"
+  ],
+  "checks": [
+   "lint (repo's configured linter, warnings included)",
+   "typecheck",
+   "jscpd / `dupl` / pylint R0801 \u2014 copy-paste census, diff-scoped",
+   "**suppression delta**: NEW escape hatches introduced by this diff only \u2014"
+  ]
+ },
+ {
+  "group": "Quality & verification",
+  "id": "testability",
+  "name": "Testability",
+  "charter": "CAN the production code be tested \u2014 seams, determinism, isolation, hermeticity",
+  "boundary": "IS it tested well \u2014 test strategy, coverage adequacy, flaky/dishonest test code \u2192 qa; CI runners, test containers, pipeline config \u2192 devops; production retries/timeouts/observability \u2192 sre",
+  "looks_for": "seams and substitutability (clock, network, filesystem, DB, model/LLM client), hidden globals and shared state OUTSIDE the process, non-determinism, parallel-safety, reachability of new branches from a public surface, a pure side-effect-free core that invariants could be stated against",
+  "globs": [],
+  "task_types": [
+   "api",
+   "backend",
+   "integration",
+   "distributed"
+  ],
+  "baseline": "code",
+  "deep_globs": [],
+  "checks": [
+   "coverage \u2014 use ONLY as evidence for check 4: which new branches NO test can reach at all. Do not report a coverage percentage or judge coverage adequacy; that is qa's. [Inozemtseva & Holmes, ICSE 2014: coverage correlates only weakly-to-moderately with suite effectiveness once suite size is controlled \u2014 a number here would be an unsupported quality claim]"
+  ]
+ },
+ {
+  "group": "Experience",
+  "id": "design",
+  "name": "Design & UX",
+  "charter": "interaction, all UI states, visual consistency against the product's own design system",
+  "boundary": "WCAG grading, keyboard, contrast, focus, target size \u2192 accessibility; FE implementation (component architecture, state, render/bundle cost) \u2192 frontend; README/API-doc/changelog prose \u2192 tech-writer",
+  "looks_for": "UX flow, loading/empty/error/partial/success states, error recoverability, latency-proportional feedback, visual consistency against declared tokens, hierarchy",
+  "globs": [
+   "**/*.tsx",
+   "**/*.jsx",
+   "**/*.vue",
+   "**/*.svelte",
+   "**/*.astro",
+   "**/*.css",
+   "**/*.scss",
+   "**/components/**",
+   "**/ui/**",
+   "**/tokens/**",
+   "**/theme/**",
+   "**/design-system/**",
+   "**/templates/**",
+   "**/*.erb",
+   "**/*.hbs",
+   "tailwind.config.*"
+  ],
+  "task_types": [
+   "ui",
+   "screens",
+   "design-system",
+   "mobile"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/*.tsx",
+   "**/*.jsx",
+   "**/*.vue",
+   "**/tokens/**",
+   "**/theme/**",
+   "tailwind.config.* \u2014 or task type design-system"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Operations",
+  "id": "scalability",
+  "name": "Scalability & performance",
+  "charter": "will it hold under load and data growth",
+  "boundary": "indexes, query plans, schema/partitioning \u2192 dba; migration lock, rewrite and backfill safety \u2192 data-safety; timeouts, retries, circuit-breaking, alerting, recovery \u2192 sre; API/response shape and transaction correctness \u2192 backend; cost of resources consumed \u2192 cost-finops",
+  "looks_for": "N+1 and uncapped fan-out, unbounded work (no LIMIT, load-everything, unpaginated or depth-degrading pagination), blocking calls on latency-sensitive paths, cache invalidation and stampede, bounds and behaviour at the bound (pools, queues, buffers, in-flight sets), hot-path complexity against realistic growth",
+  "globs": [
+   "**/api/**",
+   "**/db/**",
+   "**/*.sql",
+   "**/services/**",
+   "**/queries/**",
+   "**/repositories/**",
+   "**/resolvers/**",
+   "**/*.graphql",
+   "**/workers/**",
+   "**/jobs/**",
+   "**/queues/**",
+   "**/consumers/**"
+  ],
+  "task_types": [
+   "api",
+   "integration",
+   "backend",
+   "data",
+   "distributed"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/*.sql",
+   "**/db/**",
+   "**/resolvers/**",
+   "**/*.graphql"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Interfaces",
+  "id": "integrability",
+  "name": "Integrability",
+  "charter": "contracts BETWEEN systems: shape, compatible evolution, versioning and retirement, error semantics",
+  "boundary": "implementation behind the contract \u2014 transactions, dual-write/outbox, the server-side implementation of an idempotency key, and this service's internal error-shape consistency \u2192 backend; retry/timeout *policy* \u2192 sre; changing data already stored, migrations and backfills \u2192 data-safety; schema DESIGN, data types, indexes \u2192 dba; whether this boundary should exist at all, service decomposition and coupling \u2192 architecture; pipeline configuration and gate wiring quality \u2192 devops; adequacy of the contract tests themselves \u2192 qa; authz on the endpoint and mass assignment \u2192 security; prose docs, changelog and reference accuracy \u2192 tech-writer",
+  "looks_for": "API/data contracts, an explicit breaking-vs-additive taxonomy per contract style (REST/OpenAPI, protobuf/gRPC, GraphQL, Avro/event schemas), versioning, deprecation & sunset signalling with a stated consumer notice period, error semantics to a named standard, documented retryability, unknown-field tolerance on both producer and consumer, automated compatibility gating and contract testing, spec/SDK sync, pagination & naming conventions",
+  "globs": [
+   "**/api/**",
+   "**/contracts/**",
+   "**/schema/**",
+   "**/schemas/**",
+   "**/*.proto",
+   "**/openapi*",
+   "**/swagger*",
+   "**/asyncapi*",
+   "**/*.graphql",
+   "**/*.graphqls",
+   "**/*.gql",
+   "**/*.avsc",
+   "**/*.thrift",
+   "**/buf*.yaml",
+   "**/webhooks/**",
+   "**/sdk/**",
+   "**/sdks/**",
+   "**/clients/**",
+   "**/generated/**"
+  ],
+  "task_types": [
+   "api",
+   "backend",
+   "integration",
+   "distributed"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/*.proto",
+   "**/*.graphql",
+   "**/*.graphqls",
+   "**/openapi*",
+   "**/swagger*",
+   "**/asyncapi*",
+   "**/*.avsc"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Data",
+  "id": "data-safety",
+  "name": "Data & migration safety",
+  "charter": "changing stored data without corrupting it, and shipping that change without an outage",
+  "boundary": "schema DESIGN, normalization, index choice, data types, query plans, partitioning strategy \u2192 dba; migration script naming/versioning/one-concern hygiene (`migration-scripts.md` \u00a75) \u2192 dba; application read/write logic itself \u2192 backend; runner credentials and secrets \u2192 security",
+  "looks_for": "expand/contract sequenced across deploys, additive/rollback-safe migrations, nullable/defaulted columns, batched restartable backfill, verified rollback, explicit lock_timeout/statement_timeout, engine- and version-specific rewrite paths, constraints validated over proven-clean data, cascades, replica lag, idempotency on retry",
+  "globs": [
+   "**/migrations/**",
+   "**/Migrations/**",
+   "**/db/migrate/**",
+   "**/db/migration/**",
+   "**/migrate/**",
+   "**/alembic/**",
+   "**/versions/*.py",
+   "**/db/changelog/**",
+   "**/*migration*.py",
+   "**/*migration*.rb",
+   "**/*.sql",
+   "**/*.ddl",
+   "**/schema/**",
+   "**/seeds/**"
+  ],
+  "task_types": [
+   "migration",
+   "data"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/migrations/**",
+   "**/Migrations/**",
+   "**/db/migrate/**",
+   "**/db/migration/**",
+   "**/alembic/**"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Docs",
+  "id": "tech-writer",
+  "name": "Technical writing",
+  "charter": "developer- and operator-facing documentation that stays true to the code \u2014 references, guides, READMEs, changelogs, examples",
+  "boundary": "in-product UI copy, microcopy and user-facing error strings \u2192 design; accessibility of the product UI \u2192 accessibility; string externalisation and translation mechanics \u2192 i18n; ADR rationale and alternatives quality \u2192 tradeoffs; runbook operational adequacy \u2192 sre; requirement and spec documents \u2192 product",
+  "looks_for": "documented commands/flags/endpoints/paths/defaults/outputs that the diff has made untrue, capabilities removed or renamed with docs left behind, examples that no longer run, the right documentation TYPE for the change (reference / how-to / explanation / tutorial) and one reader-question per document, prerequisites and destructive-step warnings placed after the step they govern, new documentation nobody can reach, one name per concept, decisions made in the diff and recorded nowhere, changelog entries that describe commits rather than user outcomes",
+  "globs": [
+   "**/*.md",
+   "**/*.mdx",
+   "**/*.rst",
+   "**/*.adoc",
+   "**/docs/**",
+   "**/README*",
+   "**/CHANGELOG*"
+  ],
+  "task_types": [
+   "docs",
+   "api",
+   "feature",
+   "migration",
+   "deploy"
+  ],
+  "baseline": "code",
+  "deep_globs": [
+   "**/docs/**",
+   "**/openapi*",
+   "**/*.proto; task type `docs` \u2014 published"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Quality & verification",
+  "id": "qa",
+  "name": "QA",
+  "charter": "IS the change tested well and safe to ship",
+  "boundary": "CAN it be tested (seams, determinism, isolatable production code) \u2192 testability; test-code style and mock-library hygiene \u2192 code-quality; CI runner and pipeline config \u2192 devops",
+  "looks_for": "test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths",
+  "globs": [
+   "**/tests/**",
+   "**/*.test.*",
+   "**/*.spec.*",
+   "**/e2e/**",
+   "**/cypress/**",
+   "**/playwright/**",
+   "**/__tests__/**"
+  ],
+  "task_types": [
+   "api",
+   "auth",
+   "backend",
+   "feature",
+   "frontend",
+   "integration",
+   "migration",
+   "qa",
+   "reliability"
+  ],
+  "baseline": null,
+  "deep_globs": [],
+  "checks": [],
+  "untested_trigger": true
+ },
+ {
+  "group": "Operations",
+  "id": "devops",
+  "name": "DevOps",
+  "charter": "build and ship: pipeline correctness, build reproducibility, deploy and environment configuration",
+  "boundary": "run-time reliability, alerting, burn-rate/SLO config, runbooks \u2192 sre; resource sizing, allocation tags, waste and egress \u2192 cost-finops; capacity and autoscaling bounds under load \u2192 scalability; committed secrets, third-party action SHA pinning, lockfile-install integrity, untrusted-input handling in CI, IAM/network/storage policy permissiveness \u2192 security; migration content \u2014 expand/contract, backfill, lock budget, down-migration \u2192 data-safety; schema and index design \u2192 dba",
+  "looks_for": "pipeline correctness, build reproducibility, honest cache keys, CI secret flow and federated credentials, environment parity, rollout shape and rollback, release sequencing of schema-with-code, IaC state and version pinning",
+  "globs": [
+   "**/.github/**",
+   "**/Jenkinsfile",
+   "**/.gitlab-ci*",
+   "**/.circleci/**",
+   "**/azure-pipelines*",
+   "**/.buildkite/**",
+   "**/bitbucket-pipelines*",
+   "**/*.cicd.yml",
+   "**/Makefile",
+   "**/Dockerfile*",
+   "**/*.dockerfile",
+   "**/Containerfile",
+   "**/docker-compose*",
+   "**/.dockerignore",
+   "**/*.tf",
+   "**/*.tfvars",
+   "**/terragrunt*",
+   "**/*.bicep",
+   "**/cloudformation*",
+   "**/pulumi*",
+   "**/ansible/**",
+   "**/k8s/**",
+   "**/helm/**",
+   "**/charts/**",
+   "**/*.helm*",
+   "**/argocd/**",
+   "**/flux/**",
+   "**/skaffold*",
+   "**/serverless*",
+   "**/Procfile",
+   "**/.env.example"
+  ],
+  "task_types": [
+   "infra",
+   "infrastructure",
+   "devops",
+   "deploy"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/*.tf"
+  ],
+  "checks": [
+   "terraform validate",
+   "hadolint",
+   "actionlint",
+   "shellcheck (embedded shell in CI steps, entrypoints and Dockerfiles)",
+   "kubeconform (k8s manifest schema)"
+  ]
+ },
+ {
+  "group": "Data",
+  "id": "dba",
+  "name": "DBA",
+  "charter": "schema design, indexing, query efficiency, data modeling",
+  "boundary": "migration EXECUTION safety \u2014 locks, lock/statement timeouts, rollback, backfill, expand/contract sequencing \u2192 data-safety; N+1 and runtime behaviour under load \u2192 scalability; business logic inside repositories/services \u2192 backend; personal-data classification and retention \u2192 privacy-compliance",
+  "looks_for": "deliberate vs accidental denormalization, key & clustering design, type choice and precision, nullability and defaults, DB-enforced constraints, index column order & leftmost-prefix usability, sargable predicates, dead/redundant indexes and missing ones for queries the same diff introduces, plan evidence at realistic volume, partitioning",
+  "globs": [
+   "**/*.sql",
+   "**/*.ddl",
+   "**/models/**",
+   "**/entities/**",
+   "**/*.prisma",
+   "**/schema/**",
+   "**/schema.rb",
+   "**/repositories/**",
+   "**/queries/**",
+   "**/db/**",
+   "**/migrations/**",
+   "**/db/migrate/**",
+   "**/db/migration/**",
+   "**/Migrations/**",
+   "**/alembic/**",
+   "**/drizzle/**",
+   "**/*.dbml"
+  ],
+  "task_types": [
+   "migration",
+   "backend",
+   "data",
+   "solution-design"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/schema/**",
+   "**/*.prisma"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Operations",
+  "id": "sre",
+  "name": "SRE",
+  "charter": "will we know when it breaks, and will it survive and recover when a dependency does",
+  "boundary": "load, capacity and throughput \u2192 scalability; CI/CD, IaC and deploy config \u2192 devops; general idempotency, transactions and service logic \u2192 backend; what telemetry costs to store \u2192 cost-finops",
+  "looks_for": "observability of the new path (logs with context, metrics, traces), trace-context propagation and trace/span-id correlation on logs, metric label cardinality, timeouts and deadline propagation, bounded retries with randomized backoff and jitter, retry budgets and single-layer retry, idempotency of anything retried, circuit-breaking and failfast, graceful degradation, liveness-vs-readiness probes, burn-rate alerting when alert/SLO config is in the diff, newly introduced recurring manual operational steps (toil), runbook/rollback notes for new failure modes",
+  "globs": [
+   "**/services/**",
+   "**/monitoring/**",
+   "**/observability/**",
+   "**/alerts/**",
+   "**/*.alerts.y*ml",
+   "**/*rules*.y*ml",
+   "**/prometheus*/**",
+   "**/grafana/**",
+   "**/*.slo*",
+   "**/runbooks/**",
+   "**/health*",
+   "**/liveness*",
+   "**/readiness*",
+   "**/*.pagerduty*",
+   "**/clients/**",
+   "**/adapters/**",
+   "**/instrumentation/**",
+   "**/tracing/**",
+   "**/otel*/**",
+   "**/opentelemetry*/**"
+  ],
+  "task_types": [
+   "backend",
+   "infra",
+   "reliability",
+   "integration",
+   "distributed"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/alerts/**",
+   "**/*.slo*",
+   "**/*rules*.y*ml"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Product & delivery",
+  "id": "project-management",
+  "name": "Project / delivery",
+  "charter": "scope, sequencing, dependencies, risk, rollout readiness \u2014 as properties of the PLAN",
+  "boundary": "user value/requirements \u2192 product; what to CUT and by which seam \u2192 time-to-market; whether a migration corrupts data \u2192 data-safety; alert/metric implementation and recovery \u2192 sre; pipeline and deploy config \u2192 devops; contract shape and versioning \u2192 integrability",
+  "looks_for": "dependency order, batch size / independently shippable slices, rollout with an abort criterion, rollback FEASIBILITY (one-way doors named), flag removal tasks, cross-team impact and consumer deprecation windows, risks with owner/trigger/response, delivery readiness",
+  "globs": [
+   "**/plan/**",
+   "plan/**",
+   "**/roadmap*",
+   "**/*.plan.md",
+   "**/milestones*",
+   "**/rollout*",
+   "**/release-plan*",
+   "**/RELEASE_NOTES*",
+   "**/feature-flags*",
+   "**/flags/**"
+  ],
+  "task_types": [
+   "deploy",
+   "migration",
+   "integration"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "task types deploy",
+   "migration"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Engineering craft",
+  "id": "frontend",
+  "name": "Front-end engineering",
+  "charter": "FE implementation: components, state, async correctness, render/load path (Core Web Vitals), bundle, compat",
+  "boundary": "whether the layout is *good* \u2192 design (frontend owns whether it is *stable*); focus order, ARIA, contrast, alt text, reduced-motion \u2192 accessibility (frontend cites `font-display`/`aspect-ratio` only as CLS levers); server-side and load-capacity performance \u2192 scalability; runtime observability \u2192 sre",
+  "looks_for": "component architecture, state mgmt, async race safety, render/bundle perf, Core Web Vitals impact (LCP/INP/CLS) with a named code cause, browser/device compat against a Baseline target, FE error/loading handling",
+  "globs": [
+   "**/*.tsx",
+   "**/*.jsx",
+   "**/*.vue",
+   "**/*.svelte",
+   "**/*.astro",
+   "**/*.html",
+   "**/*.css",
+   "**/*.scss",
+   "**/web/**",
+   "**/src/components/**",
+   "**/pages/**",
+   "**/app/**/*.ts",
+   "**/app/**/*.tsx",
+   "**/app/**/*.js",
+   "**/app/**/*.jsx",
+   "**/app/**/*.css",
+   "**/middleware.ts",
+   "**/*.stories.*",
+   "**/next.config.*",
+   "**/vite.config.*",
+   "**/webpack.config.*",
+   "**/rollup.config.*"
+  ],
+  "task_types": [
+   "ui",
+   "frontend",
+   "screens"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/*.tsx",
+   "**/*.jsx"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Engineering craft",
+  "id": "backend",
+  "name": "Back-end engineering",
+  "charter": "service logic, data access, boundaries, transactions",
+  "boundary": "cross-system contracts, versioning and breaking changes (incl. `Deprecation`/`Sunset` signalling) \u2192 integrability; schema and index DESIGN \u2192 dba; object- and function-level authorization, mass assignment (OWASP API1/API3/API5) \u2192 security; capacity, load and data-growth behaviour, N+1 and unbounded result sets \u2192 scalability; timeouts, retries/backoff and downstream failure policy, plus alerting, tracing and runbooks for these failures \u2192 sre",
+  "looks_for": "API design, business-logic correctness, data-access patterns, service boundaries, idempotency, transactions, dual-write/outbox integrity, input validation at the trust boundary, error-response shape consistency",
+  "globs": [
+   "**/api/**",
+   "**/services/**",
+   "**/handlers/**",
+   "**/controllers/**",
+   "**/routes/**",
+   "**/usecases/**",
+   "**/repositories/**",
+   "**/middleware/**",
+   "**/graphql/**",
+   "**/jobs/**",
+   "**/workers/**",
+   "**/consumers/**",
+   "**/tasks/**",
+   "**/*.proto"
+  ],
+  "task_types": [
+   "backend",
+   "api",
+   "integration",
+   "distributed"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/jobs/**",
+   "**/workers/**",
+   "**/consumers/**",
+   "**/tasks/**"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Architecture & systems",
+  "id": "tradeoffs",
+  "name": "Design trade-offs",
+  "charter": "every significant design choice names >=2 real alternatives with an explicit trade-off table: gained / given up / revisit-when; the chosen option is recorded as a proposed decision (D-record) in the registry",
+  "boundary": "the final call -> human at the gate; product scope -> product; overall structure, the documented model and the dependency graph -> architecture; proportionality of a proposed design before Build -> solution-design; merit of a specific library, vendor or managed service -> services-selection; evaluating a named security cost -> security; evaluating a named spend cost -> cost-finops",
+  "looks_for": "unexamined single-option designs, one-way-door choices taken without deliberation, strawman alternatives, criteria reverse-engineered after the winner was picked, hidden costs of the chosen path, what the rejected option would have bought, missing or unobservable revisit triggers, decisions made in code but never recorded durably, choices that silently contradict or supersede an accepted D-record, trade-off tables that never name the quality attribute being optimised",
+  "globs": [
+   "**/architecture/**",
+   "**/adr/**",
+   "**/decisions/**",
+   "**/design/**",
+   "**/rfc/**",
+   "**/proposals/**",
+   "**/*.arch.md",
+   "plan/**",
+   "**/specs/**",
+   "**/migrations/**",
+   "**/*.proto",
+   "**/openapi*"
+  ],
+  "task_types": [
+   "greenfield",
+   "system-design",
+   "solution-design",
+   "distributed",
+   "integration",
+   "migration",
+   "feature"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/architecture/**",
+   "**/adr/**",
+   "**/decisions/**",
+   "**/design/**",
+   "**/*.proto"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Architecture & systems",
+  "id": "solution-design",
+  "name": "Solution design",
+  "charter": "soundness, proportionality and implementability of a PROPOSED design before any code exists \u2014 requirement/constraint \u2192 decision \u2192 modules/contracts \u2192 validation \u2192 failure/rollout traceability",
+  "boundary": "structure actually introduced in a diff \u2192 architecture; comparison-table quality and revisit conditions \u2192 tradeoffs; build-vs-buy, vendor and dependency choice \u2192 services-selection; interaction and visual experience \u2192 design; requirement quality itself \u2192 product; prose quality \u2192 tech-writer",
+  "looks_for": "unsupported leaps from requirement to component, rationale retrofitted to a decision already made, designs written against a greenfield fantasy rather than the as-built state, quality targets asserted as adjectives instead of numbers, constraints the design never surfaces, acceptance criteria mapped to a \"validation\" nothing can run, rollback that the design's own migrations and contract changes make impossible, scope disproportionate to the requirement, terminology that drifts from the requirement and the graph, knowingly accepted debt left unrecorded",
+  "globs": [
+   "design/**",
+   "**/design/**",
+   "design/design.md",
+   "design/contract.json",
+   "**/solution-design/**",
+   "**/*.design.md",
+   "**/rfc/**",
+   "**/proposals/**",
+   "**/*.rfc.md"
+  ],
+  "task_types": [
+   "solution-design",
+   "system-design",
+   "greenfield",
+   "migration",
+   "integration"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "design/**",
+   "**/solution-design/**",
+   "**/*.design.md"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Architecture & systems",
+  "id": "services-selection",
+  "name": "Tool & services selection",
+  "charter": "whether a chosen dependency, library, service or vendor earns its place at all \u2014 incumbent capability vs new dependency, build vs buy, managed vs self-hosted, maturity, licence, operational load, lock-in and exit cost",
+  "boundary": "vulnerabilities, malicious packages, pinning, lockfile install integrity, SBOM, install scripts \u2192 security; import placement, wrapper quality, unused imports \u2192 code-quality; what the resource costs to run and whether that spend is bounded \u2192 cost-finops; provisioning, pipeline and IaC correctness \u2192 devops; runtime ops, on-call and SLOs \u2192 sre; decomposition of FIRST-PARTY components and boundaries \u2192 architecture; the \u22652-alternatives table and the D-record for the decision \u2192 tradeoffs; live pricing, registry stats and vendor marketing \u2192 out of scope (reason from the repo only)",
+  "looks_for": "new dependencies/services that duplicate a capability the as-built stack already provides, additions with no merit case proportionate to blast radius, hand-rolling a solved and security-sensitive problem, lock-in with no exit seam, single-maintainer / single-organisation dependencies on critical paths, archived or deprecated projects, licence class incompatible with this project's own licence and distribution mode, source-available/relicensing exposure, transitive footprint a one-line manifest change hides, additions that make an incumbent dependency redundant without removing it",
+  "globs": [
+   "**/package.json",
+   "**/package-lock.json",
+   "**/pnpm-lock.yaml",
+   "**/yarn.lock",
+   "**/requirements*.txt",
+   "**/pyproject.toml",
+   "**/poetry.lock",
+   "**/uv.lock",
+   "**/Pipfile*",
+   "**/go.mod",
+   "**/go.sum",
+   "**/Cargo.toml",
+   "**/Cargo.lock",
+   "**/Gemfile",
+   "**/Gemfile.lock",
+   "**/pom.xml",
+   "**/build.gradle*",
+   "**/*.csproj",
+   "**/packages.lock.json",
+   "**/composer.json",
+   "**/composer.lock",
+   "**/pubspec.yaml",
+   "**/pubspec.lock",
+   "**/Podfile*",
+   "**/*.tf",
+   "**/docker-compose*",
+   "**/Dockerfile*",
+   "**/LICENSE*",
+   "**/NOTICE*",
+   "**/*mcp*.json"
+  ],
+  "task_types": [
+   "integration",
+   "greenfield",
+   "infrastructure",
+   "infra",
+   "system-design",
+   "solution-design",
+   "distributed",
+   "migration"
+  ],
+  "baseline": null,
+  "deep_globs": [],
+  "checks": []
+ },
+ {
+  "group": "Product & delivery",
+  "id": "time-to-market",
+  "name": "Time to market",
+  "charter": "delivery speed as a first-class criterion: the fastest credible path, deferrals that are recorded AND priced, and reversible-now over perfect-later \u2014 so the cost of being wrong stays low",
+  "boundary": "security and testability baselines \u2192 security / testability (they are a floor here, never a lever); long-term structure, boundaries and contracts \u2192 architecture; sequencing, dependency order and rollout/rollback \u2192 project-management; whether the requirement is worth building and which metric proves it \u2192 product; stored-data change safety \u2192 data-safety",
+  "looks_for": "over-engineering vs the stated goal, deferrable work inside the critical path, ONE-WAY DOORS inside a proposed fast path, the PRICE of deferring (backfill / migration / re-teach cost), named slicing seams (vertical slice, dark launch, branch by abstraction), missing debt records for deliberate cuts",
+  "globs": [
+   "plan/**",
+   "**/plan/**",
+   "**/specs/**",
+   "**/roadmap*",
+   "**/*.spec.md",
+   "**/*.plan.md",
+   "**/PRD*"
+  ],
+  "task_types": [
+   "feature",
+   "greenfield",
+   "prototype",
+   "solution-design"
+  ],
+  "baseline": null,
+  "deep_globs": [],
+  "checks": []
+ },
+ {
+  "group": "Architecture & systems",
+  "id": "architecture",
+  "name": "System design & architecture",
+  "charter": "component boundaries, data flow, contracts, scaling & failure modes",
+  "boundary": "in-file code craft \u2192 code-quality; infra provisioning \u2192 devops; library/vendor/build-vs-buy merit \u2192 services-selection; contract shape, versioning & error semantics \u2192 integrability; deliberation of named tradeoff points \u2192 tradeoffs",
+  "looks_for": "component/service decomposition, data flow & coupling measured against the dependency graph, state & consistency, scaling & failure modes, structure introduced without a requirement that needs it",
+  "globs": [
+   "**/architecture/**",
+   "**/adr/**",
+   "**/*.arch.md",
+   "**/docker-compose*",
+   "**/*.proto",
+   "**/k8s/**",
+   "**/design/**",
+   "**/*.tf",
+   "**/migrations/**",
+   "**/components.yaml",
+   "knowledge/graph.json"
+  ],
+  "task_types": [
+   "greenfield",
+   "system-design",
+   "distributed",
+   "integration",
+   "migration"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/architecture/**",
+   "**/adr/**",
+   "task type system-design or greenfield"
+  ],
+  "checks": []
+ },
+ {
+  "group": "Engineering craft",
+  "id": "mobile",
+  "name": "Mobile engineering",
+  "charter": "native/mobile: platform contract, offline, lifecycle, store shippability",
+  "boundary": "shared business logic \u2192 backend/frontend; whether a layout/state is well designed \u2192 design; whether a data practice is lawful/proportionate \u2192 privacy-compliance; secret storage, crypto and transport hardening \u2192 security",
+  "looks_for": "iOS/Android specifics, target-SDK behavior deltas, app lifecycle & process death, offline/sync, battery/network cost, runtime permissions, privacy manifests & data-deletion declarations, store submission floor, adaptive & large-screen behavior, third-party SDK compliance footprint, native perf",
+  "globs": [
+   "**/*.swift",
+   "**/*.kt",
+   "**/*.java",
+   "**/*.m",
+   "**/*.mm",
+   "**/*.dart",
+   "**/ios/**",
+   "**/android/**",
+   "**/*.xcodeproj/**",
+   "**/*.pbxproj",
+   "**/AndroidManifest.xml",
+   "**/Info.plist",
+   "**/PrivacyInfo.xcprivacy",
+   "**/*.entitlements",
+   "**/*.xcconfig",
+   "**/build.gradle",
+   "**/build.gradle.kts",
+   "**/*.gradle",
+   "**/*.gradle.kts",
+   "**/gradle.properties",
+   "**/Podfile",
+   "**/Podfile.lock",
+   "**/Package.swift",
+   "**/Package.resolved"
+  ],
+  "task_types": [
+   "mobile"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/ios/**",
+   "**/android/**",
+   "**/AndroidManifest.xml",
+   "**/Info.plist",
+   "**/PrivacyInfo.xcprivacy",
+   "**/*.entitlements",
+   "**/build.gradle",
+   "**/build.gradle.kts"
+  ],
+  "checks": [
+   "**Target/min SDK extraction** \u2014 `targetSdk`/`targetSdkVersion` and `minSdk` from `build.gradle*` or `gradle.properties`; iOS deployment target + Xcode/SDK version from the project/`.xcconfig`. **Every conditional check below depends on this value; surface it to the LLM step.**",
+   "Android Lint (`NewApi`, deprecated-attribute, edge-to-edge and orientation checks) and Xcode build warnings, if configured in CI.",
+   "Presence check only: does an iOS target ship a `PrivacyInfo.xcprivacy`?"
+  ]
+ },
+ {
+  "group": "Experience",
+  "id": "accessibility",
+  "name": "Accessibility (a11y)",
+  "charter": "usable by everyone \u2014 WCAG 2.2 Level AA, keyboard, screen readers",
+  "boundary": "general visual design \u2192 design; FE implementation quality \u2192 frontend; text expansion / RTL / locale formatting \u2192 i18n; the security argument for disabling autofill \u2192 security (a11y framing wins on credential fields)",
+  "looks_for": "keyboard operability and order, ARIA role-vs-implementation honesty, accessible-name appropriateness, focus management, announcement timing, non-text contrast, pointer alternatives, accessible authentication, WCAG 2.2 AA",
+  "globs": [
+   "**/*.tsx",
+   "**/*.jsx",
+   "**/*.vue",
+   "**/*.svelte",
+   "**/*.astro",
+   "**/*.html",
+   "**/*.erb",
+   "**/*.hbs",
+   "**/*.twig",
+   "**/templates/**",
+   "**/components/**",
+   "**/ui/**",
+   "**/auth/**",
+   "**/login/**",
+   "**/*.css",
+   "**/*.scss"
+  ],
+  "task_types": [
+   "ui",
+   "screens",
+   "design-system",
+   "auth"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "task types: design-system"
+  ],
+  "checks": [
+   "axe-core (via axe DevTools / jest-axe / cypress-axe / Playwright `@axe-core/playwright`)",
+   "a11y-lint (eslint-plugin-jsx-a11y, vue/svelte a11y compiler warnings)",
+   "contrast checker"
+  ]
+ },
+ {
+  "group": "Compliance",
+  "id": "privacy-compliance",
+  "name": "Privacy & compliance",
+  "charter": "personal data \u2014 what is collected, where it flows, what deletes it, what the defaults are, and who owns the decision",
+  "boundary": "technical attack surface (authz, injection, secrets, vulnerable deps) \u2192 security; migration SAFETY (rollback, backfill, locks) \u2192 data-safety; schema DESIGN/indexing/types \u2192 dba; licence class, copyleft and source-available exposure \u2192 services-selection",
+  "looks_for": "jurisdiction scoping, personal data introduced in schema and models, special/sensitive categories, minimisation, pseudonymisation & aggregation as mitigation, PII in logs/analytics/error reports/model prompts, retention as a mechanism, deletion reaching downstream copies, consent AND universal opt-out signals, privacy-protective defaults, transfer mechanism (not just location)",
+  "globs": [
+   "**/migrations/**",
+   "**/*.sql",
+   "**/schema/**",
+   "**/models/**",
+   "**/entities/**",
+   "**/*.prisma",
+   "**/*consent*",
+   "**/*cookie*",
+   "**/privacy/**",
+   "**/*gdpr*",
+   "**/*.env*",
+   "**/analytics/**",
+   "**/tracking/**",
+   "**/pii/**",
+   "**/logging/**",
+   "**/*logger*",
+   "**/exports/**",
+   "**/retention/**"
+  ],
+  "task_types": [
+   "data",
+   "auth",
+   "migration",
+   "integration"
+  ],
+  "baseline": null,
+  "deep_globs": [],
+  "checks": []
+ },
+ {
+  "group": "Operations",
+  "id": "cost-finops",
+  "name": "Cost / FinOps (optional)",
+  "charter": "what this change costs to run, and whether that cost is bounded and attributable",
+  "boundary": "raw performance, latency and load behaviour \u2192 scalability; whether telemetry is SUFFICIENT to debug and whether alerts fire \u2192 sre; whether the pipeline and IaC that provision the resource are correct, least-privilege and reproducible \u2192 devops; whether this vendor or managed service should have been chosen at all \u2192 services-selection",
+  "looks_for": "unbounded metered resources, missing autoscaling and concurrency caps, cost shape of a code path (per-row external calls, unbounded fan-out, model calls in a loop), LLM token and agent-loop bounds, allocation tags on new billable resources, retention and lifecycle on storage that only grows, telemetry volume and label cardinality, egress and cross-region traffic, over-provisioned defaults",
+  "globs": [
+   "**/*.tf",
+   "**/*.tfvars",
+   "**/k8s/**",
+   "**/helm/**",
+   "**/serverless*",
+   "**/*.cloudformation*",
+   "**/*.bicep",
+   "**/pulumi*",
+   "**/cdk/**",
+   "**/llm/**",
+   "**/agents/**",
+   "**/inference/**",
+   "**/prompts/**",
+   "**/*.prompt.*",
+   "**/logging/**",
+   "**/otel*/**"
+  ],
+  "task_types": [
+   "infra",
+   "infrastructure",
+   "data"
+  ],
+  "baseline": null,
+  "deep_globs": [],
+  "checks": []
+ },
+ {
+  "group": "Experience",
+  "id": "i18n",
+  "name": "Localization / i18n (optional)",
+  "charter": "works across languages, scripts and locales",
+  "boundary": "copy quality and content accuracy \u2192 tech-writer (docs) / design (in-product copy); screen-reader, contrast and keyboard behaviour \u2192 accessibility; visual/state design and general layout \u2192 design; component implementation and locale-bundle weight \u2192 frontend",
+  "looks_for": "externalized strings incl. backend-generated text, plural/gender selection, sentence assembly by concatenation, locale formatting AND parsing, currency minor units, timezone intent, text expansion, bidi isolation and RTL, collation and grapheme-safe text",
+  "globs": [
+   "**/locales/**",
+   "**/i18n/**",
+   "**/lang/**",
+   "**/translations/**",
+   "**/*.po",
+   "**/*.pot",
+   "**/*.ftl",
+   "**/*.arb",
+   "**/*.xliff",
+   "**/*.strings",
+   "**/*.tsx",
+   "**/*.jsx",
+   "**/*.vue",
+   "**/*.svelte",
+   "**/components/**",
+   "**/screens/**",
+   "**/views/**",
+   "**/pages/**",
+   "**/ui/**",
+   "**/templates/**",
+   "**/*.erb",
+   "**/*.hbs",
+   "**/*.twig",
+   "**/*.html",
+   "**/emails/**",
+   "**/mailers/**",
+   "**/notifications/**",
+   "**/*.css",
+   "**/*.scss"
+  ],
+  "task_types": [
+   "ui",
+   "screens",
+   "frontend",
+   "design-system",
+   "feature",
+   "backend",
+   "mobile"
+  ],
+  "baseline": null,
+  "deep_globs": [
+   "**/locales/**",
+   "**/i18n/**",
+   "**/translations/**"
+  ],
+  "checks": []
+ }
+]

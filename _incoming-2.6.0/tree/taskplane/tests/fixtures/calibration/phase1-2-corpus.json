@@ -1,0 +1,697 @@
+{
+ "_meta": {
+  "schema": "taskplane.calibration-corpus/v1",
+  "captured": "2026-08-09",
+  "source_decisions": [
+   "0007",
+   "0015",
+   "0008",
+   "0016"
+  ],
+  "source_records": [
+   "knowledge/decisions/0007 (phase 1 retro: 6 tasks, forecast missed t1..t6)",
+   "knowledge/decisions/0015 (phase 2 retro: 9 tasks, forecast missed t1..t7)",
+   "knowledge/decisions/0008 (phase 1 lessons: 6/6 tasks, 0 fix cycles)",
+   "knowledge/decisions/0016 (phase 2 lessons: 9 tasks, 1 fix cycle on t7)",
+   "artifacts/<phase>/tasks.json (task scopes + requirement anchors)",
+   "artifacts/<phase>/report.md (outcomes: 6 tasks all passed; 9 tasks all passed, 1 fix cycle on t7)",
+   "trace refinement_gate events (plan-gate scores: 0.33 x6 phase 1, 1.0 x9 phase 2)",
+   "knowledge/index.json requirement records R-0001/R-0002 (phase 1), R-0003..R-0006 (phase 2)"
+  ],
+  "task_count": 15,
+  "fix_cycles_total": 1,
+  "count_note": "The Phase 3 design/plan text cites a \"17-task\" corpus; the store records 6 tasks (retro decision 0007, phase 1) + 9 tasks (retro decision 0015, phase 2) = 15 governed tasks with 1 fix cycle total (phase 2 t7). 17 is not reproducible from any store record; this corpus captures the 15 verifiable tasks faithfully.",
+  "reconstruction_note": "applicable_nfr/covered_nfr/gaps reconstructed with the live router at capture time; reconstruction reproduces every recorded plan-gate score exactly (asserted at capture and re-asserted by test_requirements.py)."
+ },
+ "entries": [
+  {
+   "phase": 1,
+   "task": "t1",
+   "requirement": "R-0001",
+   "title": "Applicability engine: taskplane/lens_signals.py detectors + fixtures",
+   "scope": [
+    "taskplane/lens_signals.py",
+    "taskplane/tests/test_lens_signals.py",
+    "taskplane/tests/test_lens_signals_fixtures.py",
+    "taskplane/tests/fixtures/detectors/**"
+   ],
+   "forecast_inputs": {
+    "functional_count": 0,
+    "acceptance_count": 6,
+    "open_questions_count": 0,
+    "nfr_stated": [],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": []
+   },
+   "as_scored": {
+    "score": 0.33,
+    "functional": 0.67,
+    "nfr": 0.0,
+    "blocking": false,
+    "mode": "quick",
+    "gaps": [
+     {
+      "axis": "functional",
+      "detail": "no functional statements"
+     },
+     {
+      "axis": "nfr",
+      "lens": "security",
+      "detail": "no security NFR stated"
+     },
+     {
+      "axis": "nfr",
+      "lens": "architecture",
+      "detail": "no architecture NFR stated"
+     }
+    ]
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 1,
+   "task": "t2",
+   "requirement": "R-0001",
+   "title": "Stage profiles data + route() v2 (profile restriction, budget wiring, floors, fail-open, --lens force) + brief verdict fields",
+   "scope": [
+    "taskplane/lens.py",
+    "lenses/catalog.json",
+    "lenses/_generate_catalog.py",
+    "docs/lens-catalog.md",
+    "taskplane/tests/test_lens_route_v2.py"
+   ],
+   "forecast_inputs": {
+    "functional_count": 0,
+    "acceptance_count": 6,
+    "open_questions_count": 0,
+    "nfr_stated": [],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": []
+   },
+   "as_scored": {
+    "score": 0.33,
+    "functional": 0.67,
+    "nfr": 0.0,
+    "blocking": false,
+    "mode": "quick",
+    "gaps": [
+     {
+      "axis": "functional",
+      "detail": "no functional statements"
+     },
+     {
+      "axis": "nfr",
+      "lens": "security",
+      "detail": "no security NFR stated"
+     },
+     {
+      "axis": "nfr",
+      "lens": "architecture",
+      "detail": "no architecture NFR stated"
+     }
+    ]
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 1,
+   "task": "t3",
+   "requirement": "R-0001",
+   "title": "Coverage honesty: dashboard coverage map v2 (dual-shape, reason per n/a) + HEADLINE segment",
+   "scope": [
+    "taskplane/dashboard.py",
+    "taskplane/tests/test_dashboard_coverage_v2.py"
+   ],
+   "forecast_inputs": {
+    "functional_count": 0,
+    "acceptance_count": 6,
+    "open_questions_count": 0,
+    "nfr_stated": [],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": []
+   },
+   "as_scored": {
+    "score": 0.33,
+    "functional": 0.67,
+    "nfr": 0.0,
+    "blocking": false,
+    "mode": "quick",
+    "gaps": [
+     {
+      "axis": "functional",
+      "detail": "no functional statements"
+     },
+     {
+      "axis": "nfr",
+      "lens": "security",
+      "detail": "no security NFR stated"
+     },
+     {
+      "axis": "nfr",
+      "lens": "architecture",
+      "detail": "no architecture NFR stated"
+     }
+    ]
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 1,
+   "task": "t4",
+   "requirement": "R-0001",
+   "title": "Audit sweep + router-regression auto-filing + every-5th/release cadence + em/evaluate stage wiring in loop.py",
+   "scope": [
+    "taskplane/loop.py",
+    "taskplane/tests/test_audit_sweep.py"
+   ],
+   "forecast_inputs": {
+    "functional_count": 0,
+    "acceptance_count": 6,
+    "open_questions_count": 0,
+    "nfr_stated": [],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": []
+   },
+   "as_scored": {
+    "score": 0.33,
+    "functional": 0.67,
+    "nfr": 0.0,
+    "blocking": false,
+    "mode": "quick",
+    "gaps": [
+     {
+      "axis": "functional",
+      "detail": "no functional statements"
+     },
+     {
+      "axis": "nfr",
+      "lens": "security",
+      "detail": "no security NFR stated"
+     },
+     {
+      "axis": "nfr",
+      "lens": "architecture",
+      "detail": "no architecture NFR stated"
+     }
+    ]
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 1,
+   "task": "t5",
+   "requirement": "R-0002",
+   "title": "workflows/review-wave.js + capability detection + mandatory dispatch fallback + path tracing (tp.py)",
+   "scope": [
+    "workflows/**",
+    "taskplane/tp.py",
+    "taskplane/tests/test_review_wave.py"
+   ],
+   "forecast_inputs": {
+    "functional_count": 0,
+    "acceptance_count": 4,
+    "open_questions_count": 0,
+    "nfr_stated": [],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": []
+   },
+   "as_scored": {
+    "score": 0.33,
+    "functional": 0.67,
+    "nfr": 0.0,
+    "blocking": false,
+    "mode": "quick",
+    "gaps": [
+     {
+      "axis": "functional",
+      "detail": "no functional statements"
+     },
+     {
+      "axis": "nfr",
+      "lens": "security",
+      "detail": "no security NFR stated"
+     },
+     {
+      "axis": "nfr",
+      "lens": "architecture",
+      "detail": "no architecture NFR stated"
+     }
+    ]
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 1,
+   "task": "t6",
+   "requirement": "R-0002",
+   "title": "CI: Codex parity leg (frozen briefs vs goldens), detector-fixture completeness leg, workflow-path parity fixture",
+   "scope": [
+    ".github/workflows/ci.yml",
+    "taskplane/tests/test_dispatch_parity.py",
+    "taskplane/tests/fixtures/briefs/**"
+   ],
+   "forecast_inputs": {
+    "functional_count": 0,
+    "acceptance_count": 4,
+    "open_questions_count": 0,
+    "nfr_stated": [],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": []
+   },
+   "as_scored": {
+    "score": 0.33,
+    "functional": 0.67,
+    "nfr": 0.0,
+    "blocking": false,
+    "mode": "quick",
+    "gaps": [
+     {
+      "axis": "functional",
+      "detail": "no functional statements"
+     },
+     {
+      "axis": "nfr",
+      "lens": "security",
+      "detail": "no security NFR stated"
+     },
+     {
+      "axis": "nfr",
+      "lens": "architecture",
+      "detail": "no architecture NFR stated"
+     }
+    ]
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t1",
+   "requirement": "R-0003",
+   "title": "Decomposition engine: taskplane/decompose.py (hybrid derivation, floors, components.yaml override) + graph.json components layer + `graph scan --decompose` + fingerprint cache",
+   "scope": [
+    "taskplane/decompose.py",
+    "taskplane/depgraph.py",
+    "taskplane/tp.py",
+    "taskplane/tests/test_decompose.py",
+    "taskplane/tests/fixtures/decompose/**"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 7,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t2",
+   "requirement": "R-0003",
+   "title": "Route v2 component assembly (capped union of touched components' cached maps, floors on live diff, fail-open superset) + component_attribution on briefs/findings meta + dashboard/graph component-layer rendering",
+   "scope": [
+    "taskplane/lens.py",
+    "taskplane/depgraph.py",
+    "taskplane/dashboard.py",
+    "taskplane/tests/test_decompose.py",
+    "taskplane/tests/fixtures/decompose/**"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 7,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t3",
+   "requirement": "R-0004",
+   "title": "Stage workflow files: workflows/execute-wave.js, evaluate-wave.js, fix-wave.js on the review-wave.js pattern (pure-literal meta, schema-pinned agent() outputs, deterministic, zero gate verbs) + static pins",
+   "scope": [
+    "workflows/execute-wave.js",
+    "workflows/evaluate-wave.js",
+    "workflows/fix-wave.js",
+    "taskplane/tests/test_stage_waves.py"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 7,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t4",
+   "requirement": "R-0004",
+   "title": "tp.py stage emitter behind workflow_available() (wrap-not-rewrite, kill-switch matrix, stage_dispatch_path trace) + resume fixture + adversarial every-gate walk + extended parity goldens + CI parity/Codex legs",
+   "scope": [
+    "taskplane/tp.py",
+    "taskplane/tests/test_stage_waves.py",
+    "taskplane/tests/fixtures/briefs/**",
+    ".github/workflows/ci.yml"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 7,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t5",
+   "requirement": "R-0006",
+   "title": "Audit extraction (D-0004): capture byte-frozen differential corpus FIRST from unmodified loop.py, then move loop.py:1426-1680 audit machinery to taskplane/audit.py with re-exported public names; loop.py shrink pinned",
+   "scope": [
+    "taskplane/audit.py",
+    "taskplane/loop.py",
+    "taskplane/tests/test_audit_extraction.py",
+    "taskplane/tests/fixtures/audit/**"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 7,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t6",
+   "requirement": "R-0006",
+   "title": "Fixtures-path discount x0.25 in lens_signals (D-0002) + detector fixture pair + parity goldens regenerated ONCE via regen.py + routed-audit hybrid measurement and D-record (D-0003)",
+   "scope": [
+    "taskplane/lens_signals.py",
+    "taskplane/tests/test_lens_signals.py",
+    "taskplane/tests/test_lens_signals_fixtures.py",
+    "taskplane/tests/test_debt_burndown.py",
+    "taskplane/tests/fixtures/detectors/**",
+    "taskplane/tests/fixtures/briefs/**"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 7,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t7",
+   "requirement": "R-0006",
+   "title": "Evaluate consumes routed briefs: loop.py evaluate wiring passes stage='build' (R-0001 budget inherited verbatim, component assembly engaged); em full-catalog literal, audit cadence, and router-regression block pinned untouched",
+   "scope": [
+    "taskplane/loop.py",
+    "taskplane/tests/test_evaluate_routing.py"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 7,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 1
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t8",
+   "requirement": "R-0005",
+   "title": "Install truth (separable, unblocked): README account-type decision tree + per-host quickstarts + tp onboard truth-up + CI grep/link legs + marketplace copy alignment",
+   "scope": [
+    "README.md",
+    "taskplane/tp.py",
+    "taskplane/tests/test_onboarding_docs.py",
+    ".github/workflows/ci.yml",
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    ".codex-plugin/plugin.json"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 6,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  },
+  {
+   "phase": 2,
+   "task": "t9",
+   "requirement": "R-0005",
+   "title": "v3 feature docs: routing v2 / review wave + fallback / decomposition + components.yaml / stage flows + kill-switch, each with a dogfood example; what's-new 3-row pin; docs-drift CI extension",
+   "scope": [
+    "README.md",
+    "docs/*.md",
+    "taskplane/tests/test_onboarding_docs.py",
+    ".github/workflows/ci.yml"
+   ],
+   "forecast_inputs": {
+    "functional_count": 4,
+    "acceptance_count": 6,
+    "open_questions_count": 0,
+    "nfr_stated": [
+     "architecture",
+     "security"
+    ],
+    "applicable_nfr": [
+     "security",
+     "architecture"
+    ],
+    "covered_nfr": [
+     "security",
+     "architecture"
+    ]
+   },
+   "as_scored": {
+    "score": 1.0,
+    "functional": 1.0,
+    "nfr": 1.0,
+    "blocking": false,
+    "mode": "full",
+    "gaps": []
+   },
+   "outcome": {
+    "status": "passed",
+    "fix_cycles": 0
+   }
+  }
+ ]
+}
