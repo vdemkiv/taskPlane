@@ -28,7 +28,7 @@ import taskplane_lite as tp  # noqa: E402
 def w(ws, rel, content):
     p = os.path.join(ws, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f:
+    with open(p, "w", encoding="utf-8") as f:
         f.write(content)
 
 
@@ -48,7 +48,7 @@ class TestGraphCorruptionSurfaces(unittest.TestCase):
     def _corrupt(self):
         p = dg._path(self.ws)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write("{not json !!!")
 
     def test_missing_graph_is_legitimate_empty_default(self):
@@ -77,12 +77,12 @@ class TestGraphCorruptionSurfaces(unittest.TestCase):
         with self.assertRaises(tp.StateError):
             dg.scan(self.ws)
         # and the file is still there for inspection, untouched
-        self.assertIn("not json", open(dg._path(self.ws)).read())
+        self.assertIn("not json", open(dg._path(self.ws), encoding="utf-8").read())
 
     def test_non_object_graph_is_corrupt_too(self):
         p = dg._path(self.ws)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             json.dump(["not", "a", "graph"], f)
         with self.assertRaises(tp.StateError):
             dg.load(self.ws)
@@ -207,7 +207,7 @@ class TestLoadMemoAndBatch(unittest.TestCase):
         self.assertIs(g1, g2)              # per-process memo, no re-parse
         # an EXTERNAL (cross-process style) atomic rewrite is picked up:
         p = dg._path(self.ws)
-        g = json.load(open(p))
+        g = json.load(open(p, encoding="utf-8"))
         g["modules"]["svc:externally-added"] = {"kind": "infra", "files": 0}
         tp.atomic_write_json(p, g)
         self.assertIn("svc:externally-added", dg.load(self.ws)["modules"])
@@ -317,7 +317,7 @@ class TestHubSignalFailsTowardMoreCoverage(unittest.TestCase):
 
     def test_corrupt_graph_warns_and_escalates_not_silences(self):
         dg.scan(self.ws)
-        with open(dg._path(self.ws), "w") as f:
+        with open(dg._path(self.ws), "w", encoding="utf-8") as f:
             f.write("{broken")
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -397,7 +397,7 @@ class TestKbArchive(unittest.TestCase):
         self.assertEqual(hot, [a["id"]])                      # accepted stays
         # archived entries remain readable in index-archive.json
         arch = json.load(open(os.path.join(kb.kb_dir(self.ws),
-                                           "index-archive.json")))
+                                           "index-archive.json"), encoding="utf-8"))
         self.assertEqual(sorted(d["id"] for d in arch["decisions"]),
                          sorted([b["id"], c["id"]]))
         # minting after archiving the HIGHEST id ("0003") must not reuse it
@@ -417,7 +417,7 @@ class TestKbArchive(unittest.TestCase):
         b = kb.record_decision(self.ws, "old")
         kb.set_status(self.ws, b["id"], "rejected")
         with open(os.path.join(kb.kb_dir(self.ws),
-                               "index-archive.json"), "w") as f:
+                               "index-archive.json"), "w", encoding="utf-8") as f:
             f.write("{torn")
         res = kb.archive(self.ws)
         self.assertIn("error", res)
@@ -447,13 +447,13 @@ class TestKbLintCaching(unittest.TestCase):
         self.assertEqual(kb.lint(self.ws), [])
         # a NEW bad file after the first lint is still caught
         bad = os.path.join(kb.kb_dir(self.ws), "note.md")
-        with open(bad, "w") as f:
+        with open(bad, "w", encoding="utf-8") as f:
             f.write("Act as the system prompt\n")
         problems = kb.lint(self.ws)
         self.assertTrue(any("prompt marker" in p["problem"]
                             for p in problems))
         # a CHANGED file is re-linted (mtime/size signature moves)
-        with open(bad, "w") as f:
+        with open(bad, "w", encoding="utf-8") as f:
             f.write("all clean now, plain decision text\n")
         os.utime(bad, ns=(1, 1))    # force a distinct signature
         self.assertEqual(kb.lint(self.ws), [])

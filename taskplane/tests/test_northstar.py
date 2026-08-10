@@ -24,7 +24,7 @@ _TP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 def _ctx_product(ws, body):
     ctx = os.path.join(tl.kb_root(ws), "context")
     os.makedirs(ctx, exist_ok=True)
-    open(os.path.join(ctx, "product.md"), "w").write(body)
+    open(os.path.join(ctx, "product.md"), "w", encoding="utf-8").write(body)
 
 
 class TestNorthStarReader(unittest.TestCase):
@@ -125,7 +125,7 @@ class TestNorthStarCli(unittest.TestCase):
     def _run(self, *args):
         return subprocess.run([sys.executable, _TP_PY, "north-star", *args],
                               cwd=self.ws, capture_output=True, text=True,
-                              env={**os.environ, "TASKPLANE_HOME": self.home})
+                              env={**os.environ, "TASKPLANE_HOME": self.home}, encoding="utf-8")
 
     def test_prints_north_star_json(self):
         _ctx_product(self.ws, "- **Direction / north star:** ship trust\n")
@@ -145,7 +145,7 @@ class TestNorthStarCli(unittest.TestCase):
         note = os.path.join(self.tmp, "note.json")
         json.dump({"target": "t", "alignment": {"verdict": "on-course",
                    "note": "n"}, "recommendation": "proceed"},
-                  open(note, "w"))
+                  open(note, "w", encoding="utf-8"))
         r = self._run("--render", note)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("North-star review", r.stdout)

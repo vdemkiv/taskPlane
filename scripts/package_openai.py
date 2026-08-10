@@ -17,6 +17,17 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PurePosixPath
 
+# Console codepages are not always UTF-8 (Windows defaults to cp1252, a C
+# locale gives ASCII), and this script's own output carries arrows and em
+# dashes. The text is ours and it is UTF-8; say so rather than dying in the
+# middle of a report.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / ".codex-plugin" / "plugin.json"

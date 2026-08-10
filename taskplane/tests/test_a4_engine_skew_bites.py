@@ -50,7 +50,7 @@ class _EngineWorkspaces(unittest.TestCase):
 
     def _edit_engine(self, ws, module="loop"):
         path = os.path.join(ws, "taskplane", module + ".py")
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("\n# a wave worker changed the engine\n")
 
 
@@ -76,7 +76,7 @@ class TestTheFingerprintCanActuallyDiffer(_EngineWorkspaces):
         engine — returning a hash for it would fabricate an identity."""
         odd = os.path.join(self.tmp, "odd")
         os.makedirs(os.path.join(odd, "taskplane"))
-        open(os.path.join(odd, "taskplane", "readme.txt"), "w").write("x")
+        open(os.path.join(odd, "taskplane", "readme.txt"), "w", encoding="utf-8").write("x")
         self.assertIsNone(tp.workspace_engine_fingerprint(odd))
 
     def test_a_truncated_engine_is_not_equal_to_a_complete_one(self):
@@ -134,7 +134,7 @@ class TestTheRefusalNowFires(_EngineWorkspaces):
     def test_the_refusal_is_traced_with_the_reason(self):
         self._edit_engine(self.worktree)
         tp.engine_skew_refusal(self.primary, self._submission(self.worktree))
-        with open(os.path.join(tp.tp_dir(self.primary), "trace.jsonl")) as f:
+        with open(os.path.join(tp.tp_dir(self.primary), "trace.jsonl"), encoding="utf-8") as f:
             events = [json.loads(x) for x in f if x.strip()]
         blocked = [e for e in events if e.get("event") == "loop_gate_blocked"]
         self.assertTrue(blocked)

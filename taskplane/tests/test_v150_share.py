@@ -49,7 +49,7 @@ class TestModeResolution(_Ws):
                          os.path.join(self.ws, ".taskplane-kb"))
         # shared config is written so a teammate's clone inherits the mode
         cfg = json.load(open(os.path.join(self.ws, ".taskplane-kb",
-                                          "config.json")))
+                                          "config.json"), encoding="utf-8"))
         self.assertEqual(cfg["plan"], "team")
 
     def test_plan_is_updatable_back_to_personal(self):
@@ -125,7 +125,7 @@ class TestSharePush(_Ws):
         self.assertEqual(titles, ["priv A", "priv B"])
         d = next(x for x in kb.load_index(self.ws)["decisions"]
                  if x["published_from"] == "0001")
-        body = open(os.path.join(kb.kb_dir(self.ws), d["file"])).read()
+        body = open(os.path.join(kb.kb_dir(self.ws), d["file"]), encoding="utf-8").read()
         self.assertIn("priv A", body)
 
     def test_shared_ids_remap_when_shared_store_not_empty(self):
@@ -147,7 +147,7 @@ class TestOnboardingSurface(_Ws):
         r = subprocess.run([sys.executable, tppy, "init", "--plan", "team",
                             "--workspace", self.ws],
                            capture_output=True, text=True,
-                           env={**os.environ})
+                           env={**os.environ}, encoding="utf-8")
         out = json.loads(r.stdout)
         self.assertEqual(out["mode"]["plan"], "team")
         self.assertIsNone(out["plan_question"])   # answered — no nag
@@ -159,13 +159,13 @@ class TestOnboardingSurface(_Ws):
         r = subprocess.run([sys.executable, tppy, "init",
                             "--workspace", self.ws],
                            capture_output=True, text=True,
-                           env={**os.environ})
+                           env={**os.environ}, encoding="utf-8")
         out = json.loads(r.stdout)
         self.assertIn("ASK THE HUMAN", out["plan_question"])
 
     def test_setup_reference_documents_the_flow(self):
         body = open(os.path.join(ROOT, "skills", "tp-go", "references",
-                                 "setup.md")).read()
+                                 "setup.md"), encoding="utf-8").read()
         for must in ("share plan", "share set private", "share push"):
             self.assertIn(must, body)
 

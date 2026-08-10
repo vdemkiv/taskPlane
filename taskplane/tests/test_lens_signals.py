@@ -25,7 +25,7 @@ EMPTY_GRAPH = {"hub_dependents": 0, "boundary_contracts": [], "modules": []}
 def write(root, rel, text):
     p = os.path.join(root, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f:
+    with open(p, "w", encoding="utf-8") as f:
         f.write(text)
     return rel
 
@@ -307,7 +307,7 @@ class TestCtxReadContainment(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ws = os.path.join(tmp, "ws")
             os.makedirs(ws)
-            open(os.path.join(tmp, "outside.txt"), "w").write("SECRET")
+            open(os.path.join(tmp, "outside.txt"), "w", encoding="utf-8").write("SECRET")
             ctx = ls.Ctx(ws, ["../outside.txt"], "", EMPTY_GRAPH, "review")
             self.assertIsNone(ctx.read("../outside.txt"))
 
@@ -315,7 +315,7 @@ class TestCtxReadContainment(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ws = os.path.join(tmp, "ws")
             os.makedirs(ws)
-            open(os.path.join(tmp, "outside.txt"), "w").write("SECRET")
+            open(os.path.join(tmp, "outside.txt"), "w", encoding="utf-8").write("SECRET")
             os.symlink(os.path.join(tmp, "outside.txt"),
                        os.path.join(ws, "link.txt"))
             ctx = ls.Ctx(ws, ["link.txt"], "", EMPTY_GRAPH, "review")
@@ -325,7 +325,7 @@ class TestCtxReadContainment(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ws = os.path.join(tmp, "ws")
             os.makedirs(ws)
-            open(os.path.join(ws, "a.py"), "w").write("x = 1\n")
+            open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x = 1\n")
             ctx = ls.Ctx(ws, ["a.py"], "", EMPTY_GRAPH, "review")
             self.assertEqual(ctx.read("a.py"), "x = 1\n")
 

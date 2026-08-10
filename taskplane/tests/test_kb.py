@@ -74,14 +74,14 @@ class TestKBLoopIntegration(unittest.TestCase):
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, "plan"))
         os.makedirs(os.path.join(ws, "src", "todo"))
-        open(os.path.join(ws, "src", "todo", "a.py"), "w").write("x=1\n")
+        open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
         for c in (["init", "-q"], ["add", "-A"]):
             subprocess.run(["git", *c], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
         json.dump({"tasks": [{"id": "t1", "scope": ["src/todo/**"],
                               "tests": "true"}]},
-                  open(os.path.join(ws, "plan", "tasks.json"), "w"))
+                  open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
 
         loop.init(ws, "add complete()", spec_path="s", checkpoints=["plan", "em"])
         loop.next_action(ws); loop.gate(ws, "pass")     # plan → plan_approval
@@ -123,7 +123,7 @@ class TestNoPromptDataLint(unittest.TestCase):
         import os as o
         kbd = kb.kb_dir(self.ws)          # external store
         o.makedirs(kbd, exist_ok=True)
-        with open(o.path.join(kbd, "blob.json"), "w") as f:
+        with open(o.path.join(kbd, "blob.json"), "w", encoding="utf-8") as f:
             j.dump({"dump": "x" * 5000}, f)
         problems = kb.lint(self.ws)
         self.assertTrue(any("exceeds" in p["problem"] for p in problems))

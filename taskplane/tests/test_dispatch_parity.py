@@ -114,7 +114,7 @@ def tree_files(root):
 
 
 def frozen_files():
-    with open(os.path.join(BRIEFS, "changed_files.json")) as f:
+    with open(os.path.join(BRIEFS, "changed_files.json"), encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -210,7 +210,7 @@ def _fixture_repo(tmp_path) -> str:
     `route_git_diff` sees exactly the frozen changed-files list."""
     ws = os.path.join(str(tmp_path), "ws")
     os.makedirs(ws)
-    with open(os.path.join(ws, ".gitkeep"), "w") as f:
+    with open(os.path.join(ws, ".gitkeep"), "w", encoding="utf-8") as f:
         f.write("")
     for a in (["init", "-q"], ["config", "user.email", "e@e"],
               ["config", "user.name", "t"], ["add", "-A"],

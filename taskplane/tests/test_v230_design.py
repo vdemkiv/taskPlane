@@ -24,7 +24,7 @@ class _DesignEnv(unittest.TestCase):
         self.ws = os.path.join(self.tmp, "ws")
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(os.path.join(self.ws, "src", "core"))
-        with open(os.path.join(self.ws, "src", "core", "a.py"), "w") as f:
+        with open(os.path.join(self.ws, "src", "core", "a.py"), "w", encoding="utf-8") as f:
             f.write("VALUE = 1\n")
         subprocess.run(["git", "init", "-q"], cwd=self.ws, check=True)
         subprocess.run(["git", "config", "user.email", "e@example.com"],
@@ -146,13 +146,13 @@ class _DesignEnv(unittest.TestCase):
 
     def _write_design(self, contract, *, bind=True):
         os.makedirs(os.path.join(self.ws, "design"), exist_ok=True)
-        with open(os.path.join(self.ws, "design", "design.md"), "w") as f:
+        with open(os.path.join(self.ws, "design", "design.md"), "w", encoding="utf-8") as f:
             f.write("# Governed Design\n\nUse an optional loop state.\n")
         if bind:
             contract["lens_evidence"][0]["content_fingerprint"] = \
                 dc.design_content_fingerprint(self.ws, contract)
         with open(os.path.join(self.ws, "design", "contract.json"),
-                  "w") as f:
+                  "w", encoding="utf-8") as f:
             json.dump(contract, f, indent=2)
         return contract
 
@@ -214,7 +214,7 @@ class M2RequirementPinnedInApproval(_DesignEnv):
     def test_requirement_fingerprint_tracks_record_edits(self):
         before = dc.requirement_fingerprint(self.ws, self.req["id"])
         path = os.path.join(reqs.kb_dir(self.ws), self.req["file"])
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("\n- edited acceptance criterion\n")
         self.assertNotEqual(
             before, dc.requirement_fingerprint(self.ws, self.req["id"]))
@@ -234,7 +234,7 @@ class M2RequirementPinnedInApproval(_DesignEnv):
         self.assertEqual(dc.design_current_errors(self.ws, state), [])
         # Hand-edit the anchored requirement record (no engine guard).
         path = os.path.join(reqs.kb_dir(self.ws), self.req["file"])
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("\n- NEW acceptance criterion sneaked in\n")
         errors = dc.design_current_errors(self.ws, state)
         self.assertTrue(errors)
@@ -272,7 +272,7 @@ class M3LensEvidenceBound(_DesignEnv):
 
     def test_stale_binding_fails_after_content_change(self):
         self._write_design(self._base_contract())
-        with open(os.path.join(self.ws, "design", "design.md"), "a") as f:
+        with open(os.path.join(self.ws, "design", "design.md"), "a", encoding="utf-8") as f:
             f.write("\nA material change after the lens ran.\n")
         joined = " ".join(dc.design_dod_errors(self.ws, self._dod_state()))
         self.assertIn("not bound to the current design content", joined)
@@ -455,7 +455,7 @@ class L3AcceptedDriftRepresentation(M4UnscannableEdgeDeclaration):
 
 class L4L5Messages(_DesignEnv):
     def test_stale_graph_blocker_names_its_remedy(self):
-        with open(os.path.join(self.ws, "src", "core", "b.py"), "w") as f:
+        with open(os.path.join(self.ws, "src", "core", "b.py"), "w", encoding="utf-8") as f:
             f.write("VALUE = 2\n")
         self._commit("new head after scan")
         dor = dc.design_dor(self.ws, {"requirement_id": self.req["id"]})
@@ -491,7 +491,7 @@ class WorktreeRequirementResolution(unittest.TestCase):
             subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
             subprocess.run(["git", "config", "user.email", "t@t"], cwd=ws, check=True)
             subprocess.run(["git", "config", "user.name", "t"], cwd=ws, check=True)
-            open(os.path.join(ws, "f.txt"), "w").write("x\n")
+            open(os.path.join(ws, "f.txt"), "w", encoding="utf-8").write("x\n")
             subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
             subprocess.run(["git", "commit", "-qm", "init"], cwd=ws, check=True)
             import requirements as reqs_mod

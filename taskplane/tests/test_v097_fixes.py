@@ -26,7 +26,7 @@ def git_ws(tmp, with_tasks=True):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
     os.makedirs(os.path.join(ws, "src", "todo"))
-    open(os.path.join(ws, "src", "todo", "a.py"), "w").write("x=1\n")
+    open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -35,7 +35,7 @@ def git_ws(tmp, with_tasks=True):
     if with_tasks:
         json.dump({"tasks": [{"id": "t1", "scope": ["src/todo/**"],
                               "tests": "true", "criteria": ["done"]}]},
-                  open(os.path.join(ws, "plan", "tasks.json"), "w"))
+                  open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 
 
@@ -71,7 +71,7 @@ class TestHigh2InitScaffoldLint(unittest.TestCase):
         for name, body in (("product.md", tpcli.PRODUCT_MD),
                            ("tech-stack.md", tpcli.TECH_MD),
                            ("workflow.md", tpcli.WORKFLOW_MD)):
-            open(os.path.join(ctx, name), "w").write(body)
+            open(os.path.join(ctx, name), "w", encoding="utf-8").write(body)
         problems = kb.lint(ws)
         self.assertEqual(problems, [], f"scaffold trips lint: {problems}")
 
@@ -130,9 +130,9 @@ class TestHigh4ProjectKeyCollisions(unittest.TestCase):
         ws = "/x/legacy-proj"
         legacy = os.path.join(self.home, "projects", tp._path_slug(ws))
         os.makedirs(os.path.join(legacy, "knowledge"))
-        open(os.path.join(legacy, "knowledge", "marker.txt"), "w").write("hi")
+        open(os.path.join(legacy, "knowledge", "marker.txt"), "w", encoding="utf-8").write("hi")
         json.dump({"workspace": os.path.abspath(ws)},
-                  open(os.path.join(legacy, "meta.json"), "w"))
+                  open(os.path.join(legacy, "meta.json"), "w", encoding="utf-8"))
         root = tp.store_root(ws)                       # triggers adoption
         self.assertTrue(os.path.exists(
             os.path.join(root, "knowledge", "marker.txt")))
@@ -145,7 +145,7 @@ class TestHigh4ProjectKeyCollisions(unittest.TestCase):
         legacy = os.path.join(self.home, "projects", tp._path_slug(ws_ours))
         os.makedirs(legacy)
         json.dump({"workspace": os.path.abspath(ws_theirs)},
-                  open(os.path.join(legacy, "meta.json"), "w"))
+                  open(os.path.join(legacy, "meta.json"), "w", encoding="utf-8"))
         tp.store_root(ws_ours)                          # must NOT adopt it
         self.assertTrue(os.path.isdir(legacy))
 
@@ -198,7 +198,7 @@ class TestHigh1FailedPlanGate(unittest.TestCase):
     def test_failed_plan_gate_stays_at_plan(self):
         ws = git_ws(self.tmp, with_tasks=False)  # planner produced nothing
         loop.init(ws, "add feature")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.gate(ws, "pass")                    # pm -> plan
         r = loop.gate(ws, "fail", note="planner failed")
         self.assertIn("error", r)
@@ -209,7 +209,7 @@ class TestHigh1FailedPlanGate(unittest.TestCase):
         # Directly guards loop.py:_step_contract task['id'] on None.
         ws = git_ws(self.tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         st = loop.load(ws)
         st["step"] = "execute"
         st["tasks"] = []
@@ -221,7 +221,7 @@ class TestHigh1FailedPlanGate(unittest.TestCase):
     def test_passing_plan_still_advances(self):
         ws = git_ws(self.tmp)                     # real tasks.json present
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.gate(ws, "pass")                     # pm -> plan
         loop.gate(ws, "pass")                     # plan -> plan_approval
         self.assertEqual(loop.load(ws)["step"], "plan_approval")

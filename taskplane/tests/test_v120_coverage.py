@@ -32,7 +32,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -43,7 +43,7 @@ def _repo(tmp):
 
 def _tp(ws, *args):
     return subprocess.run([sys.executable, TPPY, *args, "--workspace", ws],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8")
 
 
 class TestRegistry(unittest.TestCase):            # R-0002 AC1
@@ -66,7 +66,7 @@ class TestRegistry(unittest.TestCase):            # R-0002 AC1
         d = kb.get_decision(self.ws, did)
         self.assertEqual(d["links"]["requirement"], "R-0002")
         self.assertIn("src/db/**", d["links"]["modules"])
-        body = open(os.path.join(kb.kb_dir(self.ws), d["file"])).read()
+        body = open(os.path.join(kb.kb_dir(self.ws), d["file"]), encoding="utf-8").read()
         self.assertIn("given up: single-writer ceiling", body)
 
     def test_accept_lifecycle_and_supersede_chain(self):
@@ -133,7 +133,7 @@ class TestGoverningInjection(unittest.TestCase):  # R-0002 AC2+AC3
 
 class TestNewLenses(unittest.TestCase):           # R-0003
     def test_catalog_has_26_with_solution_design(self):
-        cat = json.load(open(os.path.join(ROOT, "lenses", "catalog.json")))
+        cat = json.load(open(os.path.join(ROOT, "lenses", "catalog.json"), encoding="utf-8"))
         lenses = cat["lenses"] if isinstance(cat, dict) else cat
         ids = {x["id"] for x in lenses}
         self.assertEqual(len(lenses), 26)
@@ -163,9 +163,9 @@ class TestNewLenses(unittest.TestCase):           # R-0003
         for lid in ("tradeoffs", "services-selection", "time-to-market"):
             p = os.path.join(ROOT, "lenses", f"{lid}.md")
             self.assertTrue(os.path.exists(p), lid)
-        t = open(os.path.join(ROOT, "lenses", "tradeoffs.md")).read()
+        t = open(os.path.join(ROOT, "lenses", "tradeoffs.md"), encoding="utf-8").read()
         self.assertIn("tp decision new", t)
-        ttm = open(os.path.join(ROOT, "lenses", "time-to-market.md")).read()
+        ttm = open(os.path.join(ROOT, "lenses", "time-to-market.md"), encoding="utf-8").read()
         self.assertIn("cut SCOPE, not floors", ttm)
 
 

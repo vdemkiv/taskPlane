@@ -11,7 +11,7 @@ import depgraph as dg  # noqa: E402
 def w(ws, rel, content):
     p = os.path.join(ws, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f:
+    with open(p, "w", encoding="utf-8") as f:
         f.write(content)
 
 
@@ -76,7 +76,7 @@ class TestImpact(unittest.TestCase):
 
     def test_html_written_with_highlighting(self):
         out = dg.to_html(self.ws, ["src/db/conn.py"])
-        html = open(out).read()
+        html = open(out, encoding="utf-8").read()
         self.assertIn("db", html)
         self.assertIn("impacted", html)
         self.assertIn("<svg", html.lower())
@@ -95,7 +95,7 @@ class TestLoopImpactWiring(unittest.TestCase):
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
         dg.scan(ws)
-        with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+        with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [{"id": "t1", "scope": ["src/db/**"],
                                   "tests": "true"}]}, f)
         loop.init(ws, "db work", spec_path="s", checkpoints=["plan"])
@@ -127,7 +127,7 @@ class TestImpactExcludesLoopOwned(unittest.TestCase):
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
         dg.scan(ws)
-        with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+        with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [{"id": "t1", "scope": ["src/db/**"],
                                   "tests": "true"}]}, f)
         loop.init(ws, "g", spec_path="s", checkpoints=["plan"])

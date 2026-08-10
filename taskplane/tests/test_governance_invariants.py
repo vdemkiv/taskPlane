@@ -16,7 +16,7 @@ import taskplane_lite as tp  # noqa: E402
 def _repo():
     ws = tempfile.mkdtemp(prefix="tp-governance-")
     os.makedirs(os.path.join(ws, "src"))
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
     subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
     subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
@@ -41,7 +41,7 @@ def _write_eval(ws, state):
     task = state["tasks"][0]
     routed = lens.route_git_diff(ws, base=state["baseline"], breadth="routed")
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-    with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
+    with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump({"task": task["id"], "verdict": "pass",
                    "criteria": [{"criterion": "feature works",
                                   "status": "met", "evidence": "true"}],
@@ -53,9 +53,9 @@ def _write_eval(ws, state):
 def _write_em(ws):
     coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-    with open(os.path.join(ws, ".em-review", "report.md"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
         f.write("# Engineering review\n\nNo blockers.\n")
-    with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
+    with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": {"lens_coverage": coverage, "impact": {},
                             "tests": ["true"],
                             "gate": {"verdict": "recommend-pass"}},

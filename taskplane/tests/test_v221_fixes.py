@@ -29,9 +29,9 @@ def _git(ws, *args):
 def _repo():
     ws = tempfile.mkdtemp(prefix="tp-v221-")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     os.makedirs(os.path.join(ws, "specs"))
-    open(os.path.join(ws, "specs", "spec.md"), "w").write("# spec\n")
+    open(os.path.join(ws, "specs", "spec.md"), "w", encoding="utf-8").write("# spec\n")
     _git(ws, "init", "-q")
     _git(ws, "add", "-A")
     _git(ws, "commit", "-qm", "base")
@@ -201,9 +201,9 @@ class TestH5DesignStalenessGuard(_Env):
         state.update({"design_required": True, "design_approved": True,
                       "design_fingerprint": "sealed"})
         os.makedirs(os.path.join(ws, "design"))
-        open(os.path.join(ws, "design", "contract.json"), "w").write(
+        open(os.path.join(ws, "design", "contract.json"), "w", encoding="utf-8").write(
             json.dumps({"schema": "taskplane.design/v1"}))
-        open(os.path.join(ws, "design", "design.md"), "w").write("# d\n")
+        open(os.path.join(ws, "design", "design.md"), "w", encoding="utf-8").write("# d\n")
         loop.save(ws, state)
         return ws
 
@@ -255,7 +255,7 @@ class TestM11FingerprintBranches(_Env):
         snap = tp.git_head(ws)
         base = tp.workspace_fingerprint(ws, snap)
         # untracked file changes the digest
-        open(os.path.join(ws, "src", "new.py"), "w").write("n = 1\n")
+        open(os.path.join(ws, "src", "new.py"), "w", encoding="utf-8").write("n = 1\n")
         with_untracked = tp.workspace_fingerprint(ws, snap)
         self.assertNotEqual(base, with_untracked)
         # deleting a tracked file changes it again
@@ -264,7 +264,7 @@ class TestM11FingerprintBranches(_Env):
         self.assertNotEqual(with_untracked, with_deleted)
         # extra evidence paths fold in
         os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-        open(os.path.join(ws, ".eval", "verdict.json"), "w").write("{}")
+        open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8").write("{}")
         with_extra = tp.workspace_fingerprint(
             ws, snap, extra_paths=[".eval/verdict.json"])
         self.assertNotEqual(with_deleted, with_extra)

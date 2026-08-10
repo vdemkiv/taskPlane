@@ -21,7 +21,7 @@ import taskplane_lite as tp  # noqa: E402
 def _repo():
     ws = tempfile.mkdtemp(prefix="tp-art-")
     os.makedirs(os.path.join(ws, "src"))
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
     for args in (["init", "-q"], ["add", "-A"]):
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t"]
@@ -52,7 +52,7 @@ class _Base(unittest.TestCase):
 
     def _spec(self, ws):
         os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
-        with open(os.path.join(ws, "specs", "spec.md"), "w") as f:
+        with open(os.path.join(ws, "specs", "spec.md"), "w", encoding="utf-8") as f:
             f.write("# spec\n")
 
     def _run_to_gate(self):
@@ -85,10 +85,10 @@ class TestTeamStorePublish(_Base):
     def test_plan_and_findings_snapshot_when_present(self):
         tp.set_mode(self.ws, plan="team")
         os.makedirs(os.path.join(self.ws, "plan"))
-        open(os.path.join(self.ws, "plan", "plan.md"), "w").write("# plan\n")
+        open(os.path.join(self.ws, "plan", "plan.md"), "w", encoding="utf-8").write("# plan\n")
         os.makedirs(os.path.join(self.ws, ".em-review"))
         with open(os.path.join(self.ws, ".em-review", "findings.json"),
-                  "w") as f:
+                  "w", encoding="utf-8") as f:
             json.dump({"findings": []}, f)
         root = self._run_to_gate()
         self.assertTrue(os.path.isfile(os.path.join(root, "plan.md")))
@@ -97,21 +97,21 @@ class TestTeamStorePublish(_Base):
     def test_headlines_append_without_consecutive_dupes(self):
         tp.set_mode(self.ws, plan="team")
         root = self._run_to_gate()
-        n1 = len(open(os.path.join(root, "HEADLINES.md")).readlines())
+        n1 = len(open(os.path.join(root, "HEADLINES.md"), encoding="utf-8").readlines())
         loop._publish_artifacts(self.ws)          # same state again
-        n2 = len(open(os.path.join(root, "HEADLINES.md")).readlines())
+        n2 = len(open(os.path.join(root, "HEADLINES.md"), encoding="utf-8").readlines())
         self.assertEqual(n1, n2)                  # deduped
         # a real plan advances the step (fail-closed gate needs tasks)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        open(os.path.join(self.ws, "plan", "plan.md"), "w").write("# p\n")
-        with open(os.path.join(self.ws, "plan", "tasks.json"), "w") as f:
+        open(os.path.join(self.ws, "plan", "plan.md"), "w", encoding="utf-8").write("# p\n")
+        with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [{"id": "t1", "scope": ["src/**"],
                                   "tests": "true",
                                   "criteria": ["works"],
                                   "status": "pending"}]}, f)
         out = loop.gate(self.ws, "pass")          # new step -> new line
         self.assertNotIn("error", out)
-        n3 = len(open(os.path.join(root, "HEADLINES.md")).readlines())
+        n3 = len(open(os.path.join(root, "HEADLINES.md"), encoding="utf-8").readlines())
         self.assertGreater(n3, n2)
 
 

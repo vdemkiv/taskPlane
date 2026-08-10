@@ -268,7 +268,7 @@ class _TmpRepo(unittest.TestCase):
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
                         "commit", "-q", "--allow-empty", "-m", "x"],
                        cwd=self.ws, check=True)
-        with open(os.path.join(self.ws, "app.py"), "w") as f:
+        with open(os.path.join(self.ws, "app.py"), "w", encoding="utf-8") as f:
             f.write("x = 1\n")
         subprocess.run(["git", "add", "-A"], cwd=self.ws, check=True)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",

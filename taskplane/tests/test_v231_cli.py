@@ -14,7 +14,7 @@ def _run(args, ws, env=None):
     e = dict(os.environ)
     e["TASKPLANE_HOME"] = env or ws + "-store"
     return subprocess.run([sys.executable, TP, *args], cwd=ws,
-                          capture_output=True, text=True, env=e)
+                          capture_output=True, text=True, env=e, encoding="utf-8")
 
 
 def _git_ws(tmp_path):
@@ -69,7 +69,7 @@ def test_status_on_corrupt_contract_fails_closed(tmp_path):
     import glob
     cand = glob.glob(os.path.join(ws, ".taskplane", "active_contract.json"))
     assert cand, "no active contract written"
-    with open(cand[0], "w") as f:
+    with open(cand[0], "w", encoding="utf-8") as f:
         f.write("BAD{{{ not json")
     r = _run(["status", "--workspace", ws], ws)
     assert r.returncode != 0, (r.stdout, r.stderr)
@@ -95,7 +95,7 @@ def _run_slot(args, ws, slot=None):
     else:
         e["TASKPLANE_TASK"] = slot
     return subprocess.run([sys.executable, TP, *args], cwd=ws,
-                          capture_output=True, text=True, env=e)
+                          capture_output=True, text=True, env=e, encoding="utf-8")
 
 
 def test_clear_releases_the_exported_task_slot(tmp_path):

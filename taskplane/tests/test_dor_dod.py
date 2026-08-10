@@ -26,8 +26,8 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
-    open(os.path.join(ws, "README.md"), "w").write("# readme\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
+    open(os.path.join(ws, "README.md"), "w", encoding="utf-8").write("# readme\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -38,7 +38,7 @@ def _repo(tmp):
 
 def _head(ws):
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws,
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
 class TestSignoffDoD(unittest.TestCase):
@@ -56,9 +56,9 @@ class TestSignoffDoD(unittest.TestCase):
         coverage = {x["id"]: "sweep"
                     for x in lens.load_catalog()["lenses"]}
         os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-        with open(os.path.join(ws, ".em-review", "report.md"), "w") as f:
+        with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
             f.write("# Engineering review\n\nNo blockers.\n")
-        with open(os.path.join(ws, ".em-review", "findings.json"), "w") as f:
+        with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
             json.dump({"meta": {"lens_coverage": coverage, "impact": {},
                                 "tests": ["true"],
                                 "gate": {"verdict": "recommend-pass"}},
@@ -67,7 +67,7 @@ class TestSignoffDoD(unittest.TestCase):
     def test_in_scope_change_passes(self):
         ws = _repo(self.tmp)
         base = _head(ws)
-        open(os.path.join(ws, "src", "a.py"), "w").write("x = 2\n")  # in scope
+        open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 2\n")  # in scope
         self._review_evidence(ws)
         d = loop._signoff_dod(ws, self._state(base))
         self.assertTrue(d["passed"], d["errors"])
@@ -75,7 +75,7 @@ class TestSignoffDoD(unittest.TestCase):
     def test_out_of_scope_change_fails(self):
         ws = _repo(self.tmp)
         base = _head(ws)
-        open(os.path.join(ws, "README.md"), "w").write("# changed\n")  # NOT src
+        open(os.path.join(ws, "README.md"), "w", encoding="utf-8").write("# changed\n")  # NOT src
         d = loop._signoff_dod(ws, self._state(base))
         self.assertFalse(d["passed"])
         self.assertTrue(any("diff_scope" in e for e in d["errors"]), d["errors"])
@@ -94,9 +94,9 @@ class TestSignoffDoD(unittest.TestCase):
         ws = _repo(self.tmp)
         base = _head(ws)
         os.makedirs(os.path.join(ws, "design"), exist_ok=True)
-        open(os.path.join(ws, "design", "contract.json"), "w").write("{}\n")
+        open(os.path.join(ws, "design", "contract.json"), "w", encoding="utf-8").write("{}\n")
         os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-        open(os.path.join(ws, "plan", "tasks.json"), "w").write("[]\n")
+        open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8").write("[]\n")
         _git(ws, "add", "-A")
         _git(ws, "commit", "-qm", "loop artifacts")
         self._review_evidence(ws)
@@ -110,7 +110,7 @@ class TestSignoffDoD(unittest.TestCase):
         ws = _repo(self.tmp)
         base = _head(ws)
         os.makedirs(os.path.join(ws, "src", "secrets"), exist_ok=True)
-        open(os.path.join(ws, "src", "secrets", "k.pem"), "w").write("x\n")
+        open(os.path.join(ws, "src", "secrets", "k.pem"), "w", encoding="utf-8").write("x\n")
         _git(ws, "add", "-A")
         _git(ws, "commit", "-qm", "secret")
         self._review_evidence(ws)
@@ -125,13 +125,13 @@ class TestSignoffDoD(unittest.TestCase):
         # 'n/a' also slipped past the router-audit backstop.
         ws = _repo(self.tmp)
         base = _head(ws)
-        open(os.path.join(ws, "src", "a.py"), "w").write("x = 2\n")
+        open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 2\n")
         self._review_evidence(ws)
         path = os.path.join(ws, ".em-review", "findings.json")
-        doc = json.load(open(path))
+        doc = json.load(open(path, encoding="utf-8"))
         lid = sorted(doc["meta"]["lens_coverage"])[0]
         doc["meta"]["lens_coverage"][lid] = "n/a"
-        json.dump(doc, open(path, "w"))
+        json.dump(doc, open(path, "w", encoding="utf-8"))
         d = loop._signoff_dod(ws, self._state(base))
         self.assertFalse(d["passed"])
         self.assertTrue(any("negative evidence" in e for e in d["errors"]),
@@ -140,15 +140,15 @@ class TestSignoffDoD(unittest.TestCase):
     def test_dict_na_with_negative_evidence_passes(self):
         ws = _repo(self.tmp)
         base = _head(ws)
-        open(os.path.join(ws, "src", "a.py"), "w").write("x = 2\n")
+        open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 2\n")
         self._review_evidence(ws)
         path = os.path.join(ws, ".em-review", "findings.json")
-        doc = json.load(open(path))
+        doc = json.load(open(path, encoding="utf-8"))
         lid = sorted(doc["meta"]["lens_coverage"])[0]
         doc["meta"]["lens_coverage"][lid] = {
             "verdict": "n/a",
             "negative_evidence": ["0 i18n markers across the diff"]}
-        json.dump(doc, open(path, "w"))
+        json.dump(doc, open(path, "w", encoding="utf-8"))
         d = loop._signoff_dod(ws, self._state(base))
         self.assertTrue(d["passed"], d["errors"])
 
@@ -157,7 +157,7 @@ class TestSignoffDoD(unittest.TestCase):
         base = _head(ws)
         ctx = os.path.join(tp.kb_root(ws), "context")   # isolated by conftest
         os.makedirs(ctx, exist_ok=True)
-        open(os.path.join(ctx, "product.md"), "w").write("Paid SKU ~15k/yr\n")
+        open(os.path.join(ctx, "product.md"), "w", encoding="utf-8").write("Paid SKU ~15k/yr\n")
         d = loop._signoff_dod(ws, self._state(base))
         self.assertFalse(d["passed"])
         self.assertTrue(any("kb_lint" in e for e in d["errors"]), d["errors"])
@@ -187,7 +187,7 @@ class TestPayloadAndTrace(unittest.TestCase):
         loop.gate(ws, "pass")       # pm -> plan
         loop.next_action(ws)        # plan step -> traces loop_step + DoR detail
         tr = [json.loads(ln) for ln in
-              open(os.path.join(tp.tp_dir(ws), "trace.jsonl")) if ln.strip()]
+              open(os.path.join(tp.tp_dir(ws), "trace.jsonl"), encoding="utf-8") if ln.strip()]
         steps = [e for e in tr if e.get("event") == "loop_step"]
         self.assertTrue(steps)
         self.assertIn("dor_ready", steps[-1])
@@ -238,16 +238,16 @@ class TestTaskDoDLoopOwnedExclusion(unittest.TestCase):
         base = _head(ws)
         # orchestrator-synced loop artifacts land in the task's diff
         os.makedirs(os.path.join(ws, "design"), exist_ok=True)
-        open(os.path.join(ws, "design", "contract.json"), "w").write("{}\n")
+        open(os.path.join(ws, "design", "contract.json"), "w", encoding="utf-8").write("{}\n")
         os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
-        open(os.path.join(ws, "specs", "spec.md"), "w").write("# s\n")
+        open(os.path.join(ws, "specs", "spec.md"), "w", encoding="utf-8").write("# s\n")
         errs = loop._task_dod_errors(ws, self._state(), dict(self.TASK), base)
         self.assertFalse(any(e.startswith("diff_scope") for e in errs), errs)
 
     def test_non_loop_owned_out_of_scope_still_errors(self):
         ws = _repo(self.tmp)
         base = _head(ws)
-        open(os.path.join(ws, "README.md"), "w").write("# changed\n")
+        open(os.path.join(ws, "README.md"), "w", encoding="utf-8").write("# changed\n")
         errs = loop._task_dod_errors(ws, self._state(), dict(self.TASK), base)
         self.assertTrue(any(e.startswith("diff_scope") for e in errs), errs)
 
@@ -258,7 +258,7 @@ class TestTaskDoDLoopOwnedExclusion(unittest.TestCase):
         ws = _repo(self.tmp)
         base = _head(ws)
         os.makedirs(os.path.join(ws, "design"), exist_ok=True)
-        open(os.path.join(ws, "design", "contract.json"), "w").write("{}\n")
+        open(os.path.join(ws, "design", "contract.json"), "w", encoding="utf-8").write("{}\n")
         c = tp.build_contract("T", scope=["src/**"], plan_minted=True)
         with_excl = tp.dod_check(c, ws, base,
                                  ignore_prefixes=lens.LOOP_OWNED)
@@ -273,7 +273,7 @@ class TestTaskDoDLoopOwnedExclusion(unittest.TestCase):
         ws = _repo(self.tmp)
         base = _head(ws)
         os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-        open(os.path.join(ws, "plan", "tasks.json"), "w").write("[]\n")
+        open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8").write("[]\n")
         state = self._state()
         state["parallel"] = True
         errs = loop._task_dod_errors(ws, state, dict(self.TASK), base)
@@ -305,7 +305,7 @@ class TestDodCheckSlotEnvSanitization(unittest.TestCase):
             # parent env untouched
             self.assertEqual(os.environ["TASKPLANE_TASK"], "t-leak")
         self.assertFalse(any(e.startswith("tests_pass") for e in errs), errs)
-        probed = open(out).read().split("|")
+        probed = open(out, encoding="utf-8").read().split("|")
         self.assertEqual(probed[0], "<absent>")        # slot stripped
         self.assertEqual(probed[1], "kept")            # env NOT wiped
 
@@ -319,4 +319,4 @@ class TestDodCheckSlotEnvSanitization(unittest.TestCase):
             os.environ.pop("TASKPLANE_TASK", None)
             errs = tp.dod_check(c, ws, _head(ws))
         self.assertFalse(any(e.startswith("tests_pass") for e in errs), errs)
-        self.assertEqual(open(out).read(), "<absent>|kept")
+        self.assertEqual(open(out, encoding="utf-8").read(), "<absent>|kept")

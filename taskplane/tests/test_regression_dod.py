@@ -13,7 +13,7 @@ from taskplane import regression as rg
 
 def _git(ws, *args):
     return subprocess.run(["git", *args], cwd=ws, capture_output=True,
-                          text=True, check=True)
+                          text=True, check=True, encoding="utf-8")
 
 
 def _mk_repo(tmp_path):

@@ -31,7 +31,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -66,7 +66,7 @@ class TestSafeRemove(unittest.TestCase):
     def test_gate_advances_on_no_unlink_mount(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         with _deny_unlink():
             out = loop.gate(ws, "pass")       # pm -> plan calls tp.clear
         self.assertNotIn("error", out)
@@ -74,7 +74,7 @@ class TestSafeRemove(unittest.TestCase):
 
     def test_safe_remove_plain_delete_still_works(self):
         p = os.path.join(self.tmp, "f")
-        open(p, "w").write("x")
+        open(p, "w", encoding="utf-8").write("x")
         tp.safe_remove(p)
         self.assertFalse(os.path.exists(p))
         tp.safe_remove(p)                     # missing: no raise
@@ -87,7 +87,7 @@ class TestDispatchQueue(unittest.TestCase):
     def test_loop_next_records_expectation(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.next_action(ws)                  # pm brief
         q = tp._load_queue(tp._dispatch_path(ws, "expected_dispatch.json"))
         self.assertTrue(q)
@@ -143,7 +143,7 @@ class TestScreenDispatchHook(unittest.TestCase):
             env["TASKPLANE_ENFORCE_DISPATCH"] = env_mode
         return subprocess.run(
             [sys.executable, TPPY, "screen-dispatch"],
-            input=json.dumps(event), text=True, capture_output=True, env=env)
+            input=json.dumps(event), text=True, capture_output=True, env=env, encoding="utf-8")
 
     def _event(self, model=None):
         ti = {"subagent_type": "taskplane:tp-lens", "prompt": "x"}
@@ -320,7 +320,7 @@ class TestScreenDispatchHook(unittest.TestCase):
         env = {**os.environ, "TASKPLANE_ENFORCE_DISPATCH": "strict"}
         r = subprocess.run([sys.executable, TPPY, "screen-dispatch"],
                            input="{broken", text=True, capture_output=True,
-                           env=env)
+                           env=env, encoding="utf-8")
         out = json.loads(r.stdout)
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"],
                          "deny")
@@ -329,7 +329,7 @@ class TestScreenDispatchHook(unittest.TestCase):
 
     def test_strict_corrupt_expectation_queue_is_denied(self):
         path = tp._dispatch_path(self.ws, "expected_dispatch.json")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("{broken")
         r = self._run(self._codex_event("worker", effort="medium"),
                       env_mode="strict")
@@ -405,7 +405,7 @@ class TestCodexParallelWaveDispatch(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, TPPY, "loop", "--workspace", self.ws,
              "wave", "--emit", "task"],
-            text=True, capture_output=True, env=env)
+            text=True, capture_output=True, env=env, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -457,7 +457,7 @@ class TestStatuses(unittest.TestCase):
 
     def _seed(self, ws, statuses):
         loop.init(ws, "g", parallel=True)
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         st = loop.load(ws)
         st["step"] = "execute"
         st["tasks"] = [
@@ -484,7 +484,7 @@ class TestStatuses(unittest.TestCase):
     def test_resolve_defer_sets_external(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         st = loop.load(ws)
         st.update({"step": "escalated", "current_task": 0,
                    "tasks": [{"id": "t1", "scope": ["src/**"],
@@ -497,7 +497,7 @@ class TestStatuses(unittest.TestCase):
     def test_bad_decision_lists_defer(self):
         ws = _repo(self.tmp)
         loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         st = loop.load(ws)
         st.update({"step": "escalated",
                    "tasks": [{"id": "t1", "status": "running"}],
@@ -515,7 +515,7 @@ class TestOnboardTiers(unittest.TestCase):
             env.pop("CODEX_THREAD_ID", None)
             r = subprocess.run([sys.executable, TPPY, "onboard", "--json",
                                 "--workspace", ws], capture_output=True,
-                               text=True, env=env)
+                               text=True, env=env, encoding="utf-8")
             rep = json.loads(r.stdout)
             self.assertEqual(rep["model_tiers"]["cheap"], "haiku")
             self.assertEqual(rep["model_tiers"]["standard"], "inherit")

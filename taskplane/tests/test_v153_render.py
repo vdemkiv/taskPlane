@@ -93,13 +93,13 @@ class TestCliContract(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.fj = os.path.join(self.tmp, "findings.json")
         json.dump({"meta": {"title": "rev", "tests": "5 passed"},
-                   "findings": _many()}, open(self.fj, "w"))
+                   "findings": _many()}, open(self.fj, "w", encoding="utf-8"))
 
     def test_findings_paged_prints_headline_and_pages(self):
         r = subprocess.run([sys.executable, TPPY, "findings", "--paged",
                             "--file", self.fj],
                            capture_output=True, text=True,
-                           env={**os.environ})
+                           env={**os.environ}, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("HEADLINE: "))
         payload = json.loads(r.stdout.split("\n", 1)[1])
@@ -111,7 +111,7 @@ class TestCliContract(unittest.TestCase):
         r = subprocess.run([sys.executable, TPPY, "findings",
                             "--file", self.fj],
                            capture_output=True, text=True,
-                           env={**os.environ})
+                           env={**os.environ}, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("HEADLINE: "))
         self.assertIn("<", r.stdout)     # a fragment followed
@@ -129,7 +129,7 @@ class TestLoopHeadline(unittest.TestCase):
 class TestSkillContract(unittest.TestCase):
     def test_skills_document_the_render_contract(self):
         eng = open(os.path.join(ROOT, "skills", "tp-engineering",
-                                "SKILL.md")).read()
+                                "SKILL.md"), encoding="utf-8").read()
         self.assertIn("--paged", eng)
         self.assertIn("per page", eng.lower())
         self.assertIn("HEADLINE", eng)
@@ -144,7 +144,7 @@ class TestOnboardHeadline(unittest.TestCase):
             os.path.abspath(__file__))), "tp.py")
         p = subprocess.run([sys.executable, tppy, "onboard",
                             "--workspace", ws],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(p.returncode, 0)
         first = p.stdout.splitlines()[0]
         self.assertTrue(first.startswith("HEADLINE: "), first)

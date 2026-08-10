@@ -24,9 +24,9 @@ def _repo():
     _git(ws, "config", "user.email", "t@t"); _git(ws, "config", "user.name", "t")
     os.makedirs(os.path.join(ws, "src/api"))
     os.makedirs(os.path.join(ws, "src/web"))
-    open(os.path.join(ws, "src/api/orders.py"), "w").write("import db\n")
-    open(os.path.join(ws, "src/api/db.py"), "w").write("x = 1\n")
-    open(os.path.join(ws, "src/web/home.js"), "w").write("const a = 1\n")
+    open(os.path.join(ws, "src/api/orders.py"), "w", encoding="utf-8").write("import db\n")
+    open(os.path.join(ws, "src/api/db.py"), "w", encoding="utf-8").write("x = 1\n")
+    open(os.path.join(ws, "src/web/home.js"), "w", encoding="utf-8").write("const a = 1\n")
     _git(ws, "add", "-A"); _git(ws, "commit", "-qm", "base")
     depgraph.scan(ws)
     return ws
@@ -86,7 +86,7 @@ class TestProductLayer(unittest.TestCase):
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"tasks": [{"id": "t1", "req": requirement["id"],
                               "scope": ["src/api/**"], "tests": "true"}]},
-                  open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
+                  open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass")
         state = loop.load(self.ws)
         blast = state["tasks"][0].get("blast")

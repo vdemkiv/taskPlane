@@ -82,7 +82,7 @@ def _git_ws(tmp: str) -> str:
     audit brief's shadow routing decision is fully deterministic."""
     ws = os.path.join(tmp, "gws")
     os.makedirs(os.path.join(ws, "src"))
-    with open(os.path.join(ws, "src", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
     for cmd in (["git", "init", "-q"],
                 ["git", "config", "user.email", "e@e"],
@@ -99,7 +99,7 @@ def _trace_events(ws: str) -> list:
     path = os.path.join(ws, ".taskplane", "trace.jsonl")
     out = []
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 rec = json.loads(line)
                 e = {"event": rec.get("event")}
@@ -113,7 +113,7 @@ def _trace_events(ws: str) -> list:
 def _corrupt_cadence(mod, ws: str) -> str:
     path = mod._audit_path(ws)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write("{not json")
     return path
 
@@ -283,7 +283,7 @@ def _gate_ws(tmp, meta, rows):
     d = os.path.join(ws, ".em-review")
     os.makedirs(d)
     path = os.path.join(d, "findings.json")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "findings": rows}, f)
     return ws, path
 
@@ -359,9 +359,9 @@ def _em_review_ws(tmp, name, na=("i18n",), findings_rows=()):
     meta = {"lens_coverage": coverage, "impact": {"touched": []},
             "tests": "pytest -q: pass",
             "gate": {"verdict": "recommend-pass"}, "audit": True}
-    with open(os.path.join(d, "findings.json"), "w") as f:
+    with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "findings": list(findings_rows)}, f)
-    with open(os.path.join(d, "report.md"), "w") as f:
+    with open(os.path.join(d, "report.md"), "w", encoding="utf-8") as f:
         f.write("# review\nok\n")
     return ws, os.path.join(d, "findings.json")
 
@@ -385,7 +385,7 @@ def scen_gate_integration(mod, tmp):
         {"lens": "security", "severity": "med", "class": "observation",
          "title": "note on a deep lens"}])
     errs2 = loop._engineering_review_errors(ws2, None)
-    with open(p2) as f:
+    with open(p2, encoding="utf-8") as f:
         filed2 = [r for r in json.load(f)["findings"]
                   if r.get("owner") == "router"]
     # clean v2 review: gate passes

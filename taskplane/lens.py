@@ -52,7 +52,7 @@ def load_catalog(root: str | None = None) -> dict:
     if _CATALOG_CACHE is not None and root is None:
         return _CATALOG_CACHE
     path = os.path.join(root or _plugin_root(), "lenses", "catalog.json")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         cat = json.load(f)
     if root is None:
         _CATALOG_CACHE = cat
@@ -694,7 +694,7 @@ def route_git_diff(workspace: str, base: str = "HEAD",
 
     def run(args):
         return subprocess.run(["git", *args], cwd=workspace,
-                              capture_output=True, text=True).stdout
+                              capture_output=True, text=True, encoding="utf-8").stdout
 
     files = [f for f in (run(["diff", "--name-only", base]) +
                          run(["ls-files", "--others", "--exclude-standard"])

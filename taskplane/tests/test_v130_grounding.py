@@ -37,7 +37,7 @@ def _git(ws, *a):
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
-    open(os.path.join(ws, "src", "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "e@e")
     _git(ws, "config", "user.name", "t")
@@ -49,7 +49,7 @@ def _repo(tmp):
 def _write_state(ws, body):
     ctx = os.path.join(tp.kb_root(ws), "context")
     os.makedirs(ctx, exist_ok=True)
-    open(os.path.join(ctx, "current-state.md"), "w").write(body)
+    open(os.path.join(ctx, "current-state.md"), "w", encoding="utf-8").write(body)
 
 
 class TestCurrentState(unittest.TestCase):
@@ -82,10 +82,10 @@ class TestCurrentState(unittest.TestCase):
     def test_onboarding_seeds_scaffold(self):
         subprocess.run([sys.executable, TPPY, "init",
                         "--workspace", self.ws],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8")
         p = os.path.join(tp.kb_root(self.ws), "context", "current-state.md")
         self.assertTrue(os.path.exists(p))
-        self.assertIn("as-built inventory", open(p).read())
+        self.assertIn("as-built inventory", open(p, encoding="utf-8").read())
 
 
 class TestBriefAndDashboard(unittest.TestCase):
@@ -138,7 +138,7 @@ class TestLensGrounding(unittest.TestCase):
     def test_design_lens_prompts_carry_grounding(self):
         for lid in ("tradeoffs", "architecture", "services-selection",
                     "time-to-market"):
-            body = open(os.path.join(ROOT, "lenses", f"{lid}.md")).read()
+            body = open(os.path.join(ROOT, "lenses", f"{lid}.md"), encoding="utf-8").read()
             self.assertIn("GROUND IN THE CURRENT STATE FIRST", body, lid)
             self.assertIn("REINVENTION", body, lid)
 
@@ -146,16 +146,16 @@ class TestLensGrounding(unittest.TestCase):
         # v1.3.1: criticism without a remedy is pointless — the shared
         # verdict format makes `suggestion` REQUIRED in ALL 25 lenses.
         import json as _json
-        cat = _json.load(open(os.path.join(ROOT, "lenses", "catalog.json")))
+        cat = _json.load(open(os.path.join(ROOT, "lenses", "catalog.json"), encoding="utf-8"))
         for lz in cat["lenses"]:
             body = open(os.path.join(ROOT, "lenses",
-                                     lz["id"] + ".md")).read()
+                                     lz["id"] + ".md"), encoding="utf-8").read()
             self.assertIn("criticism without a", body, lz["id"])
             self.assertIn("REQUIRED: the remedy", body, lz["id"])
 
     def test_reinvention_is_blocker_class(self):
         for lid in ("tradeoffs", "architecture"):
-            body = open(os.path.join(ROOT, "lenses", f"{lid}.md")).read()
+            body = open(os.path.join(ROOT, "lenses", f"{lid}.md"), encoding="utf-8").read()
             self.assertIn("as-built inventory", body.lower(), lid)
 
 

@@ -146,7 +146,7 @@ class TestRouteGitDiffExcludesLoopOwned(unittest.TestCase):
             os.makedirs(os.path.join(ws, d), exist_ok=True)
         for p in ("src/a.py", "plan/tasks.json",
                   "knowledge/index.json", ".taskplane/loop.json"):
-            with open(os.path.join(ws, p), "w") as f:
+            with open(os.path.join(ws, p), "w", encoding="utf-8") as f:
                 f.write("{}")
         r = lens.route_git_diff(ws, base="HEAD", catalog=CAT)
         self.assertEqual(r["context"]["changed_files"], 1)   # only src/a.py

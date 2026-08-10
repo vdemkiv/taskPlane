@@ -55,6 +55,17 @@ import subprocess
 import sys
 import tempfile
 
+# Console codepages are not always UTF-8 (Windows defaults to cp1252, a C
+# locale gives ASCII), and this script's own output carries arrows and em
+# dashes. The text is ours and it is UTF-8; say so rather than dying in the
+# middle of a report.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "taskplane"))
 

@@ -87,7 +87,7 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f".{os.path.basename(path)}.tmp.{os.getpid()}")
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent, sort_keys=sort_keys)
         os.replace(tmp, path)
     finally:
@@ -109,7 +109,7 @@ def load_json(path: str, default=_LOAD_RAISE, *, what: str = "state file"):
                      corrupt control file must never be silently replaced by
                      a default (that is fail-open data loss)."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         if default is not _LOAD_RAISE:
@@ -145,7 +145,7 @@ def file_lock(path: str, *, timeout: float = 10.0):
     # time from the fallback path).
     lf = None
     try:
-        lf = open(lock_path, "w")
+        lf = open(lock_path, "w", encoding="utf-8")
         import fcntl
         fcntl.flock(lf, fcntl.LOCK_EX)
     except (ImportError, OSError):
@@ -301,6 +301,36 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 
 # --------------------------------------------------------------- paths
 
+def to_posix(path: str) -> str:
+    """Separators as '/', whatever the host uses.
+
+    Every path taskplane COMPARES — scope globs, graph module ids, contract
+    evidence — is written with '/'. A host that hands back '\\' must be
+    normalized at the boundary, once, rather than each comparison learning
+    about two separators.
+    """
+    return str(path or "").replace("\\", "/")
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Path equality, case-folded only where the host API itself folds case.
+
+    `os.path.normcase` lowercases on Windows and is the identity everywhere
+    else, so this is Windows-only by construction. Folding there is correct
+    rather than permissive: C:\\WS\\src and C:\\ws\\src ARE one directory,
+    and a drive letter can come back in either case.
+    """
+    if os.path.normcase("A") == "a":
+        return a.lower() == b.lower()
+    return a == b
+
+
+def _startswith_path(path: str, prefix: str) -> bool:
+    if os.path.normcase("A") == "a":
+        return path.lower().startswith(prefix.lower())
+    return path.startswith(prefix)
+
+
 def norm(path: str, workspace: str | None = None) -> str:
     """Workspace-relative POSIX path with '..' collapsed and symlinks resolved.
 
@@ -321,14 +351,25 @@ def norm(path: str, workspace: str | None = None) -> str:
         # '..' for the (possibly not-yet-existing) leaf — closes the
         # `ln -s /etc server/link` then write-through-link escape.
         resolved = os.path.realpath(joined)
+        # Windows: realpath returns backslashes, and the containment test
+        # below is a STRING prefix comparison against a '/'-terminated base.
+        # Without this, every path in a Windows workspace failed that test
+        # and came back "ESCAPES:", so the contract screener refused a
+        # worker's own in-scope file — governance that fails closed on an
+        # entire operating system is still governance that does not work.
+        # Case is folded for the comparison only (Windows paths are
+        # case-insensitive; C:\Ws and C:\ws are the same directory), never
+        # for the returned relative path.
+        base = to_posix(base)
+        resolved = to_posix(resolved)
     else:
         base = "/__ws__"
         joined = raw if posixpath.isabs(raw) else posixpath.join(base, raw)
         resolved = posixpath.normpath(joined)
-    if resolved == base:
+    if _same_path(resolved, base):
         return ""
     prefix = base.rstrip("/") + "/"
-    if not resolved.startswith(prefix):
+    if not _startswith_path(resolved, prefix):
         return "ESCAPES:" + resolved
     return resolved[len(prefix):]
 
@@ -1037,7 +1078,7 @@ def _run(cmd, cwd, shell=False, timeout=600, env=None):
     # pre-existing caller is unchanged; dod_check passes a sanitized copy
     # (A3, R-0007).
     return subprocess.run(cmd, cwd=cwd, shell=shell, capture_output=True,
-                          text=True, timeout=timeout, env=env)
+                          text=True, timeout=timeout, env=env, encoding="utf-8")
 
 
 # ------------------------------------------------- suite result cache (P1)
@@ -1153,7 +1194,7 @@ def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
     if not key:
         return None
     try:
-        with open(_suite_cache_path(key)) as f:
+        with open(_suite_cache_path(key), encoding="utf-8") as f:
             rec = json.load(f)
     except Exception:
         return None
@@ -2056,7 +2097,7 @@ def orphan_status(workspace: str, contract: dict,
     tid = contract.get("task_id", "_")
     used, last_seen = 0, 0.0
     try:
-        with open(os.path.join(tp_dir(workspace), "meter.json")) as f:
+        with open(os.path.join(tp_dir(workspace), "meter.json"), encoding="utf-8") as f:
             e = (json.load(f).get(tid) or {})
         used = int(e.get("actions", 0))
         last_seen = float(e.get("last_seen_ts")
@@ -2194,7 +2235,7 @@ def activate(workspace: str, contract: dict,
     atomic_write_json(cpath, contract, indent=2)
     spath = _snapshot_path(workspace)
     tmp = spath + f".tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(snapshot or "")
     os.replace(tmp, spath)
     trace(workspace, "contract_activated", task_id=contract.get("task_id"),
@@ -2318,7 +2359,7 @@ def clear(workspace: str) -> None:
 def snapshot_ref(workspace: str) -> str | None:
     p = _snapshot_path(workspace)
     if os.path.exists(p):
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             return f.read().strip() or None
     return None
 
@@ -2333,7 +2374,7 @@ def _ensure_self_ignored(d: str) -> None:
         return
     body = ""
     try:
-        with open(gi) as f:
+        with open(gi, encoding="utf-8") as f:
             body = f.read()
     except OSError:
         body = ""
@@ -2341,7 +2382,7 @@ def _ensure_self_ignored(d: str) -> None:
     # .gitignore here (e.g. "!trace.jsonl") to make the trace committable.
     if "*" not in body.splitlines():
         try:
-            with open(gi, "w") as f:
+            with open(gi, "w", encoding="utf-8") as f:
                 f.write("*\n")
         except OSError:
             pass
@@ -2442,7 +2483,7 @@ _file_lock = file_lock
 
 def _load_queue(path: str) -> list:
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             q = json.load(f)
         return q if isinstance(q, list) else []
     except (OSError, ValueError):
@@ -2485,7 +2526,7 @@ def _save_queue(path: str, q: list) -> None:
         atomic_write_json(path + ".dropped",
                           {"dropped": _queue_dropped(path) + dropped})
     tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(q[-_QUEUE_CAP:], f, indent=1)
     os.replace(tmp, path)
 
@@ -2764,7 +2805,7 @@ def _adopt_alias_store(workspace: str, new_root: str) -> None:
         if candidate == new_root or not os.path.isdir(candidate):
             continue
         try:
-            with open(os.path.join(candidate, "meta.json")) as f:
+            with open(os.path.join(candidate, "meta.json"), encoding="utf-8") as f:
                 meta = json.load(f)
             owner = meta.get("workspace_realpath") or meta.get("workspace")
             if not owner or _workspace_identity(owner) != identity:
@@ -2790,7 +2831,7 @@ def _adopt_legacy_store(workspace: str, new_root: str) -> None:
     ap = _workspace_identity(workspace)
     owns = None                 # True=provably ours, False=sibling's,
     try:                        # None=unprovable (no/unreadable meta)
-        with open(os.path.join(legacy_root, "meta.json")) as f:
+        with open(os.path.join(legacy_root, "meta.json"), encoding="utf-8") as f:
             owner = json.load(f).get("workspace")
         if owner:
             owns = _workspace_identity(owner) == ap
@@ -2886,7 +2927,7 @@ def _read_personal_mode(workspace: str) -> tuple[dict, bool]:
         if not p:
             continue
         try:
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 return json.load(f), True
         except FileNotFoundError:
             continue
@@ -2910,7 +2951,7 @@ def _persistent_mode(workspace: str) -> dict:
     if os.path.exists(shared_cfg):
         if not plan:
             try:
-                with open(shared_cfg) as f:
+                with open(shared_cfg, encoding="utf-8") as f:
                     plan = json.load(f).get("plan")
             except (OSError, ValueError):
                 pass
@@ -2990,7 +3031,7 @@ def set_mode(workspace: str, plan: str | None = None,
         try:
             os.makedirs(repo_store_root(workspace), exist_ok=True)
             with open(os.path.join(repo_store_root(workspace),
-                                   "config.json"), "w") as f:
+                                   "config.json"), "w", encoding="utf-8") as f:
                 json.dump({"plan": persistent["plan"], "store": "repo"},
                           f, indent=2)
         except OSError:
@@ -3048,7 +3089,7 @@ def write_store_meta(workspace: str) -> dict:
             "workspace_realpath": _workspace_identity(workspace),
             "git_remote": remote}
     try:
-        with open(store_meta_path(workspace), "w") as f:
+        with open(store_meta_path(workspace), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
     except OSError:
         pass
@@ -3144,7 +3185,7 @@ def load_active(workspace: str) -> dict | None:
     legacy = None
     if os.path.exists(path):
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 legacy = json.load(f)
         except (OSError, json.JSONDecodeError):
             legacy = None
@@ -3205,7 +3246,7 @@ def screen_liveness(workspace: str, contract: dict | None = None,
     tid = c.get("task_id", "_")
     last_seen = 0.0
     try:
-        with open(os.path.join(tp_dir(workspace), "meter.json")) as f:
+        with open(os.path.join(tp_dir(workspace), "meter.json"), encoding="utf-8") as f:
             last_seen = float((json.load(f).get(tid) or {})
                               .get("last_seen_ts") or 0)
     except (OSError, ValueError, TypeError):
@@ -3237,7 +3278,7 @@ def trace(workspace: str, event: str, **data) -> None:
         _ensure_self_ignored(d)
         path = os.path.join(d, "trace.jsonl")
         rotated = _maybe_rotate_trace(path)
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             if rotated:
                 f.write(json.dumps(
                     {"event": "trace_rotated", "ts": time.time(),

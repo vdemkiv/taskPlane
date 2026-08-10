@@ -55,6 +55,30 @@ jobs:
       - name: Run the suite (unittest discover)
         run: python -m unittest discover -s taskplane/tests -t .
 
+      # ENCODING PORTABILITY, made gateable on the fast runner.
+      #
+      # Every `open()` without an explicit encoding, and every print of an
+      # arrow or em dash, uses the HOST's default text encoding. On Linux
+      # that is UTF-8 and the defect is invisible; on Windows it is cp1252
+      # and taskplane crashed on its own output — `tp kb migrate` and
+      # `tp northstar` died mid-print, requirement files could not be
+      # written at all. Those failures only ever appeared on the advisory
+      # windows-latest leg, which is slow, times out, and cannot block.
+      #
+      # A C locale gives Python an ASCII default — strictly NARROWER than
+      # cp1252 — so this leg reproduces the whole class in about two
+      # minutes on ubuntu, and blocks. Two cases skip themselves here
+      # because they carry non-ASCII through argv and filesystem paths,
+      # which a C-locale host cannot represent at all; that is a harness
+      # limit rather than a product one (Windows paths are UTF-16).
+      - name: Suite under a non-UTF-8 locale (Windows encoding class)
+        env:
+          LC_ALL: C
+          LANG: C
+          PYTHONUTF8: "0"
+          PYTHONCOERCECLOCALE: "0"
+        run: python -m pytest taskplane/tests -q
+
       # t9 (R-0011 / E1): the leg above proves the second runner still WORKS;
       # this one proves it still covers as much as it did. Two erosion
       # directions are silent under a plain green discover run — tests

@@ -32,7 +32,7 @@ TASK = {"id": "t1", "scope": ["src/app/**", "hooks/**"], "tests": "true",
 
 
 def _loop_src() -> str:
-    with open(LOOP_SRC) as f:
+    with open(LOOP_SRC, encoding="utf-8") as f:
         return f.read()
 
 
@@ -40,14 +40,14 @@ def _repo(tmp) -> str:
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
     os.makedirs(os.path.join(ws, "src", "app"))
-    with open(os.path.join(ws, "src", "app", "a.py"), "w") as f:
+    with open(os.path.join(ws, "src", "app", "a.py"), "w", encoding="utf-8") as f:
         f.write("x=1\n")
     subprocess.run(["git", "init", "-q"], cwd=ws)
     subprocess.run(["git", "config", "user.email", "e@e"], cwd=ws)
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
-    with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
+    with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
         json.dump({"tasks": [dict(TASK)]}, f)
     return ws
 
@@ -62,7 +62,7 @@ def _to_evaluate(ws, build_files) -> dict:
     for rel, content in build_files.items():
         path = os.path.join(ws, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
     loop.submit(ws, "pass")
     loop.gate(ws, "pass")                       # execute -> evaluate
@@ -78,7 +78,7 @@ def _routed(brief) -> list:
 
 def _write_verdict(ws, task_id, criteria, lens_rows):
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-    with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
+    with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump({"task": task_id, "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}

@@ -20,7 +20,7 @@ def _repo():
     ws = tempfile.mkdtemp(prefix="tp-sel-")
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "t@t"); _git(ws, "config", "user.name", "t")
-    open(os.path.join(ws, "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "add", "-A"); _git(ws, "commit", "-qm", "base")
     return ws
 
@@ -39,7 +39,7 @@ def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
     state["step"] = "plan"
     loop.save(ws, state)
     os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-    json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w"))
+    json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
     loop.approve(ws)                 # → execute
     return loop.load(ws)
@@ -51,7 +51,7 @@ def _pass_eval(ws):
     routed = lens.route_git_diff(ws, base=state.get("baseline") or "HEAD",
                                  task_type=task.get("type"), breadth="routed")
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-    with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
+    with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump({"task": task["id"], "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified"}

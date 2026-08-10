@@ -26,6 +26,7 @@ import hashlib
 import subprocess
 import sys as _sys
 import json
+import posixpath
 import os
 import re
 import time
@@ -226,7 +227,11 @@ def module_of(relpath: str) -> str:
     root: template/app/src/payment/stripe/x.ts -> payment/stripe;
     src/auth/session.py -> auth. Otherwise the first two path segments.
     A file at the repo root -> (root)."""
-    d = os.path.dirname(relpath)
+    # Module ids are '/'-shaped everywhere they are compared (globs, lens
+    # routing, component ids, contract scopes). A caller that hands in a
+    # host-shaped path must not mint 'src\\auth' as an id.
+    relpath = str(relpath or "").replace("\\", "/")
+    d = posixpath.dirname(relpath)
     if not d:
         return "(root)"
     parts = d.split("/")
@@ -341,7 +346,7 @@ def _py_imports(src: str, relpath: str, known_stems: dict) -> set:
     except SyntaxError:
         return out
     stdlib = getattr(_sys, "stdlib_module_names", frozenset())
-    pkg_dir = os.path.dirname(relpath)
+    pkg_dir = posixpath.dirname(relpath)
     for node in ast.walk(tree):
         names = []
         if isinstance(node, ast.Import):
@@ -372,8 +377,12 @@ def _js_imports(src: str, relpath: str, file_index: set) -> set:
     out = set()
     for target in _JS_IMPORT.findall(src):
         if target.startswith("."):
-            resolved = os.path.normpath(
-                os.path.join(os.path.dirname(relpath), target))
+            # LOGICAL path arithmetic over '/'-shaped repo paths, so
+            # posixpath, not os.path: on Windows os.path.join/normpath
+            # would emit backslashes that never match the '/'-keyed
+            # file_index, silently dropping every relative JS import.
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(relpath), target))
             # find an actual file this resolves to
             for cand in (resolved, *(f"{resolved}{e}" for e in CODE_EXT),
                          *(f"{resolved}/index{e}" for e in CODE_EXT)):
@@ -456,13 +465,13 @@ def _ruby_imports(src: str, relpath: str, file_index: set) -> set:
     come from the model/controller dirs sharing modules, and can be added
     as recorded edges where they matter.)"""
     out = set()
-    here = os.path.dirname(relpath)
+    here = posixpath.dirname(relpath)
     for target in _RB_REQ_REL.findall(src):
-        cand = os.path.normpath(os.path.join(here, target)) + ".rb"
+        cand = posixpath.normpath(posixpath.join(here, target)) + ".rb"
         if cand in file_index:
             out.add(module_of(cand))
     for target in _RB_REQ.findall(src):
-        cand = os.path.join("lib", target) + ".rb"
+        cand = posixpath.join("lib", target) + ".rb"
         if cand in file_index:
             out.add(module_of(cand))
         elif (target + ".rb") in file_index:
@@ -596,7 +605,12 @@ def _scan_locked(ws: str, into: dict | None = None,
             dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS
                              and not d.startswith(".tp-"))
             for n in sorted(names):
-                rel = os.path.relpath(os.path.join(root, n), ws)
+                # os.walk yields host separators; git ls-files (the other
+                # enumeration path) yields '/'. Normalize here so the two
+                # produce identical ids and every downstream '/'-shaped
+                # glob keeps matching on Windows.
+                rel = os.path.relpath(os.path.join(root, n), ws).replace(
+                    os.sep, "/")
                 if rel.startswith("knowledge/"):
                     continue
                 if n.endswith(CODE_EXT):
@@ -610,13 +624,13 @@ def _scan_locked(ws: str, into: dict | None = None,
     for f in code_files:
         stem = f.rsplit(".", 1)[0]
         known_stems[stem] = module_of(f)
-        known_stems.setdefault(os.path.basename(stem), module_of(f))
-        d = os.path.dirname(f)
+        known_stems.setdefault(posixpath.basename(stem), module_of(f))
+        d = posixpath.dirname(f)
         while d:
             # resolve dir stems through module_of so import targets land on
             # the SAME feature module a file does (consistent edge endpoints)
             known_stems.setdefault(d, module_of(d + "/_"))
-            d = os.path.dirname(d)
+            d = posixpath.dirname(d)
 
     # declaration maps (C# namespaces / Java packages → module), first pass
     ns_map, pkg_map, sources = {}, {}, {}
@@ -709,12 +723,12 @@ def _scan_locked(ws: str, into: dict | None = None,
                 text = fh.read()
             mod = module_of(rel)
             for pref in _CSPROJ_PROJ.findall(text):
-                tgt = os.path.normpath(os.path.join(
-                    os.path.dirname(rel), pref.replace("\\", "/")))
+                tgt = posixpath.normpath(posixpath.join(
+                    posixpath.dirname(rel), pref.replace("\\", "/")))
                 edges.add((mod, module_of(tgt), "project_ref"))
             for pkg in _CSPROJ_PKG.findall(text):
                 edges.add((mod, "ext:" + pkg.split(".")[0], "imports"))
-        elif os.path.basename(rel) == "Gemfile":
+        elif posixpath.basename(rel) == "Gemfile":
             with open(os.path.join(ws, rel), encoding="utf-8",
                       errors="replace") as fh:
                 for gem in _GEMFILE_GEM.findall(fh.read()):
@@ -927,7 +941,7 @@ def modules_for_scope(scope_globs) -> list:
         prefix = g.split("*", 1)[0].rstrip("/")
         if not prefix:
             continue
-        mods.add(module_of(prefix) if "." in os.path.basename(prefix)
+        mods.add(module_of(prefix) if "." in posixpath.basename(prefix)
                  else module_of(prefix + "/_"))
     return sorted(mods)
 
@@ -1571,6 +1585,6 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
             .replace("__DATA__", safe_data))
     out = out or os.path.join(ws, ".taskplane", "depgraph.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     return out

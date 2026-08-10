@@ -30,14 +30,14 @@ def _repo(prefix="tp-store-"):
     ws = tempfile.mkdtemp(prefix=prefix)
     _git(ws, "init", "-q")
     _git(ws, "config", "user.email", "t@t"); _git(ws, "config", "user.name", "t")
-    open(os.path.join(ws, "a.py"), "w").write("x = 1\n")
+    open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "add", "-A"); _git(ws, "commit", "-qm", "base")
     return ws
 
 
 def _status(ws):
     return subprocess.run(["git", "status", "--porcelain"], cwd=ws,
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
 class TestKey(unittest.TestCase):
@@ -100,7 +100,7 @@ class TestExternalWrites(unittest.TestCase):
     def test_repo_stays_clean_after_init_and_decision(self):
         # the headline invariant
         r = subprocess.run([sys.executable, _TP_PY, "init"], cwd=self.ws,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         kb.record_decision(self.ws, "a decision", decision="d")
         req.record_requirement(self.ws, "a requirement")
@@ -114,7 +114,7 @@ class TestExternalWrites(unittest.TestCase):
         self.assertEqual(dirty, [], f"repo not clean: {dirty}")
         # nothing knowledge-shaped is tracked
         tracked = subprocess.run(["git", "ls-files"], cwd=self.ws,
-                                 capture_output=True, text=True).stdout
+                                 capture_output=True, text=True, encoding="utf-8").stdout
         self.assertNotIn("knowledge/", tracked)
 
     def test_graph_and_loop_state_in_store(self):
@@ -145,11 +145,11 @@ class TestMigration(unittest.TestCase):
         # a legacy in-repo, git-tracked knowledge/ (the pre-store world)
         d = os.path.join(self.ws, "knowledge", "decisions")
         os.makedirs(d)
-        open(os.path.join(self.ws, "knowledge", "index.json"), "w").write(
+        open(os.path.join(self.ws, "knowledge", "index.json"), "w", encoding="utf-8").write(
             '{"decisions": [{"id": "0001", "title": "old", "status": '
             '"accepted", "date": "2026-01-01", "tags": [], "file": '
             '"decisions/0001-old.md"}], "flows": []}')
-        open(os.path.join(d, "0001-old.md"), "w").write("# old decision\n")
+        open(os.path.join(d, "0001-old.md"), "w", encoding="utf-8").write("# old decision\n")
         _git(self.ws, "add", "-A"); _git(self.ws, "commit", "-qm", "legacy kb")
 
     def tearDown(self):
@@ -166,7 +166,7 @@ class TestMigration(unittest.TestCase):
 
     def test_migrate_moves_untracks_and_ignores(self):
         r = subprocess.run([sys.executable, _TP_PY, "kb", "migrate"],
-                           cwd=self.ws, capture_output=True, text=True)
+                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         # data moved out of the repo, into the store
         self.assertFalse(os.path.isdir(os.path.join(self.ws, "knowledge")))
@@ -176,14 +176,14 @@ class TestMigration(unittest.TestCase):
         self.assertEqual(len(kb.list_decisions(self.ws)), 1)
         # knowledge/ untracked + gitignored
         tracked = subprocess.run(["git", "ls-files"], cwd=self.ws,
-                                 capture_output=True, text=True).stdout
+                                 capture_output=True, text=True, encoding="utf-8").stdout
         self.assertNotIn("knowledge/", tracked)
         self.assertIn("knowledge/", open(os.path.join(self.ws,
-                      ".gitignore")).read())
+                      ".gitignore"), encoding="utf-8").read())
 
     def test_where_reports_paths(self):
         r = subprocess.run([sys.executable, _TP_PY, "kb", "where"],
-                           cwd=self.ws, capture_output=True, text=True)
+                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8")
         info = json.loads(r.stdout)
         self.assertTrue(info["legacy_in_repo_present"])
         self.assertFalse(info["migrated"])

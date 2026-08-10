@@ -34,10 +34,10 @@ def _hub_repo():
     """core/hub.py imported by three feature modules -> hub has 3 dependents."""
     ws = tempfile.mkdtemp(prefix="tp-hub-")
     os.makedirs(os.path.join(ws, "src", "core"))
-    open(os.path.join(ws, "src", "core", "hub.py"), "w").write("X = 1\n")
+    open(os.path.join(ws, "src", "core", "hub.py"), "w", encoding="utf-8").write("X = 1\n")
     for feat in ("alpha", "beta", "gamma"):
         os.makedirs(os.path.join(ws, "src", feat))
-        open(os.path.join(ws, "src", feat, "m.py"), "w").write(
+        open(os.path.join(ws, "src", feat, "m.py"), "w", encoding="utf-8").write(
             "from core import hub\n")
     _git(ws, "init", "-q")
     _git(ws, "add", "-A")
@@ -85,7 +85,7 @@ class TestF1HubEscalation(_Env):
     def test_route_git_diff_reads_the_real_graph(self):
         ws = _hub_repo()
         # a one-line edit to the hub — no arch-ish path anywhere
-        open(os.path.join(ws, "src", "core", "hub.py"), "a").write("Y = 2\n")
+        open(os.path.join(ws, "src", "core", "hub.py"), "a", encoding="utf-8").write("Y = 2\n")
         r = lens.route_git_diff(ws, base="HEAD", task_type="fix")
         self.assertGreaterEqual(r["context"]["hub_dependents"], 3)
         arch = [x for x in r["lenses"] if x["id"] == "architecture"][0]
@@ -112,7 +112,7 @@ class TestF2BuilderImpact(_Env):
 class TestF3BriefImpact(_Env):
     def test_dispatch_briefs_embed_impact_context(self):
         ws = _hub_repo()
-        open(os.path.join(ws, "src", "core", "hub.py"), "a").write("Z = 3\n")
+        open(os.path.join(ws, "src", "core", "hub.py"), "a", encoding="utf-8").write("Z = 3\n")
         routing = lens.route_git_diff(ws, base="HEAD", breadth="all")
         self.assertIn("files", routing["context"])
         briefs = lens.dispatch_briefs(
@@ -129,7 +129,7 @@ class TestF4CacheDiscoverability(_Env):
         ws = _hub_repo()
         art = os.path.join(tp.store_root(ws), "artifacts", "old-track")
         os.makedirs(art)
-        open(os.path.join(art, "HEADLINES.md"), "w").write("# log\n")
+        open(os.path.join(art, "HEADLINES.md"), "w", encoding="utf-8").write("# log\n")
         out = loop.init(ws, "new goal")
         self.assertIn("prior_artifacts", out)
         self.assertIn("old-track", out["prior_artifacts"]["tracks"])
@@ -141,7 +141,7 @@ class TestF4CacheDiscoverability(_Env):
         ws = _hub_repo()
         art = os.path.join(tp.store_root(ws), "artifacts", "t1")
         os.makedirs(art)
-        open(os.path.join(art, "dashboard.html"), "w").write("<div/>")
+        open(os.path.join(art, "dashboard.html"), "w", encoding="utf-8").write("<div/>")
         r = cli._onboard_report(ws)
         self.assertIsNotNone(r["artifacts"])
         self.assertIn("t1", r["artifacts"]["tracks"])
@@ -151,9 +151,9 @@ class TestF5EdgeNudges(_Env):
     def test_sql_and_http_diffs_produce_nudges(self):
         ws = _hub_repo()
         os.makedirs(os.path.join(ws, "migrations"))
-        open(os.path.join(ws, "migrations", "001_add.sql"), "w").write(
+        open(os.path.join(ws, "migrations", "001_add.sql"), "w", encoding="utf-8").write(
             "ALTER TABLE x ADD y INT;\n")
-        open(os.path.join(ws, "src", "alpha", "client.py"), "w").write(
+        open(os.path.join(ws, "src", "alpha", "client.py"), "w", encoding="utf-8").write(
             "import requests\nrequests.get('https://api.example.com/v1')\n")
         _git(ws, "add", "-A")
         changed = ["migrations/001_add.sql", "src/alpha/client.py"]
@@ -165,7 +165,7 @@ class TestF5EdgeNudges(_Env):
 
     def test_plain_code_diff_produces_no_nudges(self):
         ws = _hub_repo()
-        open(os.path.join(ws, "src", "beta", "m.py"), "a").write("A = 1\n")
+        open(os.path.join(ws, "src", "beta", "m.py"), "a", encoding="utf-8").write("A = 1\n")
         self.assertEqual(
             loop._edge_nudges(ws, ["src/beta/m.py"], "HEAD"), [])
 

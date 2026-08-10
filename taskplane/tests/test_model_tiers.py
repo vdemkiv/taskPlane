@@ -135,7 +135,7 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
         ws = os.path.join(self.tmp, "ws")
         os.makedirs(os.path.join(ws, "plan"))
         os.makedirs(os.path.join(ws, "src"))
-        open(os.path.join(ws, "src", "a.py"), "w").write("x=1\n")
+        open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x=1\n")
         for a in (["init", "-q"], ["config", "user.email", "e@e"],
                   ["config", "user.name", "t"], ["add", "-A"],
                   ["commit", "-qm", "init"]):
@@ -145,7 +145,7 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
     def test_plan_step_payload_has_model_fields(self):
         ws = self._git_ws()
         loop.init(ws, "add a feature")     # free-text -> pm
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.gate(ws, "pass")              # pm -> plan
         out = loop.next_action(ws)
         self.assertEqual(out["step"], "plan")
@@ -158,9 +158,9 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
         ws = self._git_ws()
         json.dump({"tasks": [{"id": "t1", "scope": ["src/**"], "tests": "true",
                               "criteria": ["done"], "model": "cheap"}]},
-                  open(os.path.join(ws, "plan", "tasks.json"), "w"))
+                  open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.init(ws, "simple mechanical change")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w').write('# spec\n')
+        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.gate(ws, "pass")              # pm -> plan
         loop.gate(ws, "pass")              # plan -> plan_approval
         loop.approve(ws)                   # -> execute

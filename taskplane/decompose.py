@@ -75,6 +75,7 @@ import ast
 import hashlib
 import json
 import os
+import posixpath
 import re
 
 CANDIDATE_MIN_FILES = 8    # module decomposes with >= this many code files…
@@ -223,11 +224,11 @@ def _repo_stems(graph: dict) -> dict:
     for f in sorted(graph.get("files") or {}):
         stem = f.rsplit(".", 1)[0]
         stems[stem] = _module_of(f)
-        stems.setdefault(os.path.basename(stem), _module_of(f))
-        d = os.path.dirname(f)
+        stems.setdefault(posixpath.basename(stem), _module_of(f))
+        d = posixpath.dirname(f)
         while d:
             stems.setdefault(d, _module_of(d + "/_"))
-            d = os.path.dirname(d)
+            d = posixpath.dirname(d)
     return stems
 
 
@@ -237,7 +238,7 @@ def _module_stems(files: list) -> dict:
     for f in files:
         stem = f.rsplit(".", 1)[0]
         stems[stem] = f
-        stems.setdefault(os.path.basename(stem), f)
+        stems.setdefault(posixpath.basename(stem), f)
     return stems
 
 
@@ -250,7 +251,7 @@ def _py_import_map(tree: ast.AST, rel: str, mod_stems: dict,
     own-module targets are dropped from alias (they are not deps)."""
     intra: dict = {}
     alias: dict = {}
-    pkg_dir = os.path.dirname(rel)
+    pkg_dir = posixpath.dirname(rel)
 
     def resolve(dotted: str, local: str) -> None:
         n = (dotted or "").replace(".", "/")
@@ -314,9 +315,9 @@ def _file_refs(text: str | None, rel: str, mod_stems: dict,
         for target in re.findall(
                 r"""(?:import\s+(?:[^'"]*\s+from\s+)?|require\s*\(\s*)"""
                 r"""['"](\.[^'"]+)['"]""", text):
-            resolved = os.path.normpath(
-                os.path.join(os.path.dirname(rel), target))
-            stem = resolved.rsplit(".", 1)[0] if "." in os.path.basename(
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(rel), target))
+            stem = resolved.rsplit(".", 1)[0] if "." in posixpath.basename(
                 resolved) else resolved
             if stem in mod_stems:
                 intra.add(mod_stems[stem])
@@ -427,13 +428,16 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
     pool = [f for f in files if f not in big]
 
     # ---- file clusters: sub-directory convention + import cohesion
-    common = os.path.commonpath([os.path.dirname(f) or "." for f in files]) \
-        if files else "."
+    # Repo paths are '/'-shaped; posixpath keeps component ids identical
+    # on every host (os.path.commonpath/relpath would emit backslashes on
+    # Windows and mint ids like `engine\\mod::core`).
+    common = posixpath.commonpath(
+        [posixpath.dirname(f) or "." for f in files]) if files else "."
     clusters: dict = {}          # key -> {"files": set, "name": str}
     singleton: dict = {}         # file -> key (root-level loners)
     for f in pool:
-        d = os.path.dirname(f) or "."
-        sub = os.path.relpath(d, common) if d != common else "."
+        d = posixpath.dirname(f) or "."
+        sub = posixpath.relpath(d, common) if d != common else "."
         if sub != "." and not sub.startswith(".."):
             key = "dir:" + sub.split("/")[0]
             clusters.setdefault(key, {"files": set(),
@@ -444,7 +448,7 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
             key = "one:" + f
             clusters[key] = {"files": {f},
                              "name": _sanitize(
-                                 os.path.basename(f).rsplit(".", 1)[0]),
+                                 posixpath.basename(f).rsplit(".", 1)[0]),
                              "how": "cohesion"}
             singleton[f] = key
 

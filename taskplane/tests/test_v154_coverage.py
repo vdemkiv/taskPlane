@@ -24,7 +24,7 @@ CATALOG = os.path.join(ROOT, "lenses", "catalog.json")
 
 
 def _catalog_count():
-    c = json.load(open(CATALOG))
+    c = json.load(open(CATALOG, encoding="utf-8"))
     return len(c["lenses"] if isinstance(c, dict) else c)
 
 
@@ -40,7 +40,7 @@ class TestLensCoverage(unittest.TestCase):
     def test_new_lens_appears_without_touching_dashboard(self):
         # the panel is generated from the catalog, so all catalog names render
         html = dashboard.render_lens_coverage({"security": "deep"})
-        cat = json.load(open(CATALOG))
+        cat = json.load(open(CATALOG, encoding="utf-8"))
         lenses = cat["lenses"] if isinstance(cat, dict) else cat
         for lz in lenses:
             self.assertIn(dashboard._esc(lz["name"]), html, lz["id"])
@@ -103,7 +103,7 @@ class TestFindingsIntegration(unittest.TestCase):
 class TestNoCountDrift(unittest.TestCase):
     def test_readme_lens_count_matches_catalog(self):
         n = _catalog_count()
-        readme = open(os.path.join(ROOT, "README.md")).read()
+        readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
         # the README must not advertise a stale lens count anywhere
         self.assertNotIn("22 lens", readme)
         self.assertNotIn("22 review lenses", readme)
@@ -113,13 +113,13 @@ class TestNoCountDrift(unittest.TestCase):
     def test_plugin_manifest_count_matches_catalog(self):
         n = _catalog_count()
         man = open(os.path.join(ROOT, ".claude-plugin",
-                                "plugin.json")).read()
+                                "plugin.json"), encoding="utf-8").read()
         self.assertIn(f"{n} review lenses", man)
 
 
 class TestRenderingTierDoc(unittest.TestCase):
     def test_model_tiers_doc_pins_rendering_to_cheap(self):
-        doc = open(os.path.join(ROOT, "discipline", "model-tiers.md")).read()
+        doc = open(os.path.join(ROOT, "discipline", "model-tiers.md"), encoding="utf-8").read()
         self.assertIn("Rendering runs on the cheap tier", doc)
 
 

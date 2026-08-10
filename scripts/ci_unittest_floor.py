@@ -50,6 +50,17 @@ import os
 import subprocess
 import sys
 
+# Console codepages are not always UTF-8 (Windows defaults to cp1252, a C
+# locale gives ASCII), and this script's own output carries arrows and em
+# dashes. The text is ours and it is UTF-8; say so rather than dying in the
+# middle of a report.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The landing value pinned by t9 from the REAL tree (design-time estimate was
@@ -95,9 +106,13 @@ while stack:
             stack.append(child)
         else:
             count += 1
-            # unittest turns an unimportable module into a _FailedTest that
-            # still COUNTS toward the total — the floor alone would not see
-            # it. Report them so the caller can fail loudly.
+            # unittest turns an unimportable module into a _FailedTest
+            # that still COUNTS toward the total; the floor alone would not
+            # see it. Report them so the caller can fail loudly.
+            # (ASCII-only on purpose: this program is passed as an argv
+            # string, and argv is encoded with the FILESYSTEM encoding, so a
+            # non-ASCII byte here makes the spawn itself fail on a host
+            # whose locale is not UTF-8.)
             if type(child).__name__ in ("_FailedTest", "ModuleImportFailure"):
                 broken.append(str(child))
 for err in getattr(loader, "errors", []) or []:
