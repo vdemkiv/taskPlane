@@ -38,10 +38,14 @@ configuration, not personal preference.
 | `TASKPLANE_MODEL_CHEAP` | Claude: `haiku`; Codex: inherit | Model id for the `cheap` tier (lens sweep, planner-marked simple tasks). `""` or `inherit` → inherit the session model. | No (cost/quality routing). |
 | `TASKPLANE_MODEL_STANDARD` | inherit | Model id for the `standard` tier (execute / evaluate / fix). | No. |
 | `TASKPLANE_MODEL_DEEP` | inherit | Model id for the `deep` tier (spec, plan, engineering review, hard lenses). | No. |
-| `TASKPLANE_ENFORCE_DISPATCH` | *(unset — inert)* | Turns on the dispatch-time model-tier check in the PreToolUse `Task` hook: `warn` logs a mismatch, `strict` blocks the dispatch. Unset/other values: the check is fail-open and does nothing. `tp loop verify-dispatch` audits after the fact either way. | **Yes** (`strict`) — it is the only *mechanical* tier-routing enforcement; unset means routing is verified, not enforced. |
+| `TASKPLANE_REASONING_CHEAP` | `low` | Native Codex reasoning effort for the `cheap` tier. Invalid values fall back to `low`. | No (cost/quality routing). |
+| `TASKPLANE_REASONING_STANDARD` | `medium` | Native Codex reasoning effort for the `standard` tier. | No. |
+| `TASKPLANE_REASONING_DEEP` | `high` | Native Codex reasoning effort for the `deep` tier. | No. |
+| `TASKPLANE_ENFORCE_DISPATCH` | *(unset — inert)* | Turns on the dispatch-time check in the PreToolUse agent hook: `warn` reports a mismatch; `strict` blocks it and fails closed when verification state/input is corrupt. Native Codex checks the exact emitted task name, taskplane role marker in the delegated message, model, and reasoning effort; a rejected attempt remains pending for an exact retry. Legacy Claude Task dispatch keeps model-tier compatibility. `tp loop verify-dispatch` audits after the fact either way. | **Yes** (`strict`) — it mechanically enforces emitted dispatch identity/routing when enabled. |
 
 An unknown tier or model value degrades to "inherit" rather than blocking
-the loop. `tp onboard --json` reports the resolved `model_tiers` map.
+the loop. `tp onboard --json` reports the resolved `model_tiers` and
+`reasoning_tiers` maps.
 
 ## Diagnostics
 
@@ -53,7 +57,7 @@ the loop. `tp onboard --json` reports the resolved `model_tiers` map.
 
 | Variable | Set by | Effect |
 | --- | --- | --- |
-| `CODEX_HOME`, `CODEX_THREAD_ID` | Codex | Presence marks the host as Codex: model tiers inherit the session model by default, host-specific onboarding/dashboard fallbacks apply, and `workflow_available()` always answers no (the Task-dispatch path is the only Codex path). |
+| `CODEX_HOME`, `CODEX_THREAD_ID` | Codex | Presence marks the host as Codex: model tiers inherit by default, reasoning tiers map to low/medium/high, native subagent task dispatch applies, and `workflow_available()` always answers no for Claude Dynamic Workflows. |
 | `CLAUDE_CODE_WORKFLOWS` | Claude Code | Truthy presence marks a Dynamic Workflow runtime; consulted by `workflow_available()` only when `TASKPLANE_WORKFLOWS` is unset. |
 | `PLUGIN_ROOT`, `CLAUDE_PLUGIN_ROOT` | the host's plugin runtime | Where the installed plugin lives; hooks, skills, and agent briefs locate `taskplane/tp.py` via `${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`. |
 

@@ -13,7 +13,7 @@
         ]
       },
       {
-        "matcher": "Task|Agent",
+        "matcher": "Task|Agent|spawn_agent|.*spawn_agent.*",
         "hooks": [
           {
             "type": "command",
@@ -32,6 +32,33 @@
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" context",
             "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" context) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" context) else (echo taskplane context hook: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset - failing closed 1>&2 & exit /b 2)",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" subagent-start",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" subagent-start) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" subagent-start) else (echo taskplane subagent-start hook: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset 1>&2 & exit /b 0)",
+            "additionalContextLimit": 600,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" subagent-stop",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" subagent-stop) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" subagent-stop) else (echo {} )",
             "timeout": 10
           }
         ]

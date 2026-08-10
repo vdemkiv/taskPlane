@@ -13,6 +13,7 @@ import loop  # noqa: E402
 import depgraph  # noqa: E402
 import dashboard  # noqa: E402
 import lens  # noqa: E402
+import requirements as reqs  # noqa: E402
 
 
 def _git(ws, *a):
@@ -184,6 +185,8 @@ class TestEngine(unittest.TestCase):
         open(os.path.join(self.ws, "src", "auth", "a.py"), "w").write("x=1\n")
         open(os.path.join(self.ws, "src", "pay", "p.py"), "w").write("y=1\n")
         depgraph.scan(self.ws)
+        reqs.record_requirement(
+            self.ws, "shared requirement", acceptance=["shared edges stay"])
         loop.init(self.ws, "g", parallel=True)
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)

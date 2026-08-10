@@ -41,6 +41,8 @@ CATEGORIES = {
 }
 
 REQUIRED_FILES = (
+    "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "PRIVACY.md",
     "SUPPORT.md",
@@ -269,6 +271,10 @@ def package_files(manifest: dict) -> list[Path]:
     add_tree(files, ROOT / "hooks", lambda path: path.name == "hooks.json")
     add_tree(files, ROOT / "agents", lambda path: path.suffix == ".md")
     add_tree(files, ROOT / "discipline", lambda path: path.suffix == ".md")
+    # Ship the public documentation as a complete set. Skills and the stdlib
+    # runtime cite docs/* directly; a package that validates only repository
+    # existence can still strand an installed user with dead pointers.
+    add_tree(files, ROOT / "docs", lambda path: path.suffix == ".md")
     add_tree(files, ROOT / "taskplane", lambda path: path.parent == ROOT / "taskplane" and path.suffix == ".py")
     add_tree(files, ROOT / "lenses", lambda path: path.suffix == ".md" or path.name == "catalog.json")
 
@@ -344,6 +350,32 @@ def validate_archive(path: Path) -> tuple[int, int]:
         require(not any(f"{ARCHIVE_ROOT}/skills/{skill}/" in name
                         for skill in OPENAI_EXCLUDED_SKILLS for name in names),
                 "OpenAI upload must not contain host-specific Claude Tag skills")
+        for required in ("README.md", "CHANGELOG.md"):
+            require(f"{ARCHIVE_ROOT}/{required}" in names,
+                    f"ZIP is missing {required}")
+        doc_ref = re.compile(r"(?<![A-Za-z0-9_./-])(docs/[A-Za-z0-9_./-]+\.md)")
+        referenced_docs: set[str] = set()
+        source_prefixes = (f"{ARCHIVE_ROOT}/skills/",
+                           f"{ARCHIVE_ROOT}/taskplane/",
+                           f"{ARCHIVE_ROOT}/agents/",
+                           f"{ARCHIVE_ROOT}/discipline/")
+        for member in members:
+            is_source = member.filename == f"{ARCHIVE_ROOT}/README.md" or \
+                member.filename.startswith(source_prefixes)
+            if not is_source or not member.filename.endswith((".md", ".py")):
+                continue
+            try:
+                body = archive.read(member).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise PackageError(
+                    f"referencing source is not UTF-8: {member.filename}") from exc
+            referenced_docs.update(doc_ref.findall(body))
+        missing_docs = sorted(
+            rel for rel in referenced_docs
+            if f"{ARCHIVE_ROOT}/{rel}" not in names)
+        require(not missing_docs,
+                "ZIP has dead docs references from shipped skills/runtime: "
+                + ", ".join(missing_docs))
     require(uncompressed <= 512 * 1024 * 1024, "extracted ZIP exceeds 512 MiB")
     return len(members), uncompressed
 

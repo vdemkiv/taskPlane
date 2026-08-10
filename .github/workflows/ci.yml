@@ -15,6 +15,12 @@ jobs:
   tests:
     name: tests (python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    # This matrix is the host-neutral contract. Keep Codex markers explicitly
+    # empty so a runner image or caller environment cannot silently switch the
+    # workflow detector/model defaults under the portable suite.
+    env:
+      CODEX_HOME: ""
+      CODEX_THREAD_ID: ""
     strategy:
       fail-fast: false
       matrix:
@@ -283,3 +289,34 @@ jobs:
       # every-gate-reachable-without-workflows adversarial walk.
       - name: Stage-wave parity + kill-switch matrix + Codex stage cases
         run: python3 -m pytest taskplane/tests/test_stage_waves.py -q
+
+  # Required native-host leg. Unlike codex-parity's frozen payload replay,
+  # this runs the hook lifecycle, strict spawn screening, hashed native task
+  # identities, reasoning-effort routing, and execute-wave registration with
+  # real Codex host markers present.
+  codex-host:
+    name: Codex native hooks + subagent workflow
+    runs-on: ubuntu-latest
+    env:
+      CODEX_HOME: ${{ runner.temp }}/codex-home
+      CODEX_THREAD_ID: ci-codex-host
+      TASKPLANE_HOME: ${{ runner.temp }}/taskplane-store
+      TASKPLANE_WORKFLOWS: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
+        run: pip install "pytest==8.*"
+      - name: Configure git (native-wave tests build throwaway repos)
+        run: |
+          git config --global user.email "ci@taskplane"
+          git config --global user.name "taskplane-ci"
+      - name: Codex lifecycle, strict dispatch, parity, and stage waves
+        run: >-
+          python3 -m pytest -q
+          taskplane/tests/test_codex_compat.py
+          taskplane/tests/test_v101_fixes.py
+          taskplane/tests/test_dispatch_parity.py
+          taskplane/tests/test_stage_waves.py

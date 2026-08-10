@@ -321,7 +321,7 @@ def _step_contract(step: str, state: dict) -> dict:
         verb = "EXECUTE" if step == "execute" else "FIX"
         return tp.build_contract(
             f"{verb}: {task['id']}", scope=task["scope"],
-            test_command=task.get("tests"), plan_minted=True,
+            test_command=task.get("tests"), plan_minted=True, regression_gate=True,
             tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                    "MultiEdit"])
     if step == "evaluate":
@@ -458,6 +458,8 @@ def wave(ws: str) -> dict:
 
     entries = []
     for t in ready:
+        dispatch = tp.dispatch_fields(
+            "step", "tp-executor", t["id"], tp.step_tier("execute", t))
         prime = lens_router.prime_scope(t.get("scope"),
                                         task_type=t.get("type"))
         recalled = kb.retrieve(ws, files=t.get("scope") or [],
@@ -465,7 +467,7 @@ def wave(ws: str) -> dict:
         rid = t.get("req") or state.get("requirement_id")
         rec = reqs.get_requirement(ws, rid) if rid else None
         is_variant = bool(state.get("ab") and t.get("variant"))
-        entries.append({
+        entries.append({**dispatch,
             "task": {"id": t["id"], "scope": t.get("scope"),
                      "tests": t.get("tests"), "deps": t.get("deps") or [],
                      "variant": t.get("variant")},
@@ -568,7 +570,7 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
                          "not claimable"}
     contract = tp.build_contract(
         f"EXECUTE: {t['id']}", scope=t.get("scope"),
-        test_command=t.get("tests"), plan_minted=True,
+        test_command=t.get("tests"), plan_minted=True, regression_gate=True,
         tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                "MultiEdit"])
     agent_ws = os.path.abspath(agent_ws)
@@ -938,39 +940,34 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     if rid:
         req_rec = reqs.get_requirement(ws, rid)
 
-    # Capability-tier the model for this step's role: a per-task `model` tier
-    # (a planner marks a simple task "cheap") wins, else the step default. The
-    # DRIVER passes `model` to the Agent tool's `model` param — null = inherit
-    # the session model (the portable default). See tp.model_for_tier.
-    model_tier = tp.step_tier(step, task)
-    model = tp.model_for_tier(model_tier)
+    dispatch = tp.dispatch_fields(
+        "step", STEP_ROLE[step], (task or {}).get("id") or step,
+        tp.step_tier(step, task))
+    model_tier, model = dispatch["model_tier"], dispatch["model"]
+    reasoning_effort, task_name = (dispatch["reasoning_effort"],
+                                   dispatch["task_name"])
     tp.trace(ws, "model_tier", step=step,
-             task=(task or {}).get("id"), tier=model_tier, model=model)
+             task=(task or {}).get("id"), tier=model_tier, model=model,
+             reasoning_effort=reasoning_effort)
     tp.record_expected_dispatch(ws, "step", STEP_ROLE[step], model_tier,
-                                model, ref=(task or {}).get("id") or step)
-    # v2.3.0 (cost visibility): a non-standard tier that resolves to
-    # inherit (e.g. 'cheap' on Codex hosts) means the planned cost routing
-    # has NO effect — say so in the brief, at the moment it costs money.
+                                model, ref=(task or {}).get("id") or step,
+                                task_name=task_name,
+                                reasoning_effort=reasoning_effort,
+                                role_marker_value=dispatch["role_marker"])
     model_note = None
     if model is None and (model_tier or "standard") != "standard":
         model_note = (f"tier '{model_tier}' resolves to inherit on this "
                       f"host — the planned routing has no effect; set "
                       f"TASKPLANE_MODEL_{str(model_tier).upper()} to "
                       "activate it")
-
-    return {
+    return {**dispatch,
         **({"model_note": model_note} if model_note else {}),
         "step": step,
-        "role": STEP_ROLE[step],
-        "role_instructions": os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "agents", STEP_ROLE[step] + ".md"),
-        "codex_dispatch": ("Dispatch a general Codex subagent with the "
-                           "role_instructions file plus this action payload "
-                           "when the named role is not registered."),
+        "codex_dispatch": ("Use Codex's native subagent task orchestration with "
+                           "this exact task_name, role instructions, standalone "
+                           "role_marker, model when non-null, and "
+                           "reasoning_effort."),
         "task": task,
-        "model_tier": model_tier,
-        "model": model,
         "contract": {"read_only": bool(contract.get("read_only")),
                      "scope": contract["coding"]["scope_paths"],
                      "write_allow": contract.get("write_allow"),
@@ -1109,13 +1106,9 @@ def _criteria_for(ws: str, state: dict, task: dict) -> list:
     criteria = list(task.get("criteria") or [])
     rid = task.get("req") or state.get("requirement_id")
     rec = reqs.get_requirement(ws, rid) if rid else None
-    if rec:
+    if rec and not criteria:
         criteria = list(rec.get("acceptance") or criteria)
     criteria = [str(c).strip() for c in criteria if str(c).strip()]
-    # Minor-version compatibility for pre-1.6 plans: their runnable test
-    # command was the only acceptance check. New planners emit explicit
-    # criteria, but an existing plan remains executable and its test still
-    # has to pass at every DoD gate.
     if not criteria and str(task.get("tests") or "").strip():
         criteria = [f"test command passes: {task['tests']}"]
     return criteria
@@ -1188,6 +1181,8 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
     if apply:
         state["graph_dor"] = graph_dor
     errors.extend("graph DoR: " + e for e in graph_dor.get("errors") or [])
+    errors.extend(tp.requirement_coverage_errors(state.get("tasks") or [],
+        lambda rid: reqs.get_requirement(ws, rid), state.get("requirement_id")))
     errors.extend("design DoR: " + e for e in _design_plan_errors(ws, state))
     return errors
 
@@ -1218,13 +1213,13 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
                      snapshot: str | None) -> list:
     contract = tp.build_contract(
         f"EXECUTE: {task['id']}", scope=task.get("scope"),
-        test_command=task.get("tests"), plan_minted=True)
-    # A2 (R-0007): exclude loop-owned artifacts from the per-task scope
-    # diff — PARITY with the sign-off aggregate's LOOP_OWNED filter in
-    # _signoff_dod (loop artifacts pass their own gates).
-    return (_design_current_errors(ws, state)
-            + tp.dod_check(contract, ws, snapshot,
-                           ignore_prefixes=lens_router.LOOP_OWNED))
+        test_command=task.get("tests"), plan_minted=True, regression_gate=True)
+    # Scope regression evidence to this task; loop-owned artifacts self-gate.
+    regression_files = [f for f in (tp.changed_files(ws, snapshot) if snapshot else [])
+                        if tp.match_any(f, task.get("scope") or [])]
+    return (_design_current_errors(ws, state) + tp.dod_check(
+        contract, ws, snapshot, ignore_prefixes=lens_router.LOOP_OWNED,
+        regression_files=regression_files))
 
 
 def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
@@ -2098,16 +2093,16 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
 
 
 def _signoff_dod(ws: str, state: dict) -> dict:
-    """Mechanical Definition-of-Done, run at the sign-off gate: the whole diff
-    since the loop's baseline must fall within the UNION of the tasks' declared
-    scopes, and the committed knowledge store must be lint-clean. Surfaced to the
-    human next to the EM read-out — the sign-off decision is still theirs. Returns
-    {passed, errors, scope, baseline}."""
+    """Mechanical final DoD over aggregate scope, requirements, tests, graph,
+    engineering evidence, and committed knowledge. Human sign-off remains."""
     scopes: list = []
     for t in (state.get("tasks") or []):
         scopes.extend(t.get("scope") or [])
     baseline = state.get("baseline")
     errors: list = []
+    errors.extend("requirement DoD: " + e for e in tp.requirement_coverage_errors(
+        state.get("tasks") or [], lambda rid: reqs.get_requirement(ws, rid),
+        state.get("requirement_id"), require_passed=True))
     if scopes:
         # Aggregate diff-scope, EXCLUDING loop-owned artifacts: they are
         # authored by governed steps under their own write-allow contracts
@@ -2152,12 +2147,14 @@ def _signoff_dod(ws: str, state: dict) -> dict:
         test_contract = tp.build_contract(
             f"SIGNOFF TEST: {task.get('id', '?')}",
             scope=task.get("scope"), test_command=test_command,
-            plan_minted=True)
-        # Aggregate scope was checked above; run each task's behavioral test
-        # without incorrectly treating another task's files as scope creep.
+            plan_minted=True, regression_gate=True)
+        # Aggregate scope is already checked; run each task's scoped evidence.
         test_contract["coding"]["dod"]["require_clean_scope_diff"] = False
-        errors.extend(f"task {task.get('id', '?')}: {e}"
-                      for e in tp.dod_check(test_contract, ws, baseline))
+        regression_files = [f for f in (tp.changed_files(ws, baseline)
+                                        if baseline else [])
+                     if tp.match_any(f, task.get("scope") or [])]
+        errors.extend(f"task {task.get('id', '?')}: {e}" for e in tp.dod_check(
+            test_contract, ws, baseline, regression_files=regression_files))
     errors.extend(_engineering_review_errors(ws, state))
     for problem in kb.lint(ws):
         errors.append("kb_lint: " + (problem.get("file", "?")) + " — "

@@ -3,8 +3,10 @@
 # workflow path still works. Regenerate ONLY for a deliberate shape change:
 #     python3 taskplane/tests/fixtures/briefs/regen.py
 # Scrub rules (determinism): captured with CODEX_HOME/CODEX_THREAD_ID/
-# TASKPLANE_MODEL_*/TASKPLANE_WORKFLOWS/CLAUDE_CODE_WORKFLOWS unset;
-# workspace-relative paths only; no timestamps; sorted keys; indent=2.
+# TASKPLANE_MODEL_*/TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/
+# CLAUDE_CODE_WORKFLOWS unset;
+# plugin root -> <PLUGIN>; workspace-relative inputs; no timestamps;
+# sorted keys; indent=2.
 {
   "base": "HEAD",
   "changed_files": 2,
@@ -32,6 +34,11 @@
       "name": "Security",
       "output": ".em-review/lens-security/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-security`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the SECURITY lens to the diff against `HEAD`.\nLOOK FOR: secrets (exposure = compromise, rotate not delete), authz gaps incl. object-level/IDOR, injection, SSRF, unsafe input, security misconfiguration, supply-chain & build integrity (deps, lockfiles, CI workflows, install scripts, pinning), fail-open error paths, AI/agent surface risk.\nCHECKS: gitleaks; semgrep --config auto; dependency audit; zizmor (GitHub Actions workflows, when `.github/**` is in the diff).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-security/findings.json` as {\"lens\":\"security\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "high",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_security_8c38142f",
       "task_slot": "lens-security",
       "tier": "deep"
     },
@@ -58,6 +65,11 @@
       "name": "Code quality",
       "output": ".em-review/lens-code-quality/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-code-quality`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the CODE QUALITY lens to the diff against `HEAD`.\nLOOK FOR: logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality.\nCHECKS: lint (repo's configured linter, warnings included); typecheck; jscpd / `dupl` / pylint R0801 \u2014 copy-paste census, diff-scoped; **suppression delta**: NEW escape hatches introduced by this diff only \u2014.\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-code-quality/findings.json` as {\"lens\":\"code-quality\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "medium",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_code_quality_359a6283",
       "task_slot": "lens-code-quality",
       "tier": "deep"
     },
@@ -81,6 +93,11 @@
       "name": "Testability",
       "output": ".em-review/lens-testability/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-testability`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the TESTABILITY lens to the diff against `HEAD`.\nLOOK FOR: seams and substitutability (clock, network, filesystem, DB, model/LLM client), hidden globals and shared state OUTSIDE the process, non-determinism, parallel-safety, reachability of new branches from a public surface, a pure side-effect-free core that invariants could be stated against.\nCHECKS: coverage \u2014 use ONLY as evidence for check 4: which new branches NO test can reach at all. Do not report a coverage percentage or judge coverage adequacy; that is qa's. [Inozemtseva & Holmes, ICSE 2014: coverage correlates only weakly-to-moderately with suite effectiveness once suite size is controlled \u2014 a number here would be an unsupported quality claim].\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-testability/findings.json` as {\"lens\":\"testability\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "medium",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_testability_cb43f3ad",
       "task_slot": "lens-testability",
       "tier": "deep"
     },
@@ -102,6 +119,11 @@
       "name": "Scalability & performance",
       "output": ".em-review/lens-scalability/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-scalability`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the SCALABILITY & PERFORMANCE lens to the diff against `HEAD`.\nLOOK FOR: N+1 and uncapped fan-out, unbounded work (no LIMIT, load-everything, unpaginated or depth-degrading pagination), blocking calls on latency-sensitive paths, cache invalidation and stampede, bounds and behaviour at the bound (pools, queues, buffers, in-flight sets), hot-path complexity against realistic growth.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-scalability/findings.json` as {\"lens\":\"scalability\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "high",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_scalability_857b3e85",
       "task_slot": "lens-scalability",
       "tier": "deep"
     },
@@ -123,6 +145,11 @@
       "name": "Integrability",
       "output": ".em-review/lens-integrability/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-integrability`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the INTEGRABILITY lens to the diff against `HEAD`.\nLOOK FOR: API/data contracts, an explicit breaking-vs-additive taxonomy per contract style (REST/OpenAPI, protobuf/gRPC, GraphQL, Avro/event schemas), versioning, deprecation & sunset signalling with a stated consumer notice period, error semantics to a named standard, documented retryability, unknown-field tolerance on both producer and consumer, automated compatibility gating and contract testing, spec/SDK sync, pagination & naming conventions.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-integrability/findings.json` as {\"lens\":\"integrability\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "medium",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_integrability_9aaac1d0",
       "task_slot": "lens-integrability",
       "tier": "deep"
     },
@@ -144,6 +171,11 @@
       "name": "Technical writing",
       "output": ".em-review/lens-tech-writer/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-tech-writer`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the TECHNICAL WRITING lens to the diff against `HEAD`.\nLOOK FOR: documented commands/flags/endpoints/paths/defaults/outputs that the diff has made untrue, capabilities removed or renamed with docs left behind, examples that no longer run, the right documentation TYPE for the change (reference / how-to / explanation / tutorial) and one reader-question per document, prerequisites and destructive-step warnings placed after the step they govern, new documentation nobody can reach, one name per concept, decisions made in the diff and recorded nowhere, changelog entries that describe commits rather than user outcomes.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-tech-writer/findings.json` as {\"lens\":\"tech-writer\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "medium",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_tech_writer_f889ba12",
       "task_slot": "lens-tech-writer",
       "tier": "deep"
     },
@@ -165,6 +197,11 @@
       "name": "QA",
       "output": ".em-review/lens-qa/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-qa`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the QA lens to the diff against `HEAD`.\nLOOK FOR: test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-qa/findings.json` as {\"lens\":\"qa\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "medium",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_qa_471e2e6f",
       "task_slot": "lens-qa",
       "tier": "deep"
     },
@@ -186,6 +223,11 @@
       "name": "Back-end engineering",
       "output": ".em-review/lens-backend/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-backend`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the BACK-END ENGINEERING lens to the diff against `HEAD`.\nLOOK FOR: API design, business-logic correctness, data-access patterns, service boundaries, idempotency, transactions, dual-write/outbox integrity, input validation at the trust boundary, error-response shape consistency.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-backend/findings.json` as {\"lens\":\"backend\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "high",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_backend_f49b3f3e",
       "task_slot": "lens-backend",
       "tier": "deep"
     },
@@ -207,6 +249,11 @@
       "name": "System design & architecture",
       "output": ".em-review/lens-architecture/findings.json",
       "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-architecture`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the SYSTEM DESIGN & ARCHITECTURE lens to the diff against `HEAD`.\nLOOK FOR: component/service decomposition, data flow & coupling measured against the dependency graph, state & consistency, scaling & failure modes, structure introduced without a requirement that needs it.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-architecture/findings.json` as {\"lens\":\"architecture\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+      "reasoning_effort": "high",
+      "role": "tp-lens",
+      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+      "role_marker": "taskplane-role:tp-lens",
+      "task_name": "tp_lens_architecture_ce6dbb2d",
       "task_slot": "lens-architecture",
       "tier": "deep"
     }
@@ -246,6 +293,11 @@
     "model_tier": "cheap",
     "output": ".em-review/lens-sweep/findings.json",
     "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-sweep`. Keep it set for every `tp.py` call you make (new / screen / clear).\nQuick SWEEP of these lenses against the diff vs `HEAD`: Product, Design & UX, Data & migration safety, DevOps, DBA, SRE, Project / delivery, Front-end engineering, Design trade-offs, Solution design, Tool & services selection, Time to market, Mobile engineering, Accessibility (a11y), Privacy & compliance, Cost / FinOps (optional), Localization / i18n (optional). Run each lens's top checks only \u2014 flag or clear in one line each. READ-ONLY: write findings (each with a `lens` field and a `class` field \u2014 regression|pre-existing|observation) to `.em-review/lens-sweep/findings.json`, change no code.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+    "reasoning_effort": "low",
+    "role": "tp-lens",
+    "role_instructions": "<PLUGIN>/agents/tp-lens.md",
+    "role_marker": "taskplane-role:tp-lens",
+    "task_name": "tp_lens_sweep_94e23878",
     "task_slot": "lens-sweep"
   }
 }

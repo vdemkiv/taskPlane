@@ -834,9 +834,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     for x in deep:
         lid = x["id"]
         mtier = _lens_tier(lid, "deep")
-        brief = {
+        brief = {**tp.dispatch_fields("lens", "tp-lens", lid, mtier),
             "id": lid, "name": x["name"], "tier": "deep", "agent": "tp-lens",
-            "model_tier": mtier, "model": tp.model_for_tier(mtier),
             "task_slot": f"lens-{lid}",
             "output": f".em-review/lens-{lid}/findings.json",
             "contract": {"read_only": True,
@@ -861,9 +860,9 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     sweep_brief = None
     if sweep:
         names = ", ".join(s["name"] for s in sweep)
-        sweep_brief = {
+        sweep_brief = {**tp.dispatch_fields(
+            "lens", "tp-lens", "sweep", "cheap"),
             "ids": [s["id"] for s in sweep], "agent": "tp-lens",
-            "model_tier": "cheap", "model": tp.model_for_tier("cheap"),
             "task_slot": "lens-sweep",
             "output": ".em-review/lens-sweep/findings.json",
             "contract": {"read_only": True,

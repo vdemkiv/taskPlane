@@ -26,9 +26,9 @@ def _repo():
 
 
 AB_PLAN = {"mode": "ab-selection", "tasks": [
-    {"id": "feat-variant-a", "variant": "A", "req": "R-0001",
+    {"id": "feat-variant-a", "variant": "A",
      "scope": ["src/**"], "new_modules": ["src"], "tests": "true"},
-    {"id": "feat-variant-b", "variant": "B", "req": "R-0001",
+    {"id": "feat-variant-b", "variant": "B",
      "scope": ["src/**"], "new_modules": ["src"], "tests": "true"},
 ]}
 

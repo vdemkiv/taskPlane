@@ -38,6 +38,26 @@ def _mk_repo(tmp_path):
     return ws, base
 
 
+def _mk_generic_repo(tmp_path):
+    ws = str(tmp_path)
+    pkg = tmp_path / "src" / "acme"
+    tests = tmp_path / "tests"
+    pkg.mkdir(parents=True)
+    tests.mkdir()
+    (pkg / "service.py").write_text("def value():\n    return 1\n")
+    (tests / "test_service.py").write_text(textwrap.dedent("""
+        from src.acme import service
+        def test_value():
+            assert service.value() == 1
+    """))
+    _git(ws, "init", "-q")
+    _git(ws, "config", "user.email", "t@t")
+    _git(ws, "config", "user.name", "t")
+    _git(ws, "add", "-A")
+    _git(ws, "commit", "-q", "-m", "baseline green")
+    return ws, _git(ws, "rev-parse", "HEAD").stdout.strip()
+
+
 def test_tier1_flags_a_real_regression(tmp_path):
     ws, base = _mk_repo(tmp_path)
     # break the source so the previously-green test now fails
@@ -61,3 +81,13 @@ def test_tier2_flags_config_change_with_no_test(tmp_path):
     (tmp_path / "hooks" / "hooks.json").write_text("{}\n")
     errs = rg.dod_errors(ws, base, ["hooks/hooks.json"])
     assert any(e.startswith("regression_coverage_gap:") for e in errs), errs
+
+
+def test_tier1_generic_layout_flags_a_real_regression(tmp_path):
+    ws, base = _mk_generic_repo(tmp_path)
+    (tmp_path / "src" / "acme" / "service.py").write_text(
+        "def value():\n    return 2\n")
+
+    errs = rg.dod_errors(ws, base, ["src/acme/service.py"])
+
+    assert any(e.startswith("regression:") for e in errs), errs

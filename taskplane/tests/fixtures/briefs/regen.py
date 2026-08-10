@@ -26,9 +26,10 @@ What it does:
 
 DETERMINISM / SCRUB RULES (the goldens must be identical on every machine):
   * env scrub — captured with CODEX_HOME, CODEX_THREAD_ID,
-    TASKPLANE_MODEL_CHEAP/STANDARD/DEEP, TASKPLANE_WORKFLOWS and
-    CLAUDE_CODE_WORKFLOWS unset, so tier->model resolution is the shipped
-    default (cheap -> "haiku", standard/deep -> null on a claude host);
+    TASKPLANE_MODEL_CHEAP/STANDARD/DEEP,
+    TASKPLANE_REASONING_CHEAP/STANDARD/DEEP, TASKPLANE_WORKFLOWS and
+    CLAUDE_CODE_WORKFLOWS unset, so model and reasoning resolution use the
+    shipped defaults;
   * path scrub — the routing input is the workspace-RELATIVE file list; no
     absolute paths exist anywhere in the payload (asserted below);
   * no timestamps — the payload carries none (asserted below);
@@ -41,12 +42,15 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASKPLANE = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+PLUGIN_ROOT = os.path.dirname(TASKPLANE)
 sys.path.insert(0, TASKPLANE)
 sys.path.insert(0, HERE)          # stage_fixture.py lives next to this file
 
 # env scrub (see module docstring) — the capture must not inherit host state
 for var in ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
             "TASKPLANE_MODEL_STANDARD", "TASKPLANE_MODEL_DEEP",
+            "TASKPLANE_REASONING_CHEAP", "TASKPLANE_REASONING_STANDARD",
+            "TASKPLANE_REASONING_DEEP",
             "TASKPLANE_WORKFLOWS", "CLAUDE_CODE_WORKFLOWS",
             "TASKPLANE_TASK"):
     os.environ.pop(var, None)
@@ -60,8 +64,10 @@ HEADER = """\
 # workflow path still works. Regenerate ONLY for a deliberate shape change:
 #     python3 taskplane/tests/fixtures/briefs/regen.py
 # Scrub rules (determinism): captured with CODEX_HOME/CODEX_THREAD_ID/
-# TASKPLANE_MODEL_*/TASKPLANE_WORKFLOWS/CLAUDE_CODE_WORKFLOWS unset;
-# workspace-relative paths only; no timestamps; sorted keys; indent=2.
+# TASKPLANE_MODEL_*/TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/
+# CLAUDE_CODE_WORKFLOWS unset;
+# plugin root -> <PLUGIN>; workspace-relative inputs; no timestamps;
+# sorted keys; indent=2.
 """
 
 
@@ -82,7 +88,23 @@ def _assert_deterministic(payload):
         assert f'"{k}"' not in s, f"nondeterministic field {k!r} leaked"
 
 
+def scrub(payload):
+    """Replace the emitted absolute role-instruction root portably."""
+    if isinstance(payload, str):
+        root = PLUGIN_ROOT.rstrip("/\\")
+        if payload.startswith(root):
+            suffix = payload[len(root):].lstrip("/\\").replace("\\", "/")
+            return "<PLUGIN>/" + suffix if suffix else "<PLUGIN>"
+        return payload.replace(root, "<PLUGIN>")
+    if isinstance(payload, list):
+        return [scrub(item) for item in payload]
+    if isinstance(payload, dict):
+        return {key: scrub(value) for key, value in payload.items()}
+    return payload
+
+
 def write_golden(name, payload):
+    payload = scrub(payload)
     _assert_deterministic(payload)
     with open(os.path.join(HERE, name), "w", encoding="utf-8") as f:
         f.write(HEADER)
@@ -98,8 +120,9 @@ STAGE_HEADER = """\
 # Regenerate ONLY for a deliberate shape change:
 #     python3 taskplane/tests/fixtures/briefs/regen.py
 # Scrub rules (stage_fixture.py docstring): env scrub (CODEX_*/
-# TASKPLANE_MODEL_*/TASKPLANE_WORKFLOWS/CLAUDE_CODE_WORKFLOWS/
-# TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path tokens; unix times
+# TASKPLANE_MODEL_*/TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/
+# CLAUDE_CODE_WORKFLOWS/TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path
+# tokens; unix times
 # zeroed; git shas + graph fingerprints -> <SHA>; calendar dates ->
 # <DATE>; sorted keys; indent=2.
 """

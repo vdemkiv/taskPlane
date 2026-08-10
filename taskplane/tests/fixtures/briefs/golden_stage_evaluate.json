@@ -5,8 +5,9 @@
 # Regenerate ONLY for a deliberate shape change:
 #     python3 taskplane/tests/fixtures/briefs/regen.py
 # Scrub rules (stage_fixture.py docstring): env scrub (CODEX_*/
-# TASKPLANE_MODEL_*/TASKPLANE_WORKFLOWS/CLAUDE_CODE_WORKFLOWS/
-# TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path tokens; unix times
+# TASKPLANE_MODEL_*/TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/
+# CLAUDE_CODE_WORKFLOWS/TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path
+# tokens; unix times
 # zeroed; git shas + graph fingerprints -> <SHA>; calendar dates ->
 # <DATE>; sorted keys; indent=2.
 {
@@ -15,7 +16,7 @@
     "path": "<STORE>/artifacts/stage-wave-fixture"
   },
   "audit": null,
-  "codex_dispatch": "Dispatch a general Codex subagent with the role_instructions file plus this action payload when the named role is not registered.",
+  "codex_dispatch": "Use Codex's native subagent task orchestration with this exact task_name, role instructions, standalone role_marker, model when non-null, and reasoning_effort.",
   "contract": {
     "read_only": true,
     "scope": [],
@@ -601,9 +602,11 @@
   ],
   "model": null,
   "model_tier": "standard",
+  "reasoning_effort": "medium",
   "requirement": null,
   "role": "tp-evaluator",
   "role_instructions": "<PLUGIN>/agents/tp-evaluator.md",
+  "role_marker": "taskplane-role:tp-evaluator",
   "step": "evaluate",
   "task": {
     "blast": {
@@ -639,5 +642,6 @@
     "status": "built",
     "tests": "true",
     "workspace": "<WS>/.tp-work/t1"
-  }
+  },
+  "task_name": "tp_step_evaluator_t1_bb4efcad"
 }

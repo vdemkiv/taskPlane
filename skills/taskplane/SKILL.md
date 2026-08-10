@@ -47,6 +47,10 @@ user asks; say what is missing and help complete it.
 For a delivery loop, obey the engine payload from `$TP loop next` exactly.
 Dispatch the named role with its full role-instruction file on either Claude or
 Codex; do not improvise a shorter worker prompt.
+On Codex, the internal driver must also use the emitted native `task_name`,
+`model` when non-null, and `reasoning_effort`, then wait for every requested
+subagent result. The full spawn/wait/interrupt contract is in
+`../tp-go/references/codex-native-dispatch.md`.
 
 The submit/gate/human-checkpoint invariants are stated once, canonically,
 in `references/harness-rules.md` (this skill's own reference dir, so every

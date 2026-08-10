@@ -55,7 +55,10 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
+import zipfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -571,6 +574,31 @@ class TestSkillReferencePointersArePackaged(unittest.TestCase):
                       "the ONE canonical statement of the harness invariants "
                       "is not in the Codex package — the skills that stopped "
                       "restating it would ship pointing at nothing")
+
+    def test_built_archive_has_public_docs_and_no_claude_workflows(self):
+        """Inspect ZIP membership, not only the packager's source file set."""
+        mod = self._packager()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "taskplane-openai.zip"
+            mod.write_zip(mod.package_files(mod.load_manifest()), archive_path)
+            mod.validate_archive(archive_path)
+            with zipfile.ZipFile(archive_path) as archive:
+                names = set(archive.namelist())
+                self.assertIn("taskplane/README.md", names)
+                self.assertIn("taskplane/CHANGELOG.md", names)
+                repository_docs = {
+                    "taskplane/" + os.path.relpath(path, ROOT).replace(
+                        os.sep, "/")
+                    for path in glob.glob(os.path.join(ROOT, "docs", "*.md"))
+                }
+                self.assertTrue(repository_docs)
+                self.assertTrue(repository_docs <= names,
+                                "the installed plugin must carry every public "
+                                "docs/*.md target its runtime or skills cite")
+                self.assertFalse(any(
+                    name.startswith("taskplane/workflows/") for name in names),
+                    "Claude Dynamic Workflow files must not enter the "
+                    "skills-only OpenAI marketplace archive")
 
 
 if __name__ == "__main__":

@@ -53,6 +53,18 @@ checks are green:
    will stop at Design approval when that phase is used, plan approval, and
    final sign-off for your explicit decision.
 
+For independent briefs, Codex uses its native subagent task orchestration:
+each taskplane brief provides an exact `task_name`, taskplane role and
+`role_marker`, the exact `role_instructions` file path, optional model, and
+`reasoning_effort`. The driver includes that exact role marker plus the complete
+role instructions and payload in the delegated message, spawns scope-disjoint
+work concurrently, waits in bounded intervals for every requested result, and
+interrupts/escalates a stalled or mis-scoped agent rather than declaring partial
+work complete.
+`SubagentStart`/`SubagentStop` add bounded context and lifecycle traces; the
+PreToolUse screen and evidence gates remain authoritative. For a long run you
+may start Goal mode with `/goal`; it changes neither permissions nor gates.
+
 When inline HTML widgets are unavailable, Codex still relays the plain-text
 `HEADLINE:` and provides `.taskplane/dashboard.html` as the local dashboard
 artifact. The governance state and human gates do not depend on widget support.
@@ -86,6 +98,11 @@ every tier unless you explicitly map one:
 | `cheap` | Claude: `haiku`; Codex: inherit session model | the lens sweep; tasks a planner marks simple | `TASKPLANE_MODEL_CHEAP` |
 | `standard` | inherit session model | execute / evaluate / fix | `TASKPLANE_MODEL_STANDARD` |
 | `deep` | inherit session model | spec, plan, engineering review, hard lenses (security, architecture, …) | `TASKPLANE_MODEL_DEEP` |
+
+On Codex those same tiers also resolve to native reasoning effort: `cheap →
+low`, `standard → medium`, and `deep → high`. Override with
+`TASKPLANE_REASONING_CHEAP`, `TASKPLANE_REASONING_STANDARD`, or
+`TASKPLANE_REASONING_DEEP` using a Codex-supported effort value.
 
 For cost-differentiated runs, set the overrides before starting with model
 ids your host understands — on Claude e.g. `export

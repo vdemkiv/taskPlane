@@ -176,9 +176,15 @@ The rules that make this safe:
   `taskplane/tests/fixtures/briefs/regen.py`). The workflow path wraps the
   *unmodified* payload as a single `workflow {name, args}` invocation;
   agent prompts are consumed verbatim on both rails.
-- **Codex is unchanged.** Codex has no workflow runtime; on Codex hosts
-  (`CODEX_HOME`/`CODEX_THREAD_ID` present) the Task path is ALWAYS chosen
-  and no opt-in can override that.
+- **Codex uses native subagent tasks.** Codex has no Claude Dynamic Workflow
+  runtime; on Codex hosts (`CODEX_HOME`/`CODEX_THREAD_ID` present) the
+  portable task payload is ALWAYS chosen and no workflow opt-in can override
+  that. Each brief carries a collision-safe `task_name`, taskplane role and
+  exact `role_marker`, absolute `role_instructions` file path, optional model and
+  tier-derived `reasoning_effort`; execute-wave emission registers every one
+  of those expected identities before spawn. Independent briefs may fan out
+  concurrently, but the driver waits in bounded intervals and collects every
+  requested result before synthesis.
 - **Kill-switch, all conventional spellings.** `TASKPLANE_WORKFLOWS` set
   to any of `0`, `false`, `no`, `off` disables the workflow path
   everywhere; `1`, `true`, `yes`, `on` opts in explicitly; unset falls
@@ -194,6 +200,10 @@ The rules that make this safe:
   contract slots (`TASKPLANE_TASK`), are screened by the PreToolUse hook
   unchanged, and submit evidence without ever advancing loop state. Every
   gate is reachable with workflows disabled (adversarial-tested).
+- **Lifecycle is observable, not self-certifying.** Codex
+  `SubagentStart`/`SubagentStop` hooks trace the agent lifecycle and inject
+  bounded active-contract context. They never replace PreToolUse screening,
+  a worker submission, evaluator evidence, or the orchestrator/human gates.
 
 Dogfood example (this repository, forcing each rail):
 

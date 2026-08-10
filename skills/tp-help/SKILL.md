@@ -75,6 +75,15 @@ stays byte-identical and is the only path on Codex — same contracts, same
 gates, same evidence; workflows are an optimization, never a dependency.
 Human gates always stay conversation-level.
 
+**Native Codex agents.** On Codex, taskplane briefs carry a stable native
+`task_name`, the taskplane role, optional model, and tier-derived reasoning
+effort. Independent briefs run concurrently; Codex waits for every requested
+result before synthesis and can interrupt a stalled or mis-scoped agent.
+`SubagentStart`/`SubagentStop` trace lifecycle, while PreToolUse and the evidence
+gates remain the enforcement boundary. For long runs the user may start
+`/goal`; it keeps the work running but grants no extra authority and skips no
+taskplane gate.
+
 **Getting started (walk them through it live if they want):**
 
 0. Brand-new / nothing attached? `/taskplane` runs a **cold-start check** first

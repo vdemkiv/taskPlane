@@ -200,6 +200,60 @@ class TestLoop(unittest.TestCase):
         loop.next_action(ws); pass_eval(ws)            # evaluate t2 pass → em
         self.assertEqual(loop.load(ws)["step"], "em")
 
+    def test_governed_coding_contracts_enable_regression_gate(self):
+        """Execute and repair may never silently omit regression evidence."""
+        state = {"goal": "g", "current_task": 0, "tasks": [TASK]}
+        for step in ("execute", "fix"):
+            with self.subTest(step=step):
+                contract = loop._step_contract(step, state)
+                self.assertTrue(
+                    contract["coding"]["dod"]["regression_gate"])
+
+    def test_task_dod_enables_regression_gate(self):
+        """The submit/gate reconstruction keeps the same governed DoD."""
+        with unittest.mock.patch.object(
+                loop.tp, "dod_check", return_value=[]) as check:
+            self.assertEqual(loop._task_dod_errors(
+                self.tmp, {"baseline": "HEAD"}, TASK, "HEAD"), [])
+        contract = check.call_args.args[0]
+        self.assertTrue(contract["coding"]["dod"]["regression_gate"])
+        self.assertEqual(check.call_args.kwargs["regression_files"], [])
+
+    def test_explicit_task_criteria_are_not_replaced_by_release_acceptance(self):
+        """Each early task proves its slice; the release proves the union."""
+        task = dict(TASK, criteria=["scoped behavior is complete"], req="R-1")
+        with unittest.mock.patch.object(
+                loop.reqs, "get_requirement",
+                return_value={"acceptance": ["the full release is complete"]}):
+            self.assertEqual(loop._criteria_for(self.tmp, {}, task),
+                             ["scoped behavior is complete"])
+
+    def test_release_acceptance_requires_explicit_owners_across_tasks(self):
+        rec = {"acceptance": ["first outcome", "second outcome"]}
+        tasks = [
+            {"id": "t1", "req": "R-1", "criteria": ["scoped one"],
+             "acceptance_refs": ["first outcome"], "status": "passed"},
+            {"id": "t2", "req": "R-1", "criteria": ["scoped two"],
+             "acceptance_refs": ["second outcome"], "status": "pending"},
+        ]
+        lookup = lambda rid: rec if rid == "R-1" else None
+        self.assertEqual(tp.requirement_coverage_errors(tasks, lookup), [])
+        errors = tp.requirement_coverage_errors(
+            tasks, lookup, require_passed=True)
+        self.assertIn("second outcome", " ".join(errors))
+
+    def test_release_acceptance_rejects_an_unowned_outcome(self):
+        rec = {"acceptance": ["first outcome", "missed outcome"]}
+        tasks = [{"id": "t1", "req": "R-1", "criteria": ["scoped"],
+                  "acceptance_refs": ["first outcome"]}]
+        errors = tp.requirement_coverage_errors(tasks, lambda _rid: rec)
+        self.assertIn("missed outcome", " ".join(errors))
+
+    def test_release_acceptance_rejects_a_missing_requirement(self):
+        tasks = [{"id": "t1", "req": "R-missing", "criteria": ["scoped"]}]
+        errors = tp.requirement_coverage_errors(tasks, lambda _rid: None)
+        self.assertIn("R-missing does not exist", " ".join(errors))
+
     def test_escalate_retry_resets_cycles(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"], max_fix_cycles=1)

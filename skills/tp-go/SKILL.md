@@ -43,13 +43,15 @@ real run. And a finding may block a gate only if it carries a claim —
 trigger, outcome, repro — so commentary stops reading like a bug.
 
 **Model tiers.** Each `loop next` payload and each `lens dispatch` brief carries
-a `model` (a concrete id, or `null` = inherit the session model) resolved from a
-capability tier — mechanical steps/tasks/sweeps run cheaper, hard reasoning runs
-stronger. When you dispatch the role or lens agent, pass that `model` to the
-Agent tool's `model` param (omit it when `null`). A planner marks a simple task
+an exact Codex-safe `task_name`, the taskplane `role`/`agent`, a `model` (a
+concrete id, or `null` = inherit), and tier-derived `reasoning_effort`.
+On Codex, pass those exact native dispatch fields and omit `model` when null.
+A planner marks a simple task
 `"model": "cheap"` in tasks.json to route just that task cheaper. Never pin a
 model in agent frontmatter — the pin lives only at the dispatch call, which is
 what keeps taskplane portable. Full detail: `discipline/model-tiers.md`.
+The complete Codex spawn/wait/interrupt procedure is mandatory:
+`references/codex-native-dispatch.md`.
 
 **Four user intents, one driver — route by the ask, combine freely:**
 
@@ -160,10 +162,11 @@ explicit approval in conversation. Never run the loop silently.
    add `--parallel` when
    the plan will have independent tasks; `--spec path` if a spec exists).
    Then repeat `$TP loop next` and DO what its `instruction` says, playing
-   the named role under its activated contract. On Codex or any host that
-   does not register `agents/` as named roles, dispatch a general subagent
-   with the action payload's `role_instructions` file; never improvise a
-   reduced role prompt. Design writes `design/contract.json` and
+   the named role under its activated contract. On Codex, follow
+   `references/codex-native-dispatch.md`: use the exact `task_name`, model and
+   `reasoning_effort`, and preserve the complete `role_instructions` file plus
+   action payload; never improvise a reduced role prompt. Design writes
+   `design/contract.json` and
    `design/design.md`, compares alternatives, declares a proposed graph
    overlay with bounded contract-level boundaries, runs the mandatory
    solution-design lens, and stops for human approval. It never changes code
@@ -225,5 +228,9 @@ explicit approval in conversation. Never run the loop silently.
    present both variants rendered side by side, then
    `$TP loop select <variant|hybrid> --note "why"` on the human's choice —
    full procedure in `../tp-build/references/variants.md`.
+   On Codex, spawn independent entries concurrently, wait for and collect all
+   requested results, and interrupt/escalate stalled or mis-scoped agents as
+   specified in `references/codex-native-dispatch.md`. For a long governed run,
+   recommend optional user-started `/goal`; Goal mode never replaces a gate.
 6. **Finish:** after sign-off run the retro per `references/retro.md`,
    then `discipline/finishing-work.md` (debt, graph rescan, track close).

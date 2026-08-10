@@ -75,7 +75,11 @@ explicit.
 - **Governed flows.** The review wave and the execute/evaluate/fix waves each
   dispatch as one journaled, resumable Dynamic Workflow on Claude; the Task-dispatch
   path stays mandatory and byte-identical everywhere — it is the only Codex path —
-  and every human gate stays reachable with workflows off (`TASKPLANE_WORKFLOWS`). Same doc.
+  and every human gate stays reachable with workflows off (`TASKPLANE_WORKFLOWS`).
+  On Codex, every brief carries a collision-safe native `task_name`, exact taskplane
+  role marker and instructions, model tier, optional model, and tier-derived
+  reasoning effort; execute waves register those identities before spawn so strict
+  dispatch can reject a renamed, mis-routed, or partial handoff. Same doc.
 - **The regression gate.** Each change is verified for actual regressions within its
   dependency-graph blast radius at the DoD gate: Tier 1 blocks a was-green-now-red
   test against the change's baseline; Tier 2 flags a changed enforcement/public
@@ -107,7 +111,7 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
-| **v2.7.0** | **Lenses 2.0.** All 26 review lenses rewritten against current industry practice, one at a time, with every source's authority and limitation recorded and four superseded citations corrected. The largest fix was routing: twelve lenses could not fire on the change class they exist to judge, so their Blockers were unreachable — security could not see CI workflows or lockfiles, i18n only saw translation files, `qa` could not see a change that shipped with no tests. All closed. Routing rows and review guides move to JSON beside the generators and are validated at generation time, so an invalid task type fails loudly instead of becoming a dead key. `qa` now fires on untested changes rather than every change (2 of 40 real changes versus 32, same defect reachable), and CI pins the review routing surface alongside per-task cost. 1,415 tests. |
+| **v2.7.0** | **Lenses 2.0.** All 26 review lenses rewritten against current industry practice, one at a time, with every source's authority and limitation recorded and four superseded citations corrected. The largest fix was routing: twelve lenses could not fire on the change class they exist to judge, so their Blockers were unreachable — security could not see CI workflows or lockfiles, i18n only saw translation files, `qa` could not see a change that shipped with no tests. All closed. Routing rows and review guides move to JSON beside the generators and are validated at generation time, so an invalid task type fails loudly instead of becoming a dead key. `qa` now fires on untested changes rather than every change (2 of 40 real changes versus 32, same defect reachable), and CI pins the review routing surface alongside per-task cost. Same-version hardening makes the regression gate fail closed and task-scoped, makes Codex serial/parallel/lens dispatch native and strictly verifiable with bounded lifecycle context, pins a required Codex-host CI leg, ships the complete documented OpenAI archive, and removes legacy scratch mirrors. 1,529 tests. |
 | **v2.6.0** | **Phase 3 plus the performance and review-honesty work.** Every engine-correctness gap the loop hit while governing its own build is closed (serial-claim refusal, loop-owned DoD exclusion, slot-env sanitizing, unattributed-finding surfacing, fail-open stage emission, clamped floors); routing precision recalibrated and plan ordering made mechanical; Windows slot activation; all five stale skills truthed up behind a generated CLI reference. **Performance:** per-task cost had grown about thirteenfold in a month — the suite is now cited rather than re-run over byte-identical content, `tp loop evidence` assembles an evaluation in one call instead of about sixty, and a CI ratchet pins what the engine mandates per task. **Review honesty:** A4's fingerprint refusal had shipped inert and now bites on a real producer/validator divergence; a finding may block a gate only with a trigger, outcome and repro, so commentary stops reading as a bug; `"set up taskplane"` routes again; and the suite's temp-workspace leak (185,541 directories, about 30 GB) is fixed at the root. No gate loosened; two got stricter. 1,415 tests. |
 | **v2.5.1** | **Post-release review follow-ups.** Dedicated Codex-compatibility review of Phase 2 against the SHIPPED package under a simulated Codex host: byte-identical dispatch verified, full suite green with zero host leakage, workflow files correctly absent — one real gap found and fixed: `tp onboard` on a Codex host now prints the Codex plugin-tooling install path instead of the Claude org-admin universe (regression-tested). README rebuilt lean: 659 → 320 lines with a new "What taskplane does" feature-definition section; onboarding detail, specialist routes, and Claude Tag moved to docs/{onboarding,specialist-routes,claude-tag}.md — every content pin kept, zero test edits. The tp-help tour now covers routing v2, decomposition, waves, audit cadence, the regression gate, and the install-truth pointer (it had been stale since v2.2.0). 1119 tests. |
 
@@ -261,15 +265,21 @@ storage: [docs/onboarding.md](docs/onboarding.md).
 ## Honest about what the guardrails are
 
 The scope/command guardrails are a real, mechanical help for the everyday failure —
-an agent that drifts out of its lane or fires a destructive command by mistake. The
-PreToolUse hook screens scope, denied commands, and the action budget **before**
-each tool call, resolves `..`/absolute/symlink paths, screens destructive programs
-(`rm`, `chmod`, …) as writes, and fails **closed** on a corrupt contract or an
-error. But this is keep-the-agent-on-topic, not a security sandbox: a task that
-grants `Bash` grants arbitrary code execution, and no string-screen can fully
-contain a *determined adversary* — for a hard boundary, pair taskplane with a
-restricted toolset or OS-level isolation (the token/$ budget is cooperative in the
-same way). Likewise, "a worker cannot advance its own stage" is a
+an agent that drifts out of its lane or fires a destructive command by mistake. For
+matched mutating tool routes the host exposes to plugin hooks, the PreToolUse screen
+checks scope, denied commands, and the action budget **before** the call, resolves
+`..`/absolute/symlink paths, treats destructive programs (`rm`, `chmod`, …) as
+writes, and fails **closed** on a corrupt contract or screening error. Codex
+subagent lifecycle hooks are deliberately advisory; optional
+`TASKPLANE_ENFORCE_DISPATCH=strict` additionally fails closed unless a native spawn
+matches an emitted task name, role marker, model, and reasoning effort. This is
+keep-the-agent-on-topic, not a security sandbox: plugin hooks do not intercept tool
+routes the host does not expose, arbitrary effects performed inside an allowed
+process, or remote side effects. A task that grants `Bash` grants arbitrary code
+execution, and no string-screen can fully contain a *determined adversary* — for a
+hard boundary, keep Codex/Claude approvals and sandboxing enabled and add OS-level
+isolation where needed (the token/$ budget is cooperative in the same way).
+Likewise, "a worker cannot advance its own stage" is a
 **protocol + audit** guarantee, not process isolation. What holds mechanically is
 the **evidence**: a gate only advances on a submission whose fingerprints (changed
 source plus the exact evaluator/engineering evidence bytes) still match the

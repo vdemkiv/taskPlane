@@ -86,6 +86,8 @@ not repeated in the tables.
 | `tp.py share set` | set the default visibility of new decisions |
 | `tp.py share status` | show what is private and what is shared |
 | `tp.py status` | show the active contract |
+| `tp.py subagent-start` | SubagentStart lifecycle trace and bounded contract context (stdin event) |
+| `tp.py subagent-stop` | SubagentStop lifecycle trace (stdin event; advisory, never a completion gate) |
 | `tp.py summary` | simple human view: progress and decisions, while agents keep the detailed harness |
 | `tp.py track` | multi-track workstreams |
 | `tp.py track close` | close a track |
@@ -749,6 +751,14 @@ show the active contract
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py subagent-start`
+
+SubagentStart lifecycle trace and bounded contract context (stdin event)
+
+## `tp.py subagent-stop`
+
+SubagentStop lifecycle trace (stdin event; advisory, never a completion gate)
 
 ## `tp.py summary`
 

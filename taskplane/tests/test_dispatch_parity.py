@@ -24,12 +24,14 @@ as stdout. These tests freeze it:
 
 BYTE NORMALIZATION (mirrors fixtures/briefs/regen.py): goldens are stored
 with sorted keys, indent=2, default ensure_ascii, trailing newline, after an
-env scrub (CODEX_HOME/CODEX_THREAD_ID/TASKPLANE_MODEL_*/TASKPLANE_WORKFLOWS/
-CLAUDE_CODE_WORKFLOWS unset). Payloads are compared as
+env scrub (CODEX_HOME/CODEX_THREAD_ID/TASKPLANE_MODEL_*/
+TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/CLAUDE_CODE_WORKFLOWS unset).
+Payloads are compared as
 `json.dumps(obj, indent=2, sort_keys=True)` bytes — key ORDER is the only
 thing normalization forgives; every key, value, prompt byte and brief count
-is pinned. The fixture routing input is workspace-relative (no abs paths)
-and the payload carries no timestamps, so the goldens are machine-portable.
+is pinned. The emitted absolute plugin root in `role_instructions` is replaced
+with `<PLUGIN>`; the fixture routing input is workspace-relative and the
+payload carries no timestamps, so the goldens are machine-portable.
 """
 import contextlib
 import io
@@ -50,17 +52,36 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BRIEFS = os.path.join(HERE, "fixtures", "briefs")
 WORKSPACE = os.path.join(BRIEFS, "workspace")
 DETECTORS = os.path.join(HERE, "fixtures", "detectors")
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(HERE))
 
 # every env var that may vary tier->model resolution or the dispatch path —
 # cleared for determinism (the goldens' documented env scrub)
 SCRUB_VARS = ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
               "TASKPLANE_MODEL_STANDARD", "TASKPLANE_MODEL_DEEP",
+              "TASKPLANE_REASONING_CHEAP", "TASKPLANE_REASONING_STANDARD",
+              "TASKPLANE_REASONING_DEEP",
               "TASKPLANE_WORKFLOWS", "CLAUDE_CODE_WORKFLOWS")
+
+
+def _scrub_plugin_root(value, root=PLUGIN_ROOT):
+    if isinstance(value, str):
+        base = root.rstrip("/\\")
+        if value.startswith(base):
+            suffix = value[len(base):].lstrip("/\\").replace("\\", "/")
+            return "<PLUGIN>/" + suffix if suffix else "<PLUGIN>"
+        return value.replace(base, "<PLUGIN>")
+    if isinstance(value, list):
+        return [_scrub_plugin_root(item, root) for item in value]
+    if isinstance(value, dict):
+        return {key: _scrub_plugin_root(item, root)
+                for key, item in value.items()}
+    return value
 
 
 def normalize(payload) -> str:
     """THE byte normalization (same dumps args as regen.py's goldens)."""
-    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    return json.dumps(_scrub_plugin_root(payload), indent=2,
+                      sort_keys=True) + "\n"
 
 
 def load_golden(name: str):
@@ -107,6 +128,15 @@ def scrubbed_env(monkeypatch):
 
 
 class TestGoldenReplay:
+    def test_path_scrub_handles_windows_separators_before_json_encoding(self):
+        root = r"C:\repo\taskPlane"
+        payload = {"role_instructions":
+                   root + r"\agents\tp-executor.md"}
+        scrubbed = _scrub_plugin_root(payload, root)
+        assert scrubbed["role_instructions"] == \
+            "<PLUGIN>/agents/tp-executor.md"
+        assert root not in json.dumps(scrubbed)
+
     def test_fixture_tree_matches_frozen_changed_files(self):
         """The checked-in tree IS the routing input — drift between the two
         would make the goldens replay a different change than the one the
@@ -155,12 +185,20 @@ class TestGoldenReplay:
         assert payload["base"] == "HEAD"
         assert payload["deep"] and payload["sweep"]
         for b in payload["deep"]:
+            assert b["task_name"] == tp.dispatch_task_name(
+                "lens", "tp-lens", b["id"])
+            assert b["role_marker"] == "taskplane-role:tp-lens"
+            assert b["role_instructions"].endswith("agents/tp-lens.md")
+            assert b["reasoning_effort"] in tp.REASONING_EFFORTS
             assert b["task_slot"] == f"lens-{b['id']}"
             assert b["contract"]["read_only"] is True
             assert b["contract"]["task_slot"] == b["task_slot"]
             assert b["output"] == f".em-review/lens-{b['id']}/findings.json"
             assert f"export TASKPLANE_TASK={b['task_slot']}" in b["prompt"]
         assert payload["sweep"]["model_tier"] == "cheap"
+        assert payload["sweep"]["reasoning_effort"] == "low"
+        assert payload["sweep"]["task_name"] == tp.dispatch_task_name(
+            "lens", "tp-lens", "sweep")
 
 
 # ------------------------------------------------- 2. codex-env CLI parity

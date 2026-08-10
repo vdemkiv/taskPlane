@@ -12,7 +12,8 @@ and the replay can never drift apart.
 SCRUB RULES (the R-0002 discipline extended to loop payloads — every rule
 is documented and applied identically at capture and replay):
   * env scrub — captured with CODEX_HOME, CODEX_THREAD_ID,
-    TASKPLANE_MODEL_CHEAP/STANDARD/DEEP, TASKPLANE_WORKFLOWS,
+    TASKPLANE_MODEL_CHEAP/STANDARD/DEEP,
+    TASKPLANE_REASONING_CHEAP/STANDARD/DEEP, TASKPLANE_WORKFLOWS,
     CLAUDE_CODE_WORKFLOWS and TASKPLANE_TASK unset (SCRUB_VARS);
   * path scrub — the throwaway workspace, the external store root, and the
     plugin checkout root are replaced with the stable tokens <WS>, <STORE>
@@ -47,6 +48,8 @@ if TASKPLANE not in sys.path:
 # the contract slot — cleared for determinism (the goldens' env scrub)
 SCRUB_VARS = ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
               "TASKPLANE_MODEL_STANDARD", "TASKPLANE_MODEL_DEEP",
+              "TASKPLANE_REASONING_CHEAP", "TASKPLANE_REASONING_STANDARD",
+              "TASKPLANE_REASONING_DEEP",
               "TASKPLANE_WORKFLOWS", "CLAUDE_CODE_WORKFLOWS",
               "TASKPLANE_TASK")
 

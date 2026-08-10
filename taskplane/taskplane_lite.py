@@ -1345,7 +1345,8 @@ def dor_check(contract: dict, workspace: str,
 
 def dod_check(contract: dict, workspace: str,
               snapshot_ref: str | None,
-              ignore_prefixes: tuple = ()) -> list:
+              ignore_prefixes: tuple = (),
+              regression_files=None) -> list:
     """Return a list of DoD errors ([] = pass). Fails closed if a scope
     diff is required but no snapshot exists.
 
@@ -1420,14 +1421,15 @@ def dod_check(contract: dict, workspace: str,
                 errors.append(f"tests_pass: '{tc}' exited {proc.returncode}: "
                               + tail)
 
-    # Graph-scoped regression gate (v2.3.1) — opt-in via dod.regression_gate.
+    # Graph-scoped regression gate (v2.3.1) — selected by the contract.
     # ADDITIVE: it only adds blockers, never removes an existing DoD check.
-    # Kept off by default until enabled per-contract so it cannot surprise an
-    # existing loop; the loop turns it on for governed changes.
+    # General-purpose callers can opt in; every governed coding and sign-off
+    # contract created by the loop enables it mechanically.
     if dod.get("regression_gate") and snapshot_ref:
         try:
             import regression as _rg
-            changed = changed_files(workspace, snapshot_ref)
+            changed = (list(regression_files) if regression_files is not None
+                       else changed_files(workspace, snapshot_ref))
             graph_impacted = None
             try:
                 import depgraph as _dg
@@ -1435,8 +1437,9 @@ def dod_check(contract: dict, workspace: str,
                     workspace, changed).get("impacted") or None
             except Exception:
                 graph_impacted = None      # sparse/absent graph → import-map only
-            errors.extend(_rg.dod_errors(workspace, snapshot_ref, changed,
-                                         graph_impacted))
+            errors.extend(_rg.dod_errors(
+                workspace, snapshot_ref, changed, graph_impacted,
+                test_command=tc))
         except Exception as e:
             # The gate must never crash the DoD it guards — degrade visibly.
             errors.append(f"regression_gate: could not run ({e.__class__.__name__}"
@@ -1833,6 +1836,58 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
     if write_allow:
         c["write_allow"] = list(write_allow)
     return c
+
+
+def requirement_coverage_errors(tasks, requirement_lookup,
+                                default_requirement=None,
+                                *, require_passed=False) -> list[str]:
+    """Prove every top-level acceptance criterion has a task owner.
+
+    `acceptance_refs` contains exact requirement-acceptance strings. A task
+    without explicit criteria owns its whole requirement for compatibility;
+    explicit criteria only count automatically when they are exact matches.
+    """
+    errors: list[str] = []
+    owned: dict[str, dict[str, set[str]]] = {}
+    records: dict[str, dict] = {}
+    for task in tasks or []:
+        rid = task.get("req") or default_requirement
+        rec = requirement_lookup(rid) if rid else None
+        if not rec:
+            if rid:
+                errors.append(f"task {task.get('id', '?')}: requirement "
+                              f"{rid} does not exist")
+            continue
+        records[rid] = rec
+        acceptance = [str(x).strip() for x in rec.get("acceptance") or []
+                      if str(x).strip()]
+        explicit = [str(x).strip() for x in task.get("criteria") or []
+                    if str(x).strip()]
+        refs = task.get("acceptance_refs")
+        refs = ([str(x).strip() for x in refs if str(x).strip()]
+                if refs is not None else
+                ([x for x in explicit if x in acceptance]
+                 if explicit else acceptance))
+        unknown = sorted(set(refs) - set(acceptance))
+        if unknown:
+            errors.append(f"task {task.get('id', '?')}: acceptance_refs not "
+                          f"in {rid}: " + "; ".join(unknown))
+        for criterion in set(refs) & set(acceptance):
+            owned.setdefault(rid, {}).setdefault(criterion, set()).add(
+                str(task.get("id", "?")))
+    by_id = {str(t.get("id")): t for t in tasks or []}
+    for rid, rec in records.items():
+        for criterion in rec.get("acceptance") or []:
+            owners = owned.get(rid, {}).get(str(criterion), set())
+            if not owners:
+                errors.append(f"requirement {rid}: acceptance has no task "
+                              f"owner: {criterion}")
+            elif require_passed and not any(
+                    by_id.get(tid, {}).get("status") == "passed"
+                    for tid in owners):
+                errors.append(f"requirement {rid}: acceptance has no passed "
+                              f"owner: {criterion}")
+    return errors
 
 
 def budget_status(contract: dict, used_actions: int) -> tuple[bool, str]:
@@ -2305,6 +2360,7 @@ def _ensure_self_ignored(d: str) -> None:
 # cost/latency is the natural benefit of capability-tiering — it is NOT a
 # pricing feature and carries no pricing data (kb-lint still forbids that).
 MODEL_TIERS = ("cheap", "standard", "deep")
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
 # Default tier -> model. Claude keeps the historical cheap=haiku mapping;
 # Codex inherits for every tier so no provider-specific id crosses hosts.
@@ -2314,6 +2370,62 @@ def _default_tier_models() -> dict:
     """Return defaults that never send another host's model identifier."""
     return {"cheap": None if host() == "codex" else "haiku",
             "standard": None, "deep": None}
+
+
+def reasoning_for_tier(tier: str | None) -> str:
+    """Resolve a capability tier to Codex's native reasoning effort.
+
+    Unlike model ids, reasoning effort is provider-neutral metadata: every
+    emitted brief carries it, while only Codex's native subagent dispatch
+    consumes it. Invalid overrides fall back to the tier default instead of
+    injecting an unsupported value into a host tool call.
+    """
+    t = (tier or "standard").strip().lower()
+    default = {"cheap": "low", "standard": "medium", "deep": "high"}.get(
+        t, "medium")
+    value = (os.environ.get("TASKPLANE_REASONING_" + t.upper()) or "").strip()
+    return value if value in REASONING_EFFORTS else default
+
+
+def dispatch_task_name(kind: str, agent: str, ref: str | None = None) -> str:
+    """Stable Codex task identity (lowercase letters/digits/underscores).
+
+    The human-facing taskplane role remains separate in ``agent``. Keeping
+    both fields prevents a generic Codex worker name from erasing who owns
+    the contract while still satisfying Codex's task-name grammar.
+    """
+    role = (agent or "agent").removeprefix("tp-")
+    parts = ["tp", kind]
+    if role != kind:
+        parts.append(role)
+    if ref:
+        parts.append(str(ref))
+    identity = "\0".join((str(kind), str(agent), str(ref or "")))
+    raw = "_".join(parts).lower()
+    name = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "tp_agent"
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
+    return name[:55].rstrip("_") + "_" + digest
+
+
+def role_marker(agent: str) -> str:
+    """Exact marker native Codex messages bind to a taskplane role."""
+    return "taskplane-role:" + str(agent)
+
+
+def dispatch_fields(kind: str, agent: str, ref: str,
+                    model_tier: str) -> dict:
+    """Host-neutral dispatch identity carried by every Codex task brief."""
+    role_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "agents", agent + ".md"))
+    return {
+        "role": agent,
+        "role_marker": role_marker(agent),
+        "role_instructions": role_path,
+        "task_name": dispatch_task_name(kind, agent, ref),
+        "model_tier": model_tier,
+        "model": model_for_tier(model_tier),
+        "reasoning_effort": reasoning_for_tier(model_tier),
+    }
 
 
 # --- dispatch verification (tier routing is only real if the driver passes
@@ -2335,6 +2447,16 @@ def _load_queue(path: str) -> list:
         return q if isinstance(q, list) else []
     except (OSError, ValueError):
         return []
+
+
+def _load_queue_strict(path: str) -> list:
+    """Dispatch audit state for enforcement; corruption never means empty."""
+    if not os.path.exists(path):
+        return []
+    q = load_json(path, what="dispatch expectation queue")
+    if not isinstance(q, list):
+        raise StateError(path, "dispatch expectation queue is not a list")
+    return q
 
 
 # Dispatch-audit queues are BOUNDED at this many entries (a size/GC trade —
@@ -2370,44 +2492,145 @@ def _save_queue(path: str, q: list) -> None:
 
 def record_expected_dispatch(workspace: str, kind: str, agent: str,
                              model_tier: str, model: str | None,
-                             ref: str | None = None) -> None:
+                             ref: str | None = None,
+                             task_name: str | None = None,
+                             reasoning_effort: str | None = None,
+                             role_marker_value: str | None = None) -> None:
     """Called when a brief is emitted (`loop next` / `lens dispatch`): what
     agent SHOULD be dispatched next, on what model. A queue, not a scalar —
     a parallel wave emits many briefs with different tiers at once."""
     path = _dispatch_path(workspace, "expected_dispatch.json")
     with _file_lock(path):
-        q = _load_queue(path)
-        q.append({"ts": _now(), "kind": kind, "agent": agent, "ref": ref,
-                  "model_tier": model_tier, "model": model, "matched": False})
+        q = _load_queue_strict(path)
+        entry = {"ts": _now(), "kind": kind, "agent": agent, "ref": ref,
+                 "task_name": task_name or dispatch_task_name(
+                     kind, agent, ref),
+                 "role_marker": role_marker_value or role_marker(agent),
+                 "model_tier": model_tier, "model": model,
+                 "reasoning_effort": reasoning_effort or
+                 reasoning_for_tier(model_tier), "matched": False}
+        # Emission is observational and may be repeated (refreshing a wave,
+        # reopening a brief). Keep one pending expectation per native
+        # identity and refresh its routing fields instead of manufacturing a
+        # stale duplicate that can block an unrelated later spawn.
+        for prior in q:
+            same_identity = all(prior.get(k) == entry.get(k)
+                                for k in ("kind", "task_name", "agent", "ref"))
+            if same_identity and not prior.get("matched"):
+                prior.update(entry)
+                _save_queue(path, q)
+                return
+        q.append(entry)
         _save_queue(path, q)
 
 
-def consume_expectation(workspace: str, agent: str) -> dict | None:
-    """Oldest unmatched expectation for this agent short-name (host
-    subagent_type arrives namespaced, e.g. `taskplane:tp-lens`)."""
+def consume_expectation(workspace: str, agent: str,
+                        strict: bool = False) -> dict | None:
+    """Oldest unmatched expectation for a role or Codex task name."""
     short = (agent or "").split(":")[-1]
     path = _dispatch_path(workspace, "expected_dispatch.json")
     with _file_lock(path):
-        q = _load_queue(path)
+        q = _load_queue_strict(path) if strict else _load_queue(path)
         for e in q:
-            if not e.get("matched") and e.get("agent") == short:
+            if not e.get("matched") and short in (
+                    e.get("agent"), e.get("task_name")):
                 e["matched"] = True
                 _save_queue(path, q)
                 return e
     return None
 
 
+def peek_expectation(workspace: str, agent: str | None = None,
+                     strict: bool = False) -> dict | None:
+    """Read, but do not consume, a matching (or oldest) expectation."""
+    short = (agent or "").split(":")[-1]
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    with _file_lock(path):
+        q = _load_queue_strict(path) if strict else _load_queue(path)
+        for e in q:
+            matches = not agent or short in (e.get("agent"),
+                                              e.get("task_name"))
+            if not e.get("matched") and matches:
+                return dict(e)
+    return None
+
+
+def mark_expectation(workspace: str, expected: dict,
+                     strict: bool = False) -> bool:
+    """Consume the exact expectation after strict native fields validate."""
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    with _file_lock(path):
+        q = _load_queue_strict(path) if strict else _load_queue(path)
+        for e in q:
+            same = all(e.get(k) == expected.get(k)
+                       for k in ("ts", "task_name", "agent", "ref"))
+            if same and not e.get("matched"):
+                e["matched"] = True
+                _save_queue(path, q)
+                return True
+    return False
+
+
 def record_observed_dispatch(workspace: str, agent: str, model: str | None,
-                             expected: dict | None, ok: bool) -> None:
+                             expected: dict | None, ok: bool,
+                             reasoning_effort: str | None = None) -> None:
     path = _dispatch_path(workspace, "observed_dispatch.json")
     with _file_lock(path):
-        q = _load_queue(path)
+        q = _load_queue_strict(path)
         q.append({"ts": _now(), "agent": (agent or "").split(":")[-1],
-                  "model": model, "ok": ok,
+                  "model": model, "reasoning_effort": reasoning_effort,
+                  "ok": ok,
                   "expected_model": expected and expected.get("model"),
+                  "expected_reasoning_effort": expected and expected.get(
+                      "reasoning_effort"),
                   "expected_tier": expected and expected.get("model_tier"),
                   "ref": expected and expected.get("ref")})
         _save_queue(path, q)
+
+
+def commit_dispatch_verification(workspace: str, agent: str,
+                                 model: str | None,
+                                 expected: dict | None, ok: bool,
+                                 reasoning_effort: str | None = None,
+                                 strict: bool = False) -> bool:
+    """Audit a dispatch, then consume its expectation as one ordered commit.
+
+    The expectation is saved *after* the observation. Any parse, lock, or
+    audit-write failure therefore leaves it pending and retryable; strict
+    callers can deny without silently losing the brief they must retry.
+    """
+    exp_path = _dispatch_path(workspace, "expected_dispatch.json")
+    obs_path = _dispatch_path(workspace, "observed_dispatch.json")
+    with _file_lock(exp_path):
+        exp_q = (_load_queue_strict(exp_path) if strict
+                 else _load_queue(exp_path))
+        match = None
+        if ok and expected is not None:
+            for row in exp_q:
+                same = all(row.get(k) == expected.get(k)
+                           for k in ("ts", "task_name", "agent", "ref"))
+                if same and not row.get("matched"):
+                    match = row
+                    break
+            ok = match is not None
+        with _file_lock(obs_path):
+            obs_q = (_load_queue_strict(obs_path) if strict
+                     else _load_queue(obs_path))
+            obs_q.append({
+                "ts": _now(), "agent": (agent or "").split(":")[-1],
+                "model": model, "reasoning_effort": reasoning_effort,
+                "ok": bool(ok),
+                "expected_model": expected and expected.get("model"),
+                "expected_reasoning_effort": expected and expected.get(
+                    "reasoning_effort"),
+                "expected_tier": expected and expected.get("model_tier"),
+                "ref": expected and expected.get("ref"),
+            })
+            _save_queue(obs_path, obs_q)
+        if ok and match is not None:
+            match["matched"] = True
+            _save_queue(exp_path, exp_q)
+        return bool(ok)
 
 
 def dispatch_report(workspace: str) -> dict:

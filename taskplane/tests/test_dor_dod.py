@@ -80,6 +80,12 @@ class TestSignoffDoD(unittest.TestCase):
         self.assertFalse(d["passed"])
         self.assertTrue(any("diff_scope" in e for e in d["errors"]), d["errors"])
 
+    def test_missing_baseline_is_a_structured_signoff_failure(self):
+        ws = _repo(self.tmp)
+        d = loop._signoff_dod(ws, self._state(None))
+        self.assertFalse(d["passed"])
+        self.assertTrue(any("no git snapshot" in e for e in d["errors"]))
+
     def test_loop_owned_artifacts_do_not_fail_signoff_scope(self):
         # design/, plan/, specs/ etc. are authored by governed steps under
         # their own write-allow contracts + human gates; the sign-off

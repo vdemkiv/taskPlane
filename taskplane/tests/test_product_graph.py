@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
 import loop  # noqa: E402
+import requirements  # noqa: E402
 
 
 def _git(ws, *args):
@@ -76,12 +77,14 @@ class TestProductLayer(unittest.TestCase):
         # another requirement already realizes the api surface
         depgraph.link_requirement(
             self.ws, "R-0009", ["src/api/**"], kind="realizes")
+        requirement = requirements.record_requirement(
+            self.ws, "API change", acceptance=["API remains correct"])
         loop.init(self.ws, "goal")
         state = loop.load(self.ws)
         state["step"] = "plan"
         loop.save(self.ws, state)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"tasks": [{"id": "t1", "req": "R-0010",
+        json.dump({"tasks": [{"id": "t1", "req": requirement["id"],
                               "scope": ["src/api/**"], "tests": "true"}]},
                   open(os.path.join(self.ws, "plan", "tasks.json"), "w"))
         loop.gate(self.ws, "pass")
@@ -91,7 +94,7 @@ class TestProductLayer(unittest.TestCase):
         self.assertIn("req:R-0009", blast["shared_with"])
         # and the planned link for the task's own requirement exists
         g = depgraph.load(self.ws)
-        self.assertTrue(any(e["from"] == "req:R-0010"
+        self.assertTrue(any(e["from"] == "req:" + requirement["id"]
                             and e["kind"] == "planned"
                             for e in g["edges"]))
 

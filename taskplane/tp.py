@@ -276,7 +276,9 @@ def _onboard_report(ws: str) -> dict:
             # model-tiers.md). Surfacing it here is what makes the routing
             # discoverable instead of a silent no-op.
             "model_tiers": {t: (tp.model_for_tier(t) or "inherit")
-                            for t in tp.MODEL_TIERS}}
+                            for t in tp.MODEL_TIERS},
+            "reasoning_tiers": {t: tp.reasoning_for_tier(t)
+                                for t in tp.MODEL_TIERS}}
 
 
 # --------------------------------------------------------------- new
@@ -369,35 +371,78 @@ def _print_dor(ready, blockers, warnings) -> None:
 def cmd_screen_dispatch(a) -> int:
     """PreToolUse hook for the Agent/Task tool: verify the driver dispatched
     the model the most recent matching brief resolved (tier routing). OPT-IN
-    and fail-open — inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict.
-    warn: allow + a visible correction message. strict: deny with the same
-    message so the driver re-dispatches with the right model."""
+    — inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict. Warn is advisory;
+    strict fails closed on a mismatch or verification error so the driver
+    must re-dispatch with the brief's exact native Codex identity, role marker,
+    model, and reasoning effort."""
     mode = (os.environ.get("TASKPLANE_ENFORCE_DISPATCH") or "").strip().lower()
     try:
         event = json.load(sys.stdin)
-    except Exception:
+    except Exception as exc:
+        if mode == "strict":
+            reason = ("taskplane dispatch check: malformed hook input "
+                      f"({type(exc).__name__}); strict verification cannot "
+                      "prove this dispatch, so it is denied.")
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": reason}}))
         return 0
     if mode not in ("warn", "strict"):
         return 0                                   # opt-in: default inert
     try:
         ti = event.get("tool_input") or {}
-        agent = (ti.get("subagent_type") or ti.get("agent_type")
-                 or ti.get("task_name") or "")
+        native_codex = bool(ti.get("task_name"))
+        agent = (ti.get("task_name") or ti.get("subagent_type")
+                 or ti.get("agent_type") or "")
         model = ti.get("model")
+        effort = ti.get("reasoning_effort")
+        message = ti.get("message") or ti.get("prompt") or ""
+        if not isinstance(message, str):
+            message = ""
         ws = _workspace(event.get("cwd"))
-        exp = tp.consume_expectation(ws, agent)
+        strict = mode == "strict"
+        exp = tp.peek_expectation(ws, agent, strict=strict)
+        name_ok = True
+        if native_codex and exp is None:
+            exp = tp.peek_expectation(ws, strict=strict)
+            name_ok = exp is None
         expected_model = exp and exp.get("model")
-        ok = (exp is None) or (expected_model is None) \
-            or (model == expected_model)
-        tp.record_observed_dispatch(ws, agent, model, exp, ok)
+        expected_effort = exp and exp.get("reasoning_effort")
+        unknown_governed = exp is None and native_codex and agent.startswith(
+            "tp_")
+        model_ok = exp is None or (model == expected_model if native_codex
+                                  else expected_model is None or
+                                  model == expected_model)
+        effort_ok = exp is None or not native_codex or effort == expected_effort
+        marker = exp and (exp.get("role_marker") or tp.role_marker(
+            exp.get("agent", "")))
+        marker_present = bool(marker) and any(
+            line.strip() == marker for line in message.splitlines())
+        role_ok = exp is None or (
+            marker_present if native_codex else
+            not ti.get("role") or ti.get("role") == exp.get("agent"))
+        ok = name_ok and not unknown_governed and model_ok and effort_ok \
+            and role_ok
+        ok = tp.commit_dispatch_verification(
+            ws, agent, model, exp, ok, effort, strict=strict)
         if ok:
             return 0
-        reason = (f"taskplane dispatch check: the {exp['kind']} brief "
-                  f"'{exp.get('ref') or exp['agent']}' resolved "
-                  f"model={expected_model} (tier {exp['model_tier']}) but "
-                  f"this agent was dispatched with "
-                  f"model={model or '<inherit session model>'} — pass "
-                  f"model=\"{expected_model}\" to the Agent tool.")
+        if exp is None:
+            reason = (f"taskplane dispatch check: native Codex task_name "
+                      f"{agent!r} claims taskplane ownership but no matching "
+                      "emitted brief exists; use the exact task_name from "
+                      "`tp loop next` or `tp lens dispatch`.")
+        else:
+            reason = (f"taskplane dispatch check: brief "
+                      f"'{exp.get('ref') or exp['agent']}' requires "
+                      f"task_name={exp.get('task_name')}, "
+                      f"role={exp.get('agent')}, model="
+                      f"{expected_model or '<inherit>'}, reasoning_effort="
+                      f"{expected_effort}; observed task_name={agent}, "
+                      f"role_marker={'present' if marker_present else 'missing'}, "
+                      f"model={model or '<inherit>'}, reasoning_effort="
+                      f"{effort or '<unset>'}. Re-dispatch with the exact "
+                      "native Codex fields from the brief.")
         if mode == "strict":
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -407,15 +452,81 @@ def cmd_screen_dispatch(a) -> int:
             print(json.dumps({"systemMessage": reason}))
         return 0
     except Exception as e:
-        # Never break dispatch — but in STRICT mode a silent fail-open means
-        # the enforcement the operator asked for vanished with no trace.
-        # Emit a diagnostic (warn-style, non-blocking) so the failure is
-        # visible instead of invisible. (v1.5.2)
         if mode == "strict":
+            reason = ("taskplane dispatch check errored "
+                      f"({type(e).__name__}); strict verification cannot "
+                      "prove this dispatch, so it is denied.")
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": reason}}))
+        elif mode == "warn":
             print(json.dumps({"systemMessage":
-                              f"taskplane dispatch check errored and "
-                              f"fell open (allowed): {e}"}))
+                              f"taskplane dispatch check errored: {e}"}))
         return 0
+
+
+def _subagent_event() -> dict:
+    try:
+        event = json.load(sys.stdin)
+        return event if isinstance(event, dict) else {}
+    except Exception:
+        return {}
+
+
+def _subagent_workspace(event: dict) -> str:
+    """Lifecycle hooks stay advisory even on semantically malformed input."""
+    cwd = event.get("cwd")
+    return _workspace(cwd if isinstance(cwd, str) and cwd else None)
+
+
+def cmd_subagent_start(a) -> int:
+    """Codex lifecycle trace plus bounded, advisory contract context."""
+    event = _subagent_event()
+    ws = _subagent_workspace(event)
+    agent_id = event.get("agent_id")
+    agent_type = event.get("agent_type")
+    tp.trace(ws, "subagent_start", agent_id=agent_id,
+             agent_type=agent_type, turn_id=event.get("turn_id"),
+             permission_mode=event.get("permission_mode"))
+    try:
+        contract = tp.load_active(ws)
+    except Exception as exc:
+        contract = None
+        tp.trace(ws, "subagent_context_error", agent_id=agent_id,
+                 error=type(exc).__name__)
+    if isinstance(contract, dict) and contract:
+        coding = contract.get("coding")
+        coding = coding if isinstance(coding, dict) else {}
+        scopes = coding.get("scope_paths")
+        scope_count = len(scopes) if isinstance(scopes, list) else 0
+        raw_task_id = str(contract.get("task_id") or "unknown")
+        safe_task_id = re.sub(r"[^A-Za-z0-9_.:/-]+", "_",
+                              raw_task_id).strip("_")[:96] or "unknown"
+        context = ("[taskplane] Governed subagent lifecycle is active. "
+                   "Lifecycle hooks trace activity only; PreToolUse "
+                   "screening and DoD evidence remain authoritative. "
+                   f"Contract={safe_task_id}; "
+                   f"read_only={bool(contract.get('read_only'))}; "
+                   f"scope_entries={scope_count}. Preserve the "
+                   "emitted taskplane role and task slot.")
+        context = context[:560] + ("…" if len(context) > 560 else "")
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "SubagentStart",
+            "additionalContext": context}}))
+    return 0
+
+
+def cmd_subagent_stop(a) -> int:
+    """Trace Codex subagent completion without creating a new gate."""
+    event = _subagent_event()
+    ws = _subagent_workspace(event)
+    tp.trace(ws, "subagent_stop", agent_id=event.get("agent_id"),
+             agent_type=event.get("agent_type"),
+             turn_id=event.get("turn_id"),
+             has_transcript=bool(event.get("agent_transcript_path")),
+             has_message=bool(event.get("last_assistant_message")))
+    print("{}")  # SubagentStop requires JSON on successful exit.
+    return 0
 
 
 def cmd_decision(a) -> int:
@@ -1006,6 +1117,7 @@ def cmd_loop(a) -> int:
             # printed to stderr) — nonzero exit, NO payload on stdout, so a
             # scripted driver can never dispatch what cannot run.
             return 1
+        _record_parallel_expectations(ws, out)
         if wrapped is not None:
             print(json.dumps(wrapped, indent=2))
             return 0
@@ -1103,6 +1215,25 @@ def _emit_workflow_refusal(avail: dict) -> "str | None":
 
 STAGE_WAVE_NAMES = {"execute": "execute-wave", "evaluate": "evaluate-wave",
                     "fix": "fix-wave"}
+
+
+def _record_parallel_expectations(ws: str, payload: dict) -> None:
+    """Register native identities once a parallel wave is actually emitted."""
+    if not isinstance(payload, dict) or payload.get("step") != "execute" \
+            or not payload.get("parallel"):
+        return
+    for entry in payload.get("wave") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("task"), dict):
+            continue
+        task_id = entry["task"].get("id")
+        if not task_id:
+            continue
+        tp.record_expected_dispatch(
+            ws, "step", entry.get("role", "tp-executor"),
+            entry.get("model_tier", "standard"), entry.get("model"),
+            ref=task_id, task_name=entry.get("task_name"),
+            reasoning_effort=entry.get("reasoning_effort"),
+            role_marker_value=entry.get("role_marker"))
 
 
 def _stage_activation(slot: str) -> str:
@@ -1384,13 +1515,19 @@ def cmd_lens(a) -> int:
                 tp.record_expected_dispatch(ws, "lens",
                                             b.get("agent", "tp-lens"),
                                             b.get("model_tier", "standard"),
-                                            b.get("model"), ref=b.get("id"))
+                                            b.get("model"), ref=b.get("id"),
+                                            task_name=b.get("task_name"),
+                                            reasoning_effort=b.get(
+                                                "reasoning_effort"))
             sw = briefs.get("sweep")
             if sw:
                 tp.record_expected_dispatch(ws, "lens",
                                             sw.get("agent", "tp-lens"),
                                             sw.get("model_tier", "cheap"),
-                                            sw.get("model"), ref="sweep")
+                                            sw.get("model"), ref="sweep",
+                                            task_name=sw.get("task_name"),
+                                            reasoning_effort=sw.get(
+                                                "reasoning_effort"))
         if getattr(a, "dashboard", False):
             import dashboard
 
@@ -2582,6 +2719,13 @@ def main(argv=None) -> int:
                         "Agent tool: verify tier-routed model was passed "
                         "(inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict)")
     sd.set_defaults(fn=cmd_screen_dispatch)
+
+    sas = sub.add_parser("subagent-start", help="SubagentStart lifecycle "
+                         "trace and bounded contract context (stdin event)")
+    sas.set_defaults(fn=cmd_subagent_start)
+    saz = sub.add_parser("subagent-stop", help="SubagentStop lifecycle trace "
+                         "(stdin event; advisory, never a completion gate)")
+    saz.set_defaults(fn=cmd_subagent_stop)
 
     rd = sub.add_parser("ready", help="Definition-of-Ready entry gate")
     rd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)

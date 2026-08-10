@@ -5,8 +5,8 @@ taskplane pins **no** model in any agent's frontmatter. Every agent stays
 name is exactly why a sibling orchestrator's agents fail to spawn on a host
 that names models differently). Instead, a loop **step**, a planned **task**, or
 a review **lens** carries an abstract *capability tier*, and the loop **driver**
-resolves that tier to a concrete model at dispatch time — the Agent tool's
-`model` parameter. Match model power to task difficulty: mechanical work runs on
+resolves that tier to a concrete model at dispatch time. On Codex it also
+resolves the tier to native `reasoning_effort`. Match power to task difficulty: mechanical work runs on
 a cheaper/faster model, hard reasoning on a stronger one. Lower cost and latency
 are the natural benefit of capability-tiering — this is **not** a pricing
 feature and carries no pricing data (kb-lint still forbids that in the store).
@@ -31,10 +31,15 @@ you opt in** and no cross-provider model identifier is forced.
 export TASKPLANE_MODEL_CHEAP=<host-model-id>
 export TASKPLANE_MODEL_STANDARD=<host-model-id>  # or leave unset = inherit
 export TASKPLANE_MODEL_DEEP=<host-model-id>      # stronger planning/review
+export TASKPLANE_REASONING_CHEAP=low
+export TASKPLANE_REASONING_STANDARD=medium
+export TASKPLANE_REASONING_DEEP=high
 ```
 
 A value of `inherit` or empty means "inherit the session model". An unknown
 tier degrades to inherit rather than erroring, so a typo never blocks the loop.
+Invalid reasoning-effort overrides fall back to the tier defaults above;
+supported values are `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`.
 
 ## How each surface carries a tier
 
@@ -49,12 +54,11 @@ tier degrades to inherit rather than erroring, so a typo never blocks the loop.
 
 ## What the driver does
 
-`tp loop next` returns `model_tier` and a resolved `model` (a concrete id, or
-`null` = inherit) in its payload; `tp lens dispatch` puts `model_tier` + `model`
-on every brief. When the driver dispatches the role/lens agent, it passes that
-`model` to the Agent tool's `model` param — `null` means omit it and inherit the
-session model. The agent frontmatter is never touched; the pin lives only at the
-dispatch call, which is what keeps taskplane portable.
+`tp loop next` and `tp lens dispatch` emit a stable Codex-safe `task_name`, the
+taskplane `role`/`agent`, `model_tier`, resolved `model` (or `null` = inherit),
+and `reasoning_effort`. A native Codex dispatch must use the exact task name and
+effort and omit `model` when null. Agent frontmatter remains portable; routing
+lives only at dispatch.
 
 ## Verify it worked (don't assume)
 
@@ -67,8 +71,9 @@ the gap:
   `trace.jsonl` analysis, mechanized.
 - **Enforce at dispatch (opt-in)** — set `TASKPLANE_ENFORCE_DISPATCH=warn`
   (or `strict`) and the shipped PreToolUse hook on the Agent tool checks each
-  dispatch against the matching brief: `warn` surfaces a correction message,
-  `strict` denies the dispatch until the emitted `model` is passed. Unset,
+  dispatch against the matching brief: `warn` surfaces a correction message;
+  for native Codex, `strict` denies an unknown taskplane task name or a task,
+  model, role, or effort mismatch. Unset,
   the hook is inert — enforcement is opt-in by design.
 
 **Know the default:** on Claude only `cheap` pins a model (`haiku`); on Codex

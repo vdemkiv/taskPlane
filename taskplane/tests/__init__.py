@@ -29,7 +29,7 @@ import unittest
 # Deliberately still under the system temp dir, so a test asserting a
 # path prefix keeps passing, and ignore_errors so a locked file at exit
 # costs disk, never a red suite.
-_TMP_ROOT = tempfile.mkdtemp(prefix="tp-tests-")
+_TMP_ROOT = os.path.realpath(tempfile.mkdtemp(prefix="tp-tests-"))
 tempfile.tempdir = _TMP_ROOT
 os.environ["TMPDIR"] = _TMP_ROOT
 atexit.register(shutil.rmtree, _TMP_ROOT, ignore_errors=True)

@@ -36,7 +36,8 @@
    north star line feeds the north-star review, tech-stack feeds engineering
    lenses, workflow sets gate conventions.
 4. **Model tiers (cost routing).** `$TP onboard --json` includes
-   `model_tiers` — the resolved tier→model map. Explain the default to the
+   `model_tiers` and `reasoning_tiers` — the resolved tier→model and native
+   Codex tier→effort maps. Explain the defaults to the
    user: on Claude only `cheap` is pinned (`haiku`); on Codex it inherits so
    no Claude model id is dispatched. `standard`/`deep` inherit until
    `TASKPLANE_MODEL_STANDARD` / `TASKPLANE_MODEL_DEEP` are set. Offer to set

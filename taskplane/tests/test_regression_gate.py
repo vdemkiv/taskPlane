@@ -5,7 +5,11 @@ against a tiny synthetic package tree, plus the real taskplane tree, so the
 gate is verified without spawning nested pytest runs.
 """
 import os
+import subprocess
+import sys
 import textwrap
+
+import pytest
 
 from taskplane import regression as rg
 
@@ -59,6 +63,10 @@ def test_radius_degrades_when_changed_module_has_no_test(tmp_path):
     # tp.py has no importing test → degraded=True (caller runs full suite)
     radius, degraded = rg.radius_tests(ws, ["taskplane/tp.py"])
     assert degraded is True
+    assert radius == {
+        os.path.join("taskplane", "tests", "test_dash_x.py"),
+        os.path.join("taskplane", "tests", "test_loop_x.py"),
+    }
 
 
 def test_radius_empty_when_no_source_module_changed(tmp_path):
@@ -76,13 +84,264 @@ def test_graph_impacted_widens_radius(tmp_path):
     assert os.path.join("taskplane", "tests", "test_dash_x.py") in radius
 
 
+def test_depth_keyed_graph_impact_widens_radius(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    impact = {1: [{"module": "taskplane/dashboard.py", "via": "loop"}]}
+    radius, _ = rg.radius_tests(
+        ws, ["taskplane/loop.py"], graph_impacted=impact)
+    assert os.path.join("taskplane", "tests", "test_dash_x.py") in radius
+
+
+def test_radius_supports_source_and_tests_outside_taskplane_layout(tmp_path):
+    pkg = tmp_path / "src" / "acme"
+    tests = tmp_path / "tests"
+    pkg.mkdir(parents=True)
+    tests.mkdir()
+    (pkg / "service.py").write_text("def value(): return 1\n")
+    (tests / "test_service.py").write_text(
+        "from src.acme import service\n"
+        "def test_value(): assert service.value() == 1\n")
+
+    radius, degraded = rg.radius_tests(
+        str(tmp_path), ["src/acme/service.py"])
+
+    assert radius == {os.path.join("tests", "test_service.py")}
+    assert degraded is False
+
+
+def test_unmapped_generic_module_falls_back_to_every_python_test(tmp_path):
+    pkg = tmp_path / "src" / "acme"
+    tests = tmp_path / "tests"
+    pkg.mkdir(parents=True)
+    tests.mkdir()
+    (pkg / "service.py").write_text("VALUE = 1\n")
+    (tests / "test_one.py").write_text("def test_one(): assert True\n")
+    (tests / "test_two.py").write_text("def test_two(): assert True\n")
+
+    radius, degraded = rg.radius_tests(
+        str(tmp_path), ["src/acme/service.py"])
+
+    assert degraded is True
+    assert radius == {
+        os.path.join("tests", "test_one.py"),
+        os.path.join("tests", "test_two.py"),
+    }
+
+
+def test_duplicate_basename_cannot_prove_a_narrow_radius(tmp_path):
+    for package in ("a", "b"):
+        path = tmp_path / "src" / package
+        path.mkdir(parents=True)
+        (path / "service.py").write_text("VALUE = 1\n")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_b.py").write_text("import src.b.service\n")
+    (tests / "test_other.py").write_text("def test_ok(): assert True\n")
+
+    radius, degraded = rg.radius_tests(
+        str(tmp_path), ["src/a/service.py"])
+
+    assert degraded is True
+    assert radius == {"tests/test_b.py", "tests/test_other.py"}
+
+
+def test_git_discovery_excludes_ignored_foreign_tests(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+    (tmp_path / ".gitignore").write_text("vendor/\n")
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "test_foreign.py").write_text("raise RuntimeError('foreign')\n")
+
+    radius, degraded = rg.radius_tests(ws, ["taskplane/tp.py"])
+
+    assert degraded is True
+    assert all(not path.startswith("vendor/") for path in radius)
+
+
+def test_test_fixtures_are_support_code_not_standalone_radius_tests(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    fixtures = tmp_path / "taskplane" / "tests" / "fixtures"
+    fixtures.mkdir()
+    fixture = fixtures / "cli.py"
+    fixture.write_text("raise RuntimeError('only valid when loaded as data')\n")
+    (tmp_path / "conftest.py").write_text("ROOT_FIXTURE = True\n")
+
+    tests = rg._python_files(ws, tests=True)
+    sources = rg._python_files(ws, tests=False)
+
+    assert "taskplane/tests/fixtures/cli.py" not in tests
+    assert "taskplane/tests/fixtures/cli.py" not in sources
+    assert "conftest.py" not in tests
+    assert "conftest.py" not in sources
+    assert "taskplane/tests/test_loop_x.py" in tests
+
+
+def test_git_discovery_failure_blocks_instead_of_using_os_walk(
+        monkeypatch, tmp_path):
+    ws = _mk_pkg(tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+        return subprocess.CompletedProcess(cmd, 128, "", "permission denied")
+
+    monkeypatch.setattr(rg.subprocess, "run", fake_run)
+    with pytest.raises(rg.RegressionDiscoveryError, match="permission denied"):
+        rg.radius_tests(ws, ["taskplane/loop.py"])
+
+
+def test_fallback_stays_within_approved_test_roots(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    foreign = tmp_path / "foreign_tests"
+    foreign.mkdir()
+    (foreign / "test_foreign.py").write_text("raise RuntimeError('no')\n")
+    roots = rg.approved_test_roots(
+        ws, "python -m pytest taskplane/tests/test_loop_x.py")
+
+    radius, degraded = rg.radius_tests(
+        ws, ["taskplane/tp.py"], test_roots=roots)
+
+    assert degraded is True
+    assert all(path.startswith("taskplane/tests/") for path in radius)
+
+
+def test_non_pytest_command_authorizes_no_python_fallback(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    roots = rg.approved_test_roots(ws, "npm test")
+
+    radius, degraded = rg.radius_tests(
+        ws, ["taskplane/tp.py"], test_roots=roots)
+
+    assert roots == set()
+    assert radius == set()
+    assert degraded is True
+
+
+@pytest.mark.parametrize("command", [
+    "echo pytest",
+    "python checker.py pytest",
+    "python checker.py -m pytest",
+    "python-helper -m pytest",
+    "pytest-helper --all",
+])
+def test_merely_mentioning_pytest_does_not_authorize_fallback(tmp_path, command):
+    ws = _mk_pkg(tmp_path)
+    assert rg.approved_test_roots(ws, command) == set()
+
+
+def test_interpreter_token_is_never_reconsidered_as_a_test_root(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    (tmp_path / "python").mkdir()
+
+    roots = rg.approved_test_roots(
+        ws, "python -m pytest taskplane/tests/test_loop_x.py")
+
+    assert roots == {"taskplane/tests"}
+
+
+@pytest.mark.parametrize("command", [
+    "env -u CODEX_HOME -u CODEX_THREAD_ID python -m pytest -q",
+    "env -uCODEX_HOME python -m pytest -q",
+    "env --unset=CODEX_HOME CI=1 python -m pytest -q",
+    "env -- CI=1 python -m pytest taskplane/tests/test_loop_x.py",
+    "py -3 -m pytest taskplane/tests/test_loop_x.py",
+    "py -3.13 -m pytest taskplane/tests/test_loop_x.py",
+])
+def test_supported_pytest_launchers_authorize_their_test_roots(
+        tmp_path, command):
+    ws = _mk_pkg(tmp_path)
+
+    roots = rg.approved_test_roots(ws, command)
+
+    expected = {"taskplane/tests"} if "test_loop_x.py" in command else {"."}
+    assert roots == expected
+
+
+@pytest.mark.parametrize("command", [
+    "env -u python -m pytest",
+    "env --unset= python -m pytest",
+    "env FOO=1 -u BAR python -m pytest",
+])
+def test_malformed_env_prefix_authorizes_no_fallback(tmp_path, command):
+    ws = _mk_pkg(tmp_path)
+    assert rg.approved_test_roots(ws, command) == set()
+
+
+@pytest.mark.parametrize("option", sorted(rg._PYTEST_VALUE_OPTIONS))
+def test_pytest_option_missing_value_authorizes_no_fallback(tmp_path, option):
+    ws = _mk_pkg(tmp_path)
+    assert rg.approved_test_roots(ws, f"python -m pytest {option}") == set()
+
+
+@pytest.mark.parametrize("option", sorted(rg._PYTEST_VALUE_OPTIONS))
+def test_pytest_option_cannot_consume_following_option(tmp_path, option):
+    ws = _mk_pkg(tmp_path)
+    command = f"python -m pytest {option} --collect-only"
+    assert rg.approved_test_roots(ws, command) == set()
+
+
+@pytest.mark.parametrize("prefix", [
+    "CI-FLAG=1", "--fake=x", "tools/run=x",
+])
+def test_invalid_assignment_prefix_authorizes_no_fallback(tmp_path, prefix):
+    ws = _mk_pkg(tmp_path)
+    assert rg.approved_test_roots(
+        ws, f"{prefix} python -m pytest") == set()
+
+
+@pytest.mark.parametrize("command", [
+    "pytest taskplane/tests < other_tests/input.py",
+    "pytest taskplane/tests>runner.log",
+    "pytest taskplane/tests && pytest other_tests",
+    "pytest taskplane/tests\npytest .",
+    "pytest taskplane/tests\rpytest .",
+    "pytest taskplane/tests # approved\npytest .",
+])
+def test_shell_control_syntax_authorizes_no_fallback(tmp_path, command):
+    ws = _mk_pkg(tmp_path)
+    assert rg.approved_test_roots(ws, command) == set()
+
+
+def test_symlink_spelled_workspace_returns_canonical_relative_root(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    _mk_pkg(real)
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlinks are unavailable")
+
+    roots = rg.approved_test_roots(
+        str(alias), "python -m pytest taskplane/tests")
+    radius, degraded = rg.radius_tests(
+        str(alias), ["taskplane/loop.py"], test_roots=roots)
+
+    assert roots == {"taskplane/tests"}
+    assert radius == {"taskplane/tests/test_loop_x.py"}
+    assert degraded is False
+
+
+def test_command_tokenizer_preserves_windows_path_separators():
+    command = r"py -3 -m pytest tests\test_service.py"
+    lexer = rg.shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.escape = ""
+    assert rg._pytest_argv(list(lexer)) == [r"tests\test_service.py"]
+
+
 # ----------------------------------------------------- coverage-gap (Tier 2)
 
 def test_config_change_with_no_test_is_a_coverage_gap(tmp_path):
     ws = _mk_pkg(tmp_path)
-    rg.test_import_index_cache["idx"] = rg.test_import_index(ws)
+    index = rg.test_import_index(ws)
     # ws points at the synthetic pkg (no test references ci.yml there)
-    gaps = rg.coverage_gaps([".github/workflows/ci.yml"], radius=set(), ws=ws)
+    gaps = rg.coverage_gaps(
+        [".github/workflows/ci.yml"], radius=set(), ws=ws,
+        import_index=index)
     assert ".github/workflows/ci.yml" in gaps
 
 
@@ -91,8 +350,10 @@ def test_config_gap_clears_when_a_test_names_the_path(tmp_path):
     # a lint-test that references the config path by name COVERS it
     (tmp_path / "taskplane" / "tests" / "test_ci_lint.py").write_text(
         "def test_ci(): assert '.github/workflows/ci.yml'\n")
-    rg.test_import_index_cache["idx"] = rg.test_import_index(ws)
-    gaps = rg.coverage_gaps([".github/workflows/ci.yml"], radius=set(), ws=ws)
+    index = rg.test_import_index(ws)
+    gaps = rg.coverage_gaps(
+        [".github/workflows/ci.yml"], radius=set(), ws=ws,
+        import_index=index)
     assert gaps == []
 
 
@@ -102,10 +363,30 @@ def test_enforcement_module_covered_by_radius_is_not_a_gap(tmp_path):
     (tmp_path / "taskplane" / "taskplane_lite.py").write_text("def screen_command(): pass\n")
     (tmp_path / "taskplane" / "tests" / "test_lite_x.py").write_text(
         "from taskplane import taskplane_lite\ndef test_s(): pass\n")
-    rg.test_import_index_cache["idx"] = rg.test_import_index(ws)
+    index = rg.test_import_index(ws)
     radius = {os.path.join("taskplane", "tests", "test_lite_x.py")}
-    gaps = rg.coverage_gaps(["taskplane/taskplane_lite.py"], radius=radius)
+    gaps = rg.coverage_gaps(
+        ["taskplane/taskplane_lite.py"], radius=radius, ws=ws,
+        import_index=index)
     assert gaps == []
+
+
+def test_scratch_mirror_cannot_impersonate_real_enforcement_path(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    changed = [
+        "_incoming-2.7.0/taskplane/tp.py",
+        ".fixwave/hooks/hooks.json",
+        "_to_delete/.github/workflows/ci.yml",
+        "taskplane/taskplane_lite.py",
+    ]
+
+    gaps = rg.coverage_gaps(
+        changed, radius=set(), ws=ws, import_index={})
+
+    assert gaps == ["taskplane/taskplane_lite.py"]
+    assert rg._changed_modules(changed) == {
+        "taskplane.taskplane_lite", "taskplane_lite"
+    }
 
 
 # ------------------------------------------------------------- scan (impure)
@@ -144,6 +425,20 @@ def test_regression_scan_preexisting_does_not_block(tmp_path):
     assert out["blocks"] is False
 
 
+def test_regression_scan_baseline_runner_error_blocks_structurally(tmp_path):
+    ws = _mk_pkg(tmp_path)
+
+    def broken(_files):
+        raise rg.RegressionRunnerError("baseline collection failed")
+
+    out = rg.regression_scan(
+        ws, "BASE", ["taskplane/loop.py"], runner=lambda _ws, _files: set(),
+        baseline_runner=broken)
+
+    assert out["blocks"] is True
+    assert out["runner_error"].startswith("baseline:")
+
+
 # ----------------------------------------------------- real-tree smoke
 
 def test_real_tree_index_maps_loop_tests():
@@ -153,3 +448,83 @@ def test_real_tree_index_maps_loop_tests():
     imports_loop = any("loop" in mods for mods in idx.values())
     imports_lite = any("taskplane_lite" in mods for mods in idx.values())
     assert imports_loop and imports_lite
+
+
+# ------------------------------------------------------- runner fail-closed
+
+def test_run_pytest_uses_the_active_interpreter(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(rg.subprocess, "run", fake_run)
+    assert rg.run_pytest(str(tmp_path), ["tests/test_x.py"]) == set()
+    assert seen["cmd"][0] == sys.executable
+
+
+def test_run_pytest_sanitizes_credentials_and_isolates_home(
+        monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setenv("EXAMPLE_API_TOKEN", "secret")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    monkeypatch.setenv("KUBECONFIG", "/tmp/kubeconfig")
+    monkeypatch.setenv("DOCKER_CONFIG", "/tmp/docker")
+    monkeypatch.setattr(rg.subprocess, "run", fake_run)
+    rg.run_pytest(str(tmp_path), ["tests/test_x.py"])
+
+    assert "EXAMPLE_API_TOKEN" not in seen["env"]
+    assert "SSH_AUTH_SOCK" not in seen["env"]
+    assert "KUBECONFIG" not in seen["env"]
+    assert "DOCKER_CONFIG" not in seen["env"]
+    assert seen["env"]["HOME"] != os.environ.get("HOME")
+
+
+def test_symlinked_test_is_refused(tmp_path):
+    outside = tmp_path.parent / "test_outside.py"
+    outside.write_text("def test_outside(): assert True\n")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_link.py").symlink_to(outside)
+
+    with pytest.raises(rg.RegressionDiscoveryError):
+        rg.test_import_index(str(tmp_path))
+
+
+@pytest.mark.parametrize("returncode, output", [
+    (1, "python: No module named pytest"),
+    (2, "ERROR collecting tests/test_x.py"),
+    (3, "INTERNALERROR> plugin crashed"),
+    (4, "ERROR: usage error"),
+    (5, "no tests ran"),
+])
+def test_run_pytest_refuses_infrastructure_and_collection_errors(
+        monkeypatch, tmp_path, returncode, output):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, returncode, stdout=output, stderr="")
+
+    monkeypatch.setattr(rg.subprocess, "run", fake_run)
+    with pytest.raises(rg.RegressionRunnerError):
+        rg.run_pytest(str(tmp_path), ["tests/test_x.py"])
+
+
+def test_dod_errors_turns_runner_failure_into_a_named_blocker(tmp_path):
+    ws = _mk_pkg(tmp_path)
+
+    def broken_runner(_ws, _files):
+        raise rg.RegressionRunnerError("pytest collection failed")
+
+    errors = rg.dod_errors(
+        ws, "abcdef123456", ["taskplane/loop.py"],
+        runner=broken_runner,
+        baseline_failures=lambda _ws, _base, _radius: set())
+
+    assert any(e.startswith("regression_gate: current runner failed")
+               for e in errors)

@@ -837,7 +837,7 @@ class TestHookWiring(unittest.TestCase):
                 for h in matcher["hooks"]:
                     yield h
 
-    def test_windows_commands_resolve_both_roots_and_fail_closed(self):
+    def test_windows_commands_resolve_roots_and_enforcement_fails_closed(self):
         entries = list(self._entries())
         self.assertGreaterEqual(len(entries), 3)
         for h in entries:
@@ -846,8 +846,14 @@ class TestHookWiring(unittest.TestCase):
             w = h.get("commandWindows", "")
             self.assertIn("if defined PLUGIN_ROOT", w)
             self.assertIn("CLAUDE_PLUGIN_ROOT", w)
-            self.assertIn("exit /b 2", w,
-                          "unset roots must fail CLOSED on Windows")
+            command = h["command"]
+            if command.endswith(" screen") or command.endswith(
+                    " screen-dispatch") or command.endswith(" context"):
+                self.assertIn("exit /b 2", w,
+                              "enforcement/context roots fail closed")
+            else:
+                self.assertNotIn("exit /b 2", w,
+                                 "lifecycle tracing is advisory")
 
     def test_screen_liveness_probe(self):
         tmp = tempfile.mkdtemp()
