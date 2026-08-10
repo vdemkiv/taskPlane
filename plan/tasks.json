@@ -138,7 +138,7 @@
     },
     {
       "id": "t4-clean-release",
-      "title": "Remove analysis-polluting scratch, validate the complete release, and preserve 2.7.0 provenance",
+      "title": "Remove analysis-polluting scratch, validate the complete release, and preserve 2.7.1 provenance",
       "scope": [
         ".gitignore",
         "_incoming-2.6.0/**",
@@ -169,12 +169,12 @@
       "criteria": [
         "All four scratch roots are absent from the index and ignored for future local transfer/fix waves.",
         "Repository-root pytest collection, canonical pytest, unittest discover/floor, cost ratchets, generated-doc drift, manifest verification, and deterministic OpenAI package validation pass.",
-        "All manifest versions remain 2.7.0; release notes describe the hardening without claiming a new feature version.",
-        "Only after evidence and engineering review pass may the orchestrator create the release commit and v2.7.0 tag."
+        "All manifest versions resolve to the 2.7.1 patch release; release notes describe the hardening without claiming a new feature version.",
+        "Only after evidence and engineering review pass may the orchestrator create the release commit and v2.7.1 tag."
       ],
       "acceptance_refs": [
         "A Codex-host CI leg passes, normal repository-root pytest collection succeeds, and staging directories are absent and ignored.",
-        "The complete canonical suite and package validation pass before the release commit and v2.7.0 tag are created."
+        "The complete canonical suite and package validation pass before the release commit and v2.7.1 tag are created."
       ]
     }
   ]

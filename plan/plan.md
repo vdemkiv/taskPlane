@@ -20,7 +20,7 @@ main orchestrator keeps authority over gates, commit, tag, and submission.
    isolate host tests, and add the Codex CI leg.
 4. **t4-clean-release — remove duplicated scratch and prove the release.** Clean
    the index, add ignore rules, run every test/ratchet/package check, perform the
-   full engineering review, then create the commit and `v2.7.0` tag.
+   full engineering review, then create the commit and `v2.7.1` tag.
 
 ## Dependencies and contracts
 
@@ -53,4 +53,4 @@ t1 regression/DoD
 - Full neutral suite, explicit Codex-host suite, unittest floor, cost ratchets,
   generated artifacts, manifests, package closure and deterministic ZIP pass.
 - Engineering review finds no unresolved high regression.
-- Repository is clean after the release commit and points to tag `v2.7.0`.
+- Repository is clean after the patch release commit and points to tag `v2.7.1`.

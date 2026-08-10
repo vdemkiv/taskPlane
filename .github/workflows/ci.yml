@@ -297,11 +297,6 @@ jobs:
   codex-host:
     name: Codex native hooks + subagent workflow
     runs-on: ubuntu-latest
-    env:
-      CODEX_HOME: ${{ runner.temp }}/codex-home
-      CODEX_THREAD_ID: ci-codex-host
-      TASKPLANE_HOME: ${{ runner.temp }}/taskplane-store
-      TASKPLANE_WORKFLOWS: "0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -314,6 +309,13 @@ jobs:
           git config --global user.email "ci@taskplane"
           git config --global user.name "taskplane-ci"
       - name: Codex lifecycle, strict dispatch, parity, and stage waves
+        env:
+          # The runner context is available at step evaluation time, not while
+          # GitHub is validating job-level env expressions.
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_THREAD_ID: ci-codex-host
+          TASKPLANE_HOME: ${{ runner.temp }}/taskplane-store
+          TASKPLANE_WORKFLOWS: "0"
         run: >-
           python3 -m pytest -q
           taskplane/tests/test_codex_compat.py

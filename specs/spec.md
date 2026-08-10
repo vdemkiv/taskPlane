@@ -2,8 +2,8 @@
 
 Requirement: **R-0001 — Harden taskPlane 2.7 and adopt native Codex workflows**.
 The user explicitly approved implementation of all seven recommendations from
-the v2.1→v2.7 review. This spec fixes the implementation gaps without changing
-the release version from 2.7.0.
+the v2.1→v2.7 review. The implementation shipped as v2.7.0; the CI
+workflow-definition correction is released as the v2.7.1 patch.
 
 ## Problem
 
@@ -37,8 +37,9 @@ environment.
 6. Add a Codex-host CI leg and isolate host-specific onboarding tests.
 7. Remove `_incoming-2.6.0`, `_incoming-2.7.0`, `.fixwave`, and `_to_delete`
    from version control and ignore those scratch families.
-8. Keep all manifests at 2.7.0, run the complete suite and marketplace-package
-   validation, commit the hardening release, and create tag `v2.7.0`.
+8. Keep all manifests synchronized at 2.7.1, run the complete suite and
+   marketplace-package validation, commit the patch release, and create tag
+   `v2.7.1`.
 
 ## Out of scope
 

@@ -32,3 +32,13 @@ def test_ci_runs_the_unittest_discover_runner():
 def test_ci_gates_single_source_versioning():
     # makes the CHANGELOG's 'CI-gated' version claim literally true
     assert "tp.py version --verify" in _ci()
+
+
+def test_codex_host_uses_runner_context_only_after_steps_begin():
+    """GitHub has no `runner` context while validating job-level env."""
+    job = _ci().split("\n  codex-host:\n", 1)[1]
+    before_steps, steps = job.split("\n    steps:\n", 1)
+
+    assert "${{ runner." not in before_steps
+    assert "CODEX_HOME: ${{ runner.temp }}/codex-home" in steps
+    assert "TASKPLANE_HOME: ${{ runner.temp }}/taskplane-store" in steps
