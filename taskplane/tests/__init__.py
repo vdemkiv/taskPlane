@@ -8,9 +8,31 @@ under either runner — pins TASKPLANE_HOME to a throwaway temp dir first.
 
 conftest.py keeps the per-test autouse fixture (suspenders) on top.
 """
+import atexit
 import os
+import shutil
 import tempfile
 import unittest
+
+# TEMP-DIR LEAK (R-0013, found the hard way). Test modules call
+# `tempfile.mkdtemp()` in setUp and mostly never remove the result, so every
+# suite run left workspaces behind. On this project's own container that
+# reached 185,541 directories and about 30 GB, filling the disk until every
+# command failed on write — and no review caught it, because nothing about a
+# single run looks wrong.
+#
+# The fix is one root, not sixty cleanups: point `tempfile` at a
+# session-scoped directory so EVERY mkdtemp/mkstemp in the suite (and in the
+# engine code under test) lands inside it, then remove that one root at
+# exit. Runs under both runners because this module is imported by both.
+#
+# Deliberately still under the system temp dir, so a test asserting a
+# path prefix keeps passing, and ignore_errors so a locked file at exit
+# costs disk, never a red suite.
+_TMP_ROOT = tempfile.mkdtemp(prefix="tp-tests-")
+tempfile.tempdir = _TMP_ROOT
+os.environ["TMPDIR"] = _TMP_ROOT
+atexit.register(shutil.rmtree, _TMP_ROOT, ignore_errors=True)
 
 _SESSION_HOME = tempfile.mkdtemp(prefix="tp-store-test-")
 # setdefault, not overwrite: an outer harness that already isolated the store

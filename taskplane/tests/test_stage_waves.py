@@ -39,7 +39,9 @@ test_review_wave.py style):
   * agent() outputs are schema-pinned per contract:wave-workflow —
     execute/fix to receipts[{task, outcome, note}], evaluate to the
     contract:findings-v2 shape — field lists read PROGRAMMATICALLY from
-    design/contract.json in both directions (drift fails here);
+    the frozen shipped-contract snapshot
+    (fixtures/briefs/shipped_contracts.json — design/contract.json turns
+    over every design cycle) in both directions (drift fails here);
   * parallel dispatch shape: one agent() thunk per brief fanned out via
     parallel() (tasks in one wave are independent by plan construction);
   * args consumption: execute/evaluate consume args.briefs, fix consumes
@@ -49,8 +51,10 @@ test_review_wave.py style):
     receipt schema block, evaluate's findings schema block is byte-identical
     to review-wave.js's Phase 1 FINDINGS_SCHEMA.
 """
+import contextlib
 import importlib.util
 import inspect
+import io
 import json
 import os
 import re
@@ -62,6 +66,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tp as cli  # noqa: E402
 import loop  # noqa: E402
+import taskplane_lite as tp_lite  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -102,25 +107,24 @@ def _schema_block(src: str, name: str, stage: str) -> str:
 
 
 def _contracts() -> list:
-    """The design contract list — from design/contract.json, read
-    programmatically. In a parallel-wave worktree (.tp-work/<task>) the
-    Phase 2 design doc may exist only at the primary checkout until its
-    design commit lands there, so fall back to the primary's copy rather
-    than hand-copying the field list."""
-    candidates = [os.path.join(ROOT, "design", "contract.json")]
-    parent = os.path.dirname(ROOT)
-    if os.path.basename(parent) == ".tp-work":
-        candidates.append(
-            os.path.join(os.path.dirname(parent), "design", "contract.json"))
-    for path in candidates:
-        if not os.path.isfile(path):
-            continue
-        with open(path) as f:
-            contracts = json.load(f)["contracts"]
-        if any(c["id"] == "contract:wave-workflow" for c in contracts):
-            return contracts
+    """The SHIPPED design contract list — from the frozen snapshot
+    fixtures/briefs/shipped_contracts.json, read programmatically (never
+    hand-copied into a test).
+
+    Contract-turnover rule: design/contract.json always describes the
+    NEXT design cycle — it is REPLACED wholesale at every new design
+    gate — so it stops carrying the Phase 2 field-list pins the moment a
+    new phase's design lands. Schema pins for the SHIPPED surface must
+    therefore derive from a stable source: the snapshot was captured
+    verbatim from the Phase 2 contract that shipped these workflows
+    (`git show 6a3d581:design/contract.json`, the `contracts` table) and
+    changes ONLY when a shipped contract deliberately changes shape."""
+    with open(os.path.join(BRIEFS, "shipped_contracts.json")) as f:
+        contracts = json.load(f)["contracts"]
+    if any(c["id"] == "contract:wave-workflow" for c in contracts):
+        return contracts
     raise AssertionError(
-        "no design/contract.json carrying contract:wave-workflow found")
+        "shipped_contracts.json must carry contract:wave-workflow")
 
 
 def _spec(cid: str) -> dict:
@@ -453,6 +457,20 @@ class TestStageTaskPathByteIdentity:
                 f"{name}: keys not sorted / normalization drifted"
             stage_fixture.assert_deterministic(body, name)
 
+    def test_c1_activation_block_never_reaches_the_task_path(self):
+        """C1 is workflow-rail ONLY. The Task path prints the loop's own
+        payload — no composed agent prompt, hence no activation line —
+        so the frozen stage goldens carry neither form. This is why the
+        one sanctioned regeneration produced a ZERO-byte diff: the
+        mandatory byte-identical fallback (and the only Codex path) is
+        untouched by the Windows line. A golden that ever grows an
+        activation line means the emitter leaked into the Task path."""
+        for stage in stage_fixture.STAGES:
+            body = _golden_bytes(stage_fixture.GOLDENS[stage])
+            payload_bytes = body[body.index("{"):]      # drop the banner
+            for form in ("export TASKPLANE_TASK", "set TASKPLANE_TASK"):
+                assert form not in payload_bytes, (stage, form)
+
     def test_golden_headers_document_the_regen_command(self):
         for stage in stage_fixture.STAGES:
             with open(os.path.join(BRIEFS, stage_fixture.GOLDENS[stage]),
@@ -534,6 +552,68 @@ class TestStageEmitterWorkflowPath:
             assert json.dumps(task_payload, indent=2) in brief["prompt"], \
                 f"{stage}: prompt must embed the Task-path stdout verbatim"
             assert "loop submit" in brief["prompt"]
+
+    # ---------------------------------------------- C1 (R-0009)
+
+    def _all_briefs(self, rails):
+        """(stage, brief) for EVERY brief the three stage runs emit."""
+        for stage in stage_fixture.STAGES:
+            wf = json.loads(rails["caps"][stage]["wf"])["workflow"]
+            key = "verdicts" if stage == "fix" else "briefs"
+            for brief in wf["args"][key]:
+                yield stage, brief
+
+    def test_every_prompt_carries_both_activation_lines(self, rails):
+        """C1 (R-0009): `export TASKPLANE_TASK=<slot>` is POSIX-only, so a
+        cmd.exe agent silently never activates its slot and lands in the
+        slot-less union screen. Every emitted stage prompt therefore also
+        carries the LABELLED cmd form `set TASKPLANE_TASK=<slot>` for the
+        SAME slot — the hooks.json commandWindows precedent. The POSIX
+        line stays FIRST and unchanged in wording (the Windows line is an
+        ADDITION, never a replacement), and both name the same slot: a
+        drifting pair would activate the wrong contract on one host."""
+        seen = 0
+        for stage, brief in self._all_briefs(rails):
+            slot, prompt = brief["id"], brief["prompt"]
+            assert prompt.startswith(f"export TASKPLANE_TASK={slot}\n"), \
+                f"{stage}: the POSIX line must stay first and unchanged"
+            assert f"\nset TASKPLANE_TASK={slot}\n" in prompt, \
+                f"{stage}: no cmd-form activation line for slot {slot}"
+            label = prompt.split(f"\nset TASKPLANE_TASK={slot}\n")[0]
+            assert "Windows" in label and "cmd.exe" in label, \
+                f"{stage}: the cmd form must be LABELLED for its host"
+            # exactly one activation line per form, and the SAME slot in
+            # both — no second slot may reach either line
+            found = re.findall(r"^(export|set) TASKPLANE_TASK=(\S+)$",
+                               prompt, re.M)
+            assert [f[0] for f in found] == ["export", "set"], \
+                f"{stage}: expected exactly one POSIX then one cmd line"
+            assert {f[1] for f in found} == {slot}, (stage, found)
+            seen += 1
+        assert seen == 4, "2 execute briefs + evaluate + fix"
+
+    def test_activation_block_is_ascii_for_cmd_consoles(self, rails):
+        """The activation block is read (and retyped) in a cmd.exe console
+        whose default code page is not UTF-8 — it stays pure ASCII. Only
+        the block is pinned; the Task-path bytes that follow are VERBATIM
+        and not this test's to constrain."""
+        for stage, brief in self._all_briefs(rails):
+            block = brief["prompt"].split(
+                f"\nset TASKPLANE_TASK={brief['id']}\n")[0]
+            block.encode("ascii")     # raises → non-ASCII in the block
+
+    def test_stage_agent_prompt_only_prepends_the_activation_block(self):
+        """C1 is emitter-side and additive: everything after the activation
+        block is still the Task-path instruction + the entry serialized
+        exactly as the Task path prints it."""
+        entry = {"task": {"id": "t7"}}
+        prompt = cli._stage_agent_prompt("t7", "INSTRUCTION", entry)
+        tail = "INSTRUCTION\n\n" + json.dumps(entry, indent=2)
+        assert prompt.endswith(tail)
+        head = prompt[:-len(tail)]
+        assert head.startswith("export TASKPLANE_TASK=t7\n")
+        assert "set TASKPLANE_TASK=t7\n" in head
+        assert "TASKPLANE_TASK" not in tail
 
     def test_emitted_run_contains_no_gate_step(self, rails):
         """R-0004: no generated stage run contains an approval/gate step.
@@ -961,3 +1041,313 @@ class TestWorkflowAgnosticModulesExtended:
                 f"taskplane/{mod} must stay workflow-agnostic"
             for name in STAGES:
                 assert name not in src, (mod, name)
+
+
+# =====================================================================
+# A6 (R-0007) — malformed wave entries degrade to the Task path
+# E5 (R-0011) — un-slottable ids refuse emission at compose time
+# =====================================================================
+
+
+def _loop_cli(ws, *argv):
+    """Run `tp loop ...` in-process capturing BOTH streams."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = cli.main(["loop", "--workspace", ws, *argv])
+    return rc, out.getvalue(), err.getvalue()
+
+
+def _malformed_wave_payload():
+    """A wave payload whose SECOND entry lost its task.id — the shape the
+    A6 negative fixture pins (pre-A6 this KeyError'd the emitter)."""
+    return {"step": "execute", "parallel": True,
+            "instruction": "Dispatch ONE governed subagent per wave entry.",
+            "wave": [
+                {"task": {"id": "t1"}, "worktree": "w1"},
+                {"task": {"scope": ["src/**"]}, "worktree": "w2"},
+            ]}
+
+
+class TestMalformedWaveEntryFailOpen:
+    """A6: a malformed wave entry (missing task/id) must NEVER crash the
+    emitter — it degrades to the Task path (the mandatory fallback can
+    always print what the loop printed) with a traced reason."""
+
+    @pytest.fixture()
+    def ws(self, tmp_path, monkeypatch):
+        _clean_env(monkeypatch)
+        return str(tmp_path / "ws")
+
+    def _run_with_payload(self, ws, payload, monkeypatch, *extra):
+        monkeypatch.setattr(loop, "wave", lambda _ws: payload)
+        return _loop_cli(ws, "wave", *extra)
+
+    def test_missing_task_id_degrades_to_task_path_stdout(self, ws,
+                                                          monkeypatch):
+        payload = _malformed_wave_payload()
+        rc, out, err = self._run_with_payload(ws, payload, monkeypatch)
+        assert rc == 0                                   # no crash, no error
+        assert out == json.dumps(payload, indent=2) + "\n"  # Task-path bytes
+        for key in ("dispatch_path", "workflow"):
+            assert key not in json.loads(out)
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert evs and evs[-1]["path"] == "task"
+        assert "malformed wave entry" in evs[-1]["reason"]
+        assert "fail-open" in evs[-1]["reason"]
+
+    def test_degrade_wins_even_under_explicit_emit_workflow(self, ws,
+                                                            monkeypatch):
+        """--emit workflow cannot force a brief that cannot be composed:
+        the malformed entry aborts workflow wrapping BEFORE the emit
+        override is consulted — Task-path stdout, traced reason, exit 0."""
+        monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")
+        payload = _malformed_wave_payload()
+        rc, out, err = self._run_with_payload(ws, payload, monkeypatch,
+                                              "--emit", "workflow")
+        assert rc == 0
+        assert out == json.dumps(payload, indent=2) + "\n"
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert evs[-1]["path"] == "task"
+        assert "malformed wave entry" in evs[-1]["reason"]
+
+    def test_entry_not_a_dict_and_task_not_a_dict_both_degrade(self, ws,
+                                                               monkeypatch):
+        for bad in ("just-a-string", {"task": "t1"}, {"task": None}):
+            payload = {"step": "execute", "parallel": True,
+                       "instruction": "x",
+                       "wave": [{"task": {"id": "t1"}}, bad]}
+            rc, out, _ = self._run_with_payload(ws, payload, monkeypatch)
+            assert rc == 0, bad
+            assert json.loads(out) == payload, bad
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert all("malformed wave entry" in e["reason"] for e in evs[-3:])
+
+    def test_malformed_single_task_step_degrades_traced(self, ws,
+                                                        monkeypatch):
+        """The same validation covers the single-task step shapes: an
+        evaluate payload whose task lost its id degrades to the Task
+        path with the traced reason, never a silent skip or a crash."""
+        payload = {"step": "evaluate", "instruction": "x",
+                   "task": {"workspace": "w1"}}
+        monkeypatch.setattr(loop, "next_action",
+                            lambda _ws, rid=None: payload)
+        _clean_env(monkeypatch)
+        rc, out, _ = _loop_cli(ws, "next")
+        assert rc == 0
+        assert json.loads(out) == payload
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert evs and evs[-1]["path"] == "task"
+        assert evs[-1]["stage"] == "evaluate"
+        assert "malformed wave entry" in evs[-1]["reason"]
+
+    def test_well_formed_wave_unchanged_on_the_workflow_rail(self, rails):
+        """The A6 guard adds validation only: the frozen journey's
+        well-formed emission is byte-covered by the existing golden and
+        workflow-path pins (re-asserted here against the capture)."""
+        payload = json.loads(rails["caps"]["execute"]["wf"])
+        assert payload["dispatch_path"] == "workflow"
+        assert len(payload["workflow"]["args"]["briefs"]) == 2
+
+
+class TestSlotCharsetRefusalAtEmission:
+    """E5: an id the emitter would embed into `export TASKPLANE_TASK=<id>`
+    must already BE a valid slot (taskplane_lite._TASK_SLOT_RE — the ONE
+    enforced charset). Invalid → refuse the WORKFLOW emission fail-closed,
+    traced, BEFORE any prompt line is composed. Never sanitize.
+
+    Phase 3 EM review (deep3 finding #2): the refusal is scoped to the
+    workflow RAIL. The Task path composes no shell line, is the MANDATORY
+    fallback and the only rail on Codex, so it degrades instead of being
+    denied — see TestSlotCharsetNeverDeniesTheTaskPath below."""
+
+    @pytest.fixture()
+    def ws(self, tmp_path, monkeypatch):
+        _clean_env(monkeypatch)
+        return str(tmp_path / "ws")
+
+    def _wave_with_id(self, tid):
+        return {"step": "execute", "parallel": True, "instruction": "x",
+                "wave": [{"task": {"id": tid}, "worktree": "w"}]}
+
+    def test_shell_metacharacter_id_refuses_on_the_workflow_rail(
+            self, ws, monkeypatch):
+        monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")   # workflow-capable
+        monkeypatch.setattr(loop, "wave",
+                            lambda _ws: self._wave_with_id("t1;rm"))
+        rc, out, err = _loop_cli(ws, "wave")             # default auto
+        assert rc != 0
+        assert out == ""                       # nothing composed, no payload
+        # no COMPOSED export line anywhere (the reason may cite the
+        # template form, but never an activation line carrying the id)
+        assert "export TASKPLANE_TASK=t1;rm" not in out + err
+        assert "t1;rm" in err                  # reason names the id...
+        assert tp_lite._TASK_SLOT_RE.pattern in err   # ...and the charset
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert evs and evs[-1]["path"] == "refused"
+        assert "t1;rm" in evs[-1]["reason"]
+
+    def test_invalid_id_refuses_on_explicit_emit_workflow_too(self, ws,
+                                                              monkeypatch):
+        monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")
+        monkeypatch.setattr(loop, "wave",
+                            lambda _ws: self._wave_with_id("$(evil)"))
+        rc, out, err = _loop_cli(ws, "wave", "--emit", "workflow")
+        assert rc != 0
+        assert out == ""
+        assert "$(evil)" in err
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert evs[-1]["path"] == "refused"
+
+    def test_single_task_step_ids_are_validated_too(self, ws, monkeypatch):
+        monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")
+        payload = {"step": "fix", "instruction": "x",
+                   "task": {"id": "t 1", "workspace": "w"}}
+        monkeypatch.setattr(loop, "next_action",
+                            lambda _ws, rid=None: payload)
+        rc, out, err = _loop_cli(ws, "next")
+        assert rc != 0 and out == ""
+        assert "t 1" in err
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert evs[-1]["path"] == "refused" and evs[-1]["stage"] == "fix"
+
+    def test_valid_ids_emit_byte_identically(self, rails):
+        """All-valid payloads are untouched by the E5 guard — the frozen
+        journey's Task-path bytes still match the goldens (re-asserted
+        against the capture; the full golden compare lives above)."""
+        for stage in stage_fixture.STAGES:
+            got = stage_fixture.scrubbed_bytes(
+                rails["caps"][stage]["bare"], rails["ws"],
+                store=rails["store"])
+            assert got == _golden_bytes(stage_fixture.GOLDENS[stage]), stage
+
+    def test_charset_single_source_is_the_enforced_slot_regex(self):
+        """The emitter validates against taskplane_lite._TASK_SLOT_RE
+        itself — no second regex that could drift from the screener's."""
+        src = inspect.getsource(cli._valid_slot_id)
+        assert "_TASK_SLOT_RE" in src
+        assert cli._valid_slot_id("t1") and cli._valid_slot_id("fix.a-2_b")
+        for bad in ("t1;rm", "$(x)", "a b", "", ".hidden", None, 7):
+            assert not cli._valid_slot_id(bad), bad
+
+
+class TestSlotCharsetNeverDeniesTheTaskPath:
+    """Phase 3 EM review, deep3 finding #2 (HIGH regression): E5's charset
+    refusal fired in `_emit_stage` BEFORE the rail was chosen and regardless
+    of --emit, so a task id like `feat/login` made `loop wave` / `loop next`
+    exit 1 with EMPTY stdout on every host — including a definitively
+    workflow-less one, where the Task path is the only rail there is. The
+    same docstring calls that path "the MANDATORY fallback and the only
+    Codex path", and C3's own refusal text points refused users at it.
+
+    The Task path interpolates the id into nothing (it prints the engine's
+    own payload verbatim), so a slot-charset problem can never be a reason
+    to deny it."""
+
+    BAD = "feat/login"
+    GOOD = "feat-login"
+
+    @pytest.fixture()
+    def ws(self, tmp_path, monkeypatch):
+        _clean_env(monkeypatch)
+        return str(tmp_path / "ws")
+
+    def _payload(self, tid):
+        return {"step": "evaluate", "instruction": "Evaluate the task.",
+                "task": {"id": tid, "workspace": "w"}}
+
+    def _run_next(self, ws, monkeypatch, tid, *argv):
+        monkeypatch.setattr(loop, "next_action",
+                            lambda _ws, rid=None: self._payload(tid))
+        return _loop_cli(ws, "next", *argv)
+
+    def test_task_path_emits_normally_for_a_bad_id_on_a_codex_host(
+            self, ws, monkeypatch):
+        monkeypatch.setenv("CODEX_HOME", "/codex")   # definitively no runtime
+        rc, out, err = self._run_next(ws, monkeypatch, self.BAD)
+        assert rc == 0, err
+        assert json.loads(out)["task"]["id"] == self.BAD
+        assert "dispatch_path" not in json.loads(out)
+        evs = _trace_events(ws, "stage_dispatch_path")
+        assert evs[-1]["path"] == "task"      # degraded, NOT refused
+        assert self.BAD in evs[-1]["reason"]  # still named in the trace
+
+    def test_task_path_bytes_differ_only_by_the_id(self, ws, monkeypatch):
+        """The mandatory-fallback invariant: a bad id changes the id and
+        nothing else about what the Task path prints."""
+        for emit in ([], ["--emit", "task"]):
+            _, bad_out, _ = self._run_next(ws, monkeypatch, self.BAD, *emit)
+            _, good_out, _ = self._run_next(ws, monkeypatch, self.GOOD, *emit)
+            assert bad_out and good_out
+            assert bad_out.replace(self.BAD, self.GOOD) == good_out, emit
+
+    def test_explicit_emit_task_is_never_refused_even_where_workflows_run(
+            self, ws, monkeypatch):
+        monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")
+        rc, out, err = self._run_next(ws, monkeypatch, self.BAD,
+                                      "--emit", "task")
+        assert rc == 0, err
+        assert json.loads(out)["task"]["id"] == self.BAD
+        assert _trace_events(ws, "stage_dispatch_path")[-1]["path"] == "task"
+
+    def test_workflow_rail_still_refuses_the_same_id(self, ws, monkeypatch):
+        """The guard itself is intact where it belongs: the workflow rail
+        composes the export line, so it still refuses fail-closed."""
+        monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")
+        rc, out, err = self._run_next(ws, monkeypatch, self.BAD,
+                                      "--emit", "workflow")
+        assert rc != 0 and out == ""
+        assert self.BAD in err
+        assert _trace_events(ws,
+                             "stage_dispatch_path")[-1]["path"] == "refused"
+
+
+class TestPlanGateRefusesUnslottableTaskIds:
+    """Phase 3 EM review, deep3 finding #2, the EARLY half: nothing
+    validated task ids against the slot charset before the human plan
+    gate, so a plan carrying `feat/login` cleared approval and only broke
+    at execute/evaluate/fix — where the remedy (renaming ids in
+    plan/tasks.json) costs a re-plan and a re-approval. The check now runs
+    at BOTH plan transitions, via taskplane_lite.plan_ordering_refusal."""
+
+    def test_plan_task_id_errors_names_every_offender(self):
+        errs = tp_lite.plan_task_id_errors([
+            {"id": "t1"}, {"id": "feat/login"}, {"id": "a b"},
+            {"id": "." + "x"}, {"id": None}, {"id": "x" * 65},
+            "not-a-dict",
+        ])
+        assert len(errs) == 5
+        for bad in ("feat/login", "a b", ".x", "None", "x" * 65):
+            assert any(bad in e for e in errs), bad
+        assert tp_lite._TASK_SLOT_RE.pattern in errs[0]
+        assert tp_lite.plan_task_id_errors([{"id": "t1"},
+                                            {"id": "fix.a-2_b"}]) == []
+
+    def test_gate_refuses_a_plan_with_a_bad_id(self, tmp_path):
+        ws = str(tmp_path / "ws")
+        os.makedirs(ws)
+        refusal = tp_lite.plan_ordering_refusal(
+            ws, [{"id": "feat/login"}, {"id": "t2"}], "gate")
+        assert refusal is not None
+        assert refusal["step"] == "plan"
+        assert "feat/login" in refusal["error"]
+        assert refusal["task_ids"] and refusal["ordering"] == []
+        evs = _trace_events(ws, "loop_gate_blocked")
+        assert evs[-1]["reason"] == "task_id"
+
+    def test_approve_refuses_the_same_plan(self, tmp_path):
+        ws = str(tmp_path / "ws")
+        os.makedirs(ws)
+        refusal = tp_lite.plan_ordering_refusal(
+            ws, [{"id": "feat/login"}], "approve", by="human")
+        assert refusal is not None and refusal["step"] == "plan_approval"
+        assert "feat/login" in refusal["error"]
+        evs = _trace_events(ws, "loop_approve_blocked")
+        assert evs[-1]["reason"] == "task_id" and evs[-1]["by"] == "human"
+
+    def test_good_ids_still_approve(self, tmp_path):
+        ws = str(tmp_path / "ws")
+        os.makedirs(ws)
+        for where in ("gate", "approve"):
+            assert tp_lite.plan_ordering_refusal(
+                ws, [{"id": "t1"}, {"id": "fix.a-2_b", "deps": ["t1"]}],
+                where) is None, where

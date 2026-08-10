@@ -508,7 +508,8 @@ class TestSchemaBridge(unittest.TestCase):
         self.assertIn("0 med", h)
         self.assertIn("1 low", h)                   # minor
         self.assertIn("(3 findings)", h)           # notes are NOT defects
-        self.assertIn("2 notes (question/praise, not defects)", h)
+        self.assertIn("2 notes (question/praise/machinery, not defects)",
+                      h)
 
     def test_unknown_severity_never_downgrades(self):
         h = dashboard.headline_findings(
@@ -565,6 +566,67 @@ class TestWidgetComposition(unittest.TestCase):
                      "_widget_feed", "_widget_ministats", "_widget_dor",
                      "_widget_parts"):
             self.assertTrue(callable(getattr(dashboard, name)), name)
+
+
+# ------------------------------------------- A5 machinery warn rows (Phase 3)
+
+class TestMachineryWarnRowsRenderAsAdvisory(unittest.TestCase):
+    """A5's warn row PRESERVES the wrapped finding's severity by contract
+    (contract:findings-v2), so ONE unattributed blocker used to render as TWO
+    blocker cards and a headline count of 2 — the warn row (whose own title is
+    the meta-issue "unattributed finding: no lens attribution") never blocks.
+    The renderer now treats a warn row whose nested original is present in the
+    same set as an advisory DUPLICATE: counted as a note, still labelled with
+    the underlying severity."""
+
+    def _rows(self, severity="blocker"):
+        import audit
+        decision = {"sre": {"verdict": "deep", "score": 3}}
+        original = {"severity": severity, "title": "real defect",
+                    "class": "regression", "status": "open",
+                    "file": "a.py", "line": 7}
+        return [original] + audit._unattributed_rows(decision, [original])
+
+    def test_headline_counts_one_defect_not_two(self):
+        rows = self._rows()
+        self.assertEqual(len(rows), 2)              # the machinery row IS filed
+        h = dashboard.headline_findings(rows, {"title": "em review"})
+        self.assertIn("1 high", h)                  # not 2
+        self.assertIn("(1 finding)", h)
+        self.assertIn("1 note", h)                  # nothing dropped
+
+    def test_findings_dashboard_badges_it_as_machinery_not_a_blocker(self):
+        rows = self._rows()
+        html = dashboard.render_findings(rows, {"title": "em"})
+        self.assertIn('aria-label="filter: high (1)"', html)
+        self.assertIn('aria-label="filter: notes (1)"', html)
+        # honest: the advisory badge still NAMES the underlying severity
+        self.assertIn("machinery warn · blocker", html)
+
+    def test_forged_warn_row_with_no_original_keeps_its_severity(self):
+        # shape alone must not downgrade anything: every field of the warn
+        # shape lives in worker-authored findings.json, and a row that
+        # duplicates nothing on this page can be exactly what the em gate
+        # blocks on. The renderer must never show LESS than the gate.
+        forged = {"severity": "blocker", "class": "observation",
+                  "owner": "router", "warn": True,
+                  "domain": "router+unattributed", "title": "costume",
+                  "status": "open",
+                  "finding": {"title": "ghost", "file": "z.py", "line": 1}}
+        h = dashboard.headline_findings([forged], {"title": "em"})
+        self.assertIn("1 high", h)
+        self.assertIn("(1 finding)", h)
+        self.assertNotIn("1 note", h)
+
+    def test_ordinary_findings_are_untouched(self):
+        rows = [{"severity": "blocker", "title": "b"},
+                {"severity": "med", "title": "m"},
+                {"severity": "low", "title": "l"}]
+        h = dashboard.headline_findings(rows, {"title": "em"})
+        self.assertIn("1 high", h)
+        self.assertIn("1 med", h)
+        self.assertIn("1 low", h)
+        self.assertIn("(3 findings)", h)
 
 
 if __name__ == "__main__":

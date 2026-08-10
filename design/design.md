@@ -1,357 +1,232 @@
-# Design — v3 Phase 2: graph decomposition + governed flows + onboarding overhaul + routed-review wiring
+# Design — v3 Phase 3: engine correctness, routing precision, host portability, docs currency, hygiene
 
-Anchored requirement: **R-0003** (primary; this loop). **R-0004**, **R-0005**
-and **R-0006** ship in the same release (spec directive: implement all four
-streams) and are designed here as one delta because they share the same
-contract surface: R-0003 reshapes `contract:lens-brief` (component
-attribution), R-0004's stage waves and R-0006's evaluate wiring consume those
-briefs, and R-0005 documents all of it. Their acceptance criteria are mapped
-in `design/contract.json` `secondary_requirements` (the strict top-level
-`acceptance_map` is scoped to R-0003 by the DoD validator).
+**Requirements:** R-0007 (anchored, WS-A) + R-0008..R-0011 (secondary; WS-B..WS-E).
+**Baseline:** graph fingerprint `beeb5b85…`, HEAD `43253c2`, v2.5.1 + freshness gate.
+**Scope:** 26 backlog items, 29 acceptance criteria, six named contracts touched — zero new contract nodes, zero new modules.
 
-Baseline: Phase 1 (R-0001 routing v2 + R-0002 review wave) shipped as v2.4.0.
-This design is a delta against that shipped state, grounded in the cited
-file:line sources in the contract's `current_state`.
+Everything in this phase is one of three moves: **refuse loudly** (fail-closed),
+**degrade to the reference rail** (Task path), or **surface what was silent**
+(warn rows, degraded markers, traced reasons). Nothing loosens; the
+`contract:lens-brief` and `contract:findings-v2` shapes are untouched.
 
-## Stream 1 · R-0003 — graph decomposition + per-component lens maps
+---
 
-### The choice
+## 1. The blocking decision: A4 — gate/engine version skew
 
-**Hybrid derivation: directory convention + import/reference cohesion, with
-AST symbol clustering for oversized single files; components stored as a
-layer inside `graph.json`; derivation code in a new file
-`taskplane/decompose.py`; consumption in route v2 as a cached-map union with
-a structural fail-open to the module route.**
+**The defect (Phase 2, t7):** in a parallel wave, the evaluate gate validates a
+worktree's evidence with the *primary process's* engine
+(`_evaluation_errors`, loop.py:1928-1935 with `act_ws` = the worktree). When a
+task's diff changes the engine itself, the worktree's newer engine produced
+evidence the older primary validator rejects. t7 passed only after the merge
+landed — diagnosed by hand, no mechanical detection.
 
-- **Derivation.** A module decomposes into components along two axes:
-  (a) file clusters — files grouped by sub-directory convention, then merged/
-  split by import cohesion (files that import each other or share private
-  imports cluster together); (b) intra-file symbol clusters for oversized
-  files — top-level `def`/`class` groups (Python `ast`, already a depgraph
-  dependency) clustered by shared name prefix (`render_*`, `lens_*`,
-  `headline_*`) and by reference cohesion (a symbol that only calls into one
-  cluster joins it). This is what makes the pinned acceptance real:
-  `taskplane/dashboard.py` (3,379 lines, one file inside the one `taskplane`
-  module) yields ≥3 components with distinct dependency sets. A
-  `components.yaml` at the repo root overrides any derived clustering
-  per module (explicit file/symbol → component pinning).
-- **Granularity floor (decided — the pm's open question 1).** A module is a
-  decomposition CANDIDATE only when it has ≥8 code files or any single code
-  file ≥600 physical lines; a candidate cluster earns a component node only
-  with ≥2 files, or (intra-file) ≥4 top-level symbols spanning ≥120 lines.
-  Everything below the floor folds into one residual component
-  `<module>::core`, and a module below the candidate threshold IS its single
-  component. Rationale: the floor caps the component count at O(tens) on this
-  repo (not O(files) ≈ 100s — the graph-explosion failure), while the
-  600-line file trigger guarantees the known hot spots (dashboard.py 3,379,
-  loop.py 3,191, tp.py 2,354, depgraph.py 1,370) decompose instead of
-  under-decomposing into one-node modules. The floor values live as named
-  constants in `decompose.py` and are overridable in `components.yaml`.
-- **Where the map lives.** `graph.json` gains a top-level `components`
-  section (the graph is the one persistent, fingerprint-stamped,
-  atomically-written KB structure we already have — a second store would
-  duplicate its locking/corruption discipline for no gain). The modules/edges
-  sections are untouched: components are a LAYER, and every existing consumer
-  (impact, hub_signal, DoR/DoD, dashboards) is byte-identical when the key is
-  absent. Derivation lives in the NEW file `taskplane/decompose.py` — not
-  inside depgraph.py — because D-0004 is this phase's own lesson about module
-  accretion; `depgraph.scan(ws, decompose=True)` (CLI:
-  `tp graph scan --decompose`) calls it behind the flag.
-- **Per-component lens maps.** Reuse — not duplicate — the Phase 1 engine:
-  `lens_signals.route_verdicts` runs over each component's file set as the
-  ctx (content signals per component; graph payload from the component's own
-  dependency set), and the resulting `{lens: {verdict, score, evidence}}` map
-  is stored on the component node with its content fingerprint. Maps
-  recompute ONLY when the fingerprint changes (a recompute counter is traced,
-  and the no-change-rescan-is-a-no-op criterion pins it).
-- **Review assembly (route v2 consumption).** `route_git_diff` maps changed
-  files → touched components via the component file index. When every changed
-  file maps to a fingerprint-current component, candidate verdicts are the
-  union of the touched components' cached maps, re-evidenced against the live
-  diff ctx; the R-0001 budget (5–7 deep target, hard cap 8,
-  demote-never-drop) and the security/architecture floors run AFTER assembly
-  on the REAL diff ctx — floors are never served from cache. Findings meta
-  gains `component_attribution` (`{lens: [component ids]}`), carried
-  additively on `contract:lens-brief`.
-- **Fail-open (load-bearing).** Any miss — component layer absent, a changed
-  file with no component, a stale fingerprint, any exception — WIDENS routing
-  to the Phase 1 module-level route (traced `component_layer_failed`), which
-  itself fails open to legacy breadth=all. The superset property is
-  structural, not aspirational: every detector signal is existential or
-  count-monotone over the file set, and each component's file set is a subset
-  of the whole diff, so whole-diff scoring can only score ≥ the union of
-  per-component scores. A pinned test asserts the routed set under a broken
-  layer is a superset of the component-routed set.
-- **Dashboard.** `depgraph.to_html` renders the component layer (component
-  nodes grouped within their module, distinct visual class); HEADLINE and
-  coverage-map FORMAT are unchanged (pinned).
+**Three candidate mechanisms were weighed:**
 
-### Rejected alternatives
+| | Mechanism | Verdict |
+|---|---|---|
+| (a) | **Engine-enforced merge-before-gate ordering** — the gate refuses until the branch is merged, so the primary validates with the merged engine | Rejected. Merges **unevaluated code into the mainline as routine**, inverting the evaluate-PASS-then-merge order every instruction and test pins; a failed post-merge evaluation needs revert machinery the engine doesn't have; and the ordering check must run on *every* parallel evaluate gate, so "non-skew paths byte-unchanged" is unprovable. Scoping it to "engine-touching diffs" needs a repo-layout path heuristic — the class of guess A4 exists to remove. |
+| (b) | **Validate with the agent workspace's engine** — sys.path-inject the worktree's `taskplane/` and run *its* `_evaluation_errors` | **Disqualified on the guardrail.** The worktree's loop.py is the worker's own diff: this executes agent-written code in the orchestrator's gate context. A worker could ship an `_evaluation_errors` that returns `[]` and gate itself — the L12 trust boundary (evidence validated by code the worker cannot author) dissolves at exactly the gate it protects. Module-cache poisoning of the primary process is a second, independent failure. |
+| (c) | **Validator-fingerprint refusal** — stamp the producing engine's identity into the submission; the gate refuses with a *named remedy* when engines differ | **Selected.** Fail-closed, explicit, no code-execution change, no reordering. |
 
-- **Pure graph clustering** (community detection over import edges only):
-  language-blind and convention-blind — it cannot decompose a single large
-  file at all (imports are file-level), so the pinned dashboard.py criterion
-  is unreachable; cluster boundaries drift with every scan, making the
-  fingerprint cache useless and lens-map attribution unstable.
-- **Pure path-prefix heuristics**: deterministic and cheap but blind to
-  cohesion — `taskplane/` stays one component forever (this repo's actual
-  shape: one directory, 15 files, 3 of them >2,000 lines), which is exactly
-  the under-decomposition R-0003 exists to fix.
-- **Status quo** (module-level routing only): remains the permanent fallback
-  rung and the byte-identical behavior when decomposition is absent — but as
-  the only behavior it leaves a one-renderer-component diff reviewed as if it
-  touched all of `taskplane/` (the measured over-review cost from the
-  strategy doc).
+**Selected mechanism (c), precisely:**
 
-## Stream 2 · R-0004 — governed flows: execute/evaluate/fix stage waves
+- `tp.engine_fingerprint()` = sha256 over the sorted `(module, sha256(file
+  bytes))` of the validator-surface modules **as loaded by the running
+  process** (`loop, lens, lens_signals, depgraph, audit, taskplane_lite,
+  design_contract, decompose, requirements` via each module's `__file__`).
+- `loop submit` stamps it into the submission (additive field).
+- The **evaluate gate** compares it against its own fingerprint *before*
+  `_evaluation_errors`. Equal (every non-dogfood repo; every dogfood task not
+  touching engine files): the comparison is the only added instruction —
+  **byte-unchanged**. Unequal or absent: **refuse**, no transition, traced
+  `loop_gate_blocked reason=engine_skew {submitted, validator}`, error text:
 
-### The choice
+  > evidence was produced under engine `<fp12>` but this gate validates with
+  > `<fp12>` — merge the task branch into the primary
+  > (`git merge tp/<task>`) so one engine owns production and validation,
+  > then `loop submit` again.
 
-**One workflow FILE per stage (`workflows/execute-wave.js`,
-`workflows/evaluate-wave.js`, `workflows/fix-wave.js`), each following the
-review-wave.js pattern exactly (pure-literal `export const meta`,
-schema-pinned `agent()` outputs, deterministic — no clock/random/dynamic
-import); ONE workflow RUN per stage between human gates; the stage emitter
-lives in tp.py behind the SAME `workflow_available()` gate; the Task-dispatch
-path stays the byte-identical reference implementation and the only Codex
-path.**
+- **Cannot strand a re-evaluation:** the loop stays at evaluate; after the
+  merge, both processes run one engine, fingerprints match, and the identical
+  submission path proceeds. This mechanizes exactly the recovery Phase 2
+  performed by hand — with the diagnosis in the error message.
+- **Stated limit:** this detects producer-*process* vs validator-*process*
+  skew (the recorded t7 topology). Evidence hand-authored under a third
+  engine remains covered by the staleness fingerprint and DoD.
+  Escalation if dogfood ever hits the residual case: stamp the fingerprint
+  into `.eval/verdict.json` itself.
 
-- **Compilation model.** A governed stage between human gates compiles to at
-  most one journaled workflow run. Human gates are NEVER inside a run
-  (workflows cannot pause for humans): plan approval → [execute-wave run] →
-  conversation-level task gates → [evaluate-wave run] → … → sign-off. A test
-  scans every generated stage run for gate verbs (extends
-  `TestNoWorkflowOnlyGate`'s pinning style).
-- **Emitter placement.** tp.py — NOT loop.py or lens.py — because
-  `TestNoWorkflowOnlyGate.test_loop_and_lens_have_zero_workflow_coupling`
-  pins those modules workflow-agnostic, and that pin is a guardrail this
-  design extends (audit.py joins the pinned set), never relaxes. The stage
-  emitter (`--emit auto|workflow|task` on the stage dispatch surfaces,
-  mirroring `tp lens dispatch`) reuses `workflow_available()` verbatim: Codex
-  markers always win, `TASKPLANE_WORKFLOWS=0/false/no/off` always forces
-  dispatch, the default is conservatively unavailable, and the chosen path is
-  traced (`stage_dispatch_path {stage, path, reason}`).
-- **Workers under the harness.** Each workflow `agent()` receives the SAME
-  prompt text the Task path emits, verbatim — including per-task
-  `export TASKPLANE_TASK=<slot>` activation and the claim/submit/CLEAR
-  protocol. Execute agents still claim into `.tp-work/<task>` worktrees via
-  `tp loop claim` (worktree isolation is the engine's, not the workflow's);
-  the PreToolUse contract screen fires inside workflow agents unchanged;
-  workers submit evidence and NEVER advance state — the orchestrator gates at
-  conversation level after the run returns. The `agent()` schema per stage
-  pins a submission receipt (`{task, outcome, note}`) for execute/fix and the
-  findings-v2 shape for evaluate agents; a violation retries instead of
-  surfacing an invalid result.
-- **Byte-identity.** The fallback IS the reference: CI parity goldens extend
-  the R-0002 review-wave goldens to the three stage waves (frozen stage
-  payloads captured through the emitter with the R-0002 scrub rules,
-  regenerated only via the documented regen path). `--emit task` and the bare
-  default produce stdout byte-identical to today's payloads; the Codex CI
-  fixture leg passes with today's outputs and asserts no workflow runtime is
-  invoked on Codex hosts.
-- **Resume.** A killed-mid-stage run resumes from the journal; completed
-  agents return cached results (the v2.3.0 credit-cutoff redo becomes a
-  resume). On dispatch-only hosts this failure class is unchanged from today.
+See `design/visual.html` for the gate sequence with the skew branch.
 
-### Rejected alternatives
+## 2. WS-A — the other six engine fixes (R-0007, anchored)
 
-- **One generic parameterized `stage-wave.js`**: fewer files, but the shipped
-  test pattern pins each workflow's `meta` as a pure static literal and its
-  schema as a static constant checked without a JS runtime; a generic file
-  needs runtime schema/phase selection, which weakens exactly those static
-  determinism pins — and per-stage schemas genuinely differ (receipt vs
-  findings).
-- **Flow-as-data executor now (`taskplane.flow/v1`)**: explicitly out of
-  scope (spec); rewriting loop.py's transition logic multiplies risk before
-  the audit-extraction debt (D-0004) is paid — this phase does only the R-W3
-  stage-per-run compilation.
-- **Status quo (Task dispatch only)**: remains permanently wired and
-  CI-guarded, but as the only path every mid-stage death stays a full redo —
-  the measured dogfood cost this stream exists to remove.
+| Item | Change | Where | Pinned by |
+|---|---|---|---|
+| A1 | `claim` refuses when `state.parallel` is false, **before** any contract/DoR work; remedy names `init --parallel` or a plan amendment; traced `loop_claim_blocked reason=serial_mode`. Backstop behind `wave()`'s existing refusal — closes the direct-claim path from decision 0011. | loop.py:563-622 | test_loop.py |
+| A2 | `dod_check` gains `ignore_prefixes` (default `()` — non-loop callers unchanged); the per-task DoD (serial + parallel gate) passes `lens.LOOP_OWNED`, mirroring the sign-off aggregate (loop.py:2113). No more re-claim/re-snapshot workaround. | taskplane_lite.py:1185-1204, loop.py:1229-1235/1794 | test_dor_dod.py (+ aggregate parity pin) |
+| A3 | `dod_check` runs the DoD test with `TASKPLANE_TASK` stripped from the **child** env (parent untouched). | taskplane_lite.py:1206-1212 | test_dor_dod.py slot-canary |
+| A5 | `router_audit` stops silently skipping unattributed/unknown-lens findings (audit.py:149-150): warn rows — class `observation` (non-blocking; the underlying finding still gates normally), owner `router`, domain `router+unattributed` / `router+unknown:<lens>` — appended idempotently, traced `router_audit_unattributed`. Attribution omission becomes visible instead of an evasion. | audit.py | test_audit_sweep.py |
+| A6 | `_stage_wave_run` validates entries; malformed → **Task-path fallback** with traced reason, never KeyError. Well-formed emission byte-unchanged. | tp.py:1084-1086 | test_stage_waves.py negative fixture |
+| A7 | `load_floors` clamps `<=0` floors to 1 with a `degraded_floors {key: given}` marker in stats + trace; `floors_hash` hashes clamped values. | decompose.py:130-157 | test_decompose.py |
 
-## Stream 3 · R-0005 — README + onboarding overhaul
+## 3. WS-B — routing precision + planning (R-0008)
 
-### The choice
+- **B1 (recalibration approach):** class-weighted, not flattened. Functional
+  gaps keep today's 0.5-cycle weight. NFR-coverage gaps drop to 0.1 **only
+  when the functional axis is complete**; `security`/`data-safety` NFR gaps
+  are **never** discounted. The 17-task/1-fix-cycle corpus from phases 1+2 is
+  checked in as a versioned fixture (`fixtures/calibration/phase1-2-corpus.json`)
+  and re-scored by the test; 2-3 synthetic under-specified requirements are the
+  pinned **no-under-warn** corpus (new friction ≥ today's friction for each).
+  Well-scoped-wave fixtures must land below the old 0.33.
+- **B2:** engine plan-gate rule (not planner memory): every task whose scope
+  touches `taskplane/lens.py|lens_signals.py|tp.py` must be a dep of every
+  task touching `taskplane/tests/fixtures/briefs/`. Violating plans are
+  refused naming both tasks; t6∥t7 is the replay fixture. This rule governs
+  **this phase's own plan** too.
+- **B3:** a ≥600-line symbol-less file joins `::core` **with** its (file,
+  hash) member instead of vanishing (decompose.py:492). The layer stays
+  engaged; the `::core` map is computed over the file's full content, so the
+  `::core` route proposes everything the file's *own* signals support —
+  pinned by a superset-of-own-signals assertion.
+- **B4:** component assembly unions the **live requirement-keyword
+  contribution** into the proposed set (attributed `requirement-keywords`)
+  before the narrowing at lens.py:459-464 — cached maps are requirement-blind
+  (decompose.py:596-603) and can no longer narrow keyword-driven lenses away.
+  Union only widens.
+- **B5:** fixture-discount exception: a fixture-classed path whose graph
+  module has ≥1 dependents keeps full weight (evidence names the exemption).
+  Restores weight only — never deepens a discount. D-0002 test-fixture
+  discounting preserved by the negative fixture.
 
-**One README with an install decision tree by account type, per-host
-quickstarts, v3 feature docs; `tp onboard` truth-up; every claim pinned by a
-named CI/test check.** Docs-only stream — no new code contracts; the only
-code touched is `tp.py`'s onboarding report (context-aware install guidance)
-plus CI legs.
+## 4. WS-C — host portability (R-0009)
 
-- **Install decision tree** ("Which account are you on?"): (1) *Personal* —
-  marketplace / GitHub URL flow, as today; (2) *Organization admin* —
-  Organization settings → Plugins → GitHub sync → `vdemkiv/taskPlane` → set
-  Available/Required, with the auto-update note; (3) *Organization member* —
-  the plain, honest statement that members CANNOT install plugins from
-  GitHub: install from the org's curated list or admin file-upload only, with
-  a link to the admin section ("ask your admin") and the try-on-personal
-  fallback. Zero dead-end instructions on the member path.
-- **Per-host quickstarts** (Claude Code / Cowork / Codex), each runnable as
-  written on that host; the Codex quickstart never references workflow-only
-  features (dispatch is the Codex path; workflows are an optimization
-  elsewhere).
-- **v3 feature docs**: routing v2 (coverage map, n/a-with-evidence, `--lens`),
-  review wave + mandatory dispatch fallback, component decomposition
-  (`graph scan --decompose`, components.yaml, fail-open), governed stage
-  flows (one run per stage, kill-switch) — each with one honest dogfood
-  example. What's-new table stays at exactly 3 rows; CHANGELOG stays
-  authoritative.
-- **`tp onboard` truth-up**: where the host exposes org-managed install
-  context, print the matching install/update path; where undetectable, print
-  the by-account-type triage instead of the individual-only flow.
-- **Named acceptance validation** (docs streams still get mechanical DoD):
-  (1) a CI grep leg for the forbidden member-installs-from-GitHub claim,
-  repo-wide across public copy; (2) the existing CI docs-drift check extended
-  to the new sections; (3) a taskplane/tests check pinning the what's-new
-  table at exactly 3 rows; (4) onboard fixture tests per detected context;
-  (5) a README link check in CI; (6) a Codex-quickstart grep asserting no
-  workflow-only feature appears.
+- **C1:** stage prompts carry `set TASKPLANE_TASK=<slot>` (Windows/cmd,
+  the hooks.json `commandWindows` precedent) beside the POSIX export — same
+  validated slot. One regen.py goldens diff. The slot-less union-screen
+  fallback (taskplane_lite.py:938-943) is pinned by an explicit test: no
+  silent behavior change.
+- **C2:** `components.yaml` joins `DEFAULT_OUT_OF_SCOPE`
+  (taskplane_lite.py:1241). Deliberately **not** sacred: the plan-minted
+  literal override must keep working (Phase 2 shipped decomposition through
+  it). Deny case **and** the plan-minted literal positive case ship in the
+  same file — `test_governance_invariants.py` — so neither regresses silently.
+- **C3 (recorded product decision):** explicit `--emit workflow` on a
+  workflow-less host **refuses**: stderr reason naming the Task-path fallback
+  + the detector's reason, exit nonzero, traced `{path: refused}`. Both
+  surfaces (stage emitter tp.py:1112, review dispatch tp.py:1241). Default
+  and `--emit task` byte-unchanged; `workflow_available()` stays the single
+  detector; no gate reachable only via workflows.
 
-### Rejected alternatives
+## 5. WS-D — docs & skills currency (R-0010)
 
-- **Split per-audience install docs** (`docs/install-org.md` + thin README):
-  the failed user journey starts and dies on the README at GitHub — the
-  observed launch failure was people not reaching a working path at all;
-  adding a hop moves the dead end, it does not remove it. Feature DEPTH goes
-  to docs/; install truth stays on the one page everyone lands on.
-- **Status quo + a warning box**: keeps documenting an install path most of
-  the target audience cannot use; a warning next to a dead end is still a
-  dead end.
+- **D1:** tp-go/tp-status/tp-product/tp-tag/tp-northstar truthed to v2.5;
+  per-skill required-mentions table + stale-phrase denylist in
+  `test_release_freshness.py`.
+- **D2:** tp-go described as the *internal delivery driver invoked via the
+  taskplane facade*; facade keeps the "implement X" triggers; both pinned.
+- **D3:** `references/harness-rules.md` — the single canonical statement of
+  submit/gate/human-checkpoint invariants; both skills point at it;
+  keyword-coverage drift check proves no invariant dropped; restatement
+  detector prevents re-forking.
+- **D4:** tp-go pinned to the current minor exactly as tp-help
+  (test_release_freshness.py:37-44 pattern).
+- **D5 (decision):** new `tp help --md` autogenerates `docs/cli-reference.md`
+  from the live argparse tree — the generator **refuses any flag with empty
+  help text** (the ratchet gets stricter, not weaker). Committed + drift-gated
+  in CI (the ci.yml:113-118 generated-artifacts pattern). The freshness corpus
+  already globs `docs/*.md`, so `_LEGACY_UNDOCUMENTED` (34 flags) burns to
+  empty mechanically. D-0005 resolved on ship.
 
-## Stream 4 · R-0006 — routed-review wiring + debt burn-down
+## 6. WS-E — test/CI/UX hygiene (R-0011)
 
-### The choice
+- **E1 (decision): floor + manifest, convert nothing.** The 10 pytest-only
+  files include the parity/no-loosening/stage-wave suites — rewriting them to
+  `TestCase` risks silent collection drift in exactly the tests that guard
+  guardrails (E1's own defect class, reintroduced by its fix).
+  `scripts/ci_unittest_floor.py`: collected count ≥ pinned floor (995 at
+  design time) **and** the TestCase-less file set equals a named 10-file
+  manifest — a new pytest-only file fails the leg. Floor only rises; manifest
+  only shrinks.
+- **E2:** `TASKPLANE_HOME` restore via addCleanup (test_debt_burndown.py:219);
+  conftest-level env-mutation guard (snapshot before / assert byte-identical
+  after each module, naming offenders).
+- **E3:** component nodes get the module-node `keydown/Escape` dismissal
+  (depgraph.py:1381 pattern at 1404-1416); ring radius `r(m)+24` →
+  `r(m)+f(component count)`, monotonic.
+- **E4:** decompose.py docstrings aligned to behavior (unsupported
+  components.yaml *line shapes* raise → whole file fails open, reported;
+  `_symbol_clusters` returns a 5-tuple) + pinning assertions.
+- **E5:** every task id validated against `_TASK_SLOT_RE`
+  (taskplane_lite.py:1360) **before** any `export TASKPLANE_TASK=` line is
+  composed; invalid → loud refusal (exit nonzero, id + charset named,
+  traced), never sanitized.
+- **E6 (decision): fix the comment, don't widen the seam.** loop.py:1449-1456
+  over-claims that patching `loop.<name>` governs the audit path;
+  `audit_due` resolves `audit_counter` module-locally (audit.py:117-132), and
+  `_loop()` late-binds only 4 loop names (audit.py:41-51). The comment is
+  corrected to name `audit.<name>` as the machinery seam and
+  `loop.finding_blocks`/etc. as the gate-math seam; the late-binding
+  regression test patches **both real seams** and asserts the comment text —
+  a stale comment fails the suite. Widening would churn byte-frozen code for
+  a testing convenience.
 
-- **Evaluate consumes routed briefs.** The evaluate step passes
-  `stage="build"` into the routing call (route v2 engages: build-profile
-  candidates, R-0001 verdicts, component assembly from R-0003) and its brief
-  carries the dispatch payload (deep briefs + one light batch) exactly like
-  the em step's does today. **Decided (spec open question 2): the evaluate
-  wave inherits the R-0001 budget verbatim** — 5–7 deep target, hard cap 8,
-  demote-never-drop — with the `build` stage profile as the candidate set
-  (that is what stage profiles are for, and floored lenses survive profile
-  narrowing by the shipped route v2 rule). The em step's full-catalog mandate
-  and the `"all" if step == "em" else "routed"` wiring are UNTOUCHED, as are
-  the audit cadence (`TASKPLANE_AUDIT_EVERY`) and the router-regression
-  sign-off block.
-- **Fixtures-path discount (D-0002).** `lens_signals` gains a fixture-path
-  classifier (path segments `fixtures`, `testdata`, `goldens`; extensions
-  like `.golden`); in `_spec_detect`, path/content/density signal hits whose
-  ONLY support is fixture-path files are discounted ×0.25, with the discount
-  named in the evidence string (honesty: the evidence says why the score is
-  low). A fixture-only diff drops i18n/mobile below deep (negative fixture
-  test); a real locale-file diff scores full weight and still routes i18n
-  deep (positive fixture unchanged). Parity goldens are regenerated ONLY via
-  the documented `taskplane/tests/fixtures/briefs/regen.py`, reviewed as a
-  diff; hand-edited goldens remain a finding.
-- **Routed-audit hybrid (D-0003) — decision designed, not the hybrid.** This
-  phase ships the MEASUREMENT and records the decision; it does not change
-  audit execution. During this phase's own em review, run the comparison:
-  full breadth=all audit (current) vs the hybrid shape (routed deep + one
-  batched verification sweep whose brief checks each n/a lens's
-  negative-evidence claims only), on the dogfood corpus. **Adoption bar
-  (confirming the spec's suggestion): adopt only if measured audit tokens
-  drop ≥30% AND the hybrid files every router regression the full audit files
-  (zero escaped n/a-lens findings) on the replay corpus.** The outcome is
-  recorded in the decision registry either way — adopt-with-follow-up
-  requirement, or decline with the measured numbers. Default is DECLINE
-  unless the bar is met; the em full-catalog mandate is not weakened in this
-  phase in either branch.
-- **Audit extraction (D-0004) — byte-frozen.** The audit machinery
-  (loop.py:1426–1680: cadence state, `audit_every`/`audit_counter`/
-  `record_audit_review`/`audit_due`, `router_audit`, `_router_audit_gate`,
-  decision extraction, `_audit_brief`) moves to the new file
-  `taskplane/audit.py`; loop.py delegates through thin imports that preserve
-  the public names (`loop.audit_due` etc. re-exported — zero caller churn).
-  Byte-frozen proof: a differential test captures, BEFORE the move, golden
-  outputs of the audit surfaces over a scenario corpus (cadence states ×
-  release flags × meta shapes × findings sets → the `_audit_brief` dict, the
-  `router_audit` list, the `_router_audit_gate` error list AND the rewritten
-  findings.json bytes) and asserts the post-extraction outputs are identical;
-  a loop.py line-count assertion pins the shrink; audit.py joins the
-  workflow-agnostic module pin.
+## 7. Guardrail statement (strict-or-stricter, enumerated)
 
-### Rejected alternatives
+1. A1/A4/C3/E5 **add refusals**; no path that passed today starts passing more.
+2. A2 excludes only orchestrator-authored `LOOP_OWNED` artifacts — the same
+   tuple the sign-off aggregate already excludes; parity-pinned.
+3. A3 removes an env **leak**; no ambient trust added.
+4. A5 surfaces findings that were silently dropped; blocking behavior of
+   attributed findings byte-unchanged; findings-v2 shape untouched.
+5. A6 replaces a crash with the mandatory reference rail, traced.
+6. A7 clamps toward **more** decomposition, marked degraded.
+7. B1 is corpus-pinned with explicit no-under-warn negative cases;
+   security/data-safety never discount.
+8. B4/B5 only widen or restore routing weight; B3 preserves the folded file's
+   own signal set (superset pin); B2 adds a plan refusal.
+9. C2 only **widens** the default deny family; the plan-minted literal
+   override is proven by a positive test in the same file.
+10. D3's keyword coverage proves every harness invariant survives extraction;
+    D5's generator refuses undocumented flags (stricter ratchet).
+11. E1's floor/manifest only ratchet tighter; suite count only rises
+    (unittest ≥995, pytest >1122); workers still submit-never-advance; the
+    PreToolUse screen, slot protocol, and human-gate authority are untouched.
 
-- **Evaluate keeps its legacy route** (no stage): leaves Phase 1's router
-  unused at the step that pays for it and blocks R-0003's per-task component
-  precision — the wiring gap is the debt.
-- **Blanket fixture-path exclusion** (drop fixture files from ctx entirely):
-  simpler, but a diff that ONLY touches fixtures would route almost nothing —
-  discounting keeps a weak signal (light) instead of manufacturing silence;
-  exclusion is a narrowing, discount is a re-weighting.
-- **Adopt the routed-audit hybrid now, measure later**: weakens the one
-  backstop (full-catalog audit) that polices every other narrowing decision
-  in this phase — the audit is the last thing allowed to get cheaper, and
-  only with measured proof.
-- **Leave the audit code in loop.py**: loop.py is 3,191 lines and this phase
-  adds evaluate wiring to it; the extraction seam is exactly the
-  "evidence-validation seam" precondition the strategy names for Phase 3 —
-  deferring again compounds the risk this debt records.
+## 8. Rollout / rollback
 
-## Guardrail statement — nothing loosened
+Fail-closed, additive, item-sized commits with their pinned tests in-diff.
+Goldens regenerate **only** via `regen.py`, one reviewed diff per causing task
+(C1; any B-stream routed-set change) — and the B2 rule this phase ships
+enforces that ordering mechanically on this phase's own plan. A4 lands stamp +
+comparison together. Rollback is per-item commit revert everywhere; no data
+migrations; C2 rollback = remove one list entry; C3 rollback = restore
+force-print (the previous documented behavior).
 
-Every enforcement surface this phase touches, and why each change is
-strict-or-stricter:
+## 9. Graph honesty notes (for the approver)
 
-1. **Security/architecture floors** — unchanged rules, now applied AFTER
-   component assembly on the REAL diff ctx (never served from cached maps);
-   they hold at component granularity and survive stage-profile narrowing
-   (shipped route v2 rule, retained). Stricter surface area, same rule.
-2. **n/a-with-negative-evidence** — unchanged; component-assembled n/a
-   entries carry the union of per-component negative evidence plus live-diff
-   re-evidence; the em-gate block on bare/empty n/a moves verbatim into
-   audit.py under the byte-frozen differential.
-3. **Cap-8 demote-never-drop and `--lens` force** — unchanged, applied
-   identically on every routing rung.
-4. **Fail-open ladder** — new rung only ever WIDENS: component layer →
-   module route v2 → legacy breadth=all; each drop is traced and
-   test-pinned (superset test).
-5. **em full-catalog mandate + audit cadence + router-regression sign-off
-   block** — untouched (the `"all" if step == "em"` wiring literal, the
-   cadence, and the auto-filing gate all survive extraction byte-frozen).
-6. **Worker protocol** — workflow agents submit and never advance state;
-   gates stay conversation-level; a test scans generated runs for gate verbs;
-   the adversarial every-gate-with-workflows-disabled test extends to the
-   three stage waves.
-7. **PreToolUse contract screen + per-brief TASKPLANE_TASK slots** — govern
-   workflow agents unchanged (verbatim prompts carry the slot exports);
-   contract-screen semantics are out of scope (verify-only).
-8. **Codex parity** — dispatch stdout stays byte-identical; goldens extended
-   (review + three stages), regenerated only via regen.py; the Codex CI leg
-   additionally asserts no workflow runtime is invoked.
-9. **Workflow-agnostic module pin** — loop.py and lens.py stay
-   workflow-free; audit.py JOINS the pin (the pinned set grows, never
-   shrinks).
-10. **Graph governance** — components are an overlay layer; module graph,
-    DoR/DoD, impact and fingerprints are byte-identical when the layer is
-    absent; decomposition is read-only toward code and never blocks a gate by
-    failing (it widens routing instead).
-11. **Docs** — no step in any new doc instructs disabling the contract
-    screen, hooks, or gates; org-member guidance never routes around admin
-    curation (CI grep pins the forbidden claim).
+- Baseline `beeb5b85…` is bound to the loop. `scanned_head 320f47ae` predates
+  HEAD `43253c2` by six commits; three touch code files (tp.py +14,
+  test_release_freshness.py +100, test_onboarding_docs.py +20). Design is
+  read-only toward the as-built graph, so no mid-design rescan (it would
+  invalidate this gate by the engine's own isolation rule). The drift is
+  entirely inside this phase's scope; the execute baseline re-captures at the
+  plan gate.
+- `skills/`, `hooks/`, and the new `references/` are **not** graph modules
+  (the scanner indexes code files only) and are deliberately not declared —
+  WS-D is validated by named tests in `taskplane/tests` instead.
+- R-0007's store record still lists the A4 open question **this design
+  resolves**. Before the orchestrator can attach R-0007 to the loop
+  (`design_attach_requirement` refuses open questions), the product seat must
+  record the A4 decision (option c, validator-fingerprint refusal) and clear
+  the question.
 
-## Validation map
+## 10. Open decisions left for the human gate
 
-Every R-0003 criterion is mapped 1:1 in `design/contract.json`
-`acceptance_map`; every R-0004/R-0005/R-0006 criterion is mapped in
-`secondary_requirements` with the concrete test file that will prove it.
-Headline proofs: `taskplane/tests/test_decompose.py` (≥3 dashboard.py
-components, no-op rescan, single-map recompute, fail-open superset),
-`taskplane/tests/test_stage_waves.py` (static workflow pins, emitter
-byte-identity, kill-switch matrix, gate-verb scan, adversarial
-gates-without-workflows), `taskplane/tests/test_onboarding_docs.py`
-(member-path grep, 3-row pin, onboard fixtures), and
-`taskplane/tests/test_audit_extraction.py` (differential replay, loop.py
-shrink) — plus the extended parity goldens and the full suite
-(`python3 -m unittest discover -s taskplane/tests -q`, count only goes up
-from 954).
-
-## Visualization
-
-`design/visual.html` (data-flow): the two load-bearing structures — the
-three-rung routing fail-open ladder and the dual stage-dispatch rails with
-gates outside runs — drawn with their failure edges, because those two
-invariants (never narrower; never workflow-only) are what the human is
-approving.
+None inside the design. For the approver to confirm explicitly:
+1. **A4 = option (c)** — accept the stated false-negative limit (mixed-engine
+   evidence) with its escalation path, in exchange for zero trust-boundary and
+   zero ordering changes.
+2. **E1 = floor + manifest** (no conversions this phase).
+3. **D5 = generated CLI reference** (`tp help --md` → `docs/cli-reference.md`).
+4. **C2 stays plan-overridable** (not sacred) — the deadlock-avoidance choice.

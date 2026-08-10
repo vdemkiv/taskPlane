@@ -225,5 +225,90 @@ class TestEscaping(unittest.TestCase):            # security NFR
         self.assertIn("&lt;script&gt;", frag)
 
 
+# ==========================================================================
+# t5 / E3 (R-0011 design row 3) — depgraph component-layer a11y + layout.
+#
+# Component nodes lacked the keydown/Escape tooltip dismissal module nodes
+# already have (keyboard users could open a tooltip and never dismiss it),
+# and the ring radius was a FIXED r(m)+24 — component labels overlapped on
+# many-component modules. The gap is now a monotonically increasing
+# function of the module's component count, computed host-portably in
+# Python and carried per component in the embedded data.
+# ==========================================================================
+
+
+class TestDepgraphComponentLayer(unittest.TestCase):
+    def setUp(self):
+        import depgraph as dg
+        self.dg = dg
+        self.tmp = tempfile.mkdtemp()
+        self.ws = _repo(self.tmp)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _render(self, per_module):
+        """Render an HTML page for a graph carrying `per_module` =
+        {module: n} synthetic components; return (html, embedded data)."""
+        dg = self.dg
+        dg.scan(self.ws)
+        p = dg._path(self.ws)
+        with open(p) as f:
+            raw = json.load(f)
+        comps = []
+        for mod, n in sorted(per_module.items()):
+            raw["modules"].setdefault(mod, {"files": 1, "kind": "module"})
+            for i in range(n):
+                comps.append({"id": f"{mod}::c{i}", "module": mod,
+                              "files": [f"{mod}/f{i}.py"], "symbols": [],
+                              "deps": []})
+        raw["components"] = comps
+        with open(p, "w") as f:
+            json.dump(raw, f)
+        out = dg.to_html(self.ws, out=os.path.join(self.tmp, "g.html"))
+        html = open(out).read()
+        blob = html.split("const G=", 1)[1].split(";\n", 1)[0]
+        return html, json.loads(blob.replace("\\u003c", "<"))
+
+    def test_component_nodes_dismiss_the_tooltip_on_escape(self):
+        html, _data = self._render({"m/a": 2})
+        block = html.split("const comps=G.components", 1)[1]
+        self.assertIn("cc.addEventListener('keydown'", block)
+        self.assertIn("ev.key==='Escape'", block)
+
+    def test_ring_radius_grows_with_component_count(self):
+        _h2, d2 = self._render({"m/a": 2})
+        _h12, d12 = self._render({"m/a": 12})
+        r2 = {c["ring"] for c in d2["components"]}
+        r12 = {c["ring"] for c in d12["components"]}
+        self.assertEqual(len(r2), 1)
+        self.assertEqual(len(r12), 1)
+        self.assertGreater(r12.pop(), r2.pop())
+
+    def test_ring_gap_function_is_monotonically_increasing(self):
+        f = self.dg.component_ring_gap
+        vals = [f(n) for n in range(1, 40)]
+        self.assertEqual(vals, sorted(vals))
+        self.assertGreater(vals[-1], vals[0])
+        self.assertGreaterEqual(vals[0], self.dg.COMPONENT_RING_BASE)
+
+    def test_no_fixed_ring_radius_remains_in_the_renderer(self):
+        html, _data = self._render({"m/a": 2})
+        self.assertNotIn("r(m)+24", html)
+
+    def test_renderer_stays_host_portable_and_self_contained(self):
+        html, data = self._render({"m/a": 3, "m/b": 2})
+        self.assertNotIn("<script src=", html)
+        self.assertNotIn("<link ", html)
+        # the only absolute URL a self-contained page may carry is the SVG
+        # namespace literal — nothing is fetched at view time
+        for chunk in html.split("http")[1:]:
+            self.assertTrue(chunk.startswith("://www.w3.org/2000/svg"),
+                            chunk[:60])
+        rings = {c["module"]: c["ring"] for c in data["components"]}
+        self.assertGreater(rings["m/a"], rings["m/b"])
+
+
 if __name__ == "__main__":
     unittest.main()

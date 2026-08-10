@@ -7,7 +7,9 @@ Pins:
     and honest to the Dynamic Workflows primitives (agent/parallel/phase/
     args) — static checks only, CI has no JS runtime;
   * FINDINGS_SCHEMA pins exactly the contract:findings-v2 field list from
-    design/contract.json (checked programmatically, not hand-copied);
+    the frozen shipped-contract snapshot
+    (fixtures/briefs/shipped_contracts.json — design/contract.json turns
+    over every design cycle; checked programmatically, not hand-copied);
   * workflow_available(): conservative, env-based — Codex ALWAYS
     unavailable, TASKPLANE_WORKFLOWS=1 opt-in, =0 kill-switch, default
     unset with no marker = unavailable;
@@ -93,9 +95,18 @@ class TestWorkflowFile:
         assert "schema: FINDINGS_SCHEMA" in src  # retry-on-mismatch pin
 
     def test_findings_schema_matches_contract_findings_v2(self):
-        """The JS schema field list is derived from design/contract.json,
-        not hand-copied — drift in either direction fails here."""
-        with open(os.path.join(ROOT, "design", "contract.json")) as f:
+        """The JS schema field list is derived programmatically from the
+        frozen shipped-contract snapshot, not hand-copied — drift in
+        either direction fails here.
+
+        Contract-turnover rule: design/contract.json describes the NEXT
+        design cycle and is REPLACED at every new design gate, so shipped
+        field lists derive from the stable snapshot captured from the
+        contract that shipped this schema
+        (git show 6a3d581:design/contract.json, `contracts` table)."""
+        snap = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "fixtures", "briefs", "shipped_contracts.json")
+        with open(snap) as f:
             contracts = json.load(f)["contracts"]
         spec = next(c for c in contracts if c["id"] == "contract:findings-v2")
         m = re.search(r"findings\[\{([^}]+)\}\]", spec["description"])

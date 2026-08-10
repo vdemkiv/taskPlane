@@ -35,12 +35,20 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self.ws = _repo()
         self.home = tempfile.mkdtemp(prefix="tp-art-home-")
+        # t9 (R-0011 E2): SAVE the prior values. The old tearDown popped
+        # both unconditionally, so an exported TASKPLANE_STORE (or HOME)
+        # vanished for every LATER test module in the same process.
+        self._env0 = {k: os.environ.get(k)
+                      for k in ("TASKPLANE_HOME", "TASKPLANE_STORE")}
         os.environ["TASKPLANE_HOME"] = self.home
         os.environ.pop("TASKPLANE_STORE", None)
 
     def tearDown(self):
-        os.environ.pop("TASKPLANE_HOME", None)
-        os.environ.pop("TASKPLANE_STORE", None)
+        for k, v in self._env0.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def _spec(self, ws):
         os.makedirs(os.path.join(ws, "specs"), exist_ok=True)

@@ -49,6 +49,28 @@ jobs:
       - name: Run the suite (unittest discover)
         run: python -m unittest discover -s taskplane/tests -t .
 
+      # t9 (R-0011 / E1): the leg above proves the second runner still WORKS;
+      # this one proves it still covers as much as it did. Two erosion
+      # directions are silent under a plain green discover run — tests
+      # leaving discovery (closed by a pinned FLOOR on the collected count)
+      # and new pytest-only files accumulating (closed by a pinned MANIFEST
+      # of the files discovery legitimately collects nothing from). The
+      # recorded decision (R-0011 row 1) was floor + manifest, convert
+      # NOTHING. The script only counts collection — it never re-runs the
+      # tests — and both pins ratchet one way: FLOOR up, manifest down.
+      - name: Discover-leg floor + pytest-only manifest (no silent erosion)
+        run: python3 scripts/ci_unittest_floor.py
+
+      # Per-task cost ratchet (P3, R-0012). Between mid-July and v3 phase 3
+      # the loop's per-task cost grew about thirteenfold with no single
+      # change to blame: four defensible local decisions multiplied, and
+      # governance was the only part of this system without a budget. This
+      # leg drives a complete miniature loop and pins what the engine
+      # MANDATES per task. Raising a pin is allowed and expected — it just
+      # has to be a decision someone records, not drift nobody sees.
+      - name: Per-task cost ratchet (governance has a budget too)
+        run: python3 scripts/ci_loop_cost.py
+
   # Advisory portability leg: hooks/hooks.json ships Windows hook commands
   # (`py -3 …`) and the kernel has fcntl-less lock fallbacks, but the suite has
   # only ever run on Linux. continue-on-error keeps this leg from gating merges
@@ -116,6 +138,22 @@ jobs:
           python3 lenses/_generate_lens_prompts.py
           python3 scripts/gen_lens_catalog.py
           git diff --exit-code -- lenses/ docs/lens-catalog.md
+
+      # t8 (R-0010 / D5): the CLI reference is GENERATED from tp.py's live
+      # argparse tree, on the same generated-artifacts pattern as the lens
+      # drift check above. This leg is what makes the flag documentation
+      # structural instead of remembered: add a flag without help text and
+      # the generator REFUSES (nonzero, reason on stderr); add a flag and
+      # forget to regenerate, and git diff --exit-code fails here. It is
+      # also why taskplane/tests/test_release_freshness.py could burn its
+      # 34-flag _LEGACY_UNDOCUMENTED exemption list down to empty — the
+      # freshness corpus globs docs/*.md, so the reference documents every
+      # flag mechanically. Remedy on failure is one command: run the regen
+      # line below and commit docs/cli-reference.md.
+      - name: Generated CLI reference matches tp.py's argparse tree (no drift)
+        run: |
+          python3 taskplane/tp.py help --md > docs/cli-reference.md
+          git diff --exit-code -- docs/cli-reference.md
 
       - name: Build and validate OpenAI marketplace package
         run: python scripts/package_openai.py
@@ -212,6 +250,9 @@ jobs:
   # positive+negative fixtures) as an explicit CI signal rather than a line
   # lost inside the full-suite run. Kept out of validate-plugin on purpose:
   # that job is stdlib-only by design and this one needs pytest.
+      - name: Release freshness (docs/skills cannot fall behind a release)
+        run: python3 -m pytest taskplane/tests/test_release_freshness.py -q
+
   codex-parity:
     name: codex dispatch parity + detector fixtures
     runs-on: ubuntu-latest

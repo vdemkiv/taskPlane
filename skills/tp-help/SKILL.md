@@ -32,7 +32,7 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What routing looks like now (v2.5).** Reviews don't run all 26 lenses
+**What routing looks like now (v2.6).** Reviews don't run all 26 lenses
 blindly: the router scores each lens against the ACTUAL diff — paths,
 content, density, the dependency graph — and stage profiles (design/build/
 review) narrow the candidates, so a typical review runs 5-8 lenses deep with
@@ -47,6 +47,10 @@ routing — a finding on an n/a'd lens auto-files as a router regression and
 blocks sign-off. The DoD can run a graph-scoped regression gate: the blast
 radius's tests at the change's baseline vs now; only was-green-now-red
 blocks. Full detail: `docs/routing-and-flows.md`.
+
+**What's new in v2.6 — the loop stopped paying twice.** A month of dogfooding made per-task cost grow about thirteenfold, as the product of four independent growths that nobody was measuring together. Three changes, none of which weakens a gate. The DoD test command is now CITED rather than re-run when the same command already completed over byte-identical content under the same engine and env — a phase used to run the suite about six times per agent; it now runs once per tree state, and every citation is an auditable trace event where 'I ran the tests' used to be narration no gate could check. `tp loop evidence` hands an evaluator the suite result, the diff, and the exact criteria, lens and graph obligations in ONE call, with judgment slots empty — a bundle submitted unchanged is refused. And `scripts/ci_loop_cost.py` pins what the engine mandates per task, so adding a proof obligation costs a line and a sentence on the record instead of quietly costing everyone time.
+
+**Reviews say what breaks (v2.6).** A finding may block a gate only if it carries a claim: a concrete trigger, the wrong outcome observed, and a repro someone else can run. Commentary is still welcome and still recorded — it just stops rendering as a bug, which is what trained everyone to skim reviews.
 
 **Waves as workflows (Claude) — Task dispatch everywhere.** On Claude Code
 hosts with Dynamic Workflows, the review fan-out and the execute/evaluate/

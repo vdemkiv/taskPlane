@@ -1,6 +1,6 @@
 ---
 name: tp-go
-description: "The single entry point for governed work — use when the user states a goal and wants taskplane to handle everything: 'go build X', 'implement X with taskplane', 'start governed work', 'run the loop', 'set up taskplane', 'run tasks in parallel', 'dispatch the wave', 'run the retro', 'log tech debt'. Picks up whatever is prompted and executes it as far as possible, routing to the right persona — tp-product (define WHAT), tp-design (propose HOW), tp-build (realize), tp-engineering (validate) — with every step under an enforced contract and every human gate honored."
+description: "The internal delivery driver behind the taskplane facade — goal-shaped asks ('build X', 'fix X', the word taskplane) land on the facade, which routes here. Reach for this skill directly only when the user explicitly drives the loop: 'start governed work', 'run the loop', 'run tasks in parallel', 'dispatch the wave', 'run the retro', 'log tech debt'. Drives governed delivery end to end, routing to the right persona — tp-product (define WHAT), tp-design (propose HOW), tp-build (realize), tp-engineering (validate) — with every step under an enforced contract and every human gate honored."
 ---
 
 # /tp-go — goal in, governed delivery out
@@ -9,8 +9,25 @@ description: "The single entry point for governed work — use when the user sta
 pause ONLY at the human gates. Follow each step's returned `instruction`.
 
 This is the internal delivery driver behind the user-facing `taskplane`
-skill. Keep role names, CLI choreography, graph policies, and evidence files
-out of the user's way unless they ask. Do not simplify any of them for agents.
+facade — user phrasing like "build X" arrives via the facade and routes
+here. Keep role names, CLI choreography, graph policies, and evidence files
+out of the user's way unless they ask. Do not simplify any of them for
+agents. The CLI surfaces named below are current as of v2.6 — verify against
+`$TP --help` before citing anything not listed here.
+
+**New in v2.6 — stop paying twice for the same evidence.** At the
+evaluate step, START with `$TP loop evidence --write`: one call returns
+the suite result, the diff, and the exact criteria, routed-lens and
+graph obligations the gate will demand, with every judgment slot left
+EMPTY. Do not rebuild any of that by hand — hand-assembly cost about
+sixty shell calls per evaluation and produced nothing the engine did
+not already hold. The bundle states obligations; it never discharges
+one, and a bundle submitted unchanged is refused at the gate.
+The DoD test command is now cited rather than re-run when an identical
+run over byte-identical content already exists (same command, same
+engine, same governing env); `TASKPLANE_NO_SUITE_CACHE=1` forces a
+real run. And a finding may block a gate only if it carries a claim —
+trigger, outcome, repro — so commentary stops reading like a bug.
 
 **Model tiers.** Each `loop next` payload and each `lens dispatch` brief carries
 a `model` (a concrete id, or `null` = inherit the session model) resolved from a
@@ -141,10 +158,22 @@ explicit approval in conversation. Never run the loop silently.
    (each task: id, scope, tests, req, deps, contracts, `new_modules` when
    applicable, and typed `impact_policy`), execute builds TDD-first
    (`discipline/tdd.md`) honoring the primed lenses, evaluate proves
-   criteria + runs routed lenses and dispositions graph impact, the
-   engineering review synthesizes. Execute/fix/evaluate/engineering workers
-   end with `loop submit`; the orchestrator alone calls `loop gate` and trusts
-   only the engine's recomputed evidence. Product/planner return their
+   criteria + runs routed lenses and dispositions graph impact — its briefs
+   are routed with `stage="build"` (route v2: build-profile candidates
+   scored against the wave's real diff, cap-8 budget, floors, evidenced
+   n/a; when a component layer exists — `tp graph scan --decompose` — the
+   touched components assemble the candidates and each routed lens names
+   its proposers). The engineering review synthesizes with the full
+   catalog, and every Nth completed review (default 5,
+   `TASKPLANE_AUDIT_EVERY`) also runs the full-catalog audit sweep: a
+   finding on a lens the router marked n/a auto-files as a router
+   regression that blocks sign-off. Full routing detail:
+   `docs/routing-and-flows.md`.
+   Execute/fix/evaluate/engineering workers
+   end with `loop submit` and stop; the orchestrator alone calls `loop gate`
+   and trusts only the engine's recomputed evidence — the canonical
+   submit/gate/human-checkpoint invariants live in
+   `../taskplane/references/harness-rules.md`. Product/planner return their
    artifacts for the orchestrator's mechanical gate.
    If a Design Contract is approved, each proposed dependency edge is copied
    into the owning task's `design_edges` as `FROM->TO:KIND`; the plan gate
@@ -169,6 +198,16 @@ explicit approval in conversation. Never run the loop silently.
    `references/parallel.md` (worktree + claim + one governed subagent per
    task, commit before submitting, orchestrator gate, merge on evaluate PASS — EXCEPT entries
    with `merge_on_pass: false`: those are A/B variants, never merge them).
+   **Stage emitters:** `$TP loop wave --emit workflow|task|auto` (execute)
+   and `$TP loop next --emit workflow|task|auto` (evaluate/fix) pick the
+   dispatch rail — the review fan-out has the same switch on
+   `$TP lens dispatch`. On a Claude Code host with Dynamic Workflows the
+   whole stage can run as ONE journaled, resumable workflow run; the
+   Task-dispatch payload stays the mandatory fallback, byte-identical, and
+   the only Codex path. Detection is `workflow_available()` alone (opt in
+   with `TASKPLANE_WORKFLOWS=1`; any of 0/false/no/off disables). Workflows
+   are transport only: same contracts, same briefs, same gates — no gate is
+   reachable only via workflows, and human gates stay conversation-level.
    When all variants pass, the loop pauses at the native `selection` gate:
    present both variants rendered side by side, then
    `$TP loop select <variant|hybrid> --note "why"` on the human's choice —

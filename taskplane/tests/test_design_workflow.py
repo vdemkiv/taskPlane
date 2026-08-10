@@ -32,6 +32,10 @@ class DesignWorkflowTest(unittest.TestCase):
                        check=True)
         self.old_home = os.environ.get("TASKPLANE_HOME")
         os.environ["TASKPLANE_HOME"] = self.home
+        # t9 (R-0011 E2): the pop below is a real mutation — a developer or
+        # CI exporting TASKPLANE_STORE would have it silently deleted for
+        # every LATER test module. Save it and restore in tearDown.
+        self.old_store = os.environ.get("TASKPLANE_STORE")
         os.environ.pop("TASKPLANE_STORE", None)
         self.req = reqs.record_requirement(
             self.ws, "add design flow",
@@ -48,6 +52,10 @@ class DesignWorkflowTest(unittest.TestCase):
             os.environ.pop("TASKPLANE_HOME", None)
         else:
             os.environ["TASKPLANE_HOME"] = self.old_home
+        if self.old_store is None:
+            os.environ.pop("TASKPLANE_STORE", None)
+        else:
+            os.environ["TASKPLANE_STORE"] = self.old_store
 
     def _write_design(self, *, graph_fingerprint=None,
                       visualization_required=False):

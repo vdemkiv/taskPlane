@@ -24,6 +24,7 @@ acceptance criteria:
   * graph_decompose trace {components, recomputed, cache_hits, floor_folded,
     error?}
 """
+import ast
 import json
 import os
 import shutil
@@ -78,6 +79,24 @@ def _bigfile_ws(tmp, *, broken=False):
     src = "".join(out)
     assert src.count("\n") >= 600, "fixture must trip the big-file floor"
     with open(os.path.join(d, "huge.py"), "w") as f:
+        f.write(src)
+    return ws
+
+
+def _symbolless_bigfile_ws(tmp):
+    """B3 (R-0008): a module whose ONLY code file is a >=BIG_FILE_LINES
+    Python file of module-level DATA — no top-level def/class at all, so no
+    symbol cluster can earn a node AND there is no residual symbol either.
+    Built programmatically so the fixture is a real >=600-line module."""
+    ws = os.path.join(tmp, "dataws")
+    d = os.path.join(ws, "dataapp", "gen")
+    os.makedirs(d)
+    src = ("'''Generated lookup table (fixture) — module-level data only.'''\n"
+           "import json  # noqa: F401\n\n"
+           + "".join("ROW_%d = {'id': %d, 'label': 'row %d'}\n" % (i, i, i)
+                     for i in range(700)))
+    assert src.count("\n") >= dc.BIG_FILE_LINES, "fixture must trip the floor"
+    with open(os.path.join(d, "table.py"), "w") as f:
         f.write(src)
     return ws
 
@@ -245,6 +264,88 @@ class TestComponentsYaml(unittest.TestCase):
         g = dg.scan(ws)
         comps, _stats = dc.derive(ws, g)   # must not raise
         self.assertIn("engine/mod::views", {c["id"] for c in comps})
+
+    # ---- A7 (R-0007): floor overrides clamp to >= 1 with a degraded marker
+
+    def test_zero_and_negative_floors_clamp_to_one_with_degraded_marker(self):
+        """A7: floors of 0 and -3 load as 1 — a floor below 1 could never
+        be applied — and the clamp is REPORTED (per-key, with the given
+        value) as a `degraded:` marker in the error channel, per the
+        fail-open convention: proceed on safe values, never silently."""
+        ws = _miniapp(self.tmp)
+        with open(os.path.join(ws, "components.yaml"), "w") as f:
+            f.write("floors:\n"
+                    "  cluster_min_files: 0\n"
+                    "  big_file_lines: -3\n")
+        floors, err = dc.load_floors(ws)
+        self.assertEqual(floors["cluster_min_files"], 1)
+        self.assertEqual(floors["big_file_lines"], 1)
+        # untouched keys keep their defaults
+        self.assertEqual(floors["candidate_min_files"],
+                         dc.CANDIDATE_MIN_FILES)
+        self.assertIsNotNone(err)
+        self.assertIn("degraded", err)
+        self.assertIn("cluster_min_files=0", err)
+        self.assertIn("big_file_lines=-3", err)
+
+    def test_valid_positive_floors_load_unchanged_without_marker(self):
+        ws = _miniapp(self.tmp)
+        with open(os.path.join(ws, "components.yaml"), "w") as f:
+            f.write("floors:\n"
+                    "  cluster_min_files: 3\n"
+                    "  big_file_lines: 900\n")
+        floors, err = dc.load_floors(ws)
+        self.assertIsNone(err)
+        self.assertEqual(floors["cluster_min_files"], 3)
+        self.assertEqual(floors["big_file_lines"], 900)
+
+    def test_no_file_default_path_is_unchanged(self):
+        ws = _miniapp(self.tmp)
+        floors, err = dc.load_floors(ws)
+        self.assertIsNone(err)
+        self.assertEqual(floors, {
+            "candidate_min_files": dc.CANDIDATE_MIN_FILES,
+            "big_file_lines": dc.BIG_FILE_LINES,
+            "cluster_min_files": dc.CLUSTER_MIN_FILES,
+            "cluster_min_symbols": dc.CLUSTER_MIN_SYMBOLS,
+            "cluster_min_lines": dc.CLUSTER_MIN_LINES})
+
+    def test_garbage_floor_value_fails_open_to_defaults_with_marker(self):
+        """A non-integer floor value cannot be clamped — the file fails
+        OPEN to the defaults with the existing `ignored` marker."""
+        ws = _miniapp(self.tmp)
+        with open(os.path.join(ws, "components.yaml"), "w") as f:
+            f.write("floors:\n"
+                    "  big_file_lines: lots\n")
+        floors, err = dc.load_floors(ws)
+        self.assertEqual(floors["big_file_lines"], dc.BIG_FILE_LINES)
+        self.assertIsNotNone(err)
+        self.assertIn("ignored", err)
+
+    def test_floors_hash_reflects_clamped_values(self):
+        """The cache key hashes the EFFECTIVE (clamped) floors: a file
+        pinning a floor at 0 and one pinning it at 1 are the same
+        configuration."""
+        ws = _miniapp(self.tmp)
+        with open(os.path.join(ws, "components.yaml"), "w") as f:
+            f.write("floors:\n  cluster_min_files: 0\n")
+        clamped_hash = dc.floors_hash(ws)
+        with open(os.path.join(ws, "components.yaml"), "w") as f:
+            f.write("floors:\n  cluster_min_files: 1\n")
+        self.assertEqual(dc.floors_hash(ws), clamped_hash)
+
+    def test_derive_carries_the_degraded_floor_marker_in_stats(self):
+        """The marker rides derive()'s error channel (stats['error']) —
+        the same channel depgraph forwards into the graph_decompose
+        trace — and the scan still completes on the clamped floors."""
+        ws = _miniapp(self.tmp)
+        with open(os.path.join(ws, "components.yaml"), "w") as f:
+            f.write("floors:\n  candidate_min_files: -1\n")
+        g = dg.scan(ws)
+        comps, stats = dc.derive(ws, g)    # must not raise
+        self.assertTrue(comps)
+        self.assertIn("degraded", stats["error"] or "")
+        self.assertIn("candidate_min_files=-1", stats["error"])
 
 
 class TestCacheAndNoop(unittest.TestCase):
@@ -920,6 +1021,182 @@ class TestPhase2EmFixes(_WebshopBase):
         self.assertEqual(stats["modules_skipped"], 0,
                          "module-level skip must not fire across drift "
                          "for the drifted module set")
+
+
+# ==========================================================================
+# t5 / B3 (R-0008 design row 3) — symbol-less big-file decomposition honesty.
+#
+# A >=BIG_FILE_LINES Python file with NO top-level symbols earned no cluster
+# and left no residual symbol, so it vanished from the derivation: the module
+# rendered as a `::core` with an EMPTY file span, every diff touching it hit
+# "changed file maps to no component", and the component layer permanently
+# disengaged for that module behind a remedy (re-scan) that reproduced the
+# same empty core. Such a file now joins `::core` as a WHOLE-FILE member
+# (file, hash, '') — the honest fold.
+# ==========================================================================
+
+
+class TestB3SymbollessBigFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.ws = _symbolless_bigfile_ws(self.tmp)
+        self.rel = "dataapp/gen/table.py"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _hashes(self, g):
+        return {rel: (row or {}).get("hash", "")
+                for rel, row in (g.get("files") or {}).items()}
+
+    def test_fixture_really_trips_the_big_file_floor_with_no_symbols(self):
+        src = open(os.path.join(self.ws, self.rel)).read()
+        self.assertGreaterEqual(src.count("\n"), dc.BIG_FILE_LINES)
+        floors, _e = dc.load_floors(self.ws)
+        clusters, residual, tops, _tree, _folded = dc._symbol_clusters(
+            src, self.rel, floors)
+        self.assertEqual(clusters, {})
+        self.assertEqual(residual, [])
+        self.assertEqual(tops, {})
+
+    def test_whole_file_member_joins_core(self):
+        g = dg.scan(self.ws)
+        hashes = self._hashes(g)
+        floors, _e = dc.load_floors(self.ws)
+        comps, _folded = dc._derive_module(
+            self.ws, "dataapp/gen", [self.rel], hashes, floors,
+            dc._repo_stems(g))
+        self.assertEqual([c["id"] for c in comps], ["dataapp/gen::core"])
+        core = comps[0]
+        # the (file, hash, '') whole-file member — the B3 fold
+        self.assertEqual(core["_members"],
+                         [(self.rel, hashes[self.rel], "")])
+        self.assertEqual(core["files"], [self.rel])
+        self.assertEqual(core["symbols"], [])
+
+    def test_derived_core_is_not_empty(self):
+        g = dg.scan(self.ws)
+        comps, _stats = dc.derive(self.ws, g)
+        core = _by_id(comps)["dataapp/gen::core"]
+        self.assertEqual(core["files"], [self.rel])
+        self.assertTrue(core["lens_map"])
+        self.assertNotIn("degraded", core)
+
+    def test_component_shape_unchanged(self):
+        g = dg.scan(self.ws)
+        comps, _stats = dc.derive(self.ws, g)
+        for c in comps:
+            self.assertTrue(CONTRACT_FIELDS.issubset(set(c)), c["id"])
+
+    def test_no_component_anywhere_has_an_empty_span(self):
+        """No fixture in the suite may yield a component with an empty
+        span — an empty ::core is exactly the dishonesty B3 closes."""
+        roots = [_miniapp(self.tmp), _bigfile_ws(self.tmp), self.ws,
+                 os.path.join(self.tmp, "webshop")]
+        shutil.copytree(os.path.join(FIXTURES, "webshop"), roots[-1])
+        empty = []
+        for ws in roots:
+            g = dg.scan(ws)
+            comps, _stats = dc.derive(ws, g)
+            for c in comps:
+                if not c["files"] and not c["symbols"]:
+                    empty.append((ws, c["id"]))
+        self.assertEqual(empty, [], "components with an empty span: %s"
+                                    % empty)
+
+    def test_layer_engages_and_component_routes_the_diff(self):
+        g = dg.scan(self.ws, decompose=True)
+        self.assertEqual([c["id"] for c in g["components"]],
+                         ["dataapp/gen::core"])
+        r = lens.route([self.rel], stage="review", workspace=self.ws)
+        self.assertTrue(r["context"]["component_route"],
+                        "the layer must engage, not widen on "
+                        "'maps to no component'")
+        self.assertEqual(r["context"]["components"], ["dataapp/gen::core"])
+        self.assertEqual(_layer_traces(self.ws), [])
+
+    def test_core_routed_set_is_a_superset_of_the_files_own_signals(self):
+        dg.scan(self.ws, decompose=True)
+        r = lens.route([self.rel], stage="review", workspace=self.ws)
+        routed = {x["id"] for x in r["lenses"] if x["tier"] != "n/a"}
+        own = lens_signals.route_verdicts(self.ws, [self.rel],
+                                          stage="review")
+        own_set = {lid for lid, v in own.items() if v["verdict"] != "n/a"}
+        self.assertTrue(own_set)
+        self.assertTrue(own_set.issubset(routed),
+                        "component route narrowed the folded file's own "
+                        "signals: missing %s" % sorted(own_set - routed))
+
+
+# ==========================================================================
+# t5 / E4 (R-0011 design row 4) — decompose.py doc/behavior truth. The
+# docstrings claimed "unknown keys are ignored" (the real rule: unsupported
+# LINE SHAPES raise ValueError; the whole file then fails OPEN to the
+# defaults with the error reported) and a 2-tuple `_symbol_clusters` return
+# (really a 5-tuple). Behavior does not move; the docs are corrected and
+# pinned here so doc/behavior drift is unreachable.
+# ==========================================================================
+
+
+class TestE4DocstringTruth(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_unsupported_line_shape_raises_value_error(self):
+        with self.assertRaises(ValueError) as cm:
+            dc._parse_components_yaml("floors:\n  - candidate_min_files: 8\n")
+        self.assertIn("unsupported components.yaml line", str(cm.exception))
+
+    def test_unknown_keys_inside_supported_shapes_are_ignored(self):
+        self.assertEqual(
+            dc._parse_components_yaml("floors:\n  bogus_key: 3\n"
+                                      "  cluster_min_files: 5\n"),
+            {"cluster_min_files": 5})
+        self.assertEqual(
+            dc._parse_components_yaml("other:\n  cluster_min_files: 5\n"), {})
+
+    def test_whole_file_fails_open_to_defaults_and_is_reported(self):
+        ws = _miniapp(self.tmp)
+        with open(os.path.join(ws, "components.yaml"), "w") as f:
+            f.write("floors:\n  - candidate_min_files: 8\n")
+        floors, err = dc.load_floors(ws)
+        self.assertEqual(floors["candidate_min_files"],
+                         dc.CANDIDATE_MIN_FILES)
+        self.assertIsNotNone(err)
+        self.assertIn("ignored (defaults used)", err)
+
+    def test_symbol_clusters_returns_the_documented_five_tuple(self):
+        ws = _bigfile_ws(self.tmp)
+        rel = "bigapp/gen/huge.py"
+        floors, _e = dc.load_floors(ws)
+        text = open(os.path.join(ws, rel)).read()
+        out = dc._symbol_clusters(text, rel, floors)
+        self.assertEqual(len(out), 5)
+        clusters, residual, tops, tree, folded = out
+        self.assertIsInstance(clusters, dict)
+        self.assertTrue(all(isinstance(v, list) for v in clusters.values()))
+        self.assertIsInstance(residual, list)
+        self.assertIsInstance(tops, dict)
+        self.assertIsInstance(tree, ast.Module)
+        self.assertIsInstance(folded, int)
+        self.assertEqual(residual, sorted(residual))
+
+    def test_module_docstring_states_the_real_yaml_behavior(self):
+        doc = dc.__doc__
+        self.assertIn("unsupported line SHAPE raises ValueError", doc)
+        self.assertIn("fails OPEN to the defaults", doc)
+        self.assertNotIn("unknown keys\nare ignored", doc)
+
+    def test_symbol_clusters_docstring_states_the_real_return_shape(self):
+        doc = dc._symbol_clusters.__doc__
+        self.assertIn("5-tuple", doc)
+        for part in ("clusters", "residual", "tops", "tree", "folded"):
+            self.assertIn(part, doc)
+        self.assertNotIn("Returns (clusters {name: [symbol nodes]}, "
+                         "residual [nodes])", doc)
 
 
 if __name__ == "__main__":

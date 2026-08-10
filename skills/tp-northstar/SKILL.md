@@ -6,8 +6,9 @@ description: "The on-demand STRATEGIC lens of taskplane — the north-star revie
 # /tp-northstar — the north-star review (summoned, advisory, never a gate)
 
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Product owns the WHAT,
-engineering owns whether it's SOUND. This is the third lens — **strategy** —
-and it is **summoned, not automatic**. Point it at anything: an idea, a
+engineering owns whether it's SOUND — those seats run automatically, backed
+by the routed 26-lens review catalog. This is the third lens — **strategy** —
+outside that catalog, and it is **summoned, not automatic**. Point it at anything: an idea, a
 requirement, a task, a diff/PR, or a finished review. It changes nothing; it
 gives the human one strategic note to weigh.
 

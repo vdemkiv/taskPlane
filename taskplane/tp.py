@@ -33,6 +33,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import taskplane_lite as tp  # noqa: E402
 
 
+# Shared help text for the universal --workspace plumbing flag. It is
+# declared on 34 parsers; the CLI-reference generator refuses any flag
+# with empty help, so one constant keeps all 34 honest and identical.
+_WS_HELP = "repo root this command operates on (default: the cwd)"
+
+
 def _workspace(explicit: str | None = None) -> str:
     return os.path.abspath(explicit or os.getcwd())
 
@@ -486,17 +492,33 @@ def cmd_gc(a) -> int:
 
 
 def cmd_clear(a) -> int:
-    """Deactivate the workspace contract (e.g. when a review ends), so the
-    enforcement hook stops governing subsequent work."""
+    """Deactivate THIS process's contract (e.g. when a review ends), so the
+    enforcement hook stops governing subsequent work.
+
+    The guard resolves the contract through `tp.active_contract_path` — the
+    SAME slot-aware resolution the kernel's `clear()` acts on (TASKPLANE_TASK
+    selects .taskplane/active/<slot>.json; unset selects the legacy single
+    slot). It used to hardcode the legacy path, so a slotted agent following
+    the documented release step got "no active contract to clear" and exit 0
+    while its slot file stayed on disk — and because `load_active()` governs a
+    slot-less process by the MOST RESTRICTIVE UNION of every active slot, each
+    leaked slot permanently tightened what every later agent could do."""
     ws = _workspace(a.workspace)
-    path = os.path.join(tp.tp_dir(ws), "active_contract.json")
-    if os.path.exists(path):
-        c = tp.load_active(ws) or {}
-        tp.clear(ws)                      # FUSE-safe removal (safe_remove)
-        print(f"taskplane: contract {c.get('task_id','')} cleared — "
-              "workspace is ungoverned again.")
-    else:
+    path = tp.active_contract_path(ws)    # slot-aware: what clear() removes
+    if not os.path.exists(path):
         print("taskplane: no active contract to clear.")
+        return 0
+    try:
+        c = tp.load_json(path, default={}, what="active contract")
+    except tp.StateError:
+        c = {}                            # corrupt slot: still clearable
+    if not isinstance(c, dict):
+        c = {}
+    slot = tp.task_slot()
+    tp.clear(ws)                          # FUSE-safe removal (safe_remove)
+    print(f"taskplane: contract {c.get('task_id','')} cleared"
+          + (f" (slot {slot})" if slot else "")
+          + " — workspace is ungoverned again.")
     return 0
 
 
@@ -947,6 +969,9 @@ def cmd_loop(a) -> int:
         out = loopmod.select(ws, a.choice, note=a.note or "")
     elif action == "resolve":
         out = loopmod.resolve(ws, a.decision)
+    elif action == "evidence":
+        out = loopmod.evidence(ws, task_id=getattr(a, "task", None),
+                               write=getattr(a, "write", False))
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
@@ -976,6 +1001,11 @@ def cmd_loop(a) -> int:
     # and the only Codex path — R-0004's core promise).
     if action in ("wave", "next"):
         wrapped = _emit_stage(ws, out, getattr(a, "emit", None) or "auto")
+        if wrapped is _STAGE_REFUSED:
+            # C3/E5: the emission was refused (reason already traced and
+            # printed to stderr) — nonzero exit, NO payload on stdout, so a
+            # scripted driver can never dispatch what cannot run.
+            return 1
         if wrapped is not None:
             print(json.dumps(wrapped, indent=2))
             return 0
@@ -1002,11 +1032,19 @@ def workflow_available(ws) -> dict:
          runtime marker.
       5. Default: UNAVAILABLE — when in doubt, take the path that is proven
          byte-identical to today's behavior.
+
+    `definitive` (C3, R-0009) marks an unavailability that is a KNOWN host
+    fact — Codex has no workflow runtime (verified), the kill-switch is an
+    explicit operator decision — as opposed to the conservative default,
+    where a runtime is merely undetected. An explicit `--emit workflow`
+    override REFUSES on a definitive negative (the payload could never
+    run there) but is still honored on the undetected default (the human
+    may know the runtime better than the detector).
     """
     del ws  # detection is host-level, not workspace-level (reserved)
     env = os.environ
     if env.get("CODEX_HOME") or env.get("CODEX_THREAD_ID"):
-        return {"available": False,
+        return {"available": False, "definitive": True,
                 "reason": "codex host (CODEX_HOME/CODEX_THREAD_ID): "
                           "no workflow runtime"}
     toggle = (env.get("TASKPLANE_WORKFLOWS") or "").strip().lower()
@@ -1014,7 +1052,7 @@ def workflow_available(ws) -> dict:
     # operator writing any conventional falsey spelling MUST get the
     # kill-switch (fail toward disabled, the conservative side).
     if toggle in ("0", "false", "no", "off"):
-        return {"available": False,
+        return {"available": False, "definitive": True,
                 "reason": "disabled by TASKPLANE_WORKFLOWS="
                           + (env.get("TASKPLANE_WORKFLOWS") or "0")}
     if toggle in ("1", "true", "yes", "on"):
@@ -1025,9 +1063,28 @@ def workflow_available(ws) -> dict:
         return {"available": True,
                 "reason": "claude workflow runtime marker "
                           "(CLAUDE_CODE_WORKFLOWS)"}
-    return {"available": False,
+    return {"available": False, "definitive": False,
             "reason": "no workflow runtime detected (conservative default "
                       "— set TASKPLANE_WORKFLOWS=1 to opt in)"}
+
+
+def _emit_workflow_refusal(avail: dict) -> "str | None":
+    """C3 (R-0009): the refusal reason for an explicit `--emit workflow`
+    on a DEFINITIVELY workflow-less host, or None when the override may
+    proceed. Refuse-with-reason replaces force-printing an uninvokable
+    payload (product decision recorded at the pm step): the reason names
+    the host state (the detector's own words) and points at the Task
+    path — the byte-identical mandatory fallback and the only path on
+    Codex. A merely-undetected runtime (the conservative default) keeps
+    the explicit override: the human may know the host better than the
+    detector, and the dispatch-parity pins prove the payload is the same
+    either way."""
+    if avail["available"] or not avail.get("definitive"):
+        return None
+    return ("--emit workflow refused: " + avail["reason"]
+            + ". This host cannot run plugin workflows — use the Task "
+              "path (--emit task, or the default auto): byte-identical "
+              "briefs, the only path on Codex.")
 
 
 # --------------------------------------------------- stage emitter (R-0004)
@@ -1048,24 +1105,92 @@ STAGE_WAVE_NAMES = {"execute": "execute-wave", "evaluate": "evaluate-wave",
                     "fix": "fix-wave"}
 
 
+def _stage_activation(slot: str) -> str:
+    """C1 (R-0009): the per-task contract-slot activation block, in BOTH
+    host forms for the SAME slot.
+
+    `export TASKPLANE_TASK=<slot>` is POSIX-only. An agent on cmd.exe
+    cannot run it, silently never activates its slot, and lands in the
+    slot-less fallback — the most-restrictive UNION of every active
+    per-task contract (taskplane_lite.load_active / _union_contract),
+    where its OWN in-scope work is refused because a sibling's contract
+    does not allow it. That is fail-CLOSED, never an escape, but it is
+    also unworkable, so the brief carries a labelled cmd alternative —
+    the same both-forms pattern hooks/hooks.json already ships as
+    `command` + `commandWindows`.
+
+    The POSIX line stays FIRST and unchanged in wording (the dominant
+    host reads it as before, and the Task-path byte pins that follow it
+    are untouched); the cmd line is an ADDITION, never a replacement.
+    Both forms take the slot the emitter already validated against the
+    ONE enforced charset (_valid_slot_id), so neither can carry a value
+    the screener would refuse. ASCII only: this block is read, and
+    retyped, in consoles whose default code page is not UTF-8."""
+    return (f"export TASKPLANE_TASK={slot}\n\n"
+            "Windows (cmd.exe): the POSIX line above will not run there - "
+            "use this equivalent activation for the SAME slot instead:\n"
+            f"set TASKPLANE_TASK={slot}\n")
+
+
 def _stage_agent_prompt(slot: str, instruction: str, entry: dict) -> str:
     """The prompt ONE governed stage agent receives on the workflow rail.
 
     Composed ONLY of Task-path bytes, never rewritten: the per-task
-    contract-slot export (`export TASKPLANE_TASK=<slot>` — the same slot
-    protocol every dispatched worker uses), the stage payload's own
-    `instruction` VERBATIM (it carries the claim/submit-not-advance
+    contract-slot activation (`export TASKPLANE_TASK=<slot>` plus its
+    labelled cmd.exe alternative — the same slot protocol every
+    dispatched worker uses, see _stage_activation), the stage payload's
+    own `instruction` VERBATIM (it carries the claim/submit-not-advance
     protocol: workers submit evidence, only the orchestrator gates), and
     the task-path payload entry VERBATIM (json.dumps, indent=2 — the same
     serialization the Task path prints on stdout)."""
-    return (f"export TASKPLANE_TASK={slot}\n\n{instruction}\n\n"
+    return (_stage_activation(slot) + f"\n{instruction}\n\n"
             + json.dumps(entry, indent=2))
 
 
-def _stage_wave_run(payload) -> "tuple[str, dict] | None":
-    """Map a `loop wave`/`loop next` payload to its stage workflow run
-    (stage, workflow{name, args}) — or None when the payload is not a stage
-    dispatch (error, human pause, empty wave, non-stage step).
+def _valid_slot_id(tid) -> bool:
+    """E5 (R-0011): a task id the emitter embeds into an
+    `export TASKPLANE_TASK=<id>` prompt line must already BE a valid
+    contract slot — validated against the ONE enforced slot charset
+    (taskplane_lite._TASK_SLOT_RE), never a second regex that could
+    drift from the screener's."""
+    return bool(isinstance(tid, str) and tp._TASK_SLOT_RE.match(tid))
+
+
+def _entry_problem(entry, i: int) -> "dict | None":
+    """Validate ONE wave entry before any brief is composed. Returns None
+    (well-formed), an A6 degrade marker {path: 'task', reason} for a
+    malformed entry (missing/ill-shaped task or id — fail OPEN: the Task
+    path can always print what the loop printed), or an E5 refusal
+    {path: 'refused', reason} for an id outside the slot charset (fail
+    CLOSED on the WORKFLOW rail only — that rail composes an
+    `export TASKPLANE_TASK=<id>` line, so the refusal lands before any
+    such line exists. `_emit_stage` scopes it: the Task path composes no
+    shell line and degrades instead — see its RAIL ORDER note)."""
+    task = entry.get("task") if isinstance(entry, dict) else None
+    tid = task.get("id") if isinstance(task, dict) else None
+    if not tid or not isinstance(tid, str):
+        return {"path": "task",
+                "reason": "malformed wave entry — fail-open to task path: "
+                          f"entry {i} has no task.id"}
+    if not _valid_slot_id(tid):
+        return {"path": "refused",
+                "reason": f"invalid task id {tid!r} (entry {i}): a stage "
+                          "brief embeds `export TASKPLANE_TASK=<id>`, so "
+                          "the id must match the enforced slot charset "
+                          + tp._TASK_SLOT_RE.pattern
+                          + " — emission refused, nothing composed"}
+    return None
+
+
+def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
+    """Map a `loop wave`/`loop next` payload to its stage workflow run —
+    (stage, workflow{name, args}, None) — or None when the payload is not
+    a stage dispatch (error, human pause, empty wave, non-stage step), or
+    (stage, None, problem) when a stage payload cannot be composed:
+    problem = {path: 'task', reason} (A6 — malformed entry, degrade to
+    the Task path) | {path: 'refused', reason} (E5 — id outside the slot
+    charset, refuse emission). Every entry is validated BEFORE any prompt
+    line is composed.
 
     args carries the SAME brief set the Task path prints
     (contract:wave-workflow): execute/evaluate workflows consume
@@ -1081,35 +1206,76 @@ def _stage_wave_run(payload) -> "tuple[str, dict] | None":
         entries = payload.get("wave") or []
         if not entries:
             return None                      # nothing to dispatch this wave
+        for i, e in enumerate(entries):      # validate ALL before composing
+            problem = _entry_problem(e, i)
+            if problem is not None:
+                return "execute", None, problem
         briefs = [{"id": e["task"]["id"], "worktree": e.get("worktree"),
                    "prompt": _stage_agent_prompt(e["task"]["id"],
                                                  instruction, e)}
                   for e in entries]
-        return "execute", {"name": "execute-wave", "args": {"briefs": briefs}}
-    if step in STAGE_WAVE_NAMES and isinstance(payload.get("task"), dict) \
-            and payload["task"].get("id"):
+        return ("execute", {"name": "execute-wave",
+                            "args": {"briefs": briefs}}, None)
+    if step in STAGE_WAVE_NAMES and "task" in payload:
+        # same validation on the single-task step shapes (A6/E5): a
+        # payload CARRYING a task that is malformed degrades to the Task
+        # path traced (never a silent skip), an un-slottable id refuses.
+        problem = _entry_problem(payload, 0)
+        if problem is not None:
+            return step, None, problem
         tid = payload["task"]["id"]
         brief = {"id": tid, "worktree": payload["task"].get("workspace"),
                  "prompt": _stage_agent_prompt(tid, instruction, payload)}
         key = "verdicts" if step == "fix" else "briefs"
-        return step, {"name": STAGE_WAVE_NAMES[step], "args": {key: [brief]}}
+        return (step, {"name": STAGE_WAVE_NAMES[step],
+                       "args": {key: [brief]}}, None)
     return None
 
 
+# Sentinel: the emission was REFUSED (reason already on stderr + trace);
+# the caller must exit nonzero and print NO payload.
+_STAGE_REFUSED = object()
+
+
 def _emit_stage(ws, payload, emit: str):
-    """R-0004 stage emitter. Returns the workflow-path payload to print, or
+    """R-0004 stage emitter. Returns the workflow-path payload to print,
     None → the caller prints the untouched Task-path payload (stdout stays
     BYTE-IDENTICAL to the pre-workflow bytes: the MANDATORY fallback and
-    the only Codex path). The chosen path is traced as stage_dispatch_path
-    {stage, path, reason} on BOTH rails, printed on neither task stdout.
-    Detection is delegated to workflow_available() — single detector, no
-    second env parse here."""
+    the only Codex path), or _STAGE_REFUSED → the caller exits nonzero
+    (reason already traced + printed to stderr; nothing on stdout). The
+    chosen path is traced as stage_dispatch_path {stage, path, reason} on
+    ALL rails, printed on neither task stdout. Detection is delegated to
+    workflow_available() — single detector, no second env parse here.
+
+    RAIL ORDER (Phase 3 fix): the E5 slot-charset refusal is a property of
+    the WORKFLOW rail only — that rail interpolates the id into a composed
+    `export TASKPLANE_TASK=<id>` line. The Task path composes no shell line
+    (it prints the engine's own payload verbatim), so it is NEVER refused
+    for a slot-charset reason: refusing it denied the MANDATORY fallback —
+    on Codex, the only rail there is — and dead-ended an already-approved
+    plan. Bad ids are caught EARLY instead, at the plan gate
+    (taskplane_lite.plan_task_id_errors, where the remedy is a free edit to
+    plan/tasks.json), and late at `claim` (task_slot's StateError)."""
     run = _stage_wave_run(payload)
     if run is None:
         return None
-    stage, workflow = run
+    stage, workflow, problem = run
+    if problem is not None and problem["path"] != "refused":
+        # A6: malformed entry → degrade to the Task path (fail open).
+        tp.trace(ws, "stage_dispatch_path", stage=stage,
+                 path=problem["path"], reason=problem["reason"], emit=emit)
+        return None
     avail = workflow_available(ws)
     if emit == "workflow":
+        refusal = _emit_workflow_refusal(avail)
+        if refusal is not None:
+            # C3: explicit --emit workflow on a definitively workflow-less
+            # host (Codex, kill-switch) — refuse with the named remedy
+            # instead of force-printing an uninvokable payload.
+            tp.trace(ws, "stage_dispatch_path", stage=stage, path="refused",
+                     reason=refusal, emit=emit)
+            print("taskplane: " + refusal, file=sys.stderr)
+            return _STAGE_REFUSED
         path = "workflow"
         reason = "explicit --emit workflow" + (
             "" if avail["available"] else f" (forced: {avail['reason']})")
@@ -1118,6 +1284,20 @@ def _emit_stage(ws, payload, emit: str):
     else:
         path = "workflow" if avail["available"] else "task"
         reason = avail["reason"]
+    if problem is not None:
+        # E5, rail-scoped: refuse the WORKFLOW emission (nothing composed);
+        # on the Task rail degrade instead — the id is never interpolated
+        # there, and the mandatory fallback must stay reachable.
+        if path == "workflow":
+            tp.trace(ws, "stage_dispatch_path", stage=stage, path="refused",
+                     reason=problem["reason"], emit=emit)
+            print("taskplane: " + problem["reason"], file=sys.stderr)
+            return _STAGE_REFUSED
+        tp.trace(ws, "stage_dispatch_path", stage=stage, path="task",
+                 reason=problem["reason"] + " — Task path unaffected (no "
+                 "shell line is composed there); fix the id in "
+                 "plan/tasks.json before the next plan gate", emit=emit)
+        return None
     tp.trace(ws, "stage_dispatch_path", stage=stage, path=path,
              reason=reason, emit=emit)
     if path != "workflow":
@@ -1168,6 +1348,20 @@ def cmd_lens(a) -> int:
                                          breadth=breadth)
 
     if action == "dispatch":
+        # C3 (R-0009): an explicit --emit workflow on a definitively
+        # workflow-less host (Codex, operator kill-switch) is refused UP
+        # FRONT — before briefs are composed or expected dispatches are
+        # recorded — so a refusal leaves no verify-dispatch expectations
+        # behind. The merely-undetected default keeps the override
+        # (dispatch-parity pins prove the payload is identical either way).
+        if (getattr(a, "emit", "auto") or "auto") == "workflow" \
+                and not getattr(a, "dashboard", False):
+            refusal = _emit_workflow_refusal(workflow_available(ws))
+            if refusal is not None:
+                tp.trace(ws, "review_dispatch_path", path="refused",
+                         reason=refusal, emit="workflow")
+                print("taskplane: " + refusal, file=sys.stderr)
+                return 1
         impact_ctx = None
         try:
             import depgraph as dg
@@ -2107,6 +2301,219 @@ def cmd_version(a) -> int:
     return 0 if rep["ok"] else 1
 
 
+# ---------------------------------------------------------------------
+# D5 (R-0010): the CLI reference is GENERATED, never hand-written.
+#
+# `tp help --md` walks the LIVE argparse tree — the same parser object the
+# CLI dispatches with — and prints a deterministic markdown reference of
+# every subcommand (nested subparsers included) and every long flag with
+# its help text. Nothing environmental enters the output: no timestamps,
+# no absolute paths, no terminal-width wrapping (argparse's own
+# format_help() is width-dependent, so it is deliberately NOT used), and
+# every level is emitted in sorted order.
+#
+# The generator REFUSES rather than emits a reference it cannot stand
+# behind: a subcommand or long flag with empty/missing help text, or a
+# degenerate walk that found no commands or no flags. That refusal is the
+# replacement for the old hand-maintained exemption list — a new flag
+# without help prose cannot be generated at all, and a new flag whose
+# reference was not regenerated fails the CI drift leg.
+# ---------------------------------------------------------------------
+
+
+class CliReferenceError(RuntimeError):
+    """The CLI reference generator refused to emit."""
+
+
+def _cli_commands(parser, path=(), help_text=None):
+    """Yield (path, parser, help) for `parser` and every nested subparser.
+
+    Depth-first, each level in sorted name order, so the walk order is a
+    pure function of the parser tree.
+    """
+    yield path, parser, help_text
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        helps = {ca.dest: ca.help for ca in action._choices_actions}
+        for name in sorted(action.choices):
+            yield from _cli_commands(action.choices[name], path + (name,),
+                                     helps.get(name))
+
+
+def _cli_cell(text):
+    """One markdown table cell: single-line, pipes escaped."""
+    return " ".join(str(text or "").split()).replace("|", "\\|")
+
+
+def _cli_value(action):
+    """What the flag takes, as a table cell."""
+    if action.nargs == 0:
+        value = "flag"
+    elif action.choices:
+        value = "one of: " + ", ".join(str(c) for c in action.choices)
+    elif action.metavar:
+        value = str(action.metavar)
+    else:
+        value = action.dest.upper()
+    marks = []
+    if action.required:
+        marks.append("required")
+    if isinstance(action, argparse._AppendAction):
+        marks.append("repeatable")
+    if marks:
+        value += " (" + ", ".join(marks) + ")"
+    return value
+
+
+def _cli_flags(parser):
+    """[(rendered flag names, action)] for this parser, sorted."""
+    rows = []
+    for action in parser._actions:
+        if isinstance(action, (argparse._SubParsersAction,
+                               argparse._HelpAction)):
+            continue
+        longs = sorted(o for o in action.option_strings if o.startswith("--"))
+        if not longs:
+            continue
+        rows.append((longs, action))
+    return sorted(rows, key=lambda r: r[0][0])
+
+
+def _cli_positionals(parser):
+    """[(name, action)] for this parser's positional arguments."""
+    out = []
+    for action in parser._actions:
+        if isinstance(action, (argparse._SubParsersAction,
+                               argparse._HelpAction)):
+            continue
+        if action.option_strings:
+            continue
+        out.append((str(action.metavar or action.dest), action))
+    return out
+
+
+_CLI_NARGS_NOTE = {"*": "zero or more", "+": "one or more", "?": "optional"}
+
+CLI_REFERENCE_REGEN = ("python3 taskplane/tp.py help --md > "
+                       "docs/cli-reference.md")
+
+
+def cli_reference_markdown(parser) -> str:
+    """Render `parser`'s whole command tree as markdown, or refuse.
+
+    Raises CliReferenceError (naming what is wrong) when the reference
+    would be degenerate, or when any subcommand or long flag carries no
+    help text.
+    """
+    walk = sorted(_cli_commands(parser), key=lambda row: row[0])
+    commands = [row for row in walk if row[0]]
+    flag_total = sum(len(_cli_flags(par)) for _path, par, _h in walk)
+    if not commands or not flag_total:
+        raise CliReferenceError(
+            "refusing to emit a degenerate CLI reference: the argparse walk "
+            f"found {len(commands)} subcommand(s) and {flag_total} long "
+            "flag(s) — the parser tree is empty or was not built")
+
+    undocumented = []
+    for path, par, help_text in walk:
+        name = " ".join((parser.prog,) + path)
+        if path and not str(help_text or "").strip():
+            undocumented.append(f"subcommand `{name}` has no help text")
+        for longs, action in _cli_flags(par):
+            if not str(action.help or "").strip():
+                undocumented.append(
+                    f"flag `{longs[0]}` on `{name}` has no help text")
+    if undocumented:
+        raise CliReferenceError(
+            "refusing to emit an incomplete CLI reference — "
+            f"{len(undocumented)} undocumented surface(s): "
+            + "; ".join(undocumented)
+            + ". Write the argparse help= text (that IS the documentation) "
+              "and regenerate")
+
+    out = [f"# `{parser.prog}` CLI reference", ""]
+    out += [
+        f"> This file is GENERATED from `{parser.prog}`'s live argparse "
+        "tree — don't",
+        "> hand-edit. Regenerate with",
+        f"> `{CLI_REFERENCE_REGEN}`.",
+        "> CI regenerates and diffs this file on every push, so a stale "
+        "copy fails",
+        "> the build.",
+        "",
+        f"Every subcommand of `{parser.prog}` and every long flag it "
+        "accepts, walked",
+        "from the parser the CLI actually dispatches with: a flag cannot "
+        "be listed",
+        "here without existing, and cannot exist without being listed. "
+        "The generator",
+        "REFUSES to emit when a subcommand or a long flag carries no help "
+        "text, so",
+        "the documentation ratchet is enforced at generation time rather "
+        "than by an",
+        "exemption list.",
+        "",
+        "argparse's own `-h` / `--help` is accepted by every command below "
+        "and is",
+        "not repeated in the tables.",
+        "",
+        "## Commands",
+        "",
+        "| Command | What it does |",
+        "| --- | --- |",
+    ]
+    for path, _par, help_text in commands:
+        name = " ".join((parser.prog,) + path)
+        out.append(f"| `{name}` | {_cli_cell(help_text)} |")
+    out.append("")
+
+    for path, par, help_text in commands:
+        name = " ".join((parser.prog,) + path)
+        out += [f"## `{name}`", "", _cli_cell(help_text), ""]
+        positionals = _cli_positionals(par)
+        if positionals:
+            out.append("Positional arguments:")
+            out.append("")
+            for pname, action in positionals:
+                note = _CLI_NARGS_NOTE.get(action.nargs)
+                line = f"- `{pname}`"
+                if note:
+                    line += f" ({note})"
+                if str(action.help or "").strip():
+                    line += f" — {_cli_cell(action.help)}"
+                out.append(line)
+            out.append("")
+        flags = _cli_flags(par)
+        if flags:
+            out += ["| Flag | Value | What it does |", "| --- | --- | --- |"]
+            for longs, action in flags:
+                shown = ", ".join(f"`{o}`" for o in longs)
+                out.append(f"| {shown} | {_cli_cell(_cli_value(action))} "
+                           f"| {_cli_cell(action.help)} |")
+            out.append("")
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def cmd_help(a) -> int:
+    """`tp help` — the parser's own help; `tp help --md` — the reference."""
+    parser = getattr(a, "root_parser", None)
+    if parser is None:
+        print("taskplane: help is unavailable — no parser was bound to the "
+              "command (internal error)", file=sys.stderr)
+        return 1
+    if not getattr(a, "md", False):
+        parser.print_help()
+        return 0
+    try:
+        markdown = cli_reference_markdown(parser)
+    except CliReferenceError as exc:
+        print(f"taskplane: help --md refused: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.write(markdown)
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="tp.py")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -2125,19 +2532,21 @@ def main(argv=None) -> int:
     n.add_argument("--write-allow", action="append", metavar="GLOB",
                    help="in read-only mode, dirs that ARE writable "
                         "(e.g. .em-review/**) — repeatable")
-    n.add_argument("--workspace", default=argparse.SUPPRESS)
+    n.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     n.set_defaults(fn=cmd_new)
 
     dc = sub.add_parser("decision", help="decision registry — structured "
                         "ADRs with lifecycle, links and supersede chains")
-    dc.add_argument("--workspace", default=argparse.SUPPRESS)
+    dc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dsub = dc.add_subparsers(dest="decision_action", required=True)
-    dn = dsub.add_parser("new")
-    dn.add_argument("--workspace", default=argparse.SUPPRESS)
+    dn = dsub.add_parser("new", help="record a new decision (ADR)")
+    dn.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dn.add_argument("title")
-    dn.add_argument("--context")
-    dn.add_argument("--decision")
-    dn.add_argument("--rationale")
+    dn.add_argument("--context", help="the situation that forced the "
+                    "decision")
+    dn.add_argument("--decision", help="what was decided, in one sentence")
+    dn.add_argument("--rationale", help="why this option won over the "
+                    "alternatives")
     dn.add_argument("--alternative", action="append",
                     help="repeatable: 'option | gained | given up'")
     dn.add_argument("--req", help="linked requirement R-XXXX")
@@ -2145,21 +2554,25 @@ def main(argv=None) -> int:
                     "decision governs (drives always-on context injection)")
     dn.add_argument("--supersedes", help="decision id this one replaces")
     dn.add_argument("--status", default="accepted",
-                    choices=["proposed", "accepted"])
-    dn.add_argument("--tags")
-    dl = dsub.add_parser("list")
-    dl.add_argument("--workspace", default=argparse.SUPPRESS)
-    dl.add_argument("--status", dest="status_filter")
-    dsh = dsub.add_parser("show")
-    dsh.add_argument("--workspace", default=argparse.SUPPRESS)
+                    choices=["proposed", "accepted"],
+                    help="lifecycle state to record it in "
+                         "(default: accepted)")
+    dn.add_argument("--tags", help="comma-separated tags for retrieval")
+    dl = dsub.add_parser("list", help="list recorded decisions")
+    dl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    dl.add_argument("--status", dest="status_filter",
+                    help="list only decisions in this lifecycle state")
+    dsh = dsub.add_parser("show", help="print one decision in full")
+    dsh.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dsh.add_argument("id")
-    da = dsub.add_parser("accept")
-    da.add_argument("--workspace", default=argparse.SUPPRESS)
+    da = dsub.add_parser("accept", help="move a proposed decision to accepted")
+    da.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     da.add_argument("id")
-    dsp = dsub.add_parser("supersede")
-    dsp.add_argument("--workspace", default=argparse.SUPPRESS)
+    dsp = dsub.add_parser("supersede", help="mark a decision replaced by a newer one")
+    dsp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dsp.add_argument("id")
-    dsp.add_argument("--by", required=True)
+    dsp.add_argument("--by", required=True,
+                     help="id of the decision that replaces this one")
     dc.set_defaults(fn=cmd_decision)
 
     s = sub.add_parser("screen", help="PreToolUse hook entrypoint (stdin event)")
@@ -2171,20 +2584,20 @@ def main(argv=None) -> int:
     sd.set_defaults(fn=cmd_screen_dispatch)
 
     rd = sub.add_parser("ready", help="Definition-of-Ready entry gate")
-    rd.add_argument("--workspace", default=argparse.SUPPRESS)
+    rd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rd.set_defaults(fn=cmd_ready)
 
     gcp = sub.add_parser("gc", help="prune runtime artifacts (tombstones, "
                          "stale locks, orphaned tmp) — never governance "
                          "records")
-    gcp.add_argument("--workspace", default=argparse.SUPPRESS)
+    gcp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     gcp.set_defaults(fn=cmd_gc)
     cl = sub.add_parser("clear", help="deactivate the workspace contract")
-    cl.add_argument("--workspace", default=argparse.SUPPRESS)
+    cl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cl.set_defaults(fn=cmd_clear)
 
     st = sub.add_parser("status", help="show the active contract")
-    st.add_argument("--workspace", default=argparse.SUPPRESS)
+    st.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     st.set_defaults(fn=cmd_status)
 
     b = sub.add_parser("budget", help="record a cooperative spend estimate, "
@@ -2195,20 +2608,22 @@ def main(argv=None) -> int:
                    help="raise the enforced action ceiling by N — for the "
                         "human / ungoverned main session after approving "
                         "more budget (a governed agent cannot grant itself)")
-    b.add_argument("--workspace", default=argparse.SUPPRESS)
+    b.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     b.set_defaults(fn=cmd_budget)
 
     d = sub.add_parser("dod", help="Definition-of-Done exit gate (+ kb lint)")
-    d.add_argument("--workspace", default=argparse.SUPPRESS)
+    d.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     d.set_defaults(fn=cmd_dod)
 
     lp = sub.add_parser("loop", help="drive the Evaluate-Loop engine")
-    lp.add_argument("--workspace", default=argparse.SUPPRESS)
+    lp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lsub = lp.add_subparsers(dest="loop_action", required=True)
-    li = lsub.add_parser("init")
+    li = lsub.add_parser("init", help="start an Evaluate-Loop for a goal")
     li.add_argument("goal", nargs="*")
     li.add_argument("--spec", help="path to an existing spec (skips PM)")
-    li.add_argument("--max-fix-cycles", type=int, default=2)
+    li.add_argument("--max-fix-cycles", type=int, default=2,
+                    help="fix cycles the loop may run before it escalates "
+                         "to the human (default 2)")
     li.add_argument("--checkpoints", help="comma list: plan,em (default both)")
     li.add_argument("--req", help="anchor the loop to a requirement R-id")
     li.add_argument("--parallel", action="store_true",
@@ -2223,7 +2638,7 @@ def main(argv=None) -> int:
     li.add_argument("--force", action="store_true",
                     help="replace an in-flight loop (the old loop.json is "
                          "archived first — without this flag re-init refuses)")
-    ln = lsub.add_parser("next")
+    ln = lsub.add_parser("next", help="print the next stage brief for the active loop")
     ln.add_argument("--req", help="attach requirement R-id to the loop "
                     "before DoR evaluation (design anchor)")
     ln.add_argument("--emit", choices=["workflow", "task", "auto"],
@@ -2234,7 +2649,7 @@ def main(argv=None) -> int:
                          "today's payload byte-identically (the mandatory "
                          "fallback and the only Codex path), 'auto' consults "
                          "workflow_available() (default)")
-    lw = lsub.add_parser("wave")
+    lw = lsub.add_parser("wave", help="print the EXECUTE wave: one brief per scope-disjoint task")
     lw.add_argument("--emit", choices=["workflow", "task", "auto"],
                     default="auto",
                     help="stage dispatch surface (R-0004): 'workflow' wraps "
@@ -2243,45 +2658,57 @@ def main(argv=None) -> int:
                          "'task' prints today's wave payload byte-identically "
                          "(the mandatory fallback and the only Codex path), "
                          "'auto' consults workflow_available() (default)")
-    lc = lsub.add_parser("claim")
+    lc = lsub.add_parser("claim", help="a worker claims one wave task into its own worktree")
     lc.add_argument("task_id")
     lc.add_argument("--agent-workspace", required=True,
                     help="the worker's worktree — its contract activates there")
-    lg = lsub.add_parser("gate")
+    lg = lsub.add_parser("gate", help="orchestrator-only: judge the evidence and advance the loop")
     lg.add_argument("outcome", choices=["pass", "fail"])
-    lg.add_argument("--note", default="")
+    lg.add_argument("--note", default="",
+                    help="one-line note recorded with the gate decision")
     lg.add_argument("--task", help="task id (parallel execute waves)")
     lg.add_argument("--req", help="attach requirement R-id to the loop "
                     "before DoR evaluation (design anchor)")
     lsu = lsub.add_parser("submit", help="worker submits evidence without "
                             "transitioning state; the orchestrator gates")
     lsu.add_argument("outcome", choices=["pass", "fail"])
-    lsu.add_argument("--note", default="")
+    lsu.add_argument("--note", default="",
+                     help="one-line evidence note recorded with the "
+                          "submission")
     lsu.add_argument("--task", help="task id (parallel execute waves)")
     ls_ = lsub.add_parser("select", help="A/B selection gate: pick the "
                           "variant that ships (or 'hybrid')")
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")
     ls_.add_argument("--note", help="the WHY — recorded to the KB")
-    la = lsub.add_parser("approve")
+    la = lsub.add_parser("approve", help="record a human approval at a checkpoint gate")
     la.add_argument("--by", default=None,
                     help="who approved and where (e.g. a Slack user + "
                          "quoted reply) — recorded in trace + KB")
-    la.add_argument("--workspace", default=argparse.SUPPRESS)
+    la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     la.add_argument("--force", action="store_true",
                     help="pass a BLOCKED refinement gate anyway")
-    lr = lsub.add_parser("resolve")
+    lr = lsub.add_parser("resolve", help="resolve a blocked loop: retry, skip, defer or abort")
     lr.add_argument("decision", choices=["retry", "skip", "defer", "abort"])
-    lsub.add_parser("status")
-    lsub.add_parser("retro")
+    le = lsub.add_parser("evidence", help="assemble every mechanically-derivable "
+                         "fact the evaluate gate will check (suite result, diff, "
+                         "criteria, routed lenses, graph obligations) with the "
+                         "judgment slots left empty for the evaluator to fill")
+    le.add_argument("--task", help="task id (default: the loop's current task)")
+    le.add_argument("--write", action="store_true",
+                    help="also drop the skeleton at .eval/verdict.json when no "
+                         "verdict is already there (never overwrites)")
+    lsub.add_parser("status", help="show the loop's stage, tasks and gates")
+    lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "
                     "used the models the briefs resolved (tier routing)")
     lp.set_defaults(fn=cmd_loop)
 
     ln = sub.add_parser("lens", help="route lenses for a change")
     lnsub = ln.add_subparsers(dest="lens_action", required=True)
-    lnr = lnsub.add_parser("route")
+    lnr = lnsub.add_parser("route", help="decide which lenses a change needs")
     lnr.add_argument("--base", default="HEAD", help="git base to diff against")
-    lnr.add_argument("--task-type")
+    lnr.add_argument("--task-type", help="declared task type (feature, "
+                     "bugfix, refactor, ...) — widens the routed set")
     lnr.add_argument("--artifact-type",
                      help="route on an artifact instead of the diff — "
                           "'strategy' summons the advisory (board) tier")
@@ -2290,29 +2717,43 @@ def main(argv=None) -> int:
     lnr.add_argument("--all", action="store_true", dest="breadth_all",
                      help="full catalog: routed lenses run deep, the rest "
                           "as a quick sweep — nothing skipped")
-    lnr.add_argument("--json", action="store_true")
-    lnr.add_argument("--workspace", default=argparse.SUPPRESS)
+    lnr.add_argument("--json", action="store_true",
+                     help="print the routing decision as JSON")
+    lnr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnr.set_defaults(fn=cmd_lens)
 
     lnl = lnsub.add_parser("list", help="every lens in the catalog")
-    lnl.add_argument("--json", action="store_true")
-    lnl.add_argument("--workspace", default=argparse.SUPPRESS)
+    lnl.add_argument("--json", action="store_true",
+                     help="print the catalog as JSON")
+    lnl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnl.set_defaults(fn=cmd_lens)
 
     lns = lnsub.add_parser("show", help="the full brief for one lens")
     lns.add_argument("id")
-    lns.add_argument("--workspace", default=argparse.SUPPRESS)
+    lns.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lns.set_defaults(fn=cmd_lens)
 
     lnd = lnsub.add_parser("dispatch", help="ready-to-dispatch lens-agent "
                            "briefs — one read-only agent per deep lens, "
                            "fanned out in parallel")
-    lnd.add_argument("--base", default="HEAD")
-    lnd.add_argument("--task-type")
-    lnd.add_argument("--only"); lnd.add_argument("--skip")
-    lnd.add_argument("--all", action="store_true", dest="breadth_all")
-    lnd.add_argument("--max-actions", type=int, default=30, dest="max_actions")
-    lnd.add_argument("--artifact-type")
+    lnd.add_argument("--base", default="HEAD",
+                     help="git base to diff against (default HEAD)")
+    lnd.add_argument("--task-type", help="declared task type (feature, "
+                     "bugfix, refactor, ...) — widens the routed set")
+    lnd.add_argument("--only", help="comma list — dispatch only these "
+                     "lenses")
+    lnd.add_argument("--skip", help="comma list — do not dispatch these "
+                     "lenses")
+    lnd.add_argument("--all", action="store_true", dest="breadth_all",
+                     help="full catalog: routed lenses run deep, the rest "
+                          "as a quick sweep — nothing skipped")
+    lnd.add_argument("--max-actions", type=int, default=30,
+                     dest="max_actions",
+                     help="per-agent action ceiling written into each "
+                          "dispatched lens brief (default 30)")
+    lnd.add_argument("--artifact-type",
+                     help="route on an artifact instead of the diff — "
+                          "'strategy' summons the advisory (board) tier")
     lnd.add_argument("--dashboard", action="store_true",
                      help="print the live lens-wave progress board instead "
                           "of the JSON briefs (render this BEFORE dispatch)")
@@ -2323,22 +2764,28 @@ def main(argv=None) -> int:
                           "today's Task-dispatch payload byte-identically, "
                           "'auto' (default) picks workflow only when the "
                           "host runtime is detected (Codex: always task)")
-    lnd.add_argument("--workspace", default=argparse.SUPPRESS)
+    lnd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnd.set_defaults(fn=cmd_lens)
 
     kbp = sub.add_parser("kb", help="knowledge base (decisions)")
-    kbp.add_argument("--workspace", default=argparse.SUPPRESS)
+    kbp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     kbsub = kbp.add_subparsers(dest="kb_action", required=True)
-    kr = kbsub.add_parser("record")
+    kr = kbsub.add_parser("record", help="record a decision in the knowledge base")
     kr.add_argument("title")
-    kr.add_argument("--context"); kr.add_argument("--decision")
-    kr.add_argument("--rationale"); kr.add_argument("--tags")
+    kr.add_argument("--context", help="the situation the decision was "
+                    "made in")
+    kr.add_argument("--decision", help="what was decided, in one sentence")
+    kr.add_argument("--rationale", help="why this option won")
+    kr.add_argument("--tags", help="comma-separated tags for retrieval")
     kr.add_argument("--files", help="comma-separated context file globs")
-    kt = kbsub.add_parser("retrieve")
-    kt.add_argument("--files"); kt.add_argument("--tags")
-    kt.add_argument("--limit", type=int, default=5)
-    kbsub.add_parser("list")
-    kbsub.add_parser("lint")
+    kt = kbsub.add_parser("retrieve", help="recall the decisions that govern given files or tags")
+    kt.add_argument("--files", help="comma-separated file globs — retrieve "
+                    "decisions that govern them")
+    kt.add_argument("--tags", help="comma-separated tags to match")
+    kt.add_argument("--limit", type=int, default=5,
+                    help="most decisions to return (default 5)")
+    kbsub.add_parser("list", help="list every recorded decision")
+    kbsub.add_parser("lint", help="check the knowledge base for malformed or empty records")
     kbsub.add_parser("where", help="show the external store path for this "
                      "project (and whether a legacy in-repo KB remains)")
     kbsub.add_parser("migrate", help="move a legacy in-repo knowledge/ to the "
@@ -2346,9 +2793,9 @@ def main(argv=None) -> int:
     kbp.set_defaults(fn=cmd_kb)
 
     rq = sub.add_parser("req", help="requirements: record, refine, mode, debt")
-    rq.add_argument("--workspace", default=argparse.SUPPRESS)
+    rq.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rqsub = rq.add_subparsers(dest="req_action", required=True)
-    rn = rqsub.add_parser("new")
+    rn = rqsub.add_parser("new", help="record a requirement (or a change request)")
     rn.add_argument("title")
     rn.add_argument("--functional", action="append",
                     help="a functional statement (repeatable)")
@@ -2358,7 +2805,8 @@ def main(argv=None) -> int:
                     help="an acceptance criterion (repeatable)")
     rn.add_argument("--open", action="append",
                     help="an open question (repeatable)")
-    rn.add_argument("--tags"); rn.add_argument("--files",
+    rn.add_argument("--tags", help="comma-separated tags for retrieval")
+    rn.add_argument("--files",
                     help="comma-separated context file globs")
     rn.add_argument("--changed-from", dest="changed_from",
                     help="R-id this change request derives from")
@@ -2369,74 +2817,101 @@ def main(argv=None) -> int:
                     metavar="RELATION:CONTRACT",
                     help="repeatable requirement boundary: provides, consumes, "
                          "or changes a named API/event/data/runtime contract")
-    rs = rqsub.add_parser("score")
+    rs = rqsub.add_parser("score", help="score a requirement's refinement against the bar")
     rs.add_argument("id")
     rs.add_argument("--files", help="comma-separated changed-file globs")
-    rs.add_argument("--task-type")
-    rs.add_argument("--threshold", type=float, default=0.6)
+    rs.add_argument("--task-type", help="declared task type — sets the "
+                    "refinement bar this requirement is scored against")
+    rs.add_argument("--threshold", type=float, default=0.6,
+                    help="refinement score the requirement must reach "
+                         "(default 0.6)")
     rs.add_argument("--high-cost", action="store_true",
                     help="hard-block below threshold (irreversible work)")
-    rm = rqsub.add_parser("mode")
-    rm.add_argument("--refinement", type=float, required=True)
+    rm = rqsub.add_parser("mode", help="pick the delivery mode for a refinement score and change size")
+    rm.add_argument("--refinement", type=float, required=True,
+                    help="the requirement's refinement score (0.0-1.0)")
     rm.add_argument("--size", type=int, required=True, help="files changed")
-    rdb = rqsub.add_parser("debt")
+    rdb = rqsub.add_parser("debt", help="record technical debt taken on knowingly")
     rdb.add_argument("title")
     rdb.add_argument("--req", help="requirement id this debt belongs to")
-    rdb.add_argument("--reason"); rdb.add_argument("--follow-up",
-                     dest="follow_up")
-    rdb.add_argument("--tags"); rdb.add_argument("--files")
-    rqsub.add_parser("list")
+    rdb.add_argument("--reason", help="why the debt was taken on")
+    rdb.add_argument("--follow-up", dest="follow_up",
+                     help="what would pay the debt off")
+    rdb.add_argument("--tags", help="comma-separated tags for retrieval")
+    rdb.add_argument("--files",
+                     help="comma-separated file globs the debt lives in")
+    rqsub.add_parser("list", help="list recorded requirements")
     rq.set_defaults(fn=cmd_req)
 
     gp = sub.add_parser("graph", help="dependency graph: scan, impact, "
                         "contracts, requirement links, visualization")
-    gp.add_argument("--workspace", default=argparse.SUPPRESS)
+    gp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     gsub = gp.add_subparsers(dest="graph_action", required=True)
-    gs = gsub.add_parser("scan")
+    gs = gsub.add_parser("scan", help="rebuild the dependency graph from the working tree")
     gs.add_argument("--decompose", action="store_true",
                     help="derive the component layer (graph.json "
                          "'components'; R-0003 contract:component-map)")
-    gi = gsub.add_parser("impact")
+    gi = gsub.add_parser("impact", help="what a change reaches: blast radius across the graph")
     gi.add_argument("--files", help="comma-separated changed files "
                     "(default: git diff + untracked)")
-    gi.add_argument("--base", default="HEAD")
-    gi.add_argument("--depth", type=int, default=3)
+    gi.add_argument("--base", default="HEAD",
+                    help="git base to diff against (default HEAD)")
+    gi.add_argument("--depth", type=int, default=3,
+                    help="dependency hops to walk locally (default 3)")
     gi.add_argument("--boundary", choices=["contract-only", "stop", "expand"],
-                    default="contract-only")
-    gi.add_argument("--contract-depth", type=int, default=1)
-    gi.add_argument("--requirement-depth", type=int, default=1)
-    gi.add_argument("--json", action="store_true")
-    ge = gsub.add_parser("edge")
+                    default="contract-only",
+                    help="what the walk does at a distributed boundary "
+                         "(default contract-only)")
+    gi.add_argument("--contract-depth", type=int, default=1,
+                    help="hops to keep walking past a contract boundary "
+                         "(default 1)")
+    gi.add_argument("--requirement-depth", type=int, default=1,
+                    help="hops to walk into the requirement layer "
+                         "(default 1)")
+    gi.add_argument("--json", action="store_true",
+                    help="print the impact set as JSON")
+    ge = gsub.add_parser("edge", help="record an edge the scanner cannot see")
     ge.add_argument("src"); ge.add_argument("dst")
-    ge.add_argument("--kind", default="runtime")
-    ge.add_argument("--note")
+    ge.add_argument("--kind", default="runtime",
+                    help="edge kind, e.g. runtime or build "
+                         "(default runtime)")
+    ge.add_argument("--note", help="why this edge exists")
     ge.add_argument("--confidence", choices=["high", "medium", "low"],
-                    default="medium")
+                    default="medium",
+                    help="how sure the edge is (default medium)")
     gc = gsub.add_parser("contract", help="record an explicit distributed "
                          "boundary; consumers depend on the contract")
     gc.add_argument("name")
-    gc.add_argument("--provider")
-    gc.add_argument("--consumer", action="append")
+    gc.add_argument("--provider", help="module that provides the contract")
+    gc.add_argument("--consumer", action="append",
+                    help="module that consumes the contract (repeatable)")
     gl = gsub.add_parser("link", help="product layer: link a requirement "
                          "to the modules that plan/realize it")
-    gl.add_argument("--req", required=True, metavar="R-XXXX")
+    gl.add_argument("--req", required=True, metavar="R-XXXX",
+                    help="the requirement being linked")
     gl.add_argument("--files", required=True,
                     help="comma-separated files or scope globs")
     gl.add_argument("--kind", default="realizes",
-                    choices=["planned", "realizes"])
+                    choices=["planned", "realizes"],
+                    help="link kind: a planned or a realized requirement "
+                         "(default realizes)")
     gl.add_argument("--keep", action="store_true",
                     help="append instead of replacing existing links")
-    gh = gsub.add_parser("html")
-    gh.add_argument("--files"); gh.add_argument("--base", default="HEAD")
-    gh.add_argument("--out")
+    gh = gsub.add_parser("html", help="render the graph as a standalone HTML view")
+    gh.add_argument("--files", help="comma-separated changed files to "
+                    "highlight (default: git diff + untracked)")
+    gh.add_argument("--base", default="HEAD",
+                    help="git base to diff against (default HEAD)")
+    gh.add_argument("--out",
+                    help="write the HTML here instead of stdout")
     gp.set_defaults(fn=cmd_graph)
 
     db = sub.add_parser("dashboard", help="render the mission-control view")
-    db.add_argument("--out")
+    db.add_argument("--out", help="also write the fragment to this path")
     db.add_argument("--paged", action="store_true",
                     help="emit ordered <=14KB pages (JSON) for reliable "
                          "inline rendering + a never-skippable headline")
-    db.add_argument("--workspace", default=argparse.SUPPRESS)
+    db.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     db.set_defaults(fn=cmd_dashboard)
 
     op = sub.add_parser("onboard", help="cold-start readiness — folder + git "
@@ -2444,7 +2919,7 @@ def main(argv=None) -> int:
     op.add_argument("--json", action="store_true",
                     help="print the readiness report instead of the widget")
     op.add_argument("--out", help="also write the fragment to this path")
-    op.add_argument("--workspace", default=argparse.SUPPRESS)
+    op.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     op.set_defaults(fn=cmd_onboard)
 
     fp = sub.add_parser("findings", help="render a review findings dashboard "
@@ -2455,7 +2930,7 @@ def main(argv=None) -> int:
     fp.add_argument("--paged", action="store_true",
                     help="emit ordered <=14KB pages (JSON) for reliable "
                          "inline rendering + a never-skippable headline")
-    fp.add_argument("--workspace", default=argparse.SUPPRESS)
+    fp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     fp.set_defaults(fn=cmd_findings)
 
     nsp = sub.add_parser("north-star", help="on-demand strategic review: print "
@@ -2463,25 +2938,25 @@ def main(argv=None) -> int:
     nsp.add_argument("--render", help="a strategic-note JSON to render as the "
                      "inline widget fragment")
     nsp.add_argument("--out", help="also write the fragment to this path")
-    nsp.add_argument("--workspace", default=argparse.SUPPRESS)
+    nsp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     nsp.set_defaults(fn=cmd_northstar)
 
     shp = sub.add_parser("share", help="plan-aware knowledge sharing: "
                          "status / plan / set private|shared / push")
     shsub = shp.add_subparsers(dest="share_cmd", required=True)
-    sst = shsub.add_parser("status")
-    sst.add_argument("--workspace", default=argparse.SUPPRESS)
-    spl = shsub.add_parser("plan")
+    sst = shsub.add_parser("status", help="show what is private and what is shared")
+    sst.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    spl = shsub.add_parser("plan", help="set the knowledge-storage plan")
     spl.add_argument("value", choices=["personal", "team", "enterprise"])
-    spl.add_argument("--workspace", default=argparse.SUPPRESS)
-    sse = shsub.add_parser("set")
+    spl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    sse = shsub.add_parser("set", help="set the default visibility of new decisions")
     sse.add_argument("value", choices=["private", "shared"])
-    sse.add_argument("--workspace", default=argparse.SUPPRESS)
-    spu = shsub.add_parser("push")
+    sse.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    spu = shsub.add_parser("push", help="publish private decisions to the shared store")
     spu.add_argument("--ids", default=None,
                      help="comma-separated private decision ids; default = "
                           "everything unpublished")
-    spu.add_argument("--workspace", default=argparse.SUPPRESS)
+    spu.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     shp.set_defaults(fn=cmd_share)
 
     ip = sub.add_parser("init", help="scaffold context docs + KB + graph")
@@ -2489,36 +2964,53 @@ def main(argv=None) -> int:
                     default=None, help="choose knowledge storage at init — "
                     "personal is private/external; team/enterprise is "
                     "shared in-repo")
-    ip.add_argument("--workspace", default=argparse.SUPPRESS)
+    ip.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     ip.set_defaults(fn=cmd_init)
 
     tk = sub.add_parser("track", help="multi-track workstreams")
-    tk.add_argument("--workspace", default=argparse.SUPPRESS)
+    tk.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     tksub = tk.add_subparsers(dest="track_action", required=True)
-    tn = tksub.add_parser("new"); tn.add_argument("name")
-    tn.add_argument("goal", nargs="*"); tn.add_argument("--req")
-    tksub.add_parser("list")
-    tsw = tksub.add_parser("switch"); tsw.add_argument("name")
-    tcl = tksub.add_parser("close"); tcl.add_argument("name")
-    tcl.add_argument("--status", default="done")
+    tn = tksub.add_parser("new", help="open a new track")
+    tn.add_argument("name")
+    tn.add_argument("goal", nargs="*")
+    tn.add_argument("--req", help="requirement R-id this track delivers")
+    tksub.add_parser("list", help="list every track")
+    tsw = tksub.add_parser("switch", help="make another track the active one")
+    tsw.add_argument("name")
+    tcl = tksub.add_parser("close", help="close a track")
+    tcl.add_argument("name")
+    tcl.add_argument("--status", default="done",
+                     help="status to close the track in (default done)")
     tk.set_defaults(fn=cmd_track)
 
     cx = sub.add_parser("context", help="session-start context summary")
-    cx.add_argument("--workspace", default=argparse.SUPPRESS)
+    cx.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cx.set_defaults(fn=cmd_context)
 
     us = sub.add_parser("summary", help="simple human view: progress and "
                         "decisions, while agents keep the detailed harness")
-    us.add_argument("--json", action="store_true")
-    us.add_argument("--workspace", default=argparse.SUPPRESS)
+    us.add_argument("--json", action="store_true",
+                    help="print the summary as JSON")
+    us.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     us.set_defaults(fn=cmd_summary)
+
+    hp = sub.add_parser("help", help="print this help; with --md, the "
+                        "generated markdown CLI reference "
+                        "(docs/cli-reference.md)")
+    hp.add_argument("--md", action="store_true",
+                    help="print the deterministic markdown CLI "
+                         "reference walked from the live argparse "
+                         "tree, instead of argparse's own help")
+    hp.set_defaults(fn=cmd_help, root_parser=p)
 
     vp = sub.add_parser("version", help="print the plugin version; "
                         "--verify cross-checks every derived version "
                         "surface against the single source "
                         "(.codex-plugin/plugin.json) — CI-callable, "
                         "exit 1 on drift")
-    vp.add_argument("--verify", action="store_true")
+    vp.add_argument("--verify", action="store_true",
+                    help="cross-check every derived version surface "
+                         "against the single source; exit 1 on drift")
     vp.set_defaults(fn=cmd_version)
 
     a = p.parse_args(argv)

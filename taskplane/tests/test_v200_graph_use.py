@@ -48,11 +48,20 @@ def _hub_repo():
 
 class _Env(unittest.TestCase):
     def setUp(self):
+        # t9 (R-0011 E2): save-and-restore both vars — the old tearDown
+        # popped HOME and never restored STORE, so an exported
+        # TASKPLANE_STORE vanished for every LATER test module.
+        self._env0 = {k: os.environ.get(k)
+                      for k in ("TASKPLANE_HOME", "TASKPLANE_STORE")}
         os.environ["TASKPLANE_HOME"] = tempfile.mkdtemp(prefix="tp-h-")
         os.environ.pop("TASKPLANE_STORE", None)
 
     def tearDown(self):
-        os.environ.pop("TASKPLANE_HOME", None)
+        for k, v in self._env0.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 class TestF1HubEscalation(_Env):

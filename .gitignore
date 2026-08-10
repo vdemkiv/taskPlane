@@ -28,3 +28,5 @@ taskplane.plugin
 
 # local Claude session settings (never commit)
 .claude/
+_incoming-2.6.0/
+_to_delete/

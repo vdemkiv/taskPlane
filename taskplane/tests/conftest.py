@@ -37,3 +37,70 @@ def _isolated_taskplane_home(tmp_path, monkeypatch):
     monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "tp-store"))
     yield
     # monkeypatch restores the prior value automatically on teardown.
+
+
+# --------------------------------------------------------------------------
+# t9 (R-0011 / E2): env-mutation guard.
+#
+# TASKPLANE_HOME had a bespoke belt-and-suspenders because a leak there was
+# caught the hard way (v0.9.6: teardowns popped the var and later tests wrote
+# into the developer's real ~/.taskplane). Nothing generalized that lesson:
+# ANY other variable a test sets and forgets — TASKPLANE_AUDIT_EVERY,
+# TASKPLANE_ROUTER_*, PATH, HOME, GIT_* — silently changes what every LATER
+# test module sees, which is exactly the class of order-dependent flake that
+# is worst to debug (green alone, red in the suite, or the reverse).
+#
+# This module-scoped autouse fixture snapshots os.environ before a test
+# module's first test and requires byte-identity after its last one, naming
+# the module and every offending key. Module scope, not function scope, on
+# purpose: setUpClass/module-level fixtures legitimately set vars for the
+# duration of a module, and the contract that matters is that nothing
+# escapes the MODULE.
+#
+# Ordering note: pytest sets up broader scopes first, so this snapshot is
+# taken BEFORE the function-scoped monkeypatch above ever runs and is
+# compared AFTER its last restore — the fixture's own TASKPLANE_HOME churn
+# is invisible to the guard, as it should be.
+#
+# Fix a failure by restoring what you set (addCleanup / monkeypatch /
+# try-finally) — never by widening an allowlist here; there is none.
+#
+# _RUNNER_OWNED is not an allowlist for test code: PYTEST_CURRENT_TEST is
+# written by pytest itself on every setup/call/teardown transition, so it is
+# never byte-stable and never a signal about the module under guard.
+_RUNNER_OWNED = ("PYTEST_CURRENT_TEST",)
+
+
+def _env_snapshot():
+    return {k: v for k, v in _os.environ.items() if k not in _RUNNER_OWNED}
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _env_mutation_guard(request):
+    before = _env_snapshot()
+    yield
+    after = _env_snapshot()
+    if after == before:
+        return
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    changed = sorted(k for k in set(before) & set(after)
+                     if before[k] != after[k])
+    detail = []
+    if added:
+        detail.append("SET and not unset: "
+                      + ", ".join(f"{k}={after[k]!r}" for k in added))
+    if removed:
+        detail.append("DELETED and not restored: "
+                      + ", ".join(f"{k}(was {before[k]!r})" for k in removed))
+    if changed:
+        detail.append("OVERWRITTEN and not restored: "
+                      + ", ".join(f"{k}: {before[k]!r} -> {after[k]!r}"
+                                  for k in changed))
+    raise AssertionError(
+        f"env leak from test module {request.node.name}: os.environ is not "
+        "byte-identical after the module ran — "
+        + "; ".join(detail)
+        + ". Restore every variable you set (addCleanup/monkeypatch/"
+          "try-finally); a leaked variable changes what every LATER test "
+          "module sees.")

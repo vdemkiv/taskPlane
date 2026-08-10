@@ -39,5 +39,24 @@ description: "Use when the user asks where things stand with taskplane-governed 
    "no action needed from you — <role> is on <step> · next human gate: X"
    strip when agents are working, and a retro button at done. Their click
    IS the proceed — no command to remember.
+3. Two v2.5 surfaces to get right — relay them where they actually are,
+   never invent them where they are not:
+   - **Component surfaces (know which board shows what):** the dashboard's
+     Graph tab is MODULE-level only — modules / internal edges / external
+     deps, the most-connected hubs, and the blast radius of the current
+     tasks' scope. It does not draw component nodes; never say it does.
+     On a decomposed graph (`tp graph scan --decompose`) two component
+     surfaces do appear: the review dashboard's graph line gains a
+     "N components (decomposed)" count, and the coverage map marks routed
+     lenses with their component attribution (which component(s) proposed
+     them). The drawn component layer — a node per component ringed around
+     its owning module — is in the standalone `tp graph html` map, not the
+     dashboard; point the user there when they want to see it. Graph with
+     no `components` → module-level everywhere, say so.
+   - **Coverage map v2:** review status dispositions EVERY catalog lens as
+     deep · light · n/a, each n/a only with its stated negative evidence
+     (e.g. "0 i18n markers in the diff"); the HEADLINE carries the coverage
+     counts (deep/light/n-a). A bare, unevidenced n/a is a blocker to report,
+     not a formatting nit.
 
 Never mutate anything from this skill — status reads and renders only.

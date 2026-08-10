@@ -31,6 +31,16 @@ tests pin the honest install story so it cannot silently regress:
 
 READ-ONLY toward taskplane/*.py and the docs: these tests inspect, they
 never modify.
+
+NOTE (R-0010 D2, WS-D): the facade/driver routing-determinism pins — tp-go's
+description carries the internal-delivery-driver phrasing and NOT the
+facade's 'implement X' trigger, while skills/taskplane/SKILL.md keeps it —
+live in taskplane/tests/test_release_freshness.py
+(TestFacadeDriverRoutingDeterminism), not here. R-0010's acceptance permits
+either file ("test_onboarding_docs.py (or freshness test)"); they landed
+next to the other skill-freshness checks so the whole skills/ gate reads in
+one place, and both files run in the same declared command. Look there
+before adding a duplicate here.
 """
 import io
 import json

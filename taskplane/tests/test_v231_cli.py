@@ -75,3 +75,76 @@ def test_status_on_corrupt_contract_fails_closed(tmp_path):
     assert r.returncode != 0, (r.stdout, r.stderr)
     assert "CORRUPT" in r.stdout, r.stdout
     assert "no active contract" not in r.stdout.lower()
+
+
+# ---- Phase 3 EM em-fix: `clear` releases THIS process's contract slot ----
+# The guard used to hardcode the LEGACY .taskplane/active_contract.json, so a
+# slotted agent (TASKPLANE_TASK exported — every dispatched wave agent) got
+# "taskplane: no active contract to clear." and exit 0 while its
+# .taskplane/active/<slot>.json stayed on disk. That leak outlives the agent:
+# load_active() governs a slot-less process by the MOST RESTRICTIVE UNION of
+# every active slot, so each leaked slot tightens what every later agent may
+# do. The kernel's clear() was already slot-aware; only the CLI guard was not.
+
+def _run_slot(args, ws, slot=None):
+    """`_run` with explicit control of TASKPLANE_TASK (None = no slot)."""
+    e = dict(os.environ)
+    e["TASKPLANE_HOME"] = ws + "-store"
+    if slot is None:
+        e.pop("TASKPLANE_TASK", None)
+    else:
+        e["TASKPLANE_TASK"] = slot
+    return subprocess.run([sys.executable, TP, *args], cwd=ws,
+                          capture_output=True, text=True, env=e)
+
+
+def test_clear_releases_the_exported_task_slot(tmp_path):
+    ws = _git_ws(tmp_path)
+    slot = "lens-light3"
+    _run_slot(["new", "sweep review", "--workspace", ws, "--read-only",
+               "--write-allow", ".em-review/**"], ws, slot)
+    active = os.path.join(ws, ".taskplane", "active")
+    slot_file = os.path.join(active, slot + ".json")
+    assert os.path.exists(slot_file), os.listdir(active)
+
+    r = _run_slot(["clear", "--workspace", ws], ws, slot)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert not os.path.exists(slot_file), (r.stdout, os.listdir(active))
+    assert not os.path.exists(os.path.join(active, slot + ".snapshot"))
+    assert "cleared" in r.stdout, r.stdout          # reports the release
+    assert slot in r.stdout, r.stdout               # names WHICH slot
+    # the release is real for everyone after: no slot survives to tighten
+    # the most-restrictive union a slot-less process is governed by
+    assert not [f for f in os.listdir(active) if f.endswith(".json")]
+
+
+def test_clear_with_a_sibling_slot_active_releases_only_its_own(tmp_path):
+    ws = _git_ws(tmp_path)
+    for slot in ("tA", "tB"):
+        _run_slot(["new", f"task {slot}", "--workspace", ws,
+                   "--scope", "src/**"], ws, slot)
+    active = os.path.join(ws, ".taskplane", "active")
+    r = _run_slot(["clear", "--workspace", ws], ws, "tA")
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert not os.path.exists(os.path.join(active, "tA.json"))
+    assert os.path.exists(os.path.join(active, "tB.json")), r.stdout
+
+
+def test_clear_with_no_slot_and_no_contract_still_reports_and_exits_zero(
+        tmp_path):
+    ws = _git_ws(tmp_path)
+    r = _run_slot(["clear", "--workspace", ws], ws)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert "no active contract" in r.stdout, r.stdout
+
+
+def test_clear_still_releases_the_legacy_single_contract(tmp_path):
+    ws = _git_ws(tmp_path)
+    _run_slot(["new", "legacy task", "--workspace", ws,
+               "--scope", "src/**"], ws)
+    legacy = os.path.join(ws, ".taskplane", "active_contract.json")
+    assert os.path.exists(legacy)
+    r = _run_slot(["clear", "--workspace", ws], ws)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert not os.path.exists(legacy), r.stdout
+    assert "cleared" in r.stdout, r.stdout

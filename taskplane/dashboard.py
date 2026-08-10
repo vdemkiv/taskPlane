@@ -196,7 +196,8 @@ _MESSAGES = {
                          "{impact}{rec}",
     "headline_findings_unrated": " · {n} unrated → counted high",
     "headline_findings_notes": " · {n} {n, plural, one {note} other "
-                               "{notes}} (question/praise, not defects)",
+                               "{notes}} (question/praise/machinery, "
+                               "not defects)",
     "headline_findings_tests": " · {tests}",
     "headline_findings_coverage": " · lenses {deep} deep/{sweep} sweep "
                                   "of {total}",
@@ -746,6 +747,63 @@ def _sev_info(sev):
             "var(--text-danger)", "var(--border-danger)", True)
 
 
+# A5 machinery warn rows (contract:findings-v2). `router_audit`'s gate half
+# appends one advisory row per unattributed finding, and by contract that row
+# PRESERVES the wrapped finding's severity — so ONE unattributed blocker used
+# to render as TWO blocker cards and a headline count of 2. The warn row never
+# blocks (class 'observation'), and its meta-title ("unattributed finding: no
+# lens attribution") is not itself a blocker: it is a DUPLICATE view of a
+# defect that is already on its own row.
+
+def _machinery_warn_shape(f) -> bool:
+    """The machinery warn-row shape: warn flag, machinery owner, original
+    finding nested (audit._unattributed_rows). Shape alone decides nothing
+    here — see `_advisory_rows`."""
+    return (isinstance(f, dict) and f.get("warn") is True
+            and f.get("owner") == "router"
+            and isinstance(f.get("finding"), dict))
+
+
+def _finding_identity(f):
+    return (str((f or {}).get("title") or ""), str((f or {}).get("file") or ""),
+            str((f or {}).get("line") if (f or {}).get("line") is not None
+                else ""))
+
+
+def _advisory_rows(findings) -> set:
+    """id()s of the rows that are machinery DUPLICATES: a warn-shaped row
+    whose nested original is ALSO a row in this same findings set. Those two
+    rows are one defect, so only the original is counted and badged in the
+    severity buckets; the duplicate renders as an advisory note.
+
+    Duplication is verified from the ROWS, never from the warn flag alone —
+    every field of the shape lives in worker-authored findings.json. A forged
+    warn row whose nested finding corresponds to no row on this page is a
+    duplicate of nothing, keeps its own severity, and stays in its bucket, so
+    the renderer can never show LESS than what the em gate blocks on (the
+    gate's own exemption is re-derived independently in audit.py)."""
+    rows = [f for f in findings or [] if isinstance(f, dict)]
+    present = {_finding_identity(f) for f in rows
+               if not _machinery_warn_shape(f)}
+    return {id(f) for f in rows if _machinery_warn_shape(f)
+            and _finding_identity(f.get("finding")) in present}
+
+
+def _row_sev_info(f, advisory=False):
+    """`_sev_info` for a findings ROW. A machinery duplicate keeps the
+    underlying severity in its LABEL (honest: the wrapped defect really is a
+    blocker) but buckets to 'info', so it is counted and badged as machinery
+    rather than as a second, independent blocker. Every other row is
+    unchanged — the no-downgrade guardrail is intact for anything that can
+    block."""
+    sev = (f.get("severity", "med") if isinstance(f, dict) else "med")
+    bucket, rank, label, dot, accent, flagged = _sev_info(sev)
+    if advisory:
+        return ("info", 4, f"machinery warn · {label}",
+                "var(--text-muted)", "var(--border)", False)
+    return bucket, rank, label, dot, accent, flagged
+
+
 def _alias(f):
     """Bridge the lens-charter verdict fields (issue/why/suggestion) to the
     renderer's fields (title/scenario/fix) so charter-schema findings render
@@ -801,8 +859,9 @@ def headline_findings(findings, meta=None) -> str:
     meta = meta or {}
     c = {"high": 0, "med": 0, "low": 0, "info": 0}
     unrated = 0
+    adv = _advisory_rows(findings)
     for f in findings or []:
-        bucket, _, _, _, _, flagged = _sev_info(f.get("severity", "med"))
+        bucket, _, _, _, _, flagged = _row_sev_info(f, id(f) in adv)
         c[bucket] += 1
         if flagged:
             unrated += 1
@@ -856,7 +915,9 @@ def _ptitle(t):
 
 def _compact_card(f, open_=True):
     f = _alias(f)
-    _, _, slabel, dot, accent, _ = _sev_info(f.get("severity", "med"))
+    # '_adv' is set by the caller that saw the whole findings set
+    # (render_findings_paged); absent = not a machinery duplicate.
+    _, _, slabel, dot, accent, _ = _row_sev_info(f, bool(f.get("_adv")))
     loc = ""
     if f.get("file"):
         ln = f":{f['line']}" if f.get("line") not in (None, "") else ""
@@ -933,10 +994,12 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
         return [{"title": meta.get("title", "review findings"), "html": full}]
 
     norm = []
+    adv = _advisory_rows(findings)
     for f in findings or []:
+        a = id(f) in adv
         f = _alias(f)
-        k, _, _, _, _, _ = _sev_info(f.get("severity", "med"))
-        norm.append({**f, "_key": k})
+        k, _, _, _, _, _ = _row_sev_info(f, a)
+        norm.append({**f, "_key": k, "_adv": a})
     buckets = {k: [f for f in norm if f["_key"] == k]
                for k in ("high", "med", "low", "info")}
     c = {k: len(v) for k, v in buckets.items()}
@@ -1392,10 +1455,12 @@ def render_findings(findings, meta=None, out=None):
     """
     meta = meta or {}
     norm = []
+    adv = _advisory_rows(findings)
     for f in findings or []:
+        a = id(f) in adv
         f = _alias(f)
-        key, rank, _, _, _, _ = _sev_info(f.get("severity", "med"))
-        norm.append({**f, "_key": key, "_rank": rank})
+        key, rank, _, _, _, _ = _row_sev_info(f, a)
+        norm.append({**f, "_key": key, "_rank": rank, "_adv": a})
     norm.sort(key=lambda x: (x["_rank"], str(x.get("domain", "")),
                              str(x.get("file", ""))))
     counts = {k: sum(1 for f in norm if f["_key"] == k)
@@ -1429,7 +1494,7 @@ def render_findings(findings, meta=None, out=None):
     # one card per finding
     cards = []
     for i, f in enumerate(norm):
-        _, _, slabel, dot, accent, _ = _sev_info(f.get("severity", "med"))
+        _, _, slabel, dot, accent, _ = _row_sev_info(f, bool(f.get("_adv")))
         loc = ""
         if f.get("file"):
             ln = f":{f['line']}" if f.get("line") not in (None, "") else ""

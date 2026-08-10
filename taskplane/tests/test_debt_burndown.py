@@ -212,11 +212,24 @@ class TestDebtBurndownMechanism(unittest.TestCase):
         os.makedirs(ws)
         return ws
 
+    def _set_store(self, home):
+        """Point TASKPLANE_HOME at a throwaway store and RESTORE the previous
+        value when the test ends (t9 / R-0011 E2). A bare assignment here
+        outlived the test: every later test module in the same process
+        inherited a store under a deleted temp dir. conftest.py's
+        _env_mutation_guard now fails the module if this is skipped."""
+        prior = os.environ.get("TASKPLANE_HOME")
+        self.addCleanup(
+            lambda: (os.environ.__setitem__("TASKPLANE_HOME", prior)
+                     if prior is not None
+                     else os.environ.pop("TASKPLANE_HOME", None)))
+        os.environ["TASKPLANE_HOME"] = home
+
     def test_debt_can_be_linked_and_marked_resolved(self):
         import kb
         import requirements as reqs
         with tempfile.TemporaryDirectory() as tmp:
-            os.environ["TASKPLANE_HOME"] = os.path.join(tmp, "store")
+            self._set_store(os.path.join(tmp, "store"))
             ws = self._mk_ws(tmp)
             # mint up to D-0003 (the ids under burn-down are D-0002/D-0003)
             reqs.record_debt(ws, "seed one")

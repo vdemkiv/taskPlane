@@ -37,6 +37,56 @@ NFR_LENSES = {
     "i18n", "cost-finops", "dba",
 }
 
+# B1 recalibration (R-0008): these NFR axes are NEVER discounted. A missing
+# statement on one of them keeps full forecast weight and caps the score
+# below the non-blocking threshold no matter how functionally complete the
+# requirement is.
+#
+# The set is the RISK-BEARING family, not a shortlist (Phase 3 EM review,
+# deep3 finding #3): {security, data-safety} alone was narrower than B1's
+# own no-under-warn principle, and the three axes it omitted bear risk too —
+# privacy-compliance (PII/GDPR/regulatory exposure), dba (schema and data
+# migrations: data-layer irreversibility), sre (availability: operational
+# failure). Measured before the widening, a functionally-complete
+# requirement with `dba` unstated scored 0.91 (0.5 at 43253c22), so
+# high-cost irreversible work touching a data migration with no dba
+# statement returned "proceed — sufficiently refined" where it previously
+# hard-BLOCKED. What stays discountable is the fit-and-finish family —
+# scalability, architecture, accessibility, integrability, i18n,
+# cost-finops — where a late statement costs rework, not an unrecoverable
+# outcome.
+CRITICAL_NFR_LENSES = {"security", "data-safety", "privacy-compliance",
+                       "dba", "sre"}
+
+# Class weights for the iteration forecast (design decision B1, approach A —
+# class-weighted, not flattened): functional gaps keep the original 0.5-cycle
+# weight; non-critical NFR gaps drop to 0.1 ONLY when the functional axis is
+# complete; critical NFR gaps always cost 0.5 (under-warning on risky work is
+# strictly worse than the over-warning this recalibration fixes).
+#
+# 0.1 is a JUDGEMENT weight, not a measured one. The two-phase corpus
+# (tests/fixtures/calibration/phase1-2-corpus.json) contains ZERO entries in
+# the population this weight governs: every phase-1 entry has an INCOMPLETE
+# functional axis (which routes to the byte-identical pre-recalibration
+# formula) and every phase-2 entry scored 1.0 with no NFR gap at all. The
+# corpus proves the recalibration does not regress the recorded history; it
+# holds no counter-example to the discount and no evidence for it either.
+# Capture entries of the shape "functional complete + an uncovered
+# non-critical NFR axis" before treating 0.1 as calibrated.
+GAP_WEIGHT_FUNCTIONAL = 0.5
+GAP_WEIGHT_CRITICAL_NFR = 0.5
+GAP_WEIGHT_NFR_DISCOUNTED = 0.1
+
+# Score-side weights when the functional axis is complete: functional 1.0,
+# each applicable critical NFR axis 1.0, each non-critical axis 0.1. When
+# functional is INCOMPLETE the pre-recalibration formula applies unchanged
+# (0.5*functional + 0.5*nfr-coverage) — no discount of any kind.
+AXIS_WEIGHT_CRITICAL = 1.0
+AXIS_WEIGHT_NONCRITICAL = 0.1
+# A requirement with an uncovered critical axis can never reach the 0.6
+# non-blocking threshold: hard cap just below it.
+CRITICAL_GAP_SCORE_CAP = 0.5
+
 
 def kb_dir(ws: str) -> str:
     # External per-project store, not the repo — see taskplane_lite.kb_root.
@@ -208,10 +258,31 @@ def score_refinement(req: dict, *, changed_files=None, task_type=None,
     Returns {score, functional, nfr, gaps[], applicable_nfr[], forecast}.
     Advisory: a low score recommends refining now (cheap) rather than
     discovering the gap mid-build (a full cycle each).
+
+    Recalibrated (B1, R-0008) against the two-phase calibration corpus
+    (tests/fixtures/calibration/phase1-2-corpus.json): functional
+    completeness dominates. When the functional axis is complete,
+    non-critical NFR-coverage gaps are discounted; the risk-bearing axes
+    (CRITICAL_NFR_LENSES) are NEVER discounted and cap the score below the
+    non-blocking threshold. When the functional axis is incomplete, the
+    pre-recalibration behavior applies unchanged — nothing warns less than
+    it used to.
     """
+    files = changed_files if changed_files is not None \
+        else req.get("context_files", [])
+    applicable = applicable_nfr_lenses(files, task_type=task_type,
+                                       catalog=catalog)
+    return score_axes(req, applicable)
+
+
+def score_axes(req: dict, applicable) -> dict:
+    """Pure scoring core: score `req` against an explicit list of applicable
+    NFR axes (no router call). `score_refinement` routes then delegates
+    here; the calibration corpus tests replay recorded axes through this
+    directly. Same return shape as `score_refinement`."""
     gaps = []
 
-    # ---- functional axis
+    # ---- functional axis (unchanged)
     fpts, ftot = 0, 3
     if req.get("functional"):
         fpts += 1
@@ -229,12 +300,10 @@ def score_refinement(req: dict, *, changed_files=None, task_type=None,
         gaps.append({"axis": "functional",
                      "detail": f"{len(req['open_questions'])} open question(s)"})
     functional = fpts / ftot
+    functional_complete = fpts == ftot
 
-    # ---- nfr axis (router decides which apply)
-    files = changed_files if changed_files is not None \
-        else req.get("context_files", [])
-    applicable = applicable_nfr_lenses(files, task_type=task_type,
-                                       catalog=catalog)
+    # ---- nfr axis (gap detection unchanged; weighting recalibrated)
+    applicable = list(applicable or [])
     stated = set(req.get("nfr", {}))
     covered = [lz for lz in applicable if lz in stated]
     for lz in applicable:
@@ -243,7 +312,33 @@ def score_refinement(req: dict, *, changed_files=None, task_type=None,
                          "detail": f"no {lz} NFR stated"})
     nfr = 1.0 if not applicable else len(covered) / len(applicable)
 
-    score = round(0.5 * functional + 0.5 * nfr, 2)
+    if not functional_complete:
+        # Pre-recalibration formula, byte-identical: an unresolved
+        # functional shape is what actually predicts fix cycles, so no NFR
+        # discount applies and nothing warns less than before.
+        score = round(0.5 * functional + 0.5 * nfr, 2)
+    else:
+        # Functional axis complete: class-weighted coverage average.
+        crit = [lz for lz in applicable if lz in CRITICAL_NFR_LENSES]
+        noncrit = [lz for lz in applicable if lz not in CRITICAL_NFR_LENSES]
+        num = 1.0  # the complete functional axis
+        den = 1.0
+        for lz in crit:
+            den += AXIS_WEIGHT_CRITICAL
+            if lz in stated:
+                num += AXIS_WEIGHT_CRITICAL
+        for lz in noncrit:
+            den += AXIS_WEIGHT_NONCRITICAL
+            if lz in stated:
+                num += AXIS_WEIGHT_NONCRITICAL
+        score = num / den
+        if any(lz not in stated for lz in crit):
+            # a risk-bearing (CRITICAL_NFR_LENSES) gap: never scores
+            # at/above threshold, no matter how many covered axes pad the
+            # average.
+            score = min(score, CRITICAL_GAP_SCORE_CAP)
+        score = round(score, 2)
+
     return {
         "score": score,
         "functional": round(functional, 2),
@@ -251,18 +346,57 @@ def score_refinement(req: dict, *, changed_files=None, task_type=None,
         "applicable_nfr": applicable,
         "covered_nfr": covered,
         "gaps": gaps,
-        "forecast": forecast(gaps),
+        "forecast": forecast(gaps, functional_complete),
     }
 
 
-def forecast(gaps) -> str:
-    """Iteration forecast — each unresolved gap tends to cost a fix cycle."""
+def _functional_complete_from(gaps) -> bool:
+    return not any(g.get("axis") == "functional" for g in gaps)
+
+
+def forecast_detail(gaps, functional_complete=None) -> dict:
+    """Structured iteration forecast: {friction, cycles, note}.
+
+    Class-weighted (B1): functional gaps 0.5 cycles each; non-critical NFR
+    gaps 0.1 each ONLY when the functional axis is complete (else 0.5);
+    risk-bearing NFR gaps (CRITICAL_NFR_LENSES) always 0.5 — never
+    discounted. `friction`
+    is the expected fix cycles as a float; `cycles` rounds it half-up, which
+    reproduces the old (n+1)//2 whenever no discount applies. When
+    `functional_complete` is omitted it is inferred from the gap list."""
+    if functional_complete is None:
+        functional_complete = _functional_complete_from(gaps)
+    friction = 0.0
+    for g in gaps:
+        if g.get("axis") == "functional":
+            friction += GAP_WEIGHT_FUNCTIONAL
+        elif g.get("lens") in CRITICAL_NFR_LENSES:
+            friction += GAP_WEIGHT_CRITICAL_NFR
+        elif functional_complete:
+            friction += GAP_WEIGHT_NFR_DISCOUNTED
+        else:
+            friction += GAP_WEIGHT_FUNCTIONAL
+    cycles = int(friction + 0.5)
+    if not gaps:
+        note = "refined"
+    elif cycles == 0:
+        note = ("non-critical NFR gaps on a functionally-complete "
+                "requirement — low risk, state them for the record")
+    else:
+        note = "unresolved gaps tend to cost a fix cycle each"
+    return {"friction": round(friction, 2), "cycles": cycles, "note": note}
+
+
+def forecast(gaps, functional_complete=None) -> str:
+    """Iteration forecast string, derived from `forecast_detail`."""
     n = len(gaps)
     if n == 0:
         return "refined — expect near straight-through build (0 fix cycles)"
-    cycles = (n + 1) // 2
-    return (f"{n} gap(s) → expect ~{cycles} fix cycle(s) if built as-is; "
-            "refining now is cheaper than discovering these mid-build")
+    d = forecast_detail(gaps, functional_complete)
+    if d["cycles"] == 0:
+        return (f"{n} gap(s) → expect ~0 fix cycles ({d['note']})")
+    return (f"{n} gap(s) → expect ~{d['cycles']} fix cycle(s) if built "
+            "as-is; refining now is cheaper than discovering these mid-build")
 
 
 def gate(req: dict, *, threshold: float = 0.6, high_cost: bool = False,

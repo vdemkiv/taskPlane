@@ -275,6 +275,63 @@ def _is_boundary(node: str) -> bool:
     return node.startswith(("contract:", "resource:", "svc:", "ext:"))
 
 
+# ------------------------------------------------------------- edge semantics
+#
+# This graph carries two very different families of edge, and callers that
+# ask "what DEPENDS on X?" must not confuse them.
+#
+#   DEPENDENCY edges — "from NEEDS to"; `to` breaking breaks `from`:
+#     imports     module -> module | ext:pkg   (scanned source imports)
+#     depends_on  svc:a  -> svc:b              (compose service ordering)
+#     consumes    module -> contract:c         (this code calls that contract)
+#     depends     req:a  -> req:b              (declared work dependency)
+#     calls/uses                               (reserved for future scanners;
+#                                               allow-listed up front so a new
+#                                               dependency scanner is counted
+#                                               without a second bug like the
+#                                               one below)
+#
+#   STRUCTURAL / ANNOTATION edges — "from is DECLARED IN / ABOUT to". They
+#   record provenance or ownership and carry NO "would break" relationship,
+#   and several of them point BACKWARDS relative to the dependency they
+#   describe:
+#     defined_in  svc:api -> module   the compose FILE that declares the
+#                                     service lives in that module. Emitted by
+#                                     the declaring file itself, so a module
+#                                     can "have dependents" purely because it
+#                                     contains a docker-compose.yml. This is
+#                                     the edge that repealed D-0002: this
+#                                     repo's own test corpus
+#                                     (taskplane/tests/fixtures/detectors/
+#                                     architecture/positive/docker-compose.yml)
+#                                     gave module `taskplane/tests` two
+#                                     "dependents" that are the fixtures.
+#     planned / realizes  req: -> module    requirement-to-code traceability
+#     provides    module -> contract:  ownership, the inverse of `consumes`
+#     validates   module -> contract:  a TEST asserts a contract. Excluded on
+#                                     purpose: counting it would let a test
+#                                     module's own assertions vouch for the
+#                                     thing under test — the same class of
+#                                     self-referential exemption as defined_in.
+#     changes     req: -> contract:    a requirement edits a contract
+#
+# Only the first family may answer "does real code depend on this?" — see
+# lens_signals._graph_payload / decompose._graph_payload (B5, R-0008).
+DEPENDENCY_EDGE_KINDS = frozenset({
+    "imports", "depends_on", "consumes", "depends", "calls", "uses",
+})
+
+
+def is_dependency_edge(edge: dict) -> bool:
+    """True when `edge` expresses "from NEEDS to" (see DEPENDENCY_EDGE_KINDS).
+    Structural/annotation kinds (defined_in, planned, realizes, provides,
+    validates, changes) are False. Non-dict / kind-less input -> False."""
+    try:
+        return edge.get("kind") in DEPENDENCY_EDGE_KINDS
+    except AttributeError:
+        return False
+
+
 # ------------------------------------------------------------------ scanners
 
 def _py_imports(src: str, relpath: str, known_stems: dict) -> set:
@@ -1388,10 +1445,18 @@ for(const n of nodes){
 // graph carries no G.components, so this whole block renders nothing.
 const comps=G.components||[];
 const byComp={},byMod={};
+// E3: the ring gap is NOT a fixed offset any more — every component carries
+// `ring`, the count-scaled gap computed host-side
+// (depgraph.component_ring_gap), so labels on a many-component module stop
+// overlapping. Legacy data without `ring` falls back to the base constant.
+const COMP_RING_BASE=__RING_BASE__;
+const ringOf=c=>(typeof c.ring==='number'&&isFinite(c.ring))?c.ring
+ :COMP_RING_BASE;
 for(const c of comps){(byMod[c.module]=byMod[c.module]||[]).push(c);}
 for(const mid in byMod){const m=byId[mid];if(!m)continue;
- byMod[mid].forEach((c,i)=>{const a=2*Math.PI*i/byMod[mid].length;
-  c.x=m.x+(r(m)+24)*Math.cos(a);c.y=m.y+(r(m)+24)*Math.sin(a);
+ byMod[mid].forEach((c,i)=>{const a=2*Math.PI*i/byMod[mid].length,
+  rad=r(m)+ringOf(c);
+  c.x=m.x+rad*Math.cos(a);c.y=m.y+rad*Math.sin(a);
   byComp[c.id]=c;});}
 for(const c of comps){if(!byComp[c.id])continue;
  for(const d of (c.deps||[])){const t2=byComp[d.to]||byId[d.to];
@@ -1413,10 +1478,36 @@ for(const c of comps){if(!byComp[c.id])continue;
  cc.addEventListener('focus',()=>show(c.x,c.y));
  cc.addEventListener('blur',()=>tip.style.display='none');
  cc.addEventListener('click',()=>show(c.x,c.y));
+ // E3 a11y: same keyboard escape hatch module nodes have — a keyboard user
+ // who opened this tooltip can dismiss it without a pointer.
+ cc.addEventListener('keydown',ev=>{if(ev.key==='Escape')tip.style.display='none';});
  svg.appendChild(cc);
  const tl=el('text',{class:'lbl comp',x:c.x+7,y:c.y+3});
  tl.textContent=c.id.split('::')[1]||c.id;svg.appendChild(tl);}
 </script></body></html>"""
+
+
+# E3 (R-0011): component ring geometry. The gap between a module node's
+# edge and its ring of component nodes used to be a fixed 24px, so a module
+# with many components crowded them onto the same short arc and their labels
+# overlapped. The gap is now a monotonically increasing function of the
+# module's component COUNT: each extra component buys COMPONENT_RING_STEP
+# more radius, which grows the ring's circumference (and therefore the arc
+# between neighbouring labels) linearly with the count. Computed here, in
+# Python, and carried per component in the embedded data — the renderer
+# stays a static self-contained page with no host-side layout engine.
+COMPONENT_RING_BASE = 24    # gap for a single-component module (px)
+COMPONENT_RING_STEP = 4     # extra gap per additional component (px)
+
+
+def component_ring_gap(count: int) -> int:
+    """Ring gap in px for a module holding `count` components. Monotonically
+    increasing in `count`; never below COMPONENT_RING_BASE."""
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        n = 1
+    return COMPONENT_RING_BASE + COMPONENT_RING_STEP * max(0, n - 1)
 
 
 def to_html(ws: str, changed_files=None, title: str | None = None,
@@ -1453,10 +1544,16 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
         # around their module, with their component-level edges. Without the
         # layer, `data` carries no `components` key and the page renders as
         # before.
+        per_module: dict = {}
+        for c in comps:
+            if isinstance(c, dict):
+                per_module[c.get("module")] = \
+                    per_module.get(c.get("module"), 0) + 1
         data["components"] = [
             {"id": c.get("id"), "module": c.get("module"),
              "files": len(c.get("files") or []),
              "symbols": len(c.get("symbols") or []),
+             "ring": component_ring_gap(per_module.get(c.get("module"), 1)),
              "deps": [{"to": d.get("to"), "kind": d.get("kind")}
                       for d in (c.get("deps") or [])]}
             for c in comps if isinstance(c, dict)]
@@ -1468,6 +1565,7 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
     safe_data = (json.dumps(data).replace("<", "\\u003c")
                  .replace(" ", "\\u2028").replace(" ", "\\u2029"))
     html = (_HTML.replace("__TITLE__", _esc(title or os.path.basename(ws)))
+            .replace("__RING_BASE__", str(COMPONENT_RING_BASE))
             .replace("__SUB__", _esc(sub))
             .replace("__TABLE__", table)
             .replace("__DATA__", safe_data))

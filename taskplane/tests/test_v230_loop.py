@@ -70,6 +70,14 @@ class TestStateDirOwnership(unittest.TestCase):
         os.makedirs(os.path.join(ws, ".taskplane-kb"))
         with open(os.path.join(ws, ".taskplane-kb", "config.json"), "w") as f:
             json.dump({"plan": "team", "store": "repo"}, f)
+        # t9 (R-0011 E2): this pop is a real mutation of the caller's env —
+        # restore it, or an exported TASKPLANE_STORE vanishes for every
+        # later test module (conftest's _env_mutation_guard fails on it).
+        _old_store = os.environ.get("TASKPLANE_STORE")
+        self.addCleanup(
+            lambda: (os.environ.__setitem__("TASKPLANE_STORE", _old_store)
+                     if _old_store is not None
+                     else os.environ.pop("TASKPLANE_STORE", None)))
         os.environ.pop("TASKPLANE_STORE", None)
         # the KNOWLEDGE store is shared (repo) on a team plan…
         self.assertEqual(tp.get_mode(ws)["store"], "repo")

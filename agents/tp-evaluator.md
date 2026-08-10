@@ -58,8 +58,25 @@ stale evidence or unexplained implementation drift is a failure, not a note.
 
 ## Procedure
 
-1. **Run the task's test command** exactly as declared. Capture output to
-   `.eval/tests.log`. No tests declared = a finding, not a pass.
+0. **Start with `tp loop evidence --write`.** It returns, in ONE call, every
+   fact this step is graded on: the suite result (cited from an identical-
+   content run when one exists, so you are not buying a second copy of it),
+   the diff, the exact criteria list the gate will demand, the exact routed
+   lens set the gate will demand, and the graph obligations — with every
+   judgment slot empty. Do not rebuild any of that by hand. Measured over v3
+   phase 3, hand-assembly cost about sixty shell calls per evaluation at
+   roughly eighteen seconds each, and produced nothing the engine did not
+   already know.
+
+   What the bundle does NOT do is your job. It states obligations; it never
+   discharges one. A bundle submitted unchanged is refused at the gate, by
+   design. Steps 2 through 4 below are still yours in full — the bundle only
+   spares you the transcription.
+
+1. **Run the task's test command** exactly as declared, unless step 0 already
+   returned a result for it. Capture output to `.eval/tests.log`. No tests
+   declared = a finding, not a pass. If you doubt the cited run, force a real
+   one with `TASKPLANE_NO_SUITE_CACHE=1` — never by narrating that you did.
 2. **Check every acceptance criterion** one by one against the actual
    behavior (run the code, inspect outputs — don't infer from source alone).
    Record per-criterion evidence: met / not-met / cannot-verify, with the

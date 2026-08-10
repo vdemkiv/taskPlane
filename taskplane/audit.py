@@ -148,6 +148,12 @@ def router_audit(ws: str, routing_decision, findings) -> list:
             continue
         lid = str(f.get("lens") or f.get("domain") or "").strip()
         if not lid or lid not in decision:
+            # No/unknown lens attribution: NOT a computable routing diff, so
+            # not a regression. A5 (R-0007) surfaces these as WARN rows on
+            # the GATE path (_unattributed_rows, filed by _router_audit_gate)
+            # — this function's return for such inputs is byte-frozen by the
+            # differential corpus (scenario 'router-audit'/'ignored') and
+            # must keep skipping them here.
             continue
         v = decision.get(lid)
         verdict = str((v.get("verdict") if isinstance(v, dict) else v)
@@ -161,6 +167,83 @@ def router_audit(ws: str, routing_decision, findings) -> list:
             "domain": "router+" + lid,
             "title": (f"router regression: n/a lens '{lid}' produced a "
                       "finding — detector missed a real signal"),
+            # R-0013: the machinery files a BLOCKING row, so it owes the
+            # same defect claim it demands of a human reviewer. Exempting
+            # the engine's own output would be an exemption — and an
+            # exemption is exactly how the A5 warn-row spoof got in.
+            "claim": {
+                "trigger": (f"route this diff, read lens '{lid}' as n/a, "
+                            "then review the same diff with it applied"),
+                "outcome": (f"lens '{lid}' yields a real finding the router "
+                            "said could not apply, so the routing decision "
+                            "under-covered this change"),
+                "repro": ("tp lens route --base <baseline>, then compare the "
+                          f"'{lid}' verdict against this finding: "
+                          + str(f.get("title") or "the attached finding")),
+            },
+            "finding": dict(f),
+        })
+    return out
+
+
+def _unattributed_rows(routing_decision, findings) -> list:
+    """A5 (R-0007): findings with NO lens attribution, or attributed to a
+    lens the routing decision does not know, used to be silently dropped by
+    `router_audit` (the skip above) — omitting `lens` was an evasion channel
+    around the router regression backstop. Convert each into a WARN row —
+    the approved Design Contract's shape (contract:findings-v2, A5), exactly:
+
+      severity PRESERVED      — safe even for 'high': finding_blocks checks
+                                class BEFORE severity, and 'observation'
+                                never blocks under the frozen v2.3.1 rule.
+                                The row is a DUPLICATE view of a defect that
+                                is already a row of its own, so the human
+                                consumer must not count it twice: the
+                                findings renderer buckets a warn row whose
+                                nested original is present in the same set
+                                as an advisory note that still NAMES the
+                                underlying severity (dashboard.
+                                _advisory_rows / _row_sev_info). Severity
+                                stays preserved HERE — the shape is part of
+                                contract:findings-v2 and the em gate reads
+                                it — the double-count is fixed where it was
+                                introduced, in the rendering.
+      class    'observation'  — the underlying finding stays in the findings
+                                set and gates normally on its own
+      owner    'router'       — the machinery owner; warn rows stay out of
+                                the regression path because
+                                _is_router_regression ALSO requires class
+                                'regression', which these never carry
+      warn     True           — the discriminator between warn rows and
+                                auto-filed router regressions
+      domain   'router+unattributed' | 'router+unknown:<lens>'
+
+    The frozen differential corpus pins router_audit's own return for
+    unattributed inputs (scenario 'router-audit'/'ignored'), so the
+    surfacing lives HERE and is filed by _router_audit_gate — the one path
+    the corpus does not exercise with unattributed findings."""
+    out = []
+    decision = routing_decision if isinstance(routing_decision, dict) else {}
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        if f.get("owner") == "router":
+            continue        # machinery-authored rows are never re-audited
+        lid = str(f.get("lens") or f.get("domain") or "").strip()
+        if lid and lid in decision:
+            continue        # attributed + known → router_audit's territory
+        out.append({
+            "severity": f.get("severity"),
+            "class": "observation",
+            "owner": "router",
+            "warn": True,
+            "domain": ("router+unknown:" + lid) if lid
+                      else "router+unattributed",
+            "title": ("unattributed finding: "
+                      + (f"lens '{lid}' is not in the recorded routing "
+                         "decision" if lid else "no lens attribution")
+                      + " — attribute every finding to a catalog lens so "
+                        "the router audit can diff it"),
             "finding": dict(f),
         })
     return out
@@ -186,10 +269,117 @@ def _is_router_regression(f) -> bool:
             == "regression")
 
 
+def _is_machinery_warn_row(f) -> bool:
+    """The machinery warn-row SHAPE (A5) — warn flag, machinery owner,
+    non-blocking class, router+ domain, nested original finding.
+
+    Shape is NECESSARY but NOT SUFFICIENT for the em gate's unresolved-high
+    exemption: every one of these five fields lives in worker-authored
+    .em-review/findings.json, so a real blocker can be dressed in the
+    costume. `_machinery_warn_exempt` pairs this with membership in the
+    freshly RE-DERIVED legitimate set (`_machinery_warn_keys`); nothing in
+    the gate path may exempt on shape alone."""
+    return (isinstance(f, dict) and f.get("warn") is True
+            and f.get("owner") == "router"
+            and _loop().normalize_finding_class(f.get("class"))
+            == "observation"
+            and str(f.get("domain") or "").startswith("router+")
+            and isinstance(f.get("finding"), dict))
+
+
 def _router_regression_key(r):
     nested = r.get("finding") if isinstance(r.get("finding"), dict) else {}
     return (r.get("domain"), nested.get("title"), nested.get("file"),
             nested.get("line"))
+
+
+def _machinery_warn_rows(meta, rows) -> list:
+    """The warn ROWS the machinery ITSELF would file for THIS findings set,
+    re-derived at gate time from the recorded routing decision + the findings
+    on disk — the same `_unattributed_rows` call `_router_audit_gate` files
+    from, returned whole (not reduced to a key).
+
+    This is the anti-spoof half of A5: a row wearing the machinery costume
+    that does NOT correspond to a genuinely unattributed finding is not in
+    this set and therefore still hits the v2.3.0 unresolved-high backstop.
+    Returning ROWS (rather than the `_router_regression_key` identities the
+    first cut used) is what closes the residual channel — see
+    `_machinery_warn_exempt`."""
+    decision = _routing_decision_from_meta(meta)
+    if not decision:
+        return []               # no routing recorded → no legitimate rows
+    dict_rows = [r for r in rows if isinstance(r, dict)]
+    return _unattributed_rows(decision, dict_rows)
+
+
+def _machinery_warn_matches(f, derived) -> bool:
+    """Is `f` the row `derived` — every field the machinery AUTHORS equal?
+
+    The nested original is compared by its `_router_regression_key` identity
+    rather than field-for-field: the filed row carries a SNAPSHOT of the
+    original taken when the gate first ran, and a later triage edit to the
+    original (status: resolved, an added fix note) must not turn a genuine
+    machinery row into a blocker nobody can clear. Every field the machinery
+    decides — severity, class, owner, warn, domain, title — must match
+    exactly."""
+    if _router_regression_key(f) != _router_regression_key(derived):
+        return False
+    return all(f.get(k) == v for k, v in derived.items() if k != "finding")
+
+
+def _machinery_warn_exempt(f, legit) -> bool:
+    """Exempt from the unresolved-high sweep ONLY when the row both wears the
+    machinery shape AND IS a row the machinery would file right now.
+
+    Membership used to be keyed on `_router_regression_key` alone — (domain,
+    nested title/file/line) — which a forged row could simply COPY from a
+    genuine one while carrying `severity: blocker, status: open` of its own,
+    riding a real unattributed finding's key past the backstop. The whole
+    re-derived row is compared now, so the exemption requires the row to BE
+    the machinery's own output: a forgery that reproduces it is a duplicate
+    of a legitimate row, and cannot inflate its severity past the original's
+    (which still blocks on its own row)."""
+    return (_is_machinery_warn_row(f)
+            and any(_machinery_warn_matches(f, d) for d in legit))
+
+
+def _unresolved_high_errors(meta, rows) -> list:
+    """The em gate's raw unresolved-high sweep (v2.3.0): unknown severities
+    normalize UP to high and BLOCK. Extracted from loop.py so the A5
+    exemption can be re-derived here rather than trusted from the file;
+    the gate math itself is still loop's `normalize_severity`, called
+    late-bound (never reimplemented)."""
+    exempt = _machinery_warn_rows(meta, rows)
+    errors = []
+    for finding in rows:
+        if (isinstance(finding, dict)
+                and not _machinery_warn_exempt(finding, exempt)
+                and _loop().normalize_severity(
+                    finding.get("severity")) == "high"
+                and str(finding.get("status", "open")).lower()
+                not in ("resolved", "accepted", "closed")):
+            errors.append("engineering review has an unresolved "
+                          f"{finding.get('severity') or 'unclassified'} "
+                          f"finding: {finding.get('title', 'untitled')}")
+    return errors
+
+
+def _blocking_claim_errors(ws: str, state, rows) -> list:
+    """R-0013: a finding may block the em gate only if it says what breaks.
+
+    Lives here because audit.py owns the em-gate evidence half. Purely
+    additive — it never un-blocks anything, and the frozen `finding_blocks`
+    rule (passed in, never reimplemented) still decides WHICH findings block.
+    A review that mixes commentary into the blocking set trains everyone to
+    skim it, which is how a genuinely inert guardrail (A4) sat in the same
+    pile as a note about ring geometry."""
+    import defect_claim
+    loop = _loop()
+    changed = [f for f in loop._diff_files(
+        ws, (state or {}).get("baseline") or "HEAD")
+        if not f.startswith(loop.lens_router.LOOP_OWNED)]
+    return defect_claim.blocking_errors(
+        rows, lambda f: loop.finding_blocks(f, changed))
 
 
 def _router_audit_gate(ws: str, path: str, doc: dict, meta, rows) -> list:
@@ -211,6 +401,22 @@ def _router_audit_gate(ws: str, path: str, doc: dict, meta, rows) -> list:
         tp.atomic_write_json(path, doc, indent=2)
         tp.trace(ws, "router_regression_filed", count=len(fresh),
                  lenses=sorted({r["domain"] for r in fresh}))
+    # A5 (R-0007): surface unattributed/unknown-lens findings as WARN rows —
+    # appended idempotently (same file discipline as the regressions above),
+    # traced, never blocking. When every finding is attributed (the entire
+    # frozen corpus), this is a no-op: no write, no trace, bytes unchanged.
+    # Dedup via the EXISTING key mechanism (_router_regression_key — the
+    # same (domain, nested title/file/line) tuple); warn rows never collide
+    # with regression rows because their domains are disjoint.
+    warn = _unattributed_rows(decision, dict_rows)
+    seen = {_router_regression_key(r) for r in dict_rows if r.get("warn")}
+    fresh_warn = [r for r in warn if _router_regression_key(r) not in seen]
+    if fresh_warn:
+        rows.extend(fresh_warn)
+        doc["findings"] = rows
+        tp.atomic_write_json(path, doc, indent=2)
+        tp.trace(ws, "router_audit_unattributed", count=len(fresh_warn),
+                 lenses=sorted({r["domain"] for r in fresh_warn}))
     errs = []
     for r in rows:
         if not _is_router_regression(r):

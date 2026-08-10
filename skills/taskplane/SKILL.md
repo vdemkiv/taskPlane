@@ -1,6 +1,6 @@
 ---
 name: taskplane
-description: "The simple user-facing entry point for taskplane. Use whenever the user says taskplane or asks it to design, build, implement, review, validate, plan, resume, or show status. The user supplies a goal and decisions; internally taskplane keeps the full strict harness: requirements and contracts, dependency-graph DoR/DoD, scoped execution, independent evidence, 26 review lenses, orchestrator-only gates, and human approval. Routes to tp-design, tp-go, tp-build, tp-engineering, tp-product, or tp-status without asking the user to learn those internals."
+description: "The simple user-facing entry point for taskplane. Use whenever the user says taskplane or asks it to set up taskplane, get started with taskplane, design, build, implement, review, validate, plan, resume, or show status. The user supplies a goal and decisions; internally taskplane keeps the full strict harness: requirements and contracts, dependency-graph DoR/DoD, scoped execution, independent evidence, 26 review lenses, orchestrator-only gates, and human approval. Routes to tp-design, tp-go, tp-build, tp-engineering, tp-product, or tp-status without asking the user to learn those internals."
 ---
 
 # taskplane — simple for the user, strict for agents
@@ -48,24 +48,18 @@ For a delivery loop, obey the engine payload from `$TP loop next` exactly.
 Dispatch the named role with its full role-instruction file on either Claude or
 Codex; do not improvise a shorter worker prompt.
 
-Implementation and review workers never advance their own stage:
-
-1. The design, execute, fix, evaluate, or engineering worker performs the contracted
-   role and writes its required evidence. Product/planner roles return their
-   artifacts to the orchestrator, whose plan gate is already mechanical and
-   still precedes explicit human approval.
-2. The worker runs `$TP loop submit pass|fail` (with `--task <id>` in a
-   parallel build) and stops. Evaluator and engineering submissions bind the
-   exact verdict/findings/report bytes as well as the source state.
-3. The orchestrator recomputes the submission fingerprint and calls the
-   matching `$TP loop gate`. The engine, not worker prose, decides whether
-   DoR/DoD evidence is sufficient.
-4. Human checkpoints still stop for an explicit Design Contract approval,
-   plan approval, A/B selection, escalation decision, or final sign-off.
-
-Never let an implementation/review worker call `loop gate`, approve a human checkpoint, clear its
-contract after a loop submission, weaken tests, silently widen scope, or treat
-an incomplete action list as completion.
+The submit/gate/human-checkpoint invariants are stated once, canonically,
+in `references/harness-rules.md` (this skill's own reference dir, so every
+distribution that ships `skills/` ships it) — read it before driving a
+loop. In one line each: workers write their evidence, run
+`$TP loop submit pass|fail` (with `--task <id>` only in a parallel EXECUTE
+wave) and stop; only the orchestrator calls the matching `$TP loop gate`;
+the engine — never worker prose — decides whether DoR/DoD evidence is
+sufficient; human checkpoints (Design
+Contract approval, plan approval, A/B selection, escalation, final
+sign-off) stop for an explicit human yes; and no worker clears its contract
+after a submission, weakens tests, silently widens scope, or treats an
+incomplete action list as completion.
 
 ## Dependency graph is part of Ready and Done
 

@@ -449,5 +449,130 @@ class TestDeterminism(unittest.TestCase):
                          json.dumps(b, sort_keys=True))
 
 
+# ==========================================================================
+# t5 / B4 (R-0008 design row 4) — component lens maps include requirement
+# keywords at ASSEMBLY.
+#
+# A component's cached lens_map is derived WITHOUT requirement_text, so a
+# lens the requirement's own keywords earn is absent from the cached
+# proposals and the component path narrowed it away — a NARROWING the
+# fail-open ladder forbids. `_assemble_components` now re-runs the
+# requirement-keyword detector LIVE on the ctx it already builds and UNIONS
+# the keyword-supported lenses into `proposed` (attributed
+# 'requirement-keywords') BEFORE the narrowing; the union only ever widens,
+# and floors/budget still run after on the live ctx.
+#
+# The fixture: module svc/api decomposes into ::handlers, ::testdata and
+# ::core. The ::testdata component's own signals score `scalability` at
+# 0.0875 (fixture-path discount) — below LIGHT, so the cached map does NOT
+# propose it. A requirement naming latency/throughput/load adds W_KEYWORD
+# (0.15) on the LIVE ctx -> 0.2375 >= LIGHT. svc/api has no dependents, so
+# the B5 product-dir exemption deliberately does not apply here.
+# ==========================================================================
+
+KEYWORD_REQ = ("Reduce request latency on the hot path and hold throughput "
+               "under peak load.")
+
+
+def _b4_ws(tmp):
+    ws = os.path.join(tmp, "b4ws")
+
+    def w(rel, txt):
+        p = os.path.join(ws, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write(txt)
+
+    w("svc/api/handlers/h1.py",
+      "import json\n\n\ndef handle_one(req):\n"
+      "    return json.dumps({'ok': True})\n")
+    w("svc/api/handlers/h2.py", "def handle_two(req):\n"
+                                "    return {'ok': False}\n")
+    w("svc/api/testdata/seed_a.py",
+      "SEED = [{'user_email': 'a@example.com', 'password': 'x'}]\n\n\n"
+      "def load_seed():\n    return SEED\n")
+    w("svc/api/testdata/seed_b.py",
+      "ROWS = [{'amount': 10, 'currency': 'USD'}]\n\n\n"
+      "def load_rows():\n    return ROWS\n")
+    for i in range(1, 5):
+        w("svc/api/u%d.py" % i, "def util_%d(x):\n    return x + %d\n"
+          % (i, i))
+    return ws
+
+
+class TestB4RequirementKeywordUnionAtAssembly(unittest.TestCase):
+    DIFF = ["svc/api/testdata/seed_a.py", "svc/api/testdata/seed_b.py"]
+    LENS = "scalability"
+
+    def setUp(self):
+        import depgraph as dg
+        self.tmp = tempfile.mkdtemp()
+        self.ws = _b4_ws(self.tmp)
+        self.graph = dg.scan(self.ws, decompose=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _component(self):
+        return next(c for c in self.graph["components"]
+                    if c["id"] == "svc/api::testdata")
+
+    def test_fixture_precondition_cached_map_does_not_propose_the_lens(self):
+        lm = self._component()["lens_map"]
+        self.assertIn(self.LENS, lm)
+        self.assertEqual(lm[self.LENS]["verdict"], "n/a")
+        proposals = {lid for lid, e in lm.items()
+                     if e["verdict"] in ("deep", "light")}
+        self.assertTrue(proposals, "component must still propose something")
+        self.assertNotIn(self.LENS, proposals)
+
+    def test_keyword_earned_lens_is_routed_on_the_component_path(self):
+        r = lens.route(self.DIFF, stage="review", workspace=self.ws,
+                       requirement_text=KEYWORD_REQ)
+        self.assertTrue(r["context"]["component_route"])
+        x = entry(r, self.LENS)
+        self.assertNotEqual(x["tier"], "n/a",
+                            "requirement keywords were narrowed away by the "
+                            "cached component map")
+        self.assertEqual(x["component_attribution"], ["requirement-keywords"])
+        self.assertEqual(r["context"]["component_attribution"][self.LENS],
+                         ["requirement-keywords"])
+
+    def test_union_only_widens_versus_the_module_paths_keywords(self):
+        """Superset: every lens the MODULE path routes on the strength of a
+        requirement keyword is routed on the component path too."""
+        r = lens.route(self.DIFF, stage="review", workspace=self.ws,
+                       requirement_text=KEYWORD_REQ)
+        routed = {x["id"] for x in r["lenses"] if x["tier"] != "n/a"}
+        ctx = lens_signals.make_ctx(self.ws, self.DIFF,
+                                    requirement_text=KEYWORD_REQ,
+                                    stage="review")
+        module_v = lens_signals.route_verdicts(
+            self.ws, self.DIFF, stage="review",
+            requirement_text=KEYWORD_REQ)
+        keyworded = {
+            lid for lid in lens_signals.requirement_keyword_lenses(ctx)
+            if module_v[lid]["verdict"] != "n/a"}
+        self.assertIn(self.LENS, keyworded)
+        self.assertTrue(keyworded.issubset(routed),
+                        "component route dropped keyword-earned lenses: %s"
+                        % sorted(keyworded - routed))
+
+    def test_without_requirement_text_routing_is_unchanged(self):
+        r = lens.route(self.DIFF, stage="review", workspace=self.ws)
+        self.assertTrue(r["context"]["component_route"])
+        self.assertEqual(entry(r, self.LENS)["tier"], "n/a")
+        for x in r["lenses"]:
+            self.assertNotIn("requirement-keywords",
+                             x.get("component_attribution") or [])
+        # the routed set is exactly the cached proposals disposed live (plus
+        # floors) — with no requirement text the union is empty
+        proposals = {lid for lid, e in self._component()["lens_map"].items()
+                     if e["verdict"] in ("deep", "light")}
+        for x in r["lenses"]:
+            if x["tier"] != "n/a" and "component_attribution" in x:
+                self.assertIn(x["id"], proposals)
+
+
 if __name__ == "__main__":
     unittest.main()

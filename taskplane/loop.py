@@ -26,7 +26,6 @@ existing spec (→plan).
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
 import time
@@ -407,34 +406,15 @@ def _diff_files(ws: str, base: str) -> list:
 
 # --------------------------------------------------------------- parallel
 
-def _stems(globs) -> set:
-    # A glob's fixed prefix, as path SEGMENTS. Drop empty stems (a leading
-    # `**/…` has no fixed prefix — it must not be treated as "matches
-    # everything" or it would conflict with every other task).
-    out = set()
-    for g in (globs or []):
-        if not g:
-            continue
-        stem = g.split("*", 1)[0].rstrip("/")
-        if stem:
-            out.add(stem)
-    return out
-
-
-def _seg_prefix(x: str, y: str) -> bool:
-    """True when path `x` is `y` or a descendant of `y` — on SEGMENT
-    boundaries, so `src/a` is inside `src` but `src/ab` is NOT inside
-    `src/a`."""
-    return x == y or x.startswith(y + "/")
-
-
 def _scopes_overlap(a, b) -> bool:
     """Two scopes conflict when one's fixed prefix contains the other's, on
     path-segment boundaries — conflicting tasks are serialized into later
     waves. Segment-aware so sibling dirs (src/a vs src/ab) do NOT collide,
-    and empty-prefix globs don't conflict with everything."""
-    sa, sb = _stems(a), _stems(b)
-    return any(_seg_prefix(x, y) or _seg_prefix(y, x) for x in sa for y in sb)
+    and empty-prefix globs don't conflict with everything. (The path math
+    itself lives in the kernel — tp.scope_stems / tp.seg_prefix.)"""
+    sa, sb = tp.scope_stems(a), tp.scope_stems(b)
+    return any(tp.seg_prefix(x, y) or tp.seg_prefix(y, x)
+               for x in sa for y in sb)
 
 
 def wave(ws: str) -> dict:
@@ -565,15 +545,20 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     (worktree). From here the worker's PreToolUse hook enforces this task's
     scope/tools/commands — the core invariant: every parallel agent runs
     under the harness, individually."""
-    # v2.3.0 (scalability): the DoR preparation shells out to git in the
-    # WORKER'S OWN worktree (git_head + dor_check's `git status`), which on a
-    # large repo takes seconds — holding the global loop lock across it
-    # serialized a whole wave's startup behind one worker. Prepare OUTSIDE
-    # the lock, then commit the claim under the lock with a RE-CHECK of the
-    # task's status, so two workers still cannot both win the same task.
+    # v2.3.0 (scalability): DoR preparation shells out to git in the worker's
+    # worktree (slow) — prepare OUTSIDE the global lock, then commit the
+    # claim under the lock with a status RE-CHECK.
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
+    if not state.get("parallel"):
+        # A1 (R-0007): a direct claim on a serial loop forms a wave whose
+        # submits deadlock (decision 0011) — fail closed BEFORE any
+        # contract/DoR work, backstopping wave()'s existing refusal.
+        tp.trace(ws, "loop_claim_blocked", task=task_id, reason="serial_mode")
+        return {"error": "loop was initialized without --parallel — a wave "
+                         "cannot claim; re-init with --parallel or run "
+                         "serially via `loop next`"}
     t = next((x for x in state.get("tasks") or [] if x["id"] == task_id),
              None)
     if t is None:
@@ -597,9 +582,8 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
                          "claimed", "task": task_id,
                 "dor": {"ready": False, "blockers": blockers,
                         "warnings": warnings}}
-    # Two workers claiming concurrently must not both win the same task —
-    # only the cheap read-check-write of the claim itself runs under the
-    # shared lock, and the claimability check is REPEATED on the fresh read.
+    # Two concurrent claimers: the claimability check is REPEATED under the
+    # shared lock on a fresh read, so both cannot win the same task.
     with mutate(ws) as state:
         if state is None:
             return {"error": "no active loop"}
@@ -1054,14 +1038,18 @@ def _instruction(step: str, state: dict) -> str:
                    "if you couldn't build it); only the orchestrator calls "
                    "`loop gate`.",
         "evaluate": f"Run the tp-evaluator (read-only) on task "
-                    f"{t and t['id']}: run its tests + acceptance criteria, "
-                    "then apply each ROUTED lens (see `lenses`; prompt at "
+                    f"{t and t['id']}: START with `tp loop evidence --write` — "
+                    "one call returns the suite result, the diff, and the exact "
+                    "criteria, routed-lens and graph obligations this gate "
+                    "demands, judgment slots empty; do NOT rebuild those by "
+                    "hand. Then do what the engine cannot: prove each criterion "
+                    "against real behavior, apply each ROUTED lens (prompt at "
                     "lenses/<id>.md) — inline ones yourself, one governed "
-                    "read-only subagent per subagent-mode lens. Write "
-                    ".eval/verdict.json, including graph dispositions and "
-                    "affected requirements; reject stale Design evidence. "
-                    "Then `loop submit pass|fail`; "
-                    "only the orchestrator calls `loop gate`.",
+                    "read-only subagent per subagent-mode lens — and disposition "
+                    "graph impact + affected requirements; reject stale Design "
+                    "evidence. Fill the empty slots in .eval/verdict.json "
+                    "(submitted unchanged, it is refused). Then `loop submit "
+                    "pass|fail`; only the orchestrator calls `loop gate`.",
         "fix": f"Run the tp-fixer on task {t and t['id']}: repair the "
                "listed failures + add a regression test. Then `loop submit "
                "pass`; only the orchestrator calls `loop gate`.",
@@ -1231,8 +1219,12 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
     contract = tp.build_contract(
         f"EXECUTE: {task['id']}", scope=task.get("scope"),
         test_command=task.get("tests"), plan_minted=True)
+    # A2 (R-0007): exclude loop-owned artifacts from the per-task scope
+    # diff — PARITY with the sign-off aggregate's LOOP_OWNED filter in
+    # _signoff_dod (loop artifacts pass their own gates).
     return (_design_current_errors(ws, state)
-            + tp.dod_check(contract, ws, snapshot))
+            + tp.dod_check(contract, ws, snapshot,
+                           ignore_prefixes=lens_router.LOOP_OWNED))
 
 
 def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
@@ -1446,25 +1438,36 @@ def classify_findings(findings, changed_files=None) -> dict:
     return out
 
 
+# Evidence bundle → evidence.py (P2 / R-0012); extracted like audit.py, same
+# line ratchet. UNTRUSTED INPUT — _evaluation_errors re-derives every
+# obligation itself (evidence.py's docstring: why it stays out of VALIDATOR_SURFACE).
+from evidence import EVIDENCE_JUDGMENT_KEYS, evidence  # noqa: E402,F401
+
 # ---------------------------------------------------------------------------
 # Audit sweep cadence + router-regression auto-filing (v3 Phase 1, R-0001):
-# MOVED VERBATIM to audit.py (R-0006 / D-0004, v3 Phase 2) and re-exported
-# EXPLICITLY so every existing caller — and any monkeypatching test — still
-# resolves the machinery at loop.<name>. The extraction is byte-frozen by
-# taskplane/tests/test_audit_extraction.py (differential corpus captured
-# from the pre-extraction loop.py); the gate math (`finding_blocks`) stays
-# HERE and audit.py calls back into it — never a reimplementation.
+# MOVED VERBATIM to audit.py (R-0006 / D-0004, v3 Phase 2), byte-frozen by
+# taskplane/tests/test_audit_extraction.py. The names below are CALLER
+# aliases bound once at import — NOT patch seams (t9 / R-0011 E6). Patch the
+# MACHINERY at audit.<name> (audit.audit_counter, audit.audit_every, …),
+# resolved module-locally inside audit.py: rebinding the loop alias is
+# invisible to audit_due. Patch the GATE MATH at loop.<name>
+# (finding_blocks, normalize_finding_class, load, _state_dir) — audit.py
+# late-binds those via _loop() (audit.py:41-51) every call, so a patched
+# loop.finding_blocks does govern the gate. TestPatchSeams pins both halves.
 from audit import (  # noqa: E402,F401 — re-exports, not dead imports
     AUDIT_EVERY_DEFAULT,
     AUDIT_FILE,
     _audit_brief,
     _audit_path,
+    _is_machinery_warn_row,
     _is_router_regression,
     _release_review_flagged,
+    _blocking_claim_errors,
     _router_audit_gate,
     _router_regression_key,
     _routing_decision_from_meta,
     _routing_decision_of,
+    _unresolved_high_errors,
     audit_counter,
     audit_due,
     audit_every,
@@ -1578,17 +1581,13 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     if not isinstance(rows, list):
         errors.append("engineering findings must be a list")
         rows = []
-    for finding in rows:
-        # v2.3.0: severities are normalized through the canonical map —
-        # 'blocker'/'major'/'critical' (and anything unknown) count as high
-        # and BLOCK sign-off; the old raw check let them pass the gate.
-        if (isinstance(finding, dict)
-                and normalize_severity(finding.get("severity")) == "high"
-                and str(finding.get("status", "open")).lower()
-                not in ("resolved", "accepted", "closed")):
-            errors.append("engineering review has an unresolved "
-                          f"{finding.get('severity') or 'unclassified'} "
-                          f"finding: {finding.get('title', 'untitled')}")
+    # v2.3.0 raw unresolved-high sweep (body in audit.py): unknown
+    # severities normalize UP to high and BLOCK. Machinery warn rows are
+    # exempt ONLY when re-derived as legitimate this run — the A5 shape
+    # alone is a costume any findings author can wear.
+    errors.extend(_unresolved_high_errors(meta, rows))
+    # R-0013: commentary may not block this gate (body in audit.py).
+    errors.extend(_blocking_claim_errors(ws, state, rows))
     # Audit sweep (v3 Phase 1): when the review recorded a routing decision,
     # diff the findings against it — n/a-lens findings are auto-filed as
     # router regressions and block sign-off via the frozen finding_blocks
@@ -1613,6 +1612,12 @@ def submit(ws: str, outcome: str, note: str = "",
     submission and validation, the gate rejects the stale evidence.  Repeating
     the same submission is idempotent, which makes interrupted/resumed drivers
     safe.
+
+    A4 (decision 0018): the record additionally carries ``engine_fingerprint``
+    — the identity of the ENGINE BUILD that produced it (tp.engine_fingerprint
+    over the validator surface). Purely additive: older gates ignore the
+    unknown key, and the evaluate gate uses it to refuse evidence produced by
+    a different build than the one validating it.
     """
     state = load(ws)
     if state is None:
@@ -1671,15 +1676,26 @@ def submit(ws: str, outcome: str, note: str = "",
                           if snapshot else []),
         "evidence_paths": evidence_paths,
         "graph_fingerprint": graph_fingerprint,
+        "engine_fingerprint": tp.engine_fingerprint(),
+        # A4 REPAIR (EM, v3 phase 3): engine_fingerprint attests the process
+        # RUNNING submit — the same installed plugin the gate uses, so it
+        # could never fire. Stamp the engine in the workspace the EVIDENCE
+        # came from; None where that workspace carries no engine copy.
+        "evidence_engine_fingerprint":
+            tp.workspace_engine_fingerprint(act_ws),
         "submitted_at": int(time.time()),
     }
     with mutate(ws) as locked:
         if locked is None:
             return {"error": "no active loop"}
         def _same(existing):
+            # engine_fingerprint is part of the identity: a re-submission
+            # under a DIFFERENT engine must replace the record, not be
+            # deduplicated into it (A4's in-flight remedy).
             return existing and all(
                 existing.get(k) == submission.get(k)
-                for k in ("step", "task", "outcome", "fingerprint"))
+                for k in ("step", "task", "outcome", "fingerprint",
+                          "engine_fingerprint"))
         if parallel_execute:
             target = next((x for x in locked.get("tasks") or []
                            if x.get("id") == task_id), None)
@@ -1907,6 +1923,10 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "plan/tasks.json before approval or execution",
                     "step": "plan",
                     "dor": {"ready": False, "blockers": dor_errors}}
+        # B2: ordering at the GATE too — checkpoint-less loops skip approve.
+        if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
+                                                "gate")):
+            return refusal
 
     task = _current_task(state)
     act_ws = ws
@@ -1926,6 +1946,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "advance", "step": step,
                     "dod": {"passed": False, "errors": dod_errors}}
     if outcome == "pass" and step == "evaluate":
+        # A4: the engine that PRODUCED this evidence vs the one about to
+        # judge it — a pure pre-check (decision 0018), so equal engines
+        # leave the walk below byte-unchanged.
+        if (skew := tp.engine_skew_refusal(ws, state.get("_submission"))):
+            return skew
         evidence_errors = _evaluation_errors(act_ws, state, task)
         if evidence_errors:
             tp.trace(ws, "loop_gate_blocked", step=step,
@@ -2084,28 +2109,22 @@ def _signoff_dod(ws: str, state: dict) -> dict:
     baseline = state.get("baseline")
     errors: list = []
     if scopes:
-        # Aggregate diff-scope, EXCLUDING loop-owned artifacts (design/,
-        # plan/, specs/, .taskplane, .eval/, .em-review/, knowledge/):
-        # those files are authored by governed steps under their own
-        # write-allow contracts and pass their own human gates, so
-        # requiring them inside the union of TASK scopes was a
-        # contradiction — t-task DoD forces design/contract.json to be
-        # committed, then sign-off flagged that very commit. Every other
-        # engine path (evaluate routing, em review, impact) already
-        # filters lens_router.LOOP_OWNED; this brings the sign-off
-        # aggregate in line. Fail-closed stance unchanged: no snapshot
-        # still errors, and NON-loop-owned files outside the union still
-        # block.
+        # Aggregate diff-scope, EXCLUDING loop-owned artifacts: they are
+        # authored by governed steps under their own write-allow contracts
+        # and human gates, so requiring them inside the union of TASK
+        # scopes was a contradiction. Every other engine path (evaluate
+        # routing, em review, impact, and — A2 — the per-task DoD) filters
+        # lens_router.LOOP_OWNED the same way. Fail-closed stance
+        # unchanged: no snapshot still errors, and NON-loop-owned files
+        # outside the union still block.
         if not baseline:
             errors.append("diff_scope: cannot verify — no git snapshot "
                           "(commit the workspace before governing)")
         else:
-            # plan_minted: the union IS the human-approved plan's scopes,
-            # so approved wildcard-free literals (e.g. a CI file) keep
-            # their provenance-gated override; adding DEFAULT_OUT_OF_SCOPE
-            # here is STRICTER than the old synthetic contract (which had
-            # no out_of_scope at all) — wildcard-reachable denied families
-            # now block at sign-off too.
+            # plan_minted: the union IS the human-approved plan's scopes
+            # (approved wildcard-free literals keep their provenance-gated
+            # override); DEFAULT_OUT_OF_SCOPE here is STRICTER than the
+            # old synthetic contract, which had no out_of_scope at all.
             coding = {"scope_paths": scopes,
                       "out_of_scope_paths": list(tp.DEFAULT_OUT_OF_SCOPE),
                       "plan_minted": True}
@@ -2349,6 +2368,10 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
                              "requirement is under the threshold. Refine it "
                              "(close the gaps) or `loop approve --force`.",
                     "refinement": refinement}
+        # B2 (R-0008): mechanical brief-shape-before-golden-regen ordering.
+        if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
+                                                "approve", by=by)):
+            return refusal
         # Baseline for later diff-routing at EVALUATE/EM.
         state["baseline"] = tp.git_head(ws)
         state["step"] = "execute"
@@ -2836,16 +2859,12 @@ def user_summary(ws: str, host: str | None = None) -> dict:
     }
 
 
-# --- Dashboard v2 (R-0001): rendering is part of the flow, not a separate
-# call. Every successful gate()/next_action() refreshes the fragment on disk
-# and points at it in the payload — the driver renders what's already there.
+# --- Dashboard v2 (R-0001): rendering is part of the flow — every gate()/
+# next_action() refreshes the fragment on disk and points at it.
 # ---- shared progress artifacts (v2.0.0) -------------------------------------
-# Every gate transition snapshots its decision artifacts into the ACTIVE store
-# (team/enterprise plan: in-repo .taskplane-kb/ — commit it and the whole org
-# sees progress from a fresh clone; personal/private: the external store, so
-# nothing leaks). Doubles as a context cache: a future session reads the
-# snapshot instead of re-deriving it — shared progress AND cheaper tokens.
-# Fail-open like the dashboard: publishing must never break the loop.
+# Every gate transition snapshots its decision artifacts into the ACTIVE
+# store (team plan: in-repo .taskplane-kb/; personal: the external store).
+# Doubles as a context cache. Fail-open: publishing never breaks the loop.
 
 def _publish_artifacts(ws: str) -> str | None:
     import re as _re

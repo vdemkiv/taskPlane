@@ -64,7 +64,7 @@
     "truncated": false,
     "unknown": []
   },
-  "instruction": "Run the tp-evaluator (read-only) on task t1: run its tests + acceptance criteria, then apply each ROUTED lens (see `lenses`; prompt at lenses/<id>.md) \u2014 inline ones yourself, one governed read-only subagent per subagent-mode lens. Write .eval/verdict.json, including graph dispositions and affected requirements; reject stale Design evidence. Then `loop submit pass|fail`; only the orchestrator calls `loop gate`.",
+  "instruction": "Run the tp-evaluator (read-only) on task t1: START with `tp loop evidence --write` \u2014 one call returns the suite result, the diff, and the exact criteria, routed-lens and graph obligations this gate demands, judgment slots empty; do NOT rebuild those by hand. Then do what the engine cannot: prove each criterion against real behavior, apply each ROUTED lens (prompt at lenses/<id>.md) \u2014 inline ones yourself, one governed read-only subagent per subagent-mode lens \u2014 and disposition graph impact + affected requirements; reject stale Design evidence. Fill the empty slots in .eval/verdict.json (submitted unchanged, it is refused). Then `loop submit pass|fail`; only the orchestrator calls `loop gate`.",
   "knowledge": {
     "context": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
     "current_state": null,

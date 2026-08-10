@@ -40,12 +40,20 @@ def _repo():
 
 class _Env(unittest.TestCase):
     def setUp(self):
+        # t9 (R-0011 E2): save-and-restore, not an unconditional pop — the
+        # old tearDown deleted an exported TASKPLANE_STORE/HOME for every
+        # LATER test module in the process.
+        self._env0 = {k: os.environ.get(k)
+                      for k in ("TASKPLANE_HOME", "TASKPLANE_STORE")}
         os.environ["TASKPLANE_HOME"] = tempfile.mkdtemp(prefix="tp-h-")
         os.environ.pop("TASKPLANE_STORE", None)
 
     def tearDown(self):
-        os.environ.pop("TASKPLANE_HOME", None)
-        os.environ.pop("TASKPLANE_STORE", None)
+        for k, v in self._env0.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def _to_step(ws, step, tasks=None):

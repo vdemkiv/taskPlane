@@ -67,8 +67,16 @@ graph. Never replace the dashboard with a prose recap.
 ## Product actions (judgments, never code)
 
 Refine requirements, amend acceptance criteria, `$TP req debt` (tracked,
-never silent), the approve/send-back recommendation at the plan gate,
-recorded product decisions. Contract: work read-only toward code
+never silent — each item records its requirement via `--req`, why the quick
+path was taken via `--reason`, and the full `--follow-up`; `$TP req list`
+then prints every OPEN debt item next to the requirements, which is the
+burn-down view). There is no `req resolve` subcommand: closing debt is a
+record, not a command — at sign-off/retro write `$TP decision new` naming
+the debt id, or schedule the follow-up as its own requirement. An item is
+resolved in that decision record, not by a flag, and `$TP req list` keeps
+listing it until the follow-up ships — say that rather than implying a
+command that does not exist. Also: the approve/send-back recommendation at
+the plan gate, recorded product decisions. Contract: work read-only toward code
 (`$TP new --scope "docs/**,specs/**,knowledge/**" "product: <goal>"`).
 A requirement gap tp-product fixes personally; a build gap goes back
 through the loop. Deep persona spec: `agents/tp-product.md`.

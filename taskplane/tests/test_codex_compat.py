@@ -1,5 +1,8 @@
 """Codex host compatibility for taskplane's shared enforcement boundary."""
 
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -9,6 +12,14 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import taskplane_lite as tp  # noqa: E402
+import tp as cli  # noqa: E402
+
+_BRIEFS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "fixtures", "briefs")
+_sf_spec = importlib.util.spec_from_file_location(
+    "stage_fixture_codex", os.path.join(_BRIEFS, "stage_fixture.py"))
+stage_fixture = importlib.util.module_from_spec(_sf_spec)
+_sf_spec.loader.exec_module(stage_fixture)
 
 TPPY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "tp.py")
@@ -179,6 +190,295 @@ class TestSkillPortability(unittest.TestCase):
         import lens
         self.assertIn("${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}",
                       lens.CLEAR_ALWAYS)
+
+
+class TestEmitWorkflowRefusal(unittest.TestCase):
+    """C3 (R-0009): explicit `--emit workflow` on a DEFINITIVELY
+    workflow-less host — Codex (no runtime, verified) or the operator
+    kill-switch — REFUSES: nonzero exit, a stderr reason naming the host
+    state and the Task-path remedy, NO payload on stdout, and a traced
+    stage_dispatch_path / review_dispatch_path {path: 'refused'}.
+    Refuse-with-reason replaces force-printing an uninvokable payload
+    (the product decision recorded at the pm step). The default (auto)
+    and --emit task rails are byte-unchanged — no gate is reachable only
+    via workflows remains true."""
+
+    def setUp(self):
+        self._saved = {v: os.environ.get(v) for v in stage_fixture.SCRUB_VARS}
+        for v in stage_fixture.SCRUB_VARS:
+            os.environ.pop(v, None)
+
+    def tearDown(self):
+        for v, val in self._saved.items():
+            if val is None:
+                os.environ.pop(v, None)
+            else:
+                os.environ[v] = val
+
+    # ---- helpers
+
+    def _cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def _stage_ws(self):
+        """A real loop journey parked at the EXECUTE wave dispatch."""
+        ws = stage_fixture.build_repo(tempfile.mkdtemp())
+        stage_fixture.start_loop(ws)
+        return ws
+
+    def _lens_ws(self):
+        """A repo with an uncommitted diff so `lens dispatch` routes."""
+        ws = _repo()
+        with open(os.path.join(ws, "src", "a.py"), "w") as f:
+            f.write("x = 2\n")
+        return ws
+
+    def _traces(self, ws, event):
+        p = os.path.join(ws, ".taskplane", "trace.jsonl")
+        if not os.path.isfile(p):
+            return []
+        with open(p) as f:
+            return [json.loads(l) for l in f
+                    if l.strip() and json.loads(l).get("event") == event]
+
+    def _assert_refusal(self, rc, out, err):
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(out, "")            # NO payload on stdout
+        self.assertIn("--emit workflow refused", err)
+        self.assertIn("--emit task", err)    # the Task-path remedy, named
+        self.assertIn("auto", err)
+
+    # ---- stage emitter surface (loop wave / loop next)
+
+    def test_stage_emit_workflow_refuses_on_codex(self):
+        ws = self._stage_ws()
+        os.environ["CODEX_HOME"] = "/x"
+        rc, out, err = self._cli("loop", "--workspace", ws, "wave",
+                                 "--emit", "workflow")
+        self._assert_refusal(rc, out, err)
+        self.assertIn("codex host", err)     # the detector's own reason
+        evs = self._traces(ws, "stage_dispatch_path")
+        self.assertTrue(evs)
+        self.assertEqual(evs[-1]["path"], "refused")
+        self.assertIn("codex host", evs[-1]["reason"])
+
+    def test_stage_emit_workflow_refuses_on_kill_switch(self):
+        ws = self._stage_ws()
+        os.environ["TASKPLANE_WORKFLOWS"] = "0"
+        rc, out, err = self._cli("loop", "--workspace", ws, "wave",
+                                 "--emit", "workflow")
+        self._assert_refusal(rc, out, err)
+        self.assertIn("TASKPLANE_WORKFLOWS=0", err)
+        evs = self._traces(ws, "stage_dispatch_path")
+        self.assertEqual(evs[-1]["path"], "refused")
+
+    def test_stage_auto_and_task_byte_identical_on_codex(self):
+        """The refusal changes ONLY the explicit override: on Codex the
+        default auto and --emit task still print the identical Task-path
+        payload with exit 0 (byte-identity vs the goldens is pinned in
+        test_stage_waves.py; equality across rails is re-proven here)."""
+        ws = self._stage_ws()
+        os.environ["CODEX_HOME"] = "/x"
+        rc_a, out_a, _ = self._cli("loop", "--workspace", ws, "wave")
+        rc_t, out_t, _ = self._cli("loop", "--workspace", ws, "wave",
+                                   "--emit", "task")
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(rc_t, 0)
+        self.assertEqual(out_a, out_t)
+        payload = json.loads(out_a)
+        for key in ("dispatch_path", "workflow", "reason"):
+            self.assertNotIn(key, payload)
+
+    # ---- lens dispatch surface (review_dispatch_path)
+
+    def test_lens_emit_workflow_refuses_on_codex(self):
+        ws = self._lens_ws()
+        os.environ["CODEX_HOME"] = "/x"
+        rc, out, err = self._cli("lens", "dispatch", "--workspace", ws,
+                                 "--emit", "workflow")
+        self._assert_refusal(rc, out, err)
+        evs = self._traces(ws, "review_dispatch_path")
+        self.assertTrue(evs)
+        self.assertEqual(evs[-1]["path"], "refused")
+        self.assertIn("codex host", evs[-1]["reason"])
+
+    def test_lens_emit_workflow_refuses_on_kill_switch(self):
+        ws = self._lens_ws()
+        os.environ["TASKPLANE_WORKFLOWS"] = "off"
+        rc, out, err = self._cli("lens", "dispatch", "--workspace", ws,
+                                 "--emit", "workflow")
+        self._assert_refusal(rc, out, err)
+        evs = self._traces(ws, "review_dispatch_path")
+        self.assertEqual(evs[-1]["path"], "refused")
+
+    def test_lens_refusal_records_no_expected_dispatches(self):
+        """Fail closed BEFORE side effects: a refused dispatch must leave
+        no verify-dispatch expectations behind."""
+        ws = self._lens_ws()
+        os.environ["CODEX_HOME"] = "/x"
+        self._cli("lens", "dispatch", "--workspace", ws,
+                  "--emit", "workflow")
+        rep = tp.dispatch_report(ws)
+        self.assertFalse(rep["expected"])    # zero expectations recorded
+
+    def test_lens_task_path_unchanged_on_codex(self):
+        ws = self._lens_ws()
+        os.environ["CODEX_HOME"] = "/x"
+        rc_a, out_a, _ = self._cli("lens", "dispatch", "--workspace", ws)
+        rc_t, out_t, _ = self._cli("lens", "dispatch", "--workspace", ws,
+                                   "--emit", "task")
+        self.assertEqual((rc_a, rc_t), (0, 0))
+        self.assertEqual(out_a, out_t)
+        self.assertNotIn("dispatch_path", json.loads(out_a))
+
+    # ---- the decision's boundary
+
+    def test_undetected_default_keeps_the_explicit_override(self):
+        """The refusal is scoped to DEFINITIVE unavailability. On the
+        conservative default (runtime merely undetected) the explicit
+        override still emits — the human may know the host better than
+        the detector, and the dispatch-parity pins prove the payload is
+        byte-identical either way. This boundary is what keeps the
+        refusal strict-or-stricter without breaking the parity suite."""
+        ws = self._lens_ws()          # SCRUB_VARS cleared in setUp
+        avail = cli.workflow_available(ws)
+        self.assertFalse(avail["available"])
+        self.assertFalse(avail.get("definitive"))
+        rc, out, err = self._cli("lens", "dispatch", "--workspace", ws,
+                                 "--emit", "workflow")
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["dispatch_path"], "workflow")
+        self.assertIn("forced", payload["reason"])
+
+
+class TestWindowsSlotActivationFallback(unittest.TestCase):
+    """C1 (R-0009): what actually governs a shell that cannot run the
+    POSIX `export` line.
+
+    A cmd.exe agent that skips the activation line does NOT escape
+    governance and does NOT inherit a sibling's contract — it lands in the
+    slot-less fallback, where every active per-task contract is combined
+    into the MOST-RESTRICTIVE UNION (taskplane_lite._union_contract /
+    load_active): an action passes only if EVERY member approves it, the
+    budget ceiling is the minimum, and read_only is contagious. The
+    failure mode is therefore over-blocking (the agent cannot do its own
+    task's in-scope work), never under-blocking — which is why the C1 line
+    is a usability fix, not a hole being closed. Pinned explicitly so the
+    Windows path's behavior is documented, not assumed."""
+
+    def setUp(self):
+        self.ws = _repo()
+        self._saved = os.environ.get("TASKPLANE_TASK")
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._saved is None:
+            os.environ.pop("TASKPLANE_TASK", None)
+        else:
+            os.environ["TASKPLANE_TASK"] = self._saved
+
+    def _activate(self, slot, **kw):
+        os.environ["TASKPLANE_TASK"] = slot
+        c = tp.build_contract(f"task {slot}", **kw)
+        tp.activate(self.ws, c, snapshot=None)
+        return c
+
+    def _wave(self):
+        """Two sibling wave tasks, disjoint scopes — the shape a parallel
+        EXECUTE wave activates."""
+        a = self._activate("t1", scope=["src/**"], max_actions=10)
+        b = self._activate("t2", scope=["docs/**"], max_actions=4)
+        return a, b
+
+    # ---- the fallback a Windows shell lands in
+
+    def test_slotless_process_is_governed_by_the_union(self):
+        self._wave()
+        os.environ.pop("TASKPLANE_TASK", None)     # the cmd.exe agent
+        u = tp.load_active(self.ws)
+        self.assertIsNotNone(u, "an un-exported slot must never leave the "
+                                "process UNgoverned")
+        self.assertTrue(u["task_id"].startswith("union-"))
+        self.assertEqual(len(u["_union"]), 2)
+        self.assertEqual(u["budget"]["max_actions"], 4)   # min ceiling
+
+    def test_union_blocks_each_members_own_in_scope_work(self):
+        """The concrete failure mode: t1's OWN in-scope write is refused,
+        because t2's contract does not allow it (and vice versa)."""
+        self._wave()
+        os.environ.pop("TASKPLANE_TASK", None)
+        u = tp.load_active(self.ws)
+        for path in ("src/a.py", "docs/a.md"):
+            ok, reason = tp.screen_tool(u, "Write", {"file_path": path},
+                                        self.ws)
+            self.assertFalse(ok, f"{path} must be blocked by the union")
+            self.assertIn("union", reason)
+
+    def test_refusal_names_the_slot_remedy(self):
+        """The refusal is self-describing — it names the very fix the C1
+        line automates, so an agent that hit the fallback can get out."""
+        self._wave()
+        os.environ.pop("TASKPLANE_TASK", None)
+        _, reason = tp.screen_tool(tp.load_active(self.ws), "Write",
+                                   {"file_path": "src/a.py"}, self.ws)
+        self.assertIn("set TASKPLANE_TASK", reason)
+        self.assertIn("single task's contract", reason)
+
+    def test_union_never_allows_what_a_member_denies(self):
+        """No-loosening, both directions: the union is a strict AND over
+        its members — it can only ever be stricter than any one of them."""
+        a, b = self._wave()
+        os.environ.pop("TASKPLANE_TASK", None)
+        u = tp.load_active(self.ws)
+        for path in ("src/a.py", "docs/a.md", "other/x.txt"):
+            inp = {"file_path": path}
+            union_ok, _ = tp.screen_tool(u, "Write", inp, self.ws)
+            members_ok = all(tp.screen_tool(m, "Write", inp, self.ws)[0]
+                             for m in (a, b))
+            if union_ok:
+                self.assertTrue(members_ok,
+                                f"{path}: union LOOSER than a member")
+
+    def test_read_only_member_makes_the_whole_union_read_only(self):
+        self._activate("t1", scope=["src/**"])
+        self._activate("lens-security", read_only=True,
+                       write_allow=[".em-review/**"])
+        os.environ.pop("TASKPLANE_TASK", None)
+        self.assertTrue(tp.load_active(self.ws).get("read_only"))
+
+    # ---- and what the C1 line buys
+
+    def test_windows_set_form_activates_the_per_task_contract(self):
+        """`set TASKPLANE_TASK=t1` in cmd.exe sets exactly the variable the
+        screener reads — so with the C1 line run, the per-task contract
+        governs and the task's own in-scope work passes again."""
+        a, _ = self._wave()
+        os.environ["TASKPLANE_TASK"] = "t1"        # what `set` does
+        self.assertEqual(tp.load_active(self.ws)["task_id"], a["task_id"])
+        ok, _ = tp.screen_tool(tp.load_active(self.ws), "Write",
+                               {"file_path": "src/a.py"}, self.ws)
+        self.assertTrue(ok)
+        ok, _ = tp.screen_tool(tp.load_active(self.ws), "Write",
+                               {"file_path": "docs/a.md"}, self.ws)
+        self.assertFalse(ok, "the slot must not widen past its own scope")
+
+    def test_emitted_windows_line_sets_the_variable_the_screener_reads(self):
+        """The seam: the cmd form the emitter writes into every stage
+        prompt must assign THE variable task_slot() resolves, with a value
+        the enforced slot charset accepts. Parsed out of a real emitted
+        prompt — a rename on either side fails here."""
+        prompt = cli._stage_agent_prompt("t1", "INSTRUCTION",
+                                         {"task": {"id": "t1"}})
+        line = next(l for l in prompt.splitlines() if l.startswith("set "))
+        name, _, value = line[len("set "):].partition("=")
+        self.assertEqual(name, "TASKPLANE_TASK")
+        self.assertTrue(tp._TASK_SLOT_RE.match(value), value)
+        os.environ[name] = value
+        self.assertEqual(tp.task_slot(), "t1")
 
 
 class TestCodexOnboarding(unittest.TestCase):

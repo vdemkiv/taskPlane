@@ -22,8 +22,15 @@ Floors (the approved design's constants — override via components.yaml):
   below the candidate threshold IS its single `::core` component.
 
 components.yaml schema (repo root; OPTIONAL). Only this flat mapping subset
-is parsed — stdlib only, no YAML dependency; `#` comments and unknown keys
-are ignored; a malformed file fails OPEN to the defaults:
+is parsed — stdlib only, no YAML dependency. Exactly two LINE SHAPES are
+supported: a top-level `name:` section header and an indented `name: <int>`
+key/value; `#` comments and blank lines are stripped first. Within those
+shapes unknown keys and unknown sections are ignored. Any OTHER line — a
+list item, a nested mapping, a non-integer value — is unsupported, and in
+`_parse_components_yaml` an unsupported line SHAPE raises ValueError. That
+raise is not fatal: `load_floors` catches it, so the whole file
+fails OPEN to the defaults and the failure is REPORTED in its error channel
+(which rides derive()'s stats into the graph_decompose trace):
 
     floors:
       candidate_min_files: 8
@@ -138,7 +145,17 @@ def _parse_components_yaml(text: str) -> dict:
 
 def load_floors(workspace: str) -> tuple[dict, str | None]:
     """(floors, error) — defaults overlaid with components.yaml when present.
-    A malformed file fails OPEN to the defaults, with the error reported."""
+    A malformed file fails OPEN to the defaults, with the error reported.
+
+    A7 (R-0007): every floor is a count with a hard lower bound of 1 — a
+    floor of 0 or below could never be applied meaningfully, so an
+    override below 1 is CLAMPED to 1 and reported as a `degraded:` marker
+    in the error channel (the fail-open convention: the scan proceeds on
+    the clamped values; the marker rides derive()'s stats into the
+    graph_decompose trace). A non-integer override fails open to the
+    defaults with the existing `ignored` marker. floors_hash hashes the
+    values load_floors RETURNS — i.e. the clamped ones — so the cache key
+    always reflects the EFFECTIVE floors."""
     floors = {"candidate_min_files": CANDIDATE_MIN_FILES,
               "big_file_lines": BIG_FILE_LINES,
               "cluster_min_files": CLUSTER_MIN_FILES,
@@ -151,7 +168,15 @@ def load_floors(workspace: str) -> tuple[dict, str | None]:
         text = _read_text(workspace, _COMPONENTS_YAML)
         if text is None:
             raise ValueError("components.yaml unreadable")
-        floors.update(_parse_components_yaml(text))
+        overrides = {k: int(v)
+                     for k, v in _parse_components_yaml(text).items()}
+        clamped = {k: v for k, v in overrides.items() if v < 1}
+        floors.update({k: max(1, v) for k, v in overrides.items()})
+        if clamped:
+            detail = ", ".join(f"{k}={v}" for k, v in sorted(clamped.items()))
+            return floors, ("degraded: components.yaml floors below 1 "
+                            f"clamped to 1 ({detail}) — a floor can never "
+                            "be less than 1")
         return floors, None
     except Exception as e:
         return floors, f"components.yaml ignored (defaults used): {e}"
@@ -321,7 +346,15 @@ def _module_fingerprint(files_hashes: list, fhash: str) -> str:
 def _symbol_clusters(text: str, rel: str, floors: dict):
     """Cluster a big Python file's top-level symbols by name prefix, then
     pull each residual symbol that references exactly one passing cluster
-    into it. Returns (clusters {name: [symbol nodes]}, residual [nodes]).
+    into it.
+
+    Returns a 5-tuple (clusters, residual, tops, tree, folded):
+      clusters  {cluster name: [symbol NAME, ...]} — sorted names, not nodes
+      residual  [symbol NAME, ...] sorted — symbols no cluster absorbed
+      tops      {symbol name: ast node} for every top-level def/class
+      tree      the parsed ast.Module (reused by the caller's dep pass)
+      folded    int — how many prefix groups failed the cluster floors
+
     Raises _DerivationError on a bad AST (fail-open handled by the caller)."""
     try:
         tree = ast.parse(text)
@@ -471,12 +504,15 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
     sym_comp: dict = {}          # (file, symbol) -> component name
     residual_syms: dict = {}     # file -> [symbol names]
     file_tops: dict = {}
+    big_clustered: set = set()   # big files that earned >= 1 symbol cluster
     for f in big:
         sclusters, still, tops, _tree, folded = _symbol_clusters(
             texts[f], f, floors)
         floor_folded += folded
         file_tops[f] = tops
         residual_syms[f] = still
+        if sclusters:
+            big_clustered.add(f)
         for pname, names in sorted(sclusters.items()):
             d = draft(pname, "symbols")
             d["files"].add(f)
@@ -489,12 +525,25 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
                 sym_comp[(f, n)] = pname
 
     # ---- residual -> <module>::core
-    core_files = residual_files | {f for f in big if residual_syms.get(f)}
+    #
+    # B3 (R-0008): a big file that earned NO symbol cluster and left NO
+    # residual symbol (a >=big_file_lines module of top-level DATA has no
+    # top-level def/class at all) used to be represented by neither branch
+    # below — it vanished, the module rendered as a `::core` with an EMPTY
+    # span, and the component layer permanently disengaged for that module
+    # behind a remedy (re-scan) that reproduced the same empty core. Such a
+    # file now folds into ::core as a WHOLE-FILE member (file, hash, ''),
+    # exactly like a below-floor file cluster: its span, its signals and its
+    # imports all stay in the layer.
+    big_whole = {f for f in big
+                 if f not in big_clustered and not residual_syms.get(f)}
+    core_files = (residual_files | big_whole
+                  | {f for f in big if residual_syms.get(f)})
     if core_files or residual_syms:
         d = draft("core", "core")
         d["files"] |= core_files
         d["members"] += [(f, hashes.get(f, ""), "")
-                         for f in sorted(residual_files)]
+                         for f in sorted(residual_files | big_whole)]
         for f in big:
             tops = file_tops[f]
             d["symbols"] |= set(residual_syms[f])
@@ -508,10 +557,13 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
         return core_only()
 
     # ---- component-level deps
+    # A B3 whole-file fold is represented as a FILE, not as symbols, so it
+    # participates in the file-level dep passes like any other whole file
+    # (its symbol-level pass has nothing to walk).
     comp_of_file = {}
     for name, d in comp.items():
         for f in d["files"]:
-            if f not in big:
+            if f not in big or f in big_whole:
                 comp_of_file[f] = name
 
     def comp_id(name):
@@ -520,7 +572,7 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
     deps: dict = {name: set() for name in comp}
     for name, d in sorted(comp.items()):
         for f in sorted(d["files"]):
-            if f in big:
+            if f in big and f not in big_whole:
                 continue
             # module-level imports (from the scanned graph material)
             for tgt in sorted(alias_targets.get(f, ())):
@@ -579,6 +631,7 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
 # ------------------------------------------------------------------ lens map
 
 def _graph_payload(graph: dict, module: str) -> dict:
+    import depgraph
     edges = graph.get("edges") or []
     dependents = {e.get("from") for e in edges
                   if e.get("to") == module and e.get("from") != module}
@@ -588,9 +641,28 @@ def _graph_payload(graph: dict, module: str) -> dict:
         for x, y in ((a, b), (b, a)):
             if x == module and str(y).startswith("contract:"):
                 contracts.add(y)
+    # module_dependents mirrors lens_signals._graph_payload so a cached
+    # lens_map scores the B5 fixture-path exemption exactly the way the LIVE
+    # diff ctx will — a cached map that missed the exemption would narrow
+    # the component route below the module route (B5, R-0008). That mirror
+    # includes the dependency-KIND filter: only depgraph.DEPENDENCY_EDGE_KINDS
+    # ("from NEEDS to") count as a dependent, so the structural edges
+    # (defined_in, planned/realizes, provides, validates, changes) that a
+    # fixture tree can emit ABOUT ITSELF cannot exempt it. hub_dependents is
+    # deliberately left counting every incoming edge (pre-existing signal).
+    # Guard 3 mirrored (EM, v3 phase 3): a dependent that is ITSELF fixture-
+    # classed cannot vouch for a fixture tree. Without this the cached
+    # component map would grant an exemption the live route now refuses,
+    # which is the drift this mirror exists to prevent.
+    import lens_signals as _ls
+    dep_dependents = {e.get("from") for e in edges
+                      if e.get("to") == module and e.get("from") != module
+                      and depgraph.is_dependency_edge(e)
+                      and not _ls._module_is_fixture_classed(e.get("from"))}
     return {"hub_dependents": len(dependents),
             "boundary_contracts": sorted(contracts),
-            "modules": [module]}
+            "modules": [module],
+            "module_dependents": {module: len(dep_dependents)}}
 
 
 def _lens_map(workspace: str, graph: dict, c: dict) -> dict:

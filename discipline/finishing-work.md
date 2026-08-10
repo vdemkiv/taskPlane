@@ -13,3 +13,12 @@ Done isn't merged; merged isn't shipped. After the human signs off:
    `git push` is deny-listed by default and that's deliberate).
 5. If the shape of the system changed, `knowledge/architecture.md` must
    say so — the architecture lens goes blind otherwise.
+
+## Release freshness is DoD, not memory
+
+A version bump is not done until `test_release_freshness.py` is green:
+tp-help must name the new major.minor (touch the tour every minor release),
+every new CLI flag must be documented somewhere in README/docs/skills, and
+skills' doc pointers must resolve. This exists because the tp-help tour once
+fell two releases behind — the gate makes staleness a failing test instead
+of a thing a human must remember.

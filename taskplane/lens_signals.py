@@ -77,6 +77,96 @@ def is_fixture_path(path: str) -> bool:
     return p.lower().endswith(_FIXTURE_EXTENSIONS)
 
 
+# B5 (R-0008): the classifier above keys off the PATH alone, so a REAL
+# product directory literally named `fixtures/` was discounted — the
+# dangerous direction (under-routing). The discount APPLICATION point now
+# consults a graph-informed exemption computed at ctx construction: a
+# fixture-classed path whose containing graph MODULE has at least
+# FIXTURE_EXEMPT_MIN_DEPENDENTS dependents is real product code (nothing
+# depends on a test-fixture tree), keeps FULL weight, and says so in the
+# evidence line. The exemption can only ever RESTORE weight — the
+# discounted set strictly shrinks, never grows — and is_fixture_path()
+# itself is untouched, so every other caller sees the same classification.
+#
+# TWO guards keep that premise TRUE, because the first cut of this exemption
+# repealed D-0002 on this very repository:
+#
+#  1. WHAT COUNTS AS A DEPENDENT — only depgraph.DEPENDENCY_EDGE_KINDS
+#     ("from NEEDS to"). `module_dependents` used to count EVERY incoming
+#     edge, including the STRUCTURAL `defined_in` edge a docker-compose file
+#     emits ABOUT ITS OWN module. This repo's
+#     taskplane/tests/fixtures/detectors/architecture/positive/
+#     docker-compose.yml therefore handed module `taskplane/tests` two
+#     "dependents" that were the fixtures themselves. Filtered in
+#     _graph_payload here AND in decompose._graph_payload, so cached
+#     component maps and live routing agree.
+#
+#  2. AT WHAT GRANULARITY — a graph module id is at most a few segments
+#     (`taskplane/tests`) while is_fixture_path classifies the FULL path
+#     (`taskplane/tests/fixtures/detectors/i18n/positive/locales/en.json`).
+#     An ancestor module id must never speak for a fixture subtree nested
+#     below it, so the exemption fires only when the fixture classification
+#     is visible AT the module boundary that carries the dependent count —
+#     is_fixture_path(module) is itself True (`fixtures`, `tests/fixtures`,
+#     …). When the fixture-marking segment lies BELOW the module id, the
+#     dependents belong to the module, not to the fixture tree, and the
+#     discount stands. On this repo all 102 fixture-classed tracked paths
+#     map to non-fixture-classed modules (taskplane/tests, src, api,
+#     components, auth), so the whole corpus stays discounted.
+#
+# Both guards only SHRINK the exemption, and the exemption only ever restores
+# weight, so behaviour stays between "always discounted" (base) and the
+# unguarded version: it can never route anything more narrowly than base.
+FIXTURE_EXEMPT_MIN_DEPENDENTS = 1
+
+
+def _module_is_fixture_classed(module: str) -> bool:
+    """Guard 2: the fixture marking must be visible at the module boundary
+    that carries the dependent count, not somewhere deeper in the path."""
+    m = str(module or "").replace(os.sep, "/").strip("/")
+    return bool(m) and m != "(root)" and is_fixture_path(m)
+
+
+def _module_of(path: str) -> str:
+    """The graph module id owning `path` (depgraph's own rule). A degraded
+    fallback keeps ctx construction non-raising without depgraph."""
+    p = str(path).replace(os.sep, "/")
+    try:
+        import depgraph
+        return depgraph.module_of(p)
+    except Exception:
+        d = os.path.dirname(p)
+        return "/".join(d.split("/")[:2]) if d else "(root)"
+
+
+def _fixture_exemptions(files, graph) -> dict:
+    """{path: reason} — the fixture-classed paths that keep FULL weight.
+
+    Guard 2 (granularity) is applied here; guard 1 (dependency-edge kinds)
+    is applied where `module_dependents` is BUILT (_graph_payload)."""
+    deps = (graph or {}).get("module_dependents")
+    if not isinstance(deps, dict) or not deps:
+        return {}
+    out: dict = {}
+    for rel in files:
+        if not is_fixture_path(rel):
+            continue
+        module = _module_of(rel)
+        if not _module_is_fixture_classed(module):
+            # the fixture segment sits BELOW the module boundary: this
+            # module's dependents do not describe the fixture tree
+            continue
+        try:
+            n = int(deps.get(module, 0) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n >= FIXTURE_EXEMPT_MIN_DEPENDENTS:
+            out[rel] = (f"product-dir exemption: {rel} is in module "
+                        f"{module}, which has {n} dependent(s) — real "
+                        "product code, not a test fixture")
+    return out
+
+
 # ------------------------------------------------------------------- catalog
 
 _CATALOG_CACHE: dict = {}
@@ -140,12 +230,15 @@ class Ctx:
     workspace        absolute-ish root used to read file contents
     requirement_text lowercased requirement/acceptance-criteria blob
     graph            {"hub_dependents": int, "boundary_contracts": [str],
-                      "modules": [str]}
+                      "modules": [str], "module_dependents": {mod: int}}
     stage            loop stage (carried for the router; unused by detectors)
+    fixture_exempt   {path: reason} — fixture-classed paths that keep FULL
+                     weight because their graph module has dependents (B5,
+                     R-0008); computed HERE, at ctx construction
     """
 
     __slots__ = ("workspace", "files", "requirement_text", "graph", "stage",
-                 "_contents")
+                 "fixture_exempt", "_contents")
 
     def __init__(self, workspace, files, requirement_text, graph, stage):
         self.workspace = workspace
@@ -156,7 +249,20 @@ class Ctx:
         self.graph = graph or {"hub_dependents": 0,
                                "boundary_contracts": [], "modules": []}
         self.stage = stage
+        self.fixture_exempt = _fixture_exemptions(self.files, self.graph)
         self._contents = None
+
+    def is_discounted(self, path: str) -> bool:
+        """True when the D-0002 fixture discount APPLIES to `path`: it is
+        fixture-class AND not graph-exempt (B5). A strict subset of
+        is_fixture_path() — the exemption can only restore weight."""
+        p = str(path).replace(os.sep, "/")
+        return is_fixture_path(p) and p not in self.fixture_exempt
+
+    def exemption_note(self, path: str) -> str:
+        """' (reason)' when `path` is exempt from the discount, else ''."""
+        reason = self.fixture_exempt.get(str(path).replace(os.sep, "/"))
+        return f" ({reason})" if reason else ""
 
     def read(self, relpath: str) -> str | None:
         """Bounded read of one changed file: at most MAX_FILE_BYTES bytes,
@@ -212,6 +318,7 @@ def _graph_payload(workspace, files) -> dict:
         touched = sorted({depgraph.module_of(str(f).replace(os.sep, "/"))
                           for f in files or []})
         rev: dict[str, set] = {}
+        dep_rev: dict[str, set] = {}
         adjacent_contracts: set = set()
         tset = set(touched)
         for e in g.get("edges") or []:
@@ -219,15 +326,40 @@ def _graph_payload(workspace, files) -> dict:
             if not frm or not to:
                 continue
             rev.setdefault(to, set()).add(frm)
+            if depgraph.is_dependency_edge(e):
+                dep_rev.setdefault(to, set()).add(frm)
             for a, b in ((frm, to), (to, frm)):
                 if a in tset and str(b).startswith("contract:"):
                     adjacent_contracts.add(b)
+        # hub_dependents keeps counting EVERY incoming edge — it is the
+        # pre-existing "is this a hub?" signal and narrowing it would drop
+        # graph weight off lenses that earn it today.
         hub = max((len(rev.get(m, ())) for m in touched), default=0)
+        # module_dependents feeds the B5 fixture-path exemption, which asks a
+        # much stricter question — "does real code DEPEND on this?" — so it
+        # counts only depgraph.DEPENDENCY_EDGE_KINDS. Structural kinds
+        # (defined_in, planned/realizes, provides, validates, changes) are
+        # excluded: a fixture's own docker-compose.yml must not be able to
+        # vouch for the fixture tree it lives in. Mirrored exactly in
+        # decompose._graph_payload so cached maps and live routing agree.
+        #
+        # GUARD 3 (EM, v3 phase 3): the dependent must not ITSELF be
+        # fixture-classed. Guards 1 and 2 ask what KIND of edge and at what
+        # GRANULARITY; neither asked WHO is vouching — so one test tree
+        # importing another (testdata/core → fixtures/core) exempted the
+        # second and a fixture-only diff kept full weight. That is exactly
+        # the D-0002 routing inflation the discount exists to prevent. A
+        # fixture cannot be its own witness.
         return {"hub_dependents": hub,
                 "boundary_contracts": sorted(adjacent_contracts),
-                "modules": touched}
+                "modules": touched,
+                "module_dependents": {
+                    m: len([d for d in (dep_rev.get(m) or ()) if d != m
+                            and not _module_is_fixture_classed(d)])
+                    for m in touched}}
     except Exception:
-        return {"hub_dependents": 0, "boundary_contracts": [], "modules": []}
+        return {"hub_dependents": 0, "boundary_contracts": [], "modules": [],
+                "module_dependents": {}}
 
 
 # --------------------------------------------------------- signal-spec table
@@ -554,11 +686,12 @@ def _compiled(spec: dict):
     return spec[key]
 
 
-def _density_hits(ctx: Ctx, code_ext) -> tuple[int, int, int]:
-    """(count, files, real_count) of user-facing-looking string literals
-    (>= 3 words) across changed code files; real_count excludes
-    fixture-class files (D-0002 discount support tracking)."""
-    total, nfiles, real = 0, 0, 0
+def _density_hits(ctx: Ctx, code_ext) -> tuple[int, int, int, str]:
+    """(count, files, real_count, real_rel) of user-facing-looking string
+    literals (>= 3 words) across changed code files; real_count counts only
+    files the D-0002 discount does NOT apply to (fixture-class and not
+    B5-exempt), and real_rel names the first such file."""
+    total, nfiles, real, real_rel = 0, 0, 0, ""
     for rel, text in ctx.contents():
         if not _is_code(rel, code_ext):
             continue
@@ -566,9 +699,10 @@ def _density_hits(ctx: Ctx, code_ext) -> tuple[int, int, int]:
         if n:
             total += n
             nfiles += 1
-            if not is_fixture_path(rel):
+            if not ctx.is_discounted(rel):
                 real += n
-    return total, nfiles, real
+                real_rel = real_rel or rel
+    return total, nfiles, real, real_rel
 
 
 def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
@@ -580,11 +714,15 @@ def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
     #    the lens's surface is "any code change")
     globs = sorted(set((catalog_lens.get("globs") or [])
                        + list(spec.get("paths", ()))))
-    real_files = [f for f in ctx.files if not is_fixture_path(f)]
+    # `is_discounted` is `is_fixture_path` minus the B5 product-dir
+    # exemption, so full-weight support is a SUPERSET of what it was.
+    real_files = [f for f in ctx.files if not ctx.is_discounted(f)]
     hit = _glob_hit(ctx.files, globs) if globs else None
     if hit:
-        if _glob_hit(real_files, globs):
-            evidence.append(f"path: {hit[0]} matches {hit[1]}")
+        real_hit = _glob_hit(real_files, globs)
+        if real_hit:
+            evidence.append(f"path: {hit[0]} matches {hit[1]}"
+                            + ctx.exemption_note(real_hit[0]))
             score += W_PATH
         else:   # ONLY fixture-class support -> re-weight, never suppress
             evidence.append(f"path: {hit[0]} matches {hit[1]} "
@@ -597,8 +735,9 @@ def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
             label = (f"path: code change ({code_files[0]}"
                      + (f" +{len(code_files) - 1} more" if
                         len(code_files) > 1 else "") + ")")
-            if any(not is_fixture_path(f) for f in code_files):
-                evidence.append(label)
+            real_code = [f for f in code_files if not ctx.is_discounted(f)]
+            if real_code:
+                evidence.append(label + ctx.exemption_note(real_code[0]))
                 score += W_PATH
             else:
                 evidence.append(f"{label} {_DISCOUNT_NOTE}")
@@ -607,17 +746,18 @@ def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
     # -- content signals (bounded corpus, first hit per rule)
     for label, rx in _compiled(spec):
         found = None
-        real = False
+        real_rel = None
         for rel, text in ctx.contents():
             if rx.search(text):
                 if found is None:
                     found = rel
-                if not is_fixture_path(rel):
-                    real = True
+                if not ctx.is_discounted(rel):
+                    real_rel = rel
                     break
         if found:
-            if real:
-                evidence.append(f"content: {label} in {found}")
+            if real_rel is not None:
+                evidence.append(f"content: {label} in {found}"
+                                + ctx.exemption_note(real_rel))
                 score += W_CONTENT
             else:   # ONLY fixture-class support
                 evidence.append(f"content: {label} in {found} "
@@ -628,12 +768,13 @@ def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
     dens = spec.get("density")
     if dens:
         label, threshold = dens
-        count, nfiles, real_count = _density_hits(
+        count, nfiles, real_count, real_rel = _density_hits(
             ctx, cat.get("code_extensions") or [])
         if count >= threshold:
             if real_count:
                 evidence.append(f"content: {label}: {count} across "
-                                f"{nfiles} file(s)")
+                                f"{nfiles} file(s)"
+                                + ctx.exemption_note(real_rel))
                 score += W_DENSITY
             else:   # ONLY fixture-class support
                 evidence.append(f"content: {label}: {count} across "
@@ -698,6 +839,32 @@ def _build_registry() -> dict:
 
 
 DETECTORS: dict = _build_registry()
+
+
+def requirement_keyword_lenses(ctx: Ctx, lens_ids=None) -> dict:
+    """The requirement-keyword detector, re-runnable on its own.
+
+    {lens_id: [matched keywords]} for every lens whose spec keywords appear
+    in ctx.requirement_text — the SAME `k in ctx.requirement_text` rule
+    `_spec_detect` scores with W_KEYWORD, isolated so a caller holding only
+    a ctx can ask "which lenses does this requirement's own text earn?".
+
+    B4 (R-0008): a component's cached lens_map is derived WITHOUT
+    requirement_text, so lens.py's component assembly re-runs this LIVE on
+    the ctx it already builds and UNIONS the result into the proposed set —
+    a cached map may add candidates, never subtract them. Empty
+    requirement text -> {} (no widening, byte-unchanged routing)."""
+    if not ctx.requirement_text:
+        return {}
+    ids = sorted(SPECS) if lens_ids is None else \
+        sorted(set(lens_ids) & set(SPECS))
+    out: dict = {}
+    for lid in ids:
+        kws = sorted(k for k in SPECS[lid].get("keywords", ())
+                     if k in ctx.requirement_text)
+        if kws:
+            out[lid] = kws
+    return out
 
 
 # ----------------------------------------------------------------- verdicts

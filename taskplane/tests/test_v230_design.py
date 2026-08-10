@@ -34,6 +34,9 @@ class _DesignEnv(unittest.TestCase):
         self._commit("init")
         self.old_home = os.environ.get("TASKPLANE_HOME")
         os.environ["TASKPLANE_HOME"] = self.home
+        # t9 (R-0011 E2): save-and-restore, not a bare pop — an exported
+        # TASKPLANE_STORE would otherwise be deleted for every LATER module.
+        self.old_store = os.environ.get("TASKPLANE_STORE")
         os.environ.pop("TASKPLANE_STORE", None)
         self.req = reqs.record_requirement(
             self.ws, "add governed design",
@@ -48,6 +51,10 @@ class _DesignEnv(unittest.TestCase):
             os.environ.pop("TASKPLANE_HOME", None)
         else:
             os.environ["TASKPLANE_HOME"] = self.old_home
+        if self.old_store is None:
+            os.environ.pop("TASKPLANE_STORE", None)
+        else:
+            os.environ["TASKPLANE_STORE"] = self.old_store
 
     def _commit(self, msg):
         subprocess.run(["git", "add", "-A"], cwd=self.ws, check=True)

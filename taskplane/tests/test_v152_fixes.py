@@ -20,6 +20,23 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 TPPY = os.path.join(ROOT, "taskplane", "tp.py")
 
 
+def _pop_store(case):
+    """Clear the TASKPLANE_STORE override for ONE test and put it back.
+
+    t9 (R-0011 E2): these used to be bare `os.environ.pop(...)` calls. On a
+    machine (or CI leg) that exports TASKPLANE_STORE, the first such test
+    deleted it for every LATER test module in the process — an invisible,
+    order-dependent behavior change. conftest.py's _env_mutation_guard now
+    fails the module on exactly that.
+    """
+    prev = os.environ.get("TASKPLANE_STORE")
+    case.addCleanup(
+        lambda: (os.environ.__setitem__("TASKPLANE_STORE", prev)
+                 if prev is not None
+                 else os.environ.pop("TASKPLANE_STORE", None)))
+    os.environ.pop("TASKPLANE_STORE", None)
+
+
 def _repo(tmp):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "src"))
@@ -102,7 +119,7 @@ class TestKbConcurrency(unittest.TestCase):
     def test_parallel_record_no_orphans_no_dupes(self):
         tmp = tempfile.mkdtemp()
         ws = _repo(tmp)
-        os.environ.pop("TASKPLANE_STORE", None)
+        _pop_store(self)
         ctx = multiprocessing.get_context("fork")
         procs = [ctx.Process(target=_rec, args=(ws,)) for _ in range(6)]
         for p in procs:
@@ -124,7 +141,7 @@ class TestCliInProcess(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.ws = _repo(self.tmp)
-        os.environ.pop("TASKPLANE_STORE", None)
+        _pop_store(self)
 
     def test_main_argv_runs_in_process(self):
         rc = cli.main(["decision", "new", "hi", "--workspace", self.ws])
@@ -144,7 +161,7 @@ class TestGitignoreAnchor(unittest.TestCase):
     def test_team_store_is_committable(self):
         tmp = tempfile.mkdtemp()
         ws = _repo(tmp)
-        os.environ.pop("TASKPLANE_STORE", None)
+        _pop_store(self)
         cli.main(["init", "--plan", "team", "--workspace", ws])
         # the anchored pattern must NOT ignore the shared store
         r = subprocess.run(["git", "check-ignore",
@@ -159,7 +176,7 @@ class TestShareGuards(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.ws = _repo(self.tmp)
-        os.environ.pop("TASKPLANE_STORE", None)
+        _pop_store(self)
 
     def _run(self, *args):
         return subprocess.run([sys.executable, TPPY, *args,

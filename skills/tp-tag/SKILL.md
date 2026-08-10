@@ -27,8 +27,13 @@ mode the KB travels with the branch/PR, and the next Tag session picks the
 loop up by cloning the branch.
 
 **Commit `.taskplane-kb/` with your work.** It is the session's memory.
-`.taskplane/` (runtime trace) stays local — but paste key trace lines into
-the thread at each gate so the audit survives the sandbox.
+The current layout (v2.5): `knowledge/` (decisions, requirements, debt,
+flows — and, in repo mode only, `knowledge/state/loop.json`: Tag is the ONE
+mode where loop state is committed, which is exactly what lets the next
+session resume), `artifacts/` (the per-gate decision snapshots — dashboard,
+plan, findings, HEADLINES), and `meta.json` (which project the store
+belongs to). `.taskplane/` (runtime trace) stays local — but paste key
+trace lines into the thread at each gate so the audit survives the sandbox.
 
 ## The thread protocol
 
@@ -72,8 +77,14 @@ evidence-artifact fingerprint. The Tag driver acting as orchestrator then runs t
 Never let the same role claim that its own submission passed the gate; the
 orchestrator reads the evidence and invokes the transition.
 
+The invariants themselves are unchanged and canonical in
+`../taskplane/references/harness-rules.md`; this section is their Tag
+translation — visibility replaces interception, never the rules.
+
 ## Scope discipline without hooks
 
+Unchanged in v2.5: Tag still has no tool interception, so scope stays
+cooperative and must be stated honestly.
 The contract's scope still governs even though nothing intercepts writes:
 before each execute step, restate the task's scope paths in the thread;
 touch nothing outside them; and at evaluate, show the diff file list against

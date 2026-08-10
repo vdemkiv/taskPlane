@@ -50,6 +50,7 @@ import posixpath
 import re
 import shlex
 import subprocess
+import sys
 import time as _time
 import contextlib as _contextlib
 
@@ -334,6 +335,28 @@ def norm(path: str, workspace: str | None = None) -> str:
 
 def match_any(path: str, globs) -> bool:
     return any(fnmatch.fnmatch(path, g) for g in (globs or []))
+
+
+def scope_stems(globs) -> set:
+    """Each glob's fixed prefix, as path SEGMENTS. Empty stems are dropped:
+    a leading `**/…` has no fixed prefix and must not be read as "matches
+    everything", or it would conflict with every other task's scope."""
+    out = set()
+    for g in (globs or []):
+        if not g:
+            continue
+        stem = g.split("*", 1)[0].rstrip("/")
+        if stem:
+            out.add(stem)
+    return out
+
+
+def seg_prefix(x: str, y: str) -> bool:
+    """True when path `x` is `y` or a descendant of `y` — on SEGMENT
+    boundaries, so `src/a` is inside `src` but `src/ab` is NOT inside
+    `src/a`. (Kernel-side since v3 Phase 3; loop's wave scope-overlap check
+    is the caller.)"""
+    return x == y or x.startswith(y + "/")
 
 
 # Out-of-scope entries that can NEVER be overridden, even by a literal
@@ -1009,9 +1032,155 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
 # --------------------------------------------------------------- DoD
 
-def _run(cmd, cwd, shell=False, timeout=600):
+def _run(cmd, cwd, shell=False, timeout=600, env=None):
+    # env=None inherits the parent environment (subprocess default) — every
+    # pre-existing caller is unchanged; dod_check passes a sanitized copy
+    # (A3, R-0007).
     return subprocess.run(cmd, cwd=cwd, shell=shell, capture_output=True,
-                          text=True, timeout=timeout)
+                          text=True, timeout=timeout, env=env)
+
+
+# ------------------------------------------------- suite result cache (P1)
+#
+# THE PERFORMANCE REGRESSION THIS CLOSES (measured, month-1 → phase 3): the
+# DoD test command was executed once per *caller* instead of once per *tree
+# state*. Phase 3 ran the full suite 161 times for ten tasks — about six
+# executions per agent run — because every executor, evaluator, fixer and
+# gate re-ran byte-identical content to produce evidence another agent had
+# produced minutes earlier.
+#
+# WHY THIS IS NOT A WEAKENING. A hit requires the SAME command to have
+# already run to completion over BYTE-IDENTICAL governed content under the
+# SAME engine and the SAME governing env. Nothing is assumed, skipped, or
+# taken on an agent's word — and a hit is a recorded, auditable fact in the
+# trace, where "I ran the tests" is narration no gate can verify. Failures
+# cache exactly like passes: a broken tree stays broken until its content
+# changes, and changed content is a different key.
+#
+# FAIL-CLOSED IN EVERY DIRECTION. Any doubt about the tree's identity (no
+# git, a git error, an untracked payload too large to hash honestly) returns
+# None and the command RUNS. Cache read/write errors degrade to a real run.
+# No path reports an unverified tree as clean.
+
+SUITE_CACHE_MAX_UNTRACKED_BYTES = 32 * 1024 * 1024
+
+# Env that can legitimately change what the suite does — keyed into the
+# identity so a run under a different store or host profile never satisfies
+# another's gate. (TASKPLANE_TASK is stripped by dod_check's A3 sanitizer
+# before it reaches here.)
+SUITE_CACHE_ENV_PREFIXES = ("TASKPLANE_", "CODEX_", "PYTEST_", "PYTHON")
+
+
+def tree_fingerprint(workspace: str) -> "str | None":
+    """Content identity of a workspace tree: HEAD, the tracked diff against
+    it, and every untracked non-ignored file's path and content.
+
+    Two workspaces sharing a fingerprint hold byte-identical governed
+    content, so a command's exit status on one is evidence for the other —
+    which is what lets a parallel wave's worktrees share one suite result
+    with the primary checkout instead of each recomputing it.
+
+    Returns None whenever the tree cannot be identified with certainty;
+    callers MUST treat None as uncacheable and run for real."""
+    try:
+        h = hashlib.sha256()
+        head = _run(["git", "rev-parse", "HEAD"], cwd=workspace)
+        if head.returncode != 0:
+            return None
+        h.update(b"head\0" + head.stdout.strip().encode())
+
+        diff = _run(["git", "diff", "HEAD"], cwd=workspace)
+        if diff.returncode != 0:
+            return None
+        h.update(b"\0diff\0" + diff.stdout.encode("utf-8", "replace"))
+
+        others = _run(["git", "ls-files", "--others", "--exclude-standard"],
+                      cwd=workspace)
+        if others.returncode != 0:
+            return None
+        budget = SUITE_CACHE_MAX_UNTRACKED_BYTES
+        for rel in sorted(p for p in others.stdout.splitlines() if p.strip()):
+            full = os.path.join(workspace, rel)
+            try:
+                if os.path.islink(full) or not os.path.isfile(full):
+                    continue
+                budget -= os.path.getsize(full)
+                if budget < 0:
+                    return None    # too much to identify honestly → run it
+                with open(full, "rb") as f:
+                    body = hashlib.sha256(f.read()).hexdigest()
+            except OSError:
+                return None
+            h.update(b"\0new\0" + rel.encode() + b"\0" + body.encode())
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _suite_cache_key(workspace: str, command, env: dict) -> "str | None":
+    tree = tree_fingerprint(workspace)
+    if not tree:
+        return None
+    h = hashlib.sha256()
+    h.update(b"tree\0" + tree.encode())
+    h.update(b"\0cmd\0" + str(command).encode())
+    try:
+        h.update(b"\0engine\0" + engine_fingerprint().encode())
+    except Exception:
+        return None            # can't bind evidence to an engine → run it
+    for k in sorted(env or {}):
+        if k.startswith(SUITE_CACHE_ENV_PREFIXES):
+            h.update(b"\0env\0" + k.encode() + b"=" + str(env[k]).encode())
+    return h.hexdigest()
+
+
+def _suite_cache_path(key: str) -> str:
+    return os.path.join(store_home(), "suite-cache", key + ".json")
+
+
+def suite_cache_enabled() -> bool:
+    """Off with TASKPLANE_NO_SUITE_CACHE=1 — the escape hatch for a host
+    that suspects environmental nondeterminism."""
+    return os.environ.get("TASKPLANE_NO_SUITE_CACHE", "") not in ("1", "true")
+
+
+def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
+    """A prior result for this exact (tree, command, engine, env), or None.
+    Never raises: any doubt returns None and the caller runs."""
+    if not suite_cache_enabled():
+        return None
+    key = _suite_cache_key(workspace, command, env)
+    if not key:
+        return None
+    try:
+        with open(_suite_cache_path(key)) as f:
+            rec = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(rec, dict) or "returncode" not in rec:
+        return None
+    if rec.get("command") != str(command) or rec.get("key") != key:
+        return None            # corrupt or mismatched entry → run it
+    return rec
+
+
+def suite_cache_store(workspace: str, command, env: dict, *,
+                      returncode: int, tail: str, duration_s: float) -> None:
+    """Record a completed run so the next caller over identical content can
+    cite it. Best-effort: a write failure costs a re-run, never truth."""
+    if not suite_cache_enabled():
+        return
+    key = _suite_cache_key(workspace, command, env)
+    if not key:
+        return
+    try:
+        atomic_write_json(_suite_cache_path(key), {
+            "key": key, "command": str(command),
+            "returncode": int(returncode), "tail": tail,
+            "duration_s": round(float(duration_s), 3), "ts": _time.time(),
+            "produced_in": _workspace_identity(workspace)})
+    except Exception:
+        return
 
 
 # Paths the runtime/loop writes for itself. The DoD scope-diff must not
@@ -1175,9 +1344,16 @@ def dor_check(contract: dict, workspace: str,
 
 
 def dod_check(contract: dict, workspace: str,
-              snapshot_ref: str | None) -> list:
+              snapshot_ref: str | None,
+              ignore_prefixes: tuple = ()) -> list:
     """Return a list of DoD errors ([] = pass). Fails closed if a scope
-    diff is required but no snapshot exists."""
+    diff is required but no snapshot exists.
+
+    ignore_prefixes (A2, R-0007): path prefixes EXCLUDED from the scope
+    diff. Default () — non-loop callers are unchanged. The loop's per-task
+    DoD passes lens.LOOP_OWNED so orchestrator-synced loop artifacts
+    (design/, plan/, specs/, ...) don't trip every task gate — parity with
+    the sign-off aggregate's exclusion (loop._signoff_dod)."""
     errors: list = []
     coding = contract.get("coding") or {}
     dod = coding.get("dod") or {}
@@ -1188,6 +1364,12 @@ def dod_check(contract: dict, workspace: str,
                           "(commit the workspace before governing)")
         else:
             for f in changed_files(workspace, snapshot_ref):
+                # NOTE (pre-existing, not changed here): a slash-less
+                # prefix like '.taskplane' also matches SIBLING dirs
+                # ('.taskplane-kb/…'); lens.LOOP_OWNED's shape predates
+                # this diff — the aggregate filter has always matched so.
+                if ignore_prefixes and f.startswith(tuple(ignore_prefixes)):
+                    continue          # A2: loop-owned artifacts, see above
                 p = f  # already workspace-relative from git
                 v = scope_violation(p, coding)
                 if v:
@@ -1205,11 +1387,38 @@ def dod_check(contract: dict, workspace: str,
 
     tc = dod.get("test_command")
     if tc:
-        proc = _run(tc, cwd=workspace, shell=True)
-        if proc.returncode != 0:
-            tail = (proc.stdout + proc.stderr).strip().splitlines()[-5:]
-            errors.append(f"tests_pass: '{tc}' exited {proc.returncode}: "
-                          + " | ".join(tail))
+        # A3 (R-0007): strip the wave slot from the CHILD env only — a gate
+        # run under TASKPLANE_TASK=<slot> must not leak the slot into the
+        # DoD test subprocess (slot-sensitive tests would resolve the
+        # GATE's contract, not their own). The parent env is untouched.
+        env = {k: v for k, v in os.environ.items() if k != "TASKPLANE_TASK"}
+        # P1: cite a completed run over byte-identical content instead of
+        # recomputing it. Same command, same bytes, same engine, same env —
+        # or it runs. Every hit is traced, so the evidence stays auditable.
+        hit = suite_cache_lookup(workspace, tc, env)
+        if hit is not None:
+            trace(workspace, "suite_cache_hit", command=str(tc),
+                  key=hit.get("key"), returncode=hit.get("returncode"),
+                  seconds_saved=hit.get("duration_s"),
+                  produced_in=hit.get("produced_in"))
+            if hit.get("returncode") != 0:
+                errors.append(f"tests_pass: '{tc}' exited "
+                              f"{hit.get('returncode')}: {hit.get('tail')} "
+                              "(cited from an identical-content run — change "
+                              "the tree or set TASKPLANE_NO_SUITE_CACHE=1 to "
+                              "re-execute)")
+        else:
+            _t0 = _time.time()
+            proc = _run(tc, cwd=workspace, shell=True, env=env)
+            _elapsed = _time.time() - _t0
+            tail = " | ".join((proc.stdout + proc.stderr).strip().splitlines()[-5:])
+            suite_cache_store(workspace, tc, env, returncode=proc.returncode,
+                              tail=tail, duration_s=_elapsed)
+            trace(workspace, "suite_run", command=str(tc),
+                  returncode=proc.returncode, seconds=round(_elapsed, 2))
+            if proc.returncode != 0:
+                errors.append(f"tests_pass: '{tc}' exited {proc.returncode}: "
+                              + tail)
 
     # Graph-scoped regression gate (v2.3.1) — opt-in via dod.regression_gate.
     # ADDITIVE: it only adds blockers, never removes an existing DoD check.
@@ -1235,6 +1444,323 @@ def dod_check(contract: dict, workspace: str,
     return errors
 
 
+# ----------------------------------------------------------- plan ordering
+
+# B2 (R-0008): brief-SHAPE surfaces vs golden-brief fixtures. A task that
+# changes how stage/review briefs are emitted (lens routing, signal
+# detectors, the tp.py dispatch/emission layer) must run BEFORE any task
+# that regenerates the golden brief fixtures — otherwise the regenerated
+# goldens pin the OLD shape (the Phase 2 t6∥t7 sequencing gap, retro
+# lesson 1). The plan gate enforces this mechanically; planner memory is
+# not a control.
+BRIEF_SHAPE_SURFACES = ("taskplane/lens.py", "taskplane/lens_signals.py",
+                        "taskplane/tp.py")
+GOLDEN_PREFIX = "taskplane/tests/fixtures/briefs/"
+
+
+def _scope_touches(scope, target: str) -> bool:
+    """Glob/prefix intersection: does any scope glob reach `target` (a
+    literal file, or a directory prefix ending in '/')? Stem matching (the
+    text before the first wildcard), in BOTH directions, so `taskplane/**`
+    covers lens.py and a literal fixture path counts as touching the
+    fixture dir. A catch-all glob ('**') touches everything — the strict
+    direction."""
+    for g in scope or []:
+        stem = str(g).replace("\\", "/").split("*", 1)[0]
+        if target.startswith(stem) or stem.startswith(target):
+            return True
+    return False
+
+
+def plan_ordering_errors(tasks) -> list:
+    """B2: every task whose scope touches a BRIEF_SHAPE_SURFACES file must
+    be a TRANSITIVE dependency ancestor of every task whose scope touches
+    GOLDEN_PREFIX. Returns refusal strings naming both offending task
+    ids ([] = ordered). Fail-closed: any unordered pair refuses the plan
+    approval — an under-declared dep is a plan bug, not a warning."""
+    tasks = [t for t in tasks or [] if isinstance(t, dict)]
+    shape = [t for t in tasks
+             if any(_scope_touches(t.get("scope"), s)
+                    for s in BRIEF_SHAPE_SURFACES)]
+    golden = [t for t in tasks
+              if _scope_touches(t.get("scope"), GOLDEN_PREFIX)]
+
+    # DISJOINTNESS (EM, v3 phase 3). _scope_touches matches stems in BOTH
+    # directions, which is what lets a broad scope be caught at all — but it
+    # also made a CATCH-ALL scope ('**', 'taskplane/**') land in both sets at
+    # once. Two such tasks then demanded that each depend on the other: an
+    # unsatisfiable cycle that dead-ended plan approval, with no --force
+    # path and a remedy line naming the one fix that cannot work.
+    #
+    # A task in BOTH sets carries both halves itself and is self-ordered by
+    # its own execution — exactly what the bid == gid branch below already
+    # recognised for the single-task case. Generalise it: a both-task
+    # imposes no cross-task ordering, and none is imposed on it. The Phase 2
+    # gap this gate exists for (t6 shape ∥ t7 golden-regen, two DISJOINT
+    # scopes) is still caught, because those tasks are each in one set only.
+    both = {str(t.get("id")) for t in shape} & {str(t.get("id"))
+                                                for t in golden}
+    shape = [t for t in shape if str(t.get("id")) not in both]
+    golden = [t for t in golden if str(t.get("id")) not in both]
+    if not shape or not golden:
+        return []
+    deps = {str(t.get("id")): [str(d) for d in t.get("deps") or []]
+            for t in tasks}
+
+    def ancestors(tid: str, seen: set) -> set:
+        for d in deps.get(tid, []):
+            if d not in seen:
+                seen.add(d)
+                ancestors(d, seen)
+        return seen
+
+    errors = []
+    for g in golden:
+        gid = str(g.get("id"))
+        anc = ancestors(gid, set())
+        for b in shape:
+            bid = str(b.get("id"))
+            if bid == gid or bid in anc:
+                continue     # ordered (or the same task carries both)
+            errors.append(
+                f"plan ordering: task {gid} touches {GOLDEN_PREFIX}** "
+                f"(golden brief regen) but does not depend — transitively — "
+                f"on brief-shape task {bid}; order brief-shape changes "
+                "before golden regeneration. Remedies, in preference order: "
+                f"add {bid} to {gid}'s deps; or narrow the scopes so only "
+                "the task that really changes brief shape reaches "
+                + ", ".join(BRIEF_SHAPE_SURFACES) +
+                f"; or merge both halves into one task. There is "
+                "deliberately no --force past this: regenerating goldens "
+                "against the OLD brief shape pins the bug into the fixtures, "
+                "and the plan is still free to edit at this gate")
+    return errors
+
+
+def plan_task_id_errors(tasks) -> list:
+    """E5 remedy (Phase 3 EM review): every task id BECOMES a per-task
+    contract slot (TASKPLANE_TASK) and is interpolated into the composed
+    workflow dispatch line, so an id outside the enforced slot charset
+    bricks the workflow rail at execute/evaluate/fix — AFTER the human
+    plan-approval gate, where the only remedy is renaming ids in
+    plan/tasks.json and re-planning + re-approving.
+
+    Catch it at the plan gate instead, where editing plan/tasks.json is
+    free and pre-approval. Same regex as `task_slot`'s (_TASK_SLOT_RE):
+    ONE enforced charset, never a second that could drift from it.
+    Returns refusal strings naming every offending id ([] = usable)."""
+    errors = []
+    for t in tasks or []:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if not isinstance(tid, str) or not _TASK_SLOT_RE.match(tid):
+            errors.append(
+                f"plan task id {tid!r} is not a usable contract slot — task "
+                "ids become TASKPLANE_TASK and are embedded in the dispatch "
+                "brief, so they must match " + _TASK_SLOT_RE.pattern
+                + "; rename it in plan/tasks.json before approval")
+    return errors
+
+
+def plan_ordering_refusal(ws: str, tasks, where: str, by=None):
+    """B2 (R-0008): one refusal for BOTH plan transitions — the mechanical
+    plan GATE (a loop initialized without the 'plan' checkpoint goes
+    plan→execute there and would otherwise bypass the rule entirely) and
+    plan_approval approve(). Identical refusal either way: both task ids
+    named in the error, traced loop_gate_blocked / loop_approve_blocked
+    with reason=ordering. Returns None when the plan is ordered.
+
+    Also carries the E5 task-id charset check (`plan_task_id_errors`):
+    these two transitions are exactly where an un-slottable id has to be
+    caught — before human approval makes the rename expensive — and
+    reason=task_id distinguishes it in the trace."""
+    ids = plan_task_id_errors(tasks)
+    ordering = plan_ordering_errors(tasks)
+    problems = ids + ordering
+    if not problems:
+        return None
+    reason = "task_id" if ids else "ordering"
+    if where == "gate":
+        trace(ws, "loop_gate_blocked", step="plan", reason=reason,
+              errors=problems)
+        step = "plan"
+    else:
+        trace(ws, "loop_approve_blocked", gate="plan", reason=reason,
+              errors=problems, by=by)
+        step = "plan_approval"
+    label = "plan gate BLOCKED" if ids else "plan ordering gate BLOCKED"
+    return {"error": label + " — " + "; ".join(problems),
+            "step": step, "ordering": ordering, "task_ids": ids}
+
+
+# ------------------------------------------------ engine fingerprint (A4)
+
+# The VALIDATOR SURFACE (R-0007 A4, decision 0018): every module whose BYTES
+# can change what the evaluate gate's `_evaluation_errors` walk accepts or
+# rejects. Evidence produced under one build of these files and judged by
+# another is the recorded t7 topology (a wave worker's worktree engine ahead
+# of the primary validator) — there the verdict depends on WHICH process ran
+# rather than on the evidence. Why each module is on the list:
+#
+#   loop            — owns _evaluation_errors itself and the gate ordering
+#   taskplane_lite  — this kernel: the fingerprint/staleness/DoD attestations
+#                     the walk is built on
+#   audit           — the router-audit sweep the walk folds into its errors
+#   lens            — routes the expected lens set the walk demands verdicts
+#                     for (and the catalog behind it)
+#   lens_signals    — the detector corpus that routing is derived from
+#   design_contract — the design-currency errors the walk prepends
+#   depgraph        — graph DoD: impact, product_impact, requirement nodes
+#   decompose       — module realization behind the graph DoD's node set
+#   requirements    — the acceptance criteria the walk demands evidence for
+#
+# A FIXED list, not runtime introspection of sys.modules: the fingerprint has
+# to be identical in the producing and validating processes, so it must not
+# depend on which modules a given process happened to import first.
+VALIDATOR_SURFACE = ("audit", "decompose", "depgraph", "design_contract",
+                     "lens", "lens_signals", "loop", "requirements",
+                     "taskplane_lite")
+
+ENGINE_SKEW_REMEDY = (
+    "merge the task branch into the primary (git merge {branch}) so ONE "
+    "engine owns production and validation, then run `loop submit {outcome}` "
+    "again — the loop stays at evaluate, so re-evaluation is never stranded")
+
+
+def _surface_source(name: str) -> bytes | None:
+    """The bytes of a validator-surface module AS LOADED by this process
+    (``sys.modules[name].__file__``), falling back to this kernel's own
+    directory for a surface module the process has not imported. Only the
+    BYTES are hashed, never the path: one engine checked out twice (primary
+    and worktree) must fingerprint identically — it is the same build."""
+    module = sys.modules.get(name)
+    path = getattr(module, "__file__", None) if module is not None else None
+    if not path:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            name + ".py")
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def engine_fingerprint() -> str:
+    """Identity of the ENGINE BUILD producing or validating gate evidence:
+    sha256 over the sorted (module, sha256(module file bytes)) material of
+    VALIDATOR_SURFACE. A module this process cannot read is recorded as
+    'missing' rather than skipped, so a truncated engine is not silently
+    equal to a complete one."""
+    h = hashlib.sha256()
+    for name in sorted(VALIDATOR_SURFACE):
+        src = _surface_source(name)
+        digest = ("missing" if src is None
+                  else hashlib.sha256(src).hexdigest())
+        h.update(f"{name}:{digest}\n".encode("utf-8"))
+    return h.hexdigest()
+
+
+def workspace_engine_fingerprint(workspace: str) -> "str | None":
+    """A4 REPAIR (EM, v3 phase 3). `engine_fingerprint()` hashes the engine
+    THIS PROCESS loaded, so `submit` was attesting the SUBMITTING process —
+    not the engine that produced the evidence. On every documented path the
+    CLI resolves through one installed plugin root, so producer and
+    validator were always the same build and the refusal could never fire:
+    the guardrail shipped inert.
+
+    This asks the question A4 actually meant: what engine lives in the
+    workspace the evidence came out of? A wave worktree that edited engine
+    files carries its OWN validator surface under `<ws>/taskplane/`, and
+    that is precisely the Phase 2 skew (t7's evidence produced by the
+    worktree's engine, validated by the primary's) A4 was built for.
+
+    Returns None when the workspace carries no engine copy — the ordinary
+    case for a repo that merely USES taskplane. None is not a pass: callers
+    treat it as 'no independent producer to compare', and the running-engine
+    stamp still applies."""
+    root = os.path.join(workspace, "taskplane")
+    if not os.path.isdir(root):
+        return None
+    h = hashlib.sha256()
+    found = False
+    for name in sorted(VALIDATOR_SURFACE):
+        path = os.path.join(root, name + ".py")
+        try:
+            with open(path, "rb") as f:
+                digest = hashlib.sha256(f.read()).hexdigest()
+            found = True
+        except OSError:
+            digest = "missing"
+        h.update(f"{name}:{digest}\n".encode("utf-8"))
+    return h.hexdigest() if found else None
+
+
+def engine_skew_refusal(ws: str, submission, step: str = "evaluate",
+                        outcome: str = "pass"):
+    """A4 (R-0007, decision 0018): refuse a gate whose evidence was produced
+    by a DIFFERENT engine build than the one about to validate it. Returns
+    None when the two engines agree (every non-dogfood repo, and every
+    dogfood task that does not touch engine files) — the caller's flow is
+    then byte-unchanged.
+
+    ABSENT stamp = REFUSE, fail-closed: a submission that names no engine
+    cannot be shown to have been produced by this one. The in-flight case
+    (evidence recorded by a pre-A4 engine) is handled, not ignored — the
+    named remedy is `loop submit` again, and submit's idempotence key
+    includes engine_fingerprint, so the re-submission REPLACES the unstamped
+    record instead of being deduplicated against it.
+
+    A missing submission RECORD is deliberately not this guard's business:
+    the submission_required gate above it already refuses that, and legacy
+    loops predating that flag must stay resumable. This guard governs the
+    engine identity of a record that exists.
+
+    Never executes the producing engine: the comparison is over file bytes,
+    so the gate keeps validating with code the worker cannot author (L12).
+    """
+    if not submission:
+        return None
+    submitted = submission.get("engine_fingerprint")
+    validator = engine_fingerprint()
+    reason = "engine_skew"
+
+    # A4 REPAIR (EM, v3 phase 3). The running-engine comparison above is
+    # inert on every documented path — one installed plugin root serves
+    # producer and validator alike, so `submitted == validator` always. The
+    # comparison that BITES is between the engine in the workspace the
+    # evidence came out of and the engine in the workspace validating it:
+    # a wave worktree that edited engine files carries its own validator
+    # surface, which is exactly the Phase 2 skew A4 was built for.
+    produced_ws = submission.get("evidence_engine_fingerprint")
+    validator_ws = workspace_engine_fingerprint(ws)
+    workspace_skew = (produced_ws is not None and validator_ws is not None
+                      and produced_ws != validator_ws)
+    if submitted == validator and not workspace_skew:
+        return None
+    if workspace_skew:
+        # Report the pair that actually differs, or the message names two
+        # identical hashes and reads like a bug in the gate.
+        reason = "engine_skew_workspace"
+        submitted, validator = produced_ws, validator_ws
+        produced = f"by the evidence workspace's engine {str(submitted)[:12]}"
+    else:
+        produced = (f"under engine {str(submitted)[:12]}" if submitted else
+                    "by an engine that records no engine fingerprint (pre-A4)")
+    remedy = ENGINE_SKEW_REMEDY.format(
+        branch="tp/" + str(submission.get("task") or "<task>"),
+        outcome=submission.get("outcome") or outcome)
+    trace(ws, "loop_gate_blocked", step=step, reason=reason,
+          task=submission.get("task"), submitted=submitted,
+          validator=validator)
+    return {"error": f"{step} evidence was produced by a different engine "
+                     f"build — produced {produced}, but this gate validates "
+                     f"with {str(validator)[:12]}; " + remedy,
+            "step": step,
+            "engine_skew": {"submitted": submitted, "validator": validator,
+                            "reason": reason}}
+
+
 # --------------------------------------------------------------- contracts
 
 DEFAULT_DENY = ["git push", "rm -rf /", "pip publish", "npm publish"]
@@ -1243,7 +1769,17 @@ DEFAULT_OUT_OF_SCOPE = [".git/**", ".github/**", "deploy/**", "*.lock",
                         # fnmatch '**/'-globs need a directory prefix, so
                         # ROOT-level .env / secrets/ escaped the family
                         # entirely (EM v3 finding) — cover them explicitly.
-                        ".env", "secrets/**"]
+                        ".env", "secrets/**",
+                        # C2 (R-0009): decomposition floors/config are
+                        # default-denied to any unscoped or wildcard-scoped
+                        # contract. Deliberately NOT in _SACRED_OUT_OF_SCOPE —
+                        # a plan-minted contract with a LITERAL
+                        # 'components.yaml' scope entry still writes it (see
+                        # scope_violation), which is how governed
+                        # decomposition work ships this file; making it
+                        # sacred would re-create the scope-precedence
+                        # deadlock.
+                        "components.yaml"]
 
 
 DEFAULT_MAX_ACTIONS = 60          # build contracts: hook-enforced ceiling

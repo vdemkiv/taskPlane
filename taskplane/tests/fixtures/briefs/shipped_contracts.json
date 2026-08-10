@@ -1,0 +1,37 @@
+{
+ "note": [
+  "SHIPPED contract surface \u2014 frozen snapshot for schema-pin derivation.",
+  "Captured VERBATIM from the Phase 2 design contract:",
+  "    git show 6a3d581:design/contract.json  (the `contracts` table)",
+  "Contract-turnover rule: design/contract.json always describes the",
+  "NEXT design cycle and is REPLACED at every new design gate, so",
+  "tests that derive shipped schema field lists (receipts[{...}],",
+  "findings[{...}], the stage workflow names) must read THIS stable",
+  "snapshot, never the live design doc. Update this file ONLY when a",
+  "shipped contract deliberately changes shape (and say so in the",
+  "commit)."
+ ],
+ "captured_from": "6a3d581:design/contract.json",
+ "contracts": [
+  {
+   "id": "contract:component-map",
+   "relation": "provides",
+   "description": "NEW. The component layer stored under the top-level `components` key in graph.json, written only by `graph scan --decompose` (taskplane/decompose.py via depgraph.scan) and read by route v2 and the dashboard graph view. Shape: components[{id, module, files, symbols, fingerprint, deps, lens_map}] where id is `<module>::<cluster>` (never colliding with module ids or boundary prefixes), files/symbols are the span, fingerprint is sha256 over the sorted (file, hash, symbol-span) material, deps are component-level edges [{to, kind}], and lens_map is {lens_id: {verdict, score, evidence}} computed by lens_signals.route_verdicts over the component file set and recomputed ONLY on fingerprint change. Overridable via components.yaml. Absent key = layer absent = module-level routing byte-identical; the modules/edges sections are never touched by decomposition."
+  },
+  {
+   "id": "contract:lens-brief",
+   "relation": "changes",
+   "description": "ADDITIVE change to the dispatch-brief payload emitted by lens.dispatch_briefs (id, name, tier, agent, model_tier, task_slot, output, read-only contract spec, verbatim prompt, verdict, score, evidence): briefs and the routing_decision gain component_attribution \u2014 {lens_id: [component ids]} naming which component contributed each routed lens \u2014 and the same payload family now also feeds the evaluate stage (stage='build' routing) and the stage-wave workflows. No existing key changes meaning or shape; the Codex Task-dispatch stdout for an undecomposed workspace stays byte-identical (parity goldens)."
+  },
+  {
+   "id": "contract:wave-workflow",
+   "relation": "provides",
+   "description": "NEW. One-run-per-stage compilation for the governed stages between human gates. The tp.py stage emitter (behind workflow_available(), kill-switch 0/false/no/off always forces dispatch) wraps the UNMODIFIED stage dispatch payload as workflow{name, args} where name is execute-wave|evaluate-wave|fix-wave and args IS the same brief set the Task path prints; agent() outputs are schema-pinned per stage \u2014 execute/fix: receipts[{task, outcome, note}]; evaluate: the contract:findings-v2 shape \u2014 with retry-on-mismatch. Runs are journaled and resumable (completed agents return cached results); no generated run contains an approval/gate step; the Task-dispatch fallback is MANDATORY, byte-identical on stdout, and the only path on Codex."
+  },
+  {
+   "id": "contract:findings-v2",
+   "relation": "consumes",
+   "description": "Schema-pinned findings.json shape per lens/evaluate agent: lens id + findings[{severity, class, file, line, title, scenario, fix}] plus meta.lens_coverage carrying the full routing decision {lens: {verdict, score, evidence|negative_evidence}} \u2014 UNCHANGED in this phase. Consumers move but the shape does not: the audit machinery that reads it (router_audit, _router_audit_gate, decision extraction) relocates to taskplane/audit.py under the byte-frozen differential, the evaluate wave's workflow agents are schema-pinned to it, and findings meta additionally carries component_attribution (additive, via contract:lens-brief)."
+  }
+ ]
+}

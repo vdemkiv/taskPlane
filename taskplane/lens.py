@@ -380,7 +380,9 @@ def _assemble_components(workspace, files, cat, *, stage, requirement_text):
                 engage;
       proposed  {lens_id: [component ids]} — which touched component(s)
                 proposed each candidate lens (component_attribution
-                material, contract:lens-brief);
+                material, contract:lens-brief); a lens earned by the
+                requirement text's own keywords is attributed to the
+                pseudo-source 'requirement-keywords' (B4, R-0008);
       info      {"components": [...]} on success; {"miss": reason} when the
                 layer EXISTS but failed (caller traces
                 `component_layer_failed` and widens to the module route);
@@ -454,6 +456,18 @@ def _assemble_components(workspace, files, cat, *, stage, requirement_text):
                                     stage=stage)
         raw = lens_signals.verdicts([l["id"] for l in cat["lenses"]], ctx,
                                     floors=False)
+        # B4 (R-0008): cached lens_maps are derived WITHOUT requirement_text,
+        # so a lens the requirement's own keywords earn appears in no cached
+        # proposal and the narrowing below would delete it — a NARROWING the
+        # ladder forbids. Re-run the requirement-keyword detector LIVE on the
+        # ctx we already hold (it carries requirement_text) and UNION the
+        # result into `proposed` BEFORE narrowing: the cache may only ADD
+        # candidates, never subtract them. No requirement text -> empty union
+        # -> byte-unchanged routing. Floors and the budget still run AFTER,
+        # on this same live ctx.
+        for lid in sorted(lens_signals.requirement_keyword_lenses(ctx)):
+            if lid in raw and lid not in proposed:
+                proposed[lid] = ["requirement-keywords"]
         comp_note = ("component assembly: not proposed by any touched "
                      "component (" + ", ".join(sorted(touched)) + ")")
         for lid, v in raw.items():

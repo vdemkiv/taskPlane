@@ -116,5 +116,47 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertIn("allowed_tools", reason)
 
 
+# ---- C2 (R-0009): components.yaml joins DEFAULT_OUT_OF_SCOPE — a strict-
+# ---- or-stricter widening that must still honor the plan-minted literal
+# ---- scope override (scope_violation), exactly as every other deny-family
+# ---- member already does. Both directions live in this one file so
+# ---- neither can silently regress. ----
+
+class TestComponentsYamlDenyFamily(unittest.TestCase):
+    def test_unscoped_contract_is_blocked_from_writing_components_yaml(self):
+        # `tp new --scope components.yaml` style: no plan provenance, a
+        # literal scope entry naming the file — still denied, exactly like
+        # every other unminted literal against the default deny family.
+        contract = tp.build_contract("t", scope=["components.yaml"],
+                                     test_command="true")
+        self.assertNotIn("plan_minted", contract["coding"])
+        v = tp.scope_violation("components.yaml", contract["coding"])
+        self.assertIsNotNone(v)
+        self.assertIn("out_of_scope_paths", v)
+
+    def test_plan_minted_literal_scope_still_writes_components_yaml(self):
+        # the loop engine building a task contract from a human-approved
+        # plan carries plan_minted=True — the literal override must still
+        # apply here exactly as it does for every other deny-family member
+        # (this is what prevents the Phase-2 scope-precedence deadlock).
+        contract = tp.build_contract("EXECUTE: t9",
+                                     scope=["components.yaml"],
+                                     test_command="true", plan_minted=True)
+        self.assertTrue(contract["coding"]["plan_minted"])
+        v = tp.scope_violation("components.yaml", contract["coding"])
+        self.assertIsNone(v)
+
+    def test_deny_family_only_gained_a_member(self):
+        # widening-only: every previously-shipped entry is still present,
+        # byte-unchanged, plus the new one.
+        previous = [".git/**", ".github/**", "deploy/**", "*.lock",
+                    "**/.env", "**/secrets/**", ".env", "secrets/**"]
+        for entry in previous:
+            self.assertIn(entry, tp.DEFAULT_OUT_OF_SCOPE)
+        self.assertIn("components.yaml", tp.DEFAULT_OUT_OF_SCOPE)
+        self.assertNotIn("components.yaml", tp._SACRED_OUT_OF_SCOPE)
+        self.assertEqual(len(tp.DEFAULT_OUT_OF_SCOPE), len(previous) + 1)
+
+
 if __name__ == "__main__":
     unittest.main()

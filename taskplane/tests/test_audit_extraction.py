@@ -526,11 +526,26 @@ class TestExtractionStructure(unittest.TestCase):
 
     def test_loop_shrank_by_the_moved_region(self):
         """Pre-extraction loop.py was 3191 lines; the moved audit region was
-        ~255. Pin the shrink so the bodies cannot quietly creep back."""
+        ~255. Pin the shrink so the bodies cannot quietly creep back.
+
+        Raised twice, both on the record — the discipline the per-task cost
+        ratchet asks of everyone.
+
+        2990 → 2994 (P1–P3, R-0012): the evaluate brief now tells agents to
+        call `tp loop evidence` instead of hand-assembling sixty shell
+        calls' worth of facts. The bundle itself went OUT to evidence.py.
+
+        2994 → 3003 (R-0013): submit stamps the engine that produced the
+        evidence, not the process submitting it — A4 had shipped inert
+        without it. The blocking-claim bar went OUT to audit.py, which
+        already owns the em-gate evidence half.
+
+        What guards the extraction itself is the body/constant assertions
+        above, not this count."""
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 2990, f"loop.py is {n} lines — the audit extraction shrink "
+            n, 3003, f"loop.py is {n} lines — the audit extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):
@@ -547,6 +562,164 @@ class TestExtractionStructure(unittest.TestCase):
         for banned in ("work" + "flow", "review-wave"):
             self.assertNotIn(banned, src,
                              f"audit.py must stay {banned}-agnostic")
+
+
+# --------------------------------------------------------------------- seams
+
+def _seam_comment() -> str:
+    """The loop.py note that documents where to monkeypatch the audit path:
+    the comment block immediately preceding `from audit import (`."""
+    src = _src(loop)
+    head, _, _ = src.partition("from audit import (")
+    block = []
+    for line in reversed(head.splitlines()):
+        if not line.startswith("#"):
+            break
+        block.append(line)
+    return "\n".join(reversed(block))
+
+
+class TestPatchSeams(unittest.TestCase):
+    """t9 (R-0011 / E6) — the documented patch seams, pinned MECHANICALLY.
+
+    loop.py re-exports the audit names, which reads like "patch loop.<name>
+    and the audit machinery follows". It does not: the re-export binds the
+    objects into loop's namespace ONCE at import, while audit.py's functions
+    resolve each other module-locally. The real seams are
+
+        audit.<name>            for the machinery, and
+        loop.finding_blocks /   for the gate math audit.py late-binds back
+        normalize_finding_class   through its _loop() helper.
+
+    Each is proven below by PATCHING it and observing the behavior move (and,
+    for the machinery, by patching the alias and observing that it does NOT).
+    A comment-text assertion then requires loop.py to say exactly this, so a
+    stale comment is unreachable rather than merely discouraged.
+    """
+
+    # ---- machinery seam: audit.<name>
+
+    def test_patching_audit_audit_counter_changes_loop_audit_due(self):
+        """THE seam. audit_due asks audit.audit_counter for the completed
+        count; move that and audit_due's answer moves with it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = os.path.join(tmp, "ws")
+            os.makedirs(ws)
+            state = {"step": "em"}
+            # default cadence 5: 4 completed → the 5th is the audit
+            with mock.patch.object(audit, "audit_counter", lambda _ws: 4):
+                self.assertTrue(loop.audit_due(ws, state))
+            with mock.patch.object(audit, "audit_counter", lambda _ws: 0):
+                self.assertFalse(loop.audit_due(ws, state))
+
+    def test_patching_loop_audit_counter_alias_does_NOT_change_audit_due(self):
+        """The negative half — this is why the comment had to be rewritten.
+        loop.audit_counter is a CALLER alias; rebinding it leaves audit.py's
+        module-local lookup untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = os.path.join(tmp, "ws")
+            os.makedirs(ws)
+            state = {"step": "em"}
+            with mock.patch.object(audit, "audit_counter", lambda _ws: 0):
+                baseline = loop.audit_due(ws, state)
+                with mock.patch.object(loop, "audit_counter", lambda _ws: 4):
+                    self.assertEqual(
+                        loop.audit_due(ws, state), baseline,
+                        "patching the loop.<name> ALIAS moved audit_due — if "
+                        "this ever becomes true the loop.py seam comment "
+                        "must be rewritten to say so")
+
+    def test_patching_audit_audit_every_changes_the_cadence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = os.path.join(tmp, "ws")
+            os.makedirs(ws)
+            state = {"step": "em"}
+            with mock.patch.object(audit, "audit_counter", lambda _ws: 0), \
+                    mock.patch.object(audit, "audit_every", lambda: 1):
+                self.assertTrue(loop.audit_due(ws, state))
+
+    # ---- gate-math seam: loop.<name>, late-bound through audit._loop()
+
+    def test_patching_loop_finding_blocks_changes_gate_blocking(self):
+        """The loop-side seam. The same scenario blocks with the real rule
+        and stops blocking when loop.finding_blocks is patched to False —
+        proof the gate math is resolved on loop at CALL time."""
+        with tempfile.TemporaryDirectory() as tmp:
+            meta = {"routing_decision": DECISION}
+            rows = [{"lens": "i18n", "severity": "med",
+                     "class": "observation", "title": "hardcoded locale",
+                     "file": "src/a.py", "line": 3}]
+            ws, path = _gate_ws(tmp, meta, rows)
+            doc = tp.load_json(path)
+            errs = audit._router_audit_gate(ws, path, doc, doc["meta"],
+                                            doc["findings"])
+            self.assertTrue(errs, "baseline: the router regression blocks")
+
+            # a FRESH workspace: the first run already auto-filed rows into
+            # its own findings.json, and re-using it would confuse "did the
+            # patch stop the block" with "was there anything left to block".
+            tmp2 = os.path.join(tmp, "second")
+            os.makedirs(tmp2)
+            ws2, path2 = _gate_ws(tmp2, meta, rows)
+            doc2 = tp.load_json(path2)
+            with mock.patch.object(loop, "finding_blocks",
+                                   lambda _r: False):
+                errs2 = audit._router_audit_gate(ws2, path2, doc2,
+                                                 doc2["meta"],
+                                                 doc2["findings"])
+            self.assertEqual(
+                errs2, [],
+                "patching loop.finding_blocks did NOT change the gate — the "
+                "documented late-binding seam (audit._loop()) is broken")
+
+    def test_loop_is_resolved_lazily_at_call_time(self):
+        """audit._loop() hands back the LIVE module, and audit.py carries no
+        module-level `import loop` — that would be circular, and it would
+        also freeze the loop-side seam at import time instead of resolving
+        it per call (which is what makes patching loop.finding_blocks work).
+        """
+        self.assertIs(audit._loop(), loop)
+        before_helper = _src(audit).split("def _loop(")[0]
+        self.assertNotIn("import loop", before_helper,
+                         "audit.py must import loop LAZILY, inside _loop()")
+
+    # ---- the comment cannot go stale
+
+    def test_seam_comment_names_the_machinery_seam(self):
+        note = _seam_comment()
+        self.assertIn("audit.<name>", note,
+                      "loop.py's re-export note must name audit.<name> as "
+                      "the machinery patch seam")
+        self.assertIn("audit.audit_counter", note)
+
+    def test_seam_comment_names_the_gate_math_seam(self):
+        note = _seam_comment()
+        for name in ("finding_blocks", "normalize_finding_class",
+                     "_state_dir"):
+            self.assertIn(name, note,
+                          f"loop.py's re-export note must name {name} as a "
+                          "late-bound loop-side seam")
+        self.assertIn("_loop()", note)
+
+    def test_seam_comment_no_longer_claims_the_alias_is_a_patch_seam(self):
+        """The pre-t9 wording — 'any monkeypatching test still resolves the
+        machinery at loop.<name>' — was false. Pin the correction."""
+        note = _seam_comment()
+        self.assertNotIn("monkeypatching test", note)
+        self.assertIn("CALLER", note)
+
+    def test_the_gate_math_names_the_comment_promises_all_exist(self):
+        """Every name the comment tells a reader to patch must actually be
+        a loop attribute AND actually be reached by audit.py."""
+        audit_src = _src(audit)
+        for name in ("finding_blocks", "normalize_finding_class", "load",
+                     "_state_dir"):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(loop, name),
+                                f"loop.{name} does not exist")
+                self.assertIn(f"_loop().{name}", audit_src,
+                              f"audit.py never reaches loop.{name} — the "
+                              "seam comment names a seam that is not one")
 
 
 if __name__ == "__main__":
