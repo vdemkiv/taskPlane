@@ -315,11 +315,15 @@ class TestM10UserSummary(_Env):
 
     def test_host_injection_beats_env(self):
         ws = _repo()
+        previous_codex_home = os.environ.get("CODEX_HOME")
         os.environ["CODEX_HOME"] = "/tmp/x"
         try:
             out = loop.user_summary(ws, host="claude")
         finally:
-            os.environ.pop("CODEX_HOME", None)
+            if previous_codex_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_codex_home
         self.assertNotIn("codex", json.dumps(out).lower())
 
 
