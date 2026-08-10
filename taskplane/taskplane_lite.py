@@ -301,6 +301,36 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 
 # --------------------------------------------------------------- paths
 
+def to_posix(path: str) -> str:
+    """Separators as '/', whatever the host uses.
+
+    Every path taskplane COMPARES — scope globs, graph module ids, contract
+    evidence — is written with '/'. A host that hands back '\\' must be
+    normalized at the boundary, once, rather than each comparison learning
+    about two separators.
+    """
+    return str(path or "").replace("\\", "/")
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Path equality, case-folded only where the host API itself folds case.
+
+    `os.path.normcase` lowercases on Windows and is the identity everywhere
+    else, so this is Windows-only by construction. Folding there is correct
+    rather than permissive: C:\\WS\\src and C:\\ws\\src ARE one directory,
+    and a drive letter can come back in either case.
+    """
+    if os.path.normcase("A") == "a":
+        return a.lower() == b.lower()
+    return a == b
+
+
+def _startswith_path(path: str, prefix: str) -> bool:
+    if os.path.normcase("A") == "a":
+        return path.lower().startswith(prefix.lower())
+    return path.startswith(prefix)
+
+
 def norm(path: str, workspace: str | None = None) -> str:
     """Workspace-relative POSIX path with '..' collapsed and symlinks resolved.
 
@@ -321,14 +351,25 @@ def norm(path: str, workspace: str | None = None) -> str:
         # '..' for the (possibly not-yet-existing) leaf — closes the
         # `ln -s /etc server/link` then write-through-link escape.
         resolved = os.path.realpath(joined)
+        # Windows: realpath returns backslashes, and the containment test
+        # below is a STRING prefix comparison against a '/'-terminated base.
+        # Without this, every path in a Windows workspace failed that test
+        # and came back "ESCAPES:", so the contract screener refused a
+        # worker's own in-scope file — governance that fails closed on an
+        # entire operating system is still governance that does not work.
+        # Case is folded for the comparison only (Windows paths are
+        # case-insensitive; C:\Ws and C:\ws are the same directory), never
+        # for the returned relative path.
+        base = to_posix(base)
+        resolved = to_posix(resolved)
     else:
         base = "/__ws__"
         joined = raw if posixpath.isabs(raw) else posixpath.join(base, raw)
         resolved = posixpath.normpath(joined)
-    if resolved == base:
+    if _same_path(resolved, base):
         return ""
     prefix = base.rstrip("/") + "/"
-    if not resolved.startswith(prefix):
+    if not _startswith_path(resolved, prefix):
         return "ESCAPES:" + resolved
     return resolved[len(prefix):]
 

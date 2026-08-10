@@ -281,7 +281,14 @@ class Ctx:
             if real != root and not real.startswith(root + os.sep):
                 return None
             with open(real, "rb") as f:
-                return f.read(MAX_FILE_BYTES).decode("utf-8", "replace")
+                text = f.read(MAX_FILE_BYTES).decode("utf-8", "replace")
+            # Read as bytes (deliberately — no locale codec, no newline
+            # translation), then normalize line endings ourselves. Detector
+            # regexes are line-anchored and the scores they produce are
+            # frozen in goldens; a file checked out with CRLF must score
+            # identically to the same file with LF, or the same diff routes
+            # differently on Windows than it does in CI.
+            return text.replace("\r\n", "\n").replace("\r", "\n")
         except OSError:
             return None
 

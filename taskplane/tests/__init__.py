@@ -11,6 +11,8 @@ conftest.py keeps the per-test autouse fixture (suspenders) on top.
 import atexit
 import os
 import shutil
+import stat
+import sys
 import tempfile
 import unittest
 
@@ -33,6 +35,46 @@ _TMP_ROOT = os.path.realpath(tempfile.mkdtemp(prefix="tp-tests-"))
 tempfile.tempdir = _TMP_ROOT
 os.environ["TMPDIR"] = _TMP_ROOT
 atexit.register(shutil.rmtree, _TMP_ROOT, ignore_errors=True)
+
+
+# READ-ONLY FILES DEFEAT rmtree ON WINDOWS. git marks everything under
+# .git/objects read-only, and Windows refuses to unlink a read-only file
+# (POSIX only needs the parent directory to be writable, which is why this
+# is invisible on Linux and macOS). Tests that build a throwaway repo and
+# tear it down therefore died with `PermissionError: [WinError 5] Access is
+# denied: ...\.git\objects\...` — a teardown failure reported as a test
+# failure, which sends you looking in entirely the wrong place.
+#
+# Patch it once, here, for the same reason `tempfile.tempdir` is patched
+# here: 48 call sites across the suite should not each have to know. The
+# handler clears the read-only bit and retries exactly once; anything that
+# still fails propagates unchanged.
+if not getattr(shutil, "_tp_force_rmtree", False):
+    _orig_rmtree = shutil.rmtree
+
+    def _clear_readonly_and_retry(func, target, _exc):
+        # Both the entry AND its parent: Windows blocks the unlink via the
+        # file's read-only attribute, POSIX via the directory's write bit,
+        # and a repo torn down mid-test can present either.
+        for path in (os.path.dirname(target), target):
+            try:
+                os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE
+                         | stat.S_IREAD)
+            except OSError:
+                pass
+        func(target)
+
+    def _force_rmtree(path, ignore_errors=False, **kwargs):
+        if ignore_errors or kwargs.get("onerror") or kwargs.get("onexc"):
+            return _orig_rmtree(path, ignore_errors=ignore_errors, **kwargs)
+        if sys.version_info >= (3, 12):
+            kwargs["onexc"] = lambda f, t, e: _clear_readonly_and_retry(f, t, e)
+        else:
+            kwargs["onerror"] = lambda f, t, e: _clear_readonly_and_retry(f, t, e)
+        return _orig_rmtree(path, **kwargs)
+
+    shutil.rmtree = _force_rmtree
+    shutil._tp_force_rmtree = True
 
 _SESSION_HOME = tempfile.mkdtemp(prefix="tp-store-test-")
 # setdefault, not overwrite: an outer harness that already isolated the store
