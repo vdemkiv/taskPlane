@@ -18,6 +18,7 @@ import json
 import os
 
 import taskplane_lite as tp
+from path_roles import change_adds_no_test as _adds_no_test
 
 _CATALOG_CACHE: dict | None = None
 
@@ -159,30 +160,6 @@ def architecture_effort(files, task_type, large: bool,
     if _any_match(files, _ARCH_BOUNDARY_GLOBS) or hub_dependents >= _HUB_LIGHT:
         return "light"
     return "skip"
-
-
-_TEST_PATH_MARKERS = ("test", "spec", "__tests__", "/e2e/", "cypress",
-                      "playwright", "/tests/")
-
-
-def _adds_no_test(files, code_ext) -> bool:
-    """True when a change touches code but carries no test file.
-
-    The qa lens's Blocker is "an acceptance criterion with no failing-capable
-    test evidence, including the case where the change ships with no tests at
-    all" — which glob routing could never see, because it only fired when
-    tests already existed. Baseline firing would reach it, but measured over
-    40 real changes baseline fires on 32 and this trigger on 2, for the same
-    defect. `TASKPLANE_QA_BASELINE=1` forces the baseline behaviour back.
-    """
-    import os as _os
-    if _os.environ.get("TASKPLANE_QA_BASELINE", "").strip().lower() in (
-            "1", "true", "yes", "on"):
-        return True
-    if not files or not any(_is_code(f, code_ext) for f in files):
-        return False
-    return not any(any(m in f.lower() for m in _TEST_PATH_MARKERS)
-                   for f in files)
 
 
 def route(changed_files, task_type: str | None = None,

@@ -177,6 +177,22 @@ jobs:
           echo "build A: $a"; echo "build B: $b"
           test "$a" = "$b"
 
+      # The Claude package was hand-assembled every release until 2.7.2, so
+      # its membership was whoever built it — undiffable, unreproducible, and
+      # unable to fail. Same two legs as the OpenAI archive above: build with
+      # validation, then prove determinism.
+      - name: Build and validate Claude plugin package
+        run: python scripts/package_claude.py
+
+      - name: Claude package build is deterministic (release provenance)
+        run: |
+          python3 scripts/package_claude.py --output-dir /tmp/tp-claude-a
+          python3 scripts/package_claude.py --output-dir /tmp/tp-claude-b
+          a=$(sha256sum /tmp/tp-claude-a/*.zip | cut -d' ' -f1)
+          b=$(sha256sum /tmp/tp-claude-b/*.zip | cut -d' ' -f1)
+          echo "build A: $a"; echo "build B: $b"
+          test "$a" = "$b"
+
   # t8 (R-0005): install truth. The launch failure this pins: org/Team
   # members CANNOT install plugins from GitHub — only org admins publish to
   # the org marketplace, and file-upload is the other path. This leg fails on

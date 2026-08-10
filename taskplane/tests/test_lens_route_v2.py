@@ -26,10 +26,12 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
 import lens_signals  # noqa: E402
+import path_roles  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXROOT = os.path.join(HERE, "fixtures", "detectors")
@@ -455,6 +457,133 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         finally:
             shutil.rmtree(ws)
         self.assertIn(entry(r, "security")["tier"], ("light", "deep"))
+
+    # ---- the untested trigger, on the STAGE-AWARE path -------------------
+    #
+    # The regression these pin: the trigger shipped in 2.7.0 verified only
+    # through `lens.route(files)` with NO stage — the legacy router, where it
+    # appends reason TEXT after applicability has already been decided. On
+    # the stage-aware path it moved no verdict at all, so qa stayed n/a on
+    # exactly the change it exists for. Every assertion below passes `stage=`
+    # explicitly, which is what the original verification omitted.
+
+    def test_qa_routes_on_untested_code_in_stage_aware_review(self):
+        ws = write_ws({"src/app.py": "def value():\n    return 1\n"})
+        try:
+            r = lens.route(["src/app.py"], stage="review", catalog=CAT,
+                           workspace=ws)
+        finally:
+            shutil.rmtree(ws)
+        qa = entry(r, "qa")
+        self.assertIn(qa["tier"], ("light", "deep"))
+        self.assertIn("untested change (code changed, no test file)",
+                      qa["reasons"])
+        self.assertIn("change shape: code changed with no test file",
+                      qa["evidence"])
+
+    def test_the_same_change_with_a_test_does_not_fire_the_trigger(self):
+        ws = write_ws({"src/app.py": "def value():\n    return 1\n",
+                       "tests/test_app.py": "def test_value():\n    assert 1\n"})
+        try:
+            r = lens.route(["src/app.py", "tests/test_app.py"],
+                           stage="review", catalog=CAT, workspace=ws)
+        finally:
+            shutil.rmtree(ws)
+        self.assertNotIn("change shape: code changed with no test file",
+                         entry(r, "qa")["evidence"])
+
+    def test_docs_only_change_never_fires_the_trigger(self):
+        ws = write_ws({"docs/guide.md": "# guide\n"})
+        try:
+            r = lens.route(["docs/guide.md"], stage="review", catalog=CAT,
+                           workspace=ws)
+        finally:
+            shutil.rmtree(ws)
+        qa = entry(r, "qa")
+        self.assertEqual(qa["tier"], "n/a")
+        self.assertNotIn("change shape: code changed with no test file",
+                         qa["evidence"])
+
+    def test_trigger_respects_the_stage_profile(self):
+        # qa is a review-stage lens. During build, tests legitimately may not
+        # exist yet — the trigger is a signal, not a floor, so the build
+        # profile still excludes it rather than being overridden.
+        self.assertNotIn("qa", CAT["stage_profiles"]["build"])
+        ws = write_ws({"src/app.py": "def value():\n    return 1\n"})
+        try:
+            r = lens.route(["src/app.py"], stage="build", catalog=CAT,
+                           workspace=ws)
+        finally:
+            shutil.rmtree(ws)
+        self.assertEqual(entry(r, "qa")["tier"], "n/a")
+
+    def test_substring_lookalike_filenames_still_route_qa(self):
+        # contest.py / latest.py / specification.py / protest/ all contain
+        # "test" or "spec" as a SUBSTRING. The old marker list read every one
+        # of them as a test file and suppressed the trigger.
+        for name in ("src/contest.py", "src/latest.py",
+                     "src/specification.py", "src/protest/handler.py"):
+            with self.subTest(name=name):
+                ws = write_ws({name: "def value():\n    return 1\n"})
+                try:
+                    r = lens.route([name], stage="review", catalog=CAT,
+                                   workspace=ws)
+                finally:
+                    shutil.rmtree(ws)
+                self.assertIn(entry(r, "qa")["tier"], ("light", "deep"),
+                              f"{name} was mistaken for a test file")
+
+    def test_test_path_detection_is_segment_and_filename_aware(self):
+        code_ext = CAT["code_extensions"]
+        for product_path in ("src/contest.py", "src/latest.py",
+                             "src/specification.py"):
+            with self.subTest(product_path=product_path):
+                self.assertTrue(lens._adds_no_test([product_path], code_ext))
+
+        for test_path in ("tests/test_app.py", "src/app.test.ts",
+                          "spec/app_spec.rb", "e2e/login.ts",
+                          "src/conftest.py"):
+            with self.subTest(test_path=test_path):
+                self.assertFalse(lens._adds_no_test(
+                    ["src/app.py", test_path], code_ext))
+
+    def test_qa_baseline_override_still_forces_tested_code_changes(self):
+        code_ext = CAT["code_extensions"]
+        files = ["src/app.py", "tests/test_app.py"]
+        self.assertFalse(lens._adds_no_test(files, code_ext))
+        with mock.patch.dict(os.environ, {"TASKPLANE_QA_BASELINE": "1"}):
+            self.assertTrue(lens._adds_no_test(files, code_ext))
+
+
+class TestTestPathRoles(unittest.TestCase):
+    """One shared definition of "this path is a test", in path_roles, so the
+    legacy router and the signal engine cannot drift apart again."""
+
+    TESTS = ["tests/app.py", "src/__tests__/a.js", "e2e/flow.spec.ts",
+             "cypress/e2e/x.js", "playwright/login.js", "test_loop.py",
+             "foo_test.go", "web/Checkout.test.tsx", "FooTest.java",
+             "OrderTests.cs", "conftest.py", "spec/models/user_spec.rb",
+             "src/testing/helpers.py", "integration-tests/api.py"]
+    NOT_TESTS = ["src/contest.py", "src/latest.py", "src/specification.py",
+                 "protest/app.py", "src/manifest.json", "locales/it/en.json",
+                 "src/app.py", "greatest_hits.py", "src/attest.rb"]
+
+    def test_test_paths(self):
+        for p in self.TESTS:
+            self.assertTrue(path_roles.is_test_path(p), p)
+
+    def test_non_test_paths(self):
+        for p in self.NOT_TESTS:
+            self.assertFalse(path_roles.is_test_path(p), p)
+
+    def test_windows_separators_classify_identically(self):
+        self.assertTrue(path_roles.is_test_path(r"tests\app.py"))
+        self.assertFalse(path_roles.is_test_path(r"src\contest.py"))
+
+    def test_baseline_override_does_not_fire_without_code(self):
+        with mock.patch.dict(os.environ, {"TASKPLANE_QA_BASELINE": "1"}):
+            self.assertFalse(path_roles.change_adds_no_test(
+                ["README.md"], CAT["code_extensions"]))
 
 
 class TestForceAndSkip(unittest.TestCase):

@@ -1,0 +1,14 @@
+Release notes, not code.
+
+WHY THIS FIXTURE IS NOT CODE
+---------------------------
+The qa detector scores two independent things: test constructs found in the
+diff, and the change SHAPE — a production-code change that carries no test
+path, which is the untested trigger. A negative fixture has to be negative
+for both, so it cannot contain a code file: any code tree with no tests
+scores W_PATH by design, which is the whole point of the trigger.
+
+The previous fixture here was an argparse CLI (cli.py). It was a clean
+negative while the trigger only appended reason text in lens.route, and a
+positive the moment the trigger became a real signal in the engine —
+verdict light, score 0.35. Keep this tree free of code extensions.

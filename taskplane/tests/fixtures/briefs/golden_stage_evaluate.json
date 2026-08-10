@@ -270,20 +270,20 @@
     },
     {
       "checks": [],
-      "evidence": [],
+      "evidence": [
+        "change shape: code changed with no test file"
+      ],
       "id": "qa",
       "looks_for": "test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths",
       "mode": "none",
       "name": "QA",
       "negative_evidence": [
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 qa signals: no test files, no test constructs, no QA keywords in the requirement"
+        "not in stage profile 'build' (engine verdict 'light', score 0.35)"
       ],
       "reasons": [
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 qa signals: no test files, no test constructs, no QA keywords in the requirement"
+        "not in stage profile 'build' (engine verdict 'light', score 0.35)"
       ],
-      "score": 0.0,
+      "score": 0.35,
       "tier": "n/a",
       "verdict": "n/a"
     },

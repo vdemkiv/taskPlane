@@ -32,6 +32,8 @@ import json
 import os
 import re
 
+from path_roles import change_adds_no_test
+
 # ---------------------------------------------------------------- thresholds
 
 DEEP = 0.6            # score >= DEEP  -> "deep"
@@ -742,6 +744,17 @@ def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
             else:
                 evidence.append(f"{label} {_DISCOUNT_NOTE}")
                 score += W_PATH * FIXTURE_DISCOUNT
+
+    # Lenses 2.0: absence can itself be applicability evidence. QA must see
+    # a production-code change that carries no test path; adding the reason
+    # only in lens.route was too late because this engine had already
+    # returned n/a. Give the trigger normal path-signal weight so it routes
+    # light without manufacturing a deep verdict.
+    if (catalog_lens.get("untested_trigger")
+            and change_adds_no_test(ctx.files,
+                                    cat.get("code_extensions") or [])):
+        evidence.append("change shape: code changed with no test file")
+        score += W_PATH
 
     # -- content signals (bounded corpus, first hit per rule)
     for label, rx in _compiled(spec):
