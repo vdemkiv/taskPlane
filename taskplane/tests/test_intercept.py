@@ -36,5 +36,5 @@ class TestRuntimeDirSelfIgnored(__import__("unittest").TestCase):
                      snapshot=None)
         subprocess.run(["git", "add", "-A"], cwd=ws)
         out = subprocess.run(["git", "status", "--porcelain"], cwd=ws,
-                             capture_output=True, text=True, encoding="utf-8").stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
         self.assertNotIn(".taskplane", out)   # runtime never staged

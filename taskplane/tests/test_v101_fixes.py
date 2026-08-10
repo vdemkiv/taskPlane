@@ -143,7 +143,7 @@ class TestScreenDispatchHook(unittest.TestCase):
             env["TASKPLANE_ENFORCE_DISPATCH"] = env_mode
         return subprocess.run(
             [sys.executable, TPPY, "screen-dispatch"],
-            input=json.dumps(event), text=True, capture_output=True, env=env, encoding="utf-8")
+            input=json.dumps(event), text=True, capture_output=True, env=env, encoding="utf-8", errors="replace")
 
     def _event(self, model=None):
         ti = {"subagent_type": "taskplane:tp-lens", "prompt": "x"}
@@ -320,7 +320,7 @@ class TestScreenDispatchHook(unittest.TestCase):
         env = {**os.environ, "TASKPLANE_ENFORCE_DISPATCH": "strict"}
         r = subprocess.run([sys.executable, TPPY, "screen-dispatch"],
                            input="{broken", text=True, capture_output=True,
-                           env=env, encoding="utf-8")
+                           env=env, encoding="utf-8", errors="replace")
         out = json.loads(r.stdout)
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"],
                          "deny")
@@ -405,7 +405,7 @@ class TestCodexParallelWaveDispatch(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, TPPY, "loop", "--workspace", self.ws,
              "wave", "--emit", "task"],
-            text=True, capture_output=True, env=env, encoding="utf-8")
+            text=True, capture_output=True, env=env, encoding="utf-8", errors="replace")
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -515,7 +515,7 @@ class TestOnboardTiers(unittest.TestCase):
             env.pop("CODEX_THREAD_ID", None)
             r = subprocess.run([sys.executable, TPPY, "onboard", "--json",
                                 "--workspace", ws], capture_output=True,
-                               text=True, env=env, encoding="utf-8")
+                               text=True, env=env, encoding="utf-8", errors="replace")
             rep = json.loads(r.stdout)
             self.assertEqual(rep["model_tiers"]["cheap"], "haiku")
             self.assertEqual(rep["model_tiers"]["standard"], "inherit")

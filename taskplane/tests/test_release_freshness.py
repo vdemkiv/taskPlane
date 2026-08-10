@@ -353,7 +353,7 @@ class TestGeneratedCliReference(unittest.TestCase):
 
     def _generate(self):
         run = subprocess.run([sys.executable, self.TPPY, "help", "--md"],
-                             capture_output=True, text=True, cwd=ROOT, encoding="utf-8")
+                             capture_output=True, text=True, cwd=ROOT, encoding="utf-8", errors="replace")
         self.assertEqual(run.returncode, 0,
                          f"`tp help --md` refused: {run.stderr}")
         self.assertTrue(run.stdout.strip(),

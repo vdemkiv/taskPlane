@@ -139,7 +139,7 @@ class TestVersionSingleSource(unittest.TestCase):
 
     def test_cli_version_prints_and_exits_zero(self):
         r = subprocess.run([sys.executable, TPPY, "version"],
-                           capture_output=True, text=True, encoding="utf-8")
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), cli.plugin_version(ROOT))
 
@@ -180,7 +180,7 @@ class TestEngineErrorsExitNonzero(unittest.TestCase):
             ws = _repo(tmp)
             r = subprocess.run([sys.executable, TPPY, "loop", "--workspace",
                                 ws, "gate", "pass"],
-                               capture_output=True, text=True, encoding="utf-8")
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
             self.assertEqual(r.returncode, 1)
             self.assertIn("error", json.loads(r.stdout))
 
@@ -317,7 +317,7 @@ class TestUserLayerErrorBoundary(unittest.TestCase):
             env.pop("TASKPLANE_DEBUG", None)
             r = subprocess.run(
                 [sys.executable, TPPY, "summary", "--workspace", ws],
-                capture_output=True, text=True, env=env, encoding="utf-8")
+                capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
             self.assertNotIn("Traceback", r.stderr + r.stdout)
             if r.returncode != 0:
                 # boundary path: the reason must be printed

@@ -76,6 +76,14 @@ if not getattr(shutil, "_tp_force_rmtree", False):
     shutil.rmtree = _force_rmtree
     shutil._tp_force_rmtree = True
 
+# Child processes must EMIT utf-8, not just be decoded as it. A spawned
+# python inherits the console codepage for its stdout (cp1252 on Windows), so
+# a child printing an em dash handed the parent bytes that utf-8 could not
+# decode — the decode blew up inside subprocess's reader THREAD, `stdout` came
+# back None, and the test died with `TypeError: NoneType + str`, which points
+# nowhere near the cause. setdefault so an outer harness keeps its choice.
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
 _SESSION_HOME = tempfile.mkdtemp(prefix="tp-store-test-")
 # setdefault, not overwrite: an outer harness that already isolated the store
 # (e.g. CI exporting TASKPLANE_HOME) keeps its choice.

@@ -106,7 +106,7 @@ class TestCodexHookProtocol(unittest.TestCase):
     def _run(self, event):
         return subprocess.run([sys.executable, TPPY, "screen"],
                               cwd=self.ws, input=json.dumps(event), text=True,
-                              capture_output=True, encoding="utf-8")
+                              capture_output=True, encoding="utf-8", errors="replace")
 
     def test_codex_allow_is_silent(self):
         event = {"turn_id": "turn-1", "cwd": self.ws,
@@ -142,7 +142,7 @@ class TestCodexSubagentLifecycle(unittest.TestCase):
     def _run(self, command, event):
         return subprocess.run([sys.executable, TPPY, command], cwd=self.ws,
                               input=json.dumps(event), text=True,
-                              capture_output=True, encoding="utf-8")
+                              capture_output=True, encoding="utf-8", errors="replace")
 
     def test_start_traces_and_injects_bounded_contract_context(self):
         event = {"hook_event_name": "SubagentStart", "turn_id": "turn-1",
@@ -251,7 +251,7 @@ class TestSkillPortability(unittest.TestCase):
     def test_design_cli_flags_are_host_neutral(self):
         result = subprocess.run(
             [sys.executable, TPPY, "loop", "init", "--help"],
-            capture_output=True, text=True, encoding="utf-8")
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--design", result.stdout)
         self.assertIn("--design-only", result.stdout)
@@ -600,7 +600,7 @@ class TestCodexOnboarding(unittest.TestCase):
                "TASKPLANE_HOME": tempfile.mkdtemp()}
         result = subprocess.run(
             [sys.executable, TPPY, "onboard", "--json", "--workspace", ws],
-            capture_output=True, text=True, env=env, encoding="utf-8")
+            capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["host"], "codex")

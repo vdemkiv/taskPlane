@@ -147,7 +147,7 @@ class TestOnboardingSurface(_Ws):
         r = subprocess.run([sys.executable, tppy, "init", "--plan", "team",
                             "--workspace", self.ws],
                            capture_output=True, text=True,
-                           env={**os.environ}, encoding="utf-8")
+                           env={**os.environ}, encoding="utf-8", errors="replace")
         out = json.loads(r.stdout)
         self.assertEqual(out["mode"]["plan"], "team")
         self.assertIsNone(out["plan_question"])   # answered — no nag
@@ -159,7 +159,7 @@ class TestOnboardingSurface(_Ws):
         r = subprocess.run([sys.executable, tppy, "init",
                             "--workspace", self.ws],
                            capture_output=True, text=True,
-                           env={**os.environ}, encoding="utf-8")
+                           env={**os.environ}, encoding="utf-8", errors="replace")
         out = json.loads(r.stdout)
         self.assertIn("ASK THE HUMAN", out["plan_question"])
 

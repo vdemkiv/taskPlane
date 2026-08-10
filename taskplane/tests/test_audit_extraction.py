@@ -447,7 +447,13 @@ class DifferentialMixin:
             "(--regen against the UNMODIFIED loop.py) must be committed "
             "before any extraction edit")
         with open(path, "rb") as f:
-            return f.read()
+            raw = f.read()
+        # Belt to .gitattributes' braces. The fixtures are LF by attribute,
+        # but a checkout made before that landed (or a fixture copied in by
+        # hand on Windows) would carry CRLF, and this comparison is the ONLY
+        # thing in the suite that would notice — as a byte-identity failure
+        # pointing at the code, which is the wrong place to look.
+        return raw.replace(b"\r\n", b"\n")
 
     def test_differential_byte_identity(self):
         for name, fn in SCENARIOS.items():

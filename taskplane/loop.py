@@ -361,7 +361,7 @@ def _edge_nudges(ws: str, changed, base: str) -> list:
                 "tp graph edge <consumer-module> <db-module> --kind data")
         diff = _sp.run(["git", "diff", "-U0", base, "--", *changed[:50]],
                        cwd=ws, capture_output=True, text=True
-                       , encoding="utf-8").stdout[:60000]
+                       , encoding="utf-8", errors="replace").stdout[:60000]
         added = "\n".join(l for l in diff.splitlines()
                            if l.startswith("+"))
         if _re.search(r"https?://|requests\.|urllib|fetch\(|axios"
@@ -398,7 +398,7 @@ def _diff_files(ws: str, base: str) -> list:
 
     def run(args):
         return subprocess.run(["git", *args], cwd=ws, capture_output=True,
-                              text=True, encoding="utf-8").stdout
+                              text=True, encoding="utf-8", errors="replace").stdout
     return [f for f in (run(["diff", "--name-only", base])
                         + run(["ls-files", "--others",
                                "--exclude-standard"])).splitlines() if f]

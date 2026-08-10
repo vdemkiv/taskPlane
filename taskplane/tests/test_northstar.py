@@ -125,7 +125,7 @@ class TestNorthStarCli(unittest.TestCase):
     def _run(self, *args):
         return subprocess.run([sys.executable, _TP_PY, "north-star", *args],
                               cwd=self.ws, capture_output=True, text=True,
-                              env={**os.environ, "TASKPLANE_HOME": self.home}, encoding="utf-8")
+                              env={**os.environ, "TASKPLANE_HOME": self.home}, encoding="utf-8", errors="replace")
 
     def test_prints_north_star_json(self):
         _ctx_product(self.ws, "- **Direction / north star:** ship trust\n")

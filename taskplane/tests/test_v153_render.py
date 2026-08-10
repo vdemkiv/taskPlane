@@ -99,7 +99,7 @@ class TestCliContract(unittest.TestCase):
         r = subprocess.run([sys.executable, TPPY, "findings", "--paged",
                             "--file", self.fj],
                            capture_output=True, text=True,
-                           env={**os.environ}, encoding="utf-8")
+                           env={**os.environ}, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("HEADLINE: "))
         payload = json.loads(r.stdout.split("\n", 1)[1])
@@ -111,7 +111,7 @@ class TestCliContract(unittest.TestCase):
         r = subprocess.run([sys.executable, TPPY, "findings",
                             "--file", self.fj],
                            capture_output=True, text=True,
-                           env={**os.environ}, encoding="utf-8")
+                           env={**os.environ}, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("HEADLINE: "))
         self.assertIn("<", r.stdout)     # a fragment followed
@@ -144,7 +144,7 @@ class TestOnboardHeadline(unittest.TestCase):
             os.path.abspath(__file__))), "tp.py")
         p = subprocess.run([sys.executable, tppy, "onboard",
                             "--workspace", ws],
-                           capture_output=True, text=True, encoding="utf-8")
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(p.returncode, 0)
         first = p.stdout.splitlines()[0]
         self.assertTrue(first.startswith("HEADLINE: "), first)

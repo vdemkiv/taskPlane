@@ -37,7 +37,7 @@ def _screen(ws, tool_name, tool_input, env=None):
     e.update(env or {})
     r = subprocess.run([sys.executable, TP, "screen"],
                        input=json.dumps(event), capture_output=True,
-                       text=True, env=e, encoding="utf-8")
+                       text=True, env=e, encoding="utf-8", errors="replace")
     # Empty stdout = ABSTAIN (ungoverned / auto-released → defer to Claude
     # Code's normal permission flow, no forced decision).
     if not r.stdout.strip():
@@ -105,7 +105,7 @@ class TestBudgetGrantHumanGate(unittest.TestCase):
         # the human / ungoverned main session runs the CLI directly
         r = subprocess.run([sys.executable, TP, "budget", "--grant", "20",
                             "--workspace", ws], capture_output=True,
-                           text=True, encoding="utf-8")
+                           text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("ceiling now 23", r.stdout)
         self.assertEqual(tpl.load_active(ws)["budget"]["max_actions"], 23)
@@ -124,21 +124,21 @@ class TestBudgetGrantHumanGate(unittest.TestCase):
         ws, _ = _governed_ws()
         r = subprocess.run([sys.executable, TP, "budget", "--grant", "0",
                             "--workspace", ws], capture_output=True,
-                           text=True, encoding="utf-8")
+                           text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 1)
 
     def test_budget_without_spent_or_grant_errors(self):
         ws, _ = _governed_ws()
         r = subprocess.run([sys.executable, TP, "budget",
                             "--workspace", ws], capture_output=True,
-                           text=True, encoding="utf-8")
+                           text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 1)
         self.assertIn("--grant", r.stderr)
 
     def test_grant_traced_for_audit(self):
         ws, _ = _governed_ws()
         subprocess.run([sys.executable, TP, "budget", "--grant", "5",
-                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8")
+                        "--workspace", ws], capture_output=True, text=True, encoding="utf-8", errors="replace")
         trace = open(os.path.join(tpl.tp_dir(ws), "trace.jsonl"), encoding="utf-8").read()
         self.assertIn("budget_granted", trace)
 
@@ -262,7 +262,7 @@ class TestBareRootRefusal(unittest.TestCase):
         env = dict(os.environ, HOME=fake_home)
         r = subprocess.run([sys.executable, TP, "new", "--scope", "src/**",
                             "--workspace", fake_home, "goal"],
-                           capture_output=True, text=True, env=env, encoding="utf-8")
+                           capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 1)
         self.assertIn("REFUSING", r.stderr)
         self.assertFalse(os.path.exists(
@@ -280,7 +280,7 @@ class TestBareRootRefusal(unittest.TestCase):
         env = dict(os.environ, HOME=fake_home)
         r = subprocess.run([sys.executable, TP, "new", "--scope", "src/**",
                             "--workspace", fake_home, "goal"],
-                           capture_output=True, text=True, env=env, encoding="utf-8")
+                           capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
 
 

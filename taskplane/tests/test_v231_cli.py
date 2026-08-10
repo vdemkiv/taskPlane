@@ -14,7 +14,7 @@ def _run(args, ws, env=None):
     e = dict(os.environ)
     e["TASKPLANE_HOME"] = env or ws + "-store"
     return subprocess.run([sys.executable, TP, *args], cwd=ws,
-                          capture_output=True, text=True, env=e, encoding="utf-8")
+                          capture_output=True, text=True, env=e, encoding="utf-8", errors="replace")
 
 
 def _git_ws(tmp_path):
@@ -95,7 +95,7 @@ def _run_slot(args, ws, slot=None):
     else:
         e["TASKPLANE_TASK"] = slot
     return subprocess.run([sys.executable, TP, *args], cwd=ws,
-                          capture_output=True, text=True, env=e, encoding="utf-8")
+                          capture_output=True, text=True, env=e, encoding="utf-8", errors="replace")
 
 
 def test_clear_releases_the_exported_task_slot(tmp_path):

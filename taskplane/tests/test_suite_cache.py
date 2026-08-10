@@ -41,7 +41,7 @@ def _repo(tmp):
 
 def _head(ws):
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws,
-                          capture_output=True, text=True, encoding="utf-8").stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 
 
 class _CacheCase(unittest.TestCase):

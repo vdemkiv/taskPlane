@@ -36,7 +36,7 @@ def _screen(ws, tool_name, tool_input, env=None):
     e.update(env or {})
     r = subprocess.run([sys.executable, TP, "screen"],
                        input=json.dumps(event), capture_output=True,
-                       text=True, env=e, encoding="utf-8")
+                       text=True, env=e, encoding="utf-8", errors="replace")
     if not r.stdout.strip():
         return {"decision": None}
     return json.loads(r.stdout)

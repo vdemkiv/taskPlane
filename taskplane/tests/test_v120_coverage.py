@@ -43,7 +43,7 @@ def _repo(tmp):
 
 def _tp(ws, *args):
     return subprocess.run([sys.executable, TPPY, *args, "--workspace", ws],
-                          capture_output=True, text=True, encoding="utf-8")
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 class TestRegistry(unittest.TestCase):            # R-0002 AC1

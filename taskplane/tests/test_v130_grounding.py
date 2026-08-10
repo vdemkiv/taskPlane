@@ -82,7 +82,7 @@ class TestCurrentState(unittest.TestCase):
     def test_onboarding_seeds_scaffold(self):
         subprocess.run([sys.executable, TPPY, "init",
                         "--workspace", self.ws],
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
         p = os.path.join(tp.kb_root(self.ws), "context", "current-state.md")
         self.assertTrue(os.path.exists(p))
         self.assertIn("as-built inventory", open(p, encoding="utf-8").read())
