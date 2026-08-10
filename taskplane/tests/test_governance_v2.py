@@ -20,7 +20,7 @@ import taskplane_lite as tp  # noqa: E402
 
 def _git(ws, *args):
     return subprocess.run(["git", *args], cwd=ws, capture_output=True,
-                          text=True, check=False, encoding="utf-8")
+                          text=True, check=False, encoding="utf-8", errors="replace")
 
 
 class TestGovernanceV2(unittest.TestCase):

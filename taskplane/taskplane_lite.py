@@ -1078,7 +1078,7 @@ def _run(cmd, cwd, shell=False, timeout=600, env=None):
     # pre-existing caller is unchanged; dod_check passes a sanitized copy
     # (A3, R-0007).
     return subprocess.run(cmd, cwd=cwd, shell=shell, capture_output=True,
-                          text=True, timeout=timeout, env=env, encoding="utf-8")
+                          text=True, timeout=timeout, env=env, encoding="utf-8", errors="replace")
 
 
 # ------------------------------------------------- suite result cache (P1)
@@ -2027,7 +2027,52 @@ def _snapshot_path(workspace: str) -> str:
     return os.path.join(tp_dir(workspace), "active", f"{slot}.snapshot")
 
 
+# Windows has no signal 0. `os.kill(pid, 0)` there does NOT probe liveness:
+# CPython maps signal 0 to CTRL_C_EVENT and calls GenerateConsoleCtrlEvent,
+# i.e. it SENDS Ctrl+C to the console process group. The consequences were
+# both of the ones you would fear:
+#
+#   * liveness was never actually measured — a dead pid raises a generic
+#     OSError (ERROR_INVALID_PARAMETER) rather than ProcessLookupError, which
+#     the old handler read as "unknowable, assume alive", so an orphaned
+#     contract was NEVER auto-released on Windows and the workspace stayed
+#     governed by a process that no longer existed; and
+#   * the probe interrupted whatever shared the console. This is what
+#     truncated the Windows CI leg: the suite died with KeyboardInterrupt
+#     partway through, reporting a partial result that looked like slowness.
+#
+# The supported probe is OpenProcess + GetExitCodeProcess. Kept as a separate
+# function taking its kernel32 so the branch is unit-testable off Windows.
+_STILL_ACTIVE = 259
+_ERROR_ACCESS_DENIED = 5
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _pid_alive_windows(pid: int, kernel32) -> bool:
+    """Liveness via the Win32 API. Fails toward ALIVE (stay governed) on
+    anything ambiguous — access denied means the process exists but belongs
+    to another user, which is emphatically not 'orphaned'."""
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION,
+                                  False, int(pid))
+    if not handle:
+        return kernel32.GetLastError() == _ERROR_ACCESS_DENIED
+    try:
+        import ctypes
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True          # unknowable -> governed
+        return code.value == _STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":                      # pragma: no cover - win
+        try:
+            import ctypes
+            return _pid_alive_windows(pid, ctypes.windll.kernel32)
+        except Exception:
+            return True          # unknowable -> stay governed
     try:
         os.kill(int(pid), 0)
     except ProcessLookupError:

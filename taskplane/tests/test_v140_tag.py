@@ -72,7 +72,7 @@ class TestRepoStoreMode(_RepoStore):
         _git(self.ws, "add", ".taskplane-kb")
         _git(self.ws, "commit", "-qm", "kb")
         r = subprocess.run(["git", "ls-files", ".taskplane-kb"],
-                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8")
+                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertIn("index.json", r.stdout)   # NOT gitignored — by design
 
     def test_loop_state_survives_home_teardown(self):
@@ -142,7 +142,7 @@ class TestApproveBy(_RepoStore):
                             "--by", "Leo — 'ship it'",
                             "--workspace", self.ws],
                            capture_output=True, text=True,
-                           env={**os.environ}, encoding="utf-8")
+                           env={**os.environ}, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         ev = [e for e in self._trace() if e.get("event") == "loop_approve"]
         self.assertEqual(ev[-1].get("by"), "Leo — 'ship it'")

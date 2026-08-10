@@ -530,7 +530,7 @@ class TestCli(unittest.TestCase):
 
     def _run(self, *args):
         r = subprocess.run([sys.executable, TPPY, *args],
-                           capture_output=True, text=True, timeout=120, encoding="utf-8")
+                           capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 

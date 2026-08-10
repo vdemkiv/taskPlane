@@ -172,6 +172,93 @@ class TestReadOnlyTeardown(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
 
+class TestPidLivenessNeverSignalsOnWindows(unittest.TestCase):
+    """`os.kill(pid, 0)` is not a liveness probe on Windows. CPython maps
+    signal 0 to CTRL_C_EVENT and calls GenerateConsoleCtrlEvent, so the
+    "probe" SENT Ctrl+C to the console process group — which is what killed
+    the Windows CI leg mid-suite with KeyboardInterrupt and made every run
+    report a partial result that read as slowness. It also never measured
+    anything: a dead pid raises a generic OSError there, which the handler
+    read as "unknowable, assume alive", so an orphaned contract was never
+    auto-released on Windows.
+
+    The Win32 branch is unit-tested here by injecting a fake kernel32, so it
+    is covered on every host rather than only where it runs.
+    """
+
+    class _FakeKernel32:
+        def __init__(self, handle=0, exit_code=None, last_error=87):
+            self.handle, self.exit_code = handle, exit_code
+            self.last_error, self.closed = last_error, []
+
+        def OpenProcess(self, _access, _inherit, _pid):
+            return self.handle
+
+        def GetExitCodeProcess(self, _handle, out):
+            if self.exit_code is None:
+                return 0
+            out._obj.value = self.exit_code
+            return 1
+
+        def GetLastError(self):
+            return self.last_error
+
+        def CloseHandle(self, handle):
+            self.closed.append(handle)
+
+    def test_a_running_process_is_alive(self):
+        k = self._FakeKernel32(handle=1234, exit_code=259)   # STILL_ACTIVE
+        self.assertTrue(tp._pid_alive_windows(4242, k))
+        self.assertEqual(k.closed, [1234])                   # no handle leak
+
+    def test_an_exited_process_is_dead(self):
+        k = self._FakeKernel32(handle=1234, exit_code=0)
+        self.assertFalse(tp._pid_alive_windows(4242, k))
+        self.assertEqual(k.closed, [1234])
+
+    def test_no_such_pid_is_dead(self):
+        # OpenProcess fails with ERROR_INVALID_PARAMETER — the case the old
+        # code mistook for "unknowable" and answered "alive", so a workspace
+        # stayed governed by a process that no longer existed.
+        k = self._FakeKernel32(handle=0, last_error=87)
+        self.assertFalse(tp._pid_alive_windows(4242, k))
+
+    def test_access_denied_stays_governed(self):
+        # The process EXISTS and belongs to another user. Fail toward
+        # governed: that is emphatically not an orphan.
+        k = self._FakeKernel32(handle=0, last_error=5)
+        self.assertTrue(tp._pid_alive_windows(4242, k))
+
+    def test_unreadable_exit_code_stays_governed(self):
+        k = self._FakeKernel32(handle=1234, exit_code=None)
+        self.assertTrue(tp._pid_alive_windows(4242, k))
+
+    def test_liveness_does_not_reach_os_kill_on_windows(self):
+        """The regression that matters: no signal may be sent to probe."""
+        import taskplane_lite
+        sent, real_platform = [], taskplane_lite.sys.platform
+
+        class _Boom:
+            def kill(self, *a):
+                sent.append(a)
+                raise AssertionError("os.kill must never run on win32")
+
+        real_os_kill = taskplane_lite.os.kill
+        try:
+            taskplane_lite.sys.platform = "win32"
+            taskplane_lite.os.kill = _Boom().kill
+            # ctypes.windll does not exist off Windows -> the guarded except
+            # returns True (governed), and crucially no signal was sent.
+            self.assertTrue(tp._pid_alive(4242))
+            self.assertEqual(sent, [])
+        finally:
+            taskplane_lite.sys.platform = real_platform
+            taskplane_lite.os.kill = real_os_kill
+
+    def test_posix_liveness_still_works(self):
+        self.assertTrue(tp._pid_alive(os.getpid()))
+
+
 class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
     """A static ratchet. The graph and component layers reason about
     repo-relative, '/'-shaped paths; `os.path.join`/`dirname`/`relpath` are

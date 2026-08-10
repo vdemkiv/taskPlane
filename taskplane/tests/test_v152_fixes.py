@@ -166,7 +166,7 @@ class TestGitignoreAnchor(unittest.TestCase):
         # the anchored pattern must NOT ignore the shared store
         r = subprocess.run(["git", "check-ignore",
                             ".taskplane-kb/knowledge/index.json"],
-                           cwd=ws, capture_output=True, text=True, encoding="utf-8")
+                           cwd=ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertNotEqual(r.returncode, 0,
                             "shared store must be committable (not ignored)")
 
@@ -182,7 +182,7 @@ class TestShareGuards(unittest.TestCase):
         return subprocess.run([sys.executable, TPPY, *args,
                                "--workspace", self.ws],
                               capture_output=True, text=True,
-                              env={**os.environ}, encoding="utf-8")
+                              env={**os.environ}, encoding="utf-8", errors="replace")
 
     def test_push_on_personal_plan_is_guarded(self):
         r = self._run("share", "push")

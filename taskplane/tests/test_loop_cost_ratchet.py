@@ -85,7 +85,7 @@ class TestTheScriptRunsStandalone(unittest.TestCase):
     def test_the_real_script_exits_zero_on_this_tree(self):
         proc = subprocess.run(
             [sys.executable, os.path.join(HERE, "scripts", "ci_loop_cost.py")],
-            capture_output=True, text=True, timeout=600, encoding="utf-8")
+            capture_output=True, text=True, timeout=600, encoding="utf-8", errors="replace")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("per-task cost holds", proc.stdout)
 

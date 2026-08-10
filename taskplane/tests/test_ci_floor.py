@@ -55,7 +55,7 @@ _RATCHET_MANIFEST = frozenset({
 def _run_script(*args, cwd=None):
     return subprocess.run([sys.executable, SCRIPT, *args],
                           capture_output=True, text=True,
-                          cwd=cwd or ROOT, encoding="utf-8")
+                          cwd=cwd or ROOT, encoding="utf-8", errors="replace")
 
 
 def _mk_tree(base, files):
@@ -210,7 +210,7 @@ class TestFloorScriptAgainstTheRealTree(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "-m", "unittest",
              "taskplane.tests.test_v097_fixes.TestHigh5StoreIsolation", "-v"],
-            capture_output=True, text=True, cwd=ROOT, env=env, encoding="utf-8")
+            capture_output=True, text=True, cwd=ROOT, env=env, encoding="utf-8", errors="replace")
         self.assertEqual(
             r.returncode, 0,
             "store isolation regressed under `python -m unittest`:\n"
@@ -296,7 +296,7 @@ class TestEnvMutationGuardSelfTest(unittest.TestCase):
             [sys.executable, "-m", "pytest", "-q",
              *[os.path.join("tests", f) for f in files]],
             capture_output=True, text=True, cwd=self.tmp,
-            env={**os.environ, "PYTHONPATH": ROOT}, encoding="utf-8")
+            env={**os.environ, "PYTHONPATH": ROOT}, encoding="utf-8", errors="replace")
 
     def _write(self, name, body):
         with open(os.path.join(self.tdir, name), "w", encoding="utf-8") as f:

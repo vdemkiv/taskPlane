@@ -694,7 +694,7 @@ def route_git_diff(workspace: str, base: str = "HEAD",
 
     def run(args):
         return subprocess.run(["git", *args], cwd=workspace,
-                              capture_output=True, text=True, encoding="utf-8").stdout
+                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
     files = [f for f in (run(["diff", "--name-only", base]) +
                          run(["ls-files", "--others", "--exclude-standard"])

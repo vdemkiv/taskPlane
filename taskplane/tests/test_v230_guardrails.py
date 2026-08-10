@@ -416,7 +416,7 @@ class TestPerTaskContractSlots(_StoreIsolated):
                  "tool_input": {"command": "echo hi"}}
         r = subprocess.run([sys.executable, TPPY, "screen"],
                            input=json.dumps(event), capture_output=True,
-                           text=True, env=env, encoding="utf-8")
+                           text=True, env=env, encoding="utf-8", errors="replace")
         d = json.loads(r.stdout)
         self.assertEqual(d["decision"], "block")
 
@@ -521,7 +521,7 @@ class TestUnittestRunnerIsolation(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "-m", "unittest",
              "taskplane.tests.test_requirements"],
-            cwd=ROOT, capture_output=True, text=True, env=env, encoding="utf-8")
+            cwd=ROOT, capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         self.assertFalse(
             os.path.exists(os.path.join(fake_home, ".taskplane")),

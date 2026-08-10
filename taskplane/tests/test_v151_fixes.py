@@ -30,7 +30,7 @@ def _cli(ws, *args, env=None):
     return subprocess.run([sys.executable, TPPY, *args,
                            "--workspace", ws],
                           capture_output=True, text=True,
-                          env={**os.environ, **(env or {})}, encoding="utf-8")
+                          env={**os.environ, **(env or {})}, encoding="utf-8", errors="replace")
 
 
 class _Ws(unittest.TestCase):
@@ -201,7 +201,7 @@ class TestShareUX(_Ws):
     def test_bare_share_is_usage_error_not_traceback(self):
         r = subprocess.run([sys.executable, TPPY, "share"],
                            capture_output=True, text=True,
-                           env={**os.environ}, encoding="utf-8")
+                           env={**os.environ}, encoding="utf-8", errors="replace")
         self.assertNotEqual(r.returncode, 0)
         self.assertNotIn("Traceback", r.stderr)
 

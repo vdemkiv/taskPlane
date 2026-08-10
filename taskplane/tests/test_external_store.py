@@ -37,14 +37,21 @@ def _repo(prefix="tp-store-"):
 
 def _status(ws):
     return subprocess.run(["git", "status", "--porcelain"], cwd=ws,
-                          capture_output=True, text=True, encoding="utf-8").stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 
 
 class TestKey(unittest.TestCase):
     def test_key_is_readable_slug_and_collision_free(self):
-        # The readable path slug is still the key's prefix...
-        k = tl.project_key("/Users/x/Documents/app")
-        self.assertTrue(k.startswith("-Users-x-Documents-app-"))
+        # The readable path slug is still the key's prefix. Asserted
+        # host-agnostically: the key derives from the CANONICAL absolute
+        # path, and on Windows that legitimately carries a drive letter
+        # ("C-Users-x-..."), so pinning the leading "-" pinned POSIX rather
+        # than the property — that every path segment survives, readably, in
+        # order.
+        k = tl.project_key(os.path.join(os.sep, "Users", "x", "Documents",
+                                        "app"))
+        self.assertIn("Users-x-Documents-app-", k)
+        self.assertRegex(k, r"-[0-9a-f]{8}$")
         # ...but paths that differ only by punctuation get DISTINCT keys
         # (v0.9.6 collapsed these to one shared store).
         keys = {tl.project_key(p) for p in
@@ -100,7 +107,7 @@ class TestExternalWrites(unittest.TestCase):
     def test_repo_stays_clean_after_init_and_decision(self):
         # the headline invariant
         r = subprocess.run([sys.executable, _TP_PY, "init"], cwd=self.ws,
-                           capture_output=True, text=True, encoding="utf-8")
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         kb.record_decision(self.ws, "a decision", decision="d")
         req.record_requirement(self.ws, "a requirement")
@@ -114,7 +121,7 @@ class TestExternalWrites(unittest.TestCase):
         self.assertEqual(dirty, [], f"repo not clean: {dirty}")
         # nothing knowledge-shaped is tracked
         tracked = subprocess.run(["git", "ls-files"], cwd=self.ws,
-                                 capture_output=True, text=True, encoding="utf-8").stdout
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
         self.assertNotIn("knowledge/", tracked)
 
     def test_graph_and_loop_state_in_store(self):
@@ -166,7 +173,7 @@ class TestMigration(unittest.TestCase):
 
     def test_migrate_moves_untracks_and_ignores(self):
         r = subprocess.run([sys.executable, _TP_PY, "kb", "migrate"],
-                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8")
+                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         # data moved out of the repo, into the store
         self.assertFalse(os.path.isdir(os.path.join(self.ws, "knowledge")))
@@ -176,14 +183,14 @@ class TestMigration(unittest.TestCase):
         self.assertEqual(len(kb.list_decisions(self.ws)), 1)
         # knowledge/ untracked + gitignored
         tracked = subprocess.run(["git", "ls-files"], cwd=self.ws,
-                                 capture_output=True, text=True, encoding="utf-8").stdout
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
         self.assertNotIn("knowledge/", tracked)
         self.assertIn("knowledge/", open(os.path.join(self.ws,
                       ".gitignore"), encoding="utf-8").read())
 
     def test_where_reports_paths(self):
         r = subprocess.run([sys.executable, _TP_PY, "kb", "where"],
-                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8")
+                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
         info = json.loads(r.stdout)
         self.assertTrue(info["legacy_in_repo_present"])
         self.assertFalse(info["migrated"])

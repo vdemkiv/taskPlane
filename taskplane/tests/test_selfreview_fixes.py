@@ -213,7 +213,7 @@ class TestKernelFailClosed(unittest.TestCase):
                 "tp.py"), "screen"],
             input=json.dumps({"cwd": ws, "tool_name": "Write",
                               "tool_input": {"file_path": "x"}}),
-            capture_output=True, text=True, encoding="utf-8")
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertIn('"decision": "block"', r.stdout)
 
     def test_no_contract_abstains(self):
@@ -228,7 +228,7 @@ class TestKernelFailClosed(unittest.TestCase):
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "tp.py"), "screen"],
             input=json.dumps({"cwd": ws, "tool_name": "Write"}),
-            capture_output=True, text=True, encoding="utf-8")
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.stdout.strip(), "")          # no forced decision
         self.assertNotIn('"decision"', r.stdout)
 
@@ -333,7 +333,7 @@ class TestOnboarding(unittest.TestCase):
             [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))), "tp.py"), "context",
              "--workspace", ws],
-            capture_output=True, text=True, env=env, check=False, encoding="utf-8")
+            capture_output=True, text=True, env=env, check=False, encoding="utf-8", errors="replace")
         self.assertEqual(p.returncode, 0)
         self.assertIn("no project folder is connected yet", p.stdout)
         self.assertIn("set up taskplane", p.stdout)
@@ -446,7 +446,7 @@ def _screen_once(ws, tool_name, tool_input):
         [sys.executable, _TP_PY, "screen"],
         input=json.dumps({"cwd": ws, "tool_name": tool_name,
                           "tool_input": tool_input}),
-        capture_output=True, text=True, encoding="utf-8")
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.stdout
 
 
@@ -524,7 +524,7 @@ class TestContractSchemaUnified(unittest.TestCase):
         tl.activate(ws, c)
         for verb in (["status"], ["budget", "--spent", "1"]):
             r = subprocess.run([sys.executable, _TP_PY, *verb],
-                               cwd=ws, capture_output=True, text=True, encoding="utf-8")
+                               cwd=ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn("KeyError", r.stderr)
 
@@ -532,7 +532,7 @@ class TestContractSchemaUnified(unittest.TestCase):
         ws = _repo()
         r = subprocess.run([sys.executable, _TP_PY, "req", "new", "t",
                             "--nfr", "security"], cwd=ws,
-                           capture_output=True, text=True, encoding="utf-8")
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertNotEqual(r.returncode, 0)
         self.assertNotIn("Traceback", r.stderr)
         self.assertIn("LENS=STATEMENT", r.stderr)

@@ -1,0 +1,22 @@
+# Line endings are part of this repository's test contract.
+#
+# Several suites compare bytes: the audit differential and the stage-wave
+# goldens assert byte-identity against committed fixtures. With git's default
+# Windows behaviour those fixtures are checked out CRLF while the code that
+# produces them emits LF, so the comparison fails on Windows and nowhere
+# else — a portability failure manufactured by the checkout rather than by
+# the code.
+#
+# Normalize text to LF in the working tree on every platform. Assets are
+# marked binary so they are never touched.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.plugin binary
