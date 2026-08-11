@@ -32,6 +32,22 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
+**What's new in v2.8 — the dependency graph now describes your codebase.**
+Reviews lean on the graph to decide what a change touches, and until now
+nothing scored whether the graph was RIGHT. An accuracy harness against four
+hand-authored repo profiles found four defects and all four are fixed: module
+ids come from your build manifests where you declare them (npm workspaces and
+go.mod, so a monorepo module is `@acme/ui` rather than an invented `ui`); a
+nested `src/` no longer renames a module after a convention or merges two
+sibling apps into one node; markdown skills, agents, lenses, SQL, IaC and CI
+are first-class nodes with their files, so a repo whose product is not source
+code stops being invisible; and components that talk by NAMING each other
+finally have edges. On this repo that is 6 modules and 4 internal edges before,
+28 and 120 after. A repo can also declare which trees are not its product code
+in `components.yaml`. Also in v2.8: a whole-codebase review no longer fans out
+26 subagents under a cap of 8, and content detectors stopped firing on
+documentation that merely DESCRIBES what they look for.
+
 **What routing looks like now (v2.7).** Reviews don't run all 26 lenses
 blindly: the router scores each lens against the ACTUAL diff — paths,
 content, density, the dependency graph — and stage profiles (design/build/

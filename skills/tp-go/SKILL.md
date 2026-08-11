@@ -15,6 +15,21 @@ out of the user's way unless they ask. Do not simplify any of them for
 agents. The CLI surfaces named below are current as of v2.7 — verify against
 `$TP --help` before citing anything not listed here.
 
+**New in v2.8 — trust the graph, and watch the fan-out.**
+Module ids now come from build manifests where a repo declares them, so on a
+monorepo `graph impact` answers `@acme/ui` rather than an invented `ui` — an
+id you can carry back to the codebase. Markdown skills/agents/lenses, SQL,
+IaC and CI are graph nodes with their files, and references between
+components (a skill naming an agent, a module reading a catalog) are edges,
+so blast radius covers the non-code half of a repo for the first time. Two
+consequences for you: the graph tab will be much denser than you remember,
+and a `--all` review now DEMOTES lenses past the deep cap to inline rather
+than dispatching a subagent each — everything still runs, and each demotion
+records why. A `tests_pass` satisfied by CITING an identical-content run says
+so in the DoD output now; if you are signing off, read that line. And when
+the dashboard fails to render, the payload says so explicitly instead of
+silently omitting the field — do not present a stale board as current.
+
 **New in v2.7 — the lenses got sharper and the fan-out got a budget.**
 All 26 lenses were rewritten against current industry practice. Two things
 change what you will see: many lenses now carry an ABSTAIN rule and will
