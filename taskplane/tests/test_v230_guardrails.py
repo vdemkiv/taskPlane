@@ -584,11 +584,21 @@ except ImportError:            # pragma: no cover - windows
     _HAVE_FCNTL = False
 
 
-@unittest.skipUnless(_HAVE_FCNTL,
-                     "these cases force the flock path to FAIL so the mkdir "
-                     "fallback is exercised; without fcntl the host is "
-                     "already on the fallback and there is nothing to force")
+_NEEDS_FLOCK = unittest.skipUnless(
+    _HAVE_FCNTL,
+    "this case PATCHES fcntl.flock to force the mkdir fallback; a host "
+    "without fcntl is already on the fallback, so there is nothing to "
+    "force and no fcntl to patch")
+
+
 class TestFileLock(unittest.TestCase):
+    """Only the cases that PATCH `fcntl.flock` are POSIX-only, and only
+    those carry the skip. The lifecycle cases patch nothing and run on
+    every host — which is the point: Windows has no fcntl, so there the
+    mkdir path is not a fallback at all, it is the production lock. A
+    class-level skip would have left the lock taskplane actually uses on
+    that host completely unexercised."""
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -606,6 +616,7 @@ class TestFileLock(unittest.TestCase):
             with tpl.file_lock(self.p):
                 raise OSError("disk full")
 
+    @_NEEDS_FLOCK
     def test_flockless_host_uses_mkdir_fallback_not_no_lock(self):
         with mock.patch("fcntl.flock", side_effect=OSError("no flock")):
             lockdir = self.p + ".lockdir"
@@ -613,6 +624,7 @@ class TestFileLock(unittest.TestCase):
                 self.assertTrue(os.path.isdir(lockdir))
             self.assertFalse(os.path.isdir(lockdir))
 
+    @_NEEDS_FLOCK
     def test_unacquirable_lock_raises_stateerror(self):
         with mock.patch("fcntl.flock", side_effect=OSError("no flock")):
             os.makedirs(self.p + ".lockdir")     # someone else holds it
@@ -620,6 +632,7 @@ class TestFileLock(unittest.TestCase):
                 with tpl.file_lock(self.p, timeout=0.3):
                     pass
 
+    @_NEEDS_FLOCK
     def test_stale_mkdir_lock_is_stolen(self):
         with mock.patch("fcntl.flock", side_effect=OSError("no flock")):
             lockdir = self.p + ".lockdir"

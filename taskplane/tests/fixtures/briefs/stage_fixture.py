@@ -178,6 +178,10 @@ def scrub_tokens(ws: str, store: "str | None" = None) -> list:
                         (os.path.join(PLUGIN_ROOT, ""), "<PLUGIN>/"),
                         (PLUGIN_ROOT, "<PLUGIN>")):
         subs.append((real, token))
+        # '/'-shaped variant: payload paths are normalized before emission
+        # (cross-host artifacts), while these roots are host-shaped.
+        if "\\" in real:
+            subs.append((real.replace("\\", "/"), token))
         real_r = os.path.realpath(real.rstrip(os.sep))
         if real_r != real.rstrip(os.sep):
             subs.append((real_r + ("/" if real.endswith(os.sep) else ""),

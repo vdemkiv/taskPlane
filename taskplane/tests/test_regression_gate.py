@@ -3,6 +3,14 @@
 These exercise the pure decision logic and the radius/coverage selection
 against a tiny synthetic package tree, plus the real taskplane tree, so the
 gate is verified without spawning nested pytest runs.
+
+
+Path shape: the radius, the approved test roots and the test-import
+index are all '/'-shaped by contract — that is precisely what makes the
+containment check ("fallback may only widen inside an approved root")
+work on every host. Expectations here are therefore written with "/" and
+never with os.path.join, which asserts the HOST's shape and failed on
+Windows against a radius that was correct.
 """
 import os
 import subprocess
@@ -54,7 +62,7 @@ def _mk_pkg(tmp_path):
 def test_radius_selects_only_tests_covering_changed_module(tmp_path):
     ws = _mk_pkg(tmp_path)
     radius, degraded = rg.radius_tests(ws, ["taskplane/loop.py"])
-    assert radius == {os.path.join("taskplane", "tests", "test_loop_x.py")}
+    assert radius == {"taskplane/tests/test_loop_x.py"}
     assert degraded is False
 
 
@@ -64,8 +72,8 @@ def test_radius_degrades_when_changed_module_has_no_test(tmp_path):
     radius, degraded = rg.radius_tests(ws, ["taskplane/tp.py"])
     assert degraded is True
     assert radius == {
-        os.path.join("taskplane", "tests", "test_dash_x.py"),
-        os.path.join("taskplane", "tests", "test_loop_x.py"),
+        "taskplane/tests/test_dash_x.py",
+        "taskplane/tests/test_loop_x.py",
     }
 
 
@@ -81,7 +89,7 @@ def test_graph_impacted_widens_radius(tmp_path):
     # changing loop, but graph says dashboard is impacted too → both tests
     radius, _ = rg.radius_tests(ws, ["taskplane/loop.py"],
                                 graph_impacted=["taskplane/dashboard.py"])
-    assert os.path.join("taskplane", "tests", "test_dash_x.py") in radius
+    assert "taskplane/tests/test_dash_x.py" in radius
 
 
 def test_depth_keyed_graph_impact_widens_radius(tmp_path):
@@ -89,7 +97,7 @@ def test_depth_keyed_graph_impact_widens_radius(tmp_path):
     impact = {1: [{"module": "taskplane/dashboard.py", "via": "loop"}]}
     radius, _ = rg.radius_tests(
         ws, ["taskplane/loop.py"], graph_impacted=impact)
-    assert os.path.join("taskplane", "tests", "test_dash_x.py") in radius
+    assert "taskplane/tests/test_dash_x.py" in radius
 
 
 def test_radius_supports_source_and_tests_outside_taskplane_layout(tmp_path):
@@ -105,7 +113,7 @@ def test_radius_supports_source_and_tests_outside_taskplane_layout(tmp_path):
     radius, degraded = rg.radius_tests(
         str(tmp_path), ["src/acme/service.py"])
 
-    assert radius == {os.path.join("tests", "test_service.py")}
+    assert radius == {"tests/test_service.py"}
     assert degraded is False
 
 
@@ -123,8 +131,8 @@ def test_unmapped_generic_module_falls_back_to_every_python_test(tmp_path):
 
     assert degraded is True
     assert radius == {
-        os.path.join("tests", "test_one.py"),
-        os.path.join("tests", "test_two.py"),
+        "tests/test_one.py",
+        "tests/test_two.py",
     }
 
 
@@ -364,7 +372,7 @@ def test_enforcement_module_covered_by_radius_is_not_a_gap(tmp_path):
     (tmp_path / "taskplane" / "tests" / "test_lite_x.py").write_text(
         "from taskplane import taskplane_lite\ndef test_s(): pass\n")
     index = rg.test_import_index(ws)
-    radius = {os.path.join("taskplane", "tests", "test_lite_x.py")}
+    radius = {"taskplane/tests/test_lite_x.py"}
     gaps = rg.coverage_gaps(
         ["taskplane/taskplane_lite.py"], radius=radius, ws=ws,
         import_index=index)
@@ -393,7 +401,7 @@ def test_scratch_mirror_cannot_impersonate_real_enforcement_path(tmp_path):
 
 def test_regression_scan_flags_regression_with_injected_runners(tmp_path):
     ws = _mk_pkg(tmp_path)
-    tfile = os.path.join("taskplane", "tests", "test_loop_x.py")
+    tfile = "taskplane/tests/test_loop_x.py"
 
     def now(_ws, files):
         return {f"{tfile}::test_g"} if files else set()
@@ -409,7 +417,7 @@ def test_regression_scan_flags_regression_with_injected_runners(tmp_path):
 
 def test_regression_scan_preexisting_does_not_block(tmp_path):
     ws = _mk_pkg(tmp_path)
-    tfile = os.path.join("taskplane", "tests", "test_loop_x.py")
+    tfile = "taskplane/tests/test_loop_x.py"
 
     def now(_ws, files):
         return {f"{tfile}::test_g"}

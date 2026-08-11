@@ -91,11 +91,15 @@ def _assert_deterministic(payload):
 def scrub(payload):
     """Replace the emitted absolute role-instruction root portably."""
     if isinstance(payload, str):
+        # Either separator shape: the emitted role path is '/'-shaped on
+        # every host now, while PLUGIN_ROOT is host-shaped.
         root = PLUGIN_ROOT.rstrip("/\\")
-        if payload.startswith(root):
-            suffix = payload[len(root):].lstrip("/\\").replace("\\", "/")
-            return "<PLUGIN>/" + suffix if suffix else "<PLUGIN>"
-        return payload.replace(root, "<PLUGIN>")
+        for cand in (root, root.replace("\\", "/")):
+            if payload.startswith(cand):
+                suffix = payload[len(cand):].lstrip("/\\").replace("\\", "/")
+                return "<PLUGIN>/" + suffix if suffix else "<PLUGIN>"
+        return (payload.replace(root, "<PLUGIN>")
+                .replace(root.replace("\\", "/"), "<PLUGIN>"))
     if isinstance(payload, list):
         return [scrub(item) for item in payload]
     if isinstance(payload, dict):

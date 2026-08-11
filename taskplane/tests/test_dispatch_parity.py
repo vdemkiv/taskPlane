@@ -64,12 +64,23 @@ SCRUB_VARS = ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
 
 
 def _scrub_plugin_root(value, root=PLUGIN_ROOT):
+    """Replace the plugin root with <PLUGIN>, in EITHER separator shape.
+
+    Dispatch briefs now emit '/'-shaped role-instruction paths on every host
+    (they are cross-host artifacts compared byte for byte), while
+    `PLUGIN_ROOT` is host-shaped. On Windows the two no longer matched, so
+    the scrub silently did nothing and the golden compare failed on a real
+    absolute path. Only the ROOT is substituted — unrelated text is never
+    rewritten.
+    """
     if isinstance(value, str):
         base = root.rstrip("/\\")
-        if value.startswith(base):
-            suffix = value[len(base):].lstrip("/\\").replace("\\", "/")
-            return "<PLUGIN>/" + suffix if suffix else "<PLUGIN>"
-        return value.replace(base, "<PLUGIN>")
+        for cand in (base, base.replace("\\", "/")):
+            if value.startswith(cand):
+                suffix = value[len(cand):].lstrip("/\\").replace("\\", "/")
+                return "<PLUGIN>/" + suffix if suffix else "<PLUGIN>"
+        return (value.replace(base, "<PLUGIN>")
+                .replace(base.replace("\\", "/"), "<PLUGIN>"))
     if isinstance(value, list):
         return [_scrub_plugin_root(item, root) for item in value]
     if isinstance(value, dict):
