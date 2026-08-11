@@ -1617,6 +1617,30 @@ def cmd_lens(a) -> int:
     return 0
 
 
+def cmd_yield(a) -> int:
+    """What the harness RETURNS, beside what ci_loop_cost.py says it costs.
+
+    Read-only and advisory by construction: this command cannot fail a
+    build or block a gate, and nothing in the engine reads its ledger. It
+    exists so that dropping a lens is a decision backed by evidence rather
+    than by taste.
+    """
+    import yield_meter
+    ws = _workspace(a.workspace)
+    if a.yield_action == "mark":
+        res = yield_meter.record_disposition(
+            ws, a.finding, a.verdict, by=getattr(a, "by", None) or None,
+            note=getattr(a, "note", "") or "")
+        print(json.dumps(res, indent=2) if a.json
+              else (res.get("error") or
+                    f"{res['verdict']}: {res['recorded']}"))
+        return 1 if res.get("error") else 0
+    rep = yield_meter.report(ws)
+    print(json.dumps(rep, indent=2, sort_keys=True) if a.json
+          else yield_meter.render(rep))
+    return 0
+
+
 def cmd_kb(a) -> int:
     """Record / retrieve / list knowledge-base decisions."""
     import kb as kbmod
@@ -2946,6 +2970,21 @@ def main(argv=None) -> int:
                           "host runtime is detected (Codex: always task)")
     lnd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnd.set_defaults(fn=cmd_lens)
+
+    yl = sub.add_parser("yield", help="what the harness returns (lens yield "
+                        "and where findings are caught) — advisory, gates "
+                        "nothing")
+    yl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    yl.add_argument("--json", action="store_true",
+                    help="emit the raw report instead of the table")
+    ylsub = yl.add_subparsers(dest="yield_action")
+    ym = ylsub.add_parser("mark", help="record a human verdict on one "
+                          "finding: acted or dismissed")
+    ym.add_argument("finding", help="the finding fingerprint from `tp yield`")
+    ym.add_argument("verdict", choices=["acted", "dismissed"])
+    ym.add_argument("--by", help="who decided (attribution, like gates)")
+    ym.add_argument("--note", default="", help="why, in one line")
+    yl.set_defaults(fn=cmd_yield)
 
     kbp = sub.add_parser("kb", help="knowledge base (decisions)")
     kbp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)

@@ -95,6 +95,8 @@ not repeated in the tables.
 | `tp.py track new` | open a new track |
 | `tp.py track switch` | make another track the active one |
 | `tp.py version` | print the plugin version; --verify cross-checks every derived version surface against the single source (.codex-plugin/plugin.json) — CI-callable, exit 1 on drift |
+| `tp.py yield` | what the harness returns (lens yield and where findings are caught) — advisory, gates nothing |
+| `tp.py yield mark` | record a human verdict on one finding: acted or dismissed |
 
 ## `tp.py budget`
 
@@ -821,3 +823,26 @@ print the plugin version; --verify cross-checks every derived version surface ag
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--verify` | flag | cross-check every derived version surface against the single source; exit 1 on drift |
+
+## `tp.py yield`
+
+what the harness returns (lens yield and where findings are caught) — advisory, gates nothing
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--json` | flag | emit the raw report instead of the table |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py yield mark`
+
+record a human verdict on one finding: acted or dismissed
+
+Positional arguments:
+
+- `finding` — the finding fingerprint from `tp yield`
+- `verdict`
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY | who decided (attribution, like gates) |
+| `--note` | NOTE | why, in one line |
