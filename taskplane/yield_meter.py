@@ -59,18 +59,26 @@ import taskplane_lite as tp
 
 LEDGER = "yield.jsonl"
 
-# The gate that caught a finding, cheapest first. `post-signoff` is not a
-# loop step: it is anything filed against work already signed off.
-CAUGHT_ORDER = ("plan", "design", "design_approval", "execute", "evaluate",
-                "review", "signoff", "post-signoff")
+# Reporting order, cheapest bucket first. Derived from BUCKETS below rather
+# than restated, because the first version was a hand-written second list
+# that named a step (`review`) the engine does not emit and was then never
+# read by anything — a constant that documented a lie.
 
 # Headline buckets. The point of the metric is the cost of lateness, so the
 # per-step counts roll up into three that differ by an order of magnitude.
+# The ENGINE's step ids, not plausible-looking synonyms. `em` is the review
+# step (loop.py); `review` is not a step the loop ever emits. The first
+# version listed `review` and relied on _bucket()'s fallthrough, so every em
+# finding landed in at_review by accident and `fix` — a genuine in-task step
+# — landed there too. Change the fallthrough and the headline inverts.
 BUCKETS = {
-    "in_task": ("execute", "evaluate"),
-    "at_review": ("review", "signoff", "plan", "design", "design_approval"),
+    "in_task": ("execute", "evaluate", "fix"),
+    "at_review": ("em", "signoff", "plan", "design", "design_approval"),
     "after_signoff": ("post-signoff",),
 }
+# Every step id BUCKETS knows, so a step the engine adds later cannot be
+# silently absorbed by the fallthrough.
+KNOWN_STEPS = frozenset(s for steps in BUCKETS.values() for s in steps)
 
 _WS = re.compile(r"\s+")
 # `foo.py:12`, `#12`, and the prose forms `line 12` / `L12`. Not every digit
@@ -233,14 +241,25 @@ def gate_snapshot(ws: str, step: str, outcome: str) -> None:
         pass
 
 
-def _artifact(ws: str, step: str):
-    """(findings, routed_lenses) for a step, from whatever it actually wrote.
+# Which step actually writes .em-review/findings.json. Everything else must
+# NOT read it: loop.gate calls gate_snapshot on EVERY transition and nothing
+# deletes that file, so a step-blind read re-recorded one review's findings
+# at the next fix and evaluate gates — inflating the count AND landing them
+# in the cheap in-task bucket, i.e. moving the headline metric in the
+# flattering direction.
+_FINDINGS_STEPS = frozenset({"em", "signoff"})
 
-    Only the em/review path produces identified findings. The evaluate path
+
+def _artifact(ws: str, step: str):
+    """(findings, routed_lenses) for a step, from whatever THAT step wrote.
+
+    Only the em/signoff path produces identified findings. The evaluate path
     reports per-lens counts, which are recorded separately by the caller of
     `record_counts` rather than being inflated into findings here.
     """
     findings, routed = [], []
+    if step not in _FINDINGS_STEPS:
+        return findings, routed
     doc = _load(os.path.join(ws, ".em-review", "findings.json"))
     if isinstance(doc, dict):
         raw = doc.get("findings")
@@ -348,7 +367,18 @@ def report(ws: str) -> dict:
             continue
         first_seen.setdefault(fp, ts)
         last_seen[fp] = max(last_seen.get(fp, 0), ts)
-    newest_review = max((r.get("ts") or 0 for r in reviews), default=0)
+    # PER LENS, not global. The comment above states the rule as "the latest
+    # review that ITS LENS fired in" and the first version computed one
+    # global newest — so a security finding was marked stopped_recurring the
+    # moment ANY later review landed, including one that routed no lenses in
+    # common with it. That populates the inference column with events
+    # carrying no information about the finding.
+    newest_by_lens = {}
+    for r in reviews:
+        ts = r.get("ts") or 0
+        for lid in r.get("fired") or []:
+            if ts > newest_by_lens.get(lid, 0):
+                newest_by_lens[lid] = ts
 
     lenses, seen_fp = {}, set()
     for r in findings:
@@ -369,12 +399,16 @@ def report(ws: str) -> dict:
             row["acted"] += 1
         elif verdict == "dismissed":
             row["dismissed"] += 1
-        elif newest_review <= (first_seen.get(fp) or 0):
-            row["unknown"] += 1          # no later review has happened yet
-        elif (last_seen.get(fp) or 0) < newest_review:
-            row["stopped_recurring"] += 1
         else:
-            row["persisted"] += 1
+            # Only reviews THIS lens fired in can say anything about
+            # whether its finding recurred.
+            newest = newest_by_lens.get(lid, 0)
+            if newest <= (first_seen.get(fp) or 0):
+                row["unknown"] += 1      # no later review OF THIS LENS yet
+            elif (last_seen.get(fp) or 0) < newest:
+                row["stopped_recurring"] += 1
+            else:
+                row["persisted"] += 1
     for lid, count in fired.items():
         lenses.setdefault(lid, {
             "lens": lid, "fired": 0, "findings": 0, "blockers": 0,
