@@ -64,15 +64,55 @@ class _Base(unittest.TestCase):
 
 
 class TestTeamStorePublish(_Base):
-    def test_gate_publishes_into_repo_store(self):
+    """UPDATED for D-0013. Two assertions here pinned the defect: on a team
+    plan the store is `<repo>/.taskplane-kb/`, committed with the work, and
+    a gate transition auto-copied the rendered dashboard and the model-
+    authored `.em-review/findings.json` into it. PRIVACY.md promises the
+    opposite in two places — that `.em-review/` and `.taskplane/` stay local
+    and git-ignored on BOTH plans, and that publishing to a shared store is
+    "a deliberate human act". No human act was involved; a gate was.
+
+    What is pinned now is the corrected contract: the structured, already-
+    committed material publishes, the model-authored prose does not, and
+    what was withheld is NAMED rather than silently dropped."""
+
+    def test_gate_publishes_structured_artifacts_into_repo_store(self):
         tp.set_mode(self.ws, plan="team")
         root = self._run_to_gate()
         self.assertTrue(root.startswith(self.ws), root)   # in-repo
         self.assertIn(".taskplane-kb", root)
         self.assertTrue(os.path.isfile(
-            os.path.join(root, "dashboard.html")))
-        self.assertTrue(os.path.isfile(
             os.path.join(root, "HEADLINES.md")))
+
+    def test_model_authored_prose_is_not_auto_committed(self):
+        tp.set_mode(self.ws, plan="team")
+        root = self._run_to_gate()
+        self.assertFalse(os.path.exists(
+            os.path.join(root, "dashboard.html")),
+            "the rendered dashboard embeds review prose and must not land "
+            "in a committed store without a human act")
+
+    def test_the_opt_in_is_what_publishes_it(self):
+        """The complement — this is a CONSENT gate, not a capability
+        removal. A team that wants review artifacts in the repo says so."""
+        tp.set_mode(self.ws, plan="team")
+        os.environ["TASKPLANE_PUBLISH_REVIEW"] = "1"
+        try:
+            root = self._run_to_gate()
+            self.assertTrue(os.path.isfile(
+                os.path.join(root, "dashboard.html")))
+        finally:
+            os.environ.pop("TASKPLANE_PUBLISH_REVIEW", None)
+
+    def test_an_external_store_is_unchanged(self):
+        """PRIVACY.md's promise is about a COMMITTED store. A personal plan
+        publishes to `~/.taskplane`, outside the repo and private, which is
+        exactly the situation the policy describes as fine."""
+        tp.set_mode(self.ws, plan="personal")
+        root = self._run_to_gate()
+        self.assertFalse(root.startswith(self.ws), root)
+        self.assertTrue(os.path.isfile(
+            os.path.join(root, "dashboard.html")))
 
     def test_gate_payload_names_artifacts(self):
         tp.set_mode(self.ws, plan="team")
@@ -82,7 +122,10 @@ class TestTeamStorePublish(_Base):
         self.assertIn("artifacts", out)
         self.assertIn("token cache", out["artifacts"]["note"])
 
-    def test_plan_and_findings_snapshot_when_present(self):
+    def test_the_plan_snapshots_but_the_findings_do_not(self):
+        """`plan/plan.md` is the repo's own committed material and a human
+        approved it at the plan gate. `.em-review/findings.json` is model
+        output nobody consented to publish."""
         tp.set_mode(self.ws, plan="team")
         os.makedirs(os.path.join(self.ws, "plan"))
         open(os.path.join(self.ws, "plan", "plan.md"), "w", encoding="utf-8").write("# plan\n")
@@ -92,7 +135,22 @@ class TestTeamStorePublish(_Base):
             json.dump({"findings": []}, f)
         root = self._run_to_gate()
         self.assertTrue(os.path.isfile(os.path.join(root, "plan.md")))
-        self.assertTrue(os.path.isfile(os.path.join(root, "findings.json")))
+        self.assertFalse(os.path.exists(os.path.join(root, "findings.json")))
+
+    def test_what_was_withheld_is_named_in_the_payload(self):
+        """Silently omitting the review would be its own defect: a reader of
+        the snapshot must be able to tell it is incomplete, and why."""
+        tp.set_mode(self.ws, plan="team")
+        os.makedirs(os.path.join(self.ws, ".em-review"))
+        with open(os.path.join(self.ws, ".em-review", "report.md"),
+                  "w", encoding="utf-8") as f:
+            f.write("# review\n")
+        loop.init(self.ws, "withheld-goal")
+        self._spec(self.ws)
+        out = loop.gate(self.ws, "pass")
+        art = out.get("artifacts") or {}
+        self.assertIn("report.md", art.get("withheld") or [])
+        self.assertIn("deliberate human act", art.get("withheld_reason", ""))
 
     def test_headlines_append_without_consecutive_dupes(self):
         tp.set_mode(self.ws, plan="team")

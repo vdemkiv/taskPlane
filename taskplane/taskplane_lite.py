@@ -1379,6 +1379,37 @@ def suite_cache_enabled() -> bool:
     return os.environ.get("TASKPLANE_NO_SUITE_CACHE", "") not in ("1", "true")
 
 
+# D-0008. `tests_pass` is the gate that says behaviour was verified, and a
+# citation satisfies it with no test run. The key binds tree content, the
+# command, the engine and a few env vars — everything the PRODUCT controls.
+# It cannot bind what it does not see: the interpreter minor version, the
+# installed package set, the OS libraries. Those drift, and the record
+# carried a `ts` that nothing ever read, so a green result from months ago
+# still discharged today's gate.
+#
+# A citation is therefore bounded in TIME as well as content. Inside the
+# window it is what it claims to be — the same bytes verified minutes or
+# hours ago, which is what makes a parallel wave cost one suite run instead
+# of one per task. Outside it, the environment is no longer a safe
+# assumption and the suite runs again.
+SUITE_CACHE_MAX_AGE_S = 24 * 3600
+
+
+def suite_cache_max_age() -> float:
+    """Window in seconds; TASKPLANE_SUITE_CACHE_MAX_AGE overrides.
+
+    0 or negative disables citation entirely (always re-run), which is the
+    stricter direction and therefore always safe to set.
+    """
+    raw = os.environ.get("TASKPLANE_SUITE_CACHE_MAX_AGE", "").strip()
+    if not raw:
+        return float(SUITE_CACHE_MAX_AGE_S)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(SUITE_CACHE_MAX_AGE_S)
+
+
 def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
     """A prior result for this exact (tree, command, engine, env), or None.
     Never raises: any doubt returns None and the caller runs."""
@@ -1396,6 +1427,17 @@ def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
         return None
     if rec.get("command") != str(command) or rec.get("key") != key:
         return None            # corrupt or mismatched entry → run it
+    max_age = suite_cache_max_age()
+    try:
+        age = _time.time() - float(rec.get("ts") or 0)
+    except (TypeError, ValueError):
+        return None            # undatable evidence is not evidence
+    if max_age <= 0 or age > max_age:
+        with _contextlib.suppress(Exception):
+            trace(workspace, "suite_cache_stale", command=str(command),
+                  age_s=round(age), max_age_s=max_age)
+        return None            # too old to stand in for a run
+    rec["age_s"] = round(age, 1)
     return rec
 
 
@@ -1581,9 +1623,16 @@ def dor_check(contract: dict, workspace: str,
 def dod_check(contract: dict, workspace: str,
               snapshot_ref: str | None,
               ignore_prefixes: tuple = (),
-              regression_files=None) -> list:
+              regression_files=None,
+              notices: list | None = None) -> list:
     """Return a list of DoD errors ([] = pass). Fails closed if a scope
     diff is required but no snapshot exists.
+
+    `notices` (D-0008): pass a list to receive non-blocking facts a human
+    should see before signing off — today, that `tests_pass` was satisfied
+    by CITING an identical-content run rather than executing one. That fact
+    lived only in the trace, which nobody reads at a gate. Optional so the
+    four existing callers are unchanged; the ones a human reads pass it.
 
     ignore_prefixes (A2, R-0007): path prefixes EXCLUDED from the scope
     diff. Default () — non-loop callers are unchanged. The loop's per-task
@@ -1637,6 +1686,15 @@ def dod_check(contract: dict, workspace: str,
                   key=hit.get("key"), returncode=hit.get("returncode"),
                   seconds_saved=hit.get("duration_s"),
                   produced_in=hit.get("produced_in"))
+            if notices is not None:
+                where = hit.get("produced_in")
+                notices.append(
+                    f"tests_pass: '{tc}' was CITED, not executed — an "
+                    f"identical-content run {int(hit.get('age_s') or 0)}s ago"
+                    + (f" in {where}" if where else "")
+                    + f" (exit {hit.get('returncode')}). Same bytes, same "
+                    "engine. Set TASKPLANE_NO_SUITE_CACHE=1 to force "
+                    "execution.")
             if hit.get("returncode") != 0:
                 errors.append(f"tests_pass: '{tc}' exited "
                               f"{hit.get('returncode')}: {hit.get('tail')} "
@@ -3449,21 +3507,83 @@ def load_active(workspace: str) -> dict | None:
 # that silently stops recording lets a later incident review mistake "denies
 # happened but tracing was broken" for "no denies happened".
 _TRACE_FAILED_WARNED = False
-# Rotation bound for the only-growing trace.jsonl: past this size the file is
-# archived to trace.jsonl.1 (one generation kept, replacing the previous) and
-# the new file opens with a trace_rotated record naming the archive — the log
-# is bounded AND says what it moved aside.
+# Rotation bound for the only-growing trace.jsonl. Past this size the ACTIVE
+# file is archived and a fresh one opens with a trace_rotated record naming
+# the archive.
+#
+# D-0014. This used to rotate to a fixed `trace.jsonl.1`, so the SECOND
+# rotation silently destroyed the first archive — while the record it wrote
+# said "earlier events moved aside, not lost". An audit trace that deletes
+# its own oldest generation and then asserts it did not is worse than one
+# that never rotated: the false claim is what makes it dangerous, because
+# the only reader who would notice is the one auditing the gap.
+#
+# Archives are now a monotonic sequence and no generation is ever reused.
+# The bound is on the ACTIVE file — which is what keeps appends and reads
+# cheap — not on the history, which is the thing being audited.
 _TRACE_MAX_BYTES = 5 * 1024 * 1024
 
 
-def _maybe_rotate_trace(path: str) -> bool:
+def _reserve_trace_archive(path: str) -> "str | None":
+    """Claim the next unused `trace.jsonl.<n>`, atomically.
+
+    O_CREAT|O_EXCL is the claim: two processes rotating at once cannot both
+    win the same n, so neither can land on top of the other's history. The
+    empty placeholder is then replaced by the real file.
+    """
+    n = 1
+    while n < 100000:
+        dest = f"{path}.{n}"
+        try:
+            fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            n += 1
+            continue
+        except OSError:
+            return None
+        os.close(fd)
+        return dest
+    return None
+
+
+def _maybe_rotate_trace(path: str) -> "str | None":
+    """The archive path this call created, or None if it did not rotate."""
     try:
         if os.path.getsize(path) <= _TRACE_MAX_BYTES:
-            return False
-        os.replace(path, path + ".1")
-        return True
+            return None
+        dest = _reserve_trace_archive(path)
+        if dest is None:
+            return None      # cannot archive without overwriting: do not
+        os.replace(path, dest)
+        return dest
     except OSError:
-        return False
+        return None
+
+
+def trace_paths(workspace: str) -> list:
+    """Every trace file for this workspace, OLDEST first, active last.
+
+    Rotation splits one logical audit trace across files; a consumer that
+    reads only `trace.jsonl` is reading the tail of the record and cannot
+    tell. Anything mining a whole track's history (retro, cost analysis)
+    reads this instead.
+    """
+    d = tp_dir(workspace)
+    base = os.path.join(d, "trace.jsonl")
+    archives = []
+    try:
+        for name in os.listdir(d):
+            if not name.startswith("trace.jsonl."):
+                continue
+            suffix = name[len("trace.jsonl."):]
+            if suffix.isdigit():
+                archives.append((int(suffix), os.path.join(d, name)))
+    except OSError:
+        pass
+    out = [p for _n, p in sorted(archives)]
+    if os.path.exists(base):
+        out.append(base)
+    return out
 
 
 def screen_liveness(workspace: str, contract: dict | None = None,
@@ -3516,13 +3636,17 @@ def trace(workspace: str, event: str, **data) -> None:
         os.makedirs(d, exist_ok=True)
         _ensure_self_ignored(d)
         path = os.path.join(d, "trace.jsonl")
-        rotated = _maybe_rotate_trace(path)
+        archived_to = _maybe_rotate_trace(path)
         with open(path, "a", encoding="utf-8") as f:
-            if rotated:
+            if archived_to:
                 f.write(json.dumps(
                     {"event": "trace_rotated", "ts": time.time(),
-                     "archived_to": path + ".1",
-                     "note": "earlier events moved aside, not lost"}) + "\n")
+                     "archived_to": to_posix(
+                         os.path.relpath(archived_to, workspace)),
+                     "note": "earlier events moved aside, not lost — "
+                             "no archive is ever reused or overwritten; "
+                             "read the whole record with "
+                             "taskplane_lite.trace_paths()"}) + "\n")
             f.write(json.dumps(rec, default=str) + "\n")
     except OSError as e:
         # NEVER crash the hook over a broken audit log — but never go dark

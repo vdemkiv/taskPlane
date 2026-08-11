@@ -335,7 +335,12 @@ class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
     # and `_file_refs` normalizes `\` out of every candidate token before
     # looking it up, so a Windows scan resolves `agents\reviewer.md` in a
     # markdown body to the same edge a Linux scan does.
-    PINS = {"depgraph.py": 15, "decompose.py": 3}
+    # 15 -> 16 (D-0010 wave, Maven dependency edges): the pom reader joins a
+    # repo-relative manifest path onto the workspace root to OPEN it. Third
+    # instance of the same filesystem-access category, and like the others
+    # every id it derives goes through posixpath — the artifactId it emits is
+    # a bare `ext:<name>` with no separator in it at all.
+    PINS = {"depgraph.py": 16, "decompose.py": 3}
 
     def test_host_shaped_path_calls_do_not_grow(self):
         import re

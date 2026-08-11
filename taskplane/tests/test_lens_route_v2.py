@@ -263,13 +263,33 @@ LEGACY_SNAPSHOT = json.loads(r"""
   "task_type": "feature",
   "artifact_type": null,
   "breadth": "routed",
-  "hub_dependents": 0
+  "hub_dependents": 0,
+  "deep_cap": 8,
+  "deep_dispatched": 4
  }
 }
 """)
 
 
 class TestLegacyByteIdentity(unittest.TestCase):
+    """The snapshot guards that ROUTE V2 never changed legacy routing. It
+    was updated once, for D-0005, and only in `context`: the legacy path had
+    no dispatch budget at all, so `--all` fanned out 26 subagents under a cap
+    of 8. The two new keys REPORT the budget; the `lenses` list in this
+    snapshot is byte-unchanged, which is the part that decides what runs.
+    `test_the_lens_selection_itself_is_untouched` below pins that separately
+    so a future edit cannot hide a selection change inside a context diff."""
+
+    def test_the_lens_selection_itself_is_untouched(self):
+        """The half of the snapshot that must never move for a disclosure
+        change: same lenses, same modes, same tiers, same reasons."""
+        r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT)
+        self.assertEqual(r["lenses"], LEGACY_SNAPSHOT["lenses"])
+        self.assertEqual(
+            [(e["id"], e["mode"], e["tier"]) for e in r["lenses"]],
+            [(e["id"], e["mode"], e["tier"])
+             for e in LEGACY_SNAPSHOT["lenses"]])
+
     def test_route_without_stage_is_byte_identical_to_snapshot(self):
         r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT)
         self.assertEqual(r, LEGACY_SNAPSHOT)

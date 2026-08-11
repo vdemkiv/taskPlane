@@ -1010,19 +1010,26 @@ def cmd_dod(a) -> int:
         with open(snap_path, encoding="utf-8") as f:
             snapshot = f.read().strip() or None
 
-    errors = tp.dod_check(c, ws, snapshot)
+    notices: list = []
+    errors = tp.dod_check(c, ws, snapshot, notices=notices)
     import kb as kbmod
     errors += [f"{p['file']}: {p['problem']}" for p in kbmod.lint(ws)]
-    tp.trace(ws, "dod", passed=not errors, errors=errors)
+    tp.trace(ws, "dod", passed=not errors, errors=errors, notices=notices)
     if errors:
         print("taskplane DoD: FAIL ❌")
         for e in errors:
             print("  - " + e)
+        for n in notices:
+            print("  ! " + n)
         return 1
     changed = tp.changed_files(ws, snapshot) if snapshot else []
     print("taskplane DoD: PASS ✅ (diff in scope"
           + (", tests pass" if c["coding"]["dod"].get("test_command") else "")
           + ")")
+    # D-0008: a PASS that nobody executed must say so at the moment it is
+    # read, not only in the trace.
+    for n in notices:
+        print("  ! " + n)
     if changed:
         print("  files changed (in scope): " + ", ".join(changed[:12]))
     return 0

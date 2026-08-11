@@ -25,6 +25,32 @@ gamed by a chattier or quieter agent:
                      clock (about eighteen seconds each, measured).
   gates              how many gate transitions one task passes through.
 
+D-0009 — TWO OF THESE THREE USED TO MEASURE THIS SCRIPT, NOT THE ENGINE.
+`engine_entrypoints` was a hand-written `calls["n"] += 1` after every line
+of the driver, and `gates` was `gates += 1` three times plus one. Both were
+therefore constants: an engine that started demanding two more entrypoints
+or a fifth gate per task would not have moved either number by a single
+digit, because the numbers came from the driver's source, not from the
+engine's behaviour. A cost ratchet that cannot detect a cost increase is
+worse than no ratchet, because it is CITED as evidence that cost is flat.
+The instrumentation to fix it was even present — a `counted()` wrapper,
+written and then never wired to anything.
+
+Both now come from the engine's own record:
+
+  engine_entrypoints every public `loop` entry point is WRAPPED, so the
+                     count is what the driver actually invoked rather than
+                     what someone remembered to add. Nested calls (an entry
+                     point that internally calls another) count once, at the
+                     outermost boundary — that is what a worker pays.
+  gates              counted from `loop_gate` events in the audit trace,
+                     the same trace `suite_executions` already reads. Add a
+                     gate to the state machine and this moves on its own.
+
+The residual honest limit: the driver still chooses the SEQUENCE. If the
+engine adds a mandated step, this script does not silently pass — it breaks
+at the refused call, loudly, which is the failure mode worth having.
+
 REVIEW COST (lenses 2.0, R-0012). Per-task cost was only half the picture:
 the review fan-out is now the largest variable cost in a gate, and it grew
 when 26 lens routing surfaces were rewritten. The pins below measure the
@@ -70,15 +96,30 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "taskplane"))
 
 # Pinned against the P1+P2 loop. Every raise is a recorded decision.
+#
+# D-0009 RE-BASELINED two of these, because the numbers they replaced were
+# never measurements. `engine_entrypoints: 10` and `gates: 4` came from a
+# hand-written counter in the driver, and both were simply WRONG about the
+# engine they claimed to pin: the driver makes ELEVEN entry-point calls (the
+# hand count forgot `loop.init`) and the engine emits THREE `loop_gate`
+# events, not four (the fourth was a `+ 1` in the return statement). Now that
+# they read the engine, they read 11 and 3.
+#
+# This is not a cost increase and must not be read as one. Nothing about the
+# loop changed here; the instrument started working. The pins move to what
+# is actually true so that the NEXT movement means something.
 PINS = {
     "suite_executions": 1,
-    "engine_entrypoints": 10,
-    "gates": 4,
+    "engine_entrypoints": 11,
+    "gates": 3,
     # Review routing surface. Measured 7.55 / 19 at the lenses 2.0 landing;
     # pinned just above so ordinary noise does not fail CI but a real
-    # widening does.
-    "review_mean_fired": 8.0,
-    "review_max_fired": 20,
+    # widening does. TIGHTENED after D-0006 stopped content detectors
+    # scoring prose that merely DESCRIBES what they look for: the mean fell
+    # 7.55 -> 7.05 with no loss of coverage, and a ceiling left at 8.0 would
+    # quietly hand that back.
+    "review_mean_fired": 7.5,
+    "review_max_fired": 19,
 }
 
 
@@ -115,65 +156,105 @@ def measure() -> dict:
     os.environ.pop("TASKPLANE_NO_SUITE_CACHE", None)
     ws = _fixture(tmp)
 
-    calls = {"n": 0}
+    # D-0009: count what the ENGINE was actually asked to do. Wrapping the
+    # entry points is the whole instrumentation — no `+= 1` anywhere below,
+    # so the count cannot drift from the calls.
+    calls = {"n": 0, "depth": 0}
 
     def counted(fn):
         def wrapper(*a, **kw):
-            calls["n"] += 1
-            return fn(*a, **kw)
+            # Only the OUTERMOST call counts: an entry point that calls
+            # another internally is one thing the worker paid for, not two.
+            if calls["depth"] == 0:
+                calls["n"] += 1
+            calls["depth"] += 1
+            try:
+                return fn(*a, **kw)
+            finally:
+                calls["depth"] -= 1
         return wrapper
 
-    gates = 0
-    loop.init(ws, "g", spec_path="specs/spec.md")
-    for step in ("plan",):
-        loop.next_action(ws); calls["n"] += 1
-        loop.gate(ws, "pass"); calls["n"] += 1; gates += 1
-    loop.approve(ws, "plan"); calls["n"] += 1
-    loop.next_action(ws); calls["n"] += 1                       # execute brief
-    open(os.path.join(ws, "src", "todo", "a.py"), "a").write("y = 2\n")
-    loop.submit(ws, "pass"); calls["n"] += 1
-    loop.gate(ws, "pass"); calls["n"] += 1; gates += 1
-    loop.next_action(ws); calls["n"] += 1                       # evaluate brief
+    ENTRYPOINTS = ("init", "next_action", "gate", "approve", "submit",
+                   "evidence", "retro", "resolve", "select", "wave")
+    originals = {}
+    for name in ENTRYPOINTS:
+        fn = getattr(loop, name, None)
+        if callable(fn):
+            originals[name] = fn
+            setattr(loop, name, counted(fn))
+    if len(originals) < 6:
+        raise SystemExit("ci_loop_cost: loop's entry-point surface changed "
+                         f"— only wrapped {sorted(originals)}; the "
+                         "engine_entrypoints pin would be measuring nothing")
 
-    bundle = loop.evidence(ws); calls["n"] += 1
-    for row in bundle.get("criteria") or []:
-        row["status"] = "met"
-        row["evidence"] = "covered by the task's tests"
-    for row in bundle.get("lenses") or []:
-        row["verdict"] = "pass"
-        row["blockers"] = 0
-    if bundle.get("graph"):
-        for row in bundle["graph"]["dispositions"]:
-            row["status"] = "tested"
-            row["evidence"] = "covered by declared task tests"
-        bundle["graph"]["requirements_checked"] = \
-            bundle["graph"].pop("requirements_to_check")
-        bundle["graph"]["contracts_checked"] = \
-            bundle["graph"].pop("contracts_to_verify")
-    bundle["verdict"] = "pass"
-    os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-    with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
-        json.dump(bundle, f)
-    loop.submit(ws, "pass"); calls["n"] += 1
-    loop.gate(ws, "pass"); calls["n"] += 1; gates += 1
-
-    runs = hits = 0
-    trace_path = os.path.join(tp.tp_dir(ws), "trace.jsonl")
     try:
-        with open(trace_path) as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                e = json.loads(line)
-                if e.get("event") == "suite_run":
-                    runs += 1
-                elif e.get("event") == "suite_cache_hit":
-                    hits += 1
-    except OSError:
-        pass
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        for step in ("plan",):
+            loop.next_action(ws)
+            loop.gate(ws, "pass")
+        loop.approve(ws, "plan")
+        loop.next_action(ws)                                    # execute brief
+        open(os.path.join(ws, "src", "todo", "a.py"), "a").write("y = 2\n")
+        loop.submit(ws, "pass")
+        loop.gate(ws, "pass")
+        loop.next_action(ws)                                    # evaluate brief
+
+        bundle = loop.evidence(ws)
+        for row in bundle.get("criteria") or []:
+            row["status"] = "met"
+            row["evidence"] = "covered by the task's tests"
+        for row in bundle.get("lenses") or []:
+            row["verdict"] = "pass"
+            row["blockers"] = 0
+        if bundle.get("graph"):
+            for row in bundle["graph"]["dispositions"]:
+                row["status"] = "tested"
+                row["evidence"] = "covered by declared task tests"
+            bundle["graph"]["requirements_checked"] = \
+                bundle["graph"].pop("requirements_to_check")
+            bundle["graph"]["contracts_checked"] = \
+                bundle["graph"].pop("contracts_to_verify")
+        bundle["verdict"] = "pass"
+        os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
+        with open(os.path.join(ws, ".eval", "verdict.json"), "w") as f:
+            json.dump(bundle, f)
+        loop.submit(ws, "pass")
+        loop.gate(ws, "pass")
+    finally:
+        for name, fn in originals.items():
+            setattr(loop, name, fn)
+
+    # Read the ENGINE's record, not the driver's memory of it. `trace_paths`
+    # covers rotated archives too (D-0014) — a long run must not lose events
+    # to rotation and report a smaller cost.
+    runs = hits = gates = 0
+    for trace_path in tp.trace_paths(ws):
+        try:
+            with open(trace_path, encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    ev = e.get("event")
+                    if ev == "suite_run":
+                        runs += 1
+                    elif ev == "suite_cache_hit":
+                        hits += 1
+                    elif ev == "loop_gate":
+                        gates += 1
+        except OSError:
+            pass
+    if not gates:
+        raise SystemExit("ci_loop_cost: no `loop_gate` events in the trace — "
+                         "the gates pin would silently read 0. The engine's "
+                         "gate trace event was renamed or removed; update "
+                         "this reader in the same commit.")
 
     return {"suite_executions": runs, "suite_citations": hits,
-            "engine_entrypoints": calls["n"], "gates": gates + 1}
+            "engine_entrypoints": calls["n"], "gates": gates}
 
 
 
