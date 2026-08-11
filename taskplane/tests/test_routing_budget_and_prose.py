@@ -117,9 +117,32 @@ class TestD0006ProseDescribesItDoesNotDo(unittest.TestCase):
             "PRIVACY.md", "lenses/privacy-compliance.md",
             "docs/authority-matrix.md"]
 
+    # An explicit, EMPTY graph payload. Without it `route_verdicts` derives
+    # one from the workspace — and this workspace is the real repository, so
+    # whether `architecture` and `scalability` fire depends on whether some
+    # OTHER test happened to leave a scanned graph in the shared store first.
+    # Under pytest that varied by ordering; under unittest discovery, where
+    # all 1,500 tests share one process, it was reliably present in CI and
+    # reliably absent here. The subject of these tests is the PROSE rule, so
+    # the graph signal is neutralised rather than left to chance.
+    NO_GRAPH = {"hub_dependents": 0, "boundary_contracts": [], "modules": [],
+                "module_dependents": {}}
+
     def _fired(self, files):
-        v = lens_signals.route_verdicts(ROOT, files, stage="build")
+        v = lens_signals.route_verdicts(ROOT, files, stage="build",
+                                        graph=self.NO_GRAPH)
         return {k: x["verdict"] for k, x in v.items() if x["verdict"] != "n/a"}
+
+    def test_the_fixture_is_hermetic(self):
+        """The bug this file shipped with: an ambient graph made the result
+        depend on test ORDER. Pin that the payload is the one supplied."""
+        v = lens_signals.route_verdicts(ROOT, ["docs/lens-catalog.md"],
+                                        stage="build", graph=self.NO_GRAPH)
+        for lid, entry in v.items():
+            for ev in entry["evidence"]:
+                self.assertFalse(ev.startswith("graph:"),
+                                 f"{lid} scored a graph signal from ambient "
+                                 f"state: {ev}")
 
     def test_a_docs_only_change_stops_summoning_the_database_lenses(self):
         fired = self._fired(self.DOCS)
