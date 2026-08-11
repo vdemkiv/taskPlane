@@ -546,12 +546,21 @@ class TestExtractionStructure(unittest.TestCase):
         without it. The blocking-claim bar went OUT to audit.py, which
         already owns the em-gate evidence half.
 
+        3003 → 3005 (yield meter): an import and ONE call at the single
+        point every gate transition passes, recording what the harness
+        RETURNS beside what ci_loop_cost.py already pins that it costs. Two
+        lines is the whole engine-side footprint — everything else lives in
+        yield_meter.py, which gates nothing and can be deleted without
+        touching the loop. Raised deliberately: the alternative was to hide
+        the hook somewhere it did not belong to keep a number flat, which
+        is how ratchets stop meaning anything.
+
         What guards the extraction itself is the body/constant assertions
         above, not this count."""
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 3003, f"loop.py is {n} lines — the audit extraction shrink "
+            n, 3005, f"loop.py is {n} lines — the audit extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):

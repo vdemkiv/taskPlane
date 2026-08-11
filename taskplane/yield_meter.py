@@ -1,0 +1,493 @@
+"""The yield meter — what the harness RETURNS, next to what it costs.
+
+WHY THIS EXISTS. taskplane has had a cost meter since R-0012:
+`scripts/ci_loop_cost.py` pins how many lenses fire, how many engine calls a
+task mandates, how many gates it passes. Every one of those numbers is
+SPEND. Nothing anywhere recorded RETURN — which lens produced a finding a
+human acted on, and which produced prose nobody read. So the only number
+visible was the one going up, and every question about simplifying the
+harness ("can we drop these six lenses?") had to be settled by taste.
+
+This module records the other half. It exists to make DELETION defensible:
+after a few months of real reviews, a lens that has fired forty times and
+produced nothing anyone acted on can be removed with evidence instead of
+argument. The instrument is subtractive by intent.
+
+TWO MEASUREMENTS, and only two.
+
+  LENS YIELD    per lens: reviews it was routed into, findings it produced,
+                and what became of them.
+  ESCAPE        per finding: WHICH GATE CAUGHT IT. The question behind this
+                is "are defects slipping past implementation and surfacing
+                only at review?" — caught-at-evaluate is cheap, caught-at-
+                review is expensive, and filed-after-signoff is the one that
+                reached a user.
+
+WHAT IS A FACT AND WHAT IS A GUESS. `caught_at` is the loop step at the
+moment the finding was recorded: a fact, taken from state, never inferred.
+The stage that INTRODUCED a defect is not knowable from here, so it is not
+stored and not reported — a plausible-looking origin column would be the
+kind of fabricated precision this meter exists to replace.
+
+Dispositions are likewise split and never blended:
+
+  explicit    a human said acted / dismissed. Strong.
+  inferred    the finding stopped recurring in later reviews, or persisted
+              across them. WEAK — a finding also stops recurring because
+              the diff moved on. Reported in its own columns, never added
+              into the explicit ones, and never called "acted".
+  unknown     no later review exists yet. Reported as unknown rather than
+              rounded to zero, which would slander a lens, or to acted,
+              which would flatter one.
+
+WHAT THIS MODULE MAY NOT DO. It gates nothing. It cannot fail CI, block a
+loop, refuse a tool, or change any verdict. The engine never reads it. Every
+write is best-effort and swallowed: a broken ledger must never cost anyone a
+gate. Delete this file and taskplane still works exactly as before — which
+is the property that makes it safe to have added, and easy to remove if it
+turns out not to earn its own keep.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import time
+
+import taskplane_lite as tp
+
+LEDGER = "yield.jsonl"
+
+# The gate that caught a finding, cheapest first. `post-signoff` is not a
+# loop step: it is anything filed against work already signed off.
+CAUGHT_ORDER = ("plan", "design", "design_approval", "execute", "evaluate",
+                "review", "signoff", "post-signoff")
+
+# Headline buckets. The point of the metric is the cost of lateness, so the
+# per-step counts roll up into three that differ by an order of magnitude.
+BUCKETS = {
+    "in_task": ("execute", "evaluate"),
+    "at_review": ("review", "signoff", "plan", "design", "design_approval"),
+    "after_signoff": ("post-signoff",),
+}
+
+_WS = re.compile(r"\s+")
+# `foo.py:12`, `#12`, and the prose forms `line 12` / `L12`. Not every digit
+# — "timeout 300s" and "timeout 30s" are different findings, and collapsing
+# them would merge two claims into one row.
+_LINENO = re.compile(r"[:#]\s*\d+\b|\bl(?:ine)?s?\.?\s*\d+\b",
+                     re.IGNORECASE)
+
+
+def ledger_path(ws: str) -> str:
+    """In the project STORE, not `.taskplane/`.
+
+    Runtime state is per-checkout, git-ignored and rotated; this ledger has
+    to accumulate across checkouts and months to be worth anything. It
+    follows `store_root`, so it lands wherever the project's mode already
+    puts the knowledge base — private by default, repo-shared on a team.
+    """
+    return os.path.join(tp.store_root(ws), LEDGER)
+
+
+def fingerprint(finding: dict) -> str:
+    """Stable across reviews, so recurrence is detectable.
+
+    Line numbers shift under any edit and would make every finding look new,
+    so they are stripped from the title before hashing; the lens, the file
+    and the claim are what identify it.
+    """
+    lens = str(finding.get("lens") or finding.get("domain") or "")
+    path = tp.to_posix(str(finding.get("file") or finding.get("path") or ""))
+    title = str(finding.get("title") or finding.get("summary") or "")
+    title = _WS.sub(" ", _LINENO.sub("", title)).strip().lower()[:120]
+    raw = "\x1f".join((lens, path, title)).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _append(ws: str, record: dict) -> None:
+    """Best effort, always. A meter must never cost anyone a gate."""
+    try:
+        path = ledger_path(ws)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        record.setdefault("ts", time.time())
+        with tp.file_lock(path):
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, default=str, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+
+def record_review(ws: str, routed_lenses, *, caught_at: str,
+                  review_id: str | None = None) -> str:
+    """One record per review naming the lenses that FIRED.
+
+    Without it a lens that fires often and finds nothing is
+    indistinguishable from a lens that never fires at all — and those two
+    call for opposite decisions.
+    """
+    rid = review_id or hashlib.sha256(
+        f"{ws}|{time.time()}".encode("utf-8")).hexdigest()[:12]
+    _append(ws, {"kind": "review", "review": rid, "caught_at": caught_at,
+                 "fired": sorted({str(x) for x in (routed_lenses or [])})})
+    return rid
+
+
+def record_findings(ws: str, findings, *, caught_at: str,
+                    review_id: str | None = None,
+                    blockers=None) -> int:
+    """Record each finding once, with the gate that caught it."""
+    blocking = {fingerprint(f) for f in (blockers or [])}
+    n = 0
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        fp = fingerprint(f)
+        _append(ws, {"kind": "finding", "review": review_id, "fp": fp,
+                     # a fingerprint nobody can read is a fingerprint nobody
+                     # will disposition — carry just enough to recognise it
+                     "label": _WS.sub(" ", str(
+                         f.get("title") or f.get("summary") or "")).strip()[:70],
+                     "lens": str(f.get("lens") or f.get("domain") or ""),
+                     "class": str(f.get("class") or ""),
+                     "severity": str(f.get("severity") or ""),
+                     "blocks": fp in blocking,
+                     "caught_at": caught_at})
+        n += 1
+    return n
+
+
+def record_disposition(ws: str, fp: str, verdict: str, *,
+                       by: str | None = None, note: str = "") -> dict:
+    """A human's verdict on one finding: `acted` or `dismissed`.
+
+    Explicit dispositions are asked for on BLOCKERS only. Those are the
+    findings a human already reads at the gate, so the marginal cost is a
+    keystroke; asking for the long tail would buy accuracy with exactly the
+    friction this meter exists to help remove.
+    """
+    verdict = str(verdict or "").strip().lower()
+    if verdict not in ("acted", "dismissed"):
+        return {"error": f"verdict must be acted or dismissed, got {verdict!r}"}
+    if not fp:
+        return {"error": "no finding fingerprint"}
+    _append(ws, {"kind": "disposition", "fp": fp, "verdict": verdict,
+                 "by": by or "(unattributed)", "note": note})
+    return {"recorded": fp, "verdict": verdict}
+
+
+def record_counts(ws: str, lens: str, blockers: int, *,
+                  caught_at: str, review_id: str | None = None) -> None:
+    """A lens's blocker COUNT where the identities are not available.
+
+    The evaluate gate's verdict reports `{lens, verdict, blockers: N}` — a
+    number, not a list. Those blockers are real and they matter to the
+    escape metric (they were caught IN the task, the cheap place), but they
+    cannot be fingerprinted, so they cannot be dispositioned or deduped
+    against a later review. They are stored as counts and reported as
+    counts. Manufacturing a fingerprint for them would be the fabricated
+    precision this meter exists to replace.
+    """
+    try:
+        n = max(0, int(blockers or 0))
+    except (TypeError, ValueError):
+        return
+    if not n:
+        return
+    _append(ws, {"kind": "counts", "review": review_id, "lens": str(lens),
+                 "blockers": n, "caught_at": caught_at})
+
+
+def gate_snapshot(ws: str, step: str, outcome: str) -> None:
+    """THE hook: one call, at the one place every gate transition passes.
+
+    Best-effort and idempotent. The review id is derived from the CONTENT,
+    so re-gating the same findings records nothing new — gates get retried,
+    and a meter that double-counted retries would reward flakiness.
+    """
+    try:
+        if str(outcome or "").lower() not in ("pass", "fail"):
+            return
+        step = str(step or "")
+        findings, routed = _artifact(ws, step)
+        counts = _verdict_counts(ws) if step == "evaluate" else []
+        if not findings and not routed and not counts:
+            return
+        seen = {r.get("review") for r in read_ledger(ws)}
+        rid = "r" + hashlib.sha256(
+            ("|".join([step] + sorted(fingerprint(f) for f in findings)
+                      + sorted(routed)
+                      + [f"{k}:{v}" for k, v in sorted(counts)])
+             ).encode("utf-8")).hexdigest()[:11]
+        if rid in seen:
+            return
+        record_review(ws, routed, caught_at=step, review_id=rid)
+        record_findings(ws, findings, caught_at=step, review_id=rid,
+                        blockers=[f for f in findings
+                                  if str(f.get("severity", "")).lower()
+                                  in ("high", "critical", "blocker")])
+        for lens, n in counts:
+            record_counts(ws, lens, n, caught_at=step, review_id=rid)
+    except Exception:
+        pass
+
+
+def _artifact(ws: str, step: str):
+    """(findings, routed_lenses) for a step, from whatever it actually wrote.
+
+    Only the em/review path produces identified findings. The evaluate path
+    reports per-lens counts, which are recorded separately by the caller of
+    `record_counts` rather than being inflated into findings here.
+    """
+    findings, routed = [], []
+    doc = _load(os.path.join(ws, ".em-review", "findings.json"))
+    if isinstance(doc, dict):
+        raw = doc.get("findings")
+        meta = doc.get("meta") or {}
+        routed = [str(x) for x in (meta.get("routed") or meta.get("lenses")
+                                   or [])]
+    else:
+        raw = doc
+    for f in raw or []:
+        if isinstance(f, dict):
+            findings.append(f)
+    if not routed:
+        routed = sorted({str(f.get("lens") or f.get("domain") or "")
+                         for f in findings} - {""})
+    return findings, routed
+
+
+def _verdict_counts(ws: str) -> list:
+    """[(lens, blockers)] from `.eval/verdict.json`, the evaluate gate's own
+    artifact. Blockers caught HERE are caught in the task — the cheap place
+    — which is precisely the comparison the escape metric exists to make."""
+    doc = _load(os.path.join(ws, ".eval", "verdict.json"))
+    rows = (doc or {}).get("lenses") if isinstance(doc, dict) else None
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            n = int(row.get("blockers") or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0 and row.get("lens"):
+            out.append((str(row["lens"]), n))
+    return out
+
+
+def _load(path: str):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _safe_ledger_path(ws: str) -> str:
+    """For DISPLAY only — never let naming the file be the
+    thing that crashes the report about the file."""
+    try:
+        return ledger_path(ws)
+    except Exception:
+        return "(store unavailable)"
+
+
+def read_ledger(ws: str) -> list:
+    """Every record, oldest first. Malformed lines are skipped, not fatal."""
+    out = []
+    try:
+        # `ledger_path` resolves the store, which can itself fail (missing
+        # home, unreadable mode config). Reading must be TOTAL: `tp yield`
+        # degrading to "nothing recorded" is fine; a traceback is not.
+        path = ledger_path(ws)
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+    except (OSError, ValueError, TypeError):
+        return []
+    return out
+
+
+def _bucket(caught_at: str) -> str:
+    for name, steps in BUCKETS.items():
+        if caught_at in steps:
+            return name
+    return "at_review"
+
+
+def report(ws: str) -> dict:
+    """Lens yield and escape buckets. Explicit and inferred stay apart."""
+    records = read_ledger(ws)
+    reviews = [r for r in records if r.get("kind") == "review"]
+    findings = [r for r in records if r.get("kind") == "finding"]
+    dispositions = {}
+    for r in records:
+        if r.get("kind") == "disposition" and r.get("fp"):
+            dispositions[r["fp"]] = r["verdict"]     # last word wins
+
+    fired = {}
+    for r in reviews:
+        for lid in r.get("fired") or []:
+            fired[lid] = fired.get(lid, 0) + 1
+
+    # A finding is "still open" if it appears in the LATEST review that its
+    # lens fired in. Anything earlier that no longer appears stopped
+    # recurring — weak evidence, labelled as such.
+    last_seen, first_seen = {}, {}
+    for r in findings:
+        fp, ts = r.get("fp"), r.get("ts") or 0
+        if not fp:
+            continue
+        first_seen.setdefault(fp, ts)
+        last_seen[fp] = max(last_seen.get(fp, 0), ts)
+    newest_review = max((r.get("ts") or 0 for r in reviews), default=0)
+
+    lenses, seen_fp = {}, set()
+    for r in findings:
+        fp = r.get("fp")
+        lid = r.get("lens") or "(unattributed)"
+        row = lenses.setdefault(lid, {
+            "lens": lid, "fired": 0, "findings": 0, "blockers": 0,
+            "acted": 0, "dismissed": 0,
+            "stopped_recurring": 0, "persisted": 0, "unknown": 0})
+        row["findings"] += 1
+        if r.get("blocks"):
+            row["blockers"] += 1
+        if fp in seen_fp:
+            continue
+        seen_fp.add(fp)
+        verdict = dispositions.get(fp)
+        if verdict == "acted":
+            row["acted"] += 1
+        elif verdict == "dismissed":
+            row["dismissed"] += 1
+        elif newest_review <= (first_seen.get(fp) or 0):
+            row["unknown"] += 1          # no later review has happened yet
+        elif (last_seen.get(fp) or 0) < newest_review:
+            row["stopped_recurring"] += 1
+        else:
+            row["persisted"] += 1
+    for lid, count in fired.items():
+        lenses.setdefault(lid, {
+            "lens": lid, "fired": 0, "findings": 0, "blockers": 0,
+            "acted": 0, "dismissed": 0,
+            "stopped_recurring": 0, "persisted": 0, "unknown": 0})
+        lenses[lid]["fired"] = count
+
+    escape = {k: 0 for k in BUCKETS}
+    by_step = {}
+    for r in findings:
+        step = str(r.get("caught_at") or "")
+        by_step[step] = by_step.get(step, 0) + 1
+        escape[_bucket(step)] += 1
+    # Counted-but-unidentified blockers (the evaluate verdict). They belong
+    # in the escape picture — that is the metric that asks WHERE things are
+    # caught — but they can never be dispositioned, so they stay out of the
+    # acted/dismissed columns entirely.
+    counted = 0
+    for r in records:
+        if r.get("kind") != "counts":
+            continue
+        n = int(r.get("blockers") or 0)
+        step = str(r.get("caught_at") or "")
+        counted += n
+        by_step[step] = by_step.get(step, 0) + n
+        escape[_bucket(step)] += n
+        row = lenses.setdefault(str(r.get("lens") or "(unattributed)"), {
+            "lens": str(r.get("lens") or "(unattributed)"), "fired": 0,
+            "findings": 0, "blockers": 0, "acted": 0, "dismissed": 0,
+            "stopped_recurring": 0, "persisted": 0, "unknown": 0})
+        row["blockers"] += n
+
+    # Blockers with no human verdict yet — the marking worklist. Explicit
+    # disposition is asked for HERE and nowhere else: these are the findings
+    # a human already reads at the gate.
+    open_blockers = []
+    for r in findings:
+        fp = r.get("fp")
+        if r.get("blocks") and fp and fp not in dispositions:
+            if fp not in {b["fp"] for b in open_blockers}:
+                open_blockers.append({"fp": fp, "lens": r.get("lens") or "",
+                                      "label": r.get("label") or "",
+                                      "caught_at": r.get("caught_at") or ""})
+    return {
+        "reviews": len(reviews),
+        "open_blockers": open_blockers,
+        "findings": len(findings),
+        "lenses": sorted(lenses.values(),
+                         key=lambda x: (-x["findings"], x["lens"])),
+        "escape": escape,
+        "caught_at": dict(sorted(by_step.items())),
+        "dispositioned": len(dispositions),
+        "counted_only": counted,
+        "ledger": _safe_ledger_path(ws),
+    }
+
+
+def zero_yield(rep: dict, min_fires: int = 5) -> list:
+    """Lenses that have fired enough to have had a chance, and returned
+    nothing a human acted on. The deletion shortlist — a prompt for a
+    decision, never a decision."""
+    out = []
+    for row in rep.get("lenses") or []:
+        if row["fired"] >= min_fires and row["acted"] == 0:
+            out.append(row["lens"])
+    return sorted(out)
+
+
+def render(rep: dict) -> str:
+    """The human read-out. Spend on the left, return on the right."""
+    lines = [f"yield over {rep['reviews']} review(s), "
+             f"{rep['findings']} finding(s), "
+             f"{rep['dispositioned']} dispositioned"]
+    if not rep["findings"] and not rep["reviews"] \
+            and not rep.get("counted_only"):
+        lines.append("  (nothing recorded yet — the meter fills as reviews "
+                     "run; it never blocks anything)")
+        return "\n".join(lines)
+    lines.append("")
+    lines.append(f"  {'lens':<22}{'fired':>6}{'found':>6}{'block':>6}"
+                 f"{'acted':>6}{'dism':>6}  {'stopped/persist/unknown':>24}")
+    for row in rep["lenses"]:
+        lines.append(
+            f"  {row['lens'][:22]:<22}{row['fired']:>6}{row['findings']:>6}"
+            f"{row['blockers']:>6}{row['acted']:>6}{row['dismissed']:>6}"
+            f"  {row['stopped_recurring']:>8}/{row['persisted']}"
+            f"/{row['unknown']}")
+    e = rep["escape"]
+    lines.append("")
+    if rep.get("counted_only"):
+        lines.append(f"  ({rep['counted_only']} blocker(s) known only as a "
+                     "count, from evaluate verdicts — they shape the escape "
+                     "picture but can never be dispositioned)")
+    lines.append(f"  caught in task {e['in_task']}  ·  "
+                 f"at review {e['at_review']}  ·  "
+                 f"after sign-off {e['after_signoff']}")
+    lines.append("  (acted/dism are HUMAN verdicts; stopped/persist are weak "
+                 "inference and never counted as acted)")
+    pending = rep.get("open_blockers") or []
+    if pending:
+        lines.append("")
+        lines.append(f"  {len(pending)} blocker(s) awaiting your verdict "
+                     "— `tp yield mark <fp> acted|dismissed`:")
+        for b in pending[:12]:
+            lines.append(f"    {b['fp']}  {b['lens'][:14]:<14} "
+                         f"{b['label'][:52]}")
+        if len(pending) > 12:
+            lines.append(f"    … and {len(pending) - 12} more")
+    shortlist = zero_yield(rep)
+    if shortlist:
+        lines.append("")
+        lines.append("  fired >=5 times, never produced a finding a human "
+                     "acted on: " + ", ".join(shortlist))
+        lines.append("  (a question to answer, not a verdict — check whether "
+                     "they were dispositioned at all)")
+    return "\n".join(lines)

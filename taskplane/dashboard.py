@@ -3251,7 +3251,7 @@ def _widget_parts(ws: str) -> dict:
         f'font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.2px;color:var(--text-muted);'
         f'margin-bottom:10px">agent harnesses — on topic · within budget'
         f'</div><div style="display:flex;flex-direction:column;gap:8px">'
-        f'{hcards}</div>{prog}</div>')
+        f'{hcards}</div>{prog}{_yield_strip(ws)}</div>')
 
     tabbtn = ('border:none;background:none;font-family:var(--font-mono);'
               'font-size:12px;letter-spacing:.8px;font-weight:500;'
@@ -3315,6 +3315,29 @@ def _widget_parts(ws: str) -> dict:
         "context": context_html, "map_panel": map_panel, "tabs": tabs,
         "step_badge": step_badge, "goal": goal, "visits": visits,
     }
+
+
+def _yield_strip(ws: str) -> str:
+    """Spend beside RETURN, in one line, on the surface the human already
+    governs from. Renders nothing until the ledger has something to say —
+    an empty panel is clutter, and this is an instrument, not a gate."""
+    try:
+        import yield_meter
+        rep = yield_meter.report(ws)
+    except Exception:
+        return ""
+    if not (rep.get("findings") or rep.get("counted_only")):
+        return ""
+    e = rep["escape"]
+    quiet = yield_meter.zero_yield(rep)
+    tail = (f' · quiet lenses: {", ".join(quiet[:4])}' if quiet else "")
+    return (
+        f'<div style="font-size:11.5px;color:var(--text-muted);margin-top:'
+        f'10px;padding-top:8px;border-top:1px dashed var(--border)">'
+        f'yield — {rep["findings"]} finding(s) over {rep["reviews"]} '
+        f'review(s), {rep["dispositioned"]} dispositioned · caught: '
+        f'{e["in_task"]} in task, {e["at_review"]} at review, '
+        f'{e["after_signoff"]} after sign-off{tail}</div>')
 
 
 def widget(ws: str) -> str:

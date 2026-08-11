@@ -35,6 +35,7 @@ import kb
 import lens as lens_router
 import requirements as reqs
 import taskplane_lite as tp
+import yield_meter
 
 LOOP_FILE = "loop.json"
 
@@ -2089,6 +2090,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # (v2.3.0): clearing before the lock left the workspace ungoverned during
     # the commit window; a refused gate above leaves it governed for retry.
     tp.clear(act_ws)
+    yield_meter.gate_snapshot(ws, step, outcome)   # records, never gates
     tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note)
     return {"step": state["step"], "status": status(ws)}
 
