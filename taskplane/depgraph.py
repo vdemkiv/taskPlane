@@ -36,6 +36,26 @@ import taskplane_lite as tp
 GRAPH_FILE = "graph.json"
 CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".go",
             ".cs", ".java", ".rb")
+# ------------------------------------------------------------------ artifacts
+#
+# D-0016. CODE_EXT decided what EXISTS, not just what gets parsed for imports —
+# so a repository whose product is not source code was invisible. taskplane's
+# own skills, agents and lenses are markdown and declarative JSON; the graph
+# contained none of them, and neither did decomposition, which is what the
+# review depends on to know where to look. The accuracy harness scored the
+# plugin profile at 0% module recall for a repo where nothing was missing
+# except the file extensions.
+#
+# These files ARE the product. They carry no import statements, so they get a
+# node and a file count and are never handed to an import parser.
+#
+# The list is deliberately short and excludes BUILD DESCRIPTORS (.toml, .xml,
+# .cfg, .ini, .lock). A pom.xml or a pyproject.toml describes how the code is
+# assembled — it is not a thing the code depends on, and admitting them minted
+# a `main/resources` module out of a Java DI file in the corpus. Where a
+# manifest matters it is already read for module IDENTITY (see
+# `manifest_modules`), which is a different job.
+ARTIFACT_EXT = (".md", ".json", ".yml", ".yaml", ".sql", ".tf")
 # Non-git fallback skip list (in a git work tree the scan enumerates via
 # `git ls-files`, which honors .gitignore). Covers vendored and build trees
 # (vendor/ for Go, target/ for Rust/Java) so third-party code never becomes
@@ -740,10 +760,93 @@ def load_excludes(ws: str) -> tuple[list, str | None]:
         return [], f"components.yaml ignored (no exclusions applied): {exc}"
 
 
+# ------------------------------------------------------- reference resolution
+#
+# D-0015. The graph modelled IMPORTS and nothing else, so on a repo whose
+# components talk to each other by NAMING each other — a skill dispatching an
+# agent, an agent applying a lens, a module reading a schema or a routing
+# catalog — it reported 11 edges for a tree with well over a hundred real
+# relationships. "What depends on this?" had no answer for the half of the
+# codebase that is not source code.
+#
+# This is RESOLUTION, not pattern-matching. The regex below is a cheap sieve
+# for path-SHAPED tokens; it decides nothing. A token becomes an edge only
+# when it resolves to a file that actually exists in this tree — the same
+# contract `_js_imports` already honours for relative specifiers. A reference
+# to a file that is not there produces nothing, so the scanner cannot invent a
+# dependency out of prose.
+#
+# Two deliberate restrictions:
+#   * a CODE file's reference only counts when the target is an ARTIFACT.
+#     Code-to-code dependency is the import scanners' job and they resolve it
+#     properly; a path in a string literal is usually a fixture or a message.
+#   * a target at the repo ROOT is skipped, for the reason in `_is_artifact`:
+#     it would land in `(root)`, an id that describes nothing.
+# The backslash is in the class on purpose: an artifact authored on Windows
+# writes `agents\reviewer.md`, and a token that stopped at the separator would
+# resolve a DIFFERENT set of edges on the two hosts. Candidates are normalized
+# to '/' before lookup, so both spellings reach the same file or neither does.
+_REF_TOKEN = re.compile(
+    r"[A-Za-z0-9_@.][A-Za-z0-9_./@+\\-]{0,180}\.[A-Za-z0-9]{1,6}")
+
+# Artifact directories whose contents are DISPATCHED rather than read, and
+# the wider set of directories whose artifacts DO the dispatching. A skill
+# naming an agent is a control transfer (`calls`); a design note naming the
+# same agent is a data read (`uses`), which is why the SOURCE is tested too —
+# without it the graph claimed `docs -calls-> agents`.
+#
+# Both kinds are in DEPENDENCY_EDGE_KINDS, so a mis-graded one never changes
+# a blast radius, only how the relationship reads. That is exactly why a
+# naming convention is acceptable HERE and nowhere that decides whether an
+# edge exists at all — every edge below is resolved against a real file.
+DISPATCH_DIRS = frozenset({"agents", "agent", "commands", "command"})
+EXECUTABLE_DIRS = DISPATCH_DIRS | frozenset({
+    "skills", "skill", "hooks", "workflows", "workflow"})
+
+
+def _ref_kind(source: str, target: str) -> str:
+    def _segs(p):
+        return set(posixpath.dirname(str(p)).split("/"))
+    return ("calls" if (_segs(target) & DISPATCH_DIRS)
+            and (_segs(source) & EXECUTABLE_DIRS) else "uses")
+
+
+def _file_refs(src: str, relpath: str, file_index, artifact_only: bool) -> set:
+    """Repo files this file NAMES, each verified to exist in the tree."""
+    out = set()
+    here = posixpath.dirname(relpath)
+    for tok in set(_REF_TOKEN.findall(src or "")):
+        cands = [tok.replace("\\", "/").lstrip("./")]
+        if here:
+            cands.append(posixpath.normpath(posixpath.join(here, tok)))
+        for cand in cands:
+            if (cand == relpath or cand not in file_index
+                    or not posixpath.dirname(cand)):
+                continue
+            if artifact_only and not _is_artifact(cand):
+                continue
+            out.add(cand)
+            break
+    return out
+
+
+def _is_artifact(relpath: str) -> bool:
+    """A non-code file that is itself product surface (D-0016).
+
+    A file at the REPO ROOT is excluded. There is no directory to name it
+    after, so it would land in the catch-all `(root)` module — an id that
+    describes nothing and routes lenses at a pile of unrelated top-level
+    config. Root-level CODE still mints `(root)` exactly as before: this is
+    a rule about which NEW files are admitted, not a change to old ids.
+    """
+    rel = str(relpath or "").replace("\\", "/")
+    return bool(posixpath.dirname(rel)) and rel.endswith(ARTIFACT_EXT)
+
+
 def _scan_locked(ws: str, into: dict | None = None,
                  decompose: bool = False) -> dict:
     prev = load(ws)
-    files, code_files = {}, []
+    files, code_files, artifact_files = {}, [], []
     excludes, exclude_err = load_excludes(ws)
     import path_roles as _pr
     listed = _git_candidates(ws)
@@ -761,6 +864,8 @@ def _scan_locked(ws: str, into: dict | None = None,
                 continue
             if rel.endswith(CODE_EXT):
                 code_files.append(rel)
+            elif _is_artifact(rel):
+                artifact_files.append(rel)
             files[rel] = True
     else:
         for root, dirs, names in os.walk(ws):
@@ -783,6 +888,8 @@ def _scan_locked(ws: str, into: dict | None = None,
                     continue
                 if n.endswith(CODE_EXT):
                     code_files.append(rel)
+                elif _is_artifact(rel):
+                    artifact_files.append(rel)
                 files[rel] = True
 
     # D-0007: what the repo CALLS its own modules, before anything is named.
@@ -835,6 +942,7 @@ def _scan_locked(ws: str, into: dict | None = None,
                     pkg_map.setdefault(pkg, _mod(rel))
 
     file_entries, edges = {}, set()
+    ref_rows: list = []          # (file, module, [resolved target files])
     prev_files = prev.get("files", {})
     for rel in code_files:
         full = os.path.join(ws, rel)
@@ -849,15 +957,18 @@ def _scan_locked(ws: str, into: dict | None = None,
         # makes a rescan scale with the DIFF, not the whole tree — on a big
         # repo the em-gate true-up and retro no longer re-hash every file.
         if (cached and size is not None and cached.get("size") == size
-                and cached.get("mtime") == mtime and "imports" in cached):
+                and cached.get("mtime") == mtime and "imports" in cached
+                and "refs" in cached):
             imports = set(cached["imports"])
             mod = _mod(rel)
             imports.discard(mod)
+            refs = list(cached["refs"])
             file_entries[rel] = {"hash": cached.get("hash", ""),
-                                 "imports": sorted(imports),
+                                 "imports": sorted(imports), "refs": refs,
                                  "size": size, "mtime": mtime}
             for target in imports:
                 edges.add((mod, target, "imports"))
+            ref_rows.append((rel, mod, refs))
             continue
         try:
             with open(full, encoding="utf-8", errors="replace") as fh:
@@ -865,7 +976,7 @@ def _scan_locked(ws: str, into: dict | None = None,
         except OSError:
             continue
         digest = hashlib.sha1(src.encode()).hexdigest()[:12]
-        if cached and cached.get("hash") == digest:
+        if cached and cached.get("hash") == digest and "refs" in cached:
             imports = set(cached["imports"])
         elif rel.endswith(".py"):
             imports = _py_imports(src, rel, known_stems)
@@ -899,10 +1010,46 @@ def _scan_locked(ws: str, into: dict | None = None,
                                   declared_ids)
         mod = _mod(rel)
         imports.discard(mod)
+        refs = sorted(_file_refs(src, rel, files, artifact_only=True))
         file_entries[rel] = {"hash": digest, "imports": sorted(imports),
-                             "size": size, "mtime": mtime}
+                             "refs": refs, "size": size, "mtime": mtime}
         for target in imports:
             edges.add((mod, target, "imports"))
+        ref_rows.append((rel, mod, refs))
+
+    # D-0016: artifacts enter the graph as FILES too, not just as a node.
+    # `graph["files"]` is what decomposition walks, so a node with no files
+    # under it is a node the review still cannot look inside. They carry no
+    # imports — the empty list is the honest answer, not a placeholder — and
+    # they go through the same mtime+size cache so a rescan stays diff-sized.
+    for rel in artifact_files:
+        full = os.path.join(ws, rel)
+        cached = prev_files.get(rel)
+        try:
+            st = os.stat(full)
+            size, mtime = st.st_size, int(st.st_mtime)
+        except OSError:
+            size = mtime = None
+        if (cached and size is not None and cached.get("size") == size
+                and cached.get("mtime") == mtime and "refs" in cached):
+            refs = list(cached["refs"])
+            file_entries[rel] = {"hash": cached.get("hash", ""),
+                                 "imports": [], "refs": refs,
+                                 "size": size, "mtime": mtime,
+                                 "artifact": True}
+            ref_rows.append((rel, _mod(rel), refs))
+            continue
+        try:
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                src = fh.read()
+        except OSError:
+            continue
+        refs = sorted(_file_refs(src, rel, files, artifact_only=False))
+        file_entries[rel] = {
+            "hash": hashlib.sha1(src.encode()).hexdigest()[:12],
+            "imports": [], "refs": refs, "size": size, "mtime": mtime,
+            "artifact": True}
+        ref_rows.append((rel, _mod(rel), refs))
 
     # manifests: .csproj project/package references, Gemfile gems
     for rel in files:
@@ -934,6 +1081,16 @@ def _scan_locked(ws: str, into: dict | None = None,
                         edges.add((sid, f"svc:{dep}", "depends_on"))
                     edges.add((sid, _mod(rel), "defined_in"))
 
+    # D-0015: the resolved references become dependency edges. A reference
+    # inside the SAME module is not a relationship between components — it is
+    # a file naming its neighbour — so self-edges are dropped, exactly as the
+    # import scanners do.
+    for _rel, mod, refs in ref_rows:
+        for target in refs:
+            tmod = _mod(target)
+            if tmod and tmod != mod:
+                edges.add((mod, tmod, _ref_kind(_rel, target)))
+
     # Stale-edge filter: a deleted module must not survive as an edge target
     # via some UNCHANGED importer's cached import list (the mtime+size cache
     # above keeps imports without re-reading the file). Keep an edge iff its
@@ -949,7 +1106,7 @@ def _scan_locked(ws: str, into: dict | None = None,
              if b.startswith(("ext:", "svc:")) or b in resolvable}
 
     modules = {}
-    for rel in code_files:
+    for rel in code_files + artifact_files:
         m = _mod(rel)
         modules.setdefault(m, {"kind": "module", "files": 0})
         modules[m]["files"] += 1
@@ -980,6 +1137,12 @@ def _scan_locked(ws: str, into: dict | None = None,
     # that the blast radius was scoped by declaration rather than trust a
     # small answer. A malformed components.yaml is reported here too, so
     # "my exclusions did nothing" is visible instead of silent.
+    # A graph that now contains markdown and declarative JSON should SAY so:
+    # a reviewer reading a module list needs to know whether "12 files" means
+    # twelve source files or eight source files and four skills.
+    if artifact_files:
+        scanners_meta["artifacts"] = {"extensions": list(ARTIFACT_EXT),
+                                      "files": len(artifact_files)}
     if excludes:
         scanners_meta["excluded"] = {"declared_in": "components.yaml",
                                      "prefixes": sorted(excludes)}
