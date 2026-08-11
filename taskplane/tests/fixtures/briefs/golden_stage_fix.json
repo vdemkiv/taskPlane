@@ -26,6 +26,8 @@
     "write_allow": null
   },
   "dashboard": {
+    "ack": "after showing it, run: tp ack o-4d218e0a58 \u2014 an obligation left unacknowledged is recorded as not shown",
+    "obligation": "o-4d218e0a58",
     "path": ".taskplane/dashboard.html",
     "render": "refreshed for this transition \u2014 show it (mcp__visualize__show_widget) before proceeding; the dashboard is the interface the human governs through"
   },

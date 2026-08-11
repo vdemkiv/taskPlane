@@ -122,6 +122,20 @@ After each `loop next`, `loop submit`, `loop gate`, `loop wave`, and
    updates the earlier widget in place instead of drawing a new one at the
    current position.
 
+3. **Acknowledge it: `$TP ack <id>`.** Every transition payload carries
+   `dashboard.obligation` — an id the engine recorded when it built the
+   artifact. The engine can render, write and point at the dashboard; it
+   cannot see whether it reached a human, because `show_widget` happens in
+   the host. So an obligation left unacknowledged is RECORDED AS NOT SHOWN,
+   and `scripts/ci_evals.py` counts it. This is not a gate: skipping the ack
+   blocks nothing, costs nothing, and refuses nothing. It only means the
+   session's record says the human never saw the board — which is the
+   complaint this whole mechanism exists to make visible instead of
+   deniable. Acknowledge what you actually showed, and nothing else: `tp ack`
+   reads the fingerprint off the artifact the obligation names, so citing
+   your own hand-built chart instead is recorded as a substitute, not a
+   success. `$TP ack --status` lists what is still open.
+
 **Render contract (v1.5.3/4) — the same flow every taskplane command uses.**
 `$TP dashboard` prints a `HEADLINE:` line first — relay it to the human as
 plain text, always: it is the never-skippable carrier of step + gate +

@@ -1,0 +1,11 @@
+{
+ "why": "The instrument must not slander a session for what it could not see. With no PreToolUse Task hook the engine observes zero dispatches, which is indistinguishable from dispatching none \u2014 so fan-out reports UNKNOWN, not 0%. Same for parity on one host, and for gate discipline with no approval yet.",
+ "rates": {
+  "artifact_surfacing": 1.0,
+  "product_graph": null,
+  "agent_fanout": null,
+  "skill_flow": 1.0,
+  "gate_discipline": null,
+  "cross_host": null
+ }
+}

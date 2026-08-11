@@ -20,6 +20,7 @@ not repeated in the tables.
 
 | Command | What it does |
 | --- | --- |
+| `tp.py ack` | discharge an obligation the engine issued (WS-F evals); --status lists what is open |
 | `tp.py budget` | record a cooperative spend estimate, or --grant N more actions (the budget approval gate) |
 | `tp.py clear` | deactivate the workspace contract |
 | `tp.py context` | session-start context summary |
@@ -97,6 +98,21 @@ not repeated in the tables.
 | `tp.py version` | print the plugin version; --verify cross-checks every derived version surface against the single source (.codex-plugin/plugin.json) — CI-callable, exit 1 on drift |
 | `tp.py yield` | what the harness returns (lens yield and where findings are caught) — advisory, gates nothing |
 | `tp.py yield mark` | record a human verdict on one finding: acted or dismissed |
+
+## `tp.py ack`
+
+discharge an obligation the engine issued (WS-F evals); --status lists what is open
+
+Positional arguments:
+
+- `id` (optional) — obligation id, e.g. o-1a2b3c4d5e
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--evidence` | EVIDENCE | one line on how it was shown |
+| `--fingerprint` | FINGERPRINT | content fingerprint of what was actually shown (defaults to the artifact the obligation names) |
+| `--status` | flag | print issued / acknowledged / open / mismatched |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py budget`
 

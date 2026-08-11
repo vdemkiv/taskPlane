@@ -1,0 +1,3 @@
+{"event": "issued", "fingerprint": "aaaabbbbccccdddd", "host": "claude", "id": "o-1", "kind": "render_dashboard", "step": "pm"}
+{"event": "issued", "fingerprint": "aaaabbbbccccdddd", "host": "claude", "id": "o-2", "kind": "render_dashboard", "step": "em"}
+{"event": "issued", "fingerprint": "aaaabbbbccccdddd", "host": "claude", "id": "o-3", "kind": "render_graph", "step": "em"}

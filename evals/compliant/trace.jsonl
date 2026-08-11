@@ -1,0 +1,5 @@
+{"event": "loop_step", "host": "claude", "step": "pm"}
+{"event": "loop_step", "host": "claude", "step": "plan"}
+{"by": "Volodymyr \u2014 'approved'", "event": "loop_approve", "host": "claude"}
+{"event": "loop_step", "host": "claude", "step": "execute"}
+{"event": "loop_step", "host": "claude", "step": "em"}
