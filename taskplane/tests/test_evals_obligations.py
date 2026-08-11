@@ -206,7 +206,8 @@ class TestTheAckCommand(_Ws):
         return subprocess.run(
             [sys.executable, os.path.join(REPO, "taskplane", "tp.py"), "ack",
              *args, "--workspace", self.ws],
-            capture_output=True, text=True, env=dict(os.environ))
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env=dict(os.environ))
 
     def test_ack_resolves_the_fingerprint_from_the_artifact_it_names(self):
         """The honest path has to be the SHORT one, or nobody takes it."""
@@ -338,9 +339,19 @@ class TestTheCorpusProvesTheScorer(unittest.TestCase):
             self.assertTrue(os.path.isdir(os.path.join(self.CORPUS, profile)))
 
     def test_the_harness_runs_and_gates_nothing(self):
+        """`encoding` is not decoration — this test failed in CI without it.
+
+        ci_evals.py reconfigures its own streams to UTF-8 and prints em
+        dashes. `text=True` alone decodes with the LOCALE's preferred
+        encoding, and the GitHub runner reports ANSI_X3.4-1968, so the
+        first em dash raised UnicodeDecodeError from inside subprocess —
+        a failure about nothing this test was checking. Reproduce the old
+        behaviour with `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0`.
+        """
         r = subprocess.run(
             [sys.executable, os.path.join(REPO, "scripts", "ci_evals.py"),
-             "--corpus"], capture_output=True, text=True)
+             "--corpus"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("no evidence", r.stdout)
 
