@@ -341,11 +341,21 @@ def _declared_target(spec: str, declared_ids) -> "str | None":
 
 
 def module_of(relpath: str, manifests: dict | None = None) -> str:
-    """Feature-level module id. If the path passes through a source root
-    (src/, app/, …), the module is up to two segments AFTER the last such
-    root: template/app/src/payment/stripe/x.ts -> payment/stripe;
-    src/auth/session.py -> auth. Otherwise the first two path segments.
-    A file at the repo root -> (root).
+    """Module id: the first two MEANINGFUL directory segments.
+
+    A generic source root (src/, app/, lib/, packages/, pkg/, internal/,
+    cmd/) names a CONVENTION, not a component, so it is invisible to
+    identity — dropped wherever it appears, rather than shifting the answer:
+
+        src/auth/session.py              -> auth
+        web/src/App.tsx                  -> web
+        web/src/cart/CartPanel.tsx       -> web/cart
+        services/pricing/src/rules.py    -> services/pricing
+        engine/mod/views/list.py         -> engine/mod
+        template/app/src/payment/x.ts    -> template/payment
+
+    A file at the repo root -> (root); a path made of nothing BUT source
+    roots keeps its deepest one, because there is nothing else to use.
 
     `manifests` (from `manifest_modules`) OVERRIDES all of that for paths
     under a declared module: a repo that states its own module identity is
@@ -385,17 +395,18 @@ def module_of(relpath: str, manifests: dict | None = None) -> str:
                     # and com/b/svc/db both -> svc/db). Three segments keep
                     # the disambiguating parent while staying group-id-free.
                     return "/".join(pkg[-3:])
-    # last source-root marker in the path
-    root_i = None
-    for i, p in enumerate(parts):
-        if p in _SRC_ROOTS:
-            root_i = i
-    if root_i is not None and root_i + 1 < len(parts):
-        feat = parts[root_i + 1:root_i + 3]      # feature (+ subfeature)
-        return "/".join(feat)
-    if root_i is not None:                        # files directly in src/
-        return parts[root_i]
-    return "/".join(parts[:2])
+    # D-0018. The old rule read only the segments AFTER the last source
+    # root, which made a NESTED root corrupt identity in two ways at once:
+    # `web/src/App.tsx` became `src` — an id that names a convention, not a
+    # component — and `web/src/cart/X.tsx` became `cart`, which silently
+    # MERGES it with `admin/src/cart/Y.tsx`. Two sibling apps, one node.
+    #
+    # Dropping source roots wherever they occur fixes both and makes the
+    # rule uniform: `web/cart` is what the same repo would already have
+    # produced without the intermediate `src/`, so whether a project uses
+    # that convention no longer changes its module ids.
+    kept = [p for p in parts if p not in _SRC_ROOTS]
+    return "/".join(kept[:2]) if kept else parts[-1]
 
 
 def _node_kind(node: str) -> str:

@@ -1,9 +1,22 @@
 {
  "profile": "polyglot-app",
- "why": "Coupling crosses runtimes. In the DESIGNED model the HTTP call is a contract: node with consumes/provides \u2014 not a module->module edge \u2014 and the shared schema is a resource:. An import scanner emits neither.",
+ "why": "Coupling crosses runtimes. In the DESIGNED model the HTTP call is a contract: node with consumes/provides — not a module->module edge — and the shared schema is a resource:. An import scanner emits neither.",
+ "ground_truth_revisions": [
+  {
+   "date": "D-0018",
+   "was": "web (one module for the whole front end); edges web->ext:react, web->ext:swr, web->contract:api/pricing/quote",
+   "now": "web AND web/cart; ext:swr and the contract edge move to web/cart, and the intra-app edge web->web/cart is added",
+   "why": "The original entry was wrong, and it was wrong INDEPENDENTLY of what any scanner does. It asked for a ONE-segment module id, a granularity this graph's model offers nowhere else: every other expectation in this corpus, and the engine's own default, is two meaningful path segments (engine/mod/views/list.py -> engine/mod). Written as `web`, the same front end would have been expected to yield `web/cart` the moment it dropped the intermediate src/ directory — the expectation encoded the CONVENTION rather than the structure. It also threw away a real relationship: App.tsx imports ./cart/CartPanel, which is a dependency edge the coarser id erased into a self-edge.",
+   "honesty_note": "This revision RAISES the bar rather than lowering it: expected modules go 5 -> 6 and expected edges 8 -> 9, including one intra-app edge the scanner now has to get right. Revising ground truth to match an implementation is how an accuracy harness becomes worthless, so the test is whether the new entry would still be the right answer if the scanner disagreed with it. It would."
+  }
+ ],
  "nodes": [
   {
    "id": "web",
+   "kind": "module"
+  },
+  {
+   "id": "web/cart",
    "kind": "module"
   },
   {
@@ -58,6 +71,14 @@
   },
   {
    "from": "web",
+   "to": "web/cart",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "scanner",
+   "difficulty": "easy"
+  },
+  {
+   "from": "web/cart",
    "to": "ext:swr",
    "kind": "imports",
    "family": "dependency",
@@ -81,7 +102,7 @@
    "difficulty": "manifest"
   },
   {
-   "from": "web",
+   "from": "web/cart",
    "to": "contract:api/pricing/quote",
    "kind": "consumes",
    "family": "dependency",
