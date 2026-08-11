@@ -236,5 +236,72 @@ class TestABrokenLedgerNeverCostsAGate(_Ledgered):
                         "ledger becomes a broken gate.")
 
 
+class TestTheFourRegressionsStayFixed(_Ledgered):
+    """Four defects the whole-codebase review found in this module, all of
+    which shipped the same day it did. Each is pinned by the case the
+    original tests never drove."""
+
+    def test_a_review_is_not_re_recorded_at_later_gates(self):
+        """THE one that mattered: `_artifact` took a `step` and ignored it,
+        so every later gate re-read .em-review/findings.json — inflating
+        the count AND landing the copies in the CHEAP in-task bucket, i.e.
+        moving the headline metric in the flattering direction."""
+        self._review([F_AUTHZ], routed=["security"])
+        ym.gate_snapshot(self.ws, "em", "pass")
+        before = ym.report(self.ws)
+        for step in ("fix", "evaluate", "execute"):
+            ym.gate_snapshot(self.ws, step, "pass")
+        after = ym.report(self.ws)
+        self.assertEqual(after["findings"], before["findings"])
+        self.assertEqual(after["escape"], before["escape"])
+        self.assertEqual(after["escape"]["in_task"], 0)
+
+    def test_the_engine_step_ids_are_the_ones_in_buckets(self):
+        """`em` is the loop's review step; `review` is not a step it emits.
+        Listing the wrong name made at_review a FALLTHROUGH result, so the
+        headline depended on the default rather than on the data."""
+        self.assertIn("em", ym.BUCKETS["at_review"])
+        self.assertIn("fix", ym.BUCKETS["in_task"])
+        self.assertNotIn("review", ym.KNOWN_STEPS,
+                         "'review' is not a loop step — listing it is what "
+                         "made the bucketing accidental")
+
+    def test_em_buckets_by_declaration_not_by_default(self):
+        """Proves it is not the fallthrough doing the work: an unknown step
+        and `em` must not be indistinguishable."""
+        self.assertEqual(ym._bucket("em"), "at_review")
+        self.assertEqual(ym._bucket("fix"), "in_task")
+        self.assertNotIn("totally-unknown-step", ym.KNOWN_STEPS)
+
+    def test_recurrence_is_judged_per_lens_not_globally(self):
+        """A security finding must not be marked stopped_recurring because
+        some LATER review that routed no security lens happened to land."""
+        self._review([F_AUTHZ], routed=["security"])
+        ym.gate_snapshot(self.ws, "em", "pass")
+        # a later review in which security did NOT fire
+        self._review([F_I18N], routed=["i18n"])
+        ym.gate_snapshot(self.ws, "em", "pass")
+        rows = {r["lens"]: r for r in ym.report(self.ws)["lenses"]}
+        self.assertEqual(rows["security"]["stopped_recurring"], 0,
+                         "a review that never ran this lens says nothing "
+                         "about whether its finding recurred")
+        self.assertEqual(rows["security"]["unknown"], 1)
+
+    def test_recurrence_still_fires_when_the_lens_did_run_again(self):
+        """The complement — otherwise the fix above could be 'never infer'."""
+        self._review([F_AUTHZ, F_I18N], routed=["security", "i18n"])
+        ym.gate_snapshot(self.ws, "em", "pass")
+        self._review([F_AUTHZ], routed=["security", "i18n"])
+        ym.gate_snapshot(self.ws, "em", "pass")
+        rows = {r["lens"]: r for r in ym.report(self.ws)["lenses"]}
+        self.assertEqual(rows["i18n"]["stopped_recurring"], 1)
+
+    def test_the_dead_ordering_constant_is_gone(self):
+        """CAUGHT_ORDER was defined, documented as authoritative, read by
+        nothing, and named a step the engine does not emit."""
+        self.assertFalse(hasattr(ym, "CAUGHT_ORDER"))
+
+
+
 if __name__ == "__main__":
     unittest.main()
