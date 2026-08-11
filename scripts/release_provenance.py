@@ -49,8 +49,14 @@ class ProvenanceError(RuntimeError):
 
 
 def _git(root: Path, *args: str, strip: bool = True) -> str:
+    # `encoding` is explicit because `text=True` alone decodes with the
+    # LOCALE's preferred encoding, and CI runners routinely present
+    # ANSI_X3.4-1968 (ascii). A branch name, tag or author line with one
+    # non-ASCII byte would then raise UnicodeDecodeError from inside
+    # subprocess — a crash with no relation to what was being checked.
     proc = subprocess.run(["git", *args], cwd=str(root),
-                          capture_output=True, text=True)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise ProvenanceError(
             f"git {' '.join(args)} failed: {proc.stderr.strip() or 'no output'}")

@@ -58,7 +58,8 @@ class _Repo(unittest.TestCase):
     def _head(self):
         return subprocess.run(["git", "rev-parse", "HEAD"],
                               cwd=str(self.root), capture_output=True,
-                              text=True).stdout.strip()
+                              text=True, encoding="utf-8",
+                              errors="replace").stdout.strip()
 
 
 class TestTheArtifactNamesItsCommit(_Repo):

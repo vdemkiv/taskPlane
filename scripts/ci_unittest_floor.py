@@ -123,8 +123,12 @@ print(json.dumps({"count": count, "broken": broken}))
 
 def discover_count(root: str, tests_rel: str = TESTS_REL) -> tuple[int, list]:
     """(collected test count, broken-module descriptions) for `root`."""
+    # Explicit `encoding`: `text=True` decodes with the locale's preferred
+    # encoding, which is ascii on a bare CI runner. A collection error
+    # naming a non-ASCII path would crash the counter instead of reporting.
     proc = subprocess.run([sys.executable, "-c", _COUNT_PROG, tests_rel],
-                          capture_output=True, text=True, cwd=root)
+                          capture_output=True, text=True, cwd=root,
+                          encoding="utf-8", errors="replace")
     line = (proc.stdout or "").strip().splitlines()
     if proc.returncode != 0 or not line:
         raise SystemExit(
