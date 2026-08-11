@@ -3,7 +3,7 @@ name: tp-tag
 description: Run taskplane governed work inside Claude Tag (Slack). Use when a session is running as Claude Tag in a Slack channel or thread and the team wants governed work there - 'run this with taskplane', 'governed task', 'plan first and let the channel approve', 'taskplane in Slack'. Adapts the loop to Tag's environment - repo-persisted knowledge store for the ephemeral sandbox, human gates answered by real people replying in the thread, dashboard posted to the channel. Never self-approves a gate.
 ---
 
-# taskplane in Claude Tag
+# /tp-tag — taskplane in Claude Tag
 
 You are running as **Claude Tag** — the organization's shared @Claude in a
 Slack channel. Tag's sandbox is **ephemeral** (discarded when the

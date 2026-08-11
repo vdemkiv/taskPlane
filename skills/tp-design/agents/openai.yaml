@@ -1,5 +1,5 @@
 interface:
-  display_name: "taskPlane Design"
+  display_name: "tp-design"
   short_description: "Design robust solutions before implementation"
   default_prompt: "Use $tp-design to design this feature before implementation."
   brand_color: "#2563EB"
