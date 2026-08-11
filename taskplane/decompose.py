@@ -123,25 +123,18 @@ def _read_text(workspace: str, rel: str) -> str | None:
 # ------------------------------------------------------------ components.yaml
 
 def _parse_components_yaml(text: str) -> dict:
-    """Parse the documented flat subset: a `floors:` mapping of int values.
-    Anything unparseable raises ValueError (the caller fails open)."""
-    floors: dict = {}
-    section = None
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        top = re.match(r"^([A-Za-z_][\w-]*):\s*$", line)
-        if top:
-            section = top.group(1)
-            continue
-        kv = re.match(r"^\s+([A-Za-z_][\w-]*):\s*(-?\d+)\s*$", line)
-        if kv:
-            if section == "floors" and kv.group(1) in _FLOOR_KEYS:
-                floors[kv.group(1)] = int(kv.group(2))
-            continue
-        raise ValueError(f"unsupported components.yaml line: {raw!r}")
-    return floors
+    """Floors from components.yaml, via the ONE shared parser.
+
+    The parser moved to path_roles (a dependency-free leaf) when `exclude:`
+    was added for depgraph: an exclusion list is path classification, and a
+    second copy of the file format here would be two spellings of one rule —
+    the defect shape this codebase already carries in RUNTIME_OWNED vs
+    LOOP_OWNED. Unknown floor keys are dropped here, as before; an
+    unsupported line SHAPE still raises so the caller fails open.
+    """
+    import path_roles
+    cfg = path_roles.parse_components_yaml(text)
+    return {k: v for k, v in cfg["floors"].items() if k in _FLOOR_KEYS}
 
 
 def load_floors(workspace: str) -> tuple[dict, str | None]:

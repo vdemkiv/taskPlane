@@ -1,0 +1,116 @@
+{
+ "profile": "polyglot-app",
+ "why": "Coupling crosses runtimes. In the DESIGNED model the HTTP call is a contract: node with consumes/provides \u2014 not a module->module edge \u2014 and the shared schema is a resource:. An import scanner emits neither.",
+ "nodes": [
+  {
+   "id": "web",
+   "kind": "module"
+  },
+  {
+   "id": "services/pricing",
+   "kind": "module"
+  },
+  {
+   "id": "db/migrations",
+   "kind": "module"
+  },
+  {
+   "id": "infra",
+   "kind": "module"
+  },
+  {
+   "id": ".github/workflows",
+   "kind": "module"
+  },
+  {
+   "id": "ext:react",
+   "kind": "external"
+  },
+  {
+   "id": "ext:swr",
+   "kind": "external"
+  },
+  {
+   "id": "ext:fastapi",
+   "kind": "external"
+  },
+  {
+   "id": "ext:psycopg",
+   "kind": "external"
+  },
+  {
+   "id": "contract:api/pricing/quote",
+   "kind": "contract"
+  },
+  {
+   "id": "resource:db.items",
+   "kind": "resource"
+  }
+ ],
+ "edges": [
+  {
+   "from": "web",
+   "to": "ext:react",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "scanner",
+   "difficulty": "easy"
+  },
+  {
+   "from": "web",
+   "to": "ext:swr",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "scanner",
+   "difficulty": "easy"
+  },
+  {
+   "from": "services/pricing",
+   "to": "ext:fastapi",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "manifest",
+   "difficulty": "manifest"
+  },
+  {
+   "from": "services/pricing",
+   "to": "ext:psycopg",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "manifest",
+   "difficulty": "manifest"
+  },
+  {
+   "from": "web",
+   "to": "contract:api/pricing/quote",
+   "kind": "consumes",
+   "family": "dependency",
+   "source": "recorded",
+   "difficulty": "cross-runtime"
+  },
+  {
+   "from": "services/pricing",
+   "to": "contract:api/pricing/quote",
+   "kind": "provides",
+   "family": "structural",
+   "source": "recorded",
+   "difficulty": "cross-runtime"
+  },
+  {
+   "from": "services/pricing",
+   "to": "resource:db.items",
+   "kind": "uses",
+   "family": "dependency",
+   "source": "recorded",
+   "difficulty": "cross-runtime"
+  },
+  {
+   "from": "db/migrations",
+   "to": "resource:db.items",
+   "kind": "changes",
+   "family": "structural",
+   "source": "recorded",
+   "difficulty": "cross-runtime"
+  }
+ ]
+}

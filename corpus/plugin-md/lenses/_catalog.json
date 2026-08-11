@@ -1,0 +1,13 @@
+{
+ "lenses": [
+  {
+   "id": "security",
+   "globs": [
+    "**/auth/**"
+   ],
+   "task_types": [
+    "api"
+   ]
+  }
+ ]
+}

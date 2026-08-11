@@ -33,3 +33,6 @@ taskplane.plugin
 
 # local Claude session settings (never commit)
 .claude/
+
+# graph-accuracy corpus scratch (each fixture scans into its own store)
+/corpus/*/.tp-accuracy-home/

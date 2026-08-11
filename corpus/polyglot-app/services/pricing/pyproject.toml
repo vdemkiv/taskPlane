@@ -1,0 +1,3 @@
+[project]
+name = "pricing"
+dependencies = ["fastapi", "psycopg[binary]"]
