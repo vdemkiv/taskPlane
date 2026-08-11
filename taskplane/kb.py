@@ -44,7 +44,7 @@ def load_index(ws: str) -> dict:
 def _atomic_json(path: str, obj) -> None:
     """tmp + os.replace — a reader never sees a torn index (v1.5.1)."""
     tmp = path + f".tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         json.dump(obj, f, indent=2)
     os.replace(tmp, path)
 
@@ -195,7 +195,7 @@ def _record_decision_locked(ws, title, *, context, decision, rationale,
 ## Alternatives considered
 {alternatives or '—'}
 """
-    with open(os.path.join(kb_dir(ws), entry["file"]), "w", encoding="utf-8") as f:
+    with open(os.path.join(kb_dir(ws), entry["file"]), "w", encoding="utf-8", newline="") as f:
         f.write(body)
     tp.trace(ws, "decision_recorded", id=did, title=title, tags=entry["tags"])
     return entry
@@ -308,7 +308,7 @@ def _publish_locked(ws, src_kb, dst_kb, ids):
             new_id = _shared_id(_next_seq(dst_idx[kind]), d)
             slug = re.sub(r"^\d+-", "", os.path.basename(d["file"]))
             new_file = os.path.join(subdir, f"{new_id}-{slug}")
-            with open(os.path.join(dst_kb, new_file), "w", encoding="utf-8") as f:
+            with open(os.path.join(dst_kb, new_file), "w", encoding="utf-8", newline="") as f:
                 f.write(body)
             shared = dict(d)
             shared.update({"id": new_id, "file": new_file,

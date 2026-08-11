@@ -87,7 +87,12 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f".{os.path.basename(path)}.tmp.{os.getpid()}")
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        # newline="" disables the host's newline translation. Windows
+        # text mode turns every "\n" json.dump writes into "\r\n", so the
+        # SAME state written on two hosts produced different BYTES — and
+        # these artifacts are fingerprinted and byte-compared (the audit
+        # differential caught it: b'{\r\n  "reviews": 6\r\n}').
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
             json.dump(data, f, indent=indent, sort_keys=sort_keys)
         os.replace(tmp, path)
     finally:
@@ -145,7 +150,7 @@ def file_lock(path: str, *, timeout: float = 10.0):
     # time from the fallback path).
     lf = None
     try:
-        lf = open(lock_path, "w", encoding="utf-8")
+        lf = open(lock_path, "w", encoding="utf-8", newline="")
         import fcntl
         fcntl.flock(lf, fcntl.LOCK_EX)
     except (ImportError, OSError):
@@ -269,6 +274,25 @@ _TP_CLI_PATH = os.path.realpath(
 # from argv — like `find -delete`. Extraction modes are destructive-opaque
 # (blocked under ANY governing contract); create/list/test modes are not.
 _ARCHIVE_EXTRACTORS = {"tar", "unzip"}
+
+
+def _shsplit(text: str) -> list:
+    """shlex.split, but a backslash is a PATH SEPARATOR on Windows, not an
+    escape.
+
+    Posix-mode shlex silently EATS backslashes, so the screener saw
+    `python3 D:\\a\\repo\\taskplane\\tp.py` as the single token
+    `D:arepotaskplanetp.py` — every path-shaped screen (the tp.py exemption,
+    the deny globs, the scope check) was therefore matching against a
+    mangled string on that host. Normalizing first fails toward MORE
+    recognition, which is the safe direction for a deny screen.
+    """
+    if os.name == "nt":
+        text = str(text).replace("\\", "/")
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return str(text).split()
 
 
 def _is_tp_cli(arg: str) -> bool:
@@ -570,10 +594,7 @@ def _env_split_string(rest) -> list | None:
         else:
             return None                  # reached the program: no -S form
         if val is not None:
-            try:
-                return shlex.split(val) + tail
-            except ValueError:
-                return val.split() + tail
+            return _shsplit(val) + tail
     return None
 
 
@@ -668,10 +689,7 @@ def _analyze(command: str, _depth: int = 0):
             opaque = opaque or o
 
     for part in _CMD_SEP_RE.split(command):
-        try:
-            toks = shlex.split(part)
-        except ValueError:
-            toks = part.split()
+        toks = _shsplit(part)
         if not toks:
             continue
         targets += _redirect_targets(toks)
@@ -886,11 +904,7 @@ def _deny_segments(command: str, _depth: int = 0):
             segs += s
             unscreen = unscreen or u
     for part in _CMD_SEP_RE.split(command):
-        try:
-            toks = shlex.split(part)
-        except ValueError:
-            toks = part.split()
-        toks = _unwrap(toks)
+        toks = _unwrap(_shsplit(part))
         if not toks:
             continue
         segs.append(toks)
@@ -925,10 +939,7 @@ def deny_violation(cmd: str, deny) -> str | None:
     if not deny:
         return None
     segs, unscreen = _deny_segments(cmd)
-    try:
-        joined = " ".join(shlex.split(cmd))
-    except ValueError:
-        joined = " ".join(cmd.split())
+    joined = " ".join(_shsplit(cmd))
     for pattern in deny:
         pat = (pattern or "").split()
         if not pat:
@@ -2280,7 +2291,7 @@ def activate(workspace: str, contract: dict,
     atomic_write_json(cpath, contract, indent=2)
     spath = _snapshot_path(workspace)
     tmp = spath + f".tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(snapshot or "")
     os.replace(tmp, spath)
     trace(workspace, "contract_activated", task_id=contract.get("task_id"),
@@ -2427,7 +2438,7 @@ def _ensure_self_ignored(d: str) -> None:
     # .gitignore here (e.g. "!trace.jsonl") to make the trace committable.
     if "*" not in body.splitlines():
         try:
-            with open(gi, "w", encoding="utf-8") as f:
+            with open(gi, "w", encoding="utf-8", newline="") as f:
                 f.write("*\n")
         except OSError:
             pass
@@ -2506,7 +2517,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
     return {
         "role": agent,
         "role_marker": role_marker(agent),
-        "role_instructions": role_path,
+        "role_instructions": to_posix(role_path),
         "task_name": dispatch_task_name(kind, agent, ref),
         "model_tier": model_tier,
         "model": model_for_tier(model_tier),
@@ -2571,7 +2582,7 @@ def _save_queue(path: str, q: list) -> None:
         atomic_write_json(path + ".dropped",
                           {"dropped": _queue_dropped(path) + dropped})
     tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         json.dump(q[-_QUEUE_CAP:], f, indent=1)
     os.replace(tmp, path)
 
@@ -3134,7 +3145,7 @@ def write_store_meta(workspace: str) -> dict:
             "workspace_realpath": _workspace_identity(workspace),
             "git_remote": remote}
     try:
-        with open(store_meta_path(workspace), "w", encoding="utf-8") as f:
+        with open(store_meta_path(workspace), "w", encoding="utf-8", newline="") as f:
             json.dump(meta, f, indent=2)
     except OSError:
         pass

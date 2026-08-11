@@ -60,7 +60,20 @@ class _CacheCase(unittest.TestCase):
         self.addCleanup(self._env.stop)
 
     def cmd(self, exit_code=0):
-        return f"echo ran >> {self.sentinel}; exit {exit_code}"
+        # A portable stand-in for "a test command that ran and returned N".
+        # The old form was POSIX shell — `echo ran >> log; exit 1` — which
+        # cmd.exe neither chains with `;` nor exits from, so on Windows the
+        # command "succeeded" without running and every failure-caching case
+        # asserted against a run that never happened.
+        runner = os.path.join(self.tmp, "runner.py")
+        if not os.path.exists(runner):
+            with open(runner, "w", encoding="utf-8") as f:
+                f.write("import sys\n"
+                        "with open(sys.argv[1], 'a', encoding='utf-8') as h:\n"
+                        "    h.write('ran\\n')\n"
+                        "sys.exit(int(sys.argv[2]))\n")
+        return (f'"{sys.executable}" "{runner}" "{self.sentinel}" '
+                f'{exit_code}')
 
     def runs(self):
         try:

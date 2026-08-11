@@ -89,10 +89,23 @@ def _bare_root(ws: str) -> bool:
     # TASKPLANE_BARE_ROOT (os.pathsep-separated extra roots); the env var
     # only ADDS protected roots — the default set is unchanged.
     bare = {home, "/", "/root", "/home/claude"}
+    # `os.path.expanduser` consults USERPROFILE on Windows and never HOME, so
+    # a host that sets one and not the other left the real session home
+    # UNPROTECTED — the guard silently passed there. Add every home the
+    # environment names: this can only ever ADD protected roots, which is the
+    # fail-safe direction for a guard whose whole job is refusing to scope a
+    # contract at the session home.
+    for var in ("HOME", "USERPROFILE"):
+        val = (os.environ.get(var) or "").strip()
+        if val:
+            bare.add(os.path.abspath(os.path.expanduser(val)))
     for extra in (os.environ.get("TASKPLANE_BARE_ROOT") or "").split(os.pathsep):
         if extra.strip():
             bare.add(os.path.abspath(os.path.expanduser(extra.strip())))
-    if ws not in bare:
+    # Windows path comparison is case-insensitive and separator-agnostic;
+    # os.path.normcase is the identity elsewhere, so this is a no-op there.
+    bare = {os.path.normcase(os.path.normpath(b)) for b in bare}
+    if os.path.normcase(os.path.normpath(ws)) not in bare:
         return False
     inside_git = tp._run(["git", "rev-parse", "--is-inside-work-tree"],
                          cwd=ws).stdout.strip() == "true"
@@ -1355,7 +1368,12 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         if problem is not None:
             return step, None, problem
         tid = payload["task"]["id"]
-        brief = {"id": tid, "worktree": payload["task"].get("workspace"),
+        _wt = payload["task"].get("workspace")
+        # Dispatch briefs are CROSS-HOST artifacts — the parity goldens
+        # compare them byte for byte between Claude and Codex — so a host
+        # separator must never reach one.
+        brief = {"id": tid,
+                 "worktree": tp.to_posix(_wt) if _wt else _wt,
                  "prompt": _stage_agent_prompt(tid, instruction, payload)}
         key = "verdicts" if step == "fix" else "briefs"
         return (step, {"name": STAGE_WAVE_NAMES[step],

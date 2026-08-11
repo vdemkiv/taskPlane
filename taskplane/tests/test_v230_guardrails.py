@@ -577,6 +577,17 @@ class TestModeFailsTowardPrivate(_StoreIsolated):
 # file_lock: never silently lock-free (MED)
 # =====================================================================
 
+try:                       # POSIX-only; the mkdir fallback is what
+    import fcntl               # Windows uses, and it needs no patching
+    _HAVE_FCNTL = True
+except ImportError:            # pragma: no cover - windows
+    _HAVE_FCNTL = False
+
+
+@unittest.skipUnless(_HAVE_FCNTL,
+                     "these cases force the flock path to FAIL so the mkdir "
+                     "fallback is exercised; without fcntl the host is "
+                     "already on the fallback and there is nothing to force")
 class TestFileLock(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
