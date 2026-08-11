@@ -601,5 +601,93 @@ class TestSkillReferencePointersArePackaged(unittest.TestCase):
                     "skills-only OpenAI marketplace archive")
 
 
+class TestSkillNamingIsOneConvention(unittest.TestCase):
+    """Every skill answers to its directory slug, in every surface that
+    can name it.
+
+    A skill has up to three names: the directory, the frontmatter `name:`,
+    and — where an `agents/*.yaml` interface file exists — a `display_name`
+    the host renders in its skill picker. Nothing tied them together, so
+    they drifted: `tp-design` shipped a `display_name` of "taskPlane
+    Design", which is the only reason ONE chip in the Claude skill list
+    read as a spaced, mixed-case product name while the other nine read as
+    slugs. That file is a Codex interface file that also ships inside the
+    Claude package, so a name written for one host renamed the skill on
+    the other.
+
+    The convention is the slug, because the slug is what the user types.
+    """
+
+    def _skill_dirs(self):
+        base = os.path.join(ROOT, "skills")
+        dirs = sorted(d for d in os.listdir(base)
+                      if os.path.isfile(os.path.join(d and base, d,
+                                                     "SKILL.md")))
+        self.assertGreaterEqual(len(dirs), 9, "skills/ did not enumerate")
+        return dirs
+
+    @staticmethod
+    def _frontmatter_name(text):
+        m = re.search(r"\A---\r?\n(.*?)\r?\n---", text, re.S)
+        if not m:
+            return None
+        m2 = re.search(r"^name:\s*(.+?)\s*$", m.group(1), re.M)
+        return m2.group(1).strip().strip('"\'') if m2 else None
+
+    def test_frontmatter_name_equals_the_directory_slug(self):
+        for slug in self._skill_dirs():
+            with self.subTest(skill=slug):
+                name = self._frontmatter_name(
+                    _read("skills/%s/SKILL.md" % slug))
+                self.assertEqual(
+                    name, slug,
+                    "skills/%s/SKILL.md declares name: %r — a skill must "
+                    "answer to its own directory" % (slug, name))
+
+    def test_interface_display_names_do_not_rename_the_skill(self):
+        """`display_name` is rendered by the host's skill picker, so a
+        value that is not the slug silently renames the skill in one UI
+        and not the other. Assert on every interface file that exists,
+        rather than pinning which skills have one."""
+        found = 0
+        for slug in self._skill_dirs():
+            adir = os.path.join(ROOT, "skills", slug, "agents")
+            if not os.path.isdir(adir):
+                continue
+            for fname in sorted(os.listdir(adir)):
+                if not fname.endswith((".yaml", ".yml")):
+                    continue
+                found += 1
+                text = _read("skills/%s/agents/%s" % (slug, fname))
+                for value in re.findall(
+                        r"^\s*display_name:\s*(.+?)\s*$", text, re.M):
+                    with self.subTest(skill=slug, file=fname):
+                        self.assertEqual(
+                            value.strip().strip('"\''), slug,
+                            "skills/%s/agents/%s renames the skill in the "
+                            "host UI; display_name must be the slug the "
+                            "user types" % (slug, fname))
+        self.assertGreater(found, 0,
+                           "no interface files found — if they were removed, "
+                           "remove this check with them rather than letting "
+                           "it pass vacuously")
+
+    def test_skill_headings_share_one_shape(self):
+        """The H1 is what a reader sees first; `# /<slug> — <tagline>` in
+        nine files and a spaced product name in the tenth reads as two
+        different products."""
+        for slug in self._skill_dirs():
+            with self.subTest(skill=slug):
+                text = _read("skills/%s/SKILL.md" % slug)
+                m = re.search(r"^# (.+?)\s*$", text, re.M)
+                self.assertIsNotNone(m, "skills/%s/SKILL.md has no H1" % slug)
+                self.assertTrue(
+                    m.group(1).startswith("/%s " % slug)
+                    or m.group(1).strip() == "/%s" % slug,
+                    "skills/%s/SKILL.md heading is %r — expected it to open "
+                    "with '/%s'" % (slug, m.group(1), slug))
+
+
+
 if __name__ == "__main__":
     unittest.main()

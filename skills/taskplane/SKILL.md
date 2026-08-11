@@ -3,7 +3,7 @@ name: taskplane
 description: "The simple user-facing entry point for taskplane. Use whenever the user says taskplane or asks it to set up taskplane, get started with taskplane, design, build, implement, review, validate, plan, resume, or show status. The user supplies a goal and decisions; internally taskplane keeps the full strict harness: requirements and contracts, dependency-graph DoR/DoD, scoped execution, independent evidence, 26 review lenses, orchestrator-only gates, and human approval. Routes to tp-design, tp-go, tp-build, tp-engineering, tp-product, or tp-status without asking the user to learn those internals."
 ---
 
-# taskplane — simple for the user, strict for agents
+# /taskplane — simple for the user, strict for agents
 
 The user should need to say only one of these:
 
