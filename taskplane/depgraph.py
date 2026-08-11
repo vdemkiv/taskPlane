@@ -20,8 +20,10 @@ Nodes are MODULES (directory-level, e.g. `src/auth`) plus INFRA components
 from __future__ import annotations
 
 import ast
+import base64
 import contextlib
 import copy
+import gzip
 import hashlib
 import subprocess
 import sys as _sys
@@ -1954,12 +1956,92 @@ def component_ring_gap(count: int) -> int:
     return COMPONENT_RING_BASE + COMPONENT_RING_STEP * max(0, n - 1)
 
 
+def focus_graph(g: dict, imp: dict, depth: int) -> "tuple[dict, dict, str]":
+    """The blast-radius NEIGHBOURHOOD, not the whole map.
+
+    The full view embeds every module and every edge in the repo. On a
+    monorepo that is 620 KB of JSON — a fine file, and a page no inline
+    widget can carry, which is precisely where the reader keeps asking
+    for the graph to appear. Nearly all of that weight is edges between
+    modules the change never reaches.
+
+    So: keep the changed modules, keep what depends on them out to
+    `depth`, and keep only the edges whose BOTH endpoints survive. The
+    result is the same engine-built map, cropped — not a redrawn
+    substitute — and it returns a note naming exactly what was dropped,
+    because a view that silently omits half the graph reads as
+    'that's all there is'.
+    """
+    keep = set(imp.get("touched") or [])
+    kept_impacted: dict = {}
+    for d, es in (imp.get("impacted") or {}).items():
+        if int(d) <= depth:
+            kept_impacted[d] = es
+            keep |= {e["module"] for e in es}
+    mods = {k: v for k, v in (g.get("modules") or {}).items() if k in keep}
+    edges = [e for e in (g.get("edges") or [])
+             if e.get("from") in keep and e.get("to") in keep]
+    note = (f"focused to depth {depth}: "
+            f"{len(mods)}/{len(g.get('modules') or {})} modules · "
+            f"{len(edges)}/{len(g.get('edges') or [])} edges shown")
+    sub_g = {**g, "modules": mods, "edges": edges}
+    sub_i = {**imp, "impacted": kept_impacted,
+             "total_impacted": sum(len(v) for v in kept_impacted.values())}
+    return sub_g, sub_i, note
+
+
+def as_fragment(page: str) -> str:
+    """The same standalone page, embeddable inline in a chat widget.
+
+    The graph is a whole HTML document — DOCTYPE, <head>, and a stylesheet
+    that styles `body`, `table`, `h1`. Pasted into a host page it would
+    both fail to parse as a fragment and repaint the surrounding chat. So
+    it travels inside an `srcdoc` iframe: the document is carried BYTE FOR
+    BYTE, the browser gives it its own document and its own styles, and
+    nothing leaks either way.
+
+    That byte-identity is the point. The recurring failure this guards
+    against is an assistant substituting a hand-drawn chart for the
+    product's map; a wrapper that re-authored the page to fit inline
+    would be the same substitution wearing the engine's name. Only the
+    five characters that cannot survive an HTML attribute are escaped.
+    """
+    raw = page.encode("utf-8")
+    packed = base64.b64encode(gzip.compress(raw, 9)).decode("ascii")
+    fid = "tpg-" + hashlib.sha256(raw).hexdigest()[:10]
+    return (
+        '<div style="padding:.5rem 0">'
+        f'<iframe id="{fid}" title="dependency graph" sandbox="allow-scripts" '
+        'style="width:100%;height:620px;border:1px solid var(--border);'
+        'border-radius:8px;background:#fcfcfb"></iframe>'
+        f'<noscript>the dependency graph needs scripts to unpack '
+        f'({len(raw)} bytes)</noscript>'
+        '<script>(async function(){try{'
+        f'var b=atob("{packed}");var u=new Uint8Array(b.length);'
+        'for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);'
+        'var t=await new Response(new Blob([u]).stream()'
+        '.pipeThrough(new DecompressionStream("gzip"))).text();'
+        f'document.getElementById("{fid}").srcdoc=t;'
+        '}catch(e){'
+        f'document.getElementById("{fid}").outerHTML='
+        '"<p style=\\"font-family:monospace;font-size:12px\\">graph could not '
+        'be unpacked in this view: "+e+"</p>";}})();</script></div>')
+
+
 def to_html(ws: str, changed_files=None, title: str | None = None,
-            out: str | None = None) -> str:
+            out: str | None = None, focus: int | None = None,
+            fragment: bool = False) -> str:
     """Self-contained interactive dependency map; changed/impacted modules
-    highlighted so a reviewer sees the blast radius before reading code."""
+    highlighted so a reviewer sees the blast radius before reading code.
+
+    `focus=N` crops the map to the changed set plus everything within N
+    dependency hops of it — the same graph, small enough to render inline.
+    """
     g = load(ws)
     imp = impact(ws, changed_files or [])
+    focus_note = ""
+    if focus and imp.get("touched"):
+        g, imp, focus_note = focus_graph(g, imp, int(focus))
     impacted = {e["module"]: d for d, es in imp["impacted"].items()
                 for e in es}
     rows = ["<table><tr><th>module</th><th>status</th><th>via</th>"
@@ -2002,6 +2084,8 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
                       for d in (c.get("deps") or [])]}
             for c in comps if isinstance(c, dict)]
         sub += f" · {len(comps)} decomposed component node(s)"
+    if focus_note:
+        sub += " · " + focus_note
     # json.dumps does not neutralize a `</script>` occurring inside a
     # repo-supplied module id — it would close the inline <script> early and
     # let the remainder execute as markup. Escape `<` (and U+2028/9) so the
@@ -2013,6 +2097,8 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
             .replace("__SUB__", _esc(sub))
             .replace("__TABLE__", table)
             .replace("__DATA__", safe_data))
+    if fragment:
+        html = as_fragment(html)
     out = out or os.path.join(ws, ".taskplane", "depgraph.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:

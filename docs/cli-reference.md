@@ -296,6 +296,8 @@ render the graph as a standalone HTML view
 | --- | --- | --- |
 | `--base` | BASE | git base to diff against (default HEAD) |
 | `--files` | FILES | comma-separated changed files to highlight (default: git diff + untracked) |
+| `--focus` | DEPTH | crop to the changed set plus everything within DEPTH dependency hops — the same map, small enough to render inline in chat |
+| `--fragment` | flag | emit an embeddable fragment (the same page, carried byte-for-byte in an srcdoc iframe) so the graph can be shown inline instead of as a file |
 | `--out` | OUT | write the HTML here instead of stdout |
 
 ## `tp.py graph impact`

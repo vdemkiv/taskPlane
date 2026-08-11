@@ -990,6 +990,61 @@ def _truncate_marked(html, budget):
     return kept[:max(0, budget - len(m))] + m
 
 
+_CLEAN_SHOWN = 12
+
+
+def _render_clean(clean):
+    """The clean checks, as a READABLE list — one line per check.
+
+    This used to be `"; ".join(...)`: 35 sentences, each itself full of
+    semicolons and parentheses, welded into one unbroken grey paragraph.
+    The reader's verdict was 'this part is unreadable', and they were
+    right — a wall of prose is where the negative evidence of a review
+    goes to die, and the clean list is the half that says what was
+    CHECKED and found sound.
+
+    Two things change. Each check is its own row, with the domain lifted
+    out of the sentence into a mono label so the eye can scan by lens
+    instead of re-reading. And the cap is stated: the header said
+    '35 areas' while the paragraph silently showed 12, which is the
+    dashboard telling a quiet lie about its own coverage. An omission
+    now names itself and says where the rest lives.
+    """
+    if not clean:
+        return ""
+    rows = []
+    for item in clean[:_CLEAN_SHOWN]:
+        text = str(item)
+        dom, sep, rest = text.partition(": ")
+        # Only treat a short leading token as a domain label — a sentence
+        # that merely contains a colon keeps its text intact.
+        if sep and len(dom) <= 28 and "." not in dom:
+            label = (f'<span style="font-family:var(--font-mono);'
+                     f'font-size:10.5px;color:var(--text-muted);'
+                     f'text-transform:uppercase;letter-spacing:.6px">'
+                     f'{_esc(dom)}</span> ')
+            body = _esc(rest)
+        else:
+            label, body = "", _esc(text)
+        rows.append('<li style="margin:0 0 6px;padding-inline-start:2px;'
+                    'line-height:1.5">' + label + body + '</li>')
+    omitted = len(clean) - len(rows)
+    more = ("" if omitted <= 0 else
+            f'<li style="margin:0;list-style:none;margin-inline-start:-1.1em;'
+            f'font-family:var(--font-mono);font-size:11px;'
+            f'color:var(--text-muted)">+{omitted} more clean check'
+            f'{"" if omitted == 1 else "s"} not shown here — all '
+            f'{len(clean)} are in the review’s findings.json</li>')
+    return ('<details style="margin-top:10px;font-size:12px;'
+            'color:var(--text-secondary)" open>'
+            '<summary style="cursor:pointer;font-weight:500;'
+            'color:var(--text-primary)">'
+            f'clean — {len(clean)} area{"" if len(clean) == 1 else "s"} '
+            'checked and found sound</summary>'
+            '<ul style="margin:8px 0 0;padding-inline-start:1.1em">'
+            + "".join(rows) + more + '</ul></details>')
+
+
 def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
     """Ordered, self-contained fragments each <= budget INCLUDING the page
     wrapper. If the full rich fragment already fits, returns it as a single
@@ -1028,12 +1083,7 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
         f'background:{bg};color:{fg}">{lbl} {c[k]}</span>'
         for k, lbl, bg, fg in chip_defs)
     clean = meta.get("clean") or []
-    clean_html = ""
-    if clean:
-        clean_html = ('<div style="margin-top:10px;font-size:12px;'
-                      'color:var(--text-secondary)"><b style="font-weight:500">'
-                      f'clean — {len(clean)} areas:</b> '
-                      + "; ".join(_esc(x) for x in clean[:12]) + "</div>")
+    clean_html = _render_clean(clean)
     rec = meta.get("headline") or meta.get("recommendation") or ""
     rec_html = (f'<div style="border-inline-start:3px solid '
                 f'var(--border-danger);'
