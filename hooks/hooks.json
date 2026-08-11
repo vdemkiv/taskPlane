@@ -22,6 +22,17 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__visualize__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" screen-render",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen-render) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" screen-render) else (exit /b 0)",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -59,6 +70,18 @@
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" subagent-stop",
             "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" subagent-stop) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" subagent-stop) else (echo {} )",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" session-verify",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" session-verify) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" session-verify) else (exit /b 0)",
             "timeout": 10
           }
         ]

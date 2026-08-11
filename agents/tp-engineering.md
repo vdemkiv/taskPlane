@@ -43,7 +43,7 @@ This is enforced, not trusted — activate your contract FIRST
 
 ```bash
 python3 "$PLUGIN/taskplane/tp.py" new --read-only \
-    --write-allow ".em-review/**" \
+    --write-allow ".em-review/**" --owes review \
     --tools "Read,Grep,Glob,Bash,Write,Edit" "engineering review: <target>"
 ```
 

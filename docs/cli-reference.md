@@ -81,6 +81,8 @@ not repeated in the tables.
 | `tp.py req score` | score a requirement's refinement against the bar |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
 | `tp.py screen-dispatch` | PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict) |
+| `tp.py screen-render` | PreToolUse hook for the inline-render tool: record that a render RAN, and with which bytes. Observes only — never denies |
+| `tp.py session-verify` | Stop/SessionEnd hook: exit 2 listing artifacts this run owes and never showed |
 | `tp.py share` | plan-aware knowledge sharing: status / plan / set private\|shared / push |
 | `tp.py share plan` | set the knowledge-storage plan |
 | `tp.py share push` | publish private decisions to the shared store |
@@ -604,6 +606,7 @@ Positional arguments:
 | `--budget` | BUDGET | cooperative $ ceiling |
 | `--deny` | DENY (repeatable) | extra deny command (repeatable) |
 | `--max-actions` | MAX_ACTIONS | hook-enforced action ceiling (default 60) |
+| `--owes` | RUN_TYPE | seed the artifacts this run type owes as BINDING obligations (e.g. `review`): recorded before the work starts, and taskplane's own completion commands stay blocked until each is shown |
 | `--read-only` | flag | review/plan role — block filesystem writes |
 | `--scope` | SCOPE | comma-separated scope globs (relative) |
 | `--tests` | TESTS | DoD test command |
@@ -718,6 +721,18 @@ PreToolUse hook entrypoint (stdin event)
 ## `tp.py screen-dispatch`
 
 PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict)
+
+## `tp.py screen-render`
+
+PreToolUse hook for the inline-render tool: record that a render RAN, and with which bytes. Observes only — never denies
+
+## `tp.py session-verify`
+
+Stop/SessionEnd hook: exit 2 listing artifacts this run owes and never showed
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py share`
 

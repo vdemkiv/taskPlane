@@ -188,6 +188,7 @@ The skills drive everything, but the CLI beneath is the power layer:
 ```bash
 # a read-only review contract, by hand (tp-engineering does this for you):
 python3 taskplane/tp.py new --read-only --write-allow ".em-review/**" \
+    --owes review \
     --tools "Read,Grep,Glob,Bash,Write,Edit" "review of <target>"
 python3 taskplane/tp.py lens route --base main --all   # the full catalog for a diff
 python3 taskplane/tp.py graph impact --files src/db.js  # blast radius, zero tokens
