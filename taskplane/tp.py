@@ -265,7 +265,7 @@ def _onboard_report(ws: str) -> dict:
         _art = os.path.join(tp.store_root(ws), "artifacts")
         _tracks = sorted(os.listdir(_art)) if os.path.isdir(_art) else []
         if _tracks:
-            artifacts = {"path": _art, "tracks": _tracks,
+            artifacts = {"path": tp.to_posix(_art), "tracks": _tracks,
                          "note": "prior gate snapshots - a context "
                                  "cache; read before re-deriving"}
     except Exception:

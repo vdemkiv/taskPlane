@@ -334,5 +334,79 @@ class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
                     "posixpath so Windows keeps producing '/'-shaped ids.")
 
 
+class TestEmittedArtifactPathsAreSlashShaped(unittest.TestCase):
+    """Dispatch briefs are CROSS-HOST artifacts — their parity goldens are
+    compared byte for byte between Claude and Codex — so a path that
+    renders `\\` on one host and `/` on the other is a product
+    divergence, not a cosmetic one.
+
+    Three fields still carried the host shape after the role-instruction
+    fix: the worker workspace (`.tp-work\\t1`), the dashboard pointer
+    (`.taskplane\\dashboard.html`) and the published artifacts root. The
+    Windows leg caught all three at once, on the same two golden compares.
+    """
+
+    def test_worker_workspace_is_normalized_on_the_way_into_a_brief(self):
+        win = {"id": "t1", "workspace": r"C:\ws\.tp-work\t1",
+               "scope": ["src/**"]}
+        out = tp.posix_workspace(win)
+        self.assertEqual(out["workspace"], "C:/ws/.tp-work/t1")
+        self.assertNotIn("\\", out["workspace"])
+        # the caller's task is not mutated: stored state keeps the host
+        # shape, because every filesystem use of it still wants that
+        self.assertEqual(win["workspace"], r"C:\ws\.tp-work\t1")
+        self.assertEqual(out["scope"], win["scope"])
+
+    def test_absent_workspace_is_passed_through_untouched(self):
+        for value in ({"id": "t1"}, {"id": "t1", "workspace": None}, None):
+            with self.subTest(task=value):
+                self.assertIs(tp.posix_workspace(value), value)
+
+    def test_frozen_goldens_carry_no_host_separator(self):
+        """The goldens are the gate for the whole class, but they only
+        FIRE on a host that produces backslashes. This runs everywhere and
+        fails if a golden is ever regenerated on Windows — which would
+        freeze the divergence instead of catching it."""
+        import glob
+        import json as _json
+        fixtures = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "fixtures", "briefs")
+        goldens = sorted(glob.glob(os.path.join(fixtures, "golden_*.json")))
+        self.assertTrue(goldens, "no golden briefs found to check")
+
+        def walk(node, path):
+            if isinstance(node, str):
+                # No string in ANY golden carries a backslash today, so the
+                # rule is simply "none may". A path-shaped heuristic would
+                # have missed `.taskplane\\dashboard.html`, which contains
+                # no forward slash at all — verified by injecting exactly
+                # that and watching the clever version pass.
+                if "\\" in node:
+                    yield path, node
+            elif isinstance(node, list):
+                for i, item in enumerate(node):
+                    yield from walk(item, f"{path}[{i}]")
+            elif isinstance(node, dict):
+                for key, item in node.items():
+                    yield from walk(item, f"{path}.{key}")
+
+        for g in goldens:
+            with self.subTest(golden=os.path.basename(g)):
+                with open(g, encoding="utf-8") as f:
+                    raw = f.read()
+                # goldens carry a '#' comment header before the JSON body
+                body = "".join(l for l in raw.splitlines(keepends=True)
+                               if not l.startswith("#"))
+                data = _json.loads(body)
+                bad = list(walk(data, ""))
+                self.assertEqual(
+                    bad, [],
+                    "golden carries host-shaped paths — it was regenerated "
+                    "on a host that emits '\\'. Briefs are compared byte "
+                    "for byte across hosts; regenerate on a '/'-shaped host "
+                    "and fix the emitter, do not freeze the divergence.")
+
+
+
 if __name__ == "__main__":
     unittest.main()
