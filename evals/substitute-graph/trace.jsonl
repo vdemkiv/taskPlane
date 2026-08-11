@@ -1,0 +1,3 @@
+{"event": "loop_step", "host": "claude", "step": "em"}
+{"event": "loop_approve", "host": "claude"}
+{"event": "loop_approve_unattributed", "host": "claude"}

@@ -1,0 +1,11 @@
+{
+ "why": "'here we go again no inline dashboard visualisation. no report nothing?' \u2014 the engine issued three render obligations and none was acknowledged, and six of eight lens subagents never dispatched. A green engine; this is what the user saw.",
+ "rates": {
+  "artifact_surfacing": 0.0,
+  "product_graph": 0.0,
+  "agent_fanout": 0.25,
+  "skill_flow": 1.0,
+  "gate_discipline": null,
+  "cross_host": null
+ }
+}

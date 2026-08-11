@@ -1,0 +1,11 @@
+{
+ "why": "'this is not the graph and dependency visualisation we designed' \u2014 the graph obligation WAS acknowledged, citing a fingerprint that is not the artifact the engine built. A substitute is a different failure from a skip and is counted as one. The self-approved gate is the second defect in this session.",
+ "rates": {
+  "artifact_surfacing": 1.0,
+  "product_graph": 0.0,
+  "agent_fanout": 1.0,
+  "skill_flow": 1.0,
+  "gate_discipline": 0.0,
+  "cross_host": null
+ }
+}

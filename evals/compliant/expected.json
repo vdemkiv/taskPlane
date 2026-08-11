@@ -1,0 +1,11 @@
+{
+ "why": "Every artifact the engine built was shown, the fan-out landed all eight lens subagents, the approval carries a human's name, and every step is one the engine's own machine declares.",
+ "rates": {
+  "artifact_surfacing": 1.0,
+  "product_graph": 1.0,
+  "agent_fanout": 1.0,
+  "skill_flow": 1.0,
+  "gate_discipline": 1.0,
+  "cross_host": null
+ }
+}

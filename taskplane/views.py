@@ -224,6 +224,25 @@ def refresh_views(ws: str, out: dict) -> dict:
                       "(mcp__visualize__show_widget) before "
                       "proceeding; the dashboard is the interface "
                       "the human governs through"}
+        # WS-F: the engine can render, write and point at the artifact, and
+        # has no way to see whether it reached a human — which is exactly how
+        # "no inline dashboard, no report, nothing" kept happening against a
+        # green engine. Record the demand so the SILENCE is countable.
+        # Best-effort and non-blocking by contract: a workspace with no
+        # ledger, or a failed write, changes nothing about this transition.
+        with contextlib.suppress(Exception):
+            import obligations
+            oid = obligations.issue(
+                ws, "render_dashboard",
+                detail="show the refreshed dashboard inline",
+                step=str((out.get("state") or {}).get("step")
+                         or out.get("step") or ""),
+                artifact=p, key=".taskplane/dashboard.html")
+            if oid:
+                out["dashboard"]["obligation"] = oid
+                out["dashboard"]["ack"] = (
+                    f"after showing it, run: tp ack {oid} — an obligation "
+                    "left unacknowledged is recorded as not shown")
     except Exception as exc:
         detail = f"{exc.__class__.__name__}: {exc}"
         out["dashboard"] = {

@@ -196,5 +196,34 @@ instrument pattern as `ci_graph_accuracy.py` (a known answer, scored,
 gating nothing until a number is worth defending). The engine suite says
 the machinery is correct; evals say the machinery is USED.
 
-**Status: deferred by the user until the current fix wave lands.** Do not
-start it before then.
+### Status: BUILT (first cut), 2026-08-11
+
+`taskplane/obligations.py` (the ledger), `tp ack` (the seam), and
+`scripts/ci_evals.py` (the scorer over all six areas), with a four-profile
+corpus under `evals/` that proves the scorer without a host.
+
+The design decision that shaped it: **only what the engine cannot observe
+needs a claim.** Fan-out already had `record_expected_dispatch` /
+`dispatch_report` behind the PreToolUse Task hook; step order and approval
+attribution are already trace events. Adding obligations for those would
+have created a second record of the same fact, free to disagree with the
+first. So exactly two kinds need acknowledging — `render_dashboard` and
+`render_graph` — because `mcp__visualize__show_widget` happens in the host,
+outside every process taskplane runs.
+
+Measured on a real session: artifact surfacing **0% → 100%** once the driver
+skill acknowledges what it showed. The 0% was the honest starting point and
+is what the layer exists to have made visible.
+
+Still open for a second cut:
+
+- **Host-transcript scoring.** An acknowledgement is a CLAIM, not proof. The
+  failure this was built for is skipping, and a skip is what an
+  unacknowledged obligation records — but if deliberate false acks ever
+  appear, only transcript scoring settles it. This ledger is what would show
+  that it is needed.
+- **Cross-host parity in anger.** The mechanics are there (every row carries
+  `host`), but nothing has yet run the same scenario on Claude and Codex and
+  diffed the two ledgers.
+- **A pinned number.** Like `ci_graph_accuracy.py`, this gates nothing until
+  there is a figure worth defending.

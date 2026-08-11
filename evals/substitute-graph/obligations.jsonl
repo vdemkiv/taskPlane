@@ -1,0 +1,4 @@
+{"event": "issued", "fingerprint": "aaaabbbbccccdddd", "host": "claude", "id": "o-1", "kind": "render_dashboard", "step": "em"}
+{"claimed": true, "event": "acknowledged", "fingerprint": "aaaabbbbccccdddd", "host": "claude", "id": "o-1"}
+{"event": "issued", "fingerprint": "aaaabbbbccccdddd", "host": "claude", "id": "o-2", "kind": "render_graph", "step": "em"}
+{"claimed": true, "event": "acknowledged", "fingerprint": "9999deadbeef0000", "host": "claude", "id": "o-2"}

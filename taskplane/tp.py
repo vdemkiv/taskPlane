@@ -2160,6 +2160,60 @@ def cmd_summary(a) -> int:
     return 0
 
 
+def cmd_ack(a) -> int:
+    """Discharge an obligation the engine issued (WS-F).
+
+    The engine can render an artifact, write it to disk and point at it; it
+    cannot see whether a human ever laid eyes on it, because
+    `mcp__visualize__show_widget` happens in the host. This is the seam
+    across that gap — and it is deliberately a CLAIM, never proof. An
+    unacknowledged obligation is recorded as not shown, which is precisely
+    the failure this exists to count; it blocks nothing.
+
+    `--fingerprint` is what separates showing the product's artifact from
+    showing a substitute. `tp ack <id>` alone reads the fingerprint off the
+    artifact the obligation NAMES, so the honest path is also the short one;
+    passing a different one on purpose is recorded as a mismatch rather than
+    a success.
+    """
+    import obligations
+    ws = _workspace(a.workspace)
+    if getattr(a, "status", False):
+        st = obligations.status(ws)
+        print(json.dumps({
+            "issued": st["issued"], "acknowledged": st["acknowledged"],
+            "open": [{"id": o["id"], "kind": o["kind"], "step": o.get("step"),
+                      "detail": o.get("detail")} for o in st["open"]],
+            "mismatched": [{"id": o["id"], "kind": o["kind"],
+                            "expected_fingerprint": o.get("fingerprint"),
+                            "cited": o.get("cited")}
+                           for o in st["mismatched"]],
+            "unparseable": st["unparseable"],
+            "note": "an acknowledgement is a CLAIM that the artifact was "
+                    "shown, never proof; engine-observed facts (dispatch, "
+                    "gates, step order) are scored separately",
+        }, indent=2))
+        return 0
+    if not getattr(a, "id", None):
+        print("taskplane: ack needs an obligation id (or --status)",
+              file=sys.stderr)
+        return 1
+    fp = getattr(a, "fingerprint", None)
+    if not fp:
+        for row in obligations.read(ws):
+            if row.get("event") == "issued" and row.get("id") == a.id:
+                art = row.get("artifact")
+                if art:
+                    fp = obligations.artifact_fingerprint(
+                        os.path.join(ws, art) if not os.path.isabs(art)
+                        else art)
+                break
+    obligations.acknowledge(ws, a.id, evidence=getattr(a, "evidence", "") or "",
+                            fingerprint=fp)
+    print(f"acknowledged {a.id}" + (f" ({fp})" if fp else ""))
+    return 0
+
+
 def cmd_dashboard(a) -> int:
     """Emit the mission-control view. Default: the inline widget fragment
     for mcp__visualize__show_widget (the driver pipes it straight in).
@@ -2343,6 +2397,23 @@ def cmd_graph(a) -> int:
                  _changed_for_impact(ws, a.base))
         out = dg.to_html(ws, files, out=a.out)
         print(out)
+        # WS-F: this is THE designed dependency + system-design view. The
+        # recurring failure was not that it could not be produced — it was an
+        # assistant drawing its own chart instead. The obligation carries this
+        # artifact's content fingerprint, so a substitute has nothing to cite.
+        if getattr(a, "out", None):
+            try:
+                import obligations
+                oid = obligations.issue(
+                    ws, "render_graph",
+                    detail="show the product's own dependency/system-design "
+                           "view — not a re-drawn substitute",
+                    step="graph", artifact=a.out)
+                if oid:
+                    print(f"OBLIGATION {oid}: show this view, then "
+                          f"`tp ack {oid}`", file=sys.stderr)
+            except Exception:
+                pass
     return 0
 
 
@@ -3238,6 +3309,19 @@ def main(argv=None) -> int:
                     help="cross-check every derived version surface "
                          "against the single source; exit 1 on drift")
     vp.set_defaults(fn=cmd_version)
+
+    ak = sub.add_parser("ack", help="discharge an obligation the engine "
+                        "issued (WS-F evals); --status lists what is open")
+    ak.add_argument("id", nargs="?", help="obligation id, e.g. o-1a2b3c4d5e")
+    ak.add_argument("--evidence", default="",
+                    help="one line on how it was shown")
+    ak.add_argument("--fingerprint", default=None,
+                    help="content fingerprint of what was actually shown "
+                         "(defaults to the artifact the obligation names)")
+    ak.add_argument("--status", action="store_true",
+                    help="print issued / acknowledged / open / mismatched")
+    ak.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    ak.set_defaults(fn=cmd_ack)
 
     a = p.parse_args(argv)
     if not hasattr(a, "workspace"):

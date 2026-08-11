@@ -1,0 +1,2 @@
+{"event": "issued", "fingerprint": "aaaabbbbccccdddd", "host": "codex", "id": "o-1", "kind": "render_dashboard", "step": "pm"}
+{"claimed": true, "event": "acknowledged", "fingerprint": "aaaabbbbccccdddd", "host": "codex", "id": "o-1"}
