@@ -271,6 +271,25 @@ _TP_CLI_PATH = os.path.realpath(
 _ARCHIVE_EXTRACTORS = {"tar", "unzip"}
 
 
+def _shsplit(text: str) -> list:
+    """shlex.split, but a backslash is a PATH SEPARATOR on Windows, not an
+    escape.
+
+    Posix-mode shlex silently EATS backslashes, so the screener saw
+    `python3 D:\\a\\repo\\taskplane\\tp.py` as the single token
+    `D:arepotaskplanetp.py` — every path-shaped screen (the tp.py exemption,
+    the deny globs, the scope check) was therefore matching against a
+    mangled string on that host. Normalizing first fails toward MORE
+    recognition, which is the safe direction for a deny screen.
+    """
+    if os.name == "nt":
+        text = str(text).replace("\\", "/")
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return str(text).split()
+
+
 def _is_tp_cli(arg: str) -> bool:
     """True when a python script argument is THIS package's own tp.py — by
     absolute realpath, or the `taskplane/tp.py` suffix used when invoked
@@ -570,10 +589,7 @@ def _env_split_string(rest) -> list | None:
         else:
             return None                  # reached the program: no -S form
         if val is not None:
-            try:
-                return shlex.split(val) + tail
-            except ValueError:
-                return val.split() + tail
+            return _shsplit(val) + tail
     return None
 
 
@@ -668,10 +684,7 @@ def _analyze(command: str, _depth: int = 0):
             opaque = opaque or o
 
     for part in _CMD_SEP_RE.split(command):
-        try:
-            toks = shlex.split(part)
-        except ValueError:
-            toks = part.split()
+        toks = _shsplit(part)
         if not toks:
             continue
         targets += _redirect_targets(toks)
@@ -886,11 +899,7 @@ def _deny_segments(command: str, _depth: int = 0):
             segs += s
             unscreen = unscreen or u
     for part in _CMD_SEP_RE.split(command):
-        try:
-            toks = shlex.split(part)
-        except ValueError:
-            toks = part.split()
-        toks = _unwrap(toks)
+        toks = _unwrap(_shsplit(part))
         if not toks:
             continue
         segs.append(toks)
@@ -925,10 +934,7 @@ def deny_violation(cmd: str, deny) -> str | None:
     if not deny:
         return None
     segs, unscreen = _deny_segments(cmd)
-    try:
-        joined = " ".join(shlex.split(cmd))
-    except ValueError:
-        joined = " ".join(cmd.split())
+    joined = " ".join(_shsplit(cmd))
     for pattern in deny:
         pat = (pattern or "").split()
         if not pat:
@@ -2506,7 +2512,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
     return {
         "role": agent,
         "role_marker": role_marker(agent),
-        "role_instructions": role_path,
+        "role_instructions": to_posix(role_path),
         "task_name": dispatch_task_name(kind, agent, ref),
         "model_tier": model_tier,
         "model": model_for_tier(model_tier),

@@ -120,7 +120,12 @@ class TestKbConcurrency(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         ws = _repo(tmp)
         _pop_store(self)
-        ctx = multiprocessing.get_context("fork")
+        # "fork" is POSIX-only. The point of the case is CONCURRENT
+        # writers against one index, which spawn gives just as well —
+        # and Windows is exactly where the locking needs proving.
+        method = ("fork" if "fork" in multiprocessing.get_all_start_methods()
+                  else "spawn")
+        ctx = multiprocessing.get_context(method)
         procs = [ctx.Process(target=_rec, args=(ws,)) for _ in range(6)]
         for p in procs:
             p.start()

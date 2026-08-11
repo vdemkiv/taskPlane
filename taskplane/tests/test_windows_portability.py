@@ -247,9 +247,12 @@ class TestPidLivenessNeverSignalsOnWindows(unittest.TestCase):
         try:
             taskplane_lite.sys.platform = "win32"
             taskplane_lite.os.kill = _Boom().kill
-            # ctypes.windll does not exist off Windows -> the guarded except
-            # returns True (governed), and crucially no signal was sent.
-            self.assertTrue(tp._pid_alive(4242))
+            # Off Windows, ctypes.windll does not exist and the guarded
+            # except returns True (governed). ON Windows the real Win32
+            # probe runs. Either way the ONLY thing this test asserts is
+            # the regression: no signal was sent. Use a pid known to be
+            # alive so the answer is True on both hosts.
+            self.assertTrue(tp._pid_alive(os.getpid()))
             self.assertEqual(sent, [])
         finally:
             taskplane_lite.sys.platform = real_platform

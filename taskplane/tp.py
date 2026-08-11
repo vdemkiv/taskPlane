@@ -1355,7 +1355,12 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         if problem is not None:
             return step, None, problem
         tid = payload["task"]["id"]
-        brief = {"id": tid, "worktree": payload["task"].get("workspace"),
+        _wt = payload["task"].get("workspace")
+        # Dispatch briefs are CROSS-HOST artifacts — the parity goldens
+        # compare them byte for byte between Claude and Codex — so a host
+        # separator must never reach one.
+        brief = {"id": tid,
+                 "worktree": tp.to_posix(_wt) if _wt else _wt,
                  "prompt": _stage_agent_prompt(tid, instruction, payload)}
         key = "verdicts" if step == "fix" else "briefs"
         return (step, {"name": STAGE_WAVE_NAMES[step],
