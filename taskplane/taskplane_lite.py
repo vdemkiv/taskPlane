@@ -336,6 +336,19 @@ def to_posix(path: str) -> str:
     return str(path or "").replace("\\", "/")
 
 
+def posix_workspace(task):
+    """`task` with a '/'-shaped `workspace`, for artifacts that LEAVE.
+
+    Dispatch briefs are cross-host: their parity goldens are compared byte
+    for byte between Claude and Codex, so a workspace stored as
+    `.tp-work\\t1` on Windows is a real divergence. Normalizing the copy
+    rather than the stored value keeps every filesystem use of it intact.
+    """
+    if not isinstance(task, dict) or not task.get("workspace"):
+        return task
+    return {**task, "workspace": to_posix(task["workspace"])}
+
+
 def _same_path(a: str, b: str) -> bool:
     """Path equality, case-folded only where the host API itself folds case.
 

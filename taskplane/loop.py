@@ -967,7 +967,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                            "this exact task_name, role instructions, standalone "
                            "role_marker, model when non-null, and "
                            "reasoning_effort."),
-        "task": task,
+        # cross-host artifact: '/'-shaped out, host-shaped in state
+        "task": tp.posix_workspace(task),
         "contract": {"read_only": bool(contract.get("read_only")),
                      "scope": contract["coding"]["scope_paths"],
                      "write_allow": contract.get("write_allow"),
@@ -2970,7 +2971,9 @@ def _with_dashboard(fn):
                     f.write(frag)
                 os.replace(tmp, p)
                 out["dashboard"] = {
-                    "path": os.path.join(".taskplane", "dashboard.html"),
+                    # logical pointer, not a path: os.path.join made
+                    # this '\\' on Windows and the goldens disagreed
+                    "path": ".taskplane/dashboard.html",
                     "render": "refreshed for this transition — show it "
                               "(mcp__visualize__show_widget) before "
                               "proceeding; the dashboard is the interface "
@@ -2978,7 +2981,7 @@ def _with_dashboard(fn):
                 root = _publish_artifacts(ws)
                 if root:
                     out["artifacts"] = {
-                        "path": root,
+                        "path": tp.to_posix(root),
                         "note": "gate-state snapshot (dashboard, plan, "
                                 "findings, graph, HEADLINES.md) — on a team "
                                 "store commit it with the work so the org "
