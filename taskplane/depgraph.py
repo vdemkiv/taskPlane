@@ -221,17 +221,133 @@ def summary(ws: str) -> dict:
 _SRC_ROOTS = ("src", "app", "lib", "packages", "pkg", "internal", "cmd")
 
 
-def module_of(relpath: str) -> str:
+# --------------------------------------------------- declared module identity
+#
+# D-0007. Path-depth guessing INVENTS module ids. On a workspace monorepo the
+# scanner found the right SHAPE — four modules, two edges — under four names
+# nobody uses: `ui`, `core`, `svc/gateway`, `svc/billing`, where every
+# manifest, every import statement and every human says `@acme/ui`,
+# `@acme/core`, `acme/gateway`, `acme/billing`. An invented id cannot be
+# cross-referenced with anything, which is most of what an id is for: `graph
+# impact` answering "touches ui" is not an answer a reviewer can carry back to
+# the codebase.
+#
+# THE RULE, and it is narrower than "read every manifest": adopt a declared
+# name only when that name is what other code IMPORTS the module by.
+#
+#   package.json `name`   IS the specifier — `import "@acme/core"`.      ADOPT
+#   go.mod `module`       IS the import path — `import "acme/billing"`.  ADOPT
+#   pyproject `name`      is a DISTRIBUTION name; the import name is the
+#                         package DIRECTORY (`pip install pricing`, then
+#                         `import app`). Adopting it would rename
+#                         services/pricing to `pricing` and match nothing.    —
+#   pom.xml `artifactId`  is a build coordinate; Java imports by PACKAGE.      —
+#
+# A manifest at the REPO ROOT is skipped on the same principle: it describes
+# the repository, not a module inside it. `{"name": "shopfront"}` at the root
+# of a polyglot app would otherwise rename the whole tree.
+#
+# The declared directory becomes the module BOUNDARY — everything beneath it
+# belongs to it — because the published/imported unit is exactly what a
+# reviewer's blast radius should be drawn around.
+_GO_MODULE_LINE = re.compile(r"^\s*module\s+(\S+)", re.M)
+_ID_PREFIXES = ("ext:", "svc:", "req:", "contract:", "resource:")
+
+
+def manifest_modules(files, read) -> dict:
+    """{dir_prefix: declared_module_id} from a repo's own build manifests.
+
+    `read(relpath)` returns the file's text or None. Pure and injectable so
+    the rule can be tested without a filesystem.
+    """
+    out: dict = {}
+    for rel in sorted(files or ()):
+        rel = str(rel).replace("\\", "/")
+        base = posixpath.basename(rel)
+        if base not in ("package.json", "go.mod"):
+            continue
+        d = posixpath.dirname(rel)
+        if not d:
+            continue        # root manifest describes the repo, not a module
+        text = read(rel)
+        if not text:
+            continue
+        declared = None
+        if base == "package.json":
+            try:
+                data = json.loads(text)
+            except (ValueError, TypeError):
+                continue    # malformed manifest: keep the path-derived id
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                declared = data["name"].strip()
+        else:
+            m = _GO_MODULE_LINE.search(text)
+            declared = m.group(1).strip() if m else None
+        if not declared or declared.startswith(_ID_PREFIXES):
+            # a declared name that collides with a reserved node namespace
+            # would make an internal module read as `ext:`/`svc:` to every
+            # consumer — refuse it rather than corrupt the kind
+            continue
+        out[d] = declared.replace("\\", "/").strip("/")
+    return {k: v for k, v in out.items() if v}
+
+
+def declared_module_ids(g: dict | None) -> dict:
+    """The manifest map the last scan resolved, off a loaded graph.
+
+    Consumers that turn CHANGED FILES into module ids must resolve them the
+    same way the scan did, or they compare `packages/ui` against a graph that
+    only contains `@acme/ui` and silently report a zero blast radius.
+    """
+    return ((g or {}).get("meta") or {}).get("module_ids") or {}
+
+
+def _declared_target(spec: str, declared_ids) -> "str | None":
+    """The declared module an import SPECIFIER names, or None.
+
+    Longest match on SEGMENT boundaries, so `acme/billing/internal/db`
+    resolves to `acme/billing` and `acme/billing-legacy` does not.
+    """
+    if not declared_ids:
+        return None
+    spec = str(spec or "").replace("\\", "/").strip("/")
+    while spec:
+        if spec in declared_ids:
+            return spec
+        if "/" not in spec:
+            return None
+        spec = spec.rsplit("/", 1)[0]
+    return None
+
+
+def module_of(relpath: str, manifests: dict | None = None) -> str:
     """Feature-level module id. If the path passes through a source root
     (src/, app/, …), the module is up to two segments AFTER the last such
     root: template/app/src/payment/stripe/x.ts -> payment/stripe;
     src/auth/session.py -> auth. Otherwise the first two path segments.
-    A file at the repo root -> (root)."""
+    A file at the repo root -> (root).
+
+    `manifests` (from `manifest_modules`) OVERRIDES all of that for paths
+    under a declared module: a repo that states its own module identity is
+    believed over a guess derived from directory depth.
+    """
     # Module ids are '/'-shaped everywhere they are compared (globs, lens
     # routing, component ids, contract scopes). A caller that hands in a
     # host-shaped path must not mint 'src\\auth' as an id.
     relpath = str(relpath or "").replace("\\", "/")
     d = posixpath.dirname(relpath)
+    if manifests:
+        # nearest declaration wins: a nested package inside a workspace
+        # member is its own module, not its parent's
+        probe = d
+        while probe:
+            hit = manifests.get(probe)
+            if hit:
+                return hit
+            nxt = posixpath.dirname(probe)
+            if nxt == probe:
+                break
+            probe = nxt
     if not d:
         return "(root)"
     parts = d.split("/")
@@ -373,7 +489,9 @@ _JS_IMPORT = re.compile(
     r"""from\s+)['"]([^'"]+)['"]""")
 
 
-def _js_imports(src: str, relpath: str, file_index: set) -> set:
+def _js_imports(src: str, relpath: str, file_index: set,
+                manifests: dict | None = None,
+                declared_ids=None) -> set:
     out = set()
     for target in _JS_IMPORT.findall(src):
         if target.startswith("."):
@@ -387,10 +505,15 @@ def _js_imports(src: str, relpath: str, file_index: set) -> set:
             for cand in (resolved, *(f"{resolved}{e}" for e in CODE_EXT),
                          *(f"{resolved}/index{e}" for e in CODE_EXT)):
                 if cand in file_index:
-                    out.add(module_of(cand))
+                    out.add(module_of(cand, manifests))
                     break
         else:
-            out.add("ext:" + target.split("/")[0])
+            # A bare specifier is not automatically third-party: in a
+            # workspace it is how one member imports another. `@acme/core`
+            # used to become `ext:@acme` — an external node named after a
+            # SCOPE, which is neither the package nor a real dependency.
+            inside = _declared_target(target, declared_ids)
+            out.add(inside if inside else "ext:" + target.split("/")[0])
     return out
 
 
@@ -458,7 +581,8 @@ _RB_STDLIB = {"json", "yaml", "set", "time", "date", "uri", "net/http",
               "digest", "base64", "open3", "socket", "erb", "openssl"}
 
 
-def _ruby_imports(src: str, relpath: str, file_index: set) -> set:
+def _ruby_imports(src: str, relpath: str, file_index: set,
+                  manifests: dict | None = None) -> set:
     """require_relative resolved to files; bare require matched against
     repo lib paths first (Rails-style lib/foo/bar → lib/foo), else a gem.
     (Rails constant autoloading carries no import statements — those edges
@@ -469,13 +593,13 @@ def _ruby_imports(src: str, relpath: str, file_index: set) -> set:
     for target in _RB_REQ_REL.findall(src):
         cand = posixpath.normpath(posixpath.join(here, target)) + ".rb"
         if cand in file_index:
-            out.add(module_of(cand))
+            out.add(module_of(cand, manifests))
     for target in _RB_REQ.findall(src):
         cand = posixpath.join("lib", target) + ".rb"
         if cand in file_index:
-            out.add(module_of(cand))
+            out.add(module_of(cand, manifests))
         elif (target + ".rb") in file_index:
-            out.add(module_of(target + ".rb"))
+            out.add(module_of(target + ".rb", manifests))
         elif target not in _RB_STDLIB and not target.startswith("."):
             out.add("ext:" + target.split("/")[0])
     return out
@@ -548,6 +672,18 @@ _GO_LIMITATION = (
     "records external (ext:) edges only, so intra-repo Go dependencies are "
     "absent and impact()/hub signals under-count for Go code. Record "
     "intra-repo Go edges explicitly (record_edge / `tp graph edge`).")
+# D-0007 narrowed the gap without closing it: an import path that a go.mod in
+# this repo DECLARES now resolves to that module. What is still missing is
+# every import whose module path is not declared here — so the disclosure must
+# say which of the two situations the caller is in, not keep claiming
+# external-only coverage while emitting internal Go edges.
+_GO_LIMITATION_DECLARED = (
+    "Go imports are resolved to internal modules only where a go.mod in this "
+    "repo DECLARES the import path (see meta.module_ids). An import path this "
+    "repo does not declare still lands as ext:<last-segment>, so intra-repo "
+    "Go dependencies outside the declared module set are absent and "
+    "impact()/hub signals under-count for them. Record those explicitly "
+    "(record_edge / `tp graph edge`).")
 
 
 def scan(ws: str, decompose: bool = False) -> dict:
@@ -649,19 +785,36 @@ def _scan_locked(ws: str, into: dict | None = None,
                     code_files.append(rel)
                 files[rel] = True
 
+    # D-0007: what the repo CALLS its own modules, before anything is named.
+    # Every id minted below this line goes through `_mod`, so the scan cannot
+    # end up with one call site using the declared id and another the guess.
+    def _read_text(rel):
+        try:
+            with open(os.path.join(ws, rel), encoding="utf-8",
+                      errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return None
+
+    manifests = manifest_modules(files, _read_text)
+    declared_ids = set(manifests.values())
+
+    def _mod(rel):
+        return module_of(rel, manifests)
+
     # stem/dir → module map for python import resolution: covers
     # `import src.db.conn`, `from src.db import conn` (package dir), and
     # bare `import conn` (basename).
     known_stems = {}
     for f in code_files:
         stem = f.rsplit(".", 1)[0]
-        known_stems[stem] = module_of(f)
-        known_stems.setdefault(posixpath.basename(stem), module_of(f))
+        known_stems[stem] = _mod(f)
+        known_stems.setdefault(posixpath.basename(stem), _mod(f))
         d = posixpath.dirname(f)
         while d:
             # resolve dir stems through module_of so import targets land on
             # the SAME feature module a file does (consistent edge endpoints)
-            known_stems.setdefault(d, module_of(d + "/_"))
+            known_stems.setdefault(d, _mod(d + "/_"))
             d = posixpath.dirname(d)
 
     # declaration maps (C# namespaces / Java packages → module), first pass
@@ -676,10 +829,10 @@ def _scan_locked(ws: str, into: dict | None = None,
                 continue
             if rel.endswith(".cs"):
                 for ns in _cs_declared(sources[rel]):
-                    ns_map.setdefault(ns, module_of(rel))
+                    ns_map.setdefault(ns, _mod(rel))
             else:
                 for pkg in _java_declared(sources[rel]):
-                    pkg_map.setdefault(pkg, module_of(rel))
+                    pkg_map.setdefault(pkg, _mod(rel))
 
     file_entries, edges = {}, set()
     prev_files = prev.get("files", {})
@@ -698,7 +851,7 @@ def _scan_locked(ws: str, into: dict | None = None,
         if (cached and size is not None and cached.get("size") == size
                 and cached.get("mtime") == mtime and "imports" in cached):
             imports = set(cached["imports"])
-            mod = module_of(rel)
+            mod = _mod(rel)
             imports.discard(mod)
             file_entries[rel] = {"hash": cached.get("hash", ""),
                                  "imports": sorted(imports),
@@ -717,30 +870,34 @@ def _scan_locked(ws: str, into: dict | None = None,
         elif rel.endswith(".py"):
             imports = _py_imports(src, rel, known_stems)
         elif rel.endswith(".go"):
-            # KNOWN LIMITATION (mirrors the Ruby autoloading note): internal
-            # Go imports are NOT resolved to modules — unlike the Python
-            # (known_stems), JS (file index) and C#/Java (namespace map)
-            # scanners, EVERY import lands as ext:<last-segment>, so a Go
-            # repo gets no intra-repo edges from this scanner. Do NOT
-            # fabricate edges here; the partial coverage is disclosed in
-            # meta.scanners.go.limitation (see below) so impact consumers
-            # can see it, and intra-repo Go edges can be recorded with
-            # record_edge / `tp graph edge`.
+            # PARTIAL COVERAGE (mirrors the Ruby autoloading note). A Go
+            # import path is resolvable to an internal module exactly when
+            # the repo DECLARES that path in a go.mod — which D-0007 now
+            # reads. `import "acme/billing"` in a repo carrying
+            # svc/billing/go.mod (`module acme/billing`) is an intra-repo
+            # edge and is emitted as one. Everything else still lands as
+            # ext:<last-segment>: with no declaration there is nothing to
+            # match against, so do NOT fabricate an edge. The residual gap
+            # stays disclosed in meta.scanners.go.limitation, and the rest
+            # can be recorded with record_edge / `tp graph edge`.
             imports = set()
             for block, single in re.findall(
                     r'import\s+\(([^)]*)\)|import\s+"([^"]+)"', src, re.S):
                 for t in ([single] if single
                           else re.findall(r'"([^"]+)"', block)):
-                    imports.add("ext:" + t.split("/")[-1])
+                    inside = _declared_target(t, declared_ids)
+                    imports.add(inside if inside
+                                else "ext:" + t.split("/")[-1])
         elif rel.endswith(".cs"):
             imports = _cs_imports(src, ns_map)
         elif rel.endswith(".java"):
             imports = _java_imports(src, pkg_map)
         elif rel.endswith(".rb"):
-            imports = _ruby_imports(src, rel, set(files))
+            imports = _ruby_imports(src, rel, set(files), manifests)
         else:
-            imports = _js_imports(src, rel, set(files))
-        mod = module_of(rel)
+            imports = _js_imports(src, rel, set(files), manifests,
+                                  declared_ids)
+        mod = _mod(rel)
         imports.discard(mod)
         file_entries[rel] = {"hash": digest, "imports": sorted(imports),
                              "size": size, "mtime": mtime}
@@ -753,18 +910,18 @@ def _scan_locked(ws: str, into: dict | None = None,
             with open(os.path.join(ws, rel), encoding="utf-8",
                       errors="replace") as fh:
                 text = fh.read()
-            mod = module_of(rel)
+            mod = _mod(rel)
             for pref in _CSPROJ_PROJ.findall(text):
                 tgt = posixpath.normpath(posixpath.join(
                     posixpath.dirname(rel), pref.replace("\\", "/")))
-                edges.add((mod, module_of(tgt), "project_ref"))
+                edges.add((mod, _mod(tgt), "project_ref"))
             for pkg in _CSPROJ_PKG.findall(text):
                 edges.add((mod, "ext:" + pkg.split(".")[0], "imports"))
         elif posixpath.basename(rel) == "Gemfile":
             with open(os.path.join(ws, rel), encoding="utf-8",
                       errors="replace") as fh:
                 for gem in _GEMFILE_GEM.findall(fh.read()):
-                    edges.add((module_of(rel), "ext:" + gem, "imports"))
+                    edges.add((_mod(rel), "ext:" + gem, "imports"))
 
     # infra: docker-compose services
     for rel in files:
@@ -775,7 +932,7 @@ def _scan_locked(ws: str, into: dict | None = None,
                     sid = f"svc:{svc['name']}"
                     for dep in svc["depends_on"]:
                         edges.add((sid, f"svc:{dep}", "depends_on"))
-                    edges.add((sid, module_of(rel), "defined_in"))
+                    edges.add((sid, _mod(rel), "defined_in"))
 
     # Stale-edge filter: a deleted module must not survive as an edge target
     # via some UNCHANGED importer's cached import list (the mtime+size cache
@@ -787,13 +944,13 @@ def _scan_locked(ws: str, into: dict | None = None,
     # parent-package import (`import src`) targets a dir-level module that
     # owns no files directly, and filtering to leaf modules would drop it.
     resolvable = set(known_stems.values())
-    resolvable.update(module_of(rel) for rel in files)
+    resolvable.update(_mod(rel) for rel in files)
     edges = {(a, b, k) for (a, b, k) in edges
              if b.startswith(("ext:", "svc:")) or b in resolvable}
 
     modules = {}
     for rel in code_files:
-        m = module_of(rel)
+        m = _mod(rel)
         modules.setdefault(m, {"kind": "module", "files": 0})
         modules[m]["files"] += 1
     for a, b, _k in edges:
@@ -811,8 +968,13 @@ def _scan_locked(ws: str, into: dict | None = None,
     # radius. It never blocks DoR — honesty, not a new gate.
     scanners_meta = {}
     if any(rel.endswith(".go") for rel in code_files):
-        scanners_meta["go"] = {"coverage": "external-only",
-                               "limitation": _GO_LIMITATION}
+        go_declared = any(posixpath.basename(rel) == "go.mod"
+                          and posixpath.dirname(rel) in manifests
+                          for rel in files)
+        scanners_meta["go"] = (
+            {"coverage": "declared-modules",
+             "limitation": _GO_LIMITATION_DECLARED} if go_declared else
+            {"coverage": "external-only", "limitation": _GO_LIMITATION})
     # Narrowing the graph is disclosed IN the payload, same as the Go
     # scanner's partial coverage: an impact consumer must be able to see
     # that the blast radius was scoped by declaration rather than trust a
@@ -823,6 +985,13 @@ def _scan_locked(ws: str, into: dict | None = None,
                                      "prefixes": sorted(excludes)}
     if exclude_err:
         scanners_meta["exclude_error"] = exclude_err
+    meta: dict = {"scanners": scanners_meta} if scanners_meta else {}
+    # D-0007: PUBLISH the map, do not just use it. Anything that turns a
+    # changed FILE into a module id — impact, completion, lens routing —
+    # must resolve it the way the scan did, or it looks up `packages/ui` in
+    # a graph that only knows `@acme/ui` and reports an empty blast radius.
+    if manifests:
+        meta["module_ids"] = dict(sorted(manifests.items()))
     g = {
         "modules": modules,
         "edges": sorted([{"from": a, "to": b, "kind": k}
@@ -830,7 +999,7 @@ def _scan_locked(ws: str, into: dict | None = None,
                         key=lambda e: (e["from"], e["to"])),
         "files": file_entries,
         "recorded": prev.get("recorded", []),
-        "meta": {"scanners": scanners_meta} if scanners_meta else {},
+        "meta": meta,
     }
     # merge agent-recorded edges (never dropped by rescans)
     g["edges"] += [e for e in g["recorded"]
@@ -976,16 +1145,33 @@ def record_edge(ws: str, src: str, dst: str, kind: str = "runtime",
 # change's blast radius automatically — and contracts/evaluation query the
 # product side without any extra machinery.
 
-def modules_for_scope(scope_globs) -> list:
-    """Map scope globs/paths to graph modules (glob prefix → module)."""
+def modules_for_scope(scope_globs, manifests: dict | None = None) -> list:
+    """Map scope globs/paths to graph modules (glob prefix → module).
+
+    Pass `manifests` (declared_module_ids(graph)) wherever the result is
+    compared against graph ids: without it a scope of `packages/ui/**` in a
+    workspace resolves to `ui`, which the graph does not contain.
+    """
     mods = set()
     for g in scope_globs or []:
         prefix = g.split("*", 1)[0].rstrip("/")
         if not prefix:
             continue
-        mods.add(module_of(prefix) if "." in posixpath.basename(prefix)
-                 else module_of(prefix + "/_"))
+        mods.add(module_of(prefix, manifests)
+                 if "." in posixpath.basename(prefix)
+                 else module_of(prefix + "/_", manifests))
     return sorted(mods)
+
+
+def scope_modules(ws: str, scope_globs) -> list:
+    """`modules_for_scope` with the workspace's DECLARED ids applied.
+
+    Prefer this at every call site that has a workspace. The `manifests`
+    argument is easy to forget, and forgetting it is silent: the scope
+    resolves to a path-derived id the graph does not contain, so the blast
+    radius comes back empty and the gate reads that as "nothing impacted".
+    """
+    return modules_for_scope(scope_globs, declared_module_ids(load(ws)))
 
 
 def req_node(rid: str) -> str:
@@ -1003,8 +1189,8 @@ def link_requirement(ws: str, rid: str, files, kind: str = "realizes",
     real paths or scope globs. replace=True refreshes that requirement's
     edges of this kind (the true-up), so the product side never goes stale."""
     node = _req_node(rid)
-    mods = sorted(set(modules_for_scope(files)))
     with _mutation(ws) as g:
+        mods = sorted(set(modules_for_scope(files, declared_module_ids(g))))
         if replace:
             drop = lambda e: e["from"] == node and e["kind"] == kind
             g["recorded"] = [e for e in g["recorded"] if not drop(e)]
@@ -1035,7 +1221,7 @@ def product_impact(ws: str, changed_files) -> dict:
     g = load(ws)
     items = list(changed_files or [])
     # accept file paths OR already-resolved module names
-    mods = {module_of(f) for f in items} | set(items)
+    mods = {module_of(f, declared_module_ids(g)) for f in items} | set(items)
     direct = sorted({e["from"] for e in g["edges"]
                      if e["from"].startswith("req:")
                      and e["kind"] in ("planned", "realizes")
@@ -1162,7 +1348,8 @@ def readiness(ws: str, tasks) -> dict:
                     errors.append(
                         f"task {tid}: invalid dependency depth policy")
                     break
-        mods = modules_for_scope(task.get("scope") or [])
+        mods = modules_for_scope(task.get("scope") or [],
+                                 declared_module_ids(g))
         unknown = sorted(m for m in mods if m not in g.get("modules", {}))
         declared_new = set(task.get("new_modules") or [])
         undeclared_unknown = sorted(set(unknown) - declared_new)
@@ -1208,7 +1395,7 @@ def completion(ws: str, changed_files, planned_modules=None,
                policy: dict | None = None) -> dict:
     """Graph Definition of Done read model for one realized change."""
     files = list(changed_files or [])
-    actual = sorted({module_of(f) for f in files})
+    actual = sorted({module_of(f, declared_module_ids(load(ws))) for f in files})
     planned = sorted(set(planned_modules or []))
     imp = impact(ws, files, policy=policy)
     contract_files = sorted(f for f in files if re.search(
@@ -1273,7 +1460,8 @@ def impact(ws: str, changed_files, max_depth: int = 3,
     # the execute brief pass modules_for_scope() output (module names),
     # which module_of() used to collapse to "(root)", silently zeroing
     # their blast radius.
-    touched = sorted({f if f in g["modules"] else module_of(f)
+    _ids = declared_module_ids(g)
+    touched = sorted({f if f in g["modules"] else module_of(f, _ids)
                       for f in (changed_files or [])})
     seen = {m: 0 for m in touched}
     # frontier state carries the number of explicit contract/resource and

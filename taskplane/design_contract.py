@@ -601,7 +601,8 @@ def design_plan_errors(ws: str, state: dict) -> list:
     planned_contracts = set()
     planned_edges = set()
     for task in tasks:
-        planned_modules.update(depgraph.modules_for_scope(task.get("scope") or []))
+        planned_modules.update(
+            depgraph.scope_modules(ws, task.get("scope") or []))
         planned_modules.update(str(x) for x in (task.get("new_modules") or []))
         for row in task.get("contracts") or []:
             cid = row.get("id") if isinstance(row, dict) else row
