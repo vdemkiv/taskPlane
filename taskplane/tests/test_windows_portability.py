@@ -328,7 +328,14 @@ class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
     # posixpath and normalizes `\` out of the declared name, and `module_of`
     # walks its prefixes with posixpath.dirname. A Windows scan produces
     # `@acme/ui`, never `@acme\ui` — pinned in test_module_identity.py.
-    PINS = {"depgraph.py": 14, "decompose.py": 3}
+    # 14 -> 15 (D-0016, artifacts as nodes): the artifact pass joins a
+    # repo-relative path onto the workspace root to hash the file. Same
+    # filesystem-access category again. The artifact TEST (`_is_artifact`)
+    # and the reference resolver both run on '/'-shaped paths via posixpath,
+    # and `_file_refs` normalizes `\` out of every candidate token before
+    # looking it up, so a Windows scan resolves `agents\reviewer.md` in a
+    # markdown body to the same edge a Linux scan does.
+    PINS = {"depgraph.py": 15, "decompose.py": 3}
 
     def test_host_shaped_path_calls_do_not_grow(self):
         import re

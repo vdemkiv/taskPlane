@@ -46,6 +46,19 @@
       "content_fingerprint": "<SHA>",
       "scanned_at": 0,
       "scanned_head": "<SHA>",
+      "scanners": {
+        "artifacts": {
+          "extensions": [
+            ".md",
+            ".json",
+            ".yml",
+            ".yaml",
+            ".sql",
+            ".tf"
+          ],
+          "files": 1
+        }
+      },
       "schema": 2,
       "source_counts": {},
       "updated_at": 0
