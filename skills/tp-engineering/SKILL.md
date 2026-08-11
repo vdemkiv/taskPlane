@@ -12,7 +12,18 @@ learn. The loop's `em` step is this persona. Its counterpart,
 grader never graded their own definition.
 
 All review runs read-only toward code under an enforced contract:
-`$TP new --read-only --write-allow ".em-review/**" "engineering review: <target>"`.
+`$TP new --read-only --write-allow ".em-review/**" --owes review
+"engineering review: <target>"`.
+
+**`--owes review` is not optional.** It records, before any of the work
+starts, the two artifacts a review owes a human: the wave board re-rendered
+after dispatch, and the product's own dependency view. Those are BINDING —
+`tp dod`, `tp loop submit`, `tp loop approve` and `tp loop retro` are
+refused at the PreToolUse hook until each has been shown and acknowledged
+(`tp ack <id>`, `tp ack --status` to list). Nothing about doing the work is
+blocked; only declaring it finished. This exists because "render the
+dashboard" written in a skill was ignored for a month — an instruction is
+not a mechanism, and a refusal is.
 
 **Every review applies the full catalog — nothing skipped.**
 `$TP lens route --all` returns all 26 lenses: `tier=deep` (summoned by

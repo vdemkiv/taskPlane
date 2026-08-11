@@ -32,7 +32,17 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.8 — the dependency graph now describes your codebase.**
+**What's new in v2.9 — the flow's artifacts are no longer skippable.**
+A review now records what it OWES you before the work starts (`tp new --owes
+review`): the lens wave board re-rendered after dispatch, and the product's
+own dependency view. Until each has been shown, `tp dod` and `tp loop submit`
+are refused at the hook — never an edit, a test, or any part of doing the
+work, only the act of declaring it finished. `tp ack --status` lists what is
+outstanding; `TASKPLANE_OBLIGATIONS=off` opts out. Renders are also now
+OBSERVED at the hook with their content fingerprint, so showing a substitute
+for the engine's own view is recorded as one.
+
+**In v2.8 — the dependency graph now describes your codebase.**
 Reviews lean on the graph to decide what a change touches, and until now
 nothing scored whether the graph was RIGHT. An accuracy harness against four
 hand-authored repo profiles found four defects and all four are fixed: module

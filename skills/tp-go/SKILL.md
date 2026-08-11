@@ -15,7 +15,14 @@ out of the user's way unless they ask. Do not simplify any of them for
 agents. The CLI surfaces named below are current as of v2.7 — verify against
 `$TP --help` before citing anything not listed here.
 
-**New in v2.8 — trust the graph, and watch the fan-out.**
+**New in v2.9 — a run declares what it owes you, and cannot close without
+it.** `tp new --owes <run-type>` records the artifacts a run owes BEFORE the
+work begins; taskplane's own completion commands stay blocked until each is
+shown and acknowledged. Doing the work is never blocked — only declaring it
+finished. `TASKPLANE_OBLIGATIONS=off` disables the block while still
+recording.
+
+**In v2.8 — trust the graph, and watch the fan-out.**
 Module ids now come from build manifests where a repo declares them, so on a
 monorepo `graph impact` answers `@acme/ui` rather than an invented `ui` — an
 id you can carry back to the codebase. Markdown skills/agents/lenses, SQL,

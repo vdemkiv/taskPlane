@@ -361,8 +361,14 @@ def cmd_new(a) -> int:
         print("  ! not a git repo / no commit: run `git init && git add -A "
               "&& git commit -m init` for the DoD scope-diff to work.",
               file=sys.stderr)
+    owed = _seed_owed(ws, getattr(a, "owes", None), c.get("task_id", ""))
     print("\nThe PreToolUse hook now blocks out-of-scope writes, denied "
           "commands, and disallowed tools.")
+    if owed:
+        print(f"  owes      : {', '.join(owed)} — recorded now, before the "
+              "work starts, so a skip is a fact rather than an absence. "
+              "`tp dod` and `tp loop submit` stay blocked until each is "
+              "shown and acknowledged (`tp ack --status`).")
     # Report the Definition-of-Ready verdict at activation time.
     ready, blockers, warnings = tp.dor_check(c, ws, snapshot)
     _print_dor(ready, blockers, warnings)
@@ -380,6 +386,136 @@ def _print_dor(ready, blockers, warnings) -> None:
 
 
 # --------------------------------------------------------------- ready
+
+# ---- the render seam ------------------------------------------------
+#
+# WHY THIS EXISTS. obligations.py used to state, as its central design
+# premise, that the engine "CANNOT see whether a rendered artifact was
+# actually put in front of a human" because the render "happens in the
+# host, outside every process taskplane runs" — and therefore that showing
+# an artifact could only ever be a CLAIM. That premise was wrong. A
+# PreToolUse matcher is a regex over TOOL NAMES, and an MCP tool is named
+# `mcp__<server>__<tool>`, so it matches like any other. The render is
+# reachable at exactly the seam that already screens writes and dispatches.
+#
+# So the demand ("show this"), the claim ("I showed it") and the FACT
+# ("the render tool ran, with these bytes") are three separate records,
+# and the two failures this project has actually suffered separate
+# cleanly without anyone watching: a skipped render leaves a demand with
+# no observation, and a SUBSTITUTED render — a hand-drawn chart, or the
+# engine's own HTML edited on the way through — leaves an observation
+# whose fingerprint is not the artifact the engine built. The render
+# contract says "byte-for-byte, no restyling, no re-authoring"; this is
+# the first mechanism that can tell.
+#
+# WHAT IT MAY NOT DO. It never denies. A hook that could block a render
+# would be the instrument stopping the very thing it exists to encourage,
+# and taskplane's instruments do not gate. Every path returns 0, every
+# write is best effort, and deleting this function changes no behaviour
+# except that the ledger stops learning.
+# The artifacts each run type OWES. Declared here rather than in a skill,
+# because a skill is a prompt — the model can read it and proceed anyway —
+# while this is recorded in the ledger before the work starts and read by a
+# hook that does not need the model's cooperation.
+RUN_OWES = {
+    "review": (
+        ("render_dashboard", "the lens wave board, re-rendered AFTER "
+                             "dispatch so the human sees the fan-out that "
+                             "actually happened"),
+        ("render_graph", "the product's own dependency/blast-radius view — "
+                         "not a re-drawn substitute"),
+    ),
+}
+
+
+def _seed_owed(ws, run_type, task_id):
+    """Record what this run owes BEFORE any of the work happens.
+
+    The obligations ledger could previously only record a demand the engine
+    had already made, so an artifact nobody ever asked for left no trace:
+    if `tp graph html` was never run, no obligation existed and nothing was
+    missing. Seeding inverts that — absence is recorded from the first
+    second, which is the whole difference between an instrument and a hope.
+    """
+    run = (run_type or "").strip().lower()
+    if not run:
+        return []
+    try:
+        import obligations
+    except Exception:
+        return []
+    seeded = []
+    for kind, detail in RUN_OWES.get(run, ()):  # unknown run type owes nothing
+        oid = obligations.issue(ws, kind, detail=detail, step=run,
+                                key=f"{run}:{kind}", session=task_id,
+                                binding=True)
+        if oid:
+            seeded.append(f"{kind} ({oid})")
+    return seeded
+
+
+def cmd_session_verify(a) -> int:
+    """Stop / SessionEnd hook: report artifacts this run owes and never showed.
+
+    Exits 2 with the list on stderr when anything is open. The host's exact
+    blocking semantics for `Stop` are not documented precisely enough to
+    rely on, so this is written to be USEFUL either way: if Stop can block,
+    the turn does not end quietly; if it cannot, the list is still surfaced
+    where a human reads it. The PreToolUse conversion is the mechanism that
+    actually holds — this is the net under it.
+    """
+    try:
+        json.load(sys.stdin)
+    except Exception:
+        pass
+    try:
+        import obligations
+        ws = _workspace(getattr(a, "workspace", None))
+        owed = obligations.blocking(ws)
+    except Exception:
+        return 0
+    if not owed:
+        return 0
+    print("taskplane: this run owes artifacts that were never shown:",
+          file=sys.stderr)
+    for o in owed:
+        print(f"  {o['id']}  {o.get('kind')}  {o.get('detail') or ''}",
+              file=sys.stderr)
+    print("Render each one, then `tp ack <id>`.", file=sys.stderr)
+    return 2
+
+
+def cmd_screen_render(a) -> int:
+    """PreToolUse hook for `mcp__visualize__*`: observe, never deny."""
+    try:
+        event = json.load(sys.stdin)
+    except Exception:
+        return 0                       # malformed input is not the model's
+    try:
+        import obligations
+        ti = event.get("tool_input") or {}
+        # The payload key differs by tool and may change; take the longest
+        # string argument rather than pinning one name, so a renamed field
+        # degrades to a smaller fingerprint instead of no record at all.
+        body, title = "", ""
+        for k, v in ti.items():
+            if not isinstance(v, str):
+                continue
+            if k in ("title", "name") and not title:
+                title = v
+            if len(v) > len(body):
+                body, key = v, k
+        ws = _workspace(event.get("cwd"))
+        obligations.observe(
+            ws,
+            tool=event.get("tool_name") or "",
+            fingerprint=obligations.content_fingerprint(body) if body else None,
+            title=title, bytes_len=len(body.encode("utf-8")) if body else 0,
+            session=event.get("session_id"))
+    except Exception:
+        pass
+    return 0
+
 
 def cmd_screen_dispatch(a) -> int:
     """PreToolUse hook for the Agent/Task tool: verify the driver dispatched
@@ -854,6 +990,31 @@ def _screen(a) -> int:
             "decision": "block",
             "reason": f"taskplane contract {tid}: {reason}",
         }))
+        return 0
+
+    # OBLIGATION → PROHIBITION. A hook can deny an action; it cannot compel
+    # one. That asymmetry is why every prohibition in this product holds at
+    # 100% and every obligation ("show the board", "show the graph") held at
+    # 0% — five structural attempts to fix it by instruction all failed,
+    # because an instruction is not a mechanism. So a BINDING obligation
+    # borrows the enforcement that already works: it does not demand the
+    # render, it refuses the CONCLUSION until the render has happened.
+    #
+    # Deliberately narrow. Only taskplane's own completion commands are
+    # reachable here, so this can never block an edit, a test, or any part
+    # of doing the work — only the act of declaring it finished. Best
+    # effort: if the ledger cannot be read, the command proceeds, because a
+    # broken instrument must not become a broken product.
+    try:
+        import obligations as _ob
+        _owed = _ob.blocked_reason(ws, tool_input.get("command") or "")
+    except Exception:
+        _owed = None
+    if _owed:
+        _meter_bump(ws, tid, "denies")
+        tp.trace(ws, "obligation_deny", tool=tool_name,
+                 open=len(_ob.blocking(ws)))
+        print(json.dumps({"decision": "block", "reason": _owed}))
         return 0
 
     allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
@@ -2163,12 +2324,13 @@ def cmd_summary(a) -> int:
 def cmd_ack(a) -> int:
     """Discharge an obligation the engine issued (WS-F).
 
-    The engine can render an artifact, write it to disk and point at it; it
-    cannot see whether a human ever laid eyes on it, because
-    `mcp__visualize__show_widget` happens in the host. This is the seam
-    across that gap — and it is deliberately a CLAIM, never proof. An
-    unacknowledged obligation is recorded as not shown, which is precisely
-    the failure this exists to count; it blocks nothing.
+    The engine can render an artifact, write it to disk and point at it. It
+    can now also SEE the render tool run, via the `mcp__visualize__.*`
+    PreToolUse matcher (`tp screen-render`) — so an ack is no longer the only
+    record. It remains a CLAIM and is never renamed to proof, because what a
+    hook observes is a tool call, not a human's attention. What the two
+    records do together is separate a skip from a substitute from an
+    unsupported claim. None of it blocks anything.
 
     `--fingerprint` is what separates showing the product's artifact from
     showing a substitute. `tp ack <id>` alone reads the fingerprint off the
@@ -2188,10 +2350,22 @@ def cmd_ack(a) -> int:
                             "expected_fingerprint": o.get("fingerprint"),
                             "cited": o.get("cited")}
                            for o in st["mismatched"]],
+            "observed": st["observed"],
+            "corroborated": [o["id"] for o in st["corroborated"]],
+            "claimed_only": [{"id": o["id"], "kind": o["kind"]}
+                             for o in st["claimed_only"]],
+            "substituted": [{"tool": r.get("tool"), "title": r.get("title"),
+                             "fingerprint": r.get("fingerprint"),
+                             "bytes": r.get("bytes")}
+                            for r in st["substituted"]],
             "unparseable": st["unparseable"],
-            "note": "an acknowledgement is a CLAIM that the artifact was "
-                    "shown, never proof; engine-observed facts (dispatch, "
-                    "gates, step order) are scored separately",
+            "note": "issued = the engine's demand; acknowledged = the "
+                    "assistant's CLAIM; observed = the render tool actually "
+                    "running, seen at the PreToolUse hook. `substituted` is a "
+                    "render whose bytes are not the artifact the engine "
+                    "built; `claimed_only` is an ack with no observation "
+                    "behind it. An observation is a fact about a tool call, "
+                    "never proof that a human looked.",
         }, indent=2))
         return 0
     if not getattr(a, "id", None):
@@ -2809,6 +2983,11 @@ def main(argv=None) -> int:
     n.add_argument("--write-allow", action="append", metavar="GLOB",
                    help="in read-only mode, dirs that ARE writable "
                         "(e.g. .em-review/**) — repeatable")
+    n.add_argument("--owes", metavar="RUN_TYPE",
+                   help="seed the artifacts this run type owes as BINDING "
+                        "obligations (e.g. `review`): recorded before the "
+                        "work starts, and taskplane's own completion "
+                        "commands stay blocked until each is shown")
     n.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     n.set_defaults(fn=cmd_new)
 
@@ -2854,6 +3033,16 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("screen", help="PreToolUse hook entrypoint (stdin event)")
     s.set_defaults(fn=cmd_screen)
+
+    sv = sub.add_parser("session-verify", help="Stop/SessionEnd hook: exit 2 "
+                        "listing artifacts this run owes and never showed")
+    sv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    sv.set_defaults(fn=cmd_session_verify)
+
+    sr = sub.add_parser("screen-render", help="PreToolUse hook for the "
+                        "inline-render tool: record that a render RAN, and "
+                        "with which bytes. Observes only — never denies")
+    sr.set_defaults(fn=cmd_screen_render)
 
     sd = sub.add_parser("screen-dispatch", help="PreToolUse hook for the "
                         "Agent tool: verify tier-routed model was passed "
