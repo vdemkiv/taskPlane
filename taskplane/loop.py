@@ -2699,7 +2699,7 @@ def retro(ws: str) -> dict:
                 lines.append(f"- **{k}**: {v}")
         for l in (report.get("lessons") or []):
             lines.append(f"- lesson: {l if isinstance(l, str) else json.dumps(l)}")
-        with open(os.path.join(tp.tp_dir(ws), "retro.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join(tp.tp_dir(ws), "retro.md"), "w", encoding="utf-8", newline="") as f:
             f.write("\n".join(lines) + "\n")
     return report
 
@@ -2902,7 +2902,7 @@ def _publish_artifacts(ws: str) -> str | None:
                     except (OSError, ValueError):
                         old_fp = None
                 if not new_fp or old_fp != new_fp:
-                    with open(gp, "w", encoding="utf-8") as f:
+                    with open(gp, "w", encoding="utf-8", newline="") as f:
                         json.dump(g, f, indent=1)
         with contextlib.suppress(Exception):
             # Late import BY DESIGN: dashboard.py imports loop at module top,
@@ -2947,7 +2947,7 @@ def _publish_artifacts(ws: str) -> str | None:
                         body = [l for l in all_lines[len(head):] if l.strip()]
                         if len(body) > 500:
                             tmp = f"{p}.tmp.{os.getpid()}"
-                            with open(tmp, "w", encoding="utf-8") as f:
+                            with open(tmp, "w", encoding="utf-8", newline="") as f:
                                 f.write("\n".join(head + body[-500:]) + "\n")
                             os.replace(tmp, p)
         return root
@@ -2966,7 +2966,7 @@ def _with_dashboard(fn):
                 frag = _dash.widget(ws)
                 p = os.path.join(tp.tp_dir(ws), "dashboard.html")
                 tmp = f"{p}.tmp.{os.getpid()}"
-                with open(tmp, "w", encoding="utf-8") as f:
+                with open(tmp, "w", encoding="utf-8", newline="") as f:
                     f.write(frag)
                 os.replace(tmp, p)
                 out["dashboard"] = {

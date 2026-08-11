@@ -87,7 +87,12 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f".{os.path.basename(path)}.tmp.{os.getpid()}")
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        # newline="" disables the host's newline translation. Windows
+        # text mode turns every "\n" json.dump writes into "\r\n", so the
+        # SAME state written on two hosts produced different BYTES — and
+        # these artifacts are fingerprinted and byte-compared (the audit
+        # differential caught it: b'{\r\n  "reviews": 6\r\n}').
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
             json.dump(data, f, indent=indent, sort_keys=sort_keys)
         os.replace(tmp, path)
     finally:
@@ -145,7 +150,7 @@ def file_lock(path: str, *, timeout: float = 10.0):
     # time from the fallback path).
     lf = None
     try:
-        lf = open(lock_path, "w", encoding="utf-8")
+        lf = open(lock_path, "w", encoding="utf-8", newline="")
         import fcntl
         fcntl.flock(lf, fcntl.LOCK_EX)
     except (ImportError, OSError):
@@ -2286,7 +2291,7 @@ def activate(workspace: str, contract: dict,
     atomic_write_json(cpath, contract, indent=2)
     spath = _snapshot_path(workspace)
     tmp = spath + f".tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(snapshot or "")
     os.replace(tmp, spath)
     trace(workspace, "contract_activated", task_id=contract.get("task_id"),
@@ -2433,7 +2438,7 @@ def _ensure_self_ignored(d: str) -> None:
     # .gitignore here (e.g. "!trace.jsonl") to make the trace committable.
     if "*" not in body.splitlines():
         try:
-            with open(gi, "w", encoding="utf-8") as f:
+            with open(gi, "w", encoding="utf-8", newline="") as f:
                 f.write("*\n")
         except OSError:
             pass
@@ -2577,7 +2582,7 @@ def _save_queue(path: str, q: list) -> None:
         atomic_write_json(path + ".dropped",
                           {"dropped": _queue_dropped(path) + dropped})
     tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         json.dump(q[-_QUEUE_CAP:], f, indent=1)
     os.replace(tmp, path)
 
@@ -3140,7 +3145,7 @@ def write_store_meta(workspace: str) -> dict:
             "workspace_realpath": _workspace_identity(workspace),
             "git_remote": remote}
     try:
-        with open(store_meta_path(workspace), "w", encoding="utf-8") as f:
+        with open(store_meta_path(workspace), "w", encoding="utf-8", newline="") as f:
             json.dump(meta, f, indent=2)
     except OSError:
         pass

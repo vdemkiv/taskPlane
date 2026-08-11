@@ -21,6 +21,7 @@ is itself testable without spawning subprocesses — the discipline it enforces.
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -179,7 +180,13 @@ def _python_files(ws: str, *, tests: bool,
         if os.path.commonpath([ws_real, start]) != ws_real:
             raise RegressionDiscoveryError(
                 f"test root escapes workspace: {rel_scan}")
-        if os.path.islink(os.path.join(ws, rel_scan)):
+        # The guard is about a symlinked test root INSIDE the workspace, not
+        # about the workspace being REACHED through an alias — which is a
+        # supported spelling (_workspace_identity canonicalizes it) and, on
+        # Windows, the only way `.` can look like a link at all: POSIX
+        # resolves the trailing "/." so islink is False there, and the
+        # host-specific difference turned a legitimate alias into a refusal.
+        if rel_scan != "." and os.path.islink(os.path.join(ws, rel_scan)):
             raise RegressionDiscoveryError(
                 f"refusing symlinked test root: {rel_scan}")
         for root, dirs, names in os.walk(start):
@@ -203,7 +210,9 @@ def _python_files(ws: str, *, tests: bool,
                 if not ((tests and collectable)
                         or (not tests and not test_support)):
                     continue
-                rel = name if rel_root == "." else os.path.join(rel_root, name)
+                rel = (name if rel_root == "."
+                       else posixpath.join(rel_root.replace(os.sep, "/"),
+                                           name))
                 out.add(rel)
     return sorted(out)
 
@@ -362,8 +371,15 @@ def approved_test_roots(ws: str, test_command: str | None) -> set[str]:
         if os.path.commonpath([ws_real, real]) != ws_real:
             raise RegressionDiscoveryError(
                 f"approved test path escapes workspace: {raw}")
-        rel = os.path.relpath(real, ws_real)
-        roots.add(rel if os.path.isdir(real) else os.path.dirname(rel) or ".")
+        # The radius, the roots and the test-import index are all COMPARED
+        # against '/'-shaped repo paths (and against each other), so the
+        # host separator is normalized here at the boundary. On Windows
+        # `approved_test_roots` returned {'taskplane\\tests'} while the
+        # radius held 'taskplane/tests/...', so the containment check that
+        # keeps fallback inside approved roots silently matched nothing.
+        rel = os.path.relpath(real, ws_real).replace(os.sep, "/")
+        roots.add(rel if os.path.isdir(real)
+                  else posixpath.dirname(rel) or ".")
     return roots or ({"."} if not positionals else set())
 
 

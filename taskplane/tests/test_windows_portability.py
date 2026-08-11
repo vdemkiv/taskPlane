@@ -262,6 +262,51 @@ class TestPidLivenessNeverSignalsOnWindows(unittest.TestCase):
         self.assertTrue(tp._pid_alive(os.getpid()))
 
 
+class TestArtifactsAreByteIdenticalAcrossHosts(unittest.TestCase):
+    """taskplane FINGERPRINTS its own artifacts and compares them byte for
+    byte. Windows text mode turns every "\n" json.dump writes into "\r\n",
+    so the same state written on two hosts produced different BYTES — and
+    the audit differential caught it as a product divergence
+    (b'{\\r\\n  "reviews": 6\\r\\n}')."""
+
+    def test_atomic_write_json_emits_lf_on_every_host(self):
+        d = tempfile.mkdtemp()
+        try:
+            path = os.path.join(d, "state.json")
+            tp.atomic_write_json(path, {"reviews": 6})
+            with open(path, "rb") as f:
+                raw = f.read()
+            self.assertNotIn(b"\r\n", raw)
+            self.assertIn(b"\n", raw)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestBareRootGuardCoversEveryNamedHome(unittest.TestCase):
+    """`os.path.expanduser` consults USERPROFILE on Windows and never HOME,
+    so the guard that refuses to scope a contract at the session home was
+    silently inert on a host that names its home the other way."""
+
+    def test_home_and_userprofile_are_both_protected(self):
+        import tp as tpcli
+        d = tempfile.mkdtemp()          # not a git repo -> bare
+        try:
+            for var in ("HOME", "USERPROFILE"):
+                with self.subTest(var=var):
+                    saved = os.environ.get(var)
+                    os.environ[var] = d
+                    try:
+                        self.assertTrue(tpcli._bare_root(d),
+                                        f"{var} home left unprotected")
+                    finally:
+                        if saved is None:
+                            os.environ.pop(var, None)
+                        else:
+                            os.environ[var] = saved
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
     """A static ratchet. The graph and component layers reason about
     repo-relative, '/'-shaped paths; `os.path.join`/`dirname`/`relpath` are
