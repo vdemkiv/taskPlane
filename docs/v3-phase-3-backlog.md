@@ -227,3 +227,58 @@ Still open for a second cut:
   diffed the two ledgers.
 - **A pinned number.** Like `ci_graph_accuracy.py`, this gates nothing until
   there is a figure worth defending.
+
+---
+
+## WS-G — the review's own surfaces: readable, inline, and honest about cost
+
+Found by running `/tp-engineering` against `backstage/backstage` end to end
+(12,042 files, 265 packages, 7 lens-agents in one parallel wave) and then
+reading the result the way a human does. The engine was green. Three of the
+four complaints were about the surfaces, not the analysis:
+
+> "this part is unreadable. Dashboard ignored. Graph ignored, final report
+> not visualised, tokens used not shown."
+
+### Fixed in this pass
+
+- **The clean list was a wall of prose.** `render_findings_paged` joined 35
+  clean checks with `"; "` into one unbroken grey paragraph, each sentence
+  itself full of semicolons — and silently showed only the first 12 under a
+  header that said 35. Now one row per check, the domain lifted into a mono
+  label, and the omission names itself and says where the rest lives.
+  (`dashboard._render_clean`)
+- **The graph could not be shown inline, only linked.** `tp graph html`
+  embeds every module and every edge; on a monorepo that is a 620 KB page,
+  which is a fine file and an impossible widget — so the graph kept getting
+  narrated instead of rendered, which is the exact substitution the
+  obligation ledger exists to catch. Two additions:
+  `--focus N` crops to the changed set plus everything within N dependency
+  hops (620 KB → 30 KB), and `--fragment` carries that page byte-for-byte
+  into an embeddable iframe, gzip+base64 so it fits a widget (30 KB → 7 KB).
+  Byte-identity is the point: a wrapper that re-authored the page to fit
+  would be the same substitution wearing the engine's name.
+  (`depgraph.focus_graph`, `depgraph.as_fragment`)
+
+### Still open
+
+- **No token/cost accounting for a standalone review.** The cost meter and
+  the actions budget are loop-scoped. A review fans out N agents, spends
+  real tokens (535,368 across 7 lenses here, 310 tool uses, 288s parallel
+  against 1,492s sequential) and the product reports none of it. The numbers
+  exist only in the host's agent results. `tp findings` should carry a spend
+  block in `meta`, fed by the dispatch record the PreToolUse Task hook
+  already keeps.
+- **An obligation catches a skipped RENDER, never a skipped COMMAND.** In
+  this very review `tp graph html` was never run — impact was printed as
+  text instead. Running it afterwards issued the obligation, which means the
+  ledger only starts counting once someone reaches for the engine. Nothing
+  records the view that was never asked for.
+- **Scanner precision on a real monorepo.** 714 modules against 265
+  packages: `${{ values.name }}` minted as a module from a scaffolder
+  template path, and `.changeset` / `.github` / `.devcontainer` counted as
+  modules. The denominator on every graph claim is inflated.
+- **`graph impact --files` on a DIRECTORY silently answers for its parent.**
+  `module_of` drops the last segment — right for a file, wrong for a
+  directory, so `--files packages/cli` reports on `packages`. The answer
+  looks plausible, which is what makes it dangerous.

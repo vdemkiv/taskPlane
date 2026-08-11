@@ -2395,7 +2395,9 @@ def cmd_graph(a) -> int:
     elif a.graph_action == "html":
         files = (a.files.split(",") if a.files else
                  _changed_for_impact(ws, a.base))
-        out = dg.to_html(ws, files, out=a.out)
+        out = dg.to_html(ws, files, out=a.out,
+                         focus=getattr(a, "focus", None),
+                         fragment=bool(getattr(a, "fragment", False)))
         print(out)
         # WS-F: this is THE designed dependency + system-design view. The
         # recurring failure was not that it could not be produced — it was an
@@ -3201,6 +3203,14 @@ def main(argv=None) -> int:
                     help="git base to diff against (default HEAD)")
     gh.add_argument("--out",
                     help="write the HTML here instead of stdout")
+    gh.add_argument("--focus", type=int, metavar="DEPTH",
+                    help="crop to the changed set plus everything within "
+                         "DEPTH dependency hops — the same map, small "
+                         "enough to render inline in chat")
+    gh.add_argument("--fragment", action="store_true",
+                    help="emit an embeddable fragment (the same page, "
+                         "carried byte-for-byte in an srcdoc iframe) so the "
+                         "graph can be shown inline instead of as a file")
     gp.set_defaults(fn=cmd_graph)
 
     db = sub.add_parser("dashboard", help="render the mission-control view")
