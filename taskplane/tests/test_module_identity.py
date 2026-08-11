@@ -314,5 +314,132 @@ class TestNoDisturbanceWithoutManifests(unittest.TestCase):
         self.assertEqual(depgraph.declared_module_ids(g), {})
 
 
+# --------------------------------------------------------------------- D-0018
+
+class TestANestedSourceRootDoesNotCorruptIdentity(unittest.TestCase):
+    """The rule read only the segments AFTER the last source root, which is
+    correct when that root is the repo root and wrong every other time.
+
+    The whole suite passed with this defect in place and passed again with it
+    fixed — not one of 1,669 tests put a `src/` INSIDE a project directory,
+    which is the single most common layout in the JS and Go worlds. The
+    accuracy corpus is what found it. That is the argument for the corpus.
+
+    Two distinct failures, both here:
+
+      * `web/src/App.tsx` -> `src`. An id naming a CONVENTION. Nothing can
+        be cross-referenced with it and every repo produces one.
+      * `web/src/cart/X.tsx` -> `cart`, and so does `admin/src/cart/Y.tsx`.
+        Two sibling apps MERGED into one node: an edge landing on either was
+        reported against both, which is a blast radius that is wrong in the
+        dangerous direction.
+    """
+
+    def test_the_source_root_never_becomes_the_id(self):
+        self.assertEqual(depgraph.module_of("web/src/App.tsx"), "web")
+        self.assertEqual(depgraph.module_of("services/pricing/src/rules.py"),
+                         "services/pricing")
+        for root in depgraph._SRC_ROOTS:
+            with self.subTest(root=root):
+                self.assertEqual(
+                    depgraph.module_of(f"proj/{root}/main.py"), "proj")
+
+    def test_sibling_projects_do_not_merge(self):
+        self.assertEqual(depgraph.module_of("web/src/cart/X.tsx"), "web/cart")
+        self.assertEqual(depgraph.module_of("admin/src/cart/Y.tsx"),
+                         "admin/cart")
+        self.assertNotEqual(depgraph.module_of("web/src/cart/X.tsx"),
+                            depgraph.module_of("admin/src/cart/Y.tsx"))
+
+    def test_the_convention_is_invisible_not_significant(self):
+        """The property that makes this a rule rather than a patch: whether a
+        project keeps its code in `src/` must not change its module ids."""
+        for with_root, without in (("web/src/cart/X.tsx", "web/cart/X.tsx"),
+                                   ("a/lib/b/c.py", "a/b/c.py"),
+                                   ("a/pkg/b/c.go", "a/b/c.go")):
+            with self.subTest(path=with_root):
+                self.assertEqual(depgraph.module_of(with_root),
+                                 depgraph.module_of(without))
+
+    def test_a_root_level_source_root_is_unchanged(self):
+        """The case the old rule got right, and the reason it survived."""
+        self.assertEqual(depgraph.module_of("src/auth/session.py"), "auth")
+        self.assertEqual(depgraph.module_of("src/auth/session/deep/x.py"),
+                         "auth/session")
+        self.assertEqual(depgraph.module_of("cmd/api/handlers/user.go"),
+                         "api/handlers")
+        self.assertEqual(depgraph.module_of("engine/mod/views/list.py"),
+                         "engine/mod")
+
+    def test_a_path_of_nothing_but_source_roots_keeps_its_deepest(self):
+        """There is no meaningful segment to use, and returning "" would put
+        the file in whatever `(root)` collects."""
+        self.assertEqual(depgraph.module_of("src/x.py"), "src")
+        self.assertEqual(depgraph.module_of("app/src/main.py"), "src")
+
+    def test_the_maven_layout_still_wins(self):
+        """`src/main/java` is matched before any of this — collapsing every
+        Java package into one node was the M1 defect."""
+        self.assertEqual(
+            depgraph.module_of("src/main/java/com/acme/order/O.java"),
+            "com/acme/order")
+
+
+class TestSiblingAppsScanToDistinctModules(unittest.TestCase):
+    """End to end, because the id rule is only worth what the GRAPH does with
+    it: before the fix these two apps were one node and the edge from either
+    one was reported against both."""
+
+    def setUp(self):
+        self._old = os.environ.get("TASKPLANE_HOME")
+        self.home = tempfile.mkdtemp(prefix="tp-mid3-home-")
+        os.environ["TASKPLANE_HOME"] = self.home
+        self.ws = _build(tempfile.mkdtemp(prefix="tp-mid3-ws-"), {
+            "web/src/App.tsx": 'import { C } from "./cart/Cart";\n'
+                               'import React from "react";\n',
+            "web/src/cart/Cart.tsx": 'import useSWR from "swr";\n'
+                                     'export const C = 1;\n',
+            "admin/src/cart/Cart.tsx": 'import lodash from "lodash";\n',
+        })
+        self.g = depgraph.scan(self.ws)
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("TASKPLANE_HOME", None)
+        else:
+            os.environ["TASKPLANE_HOME"] = self._old
+        shutil.rmtree(self.home, ignore_errors=True)
+        shutil.rmtree(self.ws, ignore_errors=True)
+
+    def test_the_two_carts_are_two_modules(self):
+        mods = set(self.g["modules"])
+        self.assertIn("web/cart", mods)
+        self.assertIn("admin/cart", mods)
+        self.assertNotIn("cart", mods)
+        self.assertNotIn("src", mods)
+
+    def test_each_apps_dependency_stays_its_own(self):
+        edges = {(e["from"], e["to"], e["kind"]) for e in self.g["edges"]}
+        self.assertIn(("web/cart", "ext:swr", "imports"), edges)
+        self.assertIn(("admin/cart", "ext:lodash", "imports"), edges)
+        self.assertNotIn(("web/cart", "ext:lodash", "imports"), edges)
+        self.assertNotIn(("admin/cart", "ext:swr", "imports"), edges)
+
+    def test_the_intra_app_import_is_an_edge_not_a_self_edge(self):
+        """`App.tsx` imports `./cart/Cart`. Under the old id both files were
+        `cart`/`src`, so this real dependency vanished as a self-edge."""
+        edges = {(e["from"], e["to"]) for e in self.g["edges"]}
+        self.assertIn(("web", "web/cart"), edges)
+
+    def test_the_blast_radius_separates_them(self):
+        imp = depgraph.impact(self.ws, ["web/src/cart/Cart.tsx"])
+        self.assertEqual(imp["touched"], ["web/cart"])
+        reached = {row["module"]
+                   for rows in (imp["impacted"] or {}).values()
+                   for row in rows}
+        self.assertIn("web", reached)
+        self.assertNotIn("admin/cart", reached)
+
+
 if __name__ == "__main__":
     unittest.main()
