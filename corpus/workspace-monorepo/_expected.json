@@ -1,0 +1,40 @@
+{
+ "profile": "workspace-monorepo",
+ "why": "Module IDENTITY is declared by npm workspaces and go.work. The design already has the right node kind (module); only the id is invented.",
+ "nodes": [
+  {
+   "id": "@acme/ui",
+   "kind": "module"
+  },
+  {
+   "id": "@acme/core",
+   "kind": "module"
+  },
+  {
+   "id": "acme/gateway",
+   "kind": "module"
+  },
+  {
+   "id": "acme/billing",
+   "kind": "module"
+  }
+ ],
+ "edges": [
+  {
+   "from": "@acme/ui",
+   "to": "@acme/core",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "manifest",
+   "difficulty": "manifest"
+  },
+  {
+   "from": "acme/gateway",
+   "to": "acme/billing",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "manifest",
+   "difficulty": "manifest"
+  }
+ ]
+}

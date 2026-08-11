@@ -578,10 +578,38 @@ def _scan_volatile_stripped(g: dict) -> str:
     return json.dumps(stable, sort_keys=True, default=str)
 
 
+def load_excludes(ws: str) -> tuple[list, str | None]:
+    """(prefixes, error) — repo-declared trees that are NOT product code.
+
+    SKIP_DIRS covers the universal cases (node_modules, vendor, build output).
+    It cannot cover the repo-specific ones, and every real codebase has them:
+    generated protobuf/OpenAPI clients, sample apps, docs sites, test corpora.
+    Left unexcluded they become graph MODULES and route review lenses at code
+    nobody wrote — this repo already mints `api`, `auth`, `components` and
+    `src` out of its own test fixtures that way.
+
+    Fails OPEN with a report, like `decompose.load_floors`: a malformed file
+    must never silently narrow the graph, because a narrowed graph is a
+    narrowed blast radius, and that fails toward LESS review.
+    """
+    import path_roles
+    path = os.path.join(ws, "components.yaml")
+    if not os.path.exists(path):
+        return [], None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        return path_roles.parse_components_yaml(text)["exclude"], None
+    except (OSError, ValueError) as exc:
+        return [], f"components.yaml ignored (no exclusions applied): {exc}"
+
+
 def _scan_locked(ws: str, into: dict | None = None,
                  decompose: bool = False) -> dict:
     prev = load(ws)
     files, code_files = {}, []
+    excludes, exclude_err = load_excludes(ws)
+    import path_roles as _pr
     listed = _git_candidates(ws)
     if listed is not None:
         # Git work tree: .gitignore is authoritative. Still drop the
@@ -592,6 +620,8 @@ def _scan_locked(ws: str, into: dict | None = None,
                    for seg in parts[:-1]):
                 continue
             if rel.startswith("knowledge/"):
+                continue
+            if _pr.is_excluded(rel, excludes):
                 continue
             if rel.endswith(CODE_EXT):
                 code_files.append(rel)
@@ -612,6 +642,8 @@ def _scan_locked(ws: str, into: dict | None = None,
                 rel = os.path.relpath(os.path.join(root, n), ws).replace(
                     os.sep, "/")
                 if rel.startswith("knowledge/"):
+                    continue
+                if _pr.is_excluded(rel, excludes):
                     continue
                 if n.endswith(CODE_EXT):
                     code_files.append(rel)
@@ -781,6 +813,16 @@ def _scan_locked(ws: str, into: dict | None = None,
     if any(rel.endswith(".go") for rel in code_files):
         scanners_meta["go"] = {"coverage": "external-only",
                                "limitation": _GO_LIMITATION}
+    # Narrowing the graph is disclosed IN the payload, same as the Go
+    # scanner's partial coverage: an impact consumer must be able to see
+    # that the blast radius was scoped by declaration rather than trust a
+    # small answer. A malformed components.yaml is reported here too, so
+    # "my exclusions did nothing" is visible instead of silent.
+    if excludes:
+        scanners_meta["excluded"] = {"declared_in": "components.yaml",
+                                     "prefixes": sorted(excludes)}
+    if exclude_err:
+        scanners_meta["exclude_error"] = exclude_err
     g = {
         "modules": modules,
         "edges": sorted([{"from": a, "to": b, "kind": k}

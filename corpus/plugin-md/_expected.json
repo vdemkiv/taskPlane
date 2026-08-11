@@ -1,0 +1,48 @@
+{
+ "profile": "plugin-md",
+ "why": "A plugin's artifacts are its product. In the designed model a skill CONSUMES an agent's contract and USES a lens; none of it is an import.",
+ "nodes": [
+  {
+   "id": "skills/review",
+   "kind": "module"
+  },
+  {
+   "id": "agents",
+   "kind": "module"
+  },
+  {
+   "id": "lenses",
+   "kind": "module"
+  },
+  {
+   "id": ".claude-plugin",
+   "kind": "module"
+  }
+ ],
+ "edges": [
+  {
+   "from": "skills/review",
+   "to": "agents",
+   "kind": "calls",
+   "family": "dependency",
+   "source": "declared",
+   "difficulty": "declared"
+  },
+  {
+   "from": "skills/review",
+   "to": "lenses",
+   "kind": "uses",
+   "family": "dependency",
+   "source": "declared",
+   "difficulty": "declared"
+  },
+  {
+   "from": "agents",
+   "to": "lenses",
+   "kind": "uses",
+   "family": "dependency",
+   "source": "declared",
+   "difficulty": "declared"
+  }
+ ]
+}

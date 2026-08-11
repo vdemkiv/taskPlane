@@ -1,0 +1,36 @@
+{
+ "profile": "legacy-monolith",
+ "why": "The import edge is a dependency edge the scanner should get. The DI wiring in beans.xml is a dependency the container creates at runtime \u2014 recordable, never scannable.",
+ "nodes": [
+  {
+   "id": "com/acme/order",
+   "kind": "module"
+  },
+  {
+   "id": "com/acme/billing",
+   "kind": "module"
+  },
+  {
+   "id": "ext:spring-core",
+   "kind": "external"
+  }
+ ],
+ "edges": [
+  {
+   "from": "com/acme/order",
+   "to": "com/acme/billing",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "scanner",
+   "difficulty": "easy"
+  },
+  {
+   "from": "com/acme/order",
+   "to": "ext:spring-core",
+   "kind": "imports",
+   "family": "dependency",
+   "source": "manifest",
+   "difficulty": "manifest"
+  }
+ ]
+}

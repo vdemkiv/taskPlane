@@ -1,0 +1,11 @@
+# Trees that are NOT taskplane's product code. Excluding them keeps the
+# dependency graph — and therefore every blast radius and lens route —
+# about the engine and its artifacts, not about scaffolding.
+exclude:
+  # graph-accuracy corpus: four synthetic repos with hand-authored ground
+  # truth, scanned individually by scripts/ci_graph_accuracy.py
+  - corpus
+  # detector/decompose/brief fixtures: synthetic trees that exist to prove
+  # routing works. They currently mint api/auth/components/src as product
+  # modules and route lenses at code nobody wrote.
+  - taskplane/tests/fixtures

@@ -1,0 +1,2 @@
+<beans><bean id="orderService" class="com.acme.order.OrderService">
+<property name="billing" ref="billingClient"/></bean></beans>

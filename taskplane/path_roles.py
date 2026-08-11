@@ -73,3 +73,82 @@ def change_adds_no_test(files, code_extensions) -> bool:
             "1", "true", "yes", "on"}:
         return has_code
     return has_code and not any(is_test_path(path) for path in paths)
+
+
+# --------------------------------------------------------- repo-declared config
+# `components.yaml` is the one file a repo uses to tell taskplane about its own
+# shape. It lived only in decompose (floors), but an EXCLUSION list is path
+# classification, which is this module's job — and putting the shared parser
+# here keeps `depgraph` from importing `decompose`, a pair that is already a
+# mutual-import cycle.
+#
+# Supported shapes, deliberately still a tiny subset (stdlib only, no YAML
+# dependency). Exactly three LINE SHAPES:
+#
+#     floors:                     a top-level section header
+#       cluster_min_files: 2      an indented int key/value
+#     exclude:
+#       - vendor/generated/       an indented list item (NEW)
+#
+# `#` comments and blank lines are stripped first. Any OTHER line shape raises
+# ValueError, and every caller fails OPEN — a malformed file must never
+# silently narrow the graph, because a narrowed graph is a narrowed blast
+# radius and that fails toward LESS review.
+_CFG_SECTION = re.compile(r"^([A-Za-z_][\w-]*):\s*$")
+_CFG_INT = re.compile(r"^\s+([A-Za-z_][\w-]*):\s*(-?\d+)\s*$")
+_CFG_ITEM = re.compile(r"^\s+-\s*(\S.*?)\s*$")
+
+
+def parse_components_yaml(text: str) -> dict:
+    """{'floors': {name: int}, 'exclude': [prefix, ...]} from the flat subset.
+
+    Raises ValueError on any unsupported line shape; callers fail open.
+    """
+    out: dict = {"floors": {}, "exclude": []}
+    section = None
+    for raw in (text or "").splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        top = _CFG_SECTION.match(line)
+        if top:
+            section = top.group(1)
+            continue
+        # A shape is only valid in the section that uses it. A list item
+        # under `floors:` is NOT "an item we ignore" — it is a malformed
+        # floors file, and it must still raise so the caller fails open
+        # WITH a report. Accepting it silently would drop the floors the
+        # author intended and say nothing, which is worse than the error.
+        kv = _CFG_INT.match(line)
+        if kv and section == "floors":
+            out["floors"][kv.group(1)] = int(kv.group(2))
+            continue
+        item = _CFG_ITEM.match(line)
+        if item and section == "exclude":
+            out["exclude"].append(item.group(1).strip("'\"").replace(
+                "\\", "/").lstrip("./"))
+            continue
+        # A recognised shape in an UNKNOWN section stays ignorable, which is
+        # the documented forward-compatibility behaviour.
+        if (kv or item) and section not in ("floors", "exclude"):
+            continue
+        raise ValueError(f"unsupported components.yaml line: {raw!r}")
+    return out
+
+
+def is_excluded(relpath: str, prefixes) -> bool:
+    """True when `relpath` sits under one of the declared exclude prefixes.
+
+    Matched on SEGMENT boundaries, never as a raw string prefix: `corpus`
+    must not also exclude `corpus-notes.md`. This is the same prefix-vs-
+    segment distinction that made `.taskplane` wrongly match
+    `.taskplane-kb/` elsewhere in this codebase.
+    """
+    rel = str(relpath or "").replace("\\", "/").lstrip("./")
+    for p in prefixes or ():
+        p = str(p).replace("\\", "/").strip("/")
+        if not p:
+            continue
+        if rel == p or rel.startswith(p + "/"):
+            return True
+    return False

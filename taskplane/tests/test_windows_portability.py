@@ -315,7 +315,13 @@ class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
     os.path, so the pin is on the count, not on absence."""
 
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    PINS = {"depgraph.py": 12, "decompose.py": 3}
+    # 12 -> 13 (D-0017, repo-declared exclusions): load_excludes joins
+    # components.yaml onto the workspace root to OPEN it. That is filesystem
+    # access, the category this ratchet's own message says to raise the pin
+    # for — not repo-path arithmetic, which still goes through posixpath.
+    # The exclusion MATCHING itself is in path_roles.is_excluded and is
+    # '/'-shaped on every host by construction.
+    PINS = {"depgraph.py": 13, "decompose.py": 3}
 
     def test_host_shaped_path_calls_do_not_grow(self):
         import re

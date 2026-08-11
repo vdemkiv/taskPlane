@@ -1,0 +1,4 @@
+go 1.22
+
+use ./svc/gateway
+use ./svc/billing
