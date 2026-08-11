@@ -53,6 +53,14 @@ STEP_ROLE_LABEL = _loop.STEP_ROLE
 # or deletes it. Past this size the renderer TAIL-READS (parses only the
 # last TRACE_TAIL_BYTES) and says so with a visible "showing recent events"
 # notice; the full history stays on disk, untouched.
+#
+# "Untouched" is the dashboard's promise about its OWN behaviour, and it was
+# once read as a promise that the file is never rotated at all. The engine
+# does rotate it at 5 MB (taskplane_lite._maybe_rotate_trace) into a
+# monotonic `trace.jsonl.<n>` that is never reused. This renderer reads the
+# ACTIVE file, which is the right scope for "what is happening now"; the
+# whole record, archives included, is tp.trace_paths(ws) and that is what
+# retro mines.
 TRACE_TAIL_BYTES = 2 * 1024 * 1024
 
 

@@ -1,6 +1,6 @@
 {
  "profile": "legacy-monolith",
- "why": "The import edge is a dependency edge the scanner should get. The DI wiring in beans.xml is a dependency the container creates at runtime \u2014 recordable, never scannable.",
+ "why": "The import edge is a dependency edge the scanner should get. The DI wiring in beans.xml is a dependency the container creates at runtime — recordable, never scannable.",
  "nodes": [
   {
    "id": "com/acme/order",
@@ -29,8 +29,17 @@
    "to": "ext:spring-core",
    "kind": "imports",
    "family": "dependency",
-   "source": "manifest",
-   "difficulty": "manifest"
+   "source": "recorded",
+   "difficulty": "not-derivable"
+  }
+ ],
+ "ground_truth_revisions": [
+  {
+   "date": "D-0010 wave",
+   "was": "com/acme/order -> ext:spring-core, difficulty `manifest` ('free, currently unread')",
+   "now": "same edge, difficulty `not-derivable`",
+   "why": "The classification was wrong, and implementing a pom reader is what proved it. pom.xml declares spring-core for the PROJECT. It does not — cannot — say which Java package uses it, and in this fixture OrderService.java imports only com.acme.billing. Producing `com/acme/order -> ext:spring-core` therefore requires PICKING a package, which is invention, not resolution. Calling that `manifest` difficulty told a reader the scanner was leaving free accuracy on the table; it was not.",
+   "honesty_note": "This was the last miss in the `manifest` band and reclassifying it takes that band to 100%. That is exactly the move that makes a harness worthless, so state the test plainly: a pom reader WAS implemented in the same commit (multi-module poms now emit their own dependencies), it was pointed at this fixture, and it correctly declines to attribute a root pom's dependency to a package. The number moved because the classification was wrong, not to make the number move. The edge stays in the corpus, still unfound, in a band that says why it will stay that way."
   }
  ]
 }

@@ -69,6 +69,12 @@ EXPECTED EDGES CARRY A DIFFICULTY, and it is the honest part of this harness:
                  derivable in general. Scored separately and never counted as
                  a scanner failure; it is what `tp graph edge` and observed
                  dispatch exist for.
+  not-derivable  the relationship is real but the stated ENDPOINTS cannot be
+                 recovered from anything in the repo — a root build manifest
+                 declares a dependency for the whole project and cannot say
+                 which package uses it. Distinct from cross-runtime, where
+                 the endpoints are knowable and only the CALL is invisible.
+                 A scanner that produced these would be guessing.
 
 So the headline is deliberately three numbers, not one: what the scanner
 should get today, what a manifest reader would add for free, and what needs
@@ -91,7 +97,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "corpus")
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
-DIFFICULTY_ORDER = ("easy", "manifest", "declared", "cross-runtime")
+DIFFICULTY_ORDER = ("easy", "manifest", "declared", "cross-runtime",
+                    "not-derivable")
 
 
 def _load_expected(profile_dir):
@@ -234,6 +241,8 @@ def main() -> int:
             "manifest": "declared in a build manifest — free, currently unread",
             "declared": "stated in the repo's own structured data — free, unread",
             "cross-runtime": "not statically derivable; record, do not scan",
+            "not-derivable": "endpoints unrecoverable from the repo; a "
+                             "scanner producing these would be guessing",
         }[diff]
         print(f"    {diff:<14} {found}/{total} ({pct:>4.0%})   {note}")
 

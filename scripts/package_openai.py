@@ -394,6 +394,11 @@ def validate_archive(path: Path) -> tuple[int, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
+    # D-0010 — same rule as the Claude archive; see scripts/release_provenance.py
+    parser.add_argument("--allow-dirty", action="store_true",
+                        help="package over uncommitted edits; the provenance "
+                             "record is stamped verified_source: false and "
+                             "the archive must not be released")
     args = parser.parse_args()
 
     try:
@@ -411,6 +416,15 @@ def main() -> int:
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
         checksum = output.with_suffix(output.suffix + ".sha256")
         checksum.write_text(f"{digest}  {output.name}\n", encoding="utf-8")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import release_provenance as prov
+        try:
+            prov_path = prov.write(ROOT, output, digest,
+                                   allow_dirty=args.allow_dirty)
+        except prov.ProvenanceError as exc:
+            output.unlink(missing_ok=True)
+            checksum.unlink(missing_ok=True)
+            raise PackageError(str(exc)) from exc
     except (OSError, PackageError) as exc:
         print(f"OpenAI package validation failed: {exc}", file=sys.stderr)
         return 1
@@ -422,6 +436,7 @@ def main() -> int:
     print(f"uncompressed_bytes: {uncompressed}")
     print(f"sha256: {digest}")
     print(f"checksum: {checksum}")
+    print(f"provenance: {prov_path}")
     return 0
 
 

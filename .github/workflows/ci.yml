@@ -217,6 +217,37 @@ jobs:
           echo "build A: $a"; echo "build B: $b"
           test "$a" = "$b"
 
+      # D-0010. Determinism proves an archive is reproducible FROM SOME TREE.
+      # It never said WHICH tree, so nothing tied a shipped artifact to a
+      # commit, let alone a green one. Each archive now carries a
+      # provenance record naming its source commit; this leg is the other
+      # half — it binds that commit to the tree THIS run verified, so an
+      # artifact built in the release path cannot have come from anywhere
+      # else. `verified_source` false means the build saw uncommitted edits,
+      # which must never happen on a CI checkout.
+      - name: Packages name the commit this run verified
+        run: |
+          python3 - <<'PY'
+          import glob, json, subprocess, sys
+          head = subprocess.run(["git", "rev-parse", "HEAD"],
+                                capture_output=True, text=True).stdout.strip()
+          found = sorted(glob.glob("/tmp/tp-pkg-a/*.provenance.json")
+                         + glob.glob("/tmp/tp-claude-a/*.provenance.json"))
+          if len(found) < 2:
+              sys.exit(f"expected a provenance record per archive, got {found}")
+          for path in found:
+              rec = json.load(open(path))
+              print(f"{rec['archive']}: commit {rec['commit']} "
+                    f"verified_source={rec['verified_source']}")
+              if rec["commit"] != head:
+                  sys.exit(f"{path}: built from {rec['commit']}, this run "
+                           f"verified {head} — the artifact is not the tree "
+                           "that was tested")
+              if not rec["verified_source"] or rec["dirty"]:
+                  sys.exit(f"{path}: dirty CI checkout {rec['dirty']}")
+          print("ok: every archive names the commit this run verified")
+          PY
+
   # t8 (R-0005): install truth. The launch failure this pins: org/Team
   # members CANNOT install plugins from GitHub — only org admins publish to
   # the org marketplace, and file-upload is the other path. This leg fails on

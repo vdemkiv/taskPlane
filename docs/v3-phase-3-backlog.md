@@ -144,3 +144,57 @@ same way t6/t7 should have been ordered.
 
 Out of scope for Phase 3 (unchanged from the v3 strategy): WS1 flow-as-data
 (R-F1..R-F6), new lens catalog entries, host-specific UI.
+
+---
+
+## WS-F · Evaluations layer: does the plugin actually work inside the host?
+
+**Recorded 2026-08-11, from the user.** Everything above tests the ENGINE
+in isolation: 1,679 unit tests over `taskplane/`, a cost meter, a yield
+meter, and now a graph-accuracy meter. None of them tests the thing the
+user actually buys — **the plugin behaving correctly inside Claude Code,
+Cowork, and Codex.**
+
+That gap is not theoretical. It is the direct cause of the most-repeated
+complaint in this project's history:
+
+> *"here we go again no inline dashboard visualisation. no report nothing?"*
+> *"this is not the graph and dependency visualisation we designed and
+> adopted before."*
+> *"again ignored graph design."*
+> *"Skills agents and lenses are the most important part of this plugin."*
+
+Every one of those is an assistant, inside a host, failing to use an
+artifact the product already had — the inline widget, `tp graph html`,
+the agent fan-out, the skill flow. The engine was green for all of them.
+A green engine and a broken product is exactly the shape an evaluations
+layer exists to catch, and it is the only layer that can.
+
+### What it must cover
+
+1. **Artifact surfacing.** When a review completes, is the dashboard
+   actually rendered inline (`mcp__visualize__show_widget`) rather than
+   described, re-derived, or replaced by a hand-built substitute?
+2. **The product's own graph.** Is `tp graph html` / the designed
+   dependency + system-design visualisation the thing shown — not an
+   ad-hoc chart the assistant drew instead?
+3. **Agent fan-out.** Does a routed review dispatch one governed
+   subagent per lens (`tp-lens`), in parallel, as designed — or does one
+   agent walk the catalog in sequence?
+4. **Skill flow adherence.** Are the steps a SKILL.md defines actually
+   followed, in order, including the ones that are easy to skip?
+5. **Gate discipline in-host.** Does the assistant stop at human gates
+   instead of self-approving, in each host's idioms?
+6. **Cross-host parity.** The same task in Claude Code, Cowork and Codex
+   should produce the same governance decisions and the same artifacts.
+
+### Shape
+
+Scored scenario runs, not assertions on strings: a fixture repo, a task,
+a rubric per scenario, and a pass rate tracked over time — the same
+instrument pattern as `ci_graph_accuracy.py` (a known answer, scored,
+gating nothing until a number is worth defending). The engine suite says
+the machinery is correct; evals say the machinery is USED.
+
+**Status: deferred by the user until the current fix wave lands.** Do not
+start it before then.

@@ -106,6 +106,71 @@ _HUB_LIGHT = 3    # >= this many direct dependents -> at least a light pass
 _HUB_FULL = 8     # >= this many -> a full design pass
 
 
+# D-0005. The deep cap is a DISPATCH budget — how many lenses get their own
+# subagent — and route v2 enforced it while the legacy path did not. That
+# gap opened exactly where it hurts most: `breadth="all"` DISABLES route v2
+# (see `route`), and `--all` is what a whole-codebase review runs. Every
+# routed lens then saw `large` (a diff at or over deep_threshold_files) and
+# became its own subagent, so a final review fanned out 26 deep agents under
+# a cap of 8 — the one review where the budget was silently absent was the
+# most expensive review the product performs.
+#
+# The cap DEMOTES, never drops, mirroring lens_signals.apply_budget: an
+# over-budget lens still runs, inline, and says why it was demoted.
+def _deep_cap() -> int:
+    """The one cap, read from the engine that defines it.
+
+    Deliberately not a second constant here. A local default would be a
+    second reader of one number, which is the drift shape this codebase
+    already carries in RUNTIME_OWNED vs LOOP_OWNED; if lens_signals cannot
+    be imported the budget cannot be honoured, and the fail-safe direction
+    for a review is MORE coverage, so the cap lifts rather than guessing.
+    """
+    try:
+        import lens_signals
+        return int(lens_signals.DEEP_CAP)
+    except Exception:
+        return 0          # 0 == no cap applied, and it is disclosed
+
+
+def _cap_deep_dispatch(selected: list, cap: int) -> list:
+    """Demote subagent-mode lenses past `cap` to inline, best evidence first.
+
+    Ranked by how EXPLICIT the deep signal was: a lens whose own deep_globs
+    matched the diff, or an architecture full pass, outranks one that is
+    deep only because the diff happened to be large — which on a
+    whole-codebase review is all of them. Ties break on evidence count and
+    then catalog order, so the choice is deterministic.
+    """
+    if cap <= 0:
+        return selected
+    deep = [e for e in selected if e.get("mode") == "subagent"]
+    if len(deep) <= cap:
+        for e in selected:
+            e.pop("_explicit_deep", None)
+        return selected
+    # Floors survive the budget, exactly as lens_signals applies them AFTER
+    # apply_budget: an architecture FULL pass is defined by this module to
+    # run as its own subagent, so the budget may not quietly take that away.
+    # It still COUNTS against the cap — the budget is about total spend.
+    exempt = [e for e in deep if e.get("effort") == "full"]
+    order = {id(e): i for i, e in enumerate(selected)}
+    ranked = sorted((e for e in deep if e not in exempt),
+                    key=lambda e: (not e.get("_explicit_deep"),
+                                   -len(e.get("reasons") or ()),
+                                   order[id(e)]))
+    cap = max(0, cap - len(exempt))
+    for rank, e in enumerate(ranked, start=1):
+        if rank > cap:
+            e["mode"] = "inline"
+            e["reasons"] = list(e.get("reasons") or []) + [
+                f"budget: demoted subagent->inline (rank {rank} > deep cap "
+                f"{cap}) — still reviewed, in the same pass"]
+    for e in selected:
+        e.pop("_explicit_deep", None)
+    return selected
+
+
 def hub_signal(workspace, files) -> int:
     """Max count of DIRECT dependents among the modules a change touches —
     the dependency graph's zero-token answer to "is this a hub?"."""
@@ -293,9 +358,11 @@ def _route_legacy(changed_files, task_type, artifact_type, cat,
         if lid in skip or (only and lid not in only):
             continue
 
-        deep = bool(_any_match(files, lens.get("deep_globs"))) or large
+        explicit = bool(_any_match(files, lens.get("deep_globs")))
+        deep = explicit or large
         if effort == "full":
             deep = True   # a full design pass runs as its own subagent
+            explicit = True
         entry = {
             "id": lid,
             "name": lens["name"],
@@ -307,7 +374,13 @@ def _route_legacy(changed_files, task_type, artifact_type, cat,
         }
         if effort:
             entry["effort"] = effort
+        entry["_explicit_deep"] = explicit
         selected.append(entry)
+
+    # D-0005: the dispatch budget, applied BEFORE the sweep so the sweep's
+    # own inline entries never compete for it.
+    cap = _deep_cap()
+    selected = _cap_deep_dispatch(selected, cap)
 
     if breadth == "all":
         have = {e["id"] for e in selected}
@@ -326,6 +399,7 @@ def _route_legacy(changed_files, task_type, artifact_type, cat,
                 "looks_for": lens.get("looks_for", ""),
             })
 
+    n_deep = sum(1 for e in selected if e.get("mode") == "subagent")
     return {
         "lenses": selected,
         "context": {
@@ -336,6 +410,11 @@ def _route_legacy(changed_files, task_type, artifact_type, cat,
             "artifact_type": artifact_type,
             "breadth": breadth,
             "hub_dependents": hub_dependents,
+            # D-0005: the budget is part of the routing DECISION, so it is
+            # reported with it. `deep_cap: 0` means the cap could not be
+            # read and none was applied — visible, not silent.
+            "deep_cap": cap,
+            "deep_dispatched": n_deep,
         },
     }
 

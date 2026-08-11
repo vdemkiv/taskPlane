@@ -555,12 +555,20 @@ class TestExtractionStructure(unittest.TestCase):
         the hook somewhere it did not belong to keep a number flat, which
         is how ratchets stop meaning anything.
 
+        3005 → 2907 (D-0011): rendering the dashboard and publishing the
+        gate snapshot moved OUT to views.py — the extraction this module's
+        own comment had been recording as debt since v2.3.0 ("rendering/
+        publishing belongs in the CLI/driver layer"). The engine keeps the
+        seam and nothing else. The ratchet is LOWERED to the new figure in
+        the same commit: a ceiling left at the old number would quietly
+        hand back the 98 lines this bought.
+
         What guards the extraction itself is the body/constant assertions
         above, not this count."""
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 3005, f"loop.py is {n} lines — the audit extraction shrink "
+            n, 2907, f"loop.py is {n} lines — the audit extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):

@@ -330,5 +330,63 @@ class TestACodeOnlyRepoIsUndisturbed(unittest.TestCase):
                          (g.get("meta") or {}).get("scanners") or {})
 
 
+class TestMavenDependencies(unittest.TestCase):
+    """A pom's `<dependency>` list, attributed the way `.csproj` and Gemfile
+    dependencies already are: to the module the manifest lives in. One rule,
+    three manifest formats.
+
+    The ROOT pom is skipped, for the same reason D-0007 skips a root
+    package.json — it describes the BUILD, not a module in it, and cannot say
+    which package uses what. The accuracy corpus asked for exactly that
+    attribution (`com/acme/order -> ext:spring-core` from a root pom) and the
+    honest answer is that no scanner can produce it without guessing; the
+    corpus entry now says so.
+    """
+
+    def setUp(self):
+        self._old = os.environ.get("TASKPLANE_HOME")
+        self.home = tempfile.mkdtemp(prefix="tp-pom-home-")
+        os.environ["TASKPLANE_HOME"] = self.home
+        self.ws = _build(tempfile.mkdtemp(prefix="tp-pom-ws-"), {
+            "pom.xml": "<project><artifactId>root</artifactId><dependencies>"
+                       "<dependency><groupId>g</groupId>"
+                       "<artifactId>root-only-dep</artifactId>"
+                       "</dependency></dependencies></project>",
+            "modules/order/pom.xml":
+                "<project><artifactId>order</artifactId><dependencies>"
+                "<dependency><groupId>org.springframework</groupId>"
+                "<artifactId>spring-core</artifactId></dependency>"
+                "<dependency><groupId>junit</groupId>"
+                "<artifactId>junit</artifactId><scope>test</scope>"
+                "</dependency></dependencies></project>",
+            "modules/order/src/main/java/com/acme/order/O.java":
+                "package com.acme.order;\npublic class O {}\n",
+        })
+        self.g = depgraph.scan(self.ws)
+        self.edges = {(e["from"], e["to"], e["kind"])
+                      for e in (self.g.get("edges") or [])}
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("TASKPLANE_HOME", None)
+        else:
+            os.environ["TASKPLANE_HOME"] = self._old
+        shutil.rmtree(self.home, ignore_errors=True)
+        shutil.rmtree(self.ws, ignore_errors=True)
+
+    def test_a_module_pom_declares_that_modules_dependencies(self):
+        self.assertIn(("modules/order", "ext:spring-core", "imports"),
+                      self.edges)
+
+    def test_a_test_scoped_dependency_is_not_a_product_dependency(self):
+        """`what depends on this?` is a question about the shipped thing."""
+        self.assertNotIn("ext:junit", set(self.g["modules"]))
+
+    def test_a_root_pom_is_not_attributed_to_anything(self):
+        """It would have to PICK a package, which is invention."""
+        self.assertNotIn("ext:root-only-dep", set(self.g["modules"]))
+        self.assertNotIn("(root)", set(self.g["modules"]))
+
+
 if __name__ == "__main__":
     unittest.main()

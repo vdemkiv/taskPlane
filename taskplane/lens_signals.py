@@ -703,6 +703,27 @@ def _compiled(spec: dict):
     return spec[key]
 
 
+# D-0006. A content regex is a proxy for "this code DOES x". Run it over
+# prose and it becomes a proxy for "this document MENTIONS x", which is a
+# different claim and usually a false one. Editing five of this repo's own
+# documentation files fired seventeen lenses — `dba` went DEEP because
+# routing-and-flows.md explains query patterns, and `data-safety` fired on
+# the privacy LENS DEFINITION, a file whose entire job is to describe
+# migration markers so a reviewer can spot them.
+#
+# The fix is not "never score markdown": tech-writer, product and
+# solution-design have documentation as their real surface. It is that a
+# content marker in a prose file only counts for a lens whose OWN declared
+# surface admits that file. tech-writer's globs say `**/*.md`, so it keeps
+# scoring; dba's say nothing of the sort, so it stops. Path and requirement
+# signals are untouched — a doc that a lens's globs claim still routes it.
+PROSE_EXT = (".md", ".mdx", ".markdown", ".rst", ".txt", ".adoc")
+
+
+def _is_prose(rel: str) -> bool:
+    return str(rel or "").lower().endswith(PROSE_EXT)
+
+
 def _density_hits(ctx: Ctx, code_ext) -> tuple[int, int, int, str]:
     """(count, files, real_count, real_rel) of user-facing-looking string
     literals (>= 3 words) across changed code files; real_count counts only
@@ -772,10 +793,19 @@ def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
         score += W_PATH
 
     # -- content signals (bounded corpus, first hit per rule)
+    #
+    # D-0006: prose is scanned only for a lens whose own surface claims it.
+    # `globs` above is exactly that surface (catalog globs + spec extras),
+    # so this needs no second list to drift out of sync.
+    def _scannable(rel):
+        return not _is_prose(rel) or bool(globs and _glob_hit([rel], globs))
+
     for label, rx in _compiled(spec):
         found = None
         real_rel = None
         for rel, text in ctx.contents():
+            if not _scannable(rel):
+                continue
             if rx.search(text):
                 if found is None:
                     found = rel

@@ -48,6 +48,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 MANIFEST_PATH = ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE_PATH = ROOT / ".claude-plugin" / "marketplace.json"
 ARCHIVE_ROOT = "taskplane"
@@ -182,6 +183,12 @@ def main(argv=None) -> int:
     # and checksummed here rather than copied by hand after the fact —
     # a renamed copy has no provenance and no gate.
     parser.add_argument("--ext", choices=("zip", "plugin"), default="zip")
+    # D-0010: a release artifact must name the tree it came from, and a
+    # dirty tree cannot. Local test builds stay possible and stay marked.
+    parser.add_argument("--allow-dirty", action="store_true",
+                        help="package over uncommitted edits; the provenance "
+                             "record is stamped verified_source: false and "
+                             "the archive must not be released")
     args = parser.parse_args(argv)
 
     try:
@@ -207,12 +214,23 @@ def main(argv=None) -> int:
     checksum = output.with_suffix(output.suffix + ".sha256")
     checksum.write_text(f"{digest}  {output.name}\n", encoding="utf-8")
 
+    import release_provenance as prov
+    try:
+        prov_path = prov.write(ROOT, output, digest,
+                               allow_dirty=args.allow_dirty)
+    except prov.ProvenanceError as exc:
+        output.unlink(missing_ok=True)
+        checksum.unlink(missing_ok=True)
+        print(f"package_claude: {exc}", file=sys.stderr)
+        return 1
+
     print(f"archive: {output}")
     print(f"files: {count}")
     print(f"compressed_bytes: {output.stat().st_size}")
     print(f"uncompressed_bytes: {uncompressed}")
     print(f"sha256: {digest}")
     print(f"checksum: {checksum}")
+    print(f"provenance: {prov_path}")
     return 0
 
 

@@ -2103,6 +2103,7 @@ def _signoff_dod(ws: str, state: dict) -> dict:
         scopes.extend(t.get("scope") or [])
     baseline = state.get("baseline")
     errors: list = []
+    notices: list = []
     errors.extend("requirement DoD: " + e for e in tp.requirement_coverage_errors(
         state.get("tasks") or [], lambda rid: reqs.get_requirement(ws, rid),
         state.get("requirement_id"), require_passed=True))
@@ -2156,13 +2157,20 @@ def _signoff_dod(ws: str, state: dict) -> dict:
         regression_files = [f for f in (tp.changed_files(ws, baseline)
                                         if baseline else [])
                      if tp.match_any(f, task.get("scope") or [])]
+        task_notices: list = []
         errors.extend(f"task {task.get('id', '?')}: {e}" for e in tp.dod_check(
-            test_contract, ws, baseline, regression_files=regression_files))
+            test_contract, ws, baseline, regression_files=regression_files,
+            notices=task_notices))
+        notices.extend(f"task {task.get('id', '?')}: {n}"
+                       for n in task_notices)
     errors.extend(_engineering_review_errors(ws, state))
     for problem in kb.lint(ws):
         errors.append("kb_lint: " + (problem.get("file", "?")) + " — "
                       + problem.get("problem", ""))
-    return {"passed": not errors, "errors": errors,
+    # D-0008: sign-off is the human's decision point. A `tests_pass` that was
+    # CITED rather than executed is a fact about the evidence being signed
+    # for, so it travels with the verdict instead of only into the trace.
+    return {"passed": not errors, "errors": errors, "notices": notices,
             "scope": scopes, "baseline": baseline}
 
 
@@ -2624,9 +2632,12 @@ def retro(ws: str) -> dict:
     hook denials (scope friction), lens routing stats — and record the
     lessons to the knowledge base so they're retrieved, not re-learned."""
     state = load(ws) or {}
-    trace_path = os.path.join(tp.tp_dir(ws), "trace.jsonl")
     events = []
-    if os.path.exists(trace_path):
+    # D-0014: the retro mines a WHOLE track's history, and a long track
+    # rotates. Reading only the active file silently drops everything before
+    # the last rotation — forecast accuracy and denial counts computed from
+    # the tail, presented as the track's totals.
+    for trace_path in tp.trace_paths(ws):
         with open(trace_path, encoding="utf-8") as f:
             for ln in f:
                 if not ln.strip():
@@ -2861,136 +2872,27 @@ def user_summary(ws: str, host: str | None = None) -> dict:
 
 # --- Dashboard v2 (R-0001): rendering is part of the flow — every gate()/
 # next_action() refreshes the fragment on disk and points at it.
-# ---- shared progress artifacts (v2.0.0) -------------------------------------
-# Every gate transition snapshots its decision artifacts into the ACTIVE
-# store (team plan: in-repo .taskplane-kb/; personal: the external store).
-# Doubles as a context cache. Fail-open: publishing never breaks the loop.
-
-def _publish_artifacts(ws: str) -> str | None:
-    import re as _re
-    import shutil as _sh
-    import time as _time
-    try:
-        state = load(ws) or {}
-        slug = _re.sub(r"[^a-z0-9]+", "-",
-                       str(state.get("goal") or "track").lower()
-                       ).strip("-")[:60] or "track"
-        root = os.path.join(tp.store_root(ws), "artifacts", slug)
-        os.makedirs(root, exist_ok=True)
-
-        def _cp(src):
-            if os.path.isfile(src):
-                _sh.copyfile(src, os.path.join(root, os.path.basename(src)))
-
-        _cp(os.path.join(tp.tp_dir(ws), "dashboard.html"))
-        _cp(os.path.join(tp.tp_dir(ws), "retro.md"))
-        _cp(os.path.join(ws, "plan", "plan.md"))
-        _cp(os.path.join(ws, "plan", "tasks.json"))
-        _cp(os.path.join(ws, ".em-review", "findings.json"))
-        _cp(os.path.join(ws, ".em-review", "report.md"))
-        with contextlib.suppress(Exception):
-            g = depgraph.load(ws)
-            if g and g.get("modules"):
-                # v2.3.0 (scalability): re-copy the graph snapshot only when
-                # its content fingerprint changed — dumping megabytes into a
-                # committed store on EVERY transition was pure churn.
-                gp = os.path.join(root, "graph.json")
-                new_fp = (g.get("meta") or {}).get("content_fingerprint")
-                old_fp = None
-                if new_fp and os.path.exists(gp):
-                    try:
-                        with open(gp, encoding="utf-8") as f:
-                            old_fp = (json.load(f).get("meta") or {}).get(
-                                "content_fingerprint")
-                    except (OSError, ValueError):
-                        old_fp = None
-                if not new_fp or old_fp != new_fp:
-                    with open(gp, "w", encoding="utf-8", newline="") as f:
-                        json.dump(g, f, indent=1)
-        with contextlib.suppress(Exception):
-            # Late import BY DESIGN: dashboard.py imports loop at module top,
-            # so a top-level `import dashboard` here would close an import
-            # cycle and break every entry point. DEBT (v2.3.0, noted at the
-            # extraction seam): rendering/publishing belongs in the
-            # CLI/driver layer (tp.cmd_loop) with evidence validation split
-            # into evidence.py — until that extraction, imports of the view
-            # from this engine stay local to these two functions.
-            import dashboard as _dash
-            line = _dash.headline_loop(ws)
-            if line:
-                p = os.path.join(root, "HEADLINES.md")
-                prev = ""
-                size = 0
-                if os.path.exists(p):
-                    # v2.3.0 (scalability): read only the TAIL to find the
-                    # last line — HEADLINES.md is append-forever, and a full
-                    # read per gate made cumulative reads quadratic.
-                    with open(p, "rb") as f:
-                        f.seek(0, os.SEEK_END)
-                        size = f.tell()
-                        f.seek(max(0, size - 8192))
-                        tail = f.read().decode("utf-8", "replace")
-                    tail_lines = tail.rstrip().splitlines()
-                    prev = tail_lines[-1] if tail_lines else ""
-                if not prev.endswith(line):        # skip consecutive repeats
-                    with open(p, "a", encoding="utf-8") as f:
-                        if not prev:
-                            f.write(f"# {state.get('goal', 'track')} — "
-                                    "progress log\n\n")
-                        stamp = _time.strftime("%Y-%m-%d %H:%M UTC",
-                                               _time.gmtime())
-                        f.write(f"- {stamp} · {line}\n")
-                    # Cap the log: keep the header + the last 500 entries.
-                    # Amortized — the full-file pass runs only past 256 KiB.
-                    if size > 262144:
-                        with open(p, encoding="utf-8") as f:
-                            all_lines = f.read().splitlines()
-                        head = [l for l in all_lines[:2]
-                                if l.startswith("#") or not l.strip()]
-                        body = [l for l in all_lines[len(head):] if l.strip()]
-                        if len(body) > 500:
-                            tmp = f"{p}.tmp.{os.getpid()}"
-                            with open(tmp, "w", encoding="utf-8", newline="") as f:
-                                f.write("\n".join(head + body[-500:]) + "\n")
-                            os.replace(tmp, p)
-        return root
-    except Exception:
-        return None
+# ---- presentation seam (D-0011) ---------------------------------------------
+# Rendering the dashboard and publishing the gate snapshot now live in
+# `views.py`. They are NOT the engine's job: an engine that renders its own
+# view cannot be tested or replaced without dragging a renderer along, and
+# this module's own comment had been recording that as debt since v2.3.0.
+# What remains here is the seam — a state transition, then a view refresh —
+# and `views` imports `loop` nowhere, so the old cycle is gone rather than
+# smuggled into function bodies.
 
 
-# Fail-open: a dashboard problem must never break the loop itself.
+def _publish_artifacts(ws: str) -> "str | None":
+    import views
+    return views._publish_artifacts(ws)
+
 
 def _with_dashboard(fn):
     def wrapped(ws, *a, **k):
         out = fn(ws, *a, **k)
-        try:
-            if isinstance(out, dict) and "error" not in out:
-                import dashboard as _dash
-                frag = _dash.widget(ws)
-                p = os.path.join(tp.tp_dir(ws), "dashboard.html")
-                tmp = f"{p}.tmp.{os.getpid()}"
-                with open(tmp, "w", encoding="utf-8", newline="") as f:
-                    f.write(frag)
-                os.replace(tmp, p)
-                out["dashboard"] = {
-                    # logical pointer, not a path: os.path.join made
-                    # this '\\' on Windows and the goldens disagreed
-                    "path": ".taskplane/dashboard.html",
-                    "render": "refreshed for this transition — show it "
-                              "(mcp__visualize__show_widget) before "
-                              "proceeding; the dashboard is the interface "
-                              "the human governs through"}
-                root = _publish_artifacts(ws)
-                if root:
-                    out["artifacts"] = {
-                        "path": tp.to_posix(root),
-                        "note": "gate-state snapshot (dashboard, plan, "
-                                "findings, graph, HEADLINES.md) — on a team "
-                                "store commit it with the work so the org "
-                                "sees progress; future sessions read it "
-                                "instead of re-deriving (token cache)"}
-        except Exception:
-            pass
+        if isinstance(out, dict) and "error" not in out:
+            import views
+            views.refresh_views(ws, out)
         return out
     wrapped.__name__ = fn.__name__
     wrapped.__doc__ = fn.__doc__

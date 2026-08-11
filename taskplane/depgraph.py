@@ -639,6 +639,18 @@ def _ruby_imports(src: str, relpath: str, file_index: set,
 _CSPROJ_PROJ = re.compile(r'ProjectReference\s+Include="([^"]+)"')
 _CSPROJ_PKG = re.compile(r'PackageReference\s+Include="([^"]+)"')
 _GEMFILE_GEM = re.compile(r"""^\s*gem\s+['"]([\w-]+)['"]""", re.M)
+# Maven/Gradle POM dependencies. Same shape as .csproj PackageReference and
+# Gemfile gems, and attributed the same way: to the module the manifest
+# itself lives in. A pom in `modules/order/` is that module's dependency
+# list; a pom at the REPO ROOT describes the whole build and cannot say
+# which package uses what, so it is skipped for exactly the reason D-0007
+# skips a root package.json — a root manifest is about the repository, not
+# a module in it, and spreading its dependencies over every package would
+# be invention rather than resolution.
+_POM_DEP = re.compile(
+    r"<dependency>(.*?)</dependency>", re.S | re.I)
+_POM_ARTIFACT = re.compile(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", re.I)
+_POM_SCOPE = re.compile(r"<scope>\s*([^<\s]+)\s*</scope>", re.I)
 
 
 def _compose_services(src: str) -> list:
@@ -1075,6 +1087,20 @@ def _scan_locked(ws: str, into: dict | None = None,
                 edges.add((mod, _mod(tgt), "project_ref"))
             for pkg in _CSPROJ_PKG.findall(text):
                 edges.add((mod, "ext:" + pkg.split(".")[0], "imports"))
+        elif posixpath.basename(rel) == "pom.xml" and posixpath.dirname(rel):
+            with open(os.path.join(ws, rel), encoding="utf-8",
+                      errors="replace") as fh:
+                text = fh.read()
+            mod = _mod(rel)
+            for block in _POM_DEP.findall(text):
+                art = _POM_ARTIFACT.search(block)
+                if not art:
+                    continue
+                scope = _POM_SCOPE.search(block)
+                if scope and scope.group(1).lower() in ("test", "provided",
+                                                        "system"):
+                    continue      # not a runtime dependency of the product
+                edges.add((mod, "ext:" + art.group(1), "imports"))
         elif posixpath.basename(rel) == "Gemfile":
             with open(os.path.join(ws, rel), encoding="utf-8",
                       errors="replace") as fh:
