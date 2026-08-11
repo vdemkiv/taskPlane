@@ -129,13 +129,13 @@ def _module_is_fixture_classed(module: str) -> bool:
     return bool(m) and m != "(root)" and is_fixture_path(m)
 
 
-def _module_of(path: str) -> str:
+def _module_of(path: str, manifests: dict | None = None) -> str:
     """The graph module id owning `path` (depgraph's own rule). A degraded
     fallback keeps ctx construction non-raising without depgraph."""
     p = str(path).replace(os.sep, "/")
     try:
         import depgraph
-        return depgraph.module_of(p)
+        return depgraph.module_of(p, manifests)
     except Exception:
         d = os.path.dirname(p)
         return "/".join(d.split("/")[:2]) if d else "(root)"
@@ -149,11 +149,12 @@ def _fixture_exemptions(files, graph) -> dict:
     deps = (graph or {}).get("module_dependents")
     if not isinstance(deps, dict) or not deps:
         return {}
+    ids = (graph or {}).get("module_ids") or None
     out: dict = {}
     for rel in files:
         if not is_fixture_path(rel):
             continue
-        module = _module_of(rel)
+        module = _module_of(rel, ids)
         if not _module_is_fixture_classed(module):
             # the fixture segment sits BELOW the module boundary: this
             # module's dependents do not describe the fixture tree
@@ -324,7 +325,11 @@ def _graph_payload(workspace, files) -> dict:
     try:
         import depgraph
         g = depgraph.load(workspace)
-        touched = sorted({depgraph.module_of(str(f).replace(os.sep, "/"))
+        # the graph's own declared ids, or the fixture-exemption and
+        # dependent-count lookups below miss every workspace module
+        _ids = depgraph.declared_module_ids(g)
+        touched = sorted({depgraph.module_of(str(f).replace(os.sep, "/"),
+                                             _ids)
                           for f in files or []})
         rev: dict[str, set] = {}
         dep_rev: dict[str, set] = {}
@@ -362,6 +367,9 @@ def _graph_payload(workspace, files) -> dict:
         return {"hub_dependents": hub,
                 "boundary_contracts": sorted(adjacent_contracts),
                 "modules": touched,
+                # carried so every LATER path->module resolution in this
+                # payload's consumers agrees with the keys below
+                "module_ids": _ids,
                 "module_dependents": {
                     m: len([d for d in (dep_rev.get(m) or ()) if d != m
                             and not _module_is_fixture_classed(d)])

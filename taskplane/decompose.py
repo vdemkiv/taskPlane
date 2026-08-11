@@ -205,22 +205,28 @@ def _count_lines(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
-def _module_of(rel: str):
+def _module_of(rel: str, manifests: dict | None = None):
     import depgraph
-    return depgraph.module_of(rel)
+    return depgraph.module_of(rel, manifests)
 
 
 def _repo_stems(graph: dict) -> dict:
     """stem/basename/dir -> module id, mirroring depgraph's scan resolution
-    so alias targets land on the same module ids the graph uses."""
+    so alias targets land on the same module ids the graph uses.
+
+    "Mirroring" now includes the DECLARED ids (D-0007): resolving a stem to
+    `packages/ui` while the graph calls it `@acme/ui` is exactly the drift
+    this function exists to prevent."""
+    import depgraph
+    ids = depgraph.declared_module_ids(graph)
     stems: dict = {}
     for f in sorted(graph.get("files") or {}):
         stem = f.rsplit(".", 1)[0]
-        stems[stem] = _module_of(f)
-        stems.setdefault(posixpath.basename(stem), _module_of(f))
+        stems[stem] = _module_of(f, ids)
+        stems.setdefault(posixpath.basename(stem), _module_of(f, ids))
         d = posixpath.dirname(f)
         while d:
-            stems.setdefault(d, _module_of(d + "/_"))
+            stems.setdefault(d, _module_of(d + "/_", ids))
             d = posixpath.dirname(d)
     return stems
 
@@ -659,6 +665,7 @@ def _graph_payload(graph: dict, module: str) -> dict:
     return {"hub_dependents": len(dependents),
             "boundary_contracts": sorted(contracts),
             "modules": [module],
+            "module_ids": depgraph.declared_module_ids(graph),
             "module_dependents": {module: len(dep_dependents)}}
 
 
@@ -700,9 +707,11 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
                                ).hexdigest()
         stats["floors_hash"] = fhash
 
+        import depgraph as _dg
+        ids = _dg.declared_module_ids(graph)
         by_module: dict = {}
         for rel in sorted(graph.get("files") or {}):
-            by_module.setdefault(_module_of(rel), []).append(rel)
+            by_module.setdefault(_module_of(rel, ids), []).append(rel)
         hashes = {rel: (row or {}).get("hash", "")
                   for rel, row in (graph.get("files") or {}).items()}
 
@@ -715,7 +724,8 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
             .get("floors")
         prev_by_module: dict = {}
         for rel in prev_files:
-            prev_by_module.setdefault(_module_of(rel), []).append(rel)
+            prev_by_module.setdefault(
+                _module_of(rel, _dg.declared_module_ids(prev)), []).append(rel)
 
         repo_stems = _repo_stems(graph)
         out: list = []

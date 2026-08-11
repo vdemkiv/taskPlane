@@ -321,7 +321,14 @@ class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
     # for — not repo-path arithmetic, which still goes through posixpath.
     # The exclusion MATCHING itself is in path_roles.is_excluded and is
     # '/'-shaped on every host by construction.
-    PINS = {"depgraph.py": 13, "decompose.py": 3}
+    # 13 -> 14 (D-0007, declared module identity): _scan_locked's `_read_text`
+    # joins a manifest's repo-relative path onto the workspace root to OPEN
+    # it — the same filesystem-access category. Every id the reader then
+    # mints stays '/'-shaped by construction: `manifest_modules` splits with
+    # posixpath and normalizes `\` out of the declared name, and `module_of`
+    # walks its prefixes with posixpath.dirname. A Windows scan produces
+    # `@acme/ui`, never `@acme\ui` — pinned in test_module_identity.py.
+    PINS = {"depgraph.py": 14, "decompose.py": 3}
 
     def test_host_shaped_path_calls_do_not_grow(self):
         import re

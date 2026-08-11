@@ -117,7 +117,11 @@ def hub_signal(workspace, files) -> int:
         rev = {}
         for e in g.get("edges") or []:
             rev.setdefault(e["to"], set()).add(e["from"])
-        touched = {depgraph.module_of(f) for f in files or []}
+        # resolve changed files the way the SCAN did: in a workspace the
+        # graph's keys are the declared ids (@acme/ui), and a path-derived
+        # `ui` matches nothing — the hub signal would silently read 0.
+        _ids = depgraph.declared_module_ids(g)
+        touched = {depgraph.module_of(f, _ids) for f in files or []}
         return max((len(rev.get(m, ())) for m in touched), default=0)
     except Exception as exc:
         # Fail toward MORE review coverage, never less — and never silently.

@@ -899,7 +899,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         # get prevented, not just detected a loop-step later.
         scope = task.get("scope") or []
         if scope and depgraph.load(ws)["modules"]:
-            mods = depgraph.modules_for_scope(scope)
+            mods = depgraph.scope_modules(ws, scope)
             if mods:
                 imp = depgraph.impact(
                     ws, mods, policy=depgraph.impact_policy(task))
@@ -912,7 +912,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     elif step == "design":
         design_req = reqs.get_requirement(ws, state.get("requirement_id"))
         design_scope = (design_req or {}).get("context_files") or []
-        design_modules = depgraph.modules_for_scope(design_scope)
+        design_modules = depgraph.scope_modules(ws, design_scope)
         if design_modules and depgraph.load(ws).get("modules"):
             design_policy = {"local_depth": 3,
                              "boundary_mode": "contract-only",
@@ -1205,7 +1205,7 @@ def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
     mine = [f for f in changed
             if not stems or any(f.startswith(s) for s in stems if s)]
     planned = ((task.get("blast") or {}).get("modules")
-               or depgraph.modules_for_scope(task.get("scope") or []))
+               or depgraph.scope_modules(ws, task.get("scope") or []))
     return depgraph.completion(
         ws, mine, planned_modules=planned,
         policy=task.get("impact_policy") or depgraph.impact_policy(task))
@@ -2220,7 +2220,7 @@ def _annotate_plan_graph(ws: str, state: dict) -> None:
         scope = t.get("scope") or []
         if not scope:
             continue
-        mods = depgraph.modules_for_scope(scope)
+        mods = depgraph.scope_modules(ws, scope)
         imp = depgraph.impact(
             ws, mods, policy=t.get("impact_policy")
             or depgraph.impact_policy(t)) if \
