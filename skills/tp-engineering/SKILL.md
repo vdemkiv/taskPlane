@@ -15,6 +15,28 @@ All review runs read-only toward code under an enforced contract:
 `$TP new --read-only --write-allow ".em-review/**" --owes review
 "engineering review: <target>"`.
 
+**OPEN THE REVIEW IN ONE CALL (v2.13.0).** `$TP review start <pr-url|ref>
+--base <ref> [--fetch]` establishes every fact a review opens with — tools,
+target pin, graph, impact, contract, seeded obligations, lens routing,
+runnability, and the ready-to-dispatch briefs — as ONE JSON payload. It
+decides nothing. Do NOT walk the ten separate commands it replaces: on the
+measured review they cost ~11k effective tokens each, and each command and
+its output then sits in the conversation to be re-read on every later turn.
+
+**DELIVER LARGE ARTIFACTS, DO NOT RETYPE THEM.** When `tp findings` prints
+`RENDER-BY-REFERENCE: <path>`, the document is too large to paste back
+through a widget tool — deliver the FILE (SendUserFile / the host's artifact
+channel) and discharge with `tp ack <id> --delivered <path>`. It is the same
+bytes and the same fingerprint check, and it does not re-author ~52k
+characters the engine already wrote. Inline dashboards were 450k effective
+tokens of one review, caused by the obligation mechanism rather than by the
+work. Small fragments still render inline, unchanged.
+
+**Every lens agent reads ONE copy of the context.** `review start` and
+`lens dispatch` write the diff and the blast radius to
+`.em-review/context/` and every brief cites the paths. Do not re-derive
+them, and do not paste them into a brief.
+
 **BIND THE REVIEW TO A TREE FIRST (v2.12.0).** Start with
 `$TP target tools` — `git` and `gh` are dependencies, not conveniences. A
 clone carries the code and NONE of the intent: a pull request's title, body,

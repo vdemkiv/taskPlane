@@ -255,7 +255,14 @@ def issue(ws: str, kind: str, *, detail: str, step: str = "",
     if kind not in KINDS:
         return None
     ts = time.time()
-    fp = artifact_fingerprint(artifact) if artifact else None
+    # Resolve against the WORKSPACE, not the process cwd. A relative
+    # artifact path hashed from wherever the CLI happened to be running
+    # either found nothing or — worse — found a same-named file in another
+    # checkout, and recorded ITS fingerprint as the engine's bytes. Every
+    # later comparison then measured the wrong thing.
+    fp = artifact_fingerprint(
+        artifact if os.path.isabs(artifact) else os.path.join(ws, artifact)
+    ) if artifact else None
     # `key` is the artifact's stable, LOGICAL name (".taskplane/dashboard.html"),
     # supplied by the caller because only the caller knows which part of an
     # absolute path is meaningful. Falling back to the basename keeps a
@@ -380,6 +387,16 @@ def status(ws: str) -> dict:
     for oid, row in issued.items():
         ack = acks.get(oid)
         want = row.get("fingerprint")
+        if not want and row.get("artifact"):
+            # The obligation NAMES an artifact but was issued before that
+            # artifact had bytes (a seeded `--owes` obligation always is).
+            # The engine's own file is still what "the engine's exact bytes"
+            # means, so resolve it now rather than treating every such
+            # obligation as uncheckable — which is what made a DELIVERED
+            # artifact indistinguishable from a bare claim.
+            art = row["artifact"]
+            want = artifact_fingerprint(
+                art if os.path.isabs(art) else os.path.join(ws, art))
         if ack is None:
             # An observation of the engine's exact bytes discharges the
             # obligation on its own: the artifact demonstrably reached the

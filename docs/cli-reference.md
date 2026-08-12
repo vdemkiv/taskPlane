@@ -80,6 +80,8 @@ not repeated in the tables.
 | `tp.py req mode` | pick the delivery mode for a refinement score and change size |
 | `tp.py req new` | record a requirement (or a change request) |
 | `tp.py req score` | score a requirement's refinement against the bar |
+| `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
+| `tp.py review start` | establish the facts and activate the read-only contract |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
 | `tp.py screen-dispatch` | PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict) |
 | `tp.py screen-render` | PreToolUse hook for the inline-render tool: record that a render RAN, and with which bytes. Observes only — never denies |
@@ -117,6 +119,7 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--delivered` | PATH | discharge by DELIVERING the engine's artifact file (SendUserFile / the host's artifact channel) instead of retyping it inline — same bytes, same fingerprint, none of the re-authoring cost |
 | `--evidence` | EVIDENCE | one line on how it was shown |
 | `--fingerprint` | FINGERPRINT | content fingerprint of what was actually shown (defaults to the artifact the obligation names) |
 | `--status` | flag | print issued / acknowledged / open / mismatched |
@@ -626,6 +629,7 @@ Positional arguments:
 | `--deny` | DENY (repeatable) | extra deny command (repeatable) |
 | `--fetch` | flag | with a PR --target, fetch pull/N/head into this checkout first (needs git; `gh` is what supplies the PR's title, body and discussion) |
 | `--max-actions` | MAX_ACTIONS | hook-enforced action ceiling (default 60) |
+| `--max-tokens` | N | EFFECTIVE-token ceiling for this contract (cache reads x0.1, cache writes x2, output x5 — the weighting cost actually follows). Counts what the host recorded, so it tracks spend where the action ceiling only counts tool calls. Unset = action ceiling only, exactly as before. |
 | `--owes` | RUN_TYPE | seed the artifacts this run type owes as BINDING obligations (e.g. `review`): recorded before the work starts, and taskplane's own completion commands stay blocked until each is shown |
 | `--read-only` | flag | review/plan role — block filesystem writes |
 | `--scope` | SCOPE | comma-separated scope globs (relative) |
@@ -734,6 +738,31 @@ Positional arguments:
 | `--high-cost` | flag | hard-block below threshold (irreversible work) |
 | `--task-type` | TASK_TYPE | declared task type — sets the refinement bar this requirement is scored against |
 | `--threshold` | THRESHOLD | refinement score the requirement must reach (default 0.6) |
+
+## `tp.py review`
+
+open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py review start`
+
+establish the facts and activate the read-only contract
+
+Positional arguments:
+
+- `spec` (optional) — PR url, OWNER/REPO#N, or a ref
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--base` | BASE | diff base ref |
+| `--fetch` | flag | fetch pull/N/head into this checkout first |
+| `--goal` | GOAL | contract goal text (default: derived) |
+| `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
+| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py screen`
 

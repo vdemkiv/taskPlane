@@ -291,11 +291,18 @@ class TestEmitTaskByteIdentity:
         # stage="review" mirrors what cmd_lens now asks for (v2.11.0) —
         # the point of this test is that --emit task adds NO keys to the
         # payload, not which router produced it.
+        # v2.13.0: dispatch writes the shared review context once and the
+        # briefs cite it, so the comparison must be built the same way —
+        # this test is about --emit task adding NO keys to the payload, not
+        # about how the briefs got their context.
+        import review as rvmod
         routing = lens.route_git_diff(ws, base="HEAD", task_type=None,
                                       only=None, skip=None, breadth="routed",
                                       stage="review")
+        ctx = rvmod.write_context(
+            ws, diff=cli.tp_target_diff(ws, "HEAD")[1], blast_radius="")
         expected = json.dumps(
-            lens.dispatch_briefs(routing, base="HEAD"),
+            lens.dispatch_briefs(routing, base="HEAD", context_paths=ctx),
             indent=2) + "\n"
         assert out == expected  # byte-for-byte
         payload = json.loads(out)
