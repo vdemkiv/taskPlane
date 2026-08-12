@@ -1732,6 +1732,60 @@ def _emit_stage(ws, payload, emit: str):
     return out
 
 
+def _lane_landed(ws: str, lid: str) -> bool:
+    """Has this lens already written evidence? The SAME source the wave board
+    reads (v2.2.1), so `--resume` and the board can never disagree about who
+    is done. A findings.json that is unreadable counts as NOT landed — a
+    corrupt lane must be re-run, never silently accepted as complete."""
+    p = os.path.join(ws, ".em-review", f"lens-{lid}", "findings.json")
+    if not os.path.isfile(p):
+        return False
+    try:
+        with open(p, encoding="utf-8") as f:
+            return isinstance(json.load(f).get("findings"), list)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _resume_filter(ws: str, briefs: dict) -> dict:
+    """Drop the briefs whose evidence is already on disk.
+
+    An interrupted wave is the single most expensive accident in this
+    product: four of ten sub-agent transcripts in one measured session
+    existed because a fan-out was spawned in a turn that died before the
+    agents reported, and the whole wave was paid for twice (~16% of that
+    session's effective tokens). Everything needed to avoid it was already
+    written down — each lens writes its own findings.json the moment it
+    lands. This reads it."""
+    out = dict(briefs)
+    kept, skipped = [], []
+    for b in briefs.get("deep") or []:
+        (skipped if _lane_landed(ws, b["id"]) else kept).append(b)
+    out["deep"] = kept
+    sw = briefs.get("sweep")
+    if sw and _lane_landed(ws, "sweep"):
+        out["sweep"] = None
+        skipped.append(sw)
+    out["resumed"] = {
+        "skipped": [b.get("id") or "sweep" for b in skipped],
+        "dispatching": [b["id"] for b in kept] + (["sweep"] if out.get("sweep")
+                                                  else []),
+    }
+    if skipped and not kept and not out.get("sweep"):
+        out["nothing_to_review"] = True
+        out["instruction"] = (
+            "Every lane already has findings on disk — dispatch NOTHING. "
+            "Merge the existing lens findings into `tp findings` and render "
+            "them for the human review gate.")
+    elif skipped:
+        out["instruction"] = (
+            f"RESUMING an interrupted wave: "
+            f"{len(skipped)} lane(s) already reported and are NOT being "
+            f"re-dispatched ({', '.join(out['resumed']['skipped'])}). "
+            + out.get("instruction", ""))
+    return out
+
+
 def cmd_lens(a) -> int:
     """Route / list / show / dispatch lenses."""
     import lens as lensmod
@@ -1810,6 +1864,20 @@ def cmd_lens(a) -> int:
                                          max_actions=a.max_actions,
                                          impact_context=impact_ctx,
                                          runnability=run_probe)
+        # --resume: a wave interrupted mid-flight (a killed turn, a crashed
+        # host) used to cost the WHOLE fan-out again — measured at ~16% of
+        # one real session's tokens, because four of ten lens agents were
+        # spawned twice. Landed evidence is already on disk and the wave
+        # board already reads status from it; this makes the DISPATCH read
+        # the same source. A lane with findings.json is done, so it is not
+        # re-briefed. Deliberately NOT the default: a fresh review of a
+        # changed diff must re-run every lens, and silently reusing stale
+        # findings would be the worse failure.
+        # ...and never on --dashboard: the board is the human's view of the
+        # WHOLE wave, including the lanes that already landed. Filtering it
+        # would hide exactly the progress it exists to show.
+        if getattr(a, "resume", False) and not getattr(a, "dashboard", False):
+            briefs = _resume_filter(ws, briefs)
         # --dashboard is a PURE VIEW that the driver re-runs as agents land;
         # recording expectations there would append a fresh unmatched set on
         # every re-render and turn `loop verify-dispatch` into noise. Only a
@@ -3410,6 +3478,10 @@ def main(argv=None) -> int:
     lnd.add_argument("--dashboard", action="store_true",
                      help="print the live lens-wave progress board instead "
                           "of the JSON briefs (render this BEFORE dispatch)")
+    lnd.add_argument("--resume", action="store_true",
+                     help="re-dispatch ONLY the lanes that have no "
+                          "findings.json yet — an interrupted wave costs "
+                          "the lenses that did not land, not all of them")
     lnd.add_argument("--emit", choices=["workflow", "task", "auto"],
                      default="auto",
                      help="dispatch path: 'workflow' wraps the briefs as "

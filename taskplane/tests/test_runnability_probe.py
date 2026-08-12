@@ -343,3 +343,85 @@ class TestNoLocaleDecoding(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResumeAnInterruptedWave(unittest.TestCase):
+    """The most expensive accident this product has: a fan-out spawned in a
+    turn that dies before the agents report, and the whole wave paid for
+    twice. Four of ten sub-agent transcripts in one measured session were
+    exactly that — ~16% of its effective tokens."""
+
+    def _lane(self, ws, lid, findings=None):
+        d = os.path.join(ws, ".em-review", f"lens-{lid}")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
+            json.dump({"lens": lid, "findings": findings or []}, f)
+
+    def _briefs(self):
+        return {"deep": [{"id": "security", "name": "S"},
+                         {"id": "perf", "name": "P"},
+                         {"id": "qa", "name": "Q"}],
+                "sweep": {"ids": ["x"]},
+                "instruction": "Dispatch ONE tp-lens agent per DEEP brief."}
+
+    def test_landed_lanes_are_not_re_dispatched(self):
+        import tp as tpcli
+        with tempfile.TemporaryDirectory() as ws:
+            self._lane(ws, "security")
+            self._lane(ws, "sweep")
+            out = tpcli._resume_filter(ws, self._briefs())
+            self.assertEqual([b["id"] for b in out["deep"]], ["perf", "qa"])
+            self.assertIsNone(out["sweep"])
+            self.assertEqual(sorted(out["resumed"]["skipped"]),
+                             ["security", "sweep"])
+            self.assertIn("RESUMING an interrupted wave", out["instruction"])
+
+    def test_a_fully_landed_wave_dispatches_nothing(self):
+        import tp as tpcli
+        with tempfile.TemporaryDirectory() as ws:
+            for lid in ("security", "perf", "qa", "sweep"):
+                self._lane(ws, lid)
+            out = tpcli._resume_filter(ws, self._briefs())
+            self.assertEqual(out["deep"], [])
+            self.assertTrue(out["nothing_to_review"])
+            self.assertIn("dispatch NOTHING", out["instruction"])
+
+    def test_a_corrupt_findings_file_is_re_run_not_accepted(self):
+        import tp as tpcli
+        with tempfile.TemporaryDirectory() as ws:
+            d = os.path.join(ws, ".em-review", "lens-security")
+            os.makedirs(d)
+            with open(os.path.join(d, "findings.json"), "w",
+                      encoding="utf-8") as f:
+                f.write("{ truncated")
+            out = tpcli._resume_filter(ws, self._briefs())
+            self.assertIn("security", [b["id"] for b in out["deep"]])
+
+    def test_a_findings_file_without_a_findings_list_is_not_landed(self):
+        import tp as tpcli
+        with tempfile.TemporaryDirectory() as ws:
+            d = os.path.join(ws, ".em-review", "lens-perf")
+            os.makedirs(d)
+            with open(os.path.join(d, "findings.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"lens": "perf"}, f)
+            out = tpcli._resume_filter(ws, self._briefs())
+            self.assertIn("perf", [b["id"] for b in out["deep"]])
+
+    def test_nothing_is_skipped_when_no_lane_landed(self):
+        import tp as tpcli
+        with tempfile.TemporaryDirectory() as ws:
+            out = tpcli._resume_filter(ws, self._briefs())
+            self.assertEqual(len(out["deep"]), 3)
+            self.assertIsNotNone(out["sweep"])
+            self.assertEqual(out["resumed"]["skipped"], [])
+            self.assertNotIn("RESUMING", out["instruction"])
+
+    def test_resume_and_the_wave_board_read_the_same_source(self):
+        """If they ever diverge, the board shows a lane DONE while dispatch
+        re-runs it — the bug that resume exists to prevent."""
+        import tp as tpcli
+        with tempfile.TemporaryDirectory() as ws:
+            self._lane(ws, "security", [{"severity": "high"}])
+            self.assertTrue(tpcli._lane_landed(ws, "security"))
+            self.assertFalse(tpcli._lane_landed(ws, "perf"))

@@ -431,6 +431,7 @@ ready-to-dispatch lens-agent briefs — one read-only agent per deep lens, fanne
 | `--emit` | one of: workflow, task, auto | dispatch path: 'workflow' wraps the briefs as /taskplane:review-wave args, 'task' prints today's Task-dispatch payload byte-identically, 'auto' (default) picks workflow only when the host runtime is detected (Codex: always task) |
 | `--max-actions` | MAX_ACTIONS | per-agent action ceiling written into each dispatched lens brief (default 30) |
 | `--only` | ONLY | comma list — dispatch only these lenses |
+| `--resume` | flag | re-dispatch ONLY the lanes that have no findings.json yet — an interrupted wave costs the lenses that did not land, not all of them |
 | `--skip` | SKIP | comma list — do not dispatch these lenses |
 | `--task-type` | TASK_TYPE | declared task type (feature, bugfix, refactor, ...) — widens the routed set |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
