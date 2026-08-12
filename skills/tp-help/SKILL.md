@@ -32,7 +32,18 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.12 — a review can prove what it reviewed.**
+**What's new in v2.13 — the review got a lot cheaper, and the budget
+finally counts what is scarce.** `tp review start` opens a review in one
+call instead of ten. Every lens agent reads ONE copy of the diff and the
+blast radius from `.em-review/context/` instead of carrying its own. A
+findings document past 24k characters is DELIVERED as a file rather than
+retyped through a widget tool — same bytes, same fingerprint, and
+`tp ack <id> --delivered <path>` discharges the obligation. And a contract
+can set `--max-tokens`: an action cost about 11k effective tokens on the
+review that motivated this, so a ceiling counted in tool calls was never
+something you could tune.
+
+**In v2.12 — a review can prove what it reviewed.**
 `tp target` acquires a pull request (`fetch`), pins what the checkout
 actually is — origin, head, base, dirty paths, one fingerprint — and the
 findings cite that fingerprint. Until the workspace is pinned, a read-only

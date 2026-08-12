@@ -895,7 +895,8 @@ def actions_for(tier: str, override=None) -> int:
 def dispatch_briefs(routing: dict, base: str = "HEAD",
                     max_actions: int | None = None,
                     impact_context: str | None = None,
-                    runnability: dict | None = None) -> dict:
+                    runnability: dict | None = None,
+                    context_paths: dict | None = None) -> dict:
     """Turn a routing into READY-TO-DISPATCH lens-agent briefs — one governed
     read-only agent per DEEP lens (fanned out in parallel = much faster than
     one reviewer running them in sequence), the SWEEP lenses batched into a
@@ -914,6 +915,17 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     # CHECKOUT, probed once by the dispatcher. Six agents rediscovering it —
     # which is exactly what happened on karpenter#9464 — is six times the
     # tokens for one environment fact. Stated, never enforced.
+    # v2.13.0: ONE copy of the diff and the blast radius, on disk, cited by
+    # every brief — instead of N embedded copies at output weight. Four lens
+    # agents cost ~754k effective tokens on the measured review, "each
+    # carrying its own copy of the diff and the blast-radius brief".
+    ctx_note = ""
+    if context_paths:
+        try:
+            import review as _rv
+            ctx_note = _rv.context_note(context_paths)
+        except Exception:
+            ctx_note = ""
     run_note = ""
     if runnability:
         try:
@@ -940,7 +952,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base) + (
                 "\nBLAST RADIUS (from the dependency graph - factor "
                 "these dependents into your verdict):\n"
-                + impact_context + "\n" if impact_context else "") + run_note,
+                + impact_context + "\n" if impact_context else "")
+                + ctx_note + run_note,
             "looks_for": x.get("looks_for", ""), "checks": x.get("checks", []),
         }
         if "verdict" in x:   # contract:lens-brief — ADDITIVE v2 fields only
@@ -970,7 +983,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                 f"one line each. READ-ONLY: write findings (each with a "
                 f"`lens` field and a `class` field — regression|pre-existing|"
                 f"observation) to `.em-review/lens-sweep/findings.json`, "
-                f"change no code.\n" + run_note + CLEAR_ALWAYS),
+                f"change no code.\n" + ctx_note + run_note + CLEAR_ALWAYS),
         }
     # Full routing-decision object (v2 only): EVERY lens's disposition —
     # n/a lenses run no agent but their verdict + negative evidence must

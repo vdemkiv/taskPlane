@@ -366,6 +366,8 @@ def cmd_new(a) -> int:
         return 1
     c["budget"]["max_cost_usd"] = float(a.budget) if a.budget is not None \
         else DEFAULT_MAX_COST_USD
+    if getattr(a, "max_tokens", None) is not None:
+        c["budget"]["max_tokens"] = int(a.max_tokens)
 
     # BIND THE CONTRACT TO A TREE (v2.12.0). A review's target used to be
     # free text in `task`, which is why two field reviews of one PR could
@@ -1243,6 +1245,30 @@ def _screen(a) -> int:
     if _is_release_command(tool_input.get("command") or ""):
         return 0                      # abstain: not metered, not denied
 
+    # TOKEN CEILING (v2.13.0) — the budget that tracks what is scarce.
+    # An action cost ~11k effective tokens on the measured review and ranged
+    # over two orders of magnitude, so the action ceiling could never be
+    # "tuned": raising it bought tokens sight unseen. This reads what the
+    # host RECORDED and fails open in every direction, with the action
+    # ceiling still standing underneath.
+    if not _is_release_command(tool_input.get("command") or ""):
+        try:
+            import spend as _spend
+            _tpath = _spend.event_transcript(event)
+            _rep = _spend.read_transcript(_tpath) if _tpath else None
+            if _rep and _rep.get("available"):
+                _tok_ok, _tok_why = _spend.status(contract, _rep["effective"])
+                if not _tok_ok:
+                    _meter_bump(ws, tid, "denies")
+                    tp.trace(ws, "token_budget_deny", tool=tool_name,
+                             effective=_rep["effective"])
+                    print(json.dumps({
+                        "decision": "block",
+                        "reason": f"taskplane contract {tid}: {_tok_why}"}))
+                    return 0
+        except Exception:
+            pass
+
     ok, reason = tp.budget_status(
         contract, used, reserve=_CLOSING_RESERVE,
         closing=_is_closing_command(tool_input.get("command") or ""))
@@ -1920,6 +1946,22 @@ def _emit_stage(ws, payload, emit: str):
     return out
 
 
+def tp_target_diff(ws: str, base: str) -> tuple:
+    """The diff every lens agent would otherwise re-derive. Bounded: a diff
+    too large to be shared cheaply is not shared at all, and the briefs fall
+    back to embedding the blast radius as before."""
+    import subprocess
+    try:
+        p = subprocess.run(["git", "diff", base], cwd=ws,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+    out = p.stdout or ""
+    return p.returncode, (out if len(out) <= 400_000 else "")
+
+
 def _lane_landed(ws: str, lid: str) -> bool:
     """Has this lens already written evidence? The SAME source the wave board
     reads (v2.2.1), so `--resume` and the board can never disagree about who
@@ -2074,10 +2116,25 @@ def cmd_lens(a) -> int:
                 run_probe = None
         except Exception:
             run_probe = None
+        # v2.13.0: write the diff + blast radius ONCE and cite the paths,
+        # instead of embedding a copy in every brief at output weight.
+        ctx_paths = {}
+        if not getattr(a, "dashboard", False):
+            try:
+                import review as _rv
+                _diff = ""
+                if a.base:
+                    _rc, _diff = tp_target_diff(ws, a.base)
+                ctx_paths = _rv.write_context(
+                    ws, diff=_diff, blast_radius=impact_ctx or "")
+            except Exception:
+                ctx_paths = {}
         briefs = lensmod.dispatch_briefs(routing, base=a.base,
                                          max_actions=a.max_actions,
-                                         impact_context=impact_ctx,
-                                         runnability=run_probe)
+                                         impact_context=(
+                                             None if ctx_paths else impact_ctx),
+                                         runnability=run_probe,
+                                         context_paths=ctx_paths)
         # --resume: a wave interrupted mid-flight (a killed turn, a crashed
         # host) used to cost the WHOLE fan-out again — measured at ~16% of
         # one real session's tokens, because four of ten lens agents were
@@ -2884,6 +2941,20 @@ def cmd_ack(a) -> int:
         if art:
             fp = obligations.artifact_fingerprint(
                 os.path.join(ws, art) if not os.path.isabs(art) else art)
+    delivered = getattr(a, "delivered", None)
+    if delivered:
+        # Delivering the engine's file is not a weaker discharge than
+        # rendering it inline — it is the SAME bytes, and the fingerprint is
+        # what the ledger compares either way. It is simply the one that
+        # does not cost a full re-authoring of the document.
+        fp = obligations.artifact_fingerprint(
+            delivered if os.path.isabs(delivered)
+            else os.path.join(ws, delivered)) or fp
+        obligations.observe(ws, tool="delivered_file",
+                            fingerprint=fp, title=os.path.basename(delivered),
+                            bytes_len=(os.path.getsize(delivered)
+                                       if os.path.isfile(delivered) else 0),
+                            session=None)
     obligations.acknowledge(ws, a.id, evidence=getattr(a, "evidence", "") or "",
                             fingerprint=fp)
     print(f"acknowledged {a.id}" + (f" ({fp})" if fp else ""))
@@ -2909,6 +2980,137 @@ def cmd_dashboard(a) -> int:
                           "no edits, no restyling, no re-authoring"}, indent=2))
         return 0
     print(dashboard.widget(ws))
+    return 0
+
+
+def cmd_review(a) -> int:
+    """Open a review in ONE call.
+
+    A review used to run about ten shell commands before a single lens
+    looked at the diff — onboard, init, new, target, graph scan, graph
+    impact, lens route, lens dispatch, two dashboard renders — at a measured
+    ~11k effective tokens each, and each command AND its output then sits in
+    the conversation to be re-read on every later turn. `tp loop evidence`
+    proved the fix for the evaluate step in v2.6: return everything the step
+    needs in one payload, with every judgement slot left EMPTY.
+
+    This does the same for the review's opening. It decides nothing: no
+    finding, no verdict, no severity. It establishes facts — tools, target,
+    graph, impact, routing, runnability — activates the contract, writes the
+    shared context once, and hands back the briefs.
+    """
+    import target as tgt
+    import review as rv
+    ws = _workspace(a.workspace)
+    out = {"steps": []}
+
+    def step(name, ok, **extra):
+        out["steps"].append({"step": name, "ok": bool(ok), **extra})
+
+    # 1. tools — a remote PR review without gh degrades into unrecorded web
+    #    reads, so it is answered up front rather than discovered later.
+    t = tgt.tools()
+    out["tools"] = t
+    step("tools", t["git"]["present"],
+         gh=t["gh"]["present"], hint=(None if t["gh"]["present"]
+                                      else tgt.install_hint()))
+
+    # 2. target — acquire and pin, so the findings can cite the tree.
+    spec = getattr(a, "spec", None)
+    parsed = tgt.parse(spec) if spec else None
+    if parsed and parsed["kind"] == "pr" and getattr(a, "fetch", False):
+        rec = tgt.acquire(ws, spec, base=getattr(a, "base", None))
+    else:
+        rec = tgt.pin(ws, base=getattr(a, "base", None), target=parsed)
+    if not rec.get("ok"):
+        step("target", False, reason=rec.get("reason"))
+        out["ok"] = False
+        out["next"] = rec.get("reason")
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 1
+    tgt.save(ws, rec)
+    out["target"] = rec
+    base = rec.get("base_ref") or getattr(a, "base", None) or "HEAD"
+    step("target", True, head=rec["head"][:12], base=(rec.get("base") or "")[:12],
+         fingerprint=rec["fingerprint"], changed=len(rec.get("changed_files") or []))
+
+    # 3. graph + impact — impact-first is not optional, and it costs nothing
+    #    here that it would not cost as its own call.
+    try:
+        import depgraph as dg
+        g = dg.load(ws)
+        if not g.get("modules"):
+            g = dg.scan(ws)
+        files = rec.get("changed_files") or []
+        imp = dg.impact(ws, files) if files else {}
+        out["impact"] = imp
+        blast = dg.render_context(imp) if imp.get("touched") else ""
+        step("graph", True, modules=len(g.get("modules") or {}),
+             edges=len(g.get("edges") or []),
+             impacted=imp.get("total_impacted", 0))
+    except Exception as e:
+        imp, blast = {}, ""
+        step("graph", False, reason=e.__class__.__name__)
+
+    # 4. contract — read-only, owing the review's artifacts.
+    c = tp.build_contract(
+        (" ".join(a.goal) if getattr(a, "goal", None)
+         else f"engineering review: {spec or base}"),
+        read_only=True, write_allow=[".em-review/**"],
+        max_actions=(int(a.max_actions)
+                     if getattr(a, "max_actions", None) is not None else None))
+    c["budget"]["max_cost_usd"] = DEFAULT_MAX_COST_USD
+    if getattr(a, "max_tokens", None) is not None:
+        c["budget"]["max_tokens"] = int(a.max_tokens)
+    c["target"] = {k: rec.get(k) for k in
+                   ("origin", "head", "base", "base_ref", "branch",
+                    "fingerprint", "target")}
+    tp.activate(ws, c, snapshot=tp.git_head(ws))
+    out["contract"] = {"task_id": c["task_id"], "read_only": True,
+                       "write_allow": c.get("write_allow"),
+                       "budget": c.get("budget")}
+    step("contract", True, task_id=c["task_id"])
+    try:
+        import obligations as _ob
+        out["owes"] = _seed_owed(ws, "review", c["task_id"])
+        step("obligations", True, owed=len(out["owes"] or []))
+    except Exception as e:
+        step("obligations", False, reason=e.__class__.__name__)
+
+    # 5. routing + runnability + briefs — the wave, ready to dispatch.
+    try:
+        import lens as lensmod
+        import runnability as runmod
+        routing = lensmod.route_git_diff(ws, base=base, stage="review")
+        probe = runmod.probe_once(ws)
+        ctx = rv.write_context(ws, diff=tp_target_diff(ws, base)[1],
+                               blast_radius=blast, impact=imp or None)
+        briefs = lensmod.dispatch_briefs(
+            routing, base=base, impact_context=(None if ctx else blast),
+            runnability=probe, context_paths=ctx)
+        out["runnability"] = probe
+        out["context"] = ctx
+        out["dispatch"] = briefs
+        dec = briefs.get("routing_decision") or {}
+        step("route", True, deep=len(briefs.get("deep") or []),
+             sweep=bool(briefs.get("sweep")), dispositioned=len(dec))
+    except Exception as e:
+        step("route", False, reason=f"{e.__class__.__name__}: {e}")
+        out["ok"] = False
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 1
+
+    out["ok"] = True
+    out["instruction"] = (
+        "Everything below is FACT — nothing here is a finding or a verdict. "
+        "Render the wave board (`tp lens dispatch --dashboard`), dispatch one "
+        "tp-lens agent per deep brief IN PARALLEL plus the sweep, then merge "
+        "their findings.json files and render THAT. Every brief cites the "
+        "shared context under .em-review/context/ — do not re-derive the diff "
+        "or the blast radius. Copy target.fingerprint into the findings "
+        "`meta.target`, impact into `meta.impact`, runnability.summary into "
+        "`meta.tests`, and routing_decision into `meta.lens_coverage`.")
+    print(json.dumps(out, indent=2, sort_keys=True))
     return 0
 
 
@@ -3029,6 +3231,18 @@ def cmd_onboard(a) -> int:
     return 0
 
 
+def _inline_max() -> int:
+    """Above this many characters, an artifact is delivered rather than
+    retyped. 24k is roughly where a fragment stops being a message and
+    starts being a document; TASKPLANE_INLINE_MAX overrides it, and 0
+    disables reference mode entirely."""
+    raw = (os.environ.get("TASKPLANE_INLINE_MAX") or "").strip()
+    try:
+        return int(raw) if raw else 24_000
+    except ValueError:
+        return 24_000
+
+
 def cmd_findings(a) -> int:
     """Render a REVIEW findings dashboard from a findings JSON — every
     severity, filterable, each finding expandable. A pure review has no loop
@@ -3069,6 +3283,41 @@ def cmd_findings(a) -> int:
     # Render-reliability contract (v1.5.3): the headline ALWAYS prints first,
     # so the key numbers reach the human even if the widget render is skipped.
     print("HEADLINE: " + dashboard.headline_findings(findings, meta))
+
+    # RENDER BY REFERENCE (v2.13.0). The obligation mechanism this product
+    # added in v2.9.0 made "show the graph" enforceable, and then made the
+    # cheapest compliance path the most expensive one: the driver pasted the
+    # engine's full HTML back through a widget tool, so ~52k characters that
+    # taskplane had ALREADY written to disk were re-authored at output
+    # weight. Inline dashboards were 450k effective tokens of one measured
+    # review — the single largest addressable slice, caused by the
+    # enforcement rather than by the work.
+    #
+    # So above a threshold the engine stops handing back a blob and hands
+    # back a PATH. The artifact is identical, its fingerprint is what the
+    # obligation ledger already checks, and delivering the file discharges
+    # the obligation exactly as a widget render does.
+    _imax = _inline_max()
+    if _imax and not getattr(a, "paged", False) \
+            and not getattr(a, "html", False):
+        _doc = dashboard.render_findings(findings, meta)
+        if len(_doc) > _imax:
+            _p = a.out or os.path.join(_workspace(a.workspace), ".em-review",
+                                       "findings.html")
+            try:
+                os.makedirs(os.path.dirname(_p), exist_ok=True)
+                with open(_p, "w", encoding="utf-8") as f:
+                    f.write(dashboard.standalone_document(
+                        [_doc], title="review findings"))
+                print(f"RENDER-BY-REFERENCE: {_p}")
+                print(f"  {len(_doc):,} chars — too large to retype through a "
+                      f"widget tool. DELIVER THIS FILE (SendUserFile / the "
+                      f"host's artifact channel); do NOT paste its contents "
+                      f"back. `tp ack <id> --delivered {_p}` records it, and "
+                      f"the fingerprint proves it was the engine's own bytes.")
+                return 0
+            except OSError:
+                pass          # unwritable: fall through and print inline
     if getattr(a, "paged", False):
         pages = dashboard.render_findings_paged(findings, meta)
         print(json.dumps({"headline":
@@ -3670,6 +3919,14 @@ def main(argv=None) -> int:
                         "obligations (e.g. `review`): recorded before the "
                         "work starts, and taskplane's own completion "
                         "commands stay blocked until each is shown")
+    n.add_argument("--max-tokens", type=int, default=None, dest="max_tokens",
+                   metavar="N",
+                   help="EFFECTIVE-token ceiling for this contract (cache "
+                        "reads x0.1, cache writes x2, output x5 — the "
+                        "weighting cost actually follows). Counts what the "
+                        "host recorded, so it tracks spend where the action "
+                        "ceiling only counts tool calls. Unset = action "
+                        "ceiling only, exactly as before.")
     n.add_argument("--target", metavar="SPEC",
                    help="what is being reviewed — a PR url, OWNER/REPO#N, "
                         "or a ref. Pins this checkout (origin, head, base, "
@@ -4219,6 +4476,32 @@ def main(argv=None) -> int:
                          "against the single source; exit 1 on drift")
     vp.set_defaults(fn=cmd_version)
 
+    rvp = sub.add_parser("review", help="open a review in ONE call — tools, "
+                         "target pin, graph, impact, contract, obligations, "
+                         "routing, runnability and the ready-to-dispatch "
+                         "briefs, as one JSON payload")
+    rvsub = rvp.add_subparsers(dest="review_action")
+    rvs = rvsub.add_parser("start", help="establish the facts and activate "
+                           "the read-only contract")
+    rvs.add_argument("spec", nargs="?", help="PR url, OWNER/REPO#N, or a ref")
+    rvs.add_argument("--base", default=None, help="diff base ref")
+    rvs.add_argument("--fetch", action="store_true",
+                     help="fetch pull/N/head into this checkout first")
+    rvs.add_argument("--goal", nargs="*", default=None,
+                     help="contract goal text (default: derived)")
+    rvs.add_argument("--max-actions", type=int, default=None,
+                     dest="max_actions",
+                     help="action ceiling for the review contract (default "
+                          "40). Prefer --max-tokens: an action cost ~11k "
+                          "effective tokens on the measured review, with a "
+                          "two-order-of-magnitude spread")
+    rvs.add_argument("--max-tokens", type=int, default=None, dest="max_tokens",
+                     help="effective-token ceiling for the review contract")
+    rvs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvs.set_defaults(fn=cmd_review)
+    rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvp.set_defaults(fn=cmd_review)
+
     tg = sub.add_parser("target", help="what is being reviewed — acquire a "
                         "pull request, pin the checkout, or check that git "
                         "and gh are actually available")
@@ -4257,6 +4540,11 @@ def main(argv=None) -> int:
     ak.add_argument("--fingerprint", default=None,
                     help="content fingerprint of what was actually shown "
                          "(defaults to the artifact the obligation names)")
+    ak.add_argument("--delivered", metavar="PATH",
+                    help="discharge by DELIVERING the engine's artifact file "
+                         "(SendUserFile / the host's artifact channel) "
+                         "instead of retyping it inline — same bytes, same "
+                         "fingerprint, none of the re-authoring cost")
     ak.add_argument("--status", action="store_true",
                     help="print issued / acknowledged / open / mismatched")
     ak.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)

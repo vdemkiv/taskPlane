@@ -15,7 +15,14 @@ out of the user's way unless they ask. Do not simplify any of them for
 agents. The CLI surfaces named below are current as of v2.7 — verify against
 `$TP --help` before citing anything not listed here.
 
-**New in v2.12 — bind the review to a tree.** `tp new --target <pr>
+**New in v2.13 — one opening call, one copy of the context.**
+`tp review start <target> --base <ref>` returns tools, target pin, graph,
+impact, contract, obligations, routing, runnability and the briefs as one
+payload. Large artifacts come back as `RENDER-BY-REFERENCE: <path>` —
+deliver the file, do not paste it. `--max-tokens` sets an effective-token
+ceiling read from the host's transcript.
+
+**In v2.12 — bind the review to a tree.** `tp new --target <pr>
 --fetch --base <ref>` fetches `pull/N/head`, pins the checkout, and writes
 the pin into the contract; findings cite it in `meta.target`. `tp target
 tools` says whether `git` and `gh` are present and authenticated, and
