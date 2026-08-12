@@ -193,6 +193,17 @@ def _install_paths_lines(ctx: str) -> list[str]:
     ]
 
 
+def _tool_report() -> dict:
+    try:
+        import target as _tgt
+        rep = _tgt.tools()
+        rep["install_hint"] = _tgt.install_hint()
+        rep["ok"] = bool(rep["git"]["present"] and rep["gh"]["present"])
+        return rep
+    except Exception:
+        return {"ok": None}
+
+
 def _onboard_report(ws: str) -> dict:
     """Cold-start readiness: does the workspace have the three things a
     governed run needs — a real folder to work in, a git repo with a
@@ -279,6 +290,16 @@ def _onboard_report(ws: str) -> dict:
             # a step an org member cannot run.
             "install": {"context": _ictx,
                         "paths": _install_paths_lines(_ictx)},
+            # v2.12.0: git and gh are dependencies, not conveniences.
+            # taskplane is a git-shaped product — contracts snapshot HEAD,
+            # routing diffs against a base, the graph scans a tree, a review
+            # is pinned to a commit — and reviewing a REMOTE pull request
+            # additionally needs the PR's title, body, linked issues and
+            # discussion, none of which are in the git objects. In the field
+            # `gh` was absent and that context arrived over unauthenticated
+            # web reads that nothing recorded. Surfacing it at onboarding is
+            # where a missing tool costs one command instead of a review.
+            "tools": _tool_report(),
             "looks_like_project": looks_like_project,
             "is_git": inside_git, "has_commit": has_commit,
             "has_context": has_context, "ready": ready,
@@ -346,8 +367,35 @@ def cmd_new(a) -> int:
     c["budget"]["max_cost_usd"] = float(a.budget) if a.budget is not None \
         else DEFAULT_MAX_COST_USD
 
+    # BIND THE CONTRACT TO A TREE (v2.12.0). A review's target used to be
+    # free text in `task`, which is why two field reviews of one PR could
+    # not prove they had cloned anything. --target pins the checkout (and
+    # fetches the PR first when asked), and the record is what the
+    # completion gate checks.
+    _tgt_rec = None
+    if getattr(a, "target", None) or getattr(a, "base", None):
+        import target as _tgt
+        spec = getattr(a, "target", None)
+        parsed = _tgt.parse(spec) if spec else None
+        if parsed and parsed["kind"] == "pr" and getattr(a, "fetch", False):
+            _tgt_rec = _tgt.acquire(ws, spec, base=getattr(a, "base", None))
+        else:
+            _tgt_rec = _tgt.pin(ws, base=getattr(a, "base", None),
+                                target=parsed)
+        if not _tgt_rec.get("ok"):
+            print(f"taskplane: {_tgt_rec.get('reason')}", file=sys.stderr)
+            return 1
+        _tgt.save(ws, _tgt_rec)
+        c["target"] = {k: _tgt_rec.get(k) for k in
+                       ("origin", "head", "base", "base_ref", "branch",
+                        "fingerprint", "target")}
+
     snapshot = tp.git_head(ws)
     tp.activate(ws, c, snapshot=snapshot)
+    if _tgt_rec:
+        print(f"  target    : {(_tgt_rec.get('head') or '')[:12]} vs "
+              f"{(_tgt_rec.get('base') or '(no base)')[:12]} — "
+              f"fingerprint {_tgt_rec['fingerprint']}")
 
     mode = "READ-ONLY review" if c.get("read_only") else "build"
     print(f"taskplane: contract {c['task_id']} active ({mode}).")
@@ -860,6 +908,19 @@ _CLOSING_RESERVE = 5
 _CLOSING_VERBS = ("dod", "findings", "decision", "req")
 
 
+def _is_completion_command(command: str) -> bool:
+    """A taskplane command that DECLARES the work finished. Shares the
+    obligation ledger's pattern set so there is one answer to "is this a
+    conclusion", not two that can drift apart."""
+    import re as _re
+    import obligations as _ob
+    verb = tp.taskplane_verb(command)
+    if not verb:
+        return False
+    text = " ".join(str(command or "").split())
+    return any(_re.search(p, text) for p in _ob.COMPLETION_PATTERNS)
+
+
 def _is_release_command(command: str) -> bool:
     """A taskplane command that only READS governed state, or discharges an
     obligation — never one that RELEASES governance. Releasing past an
@@ -1219,6 +1280,34 @@ def _screen(a) -> int:
                  open=len(_ob.blocking(ws)))
         print(json.dumps({"decision": "block", "reason": _owed}))
         return 0
+
+    # A REVIEW MUST NAME THE TREE IT REVIEWED (v2.12.0).
+    #
+    # Same conversion as the obligations above, applied to a different
+    # unprovable claim. Two field reviews of one PR both cloned the
+    # repository and neither could prove it: the contract recorded no
+    # origin, no base, no head, so a review conducted entirely from a
+    # rendered web diff would have produced identical artifacts and an
+    # identical gate. Now a read-only review cannot DECLARE ITSELF FINISHED
+    # until the workspace is pinned to a checkout — never blocking the
+    # review itself, only the conclusion, and only for read-only contracts
+    # (a build contract already carries its snapshot).
+    if contract.get("read_only"):
+        try:
+            import target as _tgt
+            _unbound = (
+                _tgt.binding_problem(ws)
+                if _is_completion_command(tool_input.get("command") or "")
+                else None)
+        except Exception:
+            _unbound = None
+        if _unbound:
+            _meter_bump(ws, tid, "denies")
+            tp.trace(ws, "target_unbound_deny", tool=tool_name)
+            print(json.dumps({
+                "decision": "block",
+                "reason": "taskplane: " + _unbound}))
+            return 0
 
     allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
     if allow:
@@ -2823,6 +2912,99 @@ def cmd_dashboard(a) -> int:
     return 0
 
 
+def cmd_target(a) -> int:
+    """Acquire / pin / inspect WHAT is being reviewed.
+
+    Added because two field reviews of the same PR both cloned the
+    repository and neither could prove it: the contract recorded no origin,
+    no base, no head, so nothing distinguished a review of a checkout from
+    a review of a rendered web diff."""
+    import target as tgt
+    ws = _workspace(a.workspace)
+    action = getattr(a, "target_action", None) or "show"
+
+    if action == "tools":
+        t = tgt.tools()
+        if getattr(a, "install", False):
+            res = tgt.ensure_gh()
+            t = tgt.tools()
+            t["install"] = res
+        t["hint"] = tgt.install_hint()
+        if getattr(a, "json", False):
+            print(json.dumps(t, indent=2, sort_keys=True))
+            return 0
+        print(f"git : {'yes' if t['git']['present'] else 'NO'}"
+              f"   {t['git']['version'] or ''}")
+        gh = t["gh"]
+        auth = ("authenticated" if gh["authenticated"] else
+                "NOT authenticated (`gh auth login`)"
+                if gh["present"] else "")
+        print(f"gh  : {'yes' if gh['present'] else 'NO'}"
+              f"   {gh['version'] or ''}  {auth}")
+        if not gh["present"]:
+            print(f"\n`gh` is REQUIRED to review a remote pull request. A "
+                  f"clone carries the code and none of the intent — the "
+                  f"title, body, linked issues and review conversation are "
+                  f"not in the git objects. Install it:\n  {t['hint']}\n"
+                  f"or run `tp target tools --install`.", file=sys.stderr)
+            return 1
+        return 0
+
+    if action == "fetch":
+        rec = tgt.acquire(ws, a.spec, base=getattr(a, "base", None))
+        if not rec.get("ok"):
+            print(f"taskplane: {rec.get('reason')}", file=sys.stderr)
+            return 1
+        tgt.save(ws, rec)
+        _print_target(rec, tgt)
+        return 0
+
+    if action == "pin":
+        rec = tgt.pin(ws, base=getattr(a, "base", None),
+                      target=tgt.parse(getattr(a, "spec", None))
+                      if getattr(a, "spec", None) else None)
+        if not rec.get("ok"):
+            print(f"taskplane: {rec.get('reason')}", file=sys.stderr)
+            return 1
+        tgt.save(ws, rec)
+        _print_target(rec, tgt)
+        return 0
+
+    rec = tgt.load(ws)
+    if getattr(a, "json", False):
+        print(json.dumps(rec or {"ok": False, "reason": "no target record"},
+                         indent=2, sort_keys=True))
+        return 0 if rec else 1
+    if not rec:
+        print("taskplane: this workspace is not bound to a reviewed tree. "
+              "`tp target pin --base <ref>`, or `tp target fetch <pr-url>`.",
+              file=sys.stderr)
+        return 1
+    _print_target(rec, tgt)
+    return 0
+
+
+def _print_target(rec, tgt) -> None:
+    t = rec.get("target") or {}
+    if t.get("kind") == "pr":
+        who = "/".join(x for x in (t.get("owner"), t.get("repo")) if x)
+        print(f"target      : {who}#{t.get('number')}" if who
+              else f"target      : PR #{t.get('number')}")
+    print(f"origin      : {rec.get('origin') or '(none)'}")
+    print(f"head        : {(rec.get('head') or '')[:12]} "
+          f"({rec.get('branch') or 'detached'})")
+    if rec.get("base"):
+        print(f"base        : {(rec.get('base') or '')[:12]} "
+              f"({rec.get('base_ref')})")
+        print(f"changed     : {len(rec.get('changed_files') or [])} file(s)")
+    if rec.get("dirty"):
+        print(f"dirty       : {len(rec['dirty'])} path(s) — "
+              f"the tree is not exactly this commit")
+    print(f"fingerprint : {rec.get('fingerprint')}")
+    print("Cite this in findings `meta.target` so the sign-off gate can "
+          "check that the findings and the tree are the same thing.")
+
+
 def cmd_onboard(a) -> int:
     """Cold-start onboarding. Detects whether the workspace is ready for a
     governed run (folder + git snapshot + init) and, by default, prints the
@@ -2868,6 +3050,22 @@ def cmd_findings(a) -> int:
     # that recorded `impact`/`lens_coverage` in meta flows through to the
     # panels and the headline.
     meta.setdefault("ws", _workspace(a.workspace))
+    # DOES THIS DOCUMENT NAME THE TREE IT CAME FROM? (v2.12.0)
+    #
+    # Reported, never silently corrected, and never a reason to withhold
+    # the findings themselves — a human reading a review is better served
+    # by "here are the findings AND they do not cite a tree" than by a
+    # refusal. It is the SIGN-OFF the binding gates, via the screener.
+    _bind = None
+    try:
+        import target as _tgt
+        _bind = _tgt.binding_problem(_workspace(a.workspace), data
+                                     if isinstance(data, dict) else None)
+    except Exception:
+        _bind = None
+    if _bind:
+        print("UNBOUND: " + _bind, file=sys.stderr)
+        meta["target_unbound"] = _bind
     # Render-reliability contract (v1.5.3): the headline ALWAYS prints first,
     # so the key numbers reach the human even if the widget render is skipped.
     print("HEADLINE: " + dashboard.headline_findings(findings, meta))
@@ -3472,6 +3670,17 @@ def main(argv=None) -> int:
                         "obligations (e.g. `review`): recorded before the "
                         "work starts, and taskplane's own completion "
                         "commands stay blocked until each is shown")
+    n.add_argument("--target", metavar="SPEC",
+                   help="what is being reviewed — a PR url, OWNER/REPO#N, "
+                        "or a ref. Pins this checkout (origin, head, base, "
+                        "dirty state) so the findings can cite the tree they "
+                        "came from and the completion gate can check it")
+    n.add_argument("--base", metavar="REF",
+                   help="diff base for the target pin (e.g. origin/main)")
+    n.add_argument("--fetch", action="store_true",
+                   help="with a PR --target, fetch pull/N/head into this "
+                        "checkout first (needs git; `gh` is what supplies "
+                        "the PR's title, body and discussion)")
     n.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     n.set_defaults(fn=cmd_new)
 
@@ -4009,6 +4218,36 @@ def main(argv=None) -> int:
                     help="cross-check every derived version surface "
                          "against the single source; exit 1 on drift")
     vp.set_defaults(fn=cmd_version)
+
+    tg = sub.add_parser("target", help="what is being reviewed — acquire a "
+                        "pull request, pin the checkout, or check that git "
+                        "and gh are actually available")
+    tg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    tg.add_argument("--json", action="store_true",
+                    help="print the target record as JSON")
+    tgsub = tg.add_subparsers(dest="target_action")
+    tgf = tgsub.add_parser("fetch", help="fetch a pull request into this "
+                           "checkout and pin it (git fetch pull/N/head)")
+    tgf.add_argument("spec", help="PR url, OWNER/REPO#N, or #N")
+    tgf.add_argument("--base", default=None,
+                     help="diff base (default: the remote's default branch)")
+    tgf.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    tgp = tgsub.add_parser("pin", help="record what THIS checkout is — "
+                           "origin, head, base, dirty state, fingerprint")
+    tgp.add_argument("--base", default=None, help="diff base ref")
+    tgp.add_argument("--spec", default=None,
+                     help="the target this checkout represents (PR url, ref)")
+    tgp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    tgt_ = tgsub.add_parser("tools", help="is git present, is gh present and "
+                            "authenticated — a remote PR review needs both")
+    tgt_.add_argument("--install", action="store_true",
+                      help="install gh via this host's package manager")
+    tgt_.add_argument("--json", action="store_true", help="JSON report")
+    tgt_.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    tgs = tgsub.add_parser("show", help="print the pinned target record")
+    tgs.add_argument("--json", action="store_true", help="JSON report")
+    tgs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    tg.set_defaults(fn=cmd_target)
 
     ak = sub.add_parser("ack", help="discharge an obligation the engine "
                         "issued (WS-F evals); --status lists what is open")

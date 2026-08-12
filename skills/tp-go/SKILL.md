@@ -15,7 +15,13 @@ out of the user's way unless they ask. Do not simplify any of them for
 agents. The CLI surfaces named below are current as of v2.7 — verify against
 `$TP --help` before citing anything not listed here.
 
-**New in v2.11 — routed, not exhaustive.** `lens dispatch` asks the
+**New in v2.12 — bind the review to a tree.** `tp new --target <pr>
+--fetch --base <ref>` fetches `pull/N/head`, pins the checkout, and writes
+the pin into the contract; findings cite it in `meta.target`. `tp target
+tools` says whether `git` and `gh` are present and authenticated, and
+`--install` installs gh through the host's package manager.
+
+**In v2.11 — routed, not exhaustive.** `lens dispatch` asks the
 applicability engine which lenses this change actually summons; unrouted
 lenses get no agent and carry the evidence for why. `--all` still forces the
 whole catalog and now says that it disables the engine. Also: `tp ack` is
