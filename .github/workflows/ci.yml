@@ -393,3 +393,37 @@ jobs:
           taskplane/tests/test_v101_fixes.py
           taskplane/tests/test_dispatch_parity.py
           taskplane/tests/test_stage_waves.py
+
+  # Release-history truth. Five releases (v2.5.0, v2.5.1, v2.6.0, v2.8.1,
+  # v2.8.2) shipped with NO tag and nobody noticed for months, because
+  # tagging lived in a human's memory of the release routine — and two
+  # CHANGELOG rows (v2.4.0, v2.3.0) name versions no tree ever declared.
+  # This job makes the manifest history the source of truth and verifies
+  # both claims against it. It needs the FULL history and the tags: a
+  # shallow or tagless checkout cannot see what it is checking, so the gate
+  # fails closed rather than passing on a misconfigured runner.
+  release-tags:
+    name: release history (every shipped version is tagged)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
+        run: pip install "pytest==8.*"
+      - name: Configure git (the gate's fixtures build throwaway repos)
+        run: |
+          git config --global user.email "ci@taskplane"
+          git config --global user.name "taskplane-ci"
+      # actions/checkout leaves a detached HEAD with no refs/heads/main on
+      # push builds; the gate resolves the mainline by name, so give it one.
+      - name: Make the mainline resolvable by name
+        run: git rev-parse --verify refs/remotes/origin/main || git fetch --no-tags origin main:refs/remotes/origin/main
+      - name: Every shipped version is tagged, every tag names a release
+        run: python3 scripts/ci_release_tags.py
+      - name: The gate itself catches planted drift (it is not a no-op)
+        run: python3 -m pytest taskplane/tests/test_release_tags.py -q
