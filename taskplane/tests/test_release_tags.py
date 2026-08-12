@@ -99,16 +99,97 @@ class TestThisRepoIsClean(unittest.TestCase):
                 f"{p['check']} v{p['version']}: {p['detail']}"
                 for p in res["problems"]))
 
-    def test_the_script_exits_nonzero_when_it_fails(self):
-        """A gate that reports problems on stdout and exits 0 is not a gate."""
-        src = open(os.path.join(ROOT, "scripts", "ci_release_tags.py"),
-                   encoding="utf-8").read()
-        self.assertIn("return 0 if res[\"ok\"] else 1", src)
+    def test_this_repo_passes_the_gate_when_the_gate_can_see(self):
+        """Runs the real script against this checkout — but only where the
+        clone HAS the history and tags to check.
+
+        The first version of this asserted exit 0 unconditionally. The main
+        test job checks out shallow and tagless (only the dedicated
+        release-tags job sets fetch-depth 0 and fetch-tags), so the gate
+        correctly reported CANNOT VERIFY, exited 1, and the test failed on
+        the gate being RIGHT. An environment-dependent assertion in a test
+        is the same defect class the gate exists to catch: a claim nobody
+        checked against the thing that settles it."""
+        if gate.audit().get("unavailable"):
+            self.skipTest("shallow/tagless clone — see the release-tags job")
         p = subprocess.run([sys.executable, "scripts/ci_release_tags.py"],
                            cwd=ROOT, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True,
                            encoding="utf-8")
         self.assertEqual(p.returncode, 0, p.stdout)
+
+
+class TestTheExitCodes(_RepoCase):
+    """A gate that reports problems on stdout and exits 0 is not a gate.
+    Proven on synthetic repos, so these assertions hold in EVERY CI job
+    regardless of what that job fetched."""
+
+    def _run(self, root):
+        p = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "scripts",
+                                          "ci_release_tags.py"), root],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8")
+        return p.returncode, p.stdout
+
+    def test_the_source_returns_one_when_not_ok(self):
+        src = open(os.path.join(ROOT, "scripts", "ci_release_tags.py"),
+                   encoding="utf-8").read()
+        self.assertIn("return 0 if res[\"ok\"] else 1", src)
+
+    def test_a_clean_repo_exits_zero(self):
+        self.repo.release("1.0.0")
+        self.repo.tag("1.0.0")
+        self.repo.release("1.1.0")
+        self.repo.tag("1.1.0")
+        rc, out = self._run(self.dir)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok:", out)
+
+    def test_a_repo_with_drift_exits_one(self):
+        self.repo.release("1.0.0")
+        self.repo.release("1.1.0")
+        self.repo.tag("1.1.0")
+        self.repo.release("1.2.0")
+        self.repo.tag("1.2.0")
+        rc, out = self._run(self.dir)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("C1 v1.0.0", out)
+        self.assertIn("FAIL", out)
+
+    def test_a_tagless_clone_exits_one_and_says_it_cannot_verify(self):
+        """The exact shape that made this file red in CI. It must FAIL
+        closed and name the checkout setting that fixes it."""
+        self.repo.release("1.0.0")
+        rc, out = self._run(self.dir)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("CANNOT VERIFY", out)
+        self.assertIn("fetch-tags", out)
+
+    def test_a_repo_with_no_mainline_exits_one(self):
+        d = tempfile.mkdtemp()
+        try:
+            _git(d, "init", "-q", "-b", "topic")
+            rc, out = self._run(d)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("CANNOT VERIFY", out)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_json_mode_carries_the_same_exit_code(self):
+        self.repo.release("1.0.0")
+        self.repo.release("1.1.0")
+        self.repo.tag("1.1.0")
+        self.repo.release("1.2.0")
+        self.repo.tag("1.2.0")
+        p = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "scripts",
+                                          "ci_release_tags.py"),
+             self.dir, "--json"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8")
+        self.assertEqual(p.returncode, 1)
+        self.assertFalse(json.loads(p.stdout)["ok"])
 
 
 class TestItCatchesAMissingTag(_RepoCase):

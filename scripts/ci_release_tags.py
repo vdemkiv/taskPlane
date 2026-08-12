@@ -27,7 +27,7 @@ the CHANGELOG are claims about it, and both are verified here.
       being true is a bypass, not an exemption
   C6  no `v*` tag names a version that never existed
 
-Run: python3 scripts/ci_release_tags.py [--json]
+Run: python3 scripts/ci_release_tags.py [<repo-root>] [--json]
 """
 import json
 import os
@@ -236,7 +236,14 @@ def audit(root=ROOT):
 
 
 def main():
-    res = audit()
+    # An optional root makes the gate runnable against any checkout — which
+    # is what lets its own tests prove the EXIT CODES on synthetic repos
+    # instead of on whatever the current CI job happened to fetch. The first
+    # version of that test ran the script against this repo and asserted
+    # exit 0; the main test job checks out without tags, the gate correctly
+    # reported CANNOT VERIFY, and the test failed on the gate being right.
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    res = audit(args[0] if args else ROOT)
     if "--json" in sys.argv:
         print(json.dumps(res, indent=2, sort_keys=True))
         return 0 if res.get("ok") else 1
