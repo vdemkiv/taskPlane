@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import time as _time
 import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -751,6 +752,69 @@ def cmd_gc(a) -> int:
     return 0
 
 
+# READ-ONLY inspection only. `clear` is deliberately NOT here.
+#
+# The field report asked for `clear` to be exempt from metering, because an
+# exhausted agent cannot release its own contract. That is a real deadlock
+# and the suggested cure is worse: clearing a contract leaves the workspace
+# UNGOVERNED, where the screener abstains — so an agent that hit its ceiling
+# could un-govern itself and carry on unmetered. `test_recovery.py::
+# TestTheWallHolds` pins exactly that, alongside `budget --grant` and `rm
+# active_contract.json`: you may not spend past the wall, raise it, or
+# remove it. The wall stands.
+#
+# What was actually missing was a RECOVERY path from outside — `tp
+# contracts` to see the slots, `tp clear --all/--slot` to release them, and
+# a message that names the slots that exist instead of claiming there are
+# none. Those are the fix; this exemption covers only commands that change
+# nothing at all, so a stuck agent can still report why it is stuck.
+_RELEASE_VERBS = ("status", "contracts", "version")
+
+
+def _is_release_command(command: str) -> bool:
+    """A taskplane command that only READS governed state — never one that
+    releases it. Releasing past an exhausted budget would defeat the wall."""
+    verb = tp.taskplane_verb(command)
+    return verb in _RELEASE_VERBS if verb else False
+
+
+def cmd_contracts(a) -> int:
+    """List every active contract slot — including the stale ones.
+
+    `tp status` reports the contract governing THIS process, which for a
+    slot-less caller is an anonymous union. That made leaked slots invisible:
+    the only way to find them was `ls .taskplane/active/`, and a leaked slot
+    silently tightens every later agent. Slots are named here, with age, so
+    an orphan can be seen and released.
+    """
+    ws = _workspace(a.workspace)
+    d = os.path.join(tp.tp_dir(ws), "active")
+    rows = []
+    for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not name.endswith(".json"):
+            continue
+        slot = name[:-5]
+        c = tp.load_json(os.path.join(d, name), default={},
+                         what="active contract") or {}
+        age = _time.time() - float(c.get("activated_at") or 0) \
+            if c.get("activated_at") else None
+        rows.append({"slot": slot, "task_id": c.get("task_id"),
+                     "read_only": bool(c.get("read_only")),
+                     "age_seconds": int(age) if age is not None else None,
+                     "task": str(c.get("task") or "")[:120]})
+    legacy = tp.active_contract_path(ws, None) if tp.task_slot() is None \
+        else os.path.join(tp.tp_dir(ws), "active_contract.json")
+    print(json.dumps({
+        "slots": rows, "count": len(rows),
+        "legacy_slot_present": os.path.exists(
+            os.path.join(tp.tp_dir(ws), "active_contract.json")),
+        "note": "a slot-less process is governed by the most-restrictive "
+                "union of every slot above; release one with "
+                "`tp clear --slot <slot>` or all with `tp clear --all`",
+    }, indent=2, default=str))
+    return 0
+
+
 def cmd_clear(a) -> int:
     """Deactivate THIS process's contract (e.g. when a review ends), so the
     enforcement hook stops governing subsequent work.
@@ -764,9 +828,38 @@ def cmd_clear(a) -> int:
     slot-less process by the MOST RESTRICTIVE UNION of every active slot, each
     leaked slot permanently tightened what every later agent could do."""
     ws = _workspace(a.workspace)
-    path = tp.active_contract_path(ws)    # slot-aware: what clear() removes
+    if getattr(a, "all", False):
+        d = os.path.join(tp.tp_dir(ws), "active")
+        freed = []
+        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            if name.endswith(".json"):
+                tp.safe_remove(os.path.join(d, name))
+                freed.append(name[:-5])
+        legacy = os.path.join(tp.tp_dir(ws), "active_contract.json")
+        if os.path.exists(legacy):
+            tp.safe_remove(legacy)
+            freed.append("(legacy)")
+        print(f"taskplane: cleared {len(freed)} contract(s): "
+              + (", ".join(freed) or "none"))
+        return 0
+    slot = getattr(a, "slot", None)
+    path = tp.active_contract_path(ws, slot) if slot \
+        else tp.active_contract_path(ws)   # slot-aware: what clear() removes
     if not os.path.exists(path):
-        print("taskplane: no active contract to clear.")
+        # Truthful: naming the slots that DO exist, because "no active
+        # contract to clear" while seven slots governed the workspace is how
+        # an operator loses twenty minutes.
+        d = os.path.join(tp.tp_dir(ws), "active")
+        others = sorted(n[:-5] for n in os.listdir(d)
+                        if n.endswith(".json")) if os.path.isdir(d) else []
+        if others:
+            print("taskplane: nothing in this slot, but "
+                  f"{len(others)} contract(s) are active: "
+                  + ", ".join(others)
+                  + "\n  release one with `tp clear --slot <slot>`, "
+                    "or all with `tp clear --all`.")
+        else:
+            print("taskplane: no active contract to clear.")
         return 0
     try:
         c = tp.load_json(path, default={}, what="active contract")
@@ -774,8 +867,11 @@ def cmd_clear(a) -> int:
         c = {}                            # corrupt slot: still clearable
     if not isinstance(c, dict):
         c = {}
-    slot = tp.task_slot()
-    tp.clear(ws)                          # FUSE-safe removal (safe_remove)
+    slot = slot or tp.task_slot()
+    if getattr(a, "slot", None):
+        tp.safe_remove(path)
+    else:
+        tp.clear(ws)                      # FUSE-safe removal (safe_remove)
     print(f"taskplane: contract {c.get('task_id','')} cleared"
           + (f" (slot {slot})" if slot else "")
           + " — workspace is ungoverned again.")
@@ -981,6 +1077,14 @@ def _screen(a) -> int:
                       "the workspace) and re-activate.",
         }))
         return 0
+    # INSPECTION MUST NOT COST. A stuck agent should still be able to say why
+    # it is stuck. These commands read and print; none of them changes a
+    # contract, a budget, or a ledger, so neither the ceiling nor the meter
+    # has anything to protect against them. `clear` is NOT among them — see
+    # _RELEASE_VERBS for why.
+    if _is_release_command(tool_input.get("command") or ""):
+        return 0                      # abstain: not metered, not denied
+
     ok, reason = tp.budget_status(contract, used)
     if not ok:
         _meter_bump(ws, tid, "denies")
@@ -1689,9 +1793,23 @@ def cmd_lens(a) -> int:
                     impact_ctx = dg.render_context(_imp)
         except Exception:
             impact_ctx = None
+        # B9 (v2.10.0): probe build/test runnability ONCE, here, and put the
+        # verdict in every brief. On karpenter#9464 six lens agents each
+        # burned actions discovering `go test` could not run — one fact about
+        # the checkout, paid for six times. Cached per tree state, so
+        # re-rendering the wave board costs nothing.
+        run_probe = None
+        try:
+            import runnability as runmod
+            run_probe = runmod.probe_once(ws)
+            if not (run_probe.get("checks") or run_probe.get("skipped")):
+                run_probe = None
+        except Exception:
+            run_probe = None
         briefs = lensmod.dispatch_briefs(routing, base=a.base,
                                          max_actions=a.max_actions,
-                                         impact_context=impact_ctx)
+                                         impact_context=impact_ctx,
+                                         runnability=run_probe)
         # --dashboard is a PURE VIEW that the driver re-runs as agents land;
         # recording expectations there would append a fresh unmatched set on
         # every re-render and turn `loop verify-dispatch` into noise. Only a
@@ -1740,13 +1858,18 @@ def cmd_lens(a) -> int:
             if briefs["sweep"]:
                 lanes.append(_lane("sweep", "sweep"))
             done = sum(1 for x in lanes if x["status"] == "done")
+            _sub = (f"{done}/{len(lanes)} lens-agents reported · read-only, "
+                    f"in parallel · diff vs {briefs['base']}")
+            if run_probe and run_probe.get("checks"):
+                # The wave board is where the human watches the fan-out, so
+                # it is where "the tests can't run here" belongs — before
+                # they read a review that had to be static.
+                _sub += " · " + run_probe.get("summary", "")
             print(dashboard.render_lens_wave(
                 lanes, {"title": ("review — wave complete"
                                   if done == len(lanes) else
                                   "review — lenses running"),
-                        "subtitle": f"{done}/{len(lanes)} lens-agents "
-                        f"reported · read-only, in parallel · diff vs "
-                        f"{briefs['base']}"}))
+                        "subtitle": _sub}))
             return 0
         # Emit path (R-W2): 'auto' picks the workflow when the host has a
         # runtime, else today's Task dispatch. The chosen path + reason are
@@ -2469,6 +2592,20 @@ def cmd_findings(a) -> int:
                           "re-authoring. The pages ARE the deliverable; "
                           "never summarize them as prose"}, indent=2))
         return 0
+    if getattr(a, "html", False):
+        pages = dashboard.render_findings_paged(findings, meta)
+        doc = dashboard.standalone_document(
+            [p["html"] for p in pages],
+            title=str(meta.get("title") or "review findings"))
+        if a.out:
+            os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".",
+                        exist_ok=True)
+            with open(a.out, "w", encoding="utf-8") as f:
+                f.write(doc)
+            print(a.out)
+        else:
+            print(doc)
+        return 0
     frag = dashboard.render_findings(findings, meta, out=a.out)
     print(frag)
     return 0
@@ -2616,18 +2753,50 @@ def _plugin_repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# Where a version may be read from, in order. `.codex-plugin/plugin.json`
+# stays AUTHORITATIVE — it is the one a human edits and the one every other
+# surface is checked against — but it is not the only place it may be READ.
+_VERSION_SOURCES = (
+    (".codex-plugin", "plugin.json"),
+    (".claude-plugin", "plugin.json"),
+)
+
+
 def plugin_version(root: str | None = None) -> str:
-    """The ONE authoritative plugin version: .codex-plugin/plugin.json —
-    the manifest scripts/package_openai.py already packages from. Every
-    other version field is derived and checked, never independently edited."""
+    """The plugin version, from whichever manifest this INSTALL actually has.
+
+    This used to read `.codex-plugin/plugin.json` and nothing else, which was
+    correct in the repository and broken in the shipped product: the Claude
+    package and the `.plugin` archive contain `.claude-plugin/` only, so
+    `tp version` raised "missing authoritative version manifest" on every
+    Claude-side install of v2.9.0. CI never saw it because CI runs against
+    the repo, where both manifests exist — a gate that only ever inspects
+    the source tree cannot see a defect introduced by packaging.
+
+    Authority is unchanged: `.codex-plugin/plugin.json` is still the single
+    source `version --verify` checks every other surface against, and it is
+    still preferred here. The fallback exists so that READING the version
+    works wherever the plugin is installed; it does not make a second
+    manifest editable.
+    """
     root = root or _plugin_repo_root()
-    src = os.path.join(root, ".codex-plugin", "plugin.json")
-    data = tp.load_json(src, what="authoritative version manifest")
-    v = data.get("version")
-    if not isinstance(v, str) or not v.strip():
-        raise tp.StateError(src, "manifest has no usable 'version' field",
-                            "restore the authoritative version string")
-    return v.strip()
+    tried = []
+    for parts in _VERSION_SOURCES:
+        src = os.path.join(root, *parts)
+        tried.append(src)
+        if not os.path.exists(src):
+            continue
+        data = tp.load_json(src, what="version manifest")
+        v = data.get("version")
+        if not isinstance(v, str) or not v.strip():
+            raise tp.StateError(src, "manifest has no usable 'version' field",
+                                "restore the authoritative version string")
+        return v.strip()
+    raise tp.StateError(
+        tried[0], "no plugin manifest found (looked for "
+        + ", ".join("/".join(p) for p in _VERSION_SOURCES) + ")",
+        "reinstall the plugin — the package appears to be missing its "
+        "manifest entirely")
 
 
 def _walk_versions(obj, prefix=""):
@@ -2983,6 +3152,11 @@ def main(argv=None) -> int:
     n.add_argument("--write-allow", action="append", metavar="GLOB",
                    help="in read-only mode, dirs that ARE writable "
                         "(e.g. .em-review/**) — repeatable")
+    cs = sub.add_parser("contracts", help="list every active contract slot, "
+                        "including stale ones a union is silently applying")
+    cs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    cs.set_defaults(fn=cmd_contracts)
+
     n.add_argument("--owes", metavar="RUN_TYPE",
                    help="seed the artifacts this run type owes as BINDING "
                         "obligations (e.g. `review`): recorded before the "
@@ -3066,6 +3240,12 @@ def main(argv=None) -> int:
     gcp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     gcp.set_defaults(fn=cmd_gc)
     cl = sub.add_parser("clear", help="deactivate the workspace contract")
+    cl.add_argument("--all", action="store_true",
+                    help="release EVERY active slot, not just this process's "
+                         "— the way out when a wave leaked contracts")
+    cl.add_argument("--slot", metavar="SLOT",
+                    help="release one named slot (see `tp contracts`) "
+                         "without setting TASKPLANE_TASK")
     cl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cl.set_defaults(fn=cmd_clear)
 
@@ -3426,6 +3606,10 @@ def main(argv=None) -> int:
     fp.add_argument("--paged", action="store_true",
                     help="emit ordered <=14KB pages (JSON) for reliable "
                          "inline rendering + a never-skippable headline")
+    fp.add_argument("--html", action="store_true",
+                    help="emit ONE self-contained HTML document (palette and "
+                         "dark mode included) — the documented fallback when "
+                         "the host cannot render inline fragments")
     fp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     fp.set_defaults(fn=cmd_findings)
 

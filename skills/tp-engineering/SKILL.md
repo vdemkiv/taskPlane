@@ -43,6 +43,17 @@ exactly its lens to the diff and writes `.em-review/lens-<id>/findings.json`,
 and none can touch code (the harness holds — read-only, metered). A
 7-lens review runs in one wall-clock pass instead of seven.
 
+**Runnability is probed ONCE, by the dispatcher (v2.10.0).** `lens dispatch`
+answers "can `go test` / `npm test` / `pytest` even start in this checkout"
+before composing briefs, states the verdict in every brief, and returns it as
+`runnability.summary`. Carry that string into the findings `meta.tests` so
+the headline says it. Do NOT let an agent re-probe, and do not re-probe
+yourself: on karpenter#9464 six lens agents each burned actions rediscovering
+that `go test` could not run — one fact about the environment, paid for six
+times. When the suite cannot run, the review is static by construction: say
+so at the top, and put "needs a dynamic check this environment cannot
+perform" in the finding's `scenario` rather than retrying the command.
+
 On hosts that do not register `agents/` as named definitions, dispatch a
 general subagent with the brief plus `agents/tp-lens.md` as its role
 instructions. The contract and output path remain identical.
@@ -184,7 +195,7 @@ orchestrator gates it). Deep persona spec:
 the checkout — it does not travel with the branch or survive an ephemeral
 sandbox (Claude Tag). REQUIRED at the end of every standalone review:
 record the review's synthesis as a knowledge-base decision
-(`$TP decision "<review title>" --context … --decision "<verdict +
+(`$TP decision new "<review title>" --context … --decision "<verdict +
 headline numbers>" …`), and record every blocker/high finding the human
 intends to fix in a *later session* as tracked debt (`$TP req debt …`) —
 that is what makes "review here, fix next session" actually work.

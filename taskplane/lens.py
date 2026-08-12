@@ -871,7 +871,8 @@ def _lens_prompt(entry: dict, base: str) -> str:
 
 def dispatch_briefs(routing: dict, base: str = "HEAD",
                     max_actions: int = 30,
-                    impact_context: str | None = None) -> dict:
+                    impact_context: str | None = None,
+                    runnability: dict | None = None) -> dict:
     """Turn a routing into READY-TO-DISPATCH lens-agent briefs — one governed
     read-only agent per DEEP lens (fanned out in parallel = much faster than
     one reviewer running them in sequence), the SWEEP lenses batched into a
@@ -886,6 +887,17 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     # on the decision object below: briefs are for work, the decision is
     # for coverage honesty. Legacy routings ("deep"/"sweep" tiers only) are
     # partitioned exactly as before.
+    # B9 (v2.10.0): whether the build/tests can run here is a property of the
+    # CHECKOUT, probed once by the dispatcher. Six agents rediscovering it —
+    # which is exactly what happened on karpenter#9464 — is six times the
+    # tokens for one environment fact. Stated, never enforced.
+    run_note = ""
+    if runnability:
+        try:
+            import runnability as _run
+            run_note = _run.brief_note(runnability)
+        except Exception:
+            run_note = ""
     deep = [x for x in routing["lenses"]
             if x.get("tier") not in ("sweep", "light", "n/a")]
     sweep = [x for x in routing["lenses"]
@@ -905,7 +917,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base) + (
                 "\nBLAST RADIUS (from the dependency graph - factor "
                 "these dependents into your verdict):\n"
-                + impact_context + "\n" if impact_context else ""),
+                + impact_context + "\n" if impact_context else "") + run_note,
             "looks_for": x.get("looks_for", ""), "checks": x.get("checks", []),
         }
         if "verdict" in x:   # contract:lens-brief — ADDITIVE v2 fields only
@@ -935,7 +947,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                 f"one line each. READ-ONLY: write findings (each with a "
                 f"`lens` field and a `class` field — regression|pre-existing|"
                 f"observation) to `.em-review/lens-sweep/findings.json`, "
-                f"change no code.\n" + CLEAR_ALWAYS),
+                f"change no code.\n" + run_note + CLEAR_ALWAYS),
         }
     # Full routing-decision object (v2 only): EVERY lens's disposition —
     # n/a lenses run no agent but their verdict + negative evidence must
@@ -971,6 +983,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         }
         if decision is not None:
             out["routing_decision"] = decision
+        if runnability:
+            out["runnability"] = runnability
         return out
     out = {
         "base": base,
@@ -988,6 +1002,13 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     }
     if decision is not None:
         out["routing_decision"] = decision
+    if runnability:
+        out["runnability"] = runnability
+        out["instruction"] += (
+            " Build/test runnability was probed ONCE and is stated in every "
+            "brief — carry `runnability.summary` into the findings "
+            "`meta.tests` so the headline says it, and do not let any agent "
+            "re-probe it.")
     return out
 
 

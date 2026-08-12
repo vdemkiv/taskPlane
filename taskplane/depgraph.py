@@ -290,7 +290,24 @@ def manifest_modules(files, read) -> dict:
             continue
         d = posixpath.dirname(rel)
         if not d:
-            continue        # root manifest describes the repo, not a module
+            # A root manifest describes the REPOSITORY, so it must not become
+            # a module id — that would collapse every file into one node.
+            #
+            # But a root `go.mod` is different in the one way that matters
+            # here: its module path is literally the prefix other code
+            # IMPORTS this repo's packages by
+            # (`github.com/aws/karpenter-provider-aws/pkg/...`). Skipping it
+            # entirely meant every intra-repo Go import resolved to `ext:` —
+            # `graph impact` on karpenter-provider-aws reported 2 modules and
+            # no call structure at all, and the review's only blocking finding
+            # had to be traced by hand. It is recorded under a reserved key
+            # and consumed as a PREFIX (see _strip_root_module), never as a
+            # module in its own right.
+            if base == "go.mod":
+                m = _GO_MODULE_LINE.search(read(rel) or "")
+                if m and m.group(1) and "/" in m.group(1):
+                    out[ROOT_MODULE_KEY] = m.group(1).strip()
+            continue
         text = read(rel)
         if not text:
             continue
@@ -324,6 +341,36 @@ def declared_module_ids(g: dict | None) -> dict:
     return ((g or {}).get("meta") or {}).get("module_ids") or {}
 
 
+# Reserved key in the manifest map for the repo's own Go module PATH. Not a
+# module id: it is a prefix that turns an intra-repo import into a repo
+# path. Prefixed with a character no directory can start with, so it can
+# never collide with a real declared name.
+ROOT_MODULE_KEY = "\x00root_module"
+
+
+def _strip_root_module(spec: str, declared_ids) -> "str | None":
+    """`<root module>/pkg/x` -> `pkg/x`, else None.
+
+    Go is the case that needs this: one module path covers the whole repo,
+    so an import of a sibling package carries the repo prefix rather than
+    naming a separately-declared module. Stripping it yields a repo-relative
+    path that `module_of` already knows how to bucket.
+    """
+    # `declared_ids` reaches this helper as a dict from the manifest map and
+    # as a SET from callers that only need membership. Both are legitimate;
+    # only a dict can carry the root path.
+    root = declared_ids.get(ROOT_MODULE_KEY) \
+        if isinstance(declared_ids, dict) else None
+    if not root:
+        return None
+    spec = str(spec or "").replace("\\", "/").strip("/")
+    if spec == root:
+        return None                      # the repo itself is not a module
+    if spec.startswith(root + "/"):
+        return spec[len(root) + 1:] or None
+    return None
+
+
 def _declared_target(spec: str, declared_ids) -> "str | None":
     """The declared module an import SPECIFIER names, or None.
 
@@ -334,7 +381,7 @@ def _declared_target(spec: str, declared_ids) -> "str | None":
         return None
     spec = str(spec or "").replace("\\", "/").strip("/")
     while spec:
-        if spec in declared_ids:
+        if spec in declared_ids and spec != ROOT_MODULE_KEY:
             return spec
         if "/" not in spec:
             return None
@@ -546,6 +593,12 @@ def _js_imports(src: str, relpath: str, file_index: set,
             # used to become `ext:@acme` — an external node named after a
             # SCOPE, which is neither the package nor a real dependency.
             inside = _declared_target(target, declared_ids)
+            if not inside:
+                # Intra-repo Go: strip the repo's own module path and bucket
+                # the remainder the same way a file path is bucketed.
+                rel_in = _strip_root_module(target, declared_ids)
+                if rel_in:
+                    inside = module_of(rel_in + "/_", manifests)
             out.add(inside if inside else "ext:" + target.split("/")[0])
     return out
 

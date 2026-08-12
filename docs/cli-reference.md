@@ -24,6 +24,7 @@ not repeated in the tables.
 | `tp.py budget` | record a cooperative spend estimate, or --grant N more actions (the budget approval gate) |
 | `tp.py clear` | deactivate the workspace contract |
 | `tp.py context` | session-start context summary |
+| `tp.py contracts` | list every active contract slot, including stale ones a union is silently applying |
 | `tp.py dashboard` | render the mission-control view |
 | `tp.py decision` | decision registry — structured ADRs with lifecycle, links and supersede chains |
 | `tp.py decision accept` | move a proposed decision to accepted |
@@ -132,11 +133,21 @@ deactivate the workspace contract
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--all` | flag | release EVERY active slot, not just this process's — the way out when a wave leaked contracts |
+| `--slot` | SLOT | release one named slot (see `tp contracts`) without setting TASKPLANE_TASK |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py context`
 
 session-start context summary
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py contracts`
+
+list every active contract slot, including stale ones a union is silently applying
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -242,6 +253,7 @@ render a review findings dashboard (all severities, filterable) from a findings 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--file` | FILE | findings JSON (default .em-review/findings.json) |
+| `--html` | flag | emit ONE self-contained HTML document (palette and dark mode included) — the documented fallback when the host cannot render inline fragments |
 | `--out` | OUT | also write the fragment to this path |
 | `--paged` | flag | emit ordered <=14KB pages (JSON) for reliable inline rendering + a never-skippable headline |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
