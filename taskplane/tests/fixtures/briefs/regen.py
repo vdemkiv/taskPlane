@@ -166,12 +166,20 @@ def main():
               encoding="utf-8") as f:
         f.write(json.dumps(files, indent=2, sort_keys=True) + "\n")
     print(f"wrote changed_files.json ({len(files)} files)")
-    routed = lens.dispatch_briefs(lens.route(files), base="HEAD",
-                                  max_actions=30)
+    routed = lens.dispatch_briefs(lens.route(files), base="HEAD")
     write_golden("golden_dispatch_routed.json", routed)
     everything = lens.dispatch_briefs(lens.route(files, breadth="all"),
-                                      base="HEAD", max_actions=30)
+                                      base="HEAD")
     write_golden("golden_dispatch_all.json", everything)
+    # v2.11.0: the CLI's DEFAULT is now signal-driven routing (stage=
+    # "review"), so the payload a review actually dispatches needs its own
+    # frozen golden. The two above stay as the library-level pins for the
+    # legacy and force-everything paths, which did not change.
+    review = lens.dispatch_briefs(
+        lens.route(files, stage="review",
+                   workspace=os.path.join(HERE, "workspace")),
+        base="HEAD")
+    write_golden("golden_dispatch_review.json", review)
     regen_stage_goldens()
 
 

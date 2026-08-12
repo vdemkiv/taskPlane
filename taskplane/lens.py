@@ -869,8 +869,31 @@ def _lens_prompt(entry: dict, base: str) -> str:
         + CLEAR_ALWAYS)
 
 
+# Per-brief action ceilings (v2.11.0). A flat 30 truncated a verification
+# agent mid-research on karpenter#9464: it was fetching and reading external
+# sources to check the lenses' load-bearing claims, hit the ceiling, and
+# returned partial findings naming the questions it could not close. It
+# degraded honestly — the ceiling was simply the wrong size for the shape of
+# work. A DEEP lens owns one subject at full depth and reads widely; the
+# SWEEP runs each lens's top checks and is meant to be quick. One number for
+# both sized the deep agent by the cheap one's needs.
+#
+# This raises no CONTRACT scope: a lens agent still writes only to
+# `.em-review/lens-<id>/**` and still cannot touch reviewed source. An
+# explicit `max_actions` overrides every tier, so callers that pin a number
+# (the parity fixtures) keep getting exactly that number.
+DEEP_ACTIONS = 45
+SWEEP_ACTIONS = 30
+
+
+def actions_for(tier: str, override=None) -> int:
+    if override is not None:
+        return int(override)
+    return DEEP_ACTIONS if tier == "deep" else SWEEP_ACTIONS
+
+
 def dispatch_briefs(routing: dict, base: str = "HEAD",
-                    max_actions: int = 30,
+                    max_actions: int | None = None,
                     impact_context: str | None = None,
                     runnability: dict | None = None) -> dict:
     """Turn a routing into READY-TO-DISPATCH lens-agent briefs — one governed
@@ -913,7 +936,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "contract": {"read_only": True,
                          "task_slot": f"lens-{lid}",
                          "write_allow": [f".em-review/lens-{lid}/**"],
-                         "max_actions": max_actions},
+                         "max_actions": actions_for("deep", max_actions)},
             "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base) + (
                 "\nBLAST RADIUS (from the dependency graph - factor "
                 "these dependents into your verdict):\n"
@@ -940,7 +963,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "contract": {"read_only": True,
                          "task_slot": "lens-sweep",
                          "write_allow": [".em-review/lens-sweep/**"],
-                         "max_actions": max_actions},
+                         "max_actions": actions_for("sweep", max_actions)},
             "prompt": _slot_instr("lens-sweep") + (
                 f"Quick SWEEP of these lenses against the diff vs `{base}`: "
                 f"{names}. Run each lens's top checks only — flag or clear in "

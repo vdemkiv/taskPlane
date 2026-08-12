@@ -185,8 +185,19 @@ class TestMigration(unittest.TestCase):
         tracked = subprocess.run(["git", "ls-files"], cwd=self.ws,
                                  capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
         self.assertNotIn("knowledge/", tracked)
-        self.assertIn("knowledge/", open(os.path.join(self.ws,
-                      ".gitignore"), encoding="utf-8").read())
+        # v2.11.0: ignored via .git/info/exclude, NOT .gitignore — a governed
+        # command must not dirty the working tree of a repo under review
+        # (karpenter#9464: the appended .gitignore joined `git diff <base>`,
+        # so routing reported 5 changed files for a 4-file PR).
+        with open(os.path.join(self.ws, ".git", "info", "exclude"),
+                  encoding="utf-8") as f:
+            self.assertIn("knowledge/", f.read())
+        self.assertFalse(os.path.exists(os.path.join(self.ws, ".gitignore")),
+                         "tp must not create a .gitignore in the repo")
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=self.ws,
+                               capture_output=True, text=True,
+                               encoding="utf-8", errors="replace").stdout
+        self.assertNotIn(".gitignore", dirty)
 
     def test_where_reports_paths(self):
         r = subprocess.run([sys.executable, _TP_PY, "kb", "where"],

@@ -396,6 +396,81 @@ def _is_tp_cli(arg: str) -> bool:
 # version/help probes. Everything else — script file, -m module, stdin —
 # is as un-screenable as `-c` and is treated as interpreter-opaque.
 _INTERPRETER_SAFE_FLAGS = {"--version", "-V", "--help", "-h"}
+
+# ---- inline python that can be PROVEN read-only (v2.11.0) -------------------
+#
+# `python3 -c …` was refused outright because "file writes can't be screened
+# from argv". True of an opaque string — but a Python string is not opaque,
+# it is a grammar, and the reason the blanket denial hurt is that the work it
+# blocked was genuinely read-only: a directory walk during a review, and a
+# lens agent validating its own findings JSON before writing it. A screen
+# that forbids reading teaches agents to route around the screen.
+#
+# The rule is an ALLOWLIST and it fails closed: the code must parse, and
+# every import, call, and attribute in it must appear below. Anything not
+# recognised — an unknown module, a dunder, a lambda calling something
+# unlisted, a syntax error — is NOT read-only and the existing denial stands.
+# `open` is allowed only in a read mode. Nothing here can name `write`,
+# `subprocess`, `shutil`, `eval`, or an os mutator, because those are simply
+# not in the sets.
+_RO_MODULES = frozenset({
+    "os", "os.path", "sys", "json", "re", "pathlib", "glob", "fnmatch",
+    "collections", "itertools", "functools", "operator", "math", "hashlib",
+    "base64", "textwrap", "datetime", "csv", "statistics", "string", "ast",
+    "difflib", "typing", "unicodedata", "decimal", "urllib.parse"})
+_RO_BUILTINS = frozenset({
+    "print", "len", "sorted", "set", "frozenset", "list", "dict", "tuple",
+    "str", "int", "float", "bool", "bytes", "sum", "min", "max", "any",
+    "all", "enumerate", "zip", "range", "map", "filter", "repr", "abs",
+    "round", "reversed", "isinstance", "issubclass", "type", "format",
+    "next", "iter", "hash", "ord", "chr", "divmod", "slice", "id"})
+# Attribute names an expression may use. Deliberately excludes every writer:
+# write, writelines, truncate, mkdir, unlink, remove, rename, rmtree, chmod,
+# system, popen, run, Popen, touch, write_text, write_bytes, dump.
+_RO_ATTRS = frozenset({
+    # os / os.path reads
+    "path", "listdir", "walk", "scandir", "getcwd", "getenv", "environ",
+    "sep", "curdir", "pardir", "stat", "fspath", "basename", "dirname",
+    "join", "splitext", "exists", "isfile", "isdir", "islink", "abspath",
+    "realpath", "relpath", "normpath", "getsize", "getmtime", "commonpath",
+    # pathlib reads
+    "Path", "name", "suffix", "stem", "parent", "parents", "parts", "glob",
+    "rglob", "iterdir", "is_file", "is_dir", "read_text", "read_bytes",
+    "resolve", "as_posix", "relative_to", "with_suffix",
+    # file reads
+    "read", "readline", "readlines", "close", "closed", "seek", "tell",
+    # str / bytes
+    "strip", "lstrip", "rstrip", "split", "rsplit", "splitlines", "lower",
+    "upper", "title", "casefold", "startswith", "endswith", "replace",
+    "find", "rfind", "index", "count", "encode", "decode", "ljust", "rjust",
+    "zfill", "partition", "removeprefix", "removesuffix", "isdigit",
+    "isalpha", "isspace", "expandtabs",
+    # containers
+    "items", "keys", "values", "get", "append", "extend", "add", "update",
+    "sort", "setdefault", "pop", "copy", "most_common", "discard", "insert",
+    "union", "intersection", "difference", "issubset", "issuperset",
+    # json / re / hashlib / ast / difflib / itertools reads
+    "load", "loads", "dumps", "search", "match", "fullmatch", "findall", "finditer",
+    "sub", "subn", "compile", "escape", "group", "groups", "groupdict",
+    "start", "end", "span", "hexdigest", "digest", "sha1", "sha256", "md5",
+    "parse", "unparse", "dump_", "walk_", "unified_diff", "ndiff",
+    "SequenceMatcher", "ratio", "chain", "islice", "groupby", "Counter",
+    "defaultdict", "OrderedDict", "namedtuple", "reader", "DictReader",
+    "argv", "stdin", "stdout", "maxsize", "version_info", "platform",
+    "now", "utcnow", "strftime", "fromtimestamp", "isoformat", "b64encode",
+    "b64decode", "urlparse", "parse_qs", "wrap", "fill", "dedent",
+    "ascii_letters", "digits", "punctuation", "mean", "median", "stdev"})
+# Attribute access on these modules is restricted to the reads above; the
+# module-name check alone would let `os.replace` through on the strength of
+# `str.replace` being a legitimate method name.
+_RO_STRICT_MODULES = frozenset({"os", "sys", "pathlib", "json", "shutil",
+                                "subprocess", "io", "tempfile", "ctypes",
+                                "socket", "importlib", "pickle"})
+_RO_OS_ATTRS = frozenset({
+    "path", "listdir", "walk", "scandir", "getcwd", "getenv", "environ",
+    "sep", "curdir", "pardir", "stat", "fspath", "linesep"})
+_RO_OPEN_MODES = frozenset({"r", "rb", "rt", "tr", "br", "rU"})
+
 # git subcommands that rewrite tracked files in the working tree.
 _GIT_MUTATORS = {"checkout", "reset", "restore", "clean", "stash",
                  "apply", "am", "rebase", "cherry-pick", "revert"}
@@ -499,8 +574,137 @@ def norm(path: str, workspace: str | None = None) -> str:
     return resolved[len(prefix):]
 
 
+def inline_python_reads_only(code: str) -> bool:
+    """Can this `python3 -c` body be PROVEN to make no writes?
+
+    Allowlist, fail closed: unparseable, or one unrecognised import / call /
+    attribute / dunder, and the answer is no. See _RO_MODULES above for why
+    this exists. It answers a narrower question than "is this safe" — only
+    "does every construct in here appear on a list of things that read"."""
+    import ast as _ast
+    try:
+        tree = _ast.parse(str(code or ""))
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return False
+
+    def mod_ok(name):
+        name = (name or "").split(" ")[0]
+        return name in _RO_MODULES or name.split(".")[0] in _RO_MODULES
+
+    # Names bound by `from <allowed module> import X`. The imported NAME
+    # must itself be a read (`from os import remove` is refused at the
+    # import, not later at the call), and once bound it is callable.
+    bound = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ImportFrom):
+            allowed = (_RO_OS_ATTRS if (node.module or "") == "os"
+                       else _RO_ATTRS)
+            for al in node.names:
+                if al.name == "*" or al.name not in allowed:
+                    return False
+                bound.add(al.asname or al.name)
+        elif isinstance(node, (_ast.FunctionDef, _ast.Lambda)):
+            bound.add(getattr(node, "name", "") or "")
+
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Import):
+            if not all(mod_ok(al.name) for al in node.names):
+                return False
+        elif isinstance(node, _ast.ImportFrom):
+            if node.level or not mod_ok(node.module or ""):
+                return False
+        elif isinstance(node, _ast.Attribute):
+            if node.attr.startswith("_"):
+                return False           # dunder walks are how sandboxes fall
+            base = node.value
+            if isinstance(base, _ast.Name) and base.id in _RO_STRICT_MODULES:
+                allowed = _RO_OS_ATTRS if base.id == "os" else _RO_ATTRS
+                if base.id in ("shutil", "subprocess", "tempfile", "ctypes",
+                               "socket", "importlib", "pickle", "io"):
+                    return False
+                if node.attr not in allowed:
+                    return False
+            elif node.attr not in _RO_ATTRS:
+                return False
+        elif isinstance(node, _ast.Name):
+            if node.id.startswith("__"):
+                return False
+        elif isinstance(node, _ast.Call):
+            fn = node.func
+            if isinstance(fn, _ast.Name):
+                if fn.id == "open":
+                    mode = None
+                    if len(node.args) > 1:
+                        m = node.args[1]
+                        mode = m.value if isinstance(m, _ast.Constant) else 0
+                    for kw in node.keywords:
+                        if kw.arg == "mode":
+                            mode = (kw.value.value
+                                    if isinstance(kw.value, _ast.Constant)
+                                    else 0)
+                    if mode is not None and mode not in _RO_OPEN_MODES:
+                        return False
+                elif fn.id not in _RO_BUILTINS and fn.id not in bound:
+                    return False
+        elif isinstance(node, (_ast.Global, _ast.Nonlocal, _ast.AsyncFor,
+                               _ast.AsyncWith, _ast.AsyncFunctionDef,
+                               _ast.Await)):
+            return False
+    return True
+
+
+def _inline_bodies_all_readonly(command: str) -> bool:
+    """True when the command contains at least one `python -c <body>` and
+    EVERY such body is provably read-only. Quote-aware, and False the moment
+    anything cannot be resolved — an unsplittable command line is exactly
+    the case that must keep the denial."""
+    try:
+        toks = _shsplit(str(command or ""))
+    except Exception:
+        return False
+    if not toks:
+        return False
+    bodies, i = [], 0
+    while i < len(toks):
+        prog = os.path.basename(toks[i])
+        if prog.startswith("python") and prog in _INTERPRETERS:
+            j = i + 1
+            while j < len(toks):
+                if toks[j] == "-c":
+                    if j + 1 >= len(toks):
+                        return False           # `-c` with no body
+                    bodies.append(toks[j + 1])
+                    i = j + 1
+                    break
+                if not toks[j].startswith("-"):
+                    break                      # a script file, not -c
+                j += 1
+        i += 1
+    return bool(bodies) and all(inline_python_reads_only(b) for b in bodies)
+
+
 def match_any(path: str, globs) -> bool:
     return any(fnmatch.fnmatch(path, g) for g in (globs or []))
+
+
+def writable(path: str, globs) -> bool:
+    """Does an allowlist permit writing `path` — INCLUDING the directory the
+    allowlist itself names?
+
+    `.em-review/**` did not match `.em-review`, so a read-only review
+    contract forbade creating the one directory it authorized: `mkdir -p
+    .em-review` was denied while `mkdir -p .em-review/impact` was allowed.
+    A contract that refuses to let you set up the space it granted you is
+    not stricter, it is just wrong, and the workaround (make a deeper path
+    first) taught agents to route around the screen.
+
+    The widening is exactly one path per glob — the glob's own fixed stem,
+    compared for equality, never as a prefix. `.em-review/**` newly permits
+    `.em-review` and still refuses `.em-review-scratch`, `.em-reviewX` and
+    every parent."""
+    if match_any(path, globs):
+        return True
+    return path in scope_stems(globs)
 
 
 def scope_stems(globs) -> set:
@@ -899,6 +1103,14 @@ def _analyze(command: str, _depth: int = 0):
     """
     targets: list = []
     opaque = None
+    # Whether EVERY `python -c` body in this command is provably read-only.
+    # Computed on the WHOLE command with a quote-aware split, before the
+    # separator split below — which is a regex and happily cuts a body in
+    # half at a `;` inside quotes, leaving the interpreter branch with an
+    # unparseable fragment. Redirects are still screened per-part, so a
+    # read-only body with `> out.txt` after it is still caught by the target
+    # scan.
+    ro_inline = _inline_bodies_all_readonly(command) if _depth == 0 else False
     if _depth > 6:
         # D-0004: this used to return ([], None), which every caller reads
         # as "no mutation found" — so seven levels of nested `sh -c` passed
@@ -1027,10 +1239,16 @@ def _analyze(command: str, _depth: int = 0):
                 continue
             if any(a in ("-c", "-e", "-E") or a.startswith("-e")
                    for a in args):
-                opaque = opaque or (
-                    "interpreter",
-                    f"`{prog} -c/-e …` runs inline code whose file writes "
-                    "can't be screened from argv")
+                # v2.11.0: a python -c body is a GRAMMAR, not an opaque
+                # blob. If every construct in it appears on the read-only
+                # allowlist, it is screenable and allowed; anything else
+                # (including code that will not parse) keeps the denial.
+                if not (prog.startswith("python") and ro_inline):
+                    opaque = opaque or (
+                        "interpreter",
+                        f"`{prog} -c/-e …` runs inline code whose file writes "
+                        "can't be screened from argv (a body that only READS "
+                        "— stdlib reads, no writers, no dunders — is allowed)")
             elif not args or not all(a in _INTERPRETER_SAFE_FLAGS
                                      for a in args):
                 # v2.3.0 tightening: a script FILE (`python3 file.py`), a
@@ -1274,7 +1492,7 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                "did not expose a screenable write target")
             bad = next((raw for raw in paths
                         if not (norm(raw, workspace)
-                                and match_any(norm(raw, workspace), allow))),
+                                and writable(norm(raw, workspace), allow))),
                        None)
             if bad is not None:
                 return False, (f"read-only review contract: '{tool_name}' may "
@@ -1285,7 +1503,7 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
             targets, opaque = _analyze(str(tool_input.get("command", "")))
             for t in targets:
                 p = norm(t, workspace)
-                if not (p and match_any(p, allow)):
+                if not (p and writable(p, allow)):
                     return False, ("read-only review contract: command writes "
                                    f"'{t}' outside {allow or '(nothing)'} — "
                                    "the reviewed source is protected")
@@ -2239,7 +2457,23 @@ def requirement_coverage_errors(tasks, requirement_lookup,
     return errors
 
 
-def budget_status(contract: dict, used_actions: int) -> tuple[bool, str]:
+def closing_reserve(max_actions, reserve: int) -> int:
+    """How many of a contract's actions are held back for CLOSING.
+
+    Never more than a quarter of the ceiling, so a small contract cannot
+    reserve itself out of doing any work at all, and never anything on a
+    zero-action ceiling — which stays maximally strict, as v2.3.0 fixed."""
+    try:
+        max_actions = int(max_actions)
+    except (TypeError, ValueError):
+        return 0
+    if max_actions <= 0:
+        return 0
+    return max(0, min(int(reserve), max_actions // 4))
+
+
+def budget_status(contract: dict, used_actions: int,
+                  reserve: int = 0, closing: bool = False) -> tuple[bool, str]:
     """The action-budget RULE, owned by the kernel so every enforcement path
     applies the same ceiling. Returns (ok, reason). ok=False means the next
     action must be blocked BEFORE it runs. The CLI hook meters `used_actions`
@@ -2258,6 +2492,26 @@ def budget_status(contract: dict, used_actions: int) -> tuple[bool, str]:
         # maximally strict, never "no ceiling" (`--max-actions 0` used to
         # silently create an unmetered contract; v2.3.0).
         return True, "no action ceiling set"
+    # CLOSING RESERVE (v2.11.0). The ceiling is unchanged; the WORKING wall
+    # sits below it. A review that spends every action reaching a verdict
+    # and then cannot record it has produced nothing that survives the
+    # session — which is exactly what happened on karpenter#9464, where
+    # `.em-review/` died with an ephemeral sandbox. So the last few actions
+    # can only be spent finishing and persisting, never on more work.
+    held = closing_reserve(max_a, reserve) if not closing else 0
+    wall = int(max_a) - held
+    if held and used_actions >= wall:
+        return False, (
+            f"ACTION BUDGET: {used_actions}/{max_a} used and the last {held} "
+            f"are RESERVED FOR CLOSING — they can be spent only on finishing "
+            f"and persisting this run (dod, findings, decision, req; ack is "
+            f"unmetered). Stop doing work: render what you owe, `tp ack "
+            f"<id>` each obligation, record the synthesis with `tp decision` "
+            f"and any tracked debt with `tp req debt`, then close. If the "
+            f"work itself is genuinely unfinished, ask the human for more "
+            f"actions — FROM A DIRECTORY OUTSIDE this workspace: "
+            f"`tp.py budget --grant N --workspace <ws>`. You cannot grant "
+            f"yourself budget.")
     if used_actions >= int(max_a):
         return False, (f"ACTION BUDGET exhausted ({used_actions}/{max_a}) — "
                        "STOP and ask the human to approve more actions. The "

@@ -61,7 +61,9 @@ simulation → DoD walkthrough → high-fidelity run → synthesis → KB record
 Standing rules layered on it:
 
 1. **All lenses, every review.** Route with
-   `python3 "$PLUGIN/taskplane/tp.py" lens route --base <baseline> --all --json`.
+   `python3 "$PLUGIN/taskplane/tp.py" lens route --base <baseline> --json`
+   (signal-driven: deep / light / n/a-with-evidence. `--all` forces the
+   whole catalog to RUN and turns the engine off — do not use it here).
    Run `tier=deep` lenses at full depth (their mode says inline vs one
    read-only governed subagent each); run every `tier=sweep` lens as a
    quick pass — its top checks against the diff, flag or clear in a line.

@@ -188,9 +188,22 @@ def audit(root=ROOT):
                 "detail": f"{name} -> {sha[:9]}, whose manifest declares "
                           f"{declared!r}, not {v!r}"})
 
+    # The version the WORKING TREE declares is the release in flight: its
+    # CHANGELOG row is written before the bump reaches the mainline, which
+    # is the correct order. C1 already tolerates the newest mainline
+    # version being untagged for the same reason; this is that rule's twin
+    # for C4. It exempts exactly one version — the one on disk right now —
+    # so a CHANGELOG row for a version nobody is preparing still fails.
+    in_flight = None
+    try:
+        with open(os.path.join(root, MANIFESTS[0]), encoding="utf-8") as f:
+            in_flight = json.load(f).get("version")
+    except (OSError, ValueError):
+        in_flight = None
+
     shipped = set(intro)
     for v in changelog_versions(root):
-        if v in shipped or v in NOT_SHIPPED:
+        if v in shipped or v in NOT_SHIPPED or v == in_flight:
             continue
         problems.append({
             "check": "C4", "version": v,
@@ -215,6 +228,7 @@ def audit(root=ROOT):
                 "detail": f"tag {name} names a version no tree ever declared"})
 
     return {"ok": not problems, "mainline": ref, "newest": newest,
+            "in_flight": in_flight,
             "shipped": {v: intro[v] for v in sorted(intro, key=vkey)},
             "tags": {k: tags[k] for k in sorted(tags, key=lambda t: vkey(t[1:]))},
             "not_shipped": sorted(NOT_SHIPPED), "skipped": sorted(SKIPPED),

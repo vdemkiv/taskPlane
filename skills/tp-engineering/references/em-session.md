@@ -92,7 +92,7 @@ How hard it was to mock the code *is itself a testability finding*. Clean seams 
 Kick off the two slow things immediately so they're ready when needed:
 
 1. **Start the high-fidelity simulation preparing in the background** (per the Simulation strategy for the detected code type): boot the dev server for a frontend, boot the service with its mocks for a backend, prepare the mocked harness for a library/CLI, or run the dry-run/validate for infra — capture the URL/output for the final step. Don't wait on it here.
-2. **Start DoR in the background.** Run lint, typecheck, tests, duplication, and the dependency / change-impact graph, and route the full lens catalog (`tp.py lens route --all`) — the security, code-quality and testability lenses lead here. Do not block on these and do not surface them until the end.
+2. **Start DoR in the background.** Run lint, typecheck, tests, duplication, and the dependency / change-impact graph, and route the lens catalog (`tp.py lens route` — signal-driven; every lens is dispositioned, only the summoned ones run) — the security, code-quality and testability lenses lead here. Do not block on these and do not surface them until the end.
 
 ## Step 1 — Early simulation (by code type)
 

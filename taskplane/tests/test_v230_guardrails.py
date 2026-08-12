@@ -210,18 +210,108 @@ class TestNoLoosening(unittest.TestCase):
             self.assertIsNotNone(
                 v, f"LOOSENED: scoped build contract now approves {cmd!r}")
 
-    def test_python_dash_c_write_still_blocked_read_only(self):
-        # The read-only branch blocks interpreter-opaque exactly as before.
-        ok, reason = tpl.screen_tool(
-            self.RO, "Bash",
-            {"command": "python3 -c \"print('x')\""}, None)
-        self.assertFalse(ok)
-        self.assertIn("read-only", reason)
+    # SANCTIONED NARROWING (v2.11.0), recorded here rather than quietly
+    # rewritten. Until now ANY `python -c` was refused under a read-only
+    # contract, including `print('x')`. A field review showed the cost: it
+    # blocked a read-only directory walk, and blocked a lens agent from
+    # validating its own findings JSON before writing it — a screen that
+    # forbids READING teaches agents to route around the screen. A Python
+    # body is a grammar, not an opaque blob, so it is now screened: an
+    # allowlist of stdlib reads passes, everything else keeps the denial and
+    # unparseable code fails closed. The battery below is what makes the
+    # narrowing checkable — every write shape must still be refused.
+    PY_WRITE_BATTERY = [
+        'python3 -c "open(\'README.md\',\'w\').write(\'x\')"',
+        'python3 -c "import os;os.remove(\'README.md\')"',
+        'python3 -c "import os;os.replace(\'a\',\'b\')"',
+        'python3 -c "import shutil;shutil.rmtree(\'.\')"',
+        'python3 -c "import subprocess;subprocess.run([\'rm\',\'x\'])"',
+        'python3 -c "from pathlib import Path;Path(\'x\').write_text(\'y\')"',
+        'python3 -c "import json;json.dump({}, open(\'x\',\'w\'))"',
+        'python3 -c "__import__(\'os\').system(\'rm -rf .\')"',
+        'python3 -c "().__class__.__bases__[0].__subclasses__()"',
+        'python3 -c "eval(\'1\')"',
+        'python3 -c "exec(open(\'x\').read())"',
+        'python3 -c "import os;os.makedirs(\'q\')"',
+        'python3 -c "not valid python ("',
+        'python3 -c "print(1)" > README.md',
+        'python3 -c "print(1)"; rm -rf README.md',
+        "python3 script.py",
+        "python3 -m http.server",
+        "perl -e 'unlink \"README.md\"'",
+        "node -e 'require(\"fs\").writeFileSync(\"x\",\"y\")'",
+    ]
+
+    def test_every_python_write_shape_is_still_refused(self):
+        for cmd in self.PY_WRITE_BATTERY:
+            ok, reason = tpl.screen_tool(self.RO, "Bash", {"command": cmd},
+                                         None)
+            self.assertFalse(ok, f"LOOSENED: read-only now approves {cmd!r}")
+            self.assertIn("read-only", reason)
+
+    def test_an_unrecognised_construct_fails_closed(self):
+        """The allowlist is the whole guarantee: anything it does not know
+        about must be refused, not guessed at."""
+        for cmd in ('python3 -c "import ctypes"',
+                    'python3 -c "import socket;socket.socket()"',
+                    'python3 -c "import importlib;importlib.import_module(\'os\')"',
+                    'python3 -c "async def f(): pass"',
+                    'python3 -c "global x"'):
+            ok, _ = tpl.screen_tool(self.RO, "Bash", {"command": cmd}, None)
+            self.assertFalse(ok, f"LOOSENED: {cmd!r}")
 
 
 # =====================================================================
 # Deny precision (the ONLY sanctioned loosening: provably-safe forms)
 # =====================================================================
+
+class TestReadOnlyInlineCodeIsAllowed(unittest.TestCase):
+    """The other half of the v2.11.0 narrowing: code that provably only
+    reads must actually be allowed, or the screen still forbids reading."""
+
+    RO = {"read_only": True, "write_allow": [".em-review/**"],
+          "task_id": "t", "scope": ["**"]}
+
+    ALLOWED = [
+        'python3 -c "print(1)"',
+        'python3 -c "import os;print(os.listdir(\'.\'))"',
+        'python3 -c "import os;print([f for r,_,fs in os.walk(\'.\') for f in fs][:5])"',
+        'python3 -c "import json;print(len(json.load(open(\'.em-review/f.json\'))))"',
+        'python3 -c "import re;print(re.findall(r\'x\', open(\'a.txt\').read()))"',
+        'python3 -c "from pathlib import Path;print(sorted(p.name for p in Path(\'.\').iterdir()))"',
+    ]
+
+    def test_the_dunder_guard_is_load_bearing_on_its_own(self):
+        """Defence in depth, tested as such. Today every dunder is ALSO
+        refused by the attribute allowlist, so removing the dunder check
+        changes no observable behaviour — which is exactly how a guard rots.
+        This proves the guard is what stops it, by making the allowlist
+        permissive for one name and checking the refusal survives."""
+        orig = tpl._RO_ATTRS
+        tpl._RO_ATTRS = frozenset(orig | {"__class__", "__subclasses__",
+                                          "__bases__", "__globals__"})
+        try:
+            self.assertFalse(tpl.inline_python_reads_only(
+                "().__class__.__bases__[0].__subclasses__()"))
+            self.assertFalse(tpl.inline_python_reads_only(
+                "print(open.__globals__)"))
+        finally:
+            tpl._RO_ATTRS = orig
+
+    def test_no_allowlisted_attribute_is_private(self):
+        """The other half: the allowlist must never gain an underscore name,
+        or the guard above becomes the only thing between a review and a
+        sandbox escape."""
+        for name in tpl._RO_ATTRS | tpl._RO_OS_ATTRS | tpl._RO_BUILTINS:
+            self.assertFalse(name.startswith("_"), name)
+
+    def test_provably_read_only_bodies_pass(self):
+        for cmd in self.ALLOWED:
+            ok, reason = tpl.screen_tool(self.RO, "Bash", {"command": cmd},
+                                         None)
+            self.assertTrue(ok, f"still refused a pure read: {cmd!r} — "
+                                f"{reason}")
+
 
 class TestDenyPrecision(unittest.TestCase):
     DENY = ["git push"]

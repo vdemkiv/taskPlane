@@ -226,6 +226,16 @@ class TestWorkflowAvailable:
 
 
 def _repo(tmp_path) -> str:
+    """A fixture change with real signals in it.
+
+    v2.11.0 made the CLI route through the applicability engine, and the
+    old fixture (`x = 1` -> `x = 2`) correctly routes NOTHING deep — a
+    two-line constant edit summons no lens. That is the engine working, but
+    it left these emit-parity tests with no briefs to compare. The diff is
+    now a session-token change, which is what a review of this shape
+    actually looks like: it carries auth/secret handling for security and
+    an untested new path for qa, so the wave has deep briefs to pin.
+    """
     ws = os.path.join(str(tmp_path), "ws")
     os.makedirs(os.path.join(ws, "src"))
     with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
@@ -236,8 +246,15 @@ def _repo(tmp_path) -> str:
         subprocess.run(["git", *a], cwd=ws, capture_output=True)
     with open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8") as f:
         f.write("x = 2\n")
-    with open(os.path.join(ws, "src", "b.py"), "w", encoding="utf-8") as f:
-        f.write("y = 1\n")
+    with open(os.path.join(ws, "src", "auth.py"), "w", encoding="utf-8") as f:
+        f.write("import hashlib, os\n\n"
+                "SECRET_KEY = os.environ.get('SESSION_SECRET', '')\n\n"
+                "def sign_session_token(user_id, password):\n"
+                "    \"\"\"Sign a session token for an authenticated user.\"\"\"\n"
+                "    raw = f'{user_id}:{password}:{SECRET_KEY}'\n"
+                "    return hashlib.sha256(raw.encode()).hexdigest()\n\n"
+                "def verify_session_token(user_id, password, token):\n"
+                "    return sign_session_token(user_id, password) == token\n")
     return ws
 
 
@@ -271,10 +288,14 @@ class TestEmitTaskByteIdentity:
         ws = _repo(tmp_path)
         rc, out = _dispatch(ws, "--emit", "task")
         assert rc == 0
+        # stage="review" mirrors what cmd_lens now asks for (v2.11.0) —
+        # the point of this test is that --emit task adds NO keys to the
+        # payload, not which router produced it.
         routing = lens.route_git_diff(ws, base="HEAD", task_type=None,
-                                      only=None, skip=None, breadth="routed")
+                                      only=None, skip=None, breadth="routed",
+                                      stage="review")
         expected = json.dumps(
-            lens.dispatch_briefs(routing, base="HEAD", max_actions=30),
+            lens.dispatch_briefs(routing, base="HEAD"),
             indent=2) + "\n"
         assert out == expected  # byte-for-byte
         payload = json.loads(out)

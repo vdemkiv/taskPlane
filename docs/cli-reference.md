@@ -429,7 +429,7 @@ ready-to-dispatch lens-agent briefs — one read-only agent per deep lens, fanne
 | `--base` | BASE | git base to diff against (default HEAD) |
 | `--dashboard` | flag | print the live lens-wave progress board instead of the JSON briefs (render this BEFORE dispatch) |
 | `--emit` | one of: workflow, task, auto | dispatch path: 'workflow' wraps the briefs as /taskplane:review-wave args, 'task' prints today's Task-dispatch payload byte-identically, 'auto' (default) picks workflow only when the host runtime is detected (Codex: always task) |
-| `--max-actions` | MAX_ACTIONS | per-agent action ceiling written into each dispatched lens brief (default 30) |
+| `--max-actions` | MAX_ACTIONS | per-agent action ceiling written into each dispatched lens brief. Default scales with the brief: 45 for a deep lens (it owns one subject at full depth and reads widely), 30 for the sweep. An explicit value applies to every brief. |
 | `--only` | ONLY | comma list — dispatch only these lenses |
 | `--resume` | flag | re-dispatch ONLY the lanes that have no findings.json yet — an interrupted wave costs the lenses that did not land, not all of them |
 | `--skip` | SKIP | comma list — do not dispatch these lenses |
