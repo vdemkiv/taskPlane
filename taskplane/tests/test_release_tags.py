@@ -147,6 +147,37 @@ class TestItCatchesAMissingTag(_RepoCase):
         self.assertEqual(self.repo.checks(), ["C1"] * 5)
 
 
+class TestTheReleaseInFlightIsExempt(_RepoCase):
+    """A release is prepared by bumping the manifest and writing its
+    CHANGELOG row BEFORE the commit reaches the mainline. C1 already
+    tolerates the newest mainline version being untagged for that reason;
+    C4 has to tolerate its CHANGELOG row for the same one."""
+
+    def test_a_changelog_row_for_the_version_on_disk_is_fine(self):
+        self.repo.release("1.0.0")
+        self.repo.tag("1.0.0")
+        self.repo.release("1.1.0")
+        self.repo.tag("1.1.0")
+        # bump the working tree only: no commit, so the mainline has not
+        # seen 1.2.0 yet, and the CHANGELOG already names it.
+        with open(os.path.join(self.dir, ".codex-plugin", "plugin.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"name": "taskplane", "version": "1.2.0"}, f)
+        self.repo.changelog_claims("1.2.0")
+        self.assertEqual(self.repo.checks(), [])
+
+    def test_it_exempts_exactly_one_version_not_any_unshipped_row(self):
+        self.repo.release("1.0.0")
+        self.repo.tag("1.0.0")
+        self.repo.release("1.1.0")
+        self.repo.tag("1.1.0")
+        with open(os.path.join(self.dir, ".codex-plugin", "plugin.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"name": "taskplane", "version": "1.2.0"}, f)
+        self.repo.changelog_claims("9.9.9")
+        self.assertIn("C4", self.repo.checks())
+
+
 class TestItCatchesAMisplacedTag(_RepoCase):
     def test_a_tag_on_the_wrong_commit_is_C3(self):
         self.repo.release("1.0.0")

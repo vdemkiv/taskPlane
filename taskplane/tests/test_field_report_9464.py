@@ -270,14 +270,49 @@ class B3_InspectionNeverCostsButReleaseStillDoes(unittest.TestCase):
         for cmd in ("tp status", "tp contracts", "tp version"):
             self.assertTrue(mod._is_release_command(cmd), cmd)
 
+    def test_ack_is_unmetered_because_it_cannot_widen_scope(self):
+        """REVERSED in v2.11.0, deliberately — this test used to assert the
+        opposite and the assertion was wrong.
+
+        v2.10.0 refused to exempt `clear` from metering (right: clearing
+        leaves the workspace ungoverned, where the screener abstains, so an
+        exhausted agent could un-govern itself) and lumped `ack` in with it
+        (wrong). `ack` moves the run TOWARD the gate: it discharges an
+        obligation the run already owes, cannot touch a file, and is bounded
+        by the number of obligations issued. Refusing it deadlocked a real
+        review — the Stop hook demanded `tp ack <id>`, the budget refused
+        `tp ack <id>`, and the hook fired ~12 times with no reachable state
+        that satisfied it. The abuse this appears to open (acking a render
+        that never happened) was already closed by the render-observation
+        ledger, which files it as `claimed_only`.
+        """
+        import importlib
+        mod = importlib.import_module("tp")
+        for cmd in ("tp ack o-1", "tp ack --status",
+                    "tp ack o-1 --evidence x"):
+            self.assertTrue(mod._is_release_command(cmd), cmd)
+
     def test_doing_work_is_not_a_release_command(self):
         import importlib
         mod = importlib.import_module("tp")
         for cmd in ("tp dod", "tp loop submit", "tp graph scan", "tp clear",
-                    "tp clear --all", "tp ack o-1",
+                    "tp clear --all",
                     "git commit -m 'clear the decks'", "rm -rf .taskplane",
                     "make status"):
             self.assertFalse(mod._is_release_command(cmd), cmd)
+
+    def test_clear_is_still_metered_the_wall_did_not_move(self):
+        """The half of the v2.10.0 decision that stands. If exempting `ack`
+        ever drifts into exempting `clear`, an exhausted agent regains the
+        ability to un-govern itself, which is the bypass the wall exists to
+        prevent."""
+        import importlib
+        mod = importlib.import_module("tp")
+        self.assertNotIn("clear", mod._RELEASE_VERBS)
+        self.assertNotIn("clear", mod._CLOSING_VERBS)
+        for cmd in ("tp clear", "tp clear --all", "tp clear --slot lens-x"):
+            self.assertFalse(mod._is_release_command(cmd), cmd)
+            self.assertFalse(mod._is_closing_command(cmd), cmd)
 
     def test_a_command_that_merely_MENTIONS_taskplane_is_not_taskplane(self):
         """Both callers scanned every token for a bare `tp`, so

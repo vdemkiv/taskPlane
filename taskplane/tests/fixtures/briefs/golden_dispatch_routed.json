@@ -20,7 +20,7 @@
         "zizmor (GitHub Actions workflows, when `.github/**` is in the diff)"
       ],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-security",
         "write_allow": [
@@ -51,7 +51,7 @@
         "**suppression delta**: NEW escape hatches introduced by this diff only \u2014"
       ],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-code-quality",
         "write_allow": [
@@ -79,7 +79,7 @@
         "coverage \u2014 use ONLY as evidence for check 4: which new branches NO test can reach at all. Do not report a coverage percentage or judge coverage adequacy; that is qa's. [Inozemtseva & Holmes, ICSE 2014: coverage correlates only weakly-to-moderately with suite effectiveness once suite size is controlled \u2014 a number here would be an unsupported quality claim]"
       ],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-testability",
         "write_allow": [
@@ -105,7 +105,7 @@
       "agent": "tp-lens",
       "checks": [],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-scalability",
         "write_allow": [
@@ -131,7 +131,7 @@
       "agent": "tp-lens",
       "checks": [],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-integrability",
         "write_allow": [
@@ -157,7 +157,7 @@
       "agent": "tp-lens",
       "checks": [],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-tech-writer",
         "write_allow": [
@@ -183,7 +183,7 @@
       "agent": "tp-lens",
       "checks": [],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-qa",
         "write_allow": [
@@ -209,7 +209,7 @@
       "agent": "tp-lens",
       "checks": [],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-backend",
         "write_allow": [
@@ -235,7 +235,7 @@
       "agent": "tp-lens",
       "checks": [],
       "contract": {
-        "max_actions": 30,
+        "max_actions": 45,
         "read_only": true,
         "task_slot": "lens-architecture",
         "write_allow": [

@@ -482,8 +482,69 @@ def cmd_session_verify(a) -> int:
     for o in owed:
         print(f"  {o['id']}  {o.get('kind')}  {o.get('detail') or ''}",
               file=sys.stderr)
-    print("Render each one, then `tp ack <id>`.", file=sys.stderr)
+    print("Render each one, then `tp ack <id>` (ack is unmetered — it can "
+          "always be run).", file=sys.stderr)
+    # STALL DETECTION (v2.11.0). This hook used to print one instruction
+    # forever. On karpenter#9464 it fired ~12 consecutive times with no
+    # state change, because `tp ack` was itself budget-blocked: the hook
+    # demanded an action the harness refused, and nothing the agent could
+    # do satisfied it. The refusal still stands — an obligation that can be
+    # waited out is not an obligation — but a hook that repeats an
+    # unsatisfiable instruction is a hang, not enforcement. So when nothing
+    # has changed since the last firing, say what is actually in the way and
+    # name the command that clears it.
+    try:
+        stalled, detail = _session_verify_stall(ws, owed)
+    except Exception:
+        stalled, detail = False, ""
+    if stalled:
+        print("", file=sys.stderr)
+        print(f"taskplane: NO PROGRESS since the last check — {detail}",
+              file=sys.stderr)
     return 2
+
+
+def _session_verify_stall(ws: str, owed: list) -> tuple:
+    """(stalled, what is actually blocking). Stalled = this hook has fired
+    before with exactly this set of open obligations and the same action
+    count, i.e. repeating the instruction cannot help."""
+    import hashlib
+    used = None
+    contract = None
+    try:
+        contract = tp.load_active(ws)
+        tid = (contract or {}).get("task_id", "_")
+        used = _meter_load(ws).get(tid, {}).get("actions")
+    except Exception:
+        contract, used = contract, None
+    key = hashlib.sha1(
+        ("|".join(sorted(o["id"] for o in owed)) + f"#{used}").encode()
+    ).hexdigest()[:16]
+    path = os.path.join(tp.tp_dir(ws), "session_verify_stall.json")
+    prior = tp.load_json(path, default={}, what="stall marker") or {}
+    count = int(prior.get("count") or 0) + 1 if prior.get("key") == key else 1
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"key": key, "count": count}, f)
+    except OSError:
+        pass
+    if count < 2:
+        return False, ""
+    max_a = ((contract or {}).get("budget") or {}).get("max_actions")
+    if max_a is not None and used is not None and int(used) >= int(max_a):
+        return True, (
+            f"the action budget is exhausted ({used}/{max_a}), so the work "
+            f"cannot continue. `tp ack <id>` is unmetered and still works; "
+            f"closing commands (dod, findings, decision, req) draw on the "
+            f"reserved closing actions. If more WORK is genuinely needed, a "
+            f"human must run, from OUTSIDE this workspace: "
+            f"`tp.py budget --grant N --workspace {ws}`")
+    return True, (
+        f"the same {len(owed)} obligation(s) have been open across "
+        f"{count} checks. Render the artifact the engine produced — its own "
+        f"bytes, not a summary — then `tp ack <id>`. `tp ack --status` shows "
+        f"whether a render was observed, substituted, or only claimed")
 
 
 def cmd_screen_render(a) -> int:
@@ -768,14 +829,50 @@ def cmd_gc(a) -> int:
 # a message that names the slots that exist instead of claiming there are
 # none. Those are the fix; this exemption covers only commands that change
 # nothing at all, so a stuck agent can still report why it is stuck.
-_RELEASE_VERBS = ("status", "contracts", "version")
+#
+# v2.11.0 adds `ack`, and the distinction matters because v2.10.0 got it
+# wrong by lumping the two together. `clear` LOOSENS governance — it leaves
+# the workspace with no contract, where the screener abstains, so an
+# exhausted agent could un-govern itself and carry on. `ack` does the
+# opposite: it discharges an obligation the run already owes, moving the run
+# TOWARD the gate and never widening what it may touch. It is bounded by the
+# number of obligations issued, and the one abuse it appears to open —
+# acking a render that never happened — is already closed by the
+# render-observation ledger, which records that as `claimed_only` rather
+# than as evidence. Refusing it produced a hard deadlock in the field: the
+# `session-verify` stop hook demanded `tp ack <id>`, the budget refused
+# `tp ack <id>`, and the hook fired twelve times with no reachable state
+# that satisfied it.
+_RELEASE_VERBS = ("status", "contracts", "version", "ack")
+
+# The CLOSING RESERVE. On aws/karpenter-provider-aws#9464 the 40-action
+# default was spent entirely on taskplane's own mandated orchestration —
+# onboard, init, contract, impact, route, two renders, dispatch — so the
+# review reached its verdict with nothing left to RECORD it. `.em-review/`
+# is git-ignored scratch in an ephemeral sandbox, which made the blocked
+# step the one whose entire purpose is surviving the session.
+#
+# This is a carve-out, NOT an increase: the ceiling is unchanged and the
+# working wall drops below it, so a contract can never spend more than it
+# could before. The last few actions are simply reserved for the commands
+# that finish and persist the work, and cannot be spent on more of it.
+_CLOSING_RESERVE = 5
+_CLOSING_VERBS = ("dod", "findings", "decision", "req")
 
 
 def _is_release_command(command: str) -> bool:
-    """A taskplane command that only READS governed state — never one that
-    releases it. Releasing past an exhausted budget would defeat the wall."""
+    """A taskplane command that only READS governed state, or discharges an
+    obligation — never one that RELEASES governance. Releasing past an
+    exhausted budget would defeat the wall."""
     verb = tp.taskplane_verb(command)
     return verb in _RELEASE_VERBS if verb else False
+
+
+def _is_closing_command(command: str) -> bool:
+    """A command that finishes or persists the work rather than doing more
+    of it — the only spender of the closing reserve."""
+    verb = tp.taskplane_verb(command)
+    return verb in _CLOSING_VERBS if verb else False
 
 
 def cmd_contracts(a) -> int:
@@ -1085,7 +1182,9 @@ def _screen(a) -> int:
     if _is_release_command(tool_input.get("command") or ""):
         return 0                      # abstain: not metered, not denied
 
-    ok, reason = tp.budget_status(contract, used)
+    ok, reason = tp.budget_status(
+        contract, used, reserve=_CLOSING_RESERVE,
+        closing=_is_closing_command(tool_input.get("command") or ""))
     if not ok:
         _meter_bump(ws, tid, "denies")
         tp.trace(ws, "budget_deny", tool=tool_name, used=used,
@@ -1810,17 +1909,43 @@ def cmd_lens(a) -> int:
         print(json.dumps(b, indent=2))
         return 0
 
+    # v2.11.0 — the CLI now ASKS for signal-driven routing.
+    #
+    # route v2 (the applicability engine: content + graph + requirement
+    # signals, per-lens deep | light | n/a with machine-checkable negative
+    # evidence) shipped in v2.4.0 and was never reachable from here.
+    # `route()` enables it only when `stage` or `use_signals` is passed, and
+    # `cmd_lens` passed neither — so every `lens route` and every
+    # `lens dispatch`, which is where the review actually spends its tokens,
+    # took the glob-based legacy path. The one caller in the codebase that
+    # passed `stage="review"` was audit.py, the coverage REPORTER. The
+    # engine scored the diff for a report and the wave ignored it.
+    #
+    # Measured on a reconstruction of aws/karpenter-provider-aws#9464 (a Go
+    # type addition plus a docs edit): legacy routed 6 lenses deep and
+    # marked nothing n/a; route v2 routed 2 deep, 4 light, and 20 n/a —
+    # each n/a carrying its evidence, e.g. product -> "0 product signals:
+    # no spec/requirements files, no acceptance-criteria markers". The
+    # field run dispatched 6 agents and 336k tokens for that diff.
+    #
+    # Coverage is NOT reduced by this — it is DISCLOSED. v2 emits an entry
+    # for every catalog lens and `routing_decision` carries each one's
+    # verdict, so the dashboard still shows all 26 and can now say WHY a
+    # lens did not run instead of running it to avoid the question. A
+    # failing engine still falls open to legacy breadth=all (more coverage,
+    # never less) and says so.
+    stage = None if getattr(a, "breadth_all", False) else "review"
     breadth = "all" if getattr(a, "breadth_all", False) else "routed"
     if getattr(a, "artifact_type", None):
         routing = lensmod.route([], artifact_type=a.artifact_type,
                                 only=(a.only.split(",") if a.only else None),
                                 skip=(a.skip.split(",") if a.skip else None),
-                                breadth=breadth)
+                                breadth=breadth, stage=stage, workspace=ws)
     else:
         routing = lensmod.route_git_diff(ws, base=a.base, task_type=a.task_type,
                                          only=(a.only.split(",") if a.only else None),
                                          skip=(a.skip.split(",") if a.skip else None),
-                                         breadth=breadth)
+                                         breadth=breadth, stage=stage)
 
     if action == "dispatch":
         # C3 (R-0009): an explicit --emit workflow on a definitively
@@ -2188,9 +2313,47 @@ How this team ships. The loop reads these as defaults.
 """
 
 
+def _ensure_excluded(ws, entries, header) -> list:
+    """Ignore paths WITHOUT touching a tracked file (v2.11.0).
+
+    `.git/info/exclude` is per-checkout, never committed, and does exactly
+    what `.gitignore` does for the person running the command. Writing to
+    `.gitignore` instead had three costs during a review of somebody else's
+    repository, all observed on aws/karpenter-provider-aws#9464: the working
+    tree went dirty on top of the exact commit under review; the file joined
+    `git diff <base>`, so routing reported "5 files changed" for a 4-file PR
+    and every lens brief had to be told to ignore it; and git-cleanliness
+    hooks then demanded a commit that would have been wrong to make in a
+    third-party repo.
+
+    Falls back to `.gitignore` only where there is no `.git` directory to
+    write into (a worktree or a non-repo), so the paths still get ignored.
+    """
+    git_dir = os.path.join(ws, ".git")
+    if os.path.isdir(git_dir):
+        info = os.path.join(git_dir, "info")
+        path = os.path.join(info, "exclude")
+        existing = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                existing = f.read()
+        missing = [e for e in entries if e not in existing]
+        if missing:
+            try:
+                os.makedirs(info, exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write("\n# " + header + "\n" + "\n".join(missing) + "\n")
+                return missing
+            except OSError:
+                pass          # unwritable .git — fall through to .gitignore
+        else:
+            return missing
+    return _ensure_gitignored(ws, entries, header)
+
+
 def _ensure_gitignored(ws, entries, header) -> list:
     """Append any missing entries to the repo .gitignore. Returns what it
-    added."""
+    added. Prefer `_ensure_excluded` — see its docstring."""
     gi_path = os.path.join(ws, ".gitignore")
     existing = ""
     if os.path.exists(gi_path):
@@ -2228,7 +2391,7 @@ def _migrate_kb(ws) -> dict:
         if fixed != body:
             with open(gi_path, "w", encoding="utf-8") as f:
                 f.write(fixed)
-    ignored = _ensure_gitignored(
+    ignored = _ensure_excluded(
         ws, ["/knowledge/"],
         "taskplane knowledge base — lives in the external store "
         "(~/.taskplane), never the repo")
@@ -2361,7 +2524,7 @@ def cmd_init(a) -> int:
                 f.write(body)
             wrote.append(f"context/{name}")
     # Runtime paths that stay LOCAL to the checkout — never committed.
-    missing = _ensure_gitignored(
+    missing = _ensure_excluded(
         ws, [".taskplane/", ".eval/", ".em-review/", ".security-review/",
              ".tp-work/"],
         "taskplane runtime (local-only — see docs/state-spec.md)")
@@ -2512,6 +2675,40 @@ def cmd_summary(a) -> int:
     return 0
 
 
+def _contracts_elsewhere(ws: str, limit: int = 4) -> list:
+    """Other checkouts in this store that currently hold a taskplane
+    contract. Governance is keyed on cwd, so "you are in the wrong
+    directory" is the single most useful thing to say when a governed
+    command finds nothing here — and the store already knows which
+    directories the session has been governing."""
+    out = []
+    here = os.path.realpath(os.path.abspath(ws))
+    projects = os.path.join(tp.store_home(), "projects")
+    for name in sorted(os.listdir(projects)) if os.path.isdir(projects) else []:
+        meta_path = os.path.join(projects, name, "meta.json")
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        owner = meta.get("workspace_realpath") or meta.get("workspace")
+        if not owner:
+            continue
+        owner = os.path.realpath(os.path.abspath(owner))
+        if owner == here or not os.path.isdir(owner):
+            continue
+        active = os.path.join(owner, ".taskplane", "active")
+        has = (os.path.isfile(os.path.join(owner, ".taskplane",
+                                           "active_contract.json"))
+               or (os.path.isdir(active)
+                   and any(n.endswith(".json") for n in os.listdir(active))))
+        if has:
+            out.append(owner)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def cmd_ack(a) -> int:
     """Discharge an obligation the engine issued (WS-F).
 
@@ -2563,16 +2760,41 @@ def cmd_ack(a) -> int:
         print("taskplane: ack needs an obligation id (or --status)",
               file=sys.stderr)
         return 1
+    # AN ACK MUST NAME AN OBLIGATION THIS WORKSPACE ISSUED (v2.11.0).
+    #
+    # Governance is keyed on cwd. In the field a shell's working directory
+    # reverted from the review checkout to the session home mid-run, and
+    # `tp ack <id>` there returned "acknowledged" for three real obligation
+    # ids against an empty directory with no contract and no ledger — while
+    # the real obligations stayed open. Nothing errored. `ack --status`
+    # then reported `issued: 0`, which reads as "nothing owed" rather than
+    # "you are in the wrong workspace". A governance command that succeeds
+    # at nothing and says OK is worse than one that fails.
+    issued = {row.get("id"): row for row in obligations.read(ws)
+              if row.get("event") == "issued"}
+    if a.id not in issued:
+        elsewhere = _contracts_elsewhere(ws)
+        msg = (f"taskplane: no obligation '{a.id}' was issued in this "
+               f"workspace ({ws}) — refusing to acknowledge it.")
+        if not issued:
+            msg += (" This workspace has no obligation ledger at all, which "
+                    "usually means the working directory is not the one the "
+                    "run was started in.")
+        else:
+            msg += (" Obligations issued here: "
+                    + ", ".join(sorted(issued)) + ".")
+        if elsewhere:
+            msg += (" Active taskplane contracts exist in: "
+                    + ", ".join(elsewhere)
+                    + " — re-run with `--workspace <that path>`.")
+        print(msg, file=sys.stderr)
+        return 1
     fp = getattr(a, "fingerprint", None)
     if not fp:
-        for row in obligations.read(ws):
-            if row.get("event") == "issued" and row.get("id") == a.id:
-                art = row.get("artifact")
-                if art:
-                    fp = obligations.artifact_fingerprint(
-                        os.path.join(ws, art) if not os.path.isabs(art)
-                        else art)
-                break
+        art = issued[a.id].get("artifact")
+        if art:
+            fp = obligations.artifact_fingerprint(
+                os.path.join(ws, art) if not os.path.isabs(art) else art)
     obligations.acknowledge(ws, a.id, evidence=getattr(a, "evidence", "") or "",
                             fingerprint=fp)
     print(f"acknowledged {a.id}" + (f" ({fp})" if fp else ""))
@@ -2772,6 +2994,26 @@ def cmd_graph(a) -> int:
                                 replace=not a.keep)
         print(json.dumps(r, indent=2))
     elif a.graph_action == "html":
+        # AN EMPTY GRAPH IS NOT A PICTURE (v2.11.0). Run from the wrong
+        # directory, this used to emit ~5.7 KB of perfectly valid-looking
+        # dependency-graph fragment for a workspace that was not a repo and
+        # had never been scanned — a graph of NOTHING, rendered to a human
+        # as the review's blast radius, with no way to tell it apart from
+        # the real one. Refusing costs a human one command; not refusing
+        # costs them a wrong decision they cannot see is wrong.
+        _g = dg.load(ws)
+        if not (_g.get("modules") or _g.get("edges")):
+            hint = ""
+            other = _contracts_elsewhere(ws)
+            if other:
+                hint = (" Active taskplane contracts exist in: "
+                        + ", ".join(other) + ".")
+            print(f"taskplane: refusing to render a dependency graph for "
+                  f"{ws} — nothing has been scanned there (0 modules, 0 "
+                  f"edges). Run `tp graph scan` in the workspace under "
+                  f"review, or pass `--workspace <path>`.{hint}",
+                  file=sys.stderr)
+            return 1
         files = (a.files.split(",") if a.files else
                  _changed_for_impact(ws, a.base))
         out = dg.to_html(ws, files, out=a.out,
@@ -3468,10 +3710,13 @@ def main(argv=None) -> int:
     lnd.add_argument("--all", action="store_true", dest="breadth_all",
                      help="full catalog: routed lenses run deep, the rest "
                           "as a quick sweep — nothing skipped")
-    lnd.add_argument("--max-actions", type=int, default=30,
+    lnd.add_argument("--max-actions", type=int, default=None,
                      dest="max_actions",
                      help="per-agent action ceiling written into each "
-                          "dispatched lens brief (default 30)")
+                          "dispatched lens brief. Default scales with the "
+                          "brief: 45 for a deep lens (it owns one subject at "
+                          "full depth and reads widely), 30 for the sweep. "
+                          "An explicit value applies to every brief.")
     lnd.add_argument("--artifact-type",
                      help="route on an artifact instead of the diff — "
                           "'strategy' summons the advisory (board) tier")

@@ -32,7 +32,17 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.10 — nine defects a real upstream repo found.** v2.9 was
+**What's new in v2.11 — the lens router you designed is now the one that
+runs.** taskplane has scored every lens against the actual diff since v2.4 —
+deep, light, or n/a with machine-checkable negative evidence — and the CLI
+never asked for it: `lens route` and `lens dispatch` took the old glob path,
+and the review skill passed `--all`, which switches the engine off by
+construction. So every review ran all 26 lenses. It no longer does: on a Go
+type change plus a docs edit the engine routes 2 deep, 4 light, and marks 20
+n/a, and the dashboard shows all 26 dispositions with the reason each one
+did not run. Coverage is disclosed, not spent.
+
+**In v2.10 — nine defects a real upstream repo found.** v2.9 was
 run end-to-end against a live PR in someone else's 256-module repo, and the
 worst defect was silent: the findings headline said `0 high` while the file
 carried a `class: regression` the engine's own gate blocks. The headline now

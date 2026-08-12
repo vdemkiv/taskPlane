@@ -1,6 +1,6 @@
 ---
 name: tp-engineering
-description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Reviews apply the FULL lens catalog — routed lenses deep, every other lens as a sweep, architecture & system design ALWAYS on — plus a requirements-vs-implementation walk for the human to sign off. Read-only toward code by enforced contract; it judges — it never implements or fixes."
+description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Reviews DISPOSITION the full lens catalog — the applicability engine routes each lens deep, light, or n/a-with-evidence, architecture & system design keeps its floor — plus a requirements-vs-implementation walk for the human to sign off. Read-only toward code by enforced contract; it judges — it never implements or fixes."
 ---
 
 # /tp-engineering — the SOUND seat (impact · all lenses · verdicts)
@@ -25,16 +25,28 @@ blocked; only declaring it finished. This exists because "render the
 dashboard" written in a skill was ignored for a month — an instruction is
 not a mechanism, and a refusal is.
 
-**Every review applies the full catalog — nothing skipped.**
-`$TP lens route --all` returns all 26 lenses: `tier=deep` (summoned by
-the change — run at full depth) and `tier=sweep` (quick pass of each
-remaining lens's top checks). **Architecture & system design is always
-on** — every code change gets at least a light pass, a structurally
-significant one a full pass. That floor is routed by the engine, not by
-memory.
+**Every review DISPOSITIONS the full catalog — it does not RUN the full
+catalog (v2.11.0).** `$TP lens route` returns all 26 lenses with a verdict
+each: `deep` (summoned by the change — full depth, its own agent), `light`
+(quick pass, batched into the sweep), and `n/a` — which runs NOTHING and
+carries machine-checkable negative evidence saying why, e.g. `product` →
+"0 product signals: no spec/requirements files, no acceptance-criteria
+markers". Coverage honesty comes from the evidence, not from running a
+lens to avoid the question: on a Go type change plus a docs edit the
+engine routes 2 deep + 4 light and marks 20 n/a, where the old glob router
+ran 6 deep and swept 20 more for nothing.
+
+Do NOT pass `--all`. It forces every lens to run AND switches the
+applicability engine off (`lens.py`: `breadth != "all"`), which is
+precisely the waste this paragraph exists to prevent. It remains available
+for the rare case where you deliberately want the whole catalog executed —
+say so when you use it. **Architecture & system design keeps its floor**:
+the engine applies it, and the security floor, inside routing — a
+structurally significant change still gets a full pass whatever the
+signals say.
 
 **Fan the lenses out — don't walk them in sequence.** Lenses are
-first-class governed agents. `$TP lens dispatch --base <ref> --all`
+first-class governed agents. `$TP lens dispatch --base <ref>`
 returns ready-to-dispatch briefs — one per DEEP lens plus one SWEEP —
 each carrying its own **read-only contract** (write-allow only
 `.em-review/lens-<id>/**`, budget-capped). Dispatch one `tp-lens` agent
@@ -61,12 +73,12 @@ instructions. The contract and output path remain identical.
 **SHOW THE PROGRESS, NOT JUST THE RESULT.** A review is agent work the
 human should watch, not a black box that ends in a report. So:
 1. BEFORE you dispatch, render the live wave board —
-   `$TP lens dispatch --base <ref> --all --dashboard` prints it — via
+   `$TP lens dispatch --base <ref> --dashboard` prints it — via
    an inline widget tool when available (unique title), otherwise deliver the
    generated dashboard artifact. The person sees every
    lens-agent about to run, in parallel, read-only.
 2. Dispatch the agents.
-3. AFTER they land, re-run `$TP lens dispatch --base <ref> --all --dashboard`
+3. AFTER they land, re-run `$TP lens dispatch --base <ref> --dashboard`
    and render it again — lane status now derives from each lens's
    findings.json (v2.2.1), so the human SEES the completed fan-out with
    per-lens counts instead of trusting your narration. Then MERGE every

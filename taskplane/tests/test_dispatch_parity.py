@@ -155,8 +155,7 @@ class TestGoldenReplay:
         assert tree_files(WORKSPACE) == frozen_files()
 
     def test_routed_dispatch_payload_matches_golden(self, scrubbed_env):
-        payload = lens.dispatch_briefs(lens.route(frozen_files()),
-                                       base="HEAD", max_actions=30)
+        payload = lens.dispatch_briefs(lens.route(frozen_files()), base="HEAD")
         assert normalize(payload) == golden_bytes(
             "golden_dispatch_routed.json")
 
@@ -164,15 +163,35 @@ class TestGoldenReplay:
         """breadth=all is the em-step shape: deep briefs + the batched sweep
         brief (cheap tier) — the sweep half of the contract is pinned too."""
         payload = lens.dispatch_briefs(
-            lens.route(frozen_files(), breadth="all"),
-            base="HEAD", max_actions=30)
+            lens.route(frozen_files(), breadth="all"), base="HEAD")
         assert normalize(payload) == golden_bytes("golden_dispatch_all.json")
+
+    def test_review_dispatch_payload_matches_golden(self, scrubbed_env):
+        """v2.11.0: what a REVIEW actually dispatches — signal-driven
+        routing, so `routing_decision` carries all 26 dispositions and only
+        the summoned lenses get a brief."""
+        payload = lens.dispatch_briefs(
+            lens.route(frozen_files(), stage="review",
+                       workspace=WORKSPACE), base="HEAD")
+        assert normalize(payload) == golden_bytes(
+            "golden_dispatch_review.json")
+        assert len(payload["routing_decision"]) == len(lens.load_catalog()["lenses"])
+        dispatched = {b["id"] for b in payload["deep"]} | set(
+            (payload["sweep"] or {}).get("ids") or [])
+        na = {k for k, v in payload["routing_decision"].items()
+              if v["verdict"] == "n/a"}
+        assert na, "a real diff should mark some lenses n/a"
+        assert not (na & dispatched), "an n/a lens must not be dispatched"
+        for k in na:
+            assert payload["routing_decision"][k]["negative_evidence"], \
+                f"{k} is n/a with no evidence — that is a silent skip"
 
     def test_goldens_are_deterministic_artifacts(self):
         """No absolute paths, no timestamps, keys sorted — the scrub rules
         the goldens' headers document, machine-checked."""
         for name in ("golden_dispatch_routed.json",
-                     "golden_dispatch_all.json"):
+                     "golden_dispatch_all.json",
+                     "golden_dispatch_review.json"):
             body = golden_bytes(name)
             payload = json.loads(body)
             assert body == normalize(payload), f"{name}: keys not sorted"
@@ -183,7 +202,8 @@ class TestGoldenReplay:
 
     def test_golden_headers_document_the_regen_command(self):
         for name in ("golden_dispatch_routed.json",
-                     "golden_dispatch_all.json"):
+                     "golden_dispatch_all.json",
+                     "golden_dispatch_review.json"):
             with open(os.path.join(BRIEFS, name), encoding="utf-8") as f:
                 head = f.read(1000)
             assert head.startswith("#")
@@ -267,8 +287,12 @@ class TestCodexEnvParity:
         ws = _fixture_repo(tmp_path)
         rc, out = _dispatch(ws)
         assert rc == 0
+        # v2.11.0: the CLI default is signal-driven routing, so the payload
+        # it dispatches is pinned by its OWN golden. The legacy and
+        # force-everything payloads are still pinned, at library level,
+        # above — this change is the CLI's contract, not the library's.
         assert normalize(json.loads(out)) == normalize(
-            _host_expected("golden_dispatch_routed.json"))
+            _host_expected("golden_dispatch_review.json"))
 
     def test_codex_cli_breadth_all_equals_golden_derived_bytes(
             self, tmp_path, monkeypatch):
@@ -345,7 +369,7 @@ class TestWorkflowArgsParity:
         assert wf_payload["dispatch_path"] == "workflow"
         args = wf_payload["workflow"]["args"]
         assert args == task_payload  # JSON-equal, whole payload
-        assert normalize(args) == golden_bytes("golden_dispatch_routed.json")
+        assert normalize(args) == golden_bytes("golden_dispatch_review.json")
 
     def test_workflow_args_breadth_all_parity_including_sweep(self, tmp_path,
                                                               scrubbed_env):

@@ -356,11 +356,31 @@ def _strip_root_module(spec: str, declared_ids) -> "str | None":
     naming a separately-declared module. Stripping it yields a repo-relative
     path that `module_of` already knows how to bucket.
     """
-    # `declared_ids` reaches this helper as a dict from the manifest map and
-    # as a SET from callers that only need membership. Both are legitimate;
-    # only a dict can carry the root path.
-    root = declared_ids.get(ROOT_MODULE_KEY) \
-        if isinstance(declared_ids, dict) else None
+    return strip_root_prefix(spec, root_module(declared_ids))
+
+
+def root_module(declared_ids) -> "str | None":
+    """The repo's own module path, from whichever shape the caller holds.
+
+    v2.10.0 got this wrong in a way that made the whole feature a no-op.
+    `declared_ids` reaches the resolvers as a DICT from the manifest map and
+    as a SET from `_scan_locked` (`set(manifests.values())`), which needs
+    only membership — and the SET is what the scanner actually holds. The
+    dict-only lookup added then silently returned None there, so the root
+    module path was read from go.mod, stored under a reserved key, and never
+    used by anything. A set cannot carry it: the path is a VALUE with no key
+    to find it by, and guessing which member is the root would be exactly
+    the kind of inference that produces a wrong graph quietly. So this
+    returns None for a set BY DESIGN, and every resolver takes the root
+    explicitly (`strip_root_prefix`) instead of hoping to recover it.
+    """
+    if isinstance(declared_ids, dict):
+        return declared_ids.get(ROOT_MODULE_KEY) or None
+    return None
+
+
+def strip_root_prefix(spec: str, root: "str | None") -> "str | None":
+    """`<root>/pkg/x` -> `pkg/x`. The prefix rule, with the root passed in."""
     if not root:
         return None
     spec = str(spec or "").replace("\\", "/").strip("/")
@@ -571,7 +591,7 @@ _JS_IMPORT = re.compile(
 
 def _js_imports(src: str, relpath: str, file_index: set,
                 manifests: dict | None = None,
-                declared_ids=None) -> set:
+                declared_ids=None, root_mod: "str | None" = None) -> set:
     out = set()
     for target in _JS_IMPORT.findall(src):
         if target.startswith("."):
@@ -594,9 +614,13 @@ def _js_imports(src: str, relpath: str, file_index: set,
             # SCOPE, which is neither the package nor a real dependency.
             inside = _declared_target(target, declared_ids)
             if not inside:
-                # Intra-repo Go: strip the repo's own module path and bucket
-                # the remainder the same way a file path is bucketed.
-                rel_in = _strip_root_module(target, declared_ids)
+                # Intra-repo: strip the repo's own module path and bucket the
+                # remainder the same way a file path is bucketed. The root
+                # is passed in — recovering it from `declared_ids` is what
+                # silently failed in v2.10.0 (see root_module).
+                rel_in = strip_root_prefix(
+                    target, root_mod if root_mod is not None
+                    else root_module(declared_ids))
                 if rel_in:
                     inside = module_of(rel_in + "/_", manifests)
             out.add(inside if inside else "ext:" + target.split("/")[0])
@@ -982,7 +1006,12 @@ def _scan_locked(ws: str, into: dict | None = None,
             return None
 
     manifests = manifest_modules(files, _read_text)
-    declared_ids = set(manifests.values())
+    # The root module path is a PREFIX, never a module id. Leaving it in the
+    # membership set would let `_declared_target` match it by walking an
+    # import path up to the repo root and return the whole repository as one
+    # module — the collapse manifest_modules explicitly refuses to cause.
+    root_mod = manifests.get(ROOT_MODULE_KEY)
+    declared_ids = {v for k, v in manifests.items() if k != ROOT_MODULE_KEY}
 
     def _mod(rel):
         return module_of(rel, manifests)
@@ -1069,12 +1098,26 @@ def _scan_locked(ws: str, into: dict | None = None,
             # match against, so do NOT fabricate an edge. The residual gap
             # stays disclosed in meta.scanners.go.limitation, and the rest
             # can be recorded with record_edge / `tp graph edge`.
+            #
+            # v2.11.0 closes the case that matters most: a repo with ONE
+            # root go.mod — the ordinary Go layout. An import under that
+            # module path is intra-repo by construction. v2.10.0 taught
+            # manifest_modules to READ the root module path and then wired
+            # the prefix-stripping into the JS resolver ONLY, so this branch
+            # still answered ext: for every internal import and `graph
+            # impact` reported 2 modules with no call structure on a
+            # 256-module repo. It now uses the same resolution the JS path
+            # uses, so there is ONE rule for "this import is ours".
             imports = set()
             for block, single in re.findall(
                     r'import\s+\(([^)]*)\)|import\s+"([^"]+)"', src, re.S):
                 for t in ([single] if single
                           else re.findall(r'"([^"]+)"', block)):
                     inside = _declared_target(t, declared_ids)
+                    if not inside:
+                        rel_in = strip_root_prefix(t, root_mod)
+                        if rel_in:
+                            inside = module_of(rel_in + "/_", manifests)
                     imports.add(inside if inside
                                 else "ext:" + t.split("/")[-1])
         elif rel.endswith(".cs"):
@@ -1085,7 +1128,7 @@ def _scan_locked(ws: str, into: dict | None = None,
             imports = _ruby_imports(src, rel, set(files), manifests)
         else:
             imports = _js_imports(src, rel, set(files), manifests,
-                                  declared_ids)
+                                  declared_ids, root_mod)
         mod = _mod(rel)
         imports.discard(mod)
         refs = sorted(_file_refs(src, rel, files, artifact_only=True))
@@ -1217,9 +1260,15 @@ def _scan_locked(ws: str, into: dict | None = None,
     # radius. It never blocks DoR — honesty, not a new gate.
     scanners_meta = {}
     if any(rel.endswith(".go") for rel in code_files):
-        go_declared = any(posixpath.basename(rel) == "go.mod"
-                          and posixpath.dirname(rel) in manifests
-                          for rel in files)
+        # A ROOT go.mod declares the repo's module path but is deliberately
+        # not a manifest entry (it would collapse the repo into one node —
+        # see ROOT_MODULE_KEY), so the `dirname in manifests` test called
+        # the ordinary single-module Go repo "external-only" even while its
+        # imports resolved. Either form of declaration counts.
+        go_declared = bool(root_mod) or any(
+            posixpath.basename(rel) == "go.mod"
+            and posixpath.dirname(rel) in manifests
+            for rel in files)
         scanners_meta["go"] = (
             {"coverage": "declared-modules",
              "limitation": _GO_LIMITATION_DECLARED} if go_declared else

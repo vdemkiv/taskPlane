@@ -15,7 +15,15 @@ out of the user's way unless they ask. Do not simplify any of them for
 agents. The CLI surfaces named below are current as of v2.7 — verify against
 `$TP --help` before citing anything not listed here.
 
-**New in v2.10 — a fan-out of lens agents actually fans out.** Sibling lens
+**New in v2.11 — routed, not exhaustive.** `lens dispatch` asks the
+applicability engine which lenses this change actually summons; unrouted
+lenses get no agent and carry the evidence for why. `--all` still forces the
+whole catalog and now says that it disables the engine. Also: `tp ack` is
+unmetered, a budget's last actions are reserved for closing rather than
+spent on work, and `tp init` ignores runtime paths via `.git/info/exclude`
+instead of dirtying a reviewed repo's `.gitignore`.
+
+**In v2.10 — a fan-out of lens agents actually fans out.** Sibling lens
 contracts (every member read-only, every write-allow under one common root)
 now merge their write-allows and SUM their budgets, instead of intersecting
 to the empty set and handing six agents one agent's action budget. The
