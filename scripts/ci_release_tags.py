@@ -200,10 +200,20 @@ def audit(root=ROOT):
             in_flight = json.load(f).get("version")
     except (OSError, ValueError):
         in_flight = None
+    # ...and the same holds for a release that is COMMITTED but not yet
+    # pushed. The first version of this exemption covered exactly one
+    # version, which was wrong the moment two release commits stacked up
+    # locally: v2.11.0 was committed here, v2.12.0 was in the working tree,
+    # and the gate reported the older one as fictional. "Prepared" means
+    # some commit reachable from HEAD declares it — a CHANGELOG row for a
+    # version nobody has prepared anywhere still fails.
+    prepared = set(shipped_versions(root, "HEAD"))
+    if in_flight:
+        prepared.add(in_flight)
 
     shipped = set(intro)
     for v in changelog_versions(root):
-        if v in shipped or v in NOT_SHIPPED or v == in_flight:
+        if v in shipped or v in NOT_SHIPPED or v in prepared:
             continue
         problems.append({
             "check": "C4", "version": v,
@@ -229,6 +239,7 @@ def audit(root=ROOT):
 
     return {"ok": not problems, "mainline": ref, "newest": newest,
             "in_flight": in_flight,
+            "prepared": sorted(prepared, key=vkey),
             "shipped": {v: intro[v] for v in sorted(intro, key=vkey)},
             "tags": {k: tags[k] for k in sorted(tags, key=lambda t: vkey(t[1:]))},
             "not_shipped": sorted(NOT_SHIPPED), "skipped": sorted(SKIPPED),

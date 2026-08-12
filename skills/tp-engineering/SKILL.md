@@ -15,6 +15,25 @@ All review runs read-only toward code under an enforced contract:
 `$TP new --read-only --write-allow ".em-review/**" --owes review
 "engineering review: <target>"`.
 
+**BIND THE REVIEW TO A TREE FIRST (v2.12.0).** Start with
+`$TP target tools` — `git` and `gh` are dependencies, not conveniences. A
+clone carries the code and NONE of the intent: a pull request's title, body,
+linked issues and review conversation are not in the git objects, so without
+`gh` that context either goes missing or arrives over unauthenticated web
+reads nobody recorded. If `gh` is absent, say so and install it
+(`tp target tools --install`) before reviewing a remote PR.
+
+Then acquire and pin: `$TP new --read-only --write-allow ".em-review/**"
+--owes review --target <pr-url> --fetch --base <ref> "engineering review:
+<target>"`. That fetches `pull/N/head`, checks it out, and records origin,
+head, base, dirty state and a fingerprint. Copy that fingerprint into the
+findings `meta.target`. Until the workspace is pinned, `tp dod`,
+`tp loop submit`, `tp loop approve` and `tp loop retro` are refused — doing
+the review is never blocked, only declaring it finished. This exists
+because two field reviews of the same PR both cloned the repository and
+neither could prove it: a review conducted entirely from a rendered web
+diff would have produced identical artifacts and an identical gate.
+
 **`--owes review` is not optional.** It records, before any of the work
 starts, the two artifacts a review owes a human: the wave board re-rendered
 after dispatch, and the product's own dependency view. Those are BINDING —

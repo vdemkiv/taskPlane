@@ -93,6 +93,11 @@ not repeated in the tables.
 | `tp.py subagent-start` | SubagentStart lifecycle trace and bounded contract context (stdin event) |
 | `tp.py subagent-stop` | SubagentStop lifecycle trace (stdin event; advisory, never a completion gate) |
 | `tp.py summary` | simple human view: progress and decisions, while agents keep the detailed harness |
+| `tp.py target` | what is being reviewed — acquire a pull request, pin the checkout, or check that git and gh are actually available |
+| `tp.py target fetch` | fetch a pull request into this checkout and pin it (git fetch pull/N/head) |
+| `tp.py target pin` | record what THIS checkout is — origin, head, base, dirty state, fingerprint |
+| `tp.py target show` | print the pinned target record |
+| `tp.py target tools` | is git present, is gh present and authenticated — a remote PR review needs both |
 | `tp.py track` | multi-track workstreams |
 | `tp.py track close` | close a track |
 | `tp.py track list` | list every track |
@@ -616,12 +621,15 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--base` | REF | diff base for the target pin (e.g. origin/main) |
 | `--budget` | BUDGET | cooperative $ ceiling |
 | `--deny` | DENY (repeatable) | extra deny command (repeatable) |
+| `--fetch` | flag | with a PR --target, fetch pull/N/head into this checkout first (needs git; `gh` is what supplies the PR's title, body and discussion) |
 | `--max-actions` | MAX_ACTIONS | hook-enforced action ceiling (default 60) |
 | `--owes` | RUN_TYPE | seed the artifacts this run type owes as BINDING obligations (e.g. `review`): recorded before the work starts, and taskplane's own completion commands stay blocked until each is shown |
 | `--read-only` | flag | review/plan role — block filesystem writes |
 | `--scope` | SCOPE | comma-separated scope globs (relative) |
+| `--target` | SPEC | what is being reviewed — a PR url, OWNER/REPO#N, or a ref. Pins this checkout (origin, head, base, dirty state) so the findings can cite the tree they came from and the completion gate can check it |
 | `--tests` | TESTS | DoD test command |
 | `--tools` | TOOLS | comma-separated allowed tools (default: any) |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
@@ -815,6 +823,57 @@ simple human view: progress and decisions, while agents keep the detailed harnes
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--json` | flag | print the summary as JSON |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py target`
+
+what is being reviewed — acquire a pull request, pin the checkout, or check that git and gh are actually available
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--json` | flag | print the target record as JSON |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py target fetch`
+
+fetch a pull request into this checkout and pin it (git fetch pull/N/head)
+
+Positional arguments:
+
+- `spec` — PR url, OWNER/REPO#N, or #N
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--base` | BASE | diff base (default: the remote's default branch) |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py target pin`
+
+record what THIS checkout is — origin, head, base, dirty state, fingerprint
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--base` | BASE | diff base ref |
+| `--spec` | SPEC | the target this checkout represents (PR url, ref) |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py target show`
+
+print the pinned target record
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--json` | flag | JSON report |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py target tools`
+
+is git present, is gh present and authenticated — a remote PR review needs both
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--install` | flag | install gh via this host's package manager |
+| `--json` | flag | JSON report |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py track`

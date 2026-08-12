@@ -32,7 +32,17 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.11 — the lens router you designed is now the one that
+**What's new in v2.12 — a review can prove what it reviewed.**
+`tp target` acquires a pull request (`fetch`), pins what the checkout
+actually is — origin, head, base, dirty paths, one fingerprint — and the
+findings cite that fingerprint. Until the workspace is pinned, a read-only
+review cannot run `tp dod` or `tp loop submit`; doing the review is never
+blocked, only declaring it finished. `git` and `gh` are now declared
+dependencies and reported by `tp onboard`: a clone carries the code and
+none of the intent, since a PR's title, body, linked issues and discussion
+are not in the git objects at all.
+
+**In v2.11 — the lens router you designed is now the one that
 runs.** taskplane has scored every lens against the actual diff since v2.4 —
 deep, light, or n/a with machine-checkable negative evidence — and the CLI
 never asked for it: `lens route` and `lens dispatch` took the old glob path,

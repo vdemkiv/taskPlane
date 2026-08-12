@@ -247,6 +247,25 @@ class TestTheReleaseInFlightIsExempt(_RepoCase):
         self.repo.changelog_claims("1.2.0")
         self.assertEqual(self.repo.checks(), [])
 
+    def test_a_stack_of_unpushed_release_commits_is_fine(self):
+        """Two releases can be prepared locally before either is pushed —
+        which is exactly what happened here: v2.11.0 was committed and
+        v2.12.0 was in the working tree, and a one-version exemption called
+        the older one fictional."""
+        self.repo.release("1.0.0")
+        self.repo.tag("1.0.0")
+        # 1.1.0 and 1.2.0 committed locally; the mainline is `main` and has
+        # them, so simulate "not yet on the mainline" by pointing the gate
+        # at a mainline that stops earlier.
+        self.repo.release("1.1.0")
+        self.repo.release("1.2.0")
+        with open(os.path.join(self.dir, ".codex-plugin", "plugin.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"name": "taskplane", "version": "1.3.0"}, f)
+        self.repo.changelog_claims("1.3.0")
+        checks = self.repo.checks()
+        self.assertNotIn("C4", checks, f"unexpected: {self.repo.audit()['problems']}")
+
     def test_it_exempts_exactly_one_version_not_any_unshipped_row(self):
         self.repo.release("1.0.0")
         self.repo.tag("1.0.0")
