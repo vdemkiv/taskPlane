@@ -32,7 +32,19 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.9 — the flow's artifacts are no longer skippable.**
+**What's new in v2.10 — nine defects a real upstream repo found.** v2.9 was
+run end-to-end against a live PR in someone else's 256-module repo, and the
+worst defect was silent: the findings headline said `0 high` while the file
+carried a `class: regression` the engine's own gate blocks. The headline now
+reads the blocking set off the engine (`1 BLOCK (1R·0H·1P·0O)`) instead of
+counting severities. Parallel lens dispatch also did not survive more than
+one agent — six sibling lens contracts intersected to the empty set, so 4 of
+6 lenses wrote nothing and the wave board read 2/6 for a finished review;
+sibling waves now merge their write-allows and sum their budgets. And the
+graph could not see intra-repo Go at all, because a root `go.mod` was skipped
+— `graph impact` reported 2 modules on a repo with 256.
+
+**In v2.9 — the flow's artifacts are no longer skippable.**
 A review now records what it OWES you before the work starts (`tp new --owes
 review`): the lens wave board re-rendered after dispatch, and the product's
 own dependency view. Until each has been shown, `tp dod` and `tp loop submit`

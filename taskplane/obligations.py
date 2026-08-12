@@ -159,13 +159,13 @@ def blocked_reason(ws: str, command: str) -> "str | None":
     """
     if not command or not blocking_enabled():
         return None
-    text = " ".join(str(command).split())
-    # Token-wise, not a regex over the raw string: `git commit -m "dod"`
-    # must not look like a taskplane completion just because it contains
-    # the word. The command has to actually INVOKE taskplane.
-    tokens = [t.strip("\"'") for t in text.replace("/", " ").split()]
-    if not any(t in ("tp", "tp.py") for t in tokens):
+    # Position matters, and one shared resolver decides it. Scanning every
+    # token for a bare `tp` meant `git commit -m "tp dod"` read as a
+    # completion and was refused. A program name is the FIRST word.
+    verb = tp.taskplane_verb(command)
+    if verb is None:
         return None            # not a taskplane command at all
+    text = " ".join(str(command).split())
     if not any(re.search(p, text) for p in COMPLETION_PATTERNS):
         return None            # a taskplane command, but not a conclusion
     owed = blocking(ws)

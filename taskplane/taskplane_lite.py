@@ -718,6 +718,48 @@ def _token_subseq(needle, haystack) -> bool:
     return all(tok in it for tok in needle)
 
 
+# Writing here discards; it can never mutate a repository. Deliberately
+# exhaustive rather than a pattern — `/dev/shm/x` IS a real write.
+_NULL_SINKS = frozenset({"/dev/null", "/dev/zero"})
+
+
+# Interpreters and env prefixes a taskplane invocation may legitimately
+# carry. Anything else in leading position means this is not taskplane.
+_TP_LAUNCHERS = frozenset({"python", "python3", "py", "-3", "uv", "run",
+                           "env", "exec", "command", "time", "nohup"})
+
+
+def taskplane_verb(command: str) -> "str | None":
+    """The taskplane SUBCOMMAND this shell command invokes, or None.
+
+    Position matters. Both callers of this used to scan every token for a
+    bare `tp`, so `echo tp clear` read as a release command (exempt from the
+    meter) and `git commit -m "tp dod"` read as a completion (refused while
+    an obligation was open). A program name is the FIRST word, not any word.
+    """
+    text = " ".join(str(command or "").split())
+    if not text:
+        return None
+    try:
+        toks = shlex.split(text)
+    except ValueError:
+        toks = text.split()
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if "=" in t and not t.startswith("-") and "/" not in t.split("=")[0]:
+            i += 1                      # VAR=value prefix
+            continue
+        base = posixpath.basename(t.replace("\\", "/"))
+        if base in ("tp", "tp.py"):
+            return toks[i + 1] if i + 1 < len(toks) else ""
+        if base in _TP_LAUNCHERS or t.startswith("-"):
+            i += 1                      # an interpreter or its flag
+            continue
+        return None                     # some other program entirely
+    return None
+
+
 def _redirect_targets(toks) -> list:
     """Shlex-aware redirect targets — the token AFTER a `>`/`>>` operator, or
     the glued `>file` form. Because it reads shlex tokens (not the raw
@@ -731,7 +773,13 @@ def _redirect_targets(toks) -> list:
             m = _REDIRECT_GLUED_RE.match(t)
             if m and m.group("f"):
                 out.append(m.group("f"))
-    return out
+    # The NULL SINKS are not writes to anything. Screening `> /dev/null` as a
+    # filesystem write blocked ordinary read-only work — `tp graph impact …
+    # > /dev/null 2>&1` was refused under a review contract — and taught
+    # reviewers to route around the screener rather than use it. Discarding
+    # output cannot mutate the repository, and this is the entire list: no
+    # other device is treated as writable.
+    return [t for t in out if t not in _NULL_SINKS]
 
 
 def _env_split_string(rest) -> list | None:
@@ -1187,6 +1235,14 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                 workspace: str | None) -> tuple[bool, str]:
     """Return (allow, reason). Mirrors the taskplane PreToolUse hook."""
     members = contract.get("_union")
+    if members and contract.get("_sibling_root") and \
+            tool_name in WRITE_TOOLS:
+        # SIBLING WAVE, write path only: screen against the union's MERGED
+        # write_allow rather than asking every member (which would deny each
+        # sibling's own directory). Every other dimension still recurses
+        # below, so read_only, scope, denies and tools are unchanged.
+        flat = {k: v for k, v in contract.items() if k != "_union"}
+        return screen_tool(flat, tool_name, tool_input, workspace)
     if members:
         # Most-restrictive union (v2.3.0): the action passes only if EVERY
         # active contract approves it. First refusal wins — ambiguity between
@@ -3422,6 +3478,37 @@ def list_task_slots(workspace: str) -> list:
                   if n.endswith(".json") and not n.startswith("."))
 
 
+def _common_write_root(contracts: list) -> "str | None":
+    """The single directory every member's write_allow lives under, or None.
+
+    This is the test for a SIBLING WAVE: N contracts minted by one dispatch,
+    each owning its own artifact directory beneath a common review root
+    (`.em-review/lens-security/**`, `.em-review/lens-qa/**`, …). It is a
+    deliberately narrow shape and every clause matters — a member that can
+    write outside the root, or writes nothing, or is not read-only, is not a
+    sibling and the caller must fall back to intersection.
+    """
+    if len(contracts) < 2:
+        return None
+    root = None
+    for c in contracts:
+        if not c.get("read_only"):
+            return None            # a writer is never a review sibling
+        allow = c.get("write_allow") or []
+        if not allow:
+            return None            # nothing to merge
+        for g in allow:
+            g = str(g).replace("\\", "/").lstrip("./")
+            head = g.split("/", 1)[0]
+            if not head or head in ("*", "**") or head.startswith(".."):
+                return None        # unrooted or escaping — not a sibling
+            if root is None:
+                root = head
+            elif head != root:
+                return None        # different roots — genuinely competing
+    return root
+
+
 def _union_contract(contracts: list) -> dict:
     """The MOST RESTRICTIVE union of several active contracts — what governs
     a process that carries no TASKPLANE_TASK while per-task contracts are
@@ -3445,9 +3532,43 @@ def _union_contract(contracts: list) -> dict:
     }
     if any(c.get("read_only") for c in contracts):
         u["read_only"] = True
+
+    # SIBLING WAVES. Intersecting write_allow is the right operation when
+    # contracts are competing claims over one tree. It is the WRONG one when
+    # they are disjoint artifact dirs minted by a single dispatch: six lens
+    # contracts allowing `.em-review/lens-<id>/**` intersect to the EMPTY
+    # set, so every lens agent was blocked from writing its own findings and
+    # the marquee parallel-review feature could not work with more than one
+    # agent. Observed on aws/karpenter-provider-aws#9464: 4 of 6 lenses
+    # produced no on-disk evidence at all.
+    #
+    # The widening is bounded and stated: it applies ONLY when every member
+    # is read-only and every member's write_allow lives under one common
+    # root. Nothing else about the union loosens — read_only still latches
+    # on, scope still intersects, denies still union, and a non-sibling pair
+    # still resolves to the empty intersection. `tests_no_loosening` pins
+    # exactly that.
+    root = _common_write_root(contracts)
+    if root:
+        merged: list = []
+        for c in contracts:
+            for g in c.get("write_allow") or []:
+                if g not in merged:
+                    merged.append(g)
+        u["write_allow"] = merged
+        u["_sibling_root"] = root
     if defined:
-        u["budget"] = {"max_actions": min(defined),
-                       "note": "minimum ceiling across the union's members"}
+        if root:
+            # One wave, one budget. The minimum is right for contracts that
+            # compete; siblings were each GRANTED their ceiling, so taking
+            # the minimum silently gave N agents one agent's allowance and
+            # killed them mid-task at roughly their tenth action each.
+            u["budget"] = {"max_actions": sum(defined),
+                           "note": f"sum across {len(defined)} sibling "
+                                   f"contracts under {root}/"}
+        else:
+            u["budget"] = {"max_actions": min(defined),
+                           "note": "minimum ceiling across the union's members"}
     return u
 
 

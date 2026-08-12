@@ -15,7 +15,16 @@ out of the user's way unless they ask. Do not simplify any of them for
 agents. The CLI surfaces named below are current as of v2.7 — verify against
 `$TP --help` before citing anything not listed here.
 
-**New in v2.9 — a run declares what it owes you, and cannot close without
+**New in v2.10 — a fan-out of lens agents actually fans out.** Sibling lens
+contracts (every member read-only, every write-allow under one common root)
+now merge their write-allows and SUM their budgets, instead of intersecting
+to the empty set and handing six agents one agent's action budget. The
+findings headline reports the engine's blocking split — `N BLOCK (R·H·P·O)`
+— rather than a severity count that can read `0 high` over a regression.
+`graph impact` sees intra-repo Go: a root `go.mod` is consumed as a module
+PREFIX instead of being skipped.
+
+**In v2.9 — a run declares what it owes you, and cannot close without
 it.** `tp new --owes <run-type>` records the artifacts a run owes BEFORE the
 work begins; taskplane's own completion commands stay blocked until each is
 shown and acknowledged. Doing the work is never blocked — only declaring it

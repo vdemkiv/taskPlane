@@ -200,8 +200,20 @@ _MESSAGES = {
     # are named placeholders rendered from their own catalog entries (or "")
     "headline_findings": "{title}: {high} high · {med} med · {low} low "
                          "({total} {total, plural, one {finding} other "
-                         "{findings}}){unrated}{notes}{tests}{coverage}"
-                         "{impact}{rec}",
+                         "{findings}}){blocking}{unrated}{notes}{tests}"
+                         "{coverage}{impact}{rec}",
+    # THE BLOCKING SET. The engine has always computed this
+    # (loop.classify_findings / finding_blocks) and the headline never said
+    # it, so a review whose findings file carried `class: regression` could
+    # print "0 high" and be summarised as "nothing blocks" — which is
+    # exactly what happened on aws/karpenter-provider-aws#9464: one
+    # regression in the file, "0 confirmed regressions" in the summary, and
+    # an approve recommendation. The skill has mandated this split since
+    # v2.3.1. A headline that can disagree with its own blocking rule is
+    # worse than no headline.
+    "headline_findings_blocking": " · {n} BLOCK{split}",
+    "headline_findings_split": " ({r}R·{h}H·{p}P·{o}O)",
+    "headline_findings_noblock": " · 0 block ({t} to triage)",
     "headline_findings_unrated": " · {n} unrated → counted high",
     "headline_findings_notes": " · {n} {n, plural, one {note} other "
                                "{notes}} (question/praise/machinery, "
@@ -886,9 +898,36 @@ def headline_findings(findings, meta=None) -> str:
         else:
             cov_seg = _msg("headline_findings_coverage", deep=cov["deep"],
                            sweep=cov["sweep"], total=cov["total"])
+    # Read the split off the ENGINE. Re-deriving it here would be a second
+    # implementation of the blocking rule, free to disagree with the one the
+    # gate actually applies — the drift shape this codebase already carries
+    # elsewhere. `changed_files` comes from meta.impact when the review
+    # recorded one, so an unclassified high is judged in-diff exactly as the
+    # gate judges it.
+    blocking_seg = ""
+    try:
+        changed = ((meta.get("impact") or {}).get("changed_files")
+                   or meta.get("changed_files"))
+        split = _loop.classify_findings(findings or [], changed)
+        nblock = len(split["blockers"])
+        if nblock:
+            blocking_seg = _msg(
+                "headline_findings_blocking", n=nblock,
+                split=_msg("headline_findings_split",
+                           r=len(split["regressions"]),
+                           h=len([f for f in split["blockers"]
+                                  if f in split["unclassified"]]),
+                           p=len(split["pre_existing"]),
+                           o=len(split["observations"])))
+        elif findings:
+            blocking_seg = _msg("headline_findings_noblock", t=len(findings))
+    except Exception:
+        blocking_seg = ""          # the headline must never fail to print
+
     rec = meta.get("headline") or meta.get("recommendation")
     return _msg(
         "headline_findings",
+        blocking=blocking_seg,
         title=meta.get("title") or "review findings",
         high=c["high"], med=c["med"], low=c["low"],
         total=c["high"] + c["med"] + c["low"],
@@ -1043,6 +1082,55 @@ def _render_clean(clean):
             'checked and found sound</summary>'
             '<ul style="margin:8px 0 0;padding-inline-start:1.1em">'
             + "".join(rows) + more + '</ul></details>')
+
+
+# The palette every fragment ASSUMES. Fragments are written for an inline
+# widget host that already defines these; saved to disk they render as
+# unstyled text, which is how a review's own findings became illegible the
+# moment the host did not show them inline. This is the documented fallback.
+_DOC_VARS = """
+  :root{
+    --font-sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,sans-serif;
+    --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --surface-0:#f0efea;--surface-1:#f7f6f3;--surface-2:#ffffff;
+    --border:#dcd9d2;--text-primary:#1f1e1c;--text-secondary:#55524c;
+    --text-muted:#8b877f;--text-danger:#a8331f;--bg-danger:#f6e3df;
+    --text-warning:#8a5a10;--bg-warning:#f8ecd6;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --surface-0:#232220;--surface-1:#2b2a27;--surface-2:#141412;
+      --border:#3b3934;--text-primary:#f2f1ed;--text-secondary:#b9b5ad;
+      --text-muted:#87837b;--text-danger:#e8836d;--bg-danger:#3a231e;
+      --text-warning:#e0b062;--bg-warning:#3a2f1a;
+    }
+  }
+  html,body{margin:0;background:var(--surface-2);color:var(--text-primary);
+    font-family:var(--font-sans);-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:940px;margin:0 auto;padding:26px 22px 56px;}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;
+    clip:rect(0,0,0,0);}
+  hr.pg{border:0;border-top:1px solid var(--border);margin:26px 0 0;}
+"""
+
+
+def standalone_document(fragments, title="review findings") -> str:
+    """The paged fragments as ONE self-contained HTML document.
+
+    Every fragment this module emits is written for an inline widget host
+    that already defines the palette. Saved to a file it renders as unstyled
+    text — so a review whose host could not show widgets inline had no
+    legible artifact at all, and the reviewer had to hand-wrap the pages
+    before anything could be read. The fragments are embedded VERBATIM; only
+    the document shell around them is new.
+    """
+    body = '<hr class="pg">'.join(fragments or [])
+    return ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+            "<meta charset=\"utf-8\">\n"
+            "<meta name=\"viewport\" content=\"width=device-width,"
+            "initial-scale=1\">\n<title>" + _esc(title) + "</title>\n"
+            "<style>" + _DOC_VARS + "</style>\n</head>\n<body>\n"
+            "<div class=\"wrap\">\n" + body + "\n</div>\n</body>\n</html>\n")
 
 
 def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
