@@ -16,6 +16,7 @@
     "tp graph scan",
     "tp loop init"
   ],
+  "terminal": "human_gate",
   "steps": [
     {
       "id": "U1-CONTRACT",
@@ -59,7 +60,9 @@
       "universal": [
         "dod"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the build evaluation stops at design approval; implementation DoD is downstream of the human-approved Design Contract"
     },
     {
       "id": "U4-SHARED",

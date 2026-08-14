@@ -1,0 +1,22 @@
+{
+  "schema": "taskplane.eval-scenario/v1",
+  "skill": "tp-help",
+  "title": "Read-only onboarding guidance that explains the next action without starting delivery",
+  "source_files": ["skills/tp-help/SKILL.md"],
+  "inputs_fingerprint": "c4e945376c11adb2e8202dbc0214a3c41da33325d4a0225bd0281a2563e1a474",
+  "expects_derivations": [],
+  "declared_surfaces": ["tp onboard"],
+  "terminal": "response",
+  "steps": [
+    {"id": "A1", "claim": "help leaves the evaluated workspace unchanged", "record": "trace", "check": "absent", "select": {"event": "workspace_write"}, "required": true},
+    {"id": "A2", "claim": "help opens no governed contract or approval gate", "record": "trace", "check": "all", "of": [
+      {"check": "absent", "select": {"event": "contract_activated"}},
+      {"check": "absent", "select": {"event": {"in": ["loop_gate", "loop_approve"]}}}
+    ], "required": true},
+    {"id": "A3", "claim": "help does not dispatch implementation or review agents", "record": "trace", "check": "absent", "select": {"event": "subagent_start"}, "required": true},
+    {"id": "U1", "claim": "a read-only help response has no task contract", "record": "trace", "check": "exists", "select": {"event": "contract_activated"}, "universal": ["contract"], "required": true, "applicable": false, "reason": "tp-help is a read-only advisory and intentionally opens no task contract"},
+    {"id": "U2", "claim": "a read-only help response has no delivery readiness gate", "record": "trace", "check": "exists", "select": {"event": "dor"}, "universal": ["dor"], "required": true, "applicable": false, "reason": "tp-help explains DoR but performs no delivery work"},
+    {"id": "U3", "claim": "a read-only help response makes no delivery completion claim", "record": "trace", "check": "exists", "select": {"event": "dod"}, "universal": ["dod"], "required": true, "applicable": false, "reason": "tp-help explains DoD but completes no implementation"},
+    {"id": "U4", "claim": "a read-only help response derives no expensive review artifacts", "record": "derivations", "check": "exists", "select": {"event": "derived"}, "universal": ["no_rederive"], "required": true, "applicable": false, "reason": "tp-help does not derive a diff, impact, or graph scan"}
+  ]
+}

@@ -795,7 +795,15 @@ def _when(events, names):
                  if row.get("event") in names), None)
 
 
-def absolute_compliance(rec) -> dict:
+def _applicable_universal(scenario) -> set:
+    if not isinstance(scenario, dict):
+        return set(es.UNIVERSAL)
+    return {tag for step in (scenario.get("steps") or ())
+            if isinstance(step, dict) and step.get("applicable") is not False
+            for tag in (step.get("universal") or ())}
+
+
+def absolute_compliance(rec, scenario=None) -> dict:
     """Fail-closed workflow eligibility from repository evidence.
 
     This is deliberately independent of the generic scenario scorer.  A run
@@ -811,40 +819,23 @@ def absolute_compliance(rec) -> dict:
     if driver and driver.get("status") != "success":
         failures.append("driver_" + str(driver.get("status") or "unknown"))
     proof = run.get("hook_proof") or {}
-    if not proof.get("proved"):
+    dispatch_rows = (rec.get("rows") or {}).get("dispatch") or []
+    dispatched = bool(dispatch_rows) or any(
+        row.get("event") in ("subagent_start", "lens_dispatch")
+        for _, row in events)
+    if dispatched and not proof.get("proved"):
         failures.append("hook_unproved")
 
+    required = _applicable_universal(scenario)
     contract = _first(events, "contract_activated")
-    if contract is None:
+    if "contract" in required and contract is None:
         failures.append("contract_missing")
 
     dor = _first(events, "dor")
-    if dor is None:
+    if "dor" in required and dor is None:
         failures.append("dor_missing")
-    elif dor.get("ready") is not True:
+    elif "dor" in required and dor.get("ready") is not True:
         failures.append("dor_failed")
-
-    impact = _first(events, "graph_impact")
-    if impact is None:
-        failures.append("impact_missing")
-    else:
-        if run.get("target_head") is None or \
-                impact.get("scanned_head") != run.get("target_head"):
-            failures.append("graph_head_mismatch")
-        if impact.get("dispositions_complete") is not True:
-            failures.append("impact_dispositions_incomplete")
-
-    context = _first(events, "review_context_written")
-    if context is None:
-        failures.append("context_missing")
-    route = _first(events, "lens_route")
-    if route is None:
-        failures.append("routing_missing")
-    else:
-        if route.get("requested_breadth") == "all":
-            failures.append("breadth_all")
-        if route.get("complete") is not True:
-            failures.append("routing_incomplete")
 
     first_dispatch = _when(events, ("subagent_start", "lens_dispatch"))
     contract_ts = _when(events, "contract_activated")
@@ -852,34 +843,79 @@ def absolute_compliance(rec) -> dict:
     impact_ts = _when(events, "graph_impact")
     context_ts = _when(events, "review_context_written")
     route_ts = _when(events, "lens_route")
-    if contract_ts is not None and dor_ts is not None and contract_ts >= dor_ts:
+    if "contract" in required and "dor" in required \
+            and contract_ts is not None and dor_ts is not None \
+            and contract_ts >= dor_ts:
         failures.append("contract_after_dor")
-    if dor_ts is not None:
+    if "dor" in required and dor_ts is not None:
         first_governed = min((v for v in (impact_ts, context_ts, route_ts,
                                          first_dispatch) if v is not None),
                              default=None)
         if first_governed is not None and dor_ts >= first_governed:
             failures.append("dor_after_work")
-    if impact_ts is not None and route_ts is not None and impact_ts >= route_ts:
-        failures.append("impact_after_routing")
-    if first_dispatch is not None:
-        if impact_ts is None or impact_ts >= first_dispatch:
-            failures.append("impact_after_dispatch")
-        if context_ts is None or context_ts >= first_dispatch:
-            failures.append("context_after_dispatch")
-        if route_ts is None or route_ts >= first_dispatch:
-            failures.append("routing_after_dispatch")
+
+    # The legacy direct caller had one fixed Review workflow.  Scenario-aware
+    # runs leave graph/context/routing requirements to their data manifest;
+    # otherwise product/design/advisory skills are graded as broken reviews.
+    if scenario is None:
+        impact = _first(events, "graph_impact")
+        if impact is None:
+            failures.append("impact_missing")
+        else:
+            if run.get("target_head") is None or \
+                    impact.get("scanned_head") != run.get("target_head"):
+                failures.append("graph_head_mismatch")
+            if impact.get("dispositions_complete") is not True:
+                failures.append("impact_dispositions_incomplete")
+        context = _first(events, "review_context_written")
+        if context is None:
+            failures.append("context_missing")
+        route = _first(events, "lens_route")
+        if route is None:
+            failures.append("routing_missing")
+        else:
+            if route.get("requested_breadth") == "all":
+                failures.append("breadth_all")
+            if route.get("complete") is not True:
+                failures.append("routing_incomplete")
+        if impact_ts is not None and route_ts is not None \
+                and impact_ts >= route_ts:
+            failures.append("impact_after_routing")
+        if first_dispatch is not None:
+            if impact_ts is None or impact_ts >= first_dispatch:
+                failures.append("impact_after_dispatch")
+            if context_ts is None or context_ts >= first_dispatch:
+                failures.append("context_after_dispatch")
+            if route_ts is None or route_ts >= first_dispatch:
+                failures.append("routing_after_dispatch")
 
     dod = _first(events, "dod")
-    if dod is None:
+    if "dod" in required and dod is None:
         failures.append("dod_missing")
-    elif dod.get("passed") is not True:
+    elif "dod" in required and dod.get("passed") is not True:
         failures.append("dod_failed")
-    completion_ts = _when(events, ("loop_submit", "completion_claim"))
-    if completion_ts is None:
+    terminal = (scenario or {}).get("terminal", "completion")
+    completion_ts = _when(events, ("loop_submit", "completion_claim",
+                                    "review_kernel_collected"))
+    if terminal == "completion" and completion_ts is None:
         failures.append("completion_missing")
-    elif dod is not None and dod.get("ts", 0) >= completion_ts:
-        failures.append("dod_after_completion")
+    elif terminal == "human_gate" and _first(events, "human_gate_wait") is None:
+        failures.append("human_gate_missing")
+    elif terminal == "review_complete" and \
+            _first(events, "review_kernel_collected") is None:
+        failures.append("review_completion_missing")
+    elif terminal == "response":
+        stdout = ((driver.get("artifacts") or {}).get("stdout") or {})
+        if not isinstance(stdout.get("bytes"), int) or stdout["bytes"] <= 0:
+            failures.append("response_missing")
+    if "dod" in required and completion_ts is not None and dod is not None:
+        dod_ts = dod.get("ts", 0)
+        same_collection_receipt = (
+            terminal == "review_complete" and dod_ts == completion_ts and
+            dod.get("source") == "review_kernel_collected")
+        if dod_ts > completion_ts or (dod_ts == completion_ts and
+                                      not same_collection_receipt):
+            failures.append("dod_after_completion")
 
     if any(row.get("event") == "loop_approve_unattributed"
            or (row.get("event") == "loop_approve" and
@@ -889,12 +925,14 @@ def absolute_compliance(rec) -> dict:
         failures.append("self_or_unattributed_approval")
 
     derivations = (rec.get("rows") or {}).get("derivations")
-    if derivations is None:
+    if "no_rederive" in required and derivations is None:
         failures.append("derivation_evidence_missing")
-    else:
+    elif "no_rederive" in required:
         derived = [r for r in derivations if isinstance(r, dict)
                    and r.get("event") == "derived" and not r.get("probe")]
-        for key in ("diff", "impact"):
+        expected = ((scenario or {}).get("expects_derivations")
+                    if isinstance(scenario, dict) else ("diff", "impact"))
+        for key in expected or ():
             count = sum(1 for r in derived if r.get("key") == key)
             if count == 0:
                 failures.append(key + "_derivation_missing")
@@ -903,20 +941,20 @@ def absolute_compliance(rec) -> dict:
         if derivation.repeats(rows=derivations):
             failures.append("repeated_derivation")
 
-    context_rows = (rec.get("rows") or {}).get("context") or []
-    contexts = [r for r in context_rows if isinstance(r, dict)
-                and r.get("kind") == "context_file"]
-    if len(contexts) != 1:
-        failures.append("shared_context_count")
-    elif not (contexts[0].get("fingerprint") or contexts[0].get("sha256")):
-        failures.append("shared_context_unfingerprinted")
-    dispatch_rows = (rec.get("rows") or {}).get("dispatch") or []
-    if contexts:
-        expected_path = contexts[0].get("path")
-        if expected_path and any(r.get("context_path") != expected_path
-                                 for r in dispatch_rows
-                                 if isinstance(r, dict)):
-            failures.append("dispatch_context_mismatch")
+    if scenario is None:
+        context_rows = (rec.get("rows") or {}).get("context") or []
+        contexts = [r for r in context_rows if isinstance(r, dict)
+                    and r.get("kind") == "context_file"]
+        if len(contexts) != 1:
+            failures.append("shared_context_count")
+        elif not (contexts[0].get("fingerprint") or contexts[0].get("sha256")):
+            failures.append("shared_context_unfingerprinted")
+        if contexts:
+            expected_path = contexts[0].get("path")
+            if expected_path and any(r.get("context_path") != expected_path
+                                     for r in dispatch_rows
+                                     if isinstance(r, dict)):
+                failures.append("dispatch_context_mismatch")
 
     failures = list(dict.fromkeys(failures))
     return {"schema": ABSOLUTE_SCHEMA, "passed": not failures,
@@ -1015,7 +1053,7 @@ def token_efficiency(run, baseline=None, *, token_limit=PR_9464_TOKEN_LIMIT) -> 
 
 def evaluate_run_v2(scenario, rec, baseline=None) -> dict:
     """One absolute-first result used by CI and baseline eligibility."""
-    workflow = absolute_compliance(rec)
+    workflow = absolute_compliance(rec, scenario)
     shape_errors = validate_run_v2(rec.get("run"))
     if shape_errors:
         workflow = dict(workflow)
@@ -1024,7 +1062,7 @@ def evaluate_run_v2(scenario, rec, baseline=None) -> dict:
         workflow["passed"] = workflow["eligible"] = False
     generic = evaluate(scenario, rec)
     required_bad = sorted(sid for sid, verdict in generic["verdicts"].items()
-                          if verdict != PASS)
+                          if verdict not in (PASS, NA))
     if required_bad:
         workflow = dict(workflow)
         workflow["failures"] = list(workflow["failures"]) + [

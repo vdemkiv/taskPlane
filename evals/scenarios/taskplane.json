@@ -14,6 +14,7 @@
     "tp loop submit",
     "tp loop gate"
   ],
+  "terminal": "human_gate",
   "steps": [
     {
       "id": "U1-CONTRACT",
@@ -57,7 +58,9 @@
       "universal": [
         "dod"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the facade evaluation deliberately stops at the first human approval gate; delivery DoD is downstream and must not be fabricated before that decision"
     },
     {
       "id": "U4-SHARED",

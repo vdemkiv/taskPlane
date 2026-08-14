@@ -1,0 +1,19 @@
+{
+  "schema": "taskplane.eval-scenario/v1",
+  "skill": "tp-northstar",
+  "title": "A read-only strategic note grounded in the configured north star and never promoted into a gate",
+  "source_files": ["skills/tp-northstar/SKILL.md"],
+  "inputs_fingerprint": "1f2846b10dc69703ea22f61ad9520228072a75b51c497009b5bde525b7260fbf",
+  "expects_derivations": [],
+  "declared_surfaces": ["tp north-star"],
+  "terminal": "response",
+  "steps": [
+    {"id": "A1", "claim": "the strategic review leaves the evaluated workspace unchanged", "record": "trace", "check": "absent", "select": {"event": "workspace_write"}, "required": true},
+    {"id": "A2", "claim": "the strategic note never becomes a delivery gate or approval", "record": "trace", "check": "absent", "select": {"event": {"in": ["loop_gate", "loop_approve"]}}, "required": true},
+    {"id": "A3", "claim": "the strategic note does not dispatch implementation or lens agents", "record": "trace", "check": "absent", "select": {"event": "subagent_start"}, "required": true},
+    {"id": "U1", "claim": "the advisory note has no task contract", "record": "trace", "check": "exists", "select": {"event": "contract_activated"}, "universal": ["contract"], "required": true, "applicable": false, "reason": "tp-northstar is explicitly advisory and never opens a delivery contract"},
+    {"id": "U2", "claim": "the advisory note has no delivery readiness gate", "record": "trace", "check": "exists", "select": {"event": "dor"}, "universal": ["dor"], "required": true, "applicable": false, "reason": "strategic advice does not start implementation"},
+    {"id": "U3", "claim": "the advisory note has no delivery completion gate", "record": "trace", "check": "exists", "select": {"event": "dod"}, "universal": ["dod"], "required": true, "applicable": false, "reason": "strategic advice does not complete implementation"},
+    {"id": "U4", "claim": "the advisory note derives no review diff or blast radius", "record": "derivations", "check": "exists", "select": {"event": "derived"}, "universal": ["no_rederive"], "required": true, "applicable": false, "reason": "tp-northstar consumes user/project context without running the review derivation pipeline"}
+  ]
+}

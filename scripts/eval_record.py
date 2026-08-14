@@ -79,6 +79,7 @@ import eval_drivers                    # noqa: E402
 import eval_rubric                     # noqa: E402
 import eval_scenario                   # noqa: E402
 import lens as lens_router             # noqa: E402
+import loop as loop_mod                # noqa: E402
 import obligations                     # noqa: E402
 import review                          # noqa: E402
 import spend                           # noqa: E402
@@ -122,7 +123,8 @@ PASSTHROUGH = ("PATH", "PYTHONPATH", "TMPDIR", "TEMP", "TMP",
                "LD_LIBRARY_PATH", "SystemRoot", "COMSPEC", "PATHEXT")
 
 # The dirs a run's own machinery owns. Never part of "what the model wrote".
-_RUNTIME_DIRS = (".git", ".taskplane", ".claude")
+_RUNTIME_DIRS = (".git", ".taskplane", ".claude", ".codex",
+                 ".taskplane-eval")
 
 # Never copied out of a fixture tree: derived bytes, not source.
 _NEVER_COPY = ("__pycache__", ".pytest_cache", ".mypy_cache", ".git")
@@ -605,7 +607,7 @@ def first_write(ws: str, contract, since) -> "dict | None":
 
 
 def synthesize_trace(rows, *, known_lenses=(), contract=None,
-                     write=None) -> list:
+                     write=None, started_at=None, loop_state=None) -> list:
     """The engine's trace plus what it does not emit, ordered.
 
     Both additions are conditional on ABSENCE. `contract_activated` is traced
@@ -629,6 +631,35 @@ def synthesize_trace(rows, *, known_lenses=(), contract=None,
                     "derived from the routed set against the lens catalog")
                 row["synthesized_fields"] = ["breadth"]
         out.append(row)
+    have = {r.get("event") for r in out}
+    if started_at is not None and "evaluation_started" not in have:
+        out.append({"event": "evaluation_started", "ts": float(started_at),
+                    "synthesized": True, "source": "recorder boundary"})
+    if "dor" not in have:
+        ready = next((r for r in out if r.get("event") == "loop_step"
+                      and r.get("dor_ready") is not None), None)
+        if ready is None:
+            ready = next((r for r in out
+                          if r.get("event") == "review_kernel_started"), None)
+        if ready is not None:
+            out.append({"event": "dor", "ts": float(ready.get("ts", 0)),
+                        "ready": (ready.get("dor_ready") is True
+                                  if "dor_ready" in ready else
+                                  ready.get("graph_quality_status") == "complete"),
+                        "synthesized": True,
+                        "source": ready.get("event")})
+    if "dod" not in have:
+        collected = next((r for r in out
+                          if r.get("event") == "review_kernel_collected"), None)
+        if collected is not None:
+            out.append({"event": "dod", "ts": float(collected.get("ts", 0)),
+                        "passed": True, "synthesized": True,
+                        "source": "review_kernel_collected"})
+    if isinstance(loop_state, dict) and \
+            loop_state.get("step") in loop_mod.HUMAN_STEPS:
+        out.append({"event": "human_gate_wait", "ts": time.time(),
+                    "step": loop_state.get("step"), "synthesized": True,
+                    "source": "frozen loop state"})
     have = {r.get("event") for r in out}
     if write and "workspace_write" not in have:
         out.append({"event": "workspace_write", "ts": float(write["ts"]),
@@ -701,8 +732,73 @@ def synthesize_context(ws: str, *, trace_rows, fallback_ts) -> list:
                     "lens": lens_name(os.path.basename(os.path.dirname(path))),
                     "path": _rel(ws, path), "sha256": _sha256(path),
                     "ts": _mtime(path, fallback_ts), "synthesized": True})
+    # ReviewKernel v2 replaces the legacy `.em-review/context/` and
+    # `lens-*/findings.json` layout with one immutable envelope and leased
+    # slot results.  Freeze those native artifacts directly instead of
+    # grading the current workflow against files it intentionally removed.
+    have_target = any(r.get("kind") == "target" for r in out)
+    for state in _review_kernel_states(ws, trace_rows=trace_rows):
+        target = state.get("target") or {}
+        if not have_target and target.get("head"):
+            out.append({"kind": "target", "path": target.get("root") or ws,
+                        "head": target.get("head"), "base": target.get("base"),
+                        "origin": target.get("origin"),
+                        "fingerprint": target.get("fingerprint"),
+                        "ts": float(fallback_ts), "synthesized": True,
+                        "source": "review kernel state"})
+            have_target = True
+        envelope = state.get("envelope") or {}
+        rel = envelope.get("relative_path")
+        if rel:
+            out.append({"kind": "review_envelope", "path": rel,
+                        "fingerprint": envelope.get("fingerprint"),
+                        "sha256": envelope.get("digest"),
+                        "bytes": envelope.get("bytes"),
+                        "run_id": state.get("run_id"),
+                        "ts": _mtime(os.path.join(ws, rel), fallback_ts),
+                        "synthesized": True})
+        for slot in state.get("slots") or ():
+            result = slot.get("result_path")
+            if not result:
+                continue
+            path = os.path.join(ws, result)
+            if not os.path.isfile(path):
+                continue
+            out.append({"kind": "slot_result", "path": result,
+                        "slot_id": slot.get("slot_id"),
+                        "lens_ids": list(slot.get("lens_ids") or ()),
+                        "sha256": _sha256(path), "ts": _mtime(path, fallback_ts),
+                        "synthesized": True})
     out.sort(key=_ts)
     return out
+
+
+def _review_kernel_states(ws: str, *, trace_rows=()) -> list:
+    """The canonical run named by this trace, never accumulated run history."""
+    traced = [str(row.get("run_id")) for row in trace_rows
+              if isinstance(row, dict)
+              and row.get("event") == "review_kernel_started"
+              and row.get("run_id")]
+    run_id = traced[-1] if traced else None
+    if not run_id:
+        try:
+            index = _read_json(os.path.join(ws, ".em-review", "kernel-v2",
+                                            "active.json"))
+        except (OSError, ValueError):
+            index = {}
+        if isinstance(index, dict):
+            run_id = index.get("latest")
+    pattern = os.path.join(ws, ".em-review", "kernel-v2", "runs",
+                           str(run_id) if run_id else "*", "state.json")
+    rows = []
+    for path in sorted(glob.glob(pattern)):
+        try:
+            row = _read_json(path)
+        except (OSError, ValueError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 def primary_context_path(trace_rows) -> "str | None":
@@ -741,6 +837,22 @@ def synthesize_briefs(ws: str, *, trace_rows, context_path) -> list:
     that did not happen.
     """
     rows = {}
+    for state in _review_kernel_states(ws, trace_rows=trace_rows):
+        envelope = state.get("envelope") or {}
+        for slot in state.get("slots") or ():
+            slot_id = str(slot.get("slot_id") or "")
+            if not slot_id:
+                continue
+            brief = slot.get("brief") or {}
+            rows["slot:" + slot_id] = {
+                "lens": slot_id, "slot_id": slot_id,
+                "lens_ids": list(slot.get("lens_ids") or ()),
+                "context_path": envelope.get("relative_path"),
+                "context_fingerprint": envelope.get("fingerprint"),
+                "ts": _mtime(os.path.join(ws, brief.get("relative_path", "")),
+                             0.0),
+                "kind": "review-kernel-slot",
+                "task_name": slot_id, "source": "review kernel state"}
     for entry in _queue(ws, "expected_dispatch.json"):
         lens = brief_lens(entry)
         if not lens or lens in rows:
@@ -930,9 +1042,11 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
     for path in tp.trace_paths(ws):
         trace_rows += _read_jsonl(path)
     contract = tp.load_active(ws)
+    loop_state = loop_mod.load(ws)
     trace_rows = synthesize_trace(
         trace_rows, known_lenses=catalog_ids(root), contract=contract,
-        write=first_write(ws, contract, started_at))
+        write=first_write(ws, contract, started_at), started_at=started_at,
+        loop_state=loop_state)
     context_rows = synthesize_context(ws, trace_rows=trace_rows,
                                       fallback_ts=started_at)
     report = tp.dispatch_report(ws)
@@ -1045,7 +1159,7 @@ def record_run(*, root: str, dest: str, driver, skill: str = "tp-engineering",
                run_id: str | None = None, mode: str = "out-of-band",
                out_dir: str | None = None, transcript=None,
                schema: str = RUN_SCHEMA, model=None,
-               reasoning_effort=None) -> dict:
+               reasoning_effort=None, setup=None) -> dict:
     """Record one run: build, instrument, probe, DRIVE, freeze.
 
     `driver` is the seam. It is called once with a `RunContext` and is the
@@ -1076,8 +1190,13 @@ def record_run(*, root: str, dest: str, driver, skill: str = "tp-engineering",
     env = run_env(root=root, ws=ws, home=home, store=store, manifest=manifest)
     install_hooks(root, ws)
 
-    started_at = time.time()
     with _applied(env):
+        setup_result = (setup(root=root, ws=ws, dest=dest, env=env)
+                        if setup is not None else None)
+        # Evaluator staging/onboarding is outside the measured model phase.
+        # Otherwise a help/status response is blamed for the harness's own
+        # files and every cost/ordering timestamp starts too early.
+        started_at = time.time()
         probe = derivation.probe(ws)
         if not probe:
             raise InstrumentBroken(
@@ -1099,7 +1218,8 @@ def record_run(*, root: str, dest: str, driver, skill: str = "tp-engineering",
                      schema=schema, driver_result=driver_result, model=model,
                      reasoning_effort=reasoning_effort)
     return {"path": out_dir, "run": run, "checkout": ws, "dest": dest,
-            "origin": origin, "fixture": fixture, "probe": probe}
+            "origin": origin, "fixture": fixture, "probe": probe,
+            "setup": setup_result}
 
 
 def record_run_v2(*, host: str, root: str, dest: str,

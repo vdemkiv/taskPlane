@@ -507,7 +507,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         routing = route_fn()
         if (routing.get("context") or {}).get("status") == "mapper_unavailable":
             raise ReviewKernelError("mapper_unavailable")
-        decision = _routing_decision(routing, lensmod.load_catalog())
+        catalog = lensmod.load_catalog()
+        decision = _routing_decision(routing, catalog)
     except Exception as exc:
         run_id = _run_id(stage, str(target.get("fingerprint") or ""),
                          quality["fingerprint"], 0)
@@ -584,8 +585,15 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "manifest": manifest, "counters": counters,
     })
     tp.trace(ws, "review_kernel_started", stage=stage,
+             run_id=run_id,
+             target_head=target.get("head"),
              target_fingerprint=target.get("fingerprint"),
              context_fingerprint=envelope_ref["fingerprint"],
+             graph_quality_status=quality.get("status"),
+             routing_mode="selective", routing_complete=True,
+             dispositions_complete=len(decision) == len(
+                 catalog.get("lenses") or []),
+             routing_counts=counts,
              slots=[row["slot_id"] for row in slots])
     return manifest
 

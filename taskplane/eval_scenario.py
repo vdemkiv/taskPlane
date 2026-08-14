@@ -76,13 +76,16 @@ FLOW_EXTRACT_SCHEMA = "taskplane.eval-scenario/flow-extract/v1"
 
 SCENARIO_DIRNAME = os.path.join("evals", "scenarios")
 
-# The skills that run under an enforced contract, and therefore the skills a
-# recorded run can be graded against. `tp-help`, `tp-status` and
-# `tp-northstar` are deliberately absent: they are read-only advisories that
-# open no contract and close no gate, so a rubric row about DoR/DoD would be
-# a row about nothing.
+# The skills that run under an enforced contract.  Read-only skills are still
+# evaluated, but against advisory scenarios whose governed controls are
+# explicitly n/a.  Keeping the two sets separate prevents a help/status run
+# from being graded as an incomplete delivery run while retaining the useful
+# distinction for callers that only want contract-bearing skills.
 GOVERNED_SKILLS = ("taskplane", "tp-build", "tp-design", "tp-engineering",
                    "tp-go", "tp-product", "tp-tag")
+ADVISORY_SKILLS = ("tp-help", "tp-northstar", "tp-status")
+EVALUATED_SKILLS = GOVERNED_SKILLS + ADVISORY_SKILLS
+TERMINALS = ("completion", "human_gate", "review_complete", "response")
 
 # --- the record vocabulary -------------------------------------------------
 #
@@ -109,12 +112,15 @@ RECORD_ROWS: dict = {
     "trace": "one row per trace.jsonl line; `event` names it; `ts` orders it",
     "obligations": "one row per obligations.jsonl line; `event` is "
                    "issued|acknowledged, `id` correlates them",
-    "dispatch": "one row per composed brief: {lens, context_path, ts}",
+    "dispatch": "one row per composed brief: legacy {lens, context_path, ts} "
+                "or ReviewKernel {kind: review-kernel-slot, slot_id, "
+                "context_fingerprint, ts}",
     "derivations": "one row per derivations.jsonl line; `event` is "
                    "command|derived",
     "context": "one row per artifact the run wrote: "
-               "{kind: target|context_file|findings|lens_findings, path, "
-               "head, base, fingerprint, sha256, lens, ts}",
+               "{kind: target|context_file|findings|lens_findings|"
+               "review_envelope|slot_result, path, head, base, fingerprint, "
+               "sha256, lens, slot_id, ts}",
 }
 
 # Ordering is compared on this field. Every record the recorder synthesizes
@@ -201,7 +207,8 @@ UNIVERSAL = ("contract", "dor", "dod", "no_rederive")
 ENGINE_EVENTS = (
     "dod", "dor", "graph_impact", "graph_scan", "lens_route", "loop_approve",
     "loop_gate", "loop_retro", "loop_step", "loop_submit",
-    "review_context_written", "review_dispatch_path", "subagent_start",
+    "review_context_written", "review_dispatch_path", "review_kernel_collected",
+    "review_kernel_started", "subagent_start",
 )
 
 # Events these scenarios need that the engine does NOT emit today. The
@@ -210,6 +217,11 @@ ENGINE_EVENTS = (
 # the one the schema's own reference example selects on, and there is no
 # `tp.trace(ws, "contract_activated")` anywhere in the engine.
 SYNTHETIC_EVENTS: dict = {
+    "evaluation_started":
+        "the recorder's timestamp immediately after fixture/setup work",
+    "human_gate_wait":
+        "the frozen loop state's current HUMAN_STEPS entry; the model stopped "
+        "without approving it",
     "contract_activated":
         "the active contract's own `activated_at` (taskplane_lite.activate "
         "records it; nothing traces it) — one row at that timestamp",
@@ -238,7 +250,7 @@ SYNTHETIC_FIELDS: dict = {
 }
 
 _TOP_KEYS = ("schema", "skill", "title", "source_files", "inputs_fingerprint",
-             "expects_derivations", "declared_surfaces", "steps")
+             "expects_derivations", "declared_surfaces", "terminal", "steps")
 _STEP_KEYS = ("id", "claim", "record", "check", "select", "event", "before",
               "after", "field", "value", "equals", "with", "key", "min",
               "max", "distinct_by", "of", "required", "universal",
@@ -631,6 +643,9 @@ def validate(scenario: dict, root: "str | None" = None) -> tuple:
             if not os.path.isfile(os.path.join(root,
                                                str(rel).replace("/", os.sep))):
                 out.append(f"source file {rel} does not exist")
+
+    if scenario.get("terminal") not in TERMINALS:
+        out.append("terminal must be one of " + ", ".join(TERMINALS))
 
     for key in scenario.get("expects_derivations") or ():
         if key not in derivation.KEYS:

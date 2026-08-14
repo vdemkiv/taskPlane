@@ -14,6 +14,7 @@
     "tp req debt",
     "tp decision new"
   ],
+  "terminal": "response",
   "steps": [
     {
       "id": "U1-CONTRACT",
@@ -42,7 +43,9 @@
       "universal": [
         "dor"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "standalone product refinement defines the requirement; delivery readiness is evaluated when a governed delivery loop consumes it"
     },
     {
       "id": "U3-DOD",
@@ -57,7 +60,9 @@
       "universal": [
         "dod"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "standalone product refinement makes no implementation completion claim, so delivery DoD is not applicable"
     },
     {
       "id": "U4-SHARED",

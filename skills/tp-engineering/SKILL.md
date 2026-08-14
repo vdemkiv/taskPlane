@@ -76,12 +76,14 @@ signals say.
 
 **Fan out only the exact mapped set.** `review start` returns one brief per
 `deep` lens plus at most one bounded `light` sweep —
-each carrying its own **read-only contract** (write-allow only
-`.em-review/lens-<id>/**`, budget-capped). Dispatch one `tp-lens` agent
-per brief IN PARALLEL (single message, multiple Task calls): each applies
-exactly its lens to the diff and writes `.em-review/lens-<id>/findings.json`,
-and none can touch code (the harness holds — read-only, metered). A
-7-lens review runs in one wall-clock pass instead of seven.
+each carrying its own exact **read-only `producer_contract`**, leased
+`result_schema`, and one `result_path`. Dispatch one `tp-lens` agent per brief
+in one host-native parallel wave. Each agent activates that exact task slot,
+reads only the referenced scoped view, and writes only the declared result
+bytes to `result_path`; it must not create the removed
+`.em-review/lens-<id>/findings.json` layout. None can touch code (the harness
+holds — read-only, metered). A 7-lens review runs in one wall-clock pass
+instead of seven.
 
 **Runnability is probed ONCE, before briefs.** `review start` answers
 "can `go test` / `npm test` / `pytest` even start in this checkout"
@@ -163,7 +165,8 @@ unresolved — `medium` → `med`, `minor` → `low`, `question`/`praise` →
 you like, but never re-grade a finding downward — an unknown or softened
 label still blocks. Include a `meta` block: `title`, `subtitle`, `tests`, `clean:[…]`, a `gate` with
 buttons, and — required (v1.5.4) — `lens_coverage` (the `{id: deep|sweep}`
-map from `tp lens dispatch`, so the dashboard shows all 26 lenses marked
+map projected by `review collect` from the canonical routing decision, so the
+dashboard shows all 26 lenses marked
 deep / sweep / didn't-fire, and adding a lens to the catalog appears
 automatically) and `impact` (the `tp graph impact` payload, so the
 blast-radius panel renders). Both also fold into the never-skippable

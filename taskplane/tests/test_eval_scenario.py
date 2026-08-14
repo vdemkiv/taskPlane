@@ -248,14 +248,14 @@ class TestBareSubcommandSpansCountAsMandates(unittest.TestCase):
 
 # ------------------------------------------------------------ the manifests
 
-class TestEveryGovernedSkillHasAScenario(unittest.TestCase):
+class TestEveryEvaluatedSkillHasAScenario(unittest.TestCase):
 
-    def test_all_seven_governed_skills_carry_a_manifest(self):
+    def test_all_governed_and_advisory_skills_carry_a_manifest(self):
         found = set(es.discover(REPO))
-        self.assertEqual(set(es.GOVERNED_SKILLS), found)
+        self.assertEqual(set(es.EVALUATED_SKILLS), found)
 
     def test_every_scenario_on_disk_validates(self):
-        for skill in es.GOVERNED_SKILLS:
+        for skill in es.EVALUATED_SKILLS:
             with self.subTest(skill=skill):
                 s = _load(skill)
                 self.assertEqual((), es.validate(s, root=REPO))
@@ -264,7 +264,7 @@ class TestEveryGovernedSkillHasAScenario(unittest.TestCase):
         """A manifest whose recorded fingerprint no longer matches its own
         source files is STALE, and a stale manifest grades runs against a
         flow that is gone."""
-        for skill in es.GOVERNED_SKILLS:
+        for skill in es.EVALUATED_SKILLS:
             with self.subTest(skill=skill):
                 s = _load(skill)
                 self.assertIsNone(es.stale(s, REPO))
@@ -273,7 +273,7 @@ class TestEveryGovernedSkillHasAScenario(unittest.TestCase):
         """A skill whose flow genuinely lacks a universal step says so, with
         a reason. Silence is the failure mode: an omitted step reads as a
         pass for a control point nobody checked."""
-        for skill in es.GOVERNED_SKILLS:
+        for skill in es.EVALUATED_SKILLS:
             with self.subTest(skill=skill):
                 s = _load(skill)
                 tags = set()
@@ -282,7 +282,7 @@ class TestEveryGovernedSkillHasAScenario(unittest.TestCase):
                 self.assertEqual(set(es.UNIVERSAL), set(es.UNIVERSAL) & tags)
 
     def test_a_step_declared_inapplicable_always_carries_a_reason(self):
-        for skill in es.GOVERNED_SKILLS:
+        for skill in es.EVALUATED_SKILLS:
             s = _load(skill)
             for step in s["steps"]:
                 if step.get("applicable") is False:
@@ -333,21 +333,20 @@ class TestTheReferenceScenarioIsTheWorkedExample(unittest.TestCase):
         self.assertEqual(0, repeats[0]["max"])
         self.assertEqual(["key", "input_key"], repeats[0]["distinct_by"])
 
-    def test_the_routing_step_refuses_the_all_breadth(self):
-        """`--all` switches the applicability engine off; a scenario that
-        accepted it would grade the waste it exists to catch. Asserted on the
-        CONSTRAINT, not on a substring of the JSON — the claim string also
-        contains the word."""
-        rejects = [c for c in es.constraints(self.steps["R5"])
-                   if c["check"] == "absent"
-                   and "all" in json.dumps(c["select"].get("breadth"))]
-        self.assertEqual(1, len(rejects))
+    def test_the_routing_step_requires_the_selective_kernel(self):
+        selective = [c for c in es.constraints(self.steps["R5"])
+                     if c["check"] == "field_equals"
+                     and c.get("field") == "routing_mode"
+                     and c.get("value") == "selective"]
+        self.assertEqual(1, len(selective))
 
     def test_the_routing_step_still_requires_a_recorded_decision(self):
         """Refusing `--all` is only half of it: a review that routed nothing
         at all would satisfy the prohibition trivially."""
-        self.assertTrue([c for c in es.constraints(self.steps["R5"])
-                         if c["check"] == "exists"])
+        fields = {c.get("field") for c in es.constraints(self.steps["R5"])
+                  if c["check"] == "field_equals"}
+        self.assertEqual({"routing_mode", "routing_complete",
+                          "dispositions_complete"}, fields)
 
     def test_the_declared_surfaces_are_real_taskplane_surfaces(self):
         for surface in self.s["declared_surfaces"]:

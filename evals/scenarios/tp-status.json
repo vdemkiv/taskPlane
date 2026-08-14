@@ -1,0 +1,19 @@
+{
+  "schema": "taskplane.eval-scenario/v1",
+  "skill": "tp-status",
+  "title": "A read-only mission-control snapshot that never advances the work it reports",
+  "source_files": ["skills/tp-status/SKILL.md"],
+  "inputs_fingerprint": "aa4e8c1c6009a9137c9c8dd43b42dae3183dbc1ba05d6f80d333636b6f5e2bed",
+  "expects_derivations": [],
+  "declared_surfaces": ["tp status", "tp dashboard", "tp graph html"],
+  "terminal": "response",
+  "steps": [
+    {"id": "A1", "claim": "status leaves the evaluated workspace unchanged", "record": "trace", "check": "absent", "select": {"event": "workspace_write"}, "required": true},
+    {"id": "A2", "claim": "status never approves or gates the workflow it observes", "record": "trace", "check": "absent", "select": {"event": {"in": ["loop_gate", "loop_approve"]}}, "required": true},
+    {"id": "A3", "claim": "status does not dispatch delivery or review agents", "record": "trace", "check": "absent", "select": {"event": "subagent_start"}, "required": true},
+    {"id": "U1", "claim": "status observes existing contracts without opening one", "record": "trace", "check": "exists", "select": {"event": "contract_activated"}, "universal": ["contract"], "required": true, "applicable": false, "reason": "tp-status is read-only and does not own a task contract"},
+    {"id": "U2", "claim": "status reports readiness but does not execute its gate", "record": "trace", "check": "exists", "select": {"event": "dor"}, "universal": ["dor"], "required": true, "applicable": false, "reason": "tp-status does not start governed work"},
+    {"id": "U3", "claim": "status reports completion but does not claim it", "record": "trace", "check": "exists", "select": {"event": "dod"}, "universal": ["dod"], "required": true, "applicable": false, "reason": "tp-status does not complete governed work"},
+    {"id": "U4", "claim": "status reads existing graph evidence rather than deriving review artifacts", "record": "derivations", "check": "exists", "select": {"event": "derived"}, "universal": ["no_rederive"], "required": true, "applicable": false, "reason": "tp-status is a read-only snapshot and has no diff or impact derivation obligation"}
+  ]
+}

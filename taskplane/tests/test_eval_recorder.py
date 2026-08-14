@@ -46,6 +46,7 @@ WHAT IS PINNED HERE
 Every assertion here was observed FAILING before it was kept.
 """
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -195,6 +196,45 @@ def _brief_and_run(ctx, lenses, breadth="routed", engine_ran=True,
     extra = ({"requested_breadth": breadth, "engine_ran": engine_ran}
              if stamp else {})
     tp.trace(ctx.ws, "lens_route", step="em", lenses=list(lenses), **extra)
+    target = target_mod.load(ctx.ws)
+    kernel = os.path.join(ctx.ws, ".em-review", "kernel-v2")
+    envelope_rel = ".em-review/kernel-v2/envelope.json"
+    envelope_path = os.path.join(ctx.ws, envelope_rel)
+    envelope_body = json.dumps({"schema": "taskplane.review-envelope/v2",
+                                "target": target}, sort_keys=True)
+    _write(envelope_path, envelope_body)
+    slots = []
+    for lid in lenses:
+        slot_id = "deep." + lid
+        brief_rel = f".em-review/kernel-v2/briefs/{lid}.json"
+        result_rel = f".em-review/kernel-v2/results/{lid}.json"
+        _write(os.path.join(ctx.ws, brief_rel), json.dumps({"slot_id": slot_id}))
+        slots.append({"slot_id": slot_id, "lens_ids": [lid],
+                      "brief": {"relative_path": brief_rel},
+                      "result_path": result_rel})
+    run_id = "e" * 32
+    state = {
+        "schema": "taskplane.review-run-state/v2", "run_id": run_id,
+        "status": "ready", "stage": "review", "target": target,
+        "envelope": {"relative_path": envelope_rel, "fingerprint": "CTX",
+                     "digest": hashlib.sha256(envelope_body.encode()).hexdigest(),
+                     "bytes": len(envelope_body.encode())},
+        "slots": slots,
+    }
+    _write(os.path.join(kernel, "runs", run_id, "state.json"),
+           json.dumps(state, sort_keys=True))
+    started = {
+        "stage": "review", "run_id": run_id,
+        "target_head": target.get("head"),
+        "graph_quality_status": "complete",
+        "context_fingerprint": "CTX",
+    }
+    if stamp:
+        started.update({"routing_mode": ("selective" if breadth == "routed"
+                                         else breadth),
+                        "routing_complete": True,
+                        "dispositions_complete": True})
+    tp.trace(ctx.ws, "review_kernel_started", **started)
     for lid in lenses:
         tp.record_expected_dispatch(ctx.ws, "lens", "tp-lens", "standard",
                                     None, ref=lid,
@@ -208,6 +248,10 @@ def _brief_and_run(ctx, lenses, breadth="routed", engine_ran=True,
         _write(os.path.join(ctx.ws, ".em-review", f"lens-{lid}",
                             "findings.json"),
                json.dumps({"lens": lid, "findings": []}, indent=2))
+        _write(os.path.join(ctx.ws, ".em-review", "kernel-v2", "results",
+                            f"{lid}.json"),
+               json.dumps({"slot_id": "deep." + lid, "findings": []},
+                          indent=2))
 
 
 def _show_the_artifact(ctx):
@@ -229,6 +273,7 @@ def _show_the_artifact(ctx):
 
 
 def _close_the_gates(ctx):
+    tp.trace(ctx.ws, "review_kernel_collected", stage="review", revision=1)
     tp.trace(ctx.ws, "dod", passed=True, errors=[], notices=[])
     tp.trace(ctx.ws, "loop_submit", step="em", task="eval-review")
 
@@ -503,6 +548,26 @@ class TestTheModelDrivingStepIsASeam(unittest.TestCase):
         self.assertEqual(order, ["probe", "driver"])
         self.assertTrue(out["probe"])
 
+    def test_setup_finishes_before_measurement_probe_and_model_driver(self):
+        order = []
+        real = derivation.probe
+
+        def setup(**ctx):
+            order.append("setup")
+            _write(os.path.join(ctx["ws"], "setup-only.md"), "harness\n")
+
+        def watched(ws):
+            order.append("probe")
+            return real(ws)
+
+        derivation.probe = watched
+        self.addCleanup(setattr, derivation, "probe", real)
+        out = _record(self, lambda ctx: order.append("driver"), setup=setup)
+        rows = _read_jsonl(os.path.join(out["path"], "trace.jsonl"))
+        self.assertEqual(order, ["setup", "probe", "driver"])
+        self.assertFalse([r for r in rows if r.get("event") ==
+                          "workspace_write"], rows)
+
     def test_a_ledger_that_cannot_be_probed_aborts_the_whole_run(self):
         """`instrument: broken` is the honest reading of a probe-less ledger,
         and a recorder that produced one anyway would ship records whose every
@@ -638,9 +703,15 @@ class TestTheFrozenRecordIsWhatTheScorerReads(unittest.TestCase):
         for count_key in ("expected", "observed", "hook_active"):
             self.assertIn(count_key, dispatch)
         rows = dispatch[eval_rubric.DISPATCH_ROWS]
-        self.assertEqual(sorted(r["lens"] for r in rows), sorted(ROUTED))
-        for row in rows:
-            self.assertTrue(row["context_path"].startswith(review.CONTEXT_DIR))
+        native = [r for r in rows if r.get("kind") == "review-kernel-slot"]
+        legacy = [r for r in rows if r.get("kind") != "review-kernel-slot"]
+        self.assertEqual(sorted(r["lens"] for r in legacy), sorted(ROUTED))
+        self.assertEqual(sorted(r["slot_id"] for r in native),
+                         sorted("deep." + lens for lens in ROUTED))
+        self.assertTrue(all(r["context_path"] ==
+                            ".em-review/kernel-v2/envelope.json"
+                            for r in native))
+        self.assertTrue(all(r["context_fingerprint"] == "CTX" for r in native))
 
     def test_every_row_the_recorder_synthesized_carries_the_order_key(self):
         """Ordering is compared on one field. A synthesized row without it
@@ -667,11 +738,16 @@ class TestTheFrozenRecordIsWhatTheScorerReads(unittest.TestCase):
                                             "context.jsonl")):
             kinds.setdefault(row["kind"], []).append(row)
         self.assertEqual(sorted(kinds), ["context_file", "findings",
-                                         "lens_findings", "target"])
+                                         "lens_findings", "review_envelope",
+                                         "slot_result", "target"])
         self.assertEqual(kinds["target"][0]["head"],
                          eval_record.load_manifest(REPO)["head"])
         self.assertEqual(sorted(r["lens"] for r in kinds["lens_findings"]),
                          sorted(ROUTED))
+        self.assertEqual(len(kinds["review_envelope"]), 1)
+        self.assertEqual(kinds["review_envelope"][0]["fingerprint"], "CTX")
+        self.assertEqual(sorted(r["slot_id"] for r in kinds["slot_result"]),
+                         sorted("deep." + lens for lens in ROUTED))
         for row in kinds["context_file"]:
             self.assertEqual(len(row["sha256"]), 64)
 
@@ -705,6 +781,69 @@ class TestTheFrozenRecordIsWhatTheScorerReads(unittest.TestCase):
         self.assertEqual(len(activated), 1,
                          "the engine emits this one; synthesizing a second "
                          "would double-count it")
+
+
+class TestScenarioAwareRecorderBoundaries(unittest.TestCase):
+    def test_evaluator_setup_is_not_misreported_as_a_model_workspace_write(self):
+        with tempfile.TemporaryDirectory() as ws:
+            _write(os.path.join(ws, ".codex", "hooks.json"), "{}")
+            _write(os.path.join(ws, ".taskplane-eval", "plugin", "marker"),
+                   "staged")
+            self.assertIsNone(eval_record.first_write(ws, None, 0))
+
+    def test_loop_readiness_and_human_gate_are_synthesized_from_frozen_state(self):
+        rows = eval_record.synthesize_trace(
+            [{"ts": 2, "event": "loop_step", "dor_ready": True}],
+            started_at=1, loop_state={"step": "design_approval"})
+        events = {row["event"]: row for row in rows}
+        self.assertEqual(events["evaluation_started"]["source"],
+                         "recorder boundary")
+        self.assertTrue(events["dor"]["ready"])
+        self.assertEqual(events["human_gate_wait"]["step"],
+                         "design_approval")
+
+    def test_review_collection_is_the_engineering_dod_receipt(self):
+        rows = eval_record.synthesize_trace(
+            [{"ts": 2, "event": "review_kernel_started",
+              "graph_quality_status": "complete"},
+             {"ts": 4, "event": "review_kernel_collected"}],
+            started_at=1)
+        events = {row["event"]: row for row in rows}
+        self.assertTrue(events["dor"]["ready"])
+        self.assertTrue(events["dod"]["passed"])
+        self.assertEqual(events["dod"]["source"],
+                         "review_kernel_collected")
+
+    def test_trace_selects_one_review_run_instead_of_mixing_history(self):
+        with tempfile.TemporaryDirectory() as ws:
+            for marker in ("a", "b"):
+                run_id = marker * 32
+                envelope = f".em-review/kernel-v2/{marker}-envelope.json"
+                brief = f".em-review/kernel-v2/{marker}-brief.json"
+                _write(os.path.join(ws, envelope), "{}")
+                _write(os.path.join(ws, brief), "{}")
+                state = {
+                    "run_id": run_id,
+                    "target": {"head": marker.upper()},
+                    "envelope": {"relative_path": envelope,
+                                 "fingerprint": marker + "-context"},
+                    "slots": [{"slot_id": "deep." + marker,
+                               "lens_ids": [marker],
+                               "brief": {"relative_path": brief},
+                               "result_path": "missing-result.json"}],
+                }
+                _write(os.path.join(ws, ".em-review", "kernel-v2", "runs",
+                                    run_id, "state.json"),
+                       json.dumps(state))
+            trace = [{"ts": 1, "event": "review_kernel_started",
+                      "run_id": "b" * 32}]
+            context = eval_record.synthesize_context(
+                ws, trace_rows=trace, fallback_ts=0)
+            briefs = eval_record.synthesize_briefs(
+                ws, trace_rows=trace, context_path=None)
+            self.assertEqual([r["run_id"] for r in context
+                              if r["kind"] == "review_envelope"], ["b" * 32])
+            self.assertEqual([r["slot_id"] for r in briefs], ["deep.b"])
 
 
 # ============================================ the breadth is READ, not GUESSED
@@ -912,8 +1051,8 @@ class TestAStubDriverRunIsScoredByTheRealScorer(unittest.TestCase):
                     if r["event"] == "lens_route"]
         self.assertEqual(breadths("compliant"), ["routed"])
         self.assertEqual(breadths("non_compliant"), ["all"])
-        self.assertIn("breadth", self.cards["non_compliant"]["steps"][4]
-                      ["constraints"][1]["evidence"]["rows"][0])
+        self.assertIn("routing_mode", self.cards["non_compliant"]["steps"][4]
+                      ["constraints"][0]["evidence"]["rows"][0])
 
     def test_a_review_the_engine_routed_over_the_whole_catalog_passes(self):
         """THE DEFECT, end to end. This run is compliant — the engine chose,

@@ -17,6 +17,7 @@
     "tp loop wave",
     "tp loop gate"
   ],
+  "terminal": "human_gate",
   "steps": [
     {
       "id": "U1-CONTRACT",
@@ -60,7 +61,9 @@
       "universal": [
         "dod"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the delivery-driver evaluation intentionally stops at its first human gate; final DoD belongs after that decision"
     },
     {
       "id": "U4-SHARED",

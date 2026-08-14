@@ -15,6 +15,7 @@
     "tp share push",
     "tp share set"
   ],
+  "terminal": "completion",
   "steps": [
     {
       "id": "U1-CONTRACT",

@@ -97,7 +97,7 @@ TP_COMMANDS: dict = {
     "onboard": frozenset(),
     "ready": frozenset(),
     "req": frozenset({"debt", "list", "mode", "new", "score"}),
-    "review": frozenset({"start"}),
+    "review": frozenset({"collect", "start"}),
     "screen": frozenset(),
     "screen-dispatch": frozenset(),
     "screen-render": frozenset(),

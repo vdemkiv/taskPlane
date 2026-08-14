@@ -119,19 +119,21 @@ def _compliant():
         trace=[
             {"ts": 1, "event": "contract_activated"},
             {"ts": 2, "event": "dor", "ready": True},
-            {"ts": 5, "event": "workspace_write"},
-            {"ts": 6, "event": "graph_impact", "scanned_head": "H"},
-            {"ts": 8, "event": "review_context_written", "status": "written"},
-            {"ts": 9, "event": "lens_route", "lenses": ["security", "arch"]},
-            {"ts": 10, "event": "subagent_start", "lens": "security"},
-            {"ts": 11, "event": "subagent_start", "lens": "arch"},
-            {"ts": 14, "event": "dod", "passed": True},
-            {"ts": 15, "event": "loop_submit"},
+            {"ts": 5, "event": "review_kernel_started", "target_head": "H",
+             "graph_quality_status": "complete", "routing_mode": "selective",
+             "routing_complete": True, "dispositions_complete": True,
+             "context_fingerprint": "CTX"},
+            {"ts": 6, "event": "subagent_start", "lens": "security"},
+            {"ts": 7, "event": "subagent_start", "lens": "arch"},
+            {"ts": 10, "event": "review_kernel_collected", "revision": 1},
+            {"ts": 10.5, "event": "dod", "passed": True},
         ],
         obligations=[],
         dispatch=[
-            {"ts": 10, "lens": "security", "context_path": ".em-review/ctx"},
-            {"ts": 11, "lens": "arch", "context_path": ".em-review/ctx"},
+            {"ts": 6, "kind": "review-kernel-slot", "lens": "deep.security",
+             "slot_id": "deep.security", "context_fingerprint": "CTX"},
+            {"ts": 7, "kind": "review-kernel-slot", "lens": "deep.arch",
+             "slot_id": "deep.arch", "context_fingerprint": "CTX"},
         ],
         derivations=[
             {"ts": 0.5, "event": "derived", "key": "impact",
@@ -142,12 +144,12 @@ def _compliant():
         ],
         context=[
             {"ts": 3, "kind": "target", "head": "H", "base": "B"},
-            {"ts": 7, "kind": "findings", "path": ".em-review/findings.json"},
-            {"ts": 8.5, "kind": "context_file", "path": ".em-review/ctx"},
-            {"ts": 12, "kind": "lens_findings", "lens": "security",
-             "path": ".em-review/lens-security/findings.json"},
-            {"ts": 13, "kind": "lens_findings", "lens": "arch",
-             "path": ".em-review/lens-arch/findings.json"},
+            {"ts": 4, "kind": "review_envelope", "fingerprint": "CTX",
+             "path": ".em-review/kernel-v2/envelope.json"},
+            {"ts": 8, "kind": "slot_result", "slot_id": "deep.security",
+             "path": ".em-review/kernel-v2/results/security.json"},
+            {"ts": 9, "kind": "slot_result", "slot_id": "deep.arch",
+             "path": ".em-review/kernel-v2/results/arch.json"},
         ],
         run={"target_head": "H"},
     )
@@ -594,14 +596,13 @@ class TestTheScorecard(unittest.TestCase):
     def test_a_step_fails_when_any_of_its_constraints_fails(self):
         """`all` is a conjunction: one CLAIM resting on two facts."""
         rec = _compliant()
-        rec["rows"]["trace"] = [r for r in rec["rows"]["trace"]
-                                if r.get("event") != "lens_route"] + \
-            [{"ts": 9, "event": "lens_route", "lenses": ["a"],
-              "breadth": "all"}]
+        started = next(r for r in rec["rows"]["trace"]
+                       if r.get("event") == "review_kernel_started")
+        started["routing_complete"] = False
         card = er.evaluate(_reference(), rec)
         self.assertEqual(card["verdicts"]["R5"], "fail")
         kinds = [c["verdict"] for c in card["steps"][4]["constraints"]]
-        self.assertEqual(kinds, ["pass", "fail"])
+        self.assertEqual(kinds, ["pass", "fail", "pass"])
 
     def test_a_definite_failure_outranks_an_unknown_within_a_step(self):
         """Evidence of a violation is evidence. An unknown elsewhere in the
@@ -630,8 +631,8 @@ class TestTheScorecard(unittest.TestCase):
         rec["run"] = {"target_head": "OTHER"}                  # R1 pass->fail
         before = er.evaluate(_reference(), rec)
         rec2 = _compliant()
-        rec2["rows"]["context"] = [
-            r for r in rec2["rows"]["context"] if r.get("kind") != "findings"]
+        next(r for r in rec2["rows"]["context"]
+             if r.get("kind") == "review_envelope")["ts"] = 6.5
         after = er.evaluate(_reference(), rec2)                # R3 pass->fail
         self.assertEqual(before["score"], after["score"])
         self.assertNotEqual(before["verdicts"], after["verdicts"])

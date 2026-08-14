@@ -15,6 +15,7 @@
     "tp loop approve",
     "tp loop gate"
   ],
+  "terminal": "human_gate",
   "steps": [
     {
       "id": "U1-CONTRACT",
@@ -58,7 +59,9 @@
       "universal": [
         "dod"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the design-only evaluation stops for human approval; build Definition of Done is not yet applicable"
     },
     {
       "id": "U4-SHARED",

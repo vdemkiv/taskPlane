@@ -1,23 +1,27 @@
 {
   "schema": "taskplane.eval-scenario/v1",
   "skill": "tp-engineering",
-  "title": "A governed engineering review: pin the tree, take the blast radius, derive the shared context ONCE, fan the lenses out over it, and close only through the gates",
+  "title": "A governed engineering review: one pinned target, one graph-qualified envelope, selective leased slots, one canonical collection",
   "source_files": [
     "skills/tp-engineering/SKILL.md",
     "agents/tp-engineering.md"
   ],
-  "inputs_fingerprint": "92195697ac2432f814acdc69fdca5370cc9a5654de2b4e90d26534e67e407233",
-  "expects_derivations": ["diff", "impact"],
+  "inputs_fingerprint": "462abfecc7d5de08a7a3eb37ba63e4c4475795436e53b9b9da13947469323f4a",
+  "expects_derivations": [
+    "diff",
+    "impact"
+  ],
   "declared_surfaces": [
     "tp review start",
+    "tp review collect",
     "tp graph impact",
-    "tp lens dispatch",
     "tp findings"
   ],
+  "terminal": "review_complete",
   "steps": [
     {
       "id": "R1",
-      "claim": "the review checked out the code it claims to have reviewed — a target is pinned, and its head is the head of the PR under review",
+      "claim": "the canonical review target is pinned to the exact head the evaluation names",
       "record": "context",
       "check": "field_equals",
       "select": {"kind": "target"},
@@ -27,84 +31,113 @@
     },
     {
       "id": "R2",
-      "claim": "the blast radius was taken against the tree that was reviewed, not against whatever happened to be checked out",
+      "claim": "graph quality is complete for that pinned head before the ReviewKernel can dispatch",
       "record": "trace",
-      "check": "field_equals",
-      "select": {"event": "graph_impact"},
-      "field": "scanned_head",
-      "equals": {"record": "context", "select": {"kind": "target"},
-                 "field": "head"},
+      "check": "all",
+      "of": [
+        {
+          "check": "field_equals",
+          "select": {"event": "review_kernel_started"},
+          "field": "target_head",
+          "equals": {"record": "context", "select": {"kind": "target"}, "field": "head"}
+        },
+        {
+          "check": "field_equals",
+          "select": {"event": "review_kernel_started"},
+          "field": "graph_quality_status",
+          "value": "complete"
+        }
+      ],
       "required": true
     },
     {
       "id": "R3",
-      "claim": "the review's own findings file existed before any lens was briefed, so the lenses added to a review rather than becoming it",
+      "claim": "one immutable review envelope exists before any governed lens slot starts",
       "record": "context",
       "check": "before",
-      "select": {"kind": "findings"},
-      "before": "first_brief",
+      "select": {"kind": "review_envelope"},
+      "before": "first_dispatch",
       "required": true
     },
     {
       "id": "R4",
-      "claim": "the diff and the blast radius were written to disk BEFORE the first lens was dispatched — the shared copy has to exist before anyone is told to read it",
+      "claim": "the ReviewKernel seals its shared context fingerprint before the first lens dispatch",
       "record": "trace",
       "check": "before",
-      "select": {"event": "review_context_written", "status": "written"},
+      "select": {"event": "review_kernel_started", "context_fingerprint": {"present": true}},
       "before": "first_dispatch",
       "required": true
     },
     {
       "id": "R5",
-      "claim": "the lenses were chosen for THIS diff — a routing decision carrying per-lens evidence, and never the --all breadth that switches the applicability engine off",
+      "claim": "one selective routing decision dispositions the complete lens catalog and never widens to all",
       "record": "trace",
       "check": "all",
       "of": [
-        {"check": "exists",
-         "select": {"event": "lens_route", "lenses": {"present": true}}},
-        {"check": "absent",
-         "select": {"event": "lens_route", "breadth": {"in": ["all"]}}}
+        {
+          "check": "field_equals",
+          "select": {"event": "review_kernel_started"},
+          "field": "routing_mode",
+          "value": "selective"
+        },
+        {
+          "check": "field_equals",
+          "select": {"event": "review_kernel_started"},
+          "field": "routing_complete",
+          "value": true
+        },
+        {
+          "check": "field_equals",
+          "select": {"event": "review_kernel_started"},
+          "field": "dispositions_complete",
+          "value": true
+        }
       ],
       "required": true
     },
     {
       "id": "R6",
-      "claim": "every brief that was dispatched came back with its own findings file — a lens that was briefed and produced nothing is a lens that did not run",
+      "claim": "every dispatched leased slot returns exactly one canonical slot result",
       "record": "dispatch",
       "check": "pairs",
-      "select": {},
-      "with": {"record": "context", "select": {"kind": "lens_findings"}},
-      "key": "lens",
+      "select": {"kind": "review-kernel-slot"},
+      "with": {"record": "context", "select": {"kind": "slot_result"}},
+      "key": "slot_id",
       "required": true
     },
     {
       "id": "R7",
-      "claim": "the expensive part ran ONCE and was SHARED — no derivation was repeated, and every brief cites the one context copy on disk instead of re-deriving it",
+      "claim": "diff and impact are derived once and every slot cites the same immutable envelope",
       "record": "derivations",
       "check": "all",
       "of": [
-        {"record": "derivations", "check": "repeats",
-         "select": {"event": "derived", "probe": {"absent": true}},
-         "distinct_by": ["key", "input_key"], "max": 0},
-        {"record": "dispatch", "check": "pairs", "select": {},
-         "with": {"record": "context", "select": {"kind": "context_file"}},
-         "key": {"left": "context_path", "right": "path"}}
+        {
+          "record": "derivations",
+          "check": "repeats",
+          "select": {"event": "derived", "probe": {"absent": true}},
+          "distinct_by": ["key", "input_key"],
+          "max": 0
+        },
+        {
+          "record": "dispatch",
+          "check": "pairs",
+          "select": {"kind": "review-kernel-slot"},
+          "with": {"record": "context", "select": {"kind": "review_envelope"}},
+          "key": {"left": "context_fingerprint", "right": "fingerprint"}
+        }
       ],
       "universal": ["no_rederive"],
       "required": true
     },
     {
       "id": "R8",
-      "claim": "the review ran inside its contract and closed through its gates — the contract was active before the first write, DoR before the first write, and DoD before any claim that the work was finished",
+      "claim": "the review contract and readiness precede dispatch, and canonical collection closes the review before sign-off",
       "record": "trace",
       "check": "all",
       "of": [
-        {"check": "before", "select": {"event": "contract_activated"},
-         "before": "first_write"},
-        {"check": "before", "select": {"event": "dor", "ready": true},
-         "before": "first_write"},
-        {"check": "before", "select": {"event": "dod", "passed": true},
-         "before": "completion_claim"}
+        {"check": "before", "select": {"event": "contract_activated"}, "before": "first_dispatch"},
+        {"check": "before", "select": {"event": "dor", "ready": true}, "before": "first_dispatch"},
+        {"check": "exists", "select": {"event": "review_kernel_collected"}}
       ],
       "universal": ["contract", "dor", "dod"],
       "required": true
