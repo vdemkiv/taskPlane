@@ -86,7 +86,21 @@ class TestImmutableEnvelope(unittest.TestCase):
             "context": "Change blast radius from the canonical dependency graph.",
         }
         values = dict(self.kw)
+        changed_files = [f"services/review/file-{index:03d}.py"
+                         for index in range(220)]
+        changed_symbols = [f"changed_symbol_{index:03d}"
+                           for index in range(160)]
+        diff_ref = self.store.put(
+            "diff", {"patch": "canonical shared diff", "files": changed_files})
         values.update({
+            "target": {
+                "fingerprint": "target-large", "head": "abc1234",
+                "changed_files": changed_files,
+            },
+            "diff": {
+                "files": changed_files, "changed_symbols": changed_symbols,
+                "artifact": diff_ref,
+            },
             "requirement": {
                 "id": "R-0005",
                 "title": "Make governed reviews provably complete and cheaper",
@@ -100,6 +114,8 @@ class TestImmutableEnvelope(unittest.TestCase):
                 "fingerprint": "gq-large",
                 "coverage": {"scanner": "complete", "callers": "bounded"},
                 "impact": impact,
+                "changed_files": changed_files,
+                "changed_symbols": changed_symbols,
             },
         })
 
@@ -109,11 +125,18 @@ class TestImmutableEnvelope(unittest.TestCase):
         self.assertNotIn("acceptance", envelope["requirements"]["requirement"])
         self.assertEqual(envelope["impact"], impact)
         self.assertNotIn("impact", envelope["graph_quality"])
+        self.assertNotIn("changed_files", envelope["target"])
+        self.assertNotIn("changed_files", envelope["graph_quality"])
+        self.assertNotIn("changed_symbols", envelope["graph_quality"])
 
         view_ref = evidence.create_scoped_view(
             self.store, envelope_ref, slot_id="deep.architecture-security",
             lens_ids=["architecture", "security"])
         view = self.store.read(view_ref)
+        self.assertEqual(view["diff"]["artifact"]["digest"],
+                         diff_ref["digest"])
+        self.assertTrue(view["diff"]["files_by_reference"])
+        self.assertTrue(view["diff"]["changed_symbols_by_reference"])
         self.assertLess(
             len(evidence.canonical_bytes(view)), evidence.MAX_SCOPED_VIEW_BYTES)
 

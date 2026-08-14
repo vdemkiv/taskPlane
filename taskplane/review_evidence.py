@@ -197,19 +197,29 @@ def create_envelope(store: ArtifactStore, *, target: dict, diff: dict,
                     requirement: dict, acceptance, contracts,
                     change: dict | None = None) -> dict:
     """Write one immutable full envelope for a canonical target snapshot."""
+    canonical_diff = copy.deepcopy(diff or {})
+    diff_files = _strings(canonical_diff.get("files"))
+    diff_symbols = _strings(canonical_diff.get("changed_symbols"))
+    canonical_target = copy.deepcopy(target or {})
+    if _strings(canonical_target.get("changed_files")) == diff_files:
+        canonical_target.pop("changed_files", None)
     canonical_impact = copy.deepcopy(impact or {})
     canonical_graph_quality = copy.deepcopy(graph_quality or {})
     if canonical_graph_quality.get("impact") == canonical_impact:
         canonical_graph_quality.pop("impact", None)
+    if _strings(canonical_graph_quality.get("changed_files")) == diff_files:
+        canonical_graph_quality.pop("changed_files", None)
+    if _strings(canonical_graph_quality.get("changed_symbols")) == diff_symbols:
+        canonical_graph_quality.pop("changed_symbols", None)
     canonical_acceptance = copy.deepcopy(list(acceptance or []))
     canonical_requirement = copy.deepcopy(requirement or {})
     if canonical_requirement.get("acceptance") == canonical_acceptance:
         canonical_requirement.pop("acceptance", None)
     base = {
         "schema": "taskplane.review-envelope/v2",
-        "target": copy.deepcopy(target or {}),
+        "target": canonical_target,
         "target_fingerprint": _target_fingerprint(target),
-        "diff": copy.deepcopy(diff or {}),
+        "diff": canonical_diff,
         "impact": canonical_impact,
         "graph_quality": canonical_graph_quality,
         "runnability": copy.deepcopy(runnability or {}),
@@ -251,6 +261,25 @@ def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
     files = _strings(diff.get("files"))
     if wanted:
         files = [path for path in files if path in wanted]
+    symbols = _strings(diff.get("changed_symbols"))
+    # The full canonical indexes remain available through the verified
+    # envelope/diff artifact.  Copy small indexes into the prompt view for
+    # convenience, but large reviews stay reference-first instead of paying
+    # for the same file/symbol lists once per lens.
+    diff_view = {
+        "file_count": len(files),
+        "changed_symbol_count": len(symbols),
+    }
+    if diff.get("artifact"):
+        diff_view["artifact"] = copy.deepcopy(diff["artifact"])
+    if len(canonical_bytes(files)) <= 4096 or not diff.get("artifact"):
+        diff_view["files"] = files
+    else:
+        diff_view["files_by_reference"] = True
+    if len(canonical_bytes(symbols)) <= 2048 or not diff.get("artifact"):
+        diff_view["changed_symbols"] = symbols
+    else:
+        diff_view["changed_symbols_by_reference"] = True
     base = {
         "schema": "taskplane.scoped-review-view/v2",
         "context_fingerprint": envelope["context_fingerprint"],
@@ -259,8 +288,7 @@ def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
         "lens_ids": _strings(lens_ids),
         "target": copy.deepcopy(envelope["target"]),
         "target_fingerprint": envelope["target_fingerprint"],
-        "diff": {"files": files,
-                 "changed_symbols": _strings(diff.get("changed_symbols"))},
+        "diff": diff_view,
         "impact": copy.deepcopy(envelope.get("impact") or {}),
         "graph_quality": copy.deepcopy(envelope.get("graph_quality") or {}),
         "runnability": copy.deepcopy(envelope.get("runnability") or {}),

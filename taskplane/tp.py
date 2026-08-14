@@ -3142,6 +3142,8 @@ def cmd_review(a) -> int:
 
     # 3. graph + impact — impact-first is not optional, and it costs nothing
     #    here that it would not cost as its own call.
+    files = rec.get("changed_files") or []
+    g, imp, blast = {}, {}, ""
     try:
         import depgraph as dg
         g = dg.load(ws)
@@ -3153,7 +3155,6 @@ def cmd_review(a) -> int:
         _scanned = ((g.get("meta") or {}).get("scanned_head") or "")[:12]
         if not g.get("modules") or _scanned != (rec.get("head") or "")[:12]:
             g = dg.scan(ws)
-        files = rec.get("changed_files") or []
         imp = dg.impact(ws, files) if files else {}
         out["impact"] = imp
         blast = dg.render_context(imp) if imp.get("touched") else ""
@@ -3161,7 +3162,10 @@ def cmd_review(a) -> int:
              edges=len(g.get("edges") or []),
              impacted=imp.get("total_impacted", 0))
     except Exception as e:
-        imp, blast = {}, ""
+        # Never pass a stale/partially loaded graph into routing.  The empty
+        # graph makes the quality gate return impact_incomplete with zero
+        # dispatch, while the canonical diff/file facts remain available.
+        g, imp, blast = {}, {}, ""
         step("graph", False, reason=e.__class__.__name__)
 
     # 4. contract — read-only, owing the review's artifacts.
@@ -3221,6 +3225,14 @@ def cmd_review(a) -> int:
                                 counters=manifest["counters"]))
     except Exception as e:
         step("route", False, reason=f"{e.__class__.__name__}: {e}")
+        # review start owns this contract.  A failed opening must not leave a
+        # read-only contract behind to block the user's next command.
+        try:
+            active = tp.load_active(ws) or {}
+            if active.get("task_id") == c.get("task_id"):
+                tp.clear(ws)
+        except Exception:
+            pass
         print(json.dumps({"schema": "taskplane.review-start-manifest/v2",
                           "status": "start_failed",
                           "reason": f"{e.__class__.__name__}: {e}"},
