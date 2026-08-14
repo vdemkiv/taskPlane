@@ -241,6 +241,27 @@ def gate_snapshot(ws: str, step: str, outcome: str) -> None:
         pass
 
 
+def observation_bundle(ws: str, operation: str, observations) -> dict:
+    """Meter one coarse read-only control operation as exactly one action.
+
+    This is accounting, not an exemption: model work, leased writes and host
+    tool calls continue through their existing hook/action paths.  Only the
+    deterministic internal reads performed by a coarse command are bundled.
+    """
+    names = sorted({str(value).strip() for value in (observations or [])
+                    if str(value).strip()})
+    row = {"schema": "taskplane.observation-bundle/v1",
+           "operation": str(operation), "observations": names,
+           "actions": 1}
+    try:
+        import taskplane_lite as tp
+        tp.trace(ws, "observation_bundle", operation=str(operation),
+                 observations=names, actions=1)
+    except Exception:
+        pass
+    return row
+
+
 # Which step actually writes .em-review/findings.json. Everything else must
 # NOT read it: loop.gate calls gate_snapshot on EVERY transition and nothing
 # deletes that file, so a step-blind read re-recorded one review's findings

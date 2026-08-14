@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 
 import taskplane_lite as tp
 import loop as _loop        # engine owns the state machine; the view derives
@@ -1093,15 +1094,21 @@ _DOC_VARS = """
     --font-sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,sans-serif;
     --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --surface-0:#f0efea;--surface-1:#f7f6f3;--surface-2:#ffffff;
-    --border:#dcd9d2;--text-primary:#1f1e1c;--text-secondary:#55524c;
+    --border:#dcd9d2;--border-strong:#b6b2aa;--border-danger:#a8331f;
+    --line:#b6b2aa;--changed-bg:#eceae4;--accent:#1f1e1c;
+    --text-primary:#1f1e1c;--text-secondary:#55524c;
     --text-muted:#8b877f;--text-danger:#a8331f;--bg-danger:#f6e3df;
+    --danger:#a8331f;--danger-bg:#f6e3df;
     --text-warning:#8a5a10;--bg-warning:#f8ecd6;
   }
   @media (prefers-color-scheme:dark){
     :root{
       --surface-0:#232220;--surface-1:#2b2a27;--surface-2:#141412;
-      --border:#3b3934;--text-primary:#f2f1ed;--text-secondary:#b9b5ad;
+      --border:#3b3934;--border-strong:#57544e;--border-danger:#e8836d;
+      --line:#57544e;--changed-bg:#302e2a;--accent:#f2f1ed;
+      --text-primary:#f2f1ed;--text-secondary:#b9b5ad;
       --text-muted:#87837b;--text-danger:#e8836d;--bg-danger:#3a231e;
+      --danger:#e8836d;--danger-bg:#3a231e;
       --text-warning:#e0b062;--bg-warning:#3a2f1a;
     }
   }
@@ -1110,6 +1117,10 @@ _DOC_VARS = """
   .wrap{max-width:940px;margin:0 auto;padding:26px 22px 56px;}
   .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;
     clip:rect(0,0,0,0);}
+  .tp-sec{border-top:1px solid var(--border);margin-top:28px;padding-top:14px;}
+  .tp-kicker{font-family:var(--font-mono);font-size:10px;letter-spacing:1.6px;
+    text-transform:uppercase;color:var(--text-muted);margin:0 0 4px;}
+  .tp-lede{font-size:13px;color:var(--text-secondary);line-height:1.65;margin:2px 0 0;}
   hr.pg{border:0;border-top:1px solid var(--border);margin:26px 0 0;}
 """
 
@@ -1483,22 +1494,33 @@ def render_lens_coverage(routed=None):
     appear automatically (v1.5.4). Collapsible — coverage line always visible.
     Dual-shape (v3): a v2 coverage map ({id: {verdict, score, evidence |
     negative_evidence}}) renders verdict chips with per-n/a reasons; the
-    legacy {id: 'deep'|'sweep'} shape renders byte-identically to before."""
+    legacy {id: 'deep'|'sweep'} shape renders byte-identically to before.
+
+    D3: the tier table below is TOTAL. It used to be indexed directly at two
+    sites, so the `light` / `n/a` verdicts route v2 has emitted since v2.4.0
+    — the very map tp-engineering's skill tells reviewers to pass — raised
+    KeyError and printed no panel at all, on documented input. An unrecognized
+    tier now renders as DIDN'T-FIRE, never as deep: the panel fails toward
+    LESS claimed coverage, because a chip that says `deep` about a lens that
+    never ran is a false coverage claim, not a rendering glitch."""
     if _cov_is_v2(routed):
         return _render_lens_coverage_v2(routed)
     cov = lens_coverage(routed)
     _tier = {"deep": ("var(--text-danger)", "deep"),
              "sweep": ("var(--text-secondary)", "sweep"),
              "—": ("var(--text-muted)", "—")}
+    _didnt_fire = _tier["—"]
     rows = []
     for grp in cov["groups"]:
         chips = "".join(
             f'<span style="display:inline-flex;align-items:center;gap:5px;'
             f'font-size:11.5px;padding:2px 9px;border:1px solid var(--border);'
-            f'border-radius:12px;margin:0 5px 5px 0;color:{_tier[l["tier"]][0]}">'
+            f'border-radius:12px;margin:0 5px 5px 0;'
+            f'color:{_tier.get(l["tier"], _didnt_fire)[0]}">'
             f'{_esc(l["name"])}'
             + (f'<span style="font-family:var(--font-mono);font-size:9px">'
-               f'{_tier[l["tier"]][1]}</span>' if routed else "")
+               f'{_tier.get(l["tier"], _didnt_fire)[1]}</span>'
+               if routed else "")
             + '</span>'
             for l in grp["lenses"])
         rows.append(f'<div style="margin-top:8px"><div style="{_MICRO};'
@@ -1555,9 +1577,10 @@ def render_review_graph(ws, impact=None, tasks=None):
     if not body:
         body = ('<div style="font-size:12px;color:var(--text-muted);'
                 'margin-top:6px">no change set to compute blast radius</div>')
-    return (f'<details style="margin-top:10px" id="tp-review-graph"><summary '
-            f'style="cursor:pointer;{_MICRO}">DEPENDENCY GRAPH — {line}'
-            f'</summary>{body}</details>')
+    flow = render_dependency_flow(ws, impact=impact, tasks=tasks or [])
+    return (f'<div id="tp-review-graph">{flow}<details style="margin-top:10px">'
+            f'<summary style="cursor:pointer;{_MICRO}">MODULE-LEVEL GRAPH — {line}'
+            f'</summary>{body}</details></div>')
 
 
 def _gate_box(meta):
@@ -1568,14 +1591,22 @@ def _gate_box(meta):
     meta['gate'] is falsy."""
     if not meta.get("gate"):
         return ""
+    title = _esc(meta.get("gate_title", "your call — the review is the deliverable"))
+    note = _esc(meta.get(
+        "gate_note",
+        "Approve or request changes explicitly. Blocking findings withhold "
+        "the gate; accepted deviations and nonblocking findings remain "
+        "recorded rather than disappearing."))
     return (
-        f'<div style="background:var(--text-primary);border-radius:6px;'
-        f'padding:14px 16px;margin-top:14px;display:flex;'
-        f'justify-content:space-between;align-items:center;gap:12px;'
-        f'flex-wrap:wrap"><div style="font-weight:500;color:'
-        f'var(--surface-2)"><i class="ti ti-writing-sign" '
-        f'aria-hidden="true"></i> {_esc(meta.get("gate_title", "your call — the review is the deliverable"))}'
-        f'</div><div style="display:flex;gap:8px;flex-wrap:wrap">'
+        '<div class="tp-sec" id="tp-review-gate">'
+        '<p class="tp-kicker">gate — your call</p>'
+        f'<div style="background:var(--text-primary);border-radius:8px;'
+        f'padding:16px 18px;margin-top:10px"><div style="font-weight:600;'
+        f'color:var(--surface-2);font-size:14px;margin-bottom:6px"><i '
+        f'class="ti ti-writing-sign" aria-hidden="true"></i> {title}</div>'
+        f'<div style="color:var(--surface-2);opacity:.85;font-size:12.5px;'
+        f'line-height:1.7;margin-bottom:12px">{note}</div>'
+        f'<div style="display:flex;gap:8px;flex-wrap:wrap">'
         + "".join(
             f'<button onclick="tpSend(this,'
             f'&#39;{_jsattr(b["prompt"])}&#39;)" style="border:'
@@ -1586,7 +1617,36 @@ def _gate_box(meta):
             f'color:{"var(--text-primary)" if b.get("primary") else "var(--surface-2)"}">'
             f'{_esc(b["label"])}</button>'
             for b in meta.get("gate_buttons", []))
-        + '</div></div>')
+        + '</div></div></div>')
+
+
+def _canonical_revision_badge(meta):
+    """Render the exact canonical tuple, rejecting partial identity claims."""
+    if "revision_identity" not in meta:
+        return ""
+    row = meta.get("revision_identity")
+    keys = ("target_fingerprint", "context_fingerprint",
+            "findings_fingerprint", "canonical_revision")
+    if not isinstance(row, dict) or any(row.get(key) in (None, "")
+                                        for key in keys):
+        raise ValueError("complete canonical revision identity is required")
+    try:
+        revision = int(row["canonical_revision"])
+    except (TypeError, ValueError):
+        raise ValueError("canonical revision identity has invalid revision")
+    if revision < 1:
+        raise ValueError("canonical revision identity has invalid revision")
+    target_fp = str(row["target_fingerprint"])
+    context_fp = str(row["context_fingerprint"])
+    findings_fp = str(row["findings_fingerprint"])
+    return (
+        f'<div data-review-revision="{revision}" '
+        f'data-target-fingerprint="{_attr(target_fp)}" '
+        f'data-context-fingerprint="{_attr(context_fp)}" '
+        f'data-findings-fingerprint="{_attr(findings_fp)}" '
+        f'style="{_MICRO};margin-bottom:10px">'
+        f'revision {revision} · target {_esc(target_fp)} · context '
+        f'{_esc(context_fp)} · findings {_esc(findings_fp)}</div>')
 
 
 def render_findings(findings, meta=None, out=None):
@@ -1600,6 +1660,7 @@ def render_findings(findings, meta=None, out=None):
     meta: {title, subtitle, tests, clean:[...], note, gate:bool}
     """
     meta = meta or {}
+    revision_badge = _canonical_revision_badge(meta)
     norm = []
     adv = _advisory_rows(findings)
     for f in findings or []:
@@ -1741,6 +1802,7 @@ def render_findings(findings, meta=None, out=None):
         f'<div dir="auto" style="padding:0.5rem 0;'
         f'font-family:var(--font-sans);color:'
         f'var(--text-primary)">'
+        f'{revision_badge}'
         f'<div style="display:flex;justify-content:space-between;'
         f'align-items:flex-start;gap:12px;margin-bottom:12px"><div>'
         f'<div style="font-size:16px;font-weight:500">{title}</div>'
@@ -2210,6 +2272,290 @@ def _lane(t, loop_step, meter=None):
         f'{wait}</div>{bar}</div>')
 
 
+def _flow_label(value, limit=42):
+    """Compact a graph node without hiding which end of a path it names."""
+    value = str(value or "")
+    if len(value) <= limit:
+        return value
+    left = max(8, (limit - 3) // 2)
+    return value[:left] + "…" + value[-(limit - left - 1):]
+
+
+def _current_graph_impact(ws, tasks, supplied=None):
+    """Use canonical impact when present; otherwise derive one display view."""
+    if isinstance(supplied, dict) and supplied.get("touched"):
+        return supplied
+    scope = sorted({str(s).rstrip("*").rstrip("/") for t in (tasks or [])
+                    for s in (t.get("scope") or []) if s})
+    if not scope:
+        return supplied if isinstance(supplied, dict) else {}
+    try:
+        return _dg.impact(
+            ws, scope, policy=_dg.aggregate_impact_policy(tasks or []))
+    except Exception:
+        return supplied if isinstance(supplied, dict) else {}
+
+
+def render_dependency_flow(ws, impact=None, tasks=None):
+    """Reference-style deterministic call/blast-radius SVG.
+
+    Callers sit above the changed nodes; reached-but-unchanged nodes use the
+    neutral surface; contract boundaries are dashed; policy-stopped paths are
+    the only danger signal.  This is a projection of one canonical impact,
+    never a second graph scan or a lens-side derivation.
+    """
+    graph = _dg.load(ws)
+    impact = _current_graph_impact(ws, tasks or [], impact)
+    touched = [str(x) for x in (impact.get("touched") or [])][:4]
+    layers, via_edges = {}, []
+    for raw_depth, entries in (impact.get("impacted") or {}).items():
+        try:
+            depth = int(raw_depth)
+        except (TypeError, ValueError):
+            continue
+        for row in entries or []:
+            if not isinstance(row, dict) or not row.get("module"):
+                continue
+            module = str(row["module"])
+            layers.setdefault(depth, [])
+            if module not in layers[depth] and len(layers[depth]) < 3:
+                layers[depth].append(module)
+            if row.get("via"):
+                via_edges.append((module, str(row["via"]), False))
+
+    callers = [str(x) for x in (impact.get("expanded_callers") or [])][:3]
+    if callers:
+        top = max(layers or {0: []}) + 1
+        layers[top] = list(dict.fromkeys(callers))
+        if touched:
+            via_edges.extend((caller, touched[0], False) for caller in callers)
+    boundaries = list(dict.fromkeys(
+        [str(x) for x in (impact.get("boundary_nodes") or [])]
+        + [str(x) for x in (impact.get("expanded_contracts") or [])]))[:3]
+    blocked = [row for row in (impact.get("policy_blocked") or [])
+               if isinstance(row, dict)][:3]
+
+    ordered_rows = []
+    for depth in sorted(layers, reverse=True):
+        row = [n for n in layers[depth]
+               if n not in touched and n not in boundaries]
+        if row:
+            ordered_rows.append(("reached", depth, row))
+    if touched:
+        ordered_rows.append(("changed", 0, list(dict.fromkeys(touched))))
+    boundary_only = [n for n in boundaries if n not in touched]
+    if boundary_only:
+        ordered_rows.append(("boundary", -1, boundary_only))
+    if not ordered_rows:
+        return ('<div class="tp-sec" id="tp-dependency-flow">'
+                '<p class="tp-kicker">dependency graph — change path</p>'
+                '<p class="tp-lede">No change-aware path is available yet. '
+                'The module graph summary remains below; scan or provide a '
+                'canonical impact before review.</p></div>')
+
+    width, box_h, gap_y = 880, 52, 78
+    positions, row_y = {}, 14
+    for kind, depth, names in ordered_rows:
+        names = names[:3]
+        box_w, gap_x = (330 if len(names) <= 2 else 250), 30
+        total = len(names) * box_w + max(0, len(names) - 1) * gap_x
+        start = (width - total) / 2
+        for idx, name in enumerate(names):
+            positions[name] = (start + idx * (box_w + gap_x), row_y,
+                               box_w, kind, depth)
+        row_y += gap_y
+    height = max(150, row_y - gap_y + box_h + 16)
+    selected, edges = set(positions), []
+    for source, target, danger in via_edges:
+        if source in selected and target in selected:
+            edges.append((source, target, danger))
+    for edge in graph.get("edges") or []:
+        source = str(edge.get("from") or "")
+        target = str(edge.get("to") or "")
+        if source in selected and target in selected:
+            edges.append((source, target, False))
+    if touched and boundary_only:
+        edges.extend((touched[0], boundary, False)
+                     for boundary in boundary_only)
+    for row in blocked:
+        source = str(row.get("module") or "")
+        target = str(row.get("via") or "")
+        if source in selected and target in selected:
+            edges.append((source, target, True))
+    if not edges and len(ordered_rows) > 1:
+        for upper, lower in zip(ordered_rows, ordered_rows[1:]):
+            edges.extend((source, lower[2][0], False)
+                         for source in upper[2])
+    edges = list(dict.fromkeys(edges))
+
+    token = hashlib.sha256("\0".join(sorted(selected)).encode()).hexdigest()[:10]
+    marker, danger_marker = f"tp-ar-{token}", f"tp-ar-danger-{token}"
+    paths = []
+    for source, target, danger in edges:
+        if source not in positions or target not in positions:
+            continue
+        sx, sy, sw, _sk, _sd = positions[source]
+        tx, ty, tw, _tk, _td = positions[target]
+        x1, y1, x2, y2 = sx + sw / 2, sy + box_h, tx + tw / 2, ty
+        mid = (y1 + y2) / 2
+        color = "var(--danger)" if danger else "var(--line)"
+        dash = ' stroke-dasharray="5 4"' if danger else ""
+        mark = danger_marker if danger else marker
+        paths.append(
+            f'<path d="M{x1:.1f},{y1:.1f} L{x1:.1f},{mid:.1f} '
+            f'L{x2:.1f},{mid:.1f} L{x2:.1f},{y2:.1f}" fill="none" '
+            f'stroke="{color}" stroke-width="1.4"{dash} '
+            f'marker-end="url(#{mark})"/>')
+
+    nodes = []
+    for name, (x, y, box_w, kind, depth) in positions.items():
+        if kind == "changed":
+            fill, stroke, stroke_w, dash = (
+                "var(--changed-bg)", "var(--accent)", "1.6", "")
+            title, meta, weight = (
+                f"{_flow_label(name)} — CHANGED", "changed by this scope", "600")
+        elif kind == "boundary":
+            fill, stroke, stroke_w = "none", "var(--line)", "1"
+            dash = ' stroke-dasharray="5 4"'
+            title, meta, weight = (
+                _flow_label(name), "contract boundary — traversal stops here", "500")
+        else:
+            fill, stroke, stroke_w, dash = (
+                "var(--surface-1)", "var(--line)", "1", "")
+            title, meta, weight = (
+                _flow_label(name), f"reached, unchanged · depth {depth}", "500")
+        nodes.append(
+            f'<g><rect x="{x:.1f}" y="{y:.1f}" width="{box_w:.1f}" '
+            f'height="{box_h}" rx="7" fill="{fill}" stroke="{stroke}" '
+            f'stroke-width="{stroke_w}"{dash}/>'
+            f'<text x="{x + 14:.1f}" y="{y + 22:.1f}" '
+            f'font-family="var(--font-sans)" font-size="12.5" '
+            f'font-weight="{weight}" fill="var(--text-primary)">{_esc(title)}</text>'
+            f'<text x="{x + 14:.1f}" y="{y + 40:.1f}" '
+            f'font-family="var(--font-mono)" font-size="10" '
+            f'fill="var(--text-secondary)">{_esc(meta)}</text></g>')
+
+    desc = (f'{len(touched)} changed module(s), '
+            f'{impact.get("total_impacted", 0)} impacted module(s), '
+            f'depth limit {impact.get("depth_limit", "—")}; '
+            f'{"truncated" if impact.get("truncated") else "not truncated"}.')
+    warning = ""
+    if blocked:
+        reasons = ", ".join(sorted(
+            {str(row.get("reason") or "policy") for row in blocked}))
+        warning = (f'<div class="tp-lede" style="color:var(--text-danger);'
+                   f'margin-top:8px">policy-stopped path(s): {_esc(reasons)}</div>')
+    return (
+        '<div class="tp-sec" id="tp-dependency-flow">'
+        '<p class="tp-kicker">dependency graph — change path and blast radius</p>'
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-labelledby="tp-graph-title-{token} tp-graph-desc-{token}" '
+        'style="margin-top:10px">'
+        f'<title id="tp-graph-title-{token}">Dependency path from callers to changed modules and contract boundaries.</title>'
+        f'<desc id="tp-graph-desc-{token}">{_esc(desc)}</desc>'
+        f'<defs><marker id="{marker}" viewBox="0 0 10 10" refX="9" '
+        'refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        '<path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/></marker>'
+        f'<marker id="{danger_marker}" viewBox="0 0 10 10" refX="9" '
+        'refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        '<path d="M0,0 L10,5 L0,10 z" fill="var(--danger)"/></marker></defs>'
+        + "".join(paths) + "".join(nodes) + '</svg>'
+        '<div class="legend" style="display:flex;gap:16px;flex-wrap:wrap;'
+        'font-size:11.5px;color:var(--text-secondary);margin-top:12px">'
+        '<span><i style="width:11px;height:11px;border-radius:3px;display:inline-block;'
+        'margin-right:6px;background:var(--changed-bg);border:1px solid var(--accent)"></i>changed by this scope</span>'
+        '<span><i style="width:11px;height:11px;border-radius:3px;display:inline-block;'
+        'margin-right:6px;background:var(--surface-1);border:1px solid var(--line)"></i>reached, unchanged</span>'
+        '<span><i style="width:11px;height:11px;border-radius:3px;display:inline-block;'
+        'margin-right:6px;background:transparent;border:1px dashed var(--line)"></i>contract boundary</span>'
+        '<span><i style="width:11px;height:11px;border-radius:3px;display:inline-block;'
+        'margin-right:6px;background:var(--danger-bg);border:1px solid var(--danger)"></i>policy/error path</span>'
+        f'</div><p class="tp-lede" style="margin-top:10px">{_esc(desc)}</p>{warning}</div>')
+
+
+def render_workflow_flow(state, step, tasks):
+    """Reference-style governed workflow: stages, current work, and gates."""
+    state = state or {}
+    current = "build" if step in _BUILD_STEPS else step
+    rows = list(_SPINE)
+    if not state.get("design_required"):
+        rows = [row for row in rows
+                if row[0] not in ("design", "design_approval")]
+    elif state.get("design_only"):
+        rows = [row for row in rows
+                if row[0] in ("pm", "design", "design_approval", "done")]
+    rows = _loop.splice_selection(rows, state)
+    order = [row[0] for row in rows]
+    current_i = order.index(current) if current in order else -1
+    width, box_x, box_w, box_h, gap = 880, 215, 450, 52, 72
+    height = max(120, 14 + len(rows) * gap)
+    token = hashlib.sha256("|".join(order).encode()).hexdigest()[:10]
+    marker, arrows, nodes = f"tp-workflow-ar-{token}", [], []
+    for idx, (sid, label, gate) in enumerate(rows):
+        y = 14 + idx * gap
+        if idx < len(rows) - 1:
+            arrows.append(
+                f'<line x1="{box_x + box_w / 2}" y1="{y + box_h}" '
+                f'x2="{box_x + box_w / 2}" y2="{y + gap}" '
+                'stroke="var(--line)" stroke-width="1.4" '
+                f'marker-end="url(#{marker})"/>')
+        if current_i >= 0 and idx < current_i:
+            fill, stroke, sw, status = (
+                "var(--surface-1)", "var(--line)", "1", "complete")
+        elif idx == current_i:
+            fill = "var(--danger-bg)" if gate else "var(--changed-bg)"
+            stroke = "var(--danger)" if gate else "var(--accent)"
+            sw = "1.6"
+            status = "human gate — waiting on you" if gate else "current"
+        else:
+            fill, stroke, sw, status = "none", "var(--line)", "1", "pending"
+        if sid == "build" and tasks:
+            done = sum(1 for task in tasks if task.get("status") == "passed")
+            meta = f'{done}/{len(tasks)} tasks passed · build → evaluate ⟲ fix'
+        elif gate:
+            meta = f'{status} · explicit approval or rejection required'
+        else:
+            meta = status
+        nodes.append(
+            f'<rect x="{box_x}" y="{y}" width="{box_w}" height="{box_h}" '
+            f'rx="7" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"/>'
+            f'<text x="{box_x + 14}" y="{y + 22}" '
+            'font-family="var(--font-sans)" font-size="13" font-weight="600" '
+            f'fill="var(--text-primary)">{_esc(label)}</text>'
+            f'<text x="{box_x + 14}" y="{y + 40}" '
+            'font-family="var(--font-mono)" font-size="10.5" '
+            f'fill="var(--text-secondary)">{_esc(meta)}</text>')
+        if idx == current_i and gate:
+            callout_y = max(4, y - 6)
+            nodes.append(
+                f'<path d="M{box_x + box_w},{y + box_h / 2} '
+                f'L690,{y + box_h / 2}" fill="none" stroke="var(--danger)" '
+                'stroke-width="1.4"/>'
+                f'<rect x="690" y="{callout_y}" width="174" height="64" '
+                'rx="7" fill="var(--danger-bg)" stroke="var(--danger)"/>'
+                f'<text x="702" y="{callout_y + 23}" '
+                'font-family="var(--font-sans)" font-size="11.5" '
+                'font-weight="600" fill="var(--text-primary)">your decision</text>'
+                f'<text x="702" y="{callout_y + 43}" '
+                'font-family="var(--font-mono)" font-size="9.5" '
+                'fill="var(--text-secondary)">approve · request changes</text>')
+    return (
+        '<div class="tp-sec" id="tp-workflow-flow">'
+        '<p class="tp-kicker">workflow execution — stages, evidence, and human gates</p>'
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-labelledby="tp-workflow-title-{token} tp-workflow-desc-{token}" '
+        'style="margin-top:10px">'
+        f'<title id="tp-workflow-title-{token}">taskPlane governed workflow and current human gate.</title>'
+        f'<desc id="tp-workflow-desc-{token}">Current stage: {_esc(str(step or "none"))}. '
+        'Decision stages require explicit human approval or rejection.</desc>'
+        f'<defs><marker id="{marker}" viewBox="0 0 10 10" refX="9" refY="5" '
+        'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        '<path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/></marker></defs>'
+        + "".join(arrows) + "".join(nodes) + '</svg>'
+        '<p class="tp-lede">Every arrow is contract activation → bounded work → evidence → orchestrator gate. '
+        'Only the human closes approval, selection, and sign-off gates.</p></div>')
+
+
 def _graph_panel(ws, tasks):
     """Graph tab: module/edge summary, most-connected hubs, and the blast
     radius of the current tasks' scope — all from the committed graph."""
@@ -2264,12 +2610,12 @@ def _graph_panel(ws, tasks):
         f'<div style="font-size:11px;color:var(--text-muted)">external deps'
         f'</div></div></div>')
     imp_html = ""
+    current_impact = _current_graph_impact(ws, tasks)
     scope = sorted({s.rstrip("*").rstrip("/") for t in tasks
                     for s in t.get("scope", []) if s})
     if scope:
         try:
-            import depgraph
-            im = depgraph.impact(ws, scope)
+            im = current_impact
             touched = im.get("touched", [])
             chips = "".join(
                 f'<span style="background:none;border:1px solid var(--border-strong);'
@@ -2351,7 +2697,9 @@ def _graph_panel(ws, tasks):
             f'letter-spacing:1.2px;color:var(--text-muted);margin-bottom:'
             f'8px">product layer — requirements ↔ modules</div>'
             f'{"".join(rows)}{shared_html}</div>')
-    return (tile3
+    return (render_dependency_flow(ws, impact=current_impact, tasks=tasks)
+            + '<div class="tp-sec"><p class="tp-kicker">module-level graph — what the engine computed</p>'
+            + tile3
             + f'<div style="background:none;border:1px solid '
               f'var(--border);border-radius:6px;padding:14px"><div style="'
               f'font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.2px;color:var(--text-muted);'
@@ -2359,7 +2707,7 @@ def _graph_panel(ws, tasks):
             + imp_html + prod_html
             + '<div style="font-size:12px;color:var(--text-muted);margin-top:'
               '10px">from the committed dependency graph — engineering AND '
-              'product edges (deterministic, zero tokens).</div>')
+              'product edges (deterministic, zero tokens).</div></div>')
 
 
 def _context_panel(ws, state, trace_all):
@@ -2671,6 +3019,23 @@ def _journey(ws, events=None, state=None):
                 "ts": e.get("ts"), "ts_end": e.get("ts"),
                 "outcome": e.get("decision"), "note": "", "dor": None})
     return visits
+
+
+def _compact_journey(visits):
+    """One latest visit per stage for the human dashboard.
+
+    The append-only trace remains the audit record. Re-rendering hundreds of
+    retry visits into a 600 KiB dashboard made the visual itself fail; the
+    report needs the latest execution/decision for each governed lane, not a
+    second copy of the trace.
+    """
+    order, latest = [], {}
+    for visit in visits or []:
+        key = visit.get("step")
+        if key not in latest:
+            order.append(key)
+        latest[key] = visit
+    return [latest[key] for key in order]
 
 
 def _model_rows(ws):
@@ -3029,18 +3394,25 @@ def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used,
              f'\'signed off\')"><i class="ti ti-check" aria-hidden="true"></i> '
              f'sign off</button><button style="{sec}" onclick="tpFire(this,'
              f'\'send it back, not ready to ship\')">send back</button>')
-        # Mechanical DoD, shown right at the gate so the human signs off seeing
-        # the scope-diff + lint verdict, not just the EM read-out.
-        _dod = _loop._signoff_dod(ws, state) if state else {"passed": True,
-                                                            "errors": []}
-        if _dod["passed"]:
-            _dsub = "all tasks reviewed · DoD ✅ diff in scope, KB lint clean"
+        # Rendering is observational.  _signoff_dod can discover a regression
+        # radius and execute current/baseline tests, so invoking it here made
+        # a dashboard refresh an expensive hidden gate.  Display a previously
+        # persisted verdict when one exists; otherwise tell the human exactly
+        # when the mechanical check will run.
+        _dod = state.get("signoff_dod") if isinstance(state, dict) else None
+        if isinstance(_dod, dict) and _dod.get("passed"):
+            _dsub = "all tasks reviewed · cached DoD ✅"
+        elif isinstance(_dod, dict):
+            _errors = list(_dod.get("errors") or [])
+            _dsub = _msg("signoff_dod_fail", n=len(_errors),
+                         details=_esc("; ".join(_errors)[:150]))
         else:
-            _dsub = _msg("signoff_dod_fail", n=len(_dod["errors"]),
-                         details=_esc("; ".join(_dod["errors"])[:150]))
+            _dsub = ("final DoD is evaluated only when you act · dashboard "
+                     "rendering never executes tests")
         gatebar = gate_box("ti-writing-sign", "your gate — EM review done, "
                            "final sign-off", _dsub, b,
-                           danger=not _dod["passed"])
+                           danger=isinstance(_dod, dict)
+                           and not bool(_dod.get("passed")))
     elif step == "escalated":
         b = (f'<button style="{sec}" onclick="tpFire(this,\'retry the task\','
              f'\'retrying\')">retry</button><button style="{sec}" onclick='
@@ -3256,7 +3628,8 @@ _WIDGET_JS = (
     'Array.from(b.parentNode.querySelectorAll("button")).forEach('
     'function(x){if(x!==b){x.disabled=true;x.style.opacity="0.45";'
     'x.style.cursor="default";}});sendPrompt(m);}'
-    'function tpTab(w){["loop","map"].forEach('
+    'function tpTab(w){if(w==="map")tpView("detail");'
+    '["loop","map"].forEach('
     'function(k){var p=document.getElementById("tp-panel-"+k),'
     'b=document.getElementById("tp-tab-"+k);if(!p||!b)return;'
     'var on=k===w;p.style.display=on?"block":"none";'
@@ -3276,7 +3649,7 @@ _WIDGET_JS = (
     'b.style.color=a?"var(--surface-2)":"var(--text-secondary)";'
     'b.setAttribute("aria-pressed",a?"true":"false");'
     'b.style.textDecoration=a?"underline":"none";}'
-    'st(bs,!on);st(bd,on);}'
+    'st(bs,!on);st(bd,on);if(!on)tpTab("loop");}'
     'var tpMap={pm:["pm"],design:["design"],'
     'design_approval:["design_approval"],plan:["plan"],'
     'plan_approval:["plan_approval"],'
@@ -3311,7 +3684,12 @@ _WIDGET_JS = (
 # the loop panel and journey grids degrade to one column instead of forcing
 # horizontal overflow on phones / narrow sidebars.
 _WIDGET_CSS = (
-    '<style>@media (max-width:640px){.tp-grid2,.tp-jgrid{'
+    '<style>.tp-sec{border-top:1px solid var(--border);margin-top:28px;'
+    'padding-top:14px}.tp-kicker{font-family:var(--font-mono);font-size:10px;'
+    'letter-spacing:1.6px;text-transform:uppercase;color:var(--text-muted);'
+    'margin:0 0 4px}.tp-lede{font-size:13px;color:var(--text-secondary);'
+    'line-height:1.65;margin:2px 0 0}'
+    '@media (max-width:640px){.tp-grid2,.tp-jgrid{'
     'grid-template-columns:1fr!important}}</style>')
 
 
@@ -3367,12 +3745,15 @@ def _widget_parts(ws: str) -> dict:
     # graph + context merged into one "map" tab — the codebase context
     # (hubs, blast radius) above the work context (requirement, lenses, KB)
     graph_html = _graph_panel(ws, tasks)
+    workflow_html = render_workflow_flow(state, step, tasks)
     context_html = (
         _context_panel(ws, state, full_trace)
         + f'<div style="{_MICRO};margin-top:10px">action budgets are '
         'hook-enforced; dollar spend stays cooperative in the plugin.</div>')
-    map_panel = (graph_html + '<div style="height:14px"></div>'
-                 + context_html)
+    # The graph is now part of the primary report, not hidden behind a tab.
+    # Keep this panel for the deeper work context only; duplicating the same
+    # SVG would spend bytes and make two visual copies drift.
+    map_panel = context_html
 
     # ---- simple view: the focus points only — where we are, your gate,
     # and each agent's harness (on topic + within budget)
@@ -3410,7 +3791,8 @@ def _widget_parts(ws: str) -> dict:
         + (';background:var(--text-primary);color:var(--surface-2);'
            'text-decoration:underline' if k == "loop" else "")
         + f'" onclick="tpTab(\'{k}\')">{lbl}</button>'
-        for k, lbl in (("loop", "loop"), ("map", "graph &amp; context")))
+        for k, lbl in (("loop", "execution detail"),
+                       ("map", "context detail")))
     tabs = f'<div role="tablist" style="display:flex;gap:6px">{tabs}</div>'
     vbtn = ('border:none;background:none;font-family:var(--font-mono);'
             'font-size:11.5px;letter-spacing:.8px;font-weight:500;'
@@ -3428,7 +3810,7 @@ def _widget_parts(ws: str) -> dict:
     dor_html = _widget_dor(full_trace, step)
 
     # Dashboard v2 (R-0001): journey navigator + always-on stats band.
-    visits = _journey(ws, events=all_ev, state=state)
+    visits = _compact_journey(_journey(ws, events=all_ev, state=state))
     journey_s = render_journey(visits, "s")
     journey_d = render_journey(visits, "d")
     stats_html = render_stats(ws, metrics, denials, "s")
@@ -3458,7 +3840,8 @@ def _widget_parts(ws: str) -> dict:
         "harness_panel": harness_panel, "loop_panel": loop_panel,
         "lanes_panel": lanes_panel, "ministats": ministats,
         "feed_panel": feed_panel, "graph": graph_html,
-        "context": context_html, "map_panel": map_panel, "tabs": tabs,
+        "workflow": workflow_html, "context": context_html,
+        "map_panel": map_panel, "tabs": tabs,
         "step_badge": step_badge, "goal": goal, "visits": visits,
     }
 
@@ -3503,15 +3886,53 @@ def widget(ws: str) -> str:
         + p["gatebar"]
         + p["dor"]
         + p["stats"]
+        + p["workflow"]
+        + p["graph"]
+        + f'<div style="margin-bottom:14px;border-bottom:'
+          f'1px solid var(--border);padding-bottom:10px">{p["tabs"]}</div>'
         + f'<div id="tp-simple">{p["pipe_s"]}{p["journey_s"]}'
           f'{p["harness_panel"]}</div>'
         + f'<div id="tp-detail">'
-          f'<div style="margin-bottom:14px;border-bottom:'
-          f'1px solid var(--border);padding-bottom:10px">{p["tabs"]}</div>'
           f'<div id="tp-panel-loop">{p["pipe_d"]}{p["journey_d"]}'
           f'{p["loop_panel"]}</div>'
           f'<div id="tp-panel-map">{p["map_panel"]}</div></div></div>'
         + _WIDGET_JS)
+
+
+def report_widget(ws: str) -> str:
+    """Concise canonical dashboard artifact in engineering-report order.
+
+    The interactive widget keeps its drill-down navigator for small inline
+    hosts.  The durable Claude/Codex artifact instead follows the field-report
+    contract: status, workflow, dependency path, live execution, context, then
+    the human gate.  The append-only trace is referenced by the journey rather
+    than copied hundreds of times into the report.
+    """
+    p = _widget_parts(ws)
+    header = (
+        f'<p class="tp-kicker">taskplane · mission control · governed run</p>'
+        f'<div style="display:flex;justify-content:space-between;align-items:'
+        f'flex-start;gap:12px;margin-bottom:12px"><div><div style="font-size:'
+        f'21px;font-weight:600;line-height:1.3">{p["goal"]}</div>'
+        f'<div class="tp-lede">workflow state and evidence are projected from '
+        f'the active loop; approval remains a human decision.</div></div>'
+        f'<span style="border:1px solid var(--border-strong);color:'
+        f'var(--text-primary);border-radius:20px;padding:4px 12px;'
+        f'font-family:var(--font-mono);font-size:11.5px;letter-spacing:.8px;'
+        f'white-space:nowrap">step: {p["step_badge"]}</span></div>')
+    execution = (
+        '<div class="tp-sec"><p class="tp-kicker">execution — governed '
+        'agents and current evidence</p>' + p["loop_panel"] + '</div>')
+    context = (
+        '<div class="tp-sec"><p class="tp-kicker">requirements, decisions, '
+        'and review context</p>' + p["context"] + '</div>')
+    return (
+        p["sr"] + _WIDGET_CSS
+        + '<div dir="auto" style="padding:.5rem 0;font-family:var(--font-sans);'
+          'color:var(--text-primary)">' + header
+        + p["notice"] + p["hero"] + p["dor"] + p["stats"]
+        + p["workflow"] + p["graph"] + execution + context
+        + p["gatebar"] + '</div>' + _WIDGET_JS)
 
 
 def _page_bytes(html: str) -> int:

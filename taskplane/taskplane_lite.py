@@ -43,6 +43,7 @@ Windows support — that gap is closed at this one seam.)
 from __future__ import annotations
 
 import fnmatch
+import ast
 import hashlib
 import json
 import os
@@ -1427,6 +1428,31 @@ def screen_command(cmd: str, coding: dict, workspace: str | None) -> str | None:
     return None
 
 
+_HOST_HOOK_COMMANDS = frozenset({
+    "screen", "screen-dispatch", "screen-render", "subagent-start",
+    "subagent-stop", "session-verify", "context",
+})
+
+
+def host_hook_cli_invocation(command: str) -> "str | None":
+    """Return a hook-only tp.py subcommand invoked through an agent shell.
+
+    Host hooks execute these entry points directly. Letting a governed agent
+    invoke the same public command through Bash turns lifecycle/provenance
+    events into self-assertions, so the shell path is always refused.
+    """
+    segments, _ = _deny_segments(command)
+    for tokens in segments:
+        for index, token in enumerate(tokens):
+            if not _is_tp_cli(token):
+                continue
+            command_args = [item for item in tokens[index + 1:]
+                            if not item.startswith("-")]
+            if command_args and command_args[0] in _HOST_HOOK_COMMANDS:
+                return command_args[0]
+    return None
+
+
 # --------------------------------------------------------------- screen
 
 def tool_aliases(tool_name: str) -> tuple[str, ...]:
@@ -1477,6 +1503,13 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
     if allowed and not any(name in allowed for name in tool_aliases(tool_name)):
         return False, f"tool '{tool_name}' not in allowed_tools"
 
+    if tool_name in COMMAND_TOOLS:
+        hook_command = host_hook_cli_invocation(
+            str(tool_input.get("command", "")))
+        if hook_command:
+            return False, ("host hook entry point cannot be invoked through "
+                           f"an agent shell: {hook_command}")
+
     coding = contract.get("coding") or {}
 
     # Read-only contract: no filesystem writes EXCEPT an optional allowlist
@@ -1501,8 +1534,15 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                "is protected")
         if tool_name in COMMAND_TOOLS:
             targets, opaque = _analyze(str(tool_input.get("command", "")))
+            leased_paths = [path for path in allow
+                            if "/kernel-v2/results/" in
+                            "/" + str(path).replace("\\", "/")]
             for t in targets:
                 p = norm(t, workspace)
+                if p and leased_paths and writable(p, leased_paths):
+                    return False, ("leased review result must use the host "
+                                   "Write tool; Bash cannot establish result "
+                                   "provenance")
                 if not (p and writable(p, allow)):
                     return False, ("read-only review contract: command writes "
                                    f"'{t}' outside {allow or '(nothing)'} — "
@@ -1549,6 +1589,126 @@ def _run(cmd, cwd, shell=False, timeout=600, env=None):
                           text=True, timeout=timeout, env=env, encoding="utf-8", errors="replace")
 
 
+_CHECKOUT_PYTHON_TRAMPOLINE = (
+    "import os,sys;"
+    "root=os.path.realpath(sys.argv[1]);"
+    "sys.path.insert(0,os.path.realpath(sys.argv[2]));"
+    "import taskplane_lite as _tp;"
+    "_tp._checkout_bound_main(root,sys.argv[3:])")
+
+
+def _python_program(value) -> bool:
+    try:
+        program = os.path.basename(os.fspath(value)).lower()
+    except TypeError:
+        return False
+    return bool(re.fullmatch(
+        r"python(?:\d+(?:\.\d+)?)?(?:\.exe)?", program))
+
+
+def _checkout_bound_python_args(workspace: str, args) -> list:
+    return [sys.executable, "-c", _CHECKOUT_PYTHON_TRAMPOLINE,
+            os.path.realpath(workspace),
+            os.path.dirname(os.path.realpath(__file__)), *list(args)]
+
+
+def _checkout_bound_main(workspace: str, args) -> None:
+    """Execute Python argv with a checkout namespace, transitively.
+
+    Tests and regression probes legitimately start nested Python/pytest
+    processes. They must inherit the same checkout boundary instead of
+    falling back to an unrelated editable install from system site-packages.
+    Intercepting only explicit Python argv keeps ordinary subprocesses and
+    shell commands byte-for-byte unchanged.
+    """
+    import importlib.machinery
+    import runpy
+    import types
+
+    root = os.path.realpath(workspace)
+    python_args = list(args or ())
+    package_path = os.path.join(root, "taskplane")
+    package = types.ModuleType("taskplane")
+    package.__package__ = "taskplane"
+    package.__path__ = [package_path]
+    package.__spec__ = importlib.machinery.ModuleSpec(
+        "taskplane", loader=None, is_package=True)
+    package.__spec__.submodule_search_locations = package.__path__
+    sys.modules["taskplane"] = package
+    if package_path not in sys.path:
+        sys.path.insert(0, package_path)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+    original_popen = subprocess.Popen
+
+    def checkout_popen(command, *popen_args, **popen_kwargs):
+        if isinstance(command, (list, tuple)) and command and \
+                _python_program(command[0]):
+            command = _checkout_bound_python_args(root, command[1:])
+        return original_popen(command, *popen_args, **popen_kwargs)
+
+    subprocess.Popen = checkout_popen
+    if not python_args:
+        raise SystemExit("checkout-bound Python command is empty")
+    if python_args[0] == "-m" and len(python_args) >= 2:
+        module = python_args[1]
+        sys.argv = [module, *python_args[2:]]
+        runpy.run_module(module, run_name="__main__", alter_sys=True)
+    elif python_args[0] == "-c" and len(python_args) >= 2:
+        sys.argv = ["-c", *python_args[2:]]
+        exec(compile(python_args[1], "<string>", "exec"),
+             {"__name__": "__main__"})
+    else:
+        script = python_args[0]
+        if not os.path.isabs(script):
+            script = os.path.join(root, script)
+        sys.argv = [script, *python_args[1:]]
+        runpy.run_path(script, run_name="__main__")
+
+
+def _checkout_bound_python_argv(workspace: str, command: str) -> "list | None":
+    """Translate one plain Python suite command to the current interpreter.
+
+    The checkout intentionally has no ``taskplane/__init__.py``. A globally
+    installed regular package would therefore beat the checkout namespace.
+    The bootstrap pins that namespace in-process without PATH aliases,
+    PYTHONPATH shims, or a machine-specific interpreter name.
+    """
+    try:
+        lexer = shlex.shlex(str(command or ""), posix=True,
+                           punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if not tokens or any(token and set(token) <= set("|&;<>")
+                         for token in tokens):
+        return None
+    if not _python_program(tokens[0]):
+        return None
+    if len(tokens) < 2:
+        return None
+    return _checkout_bound_python_args(workspace, tokens[1:])
+
+
+def run_suite_command(workspace: str, command, *, env=None,
+                      timeout: int = 600):
+    """Run a declared suite portably while retaining its original identity."""
+    if isinstance(command, (list, tuple)):
+        argv = (_checkout_bound_python_args(workspace, command[1:])
+                if command and _python_program(command[0]) else list(command))
+        return _run(argv, cwd=workspace, shell=False,
+                    timeout=timeout, env=env)
+    argv = _checkout_bound_python_argv(workspace, command)
+    if argv is not None:
+        return _run(argv, cwd=workspace, shell=False,
+                    timeout=timeout, env=env)
+    return _run(command, cwd=workspace, shell=True,
+                timeout=timeout, env=env)
+
+
 # ------------------------------------------------- suite result cache (P1)
 #
 # THE PERFORMANCE REGRESSION THIS CLOSES (measured, month-1 → phase 3): the
@@ -1573,11 +1733,93 @@ def _run(cmd, cwd, shell=False, timeout=600, env=None):
 
 SUITE_CACHE_MAX_UNTRACKED_BYTES = 32 * 1024 * 1024
 
-# Env that can legitimately change what the suite does — keyed into the
-# identity so a run under a different store or host profile never satisfies
-# another's gate. (TASKPLANE_TASK is stripped by dod_check's A3 sanitizer
-# before it reaches here.)
-SUITE_CACHE_ENV_PREFIXES = ("TASKPLANE_", "CODEX_", "PYTEST_", "PYTHON")
+# Volatile records authored by the harness itself between delivery stages.
+# This is intentionally narrower than RUNTIME_OWNED below: plan/, docs/ and
+# requirements/ can be governed task outputs whose changes must invalidate a
+# suite result, even though the scope checker treats them as loop-owned.
+SUITE_CACHE_VOLATILE = (
+    ".taskplane/", ".taskplane_output.json", "knowledge/", ".eval/",
+    ".em-review/", ".security-review/", ".tp-work/", ".taskplane-kb/",
+)
+
+# Stable, explicit inputs that can legitimately change suite behaviour.
+# Orchestration identity (TASKPLANE_TASK, CODEX_THREAD_ID, host sessions,
+# artifact stores) is deliberately absent: native executor and evaluator
+# tasks must cite the same content-bound run.
+SUITE_CACHE_ENV_KEYS = frozenset({
+    "CI", "LANG", "LC_ALL", "TZ",
+    "PYTHONHASHSEED", "PYTHONPATH", "PYTHONUTF8", "PYTHONIOENCODING",
+    "PYTEST_ADDOPTS", "PYTEST_PLUGINS",
+    "TASKPLANE_AUDIT_EVERY", "TASKPLANE_ENFORCE_DISPATCH",
+    "TASKPLANE_INLINE_MAX", "TASKPLANE_PUBLISH_REVIEW",
+    "TASKPLANE_QA_BASELINE", "TASKPLANE_RUNNABILITY",
+})
+
+_TRANSPORT_SHIM_AST = ast.dump(ast.parse(
+    "from pathlib import Path\n"
+    "__path__ = [str(Path.cwd() / 'taskplane')]\n"),
+    include_attributes=False)
+
+
+def _transport_only_pythonpath_entry(workspace: str, entry: str) -> bool:
+    """Recognize the exact checkout-local namespace shim used by gates.
+
+    A random PYTHONPATH remains test-affecting identity. Only a directory
+    containing the single inert ``taskplane/__init__.py`` adapter whose AST
+    points imports at ``cwd/taskplane`` is transport plumbing and may be
+    omitted so a native evaluator can cite the producer's run.
+    """
+    if not str(entry or "").strip():
+        return False
+    root = entry if os.path.isabs(entry) else os.path.join(workspace, entry)
+    root = os.path.realpath(root)
+    if not os.path.isdir(root) or os.path.islink(root):
+        return False
+    files, directories = [], []
+    try:
+        for directory, names, filenames in os.walk(root):
+            for name in names:
+                full = os.path.join(directory, name)
+                if os.path.islink(full):
+                    return False
+                if name != "__pycache__":
+                    directories.append(os.path.relpath(
+                        full, root).replace(os.sep, "/"))
+            names[:] = [name for name in names if name != "__pycache__"]
+            if os.path.islink(directory):
+                return False
+            for filename in filenames:
+                full = os.path.join(directory, filename)
+                if os.path.islink(full):
+                    return False
+                files.append(os.path.relpath(full, root).replace(os.sep, "/"))
+        if sorted(directories) != ["taskplane"] or \
+                sorted(files) != ["taskplane/__init__.py"]:
+            return False
+        with open(os.path.join(root, "taskplane", "__init__.py"),
+                  encoding="utf-8") as stream:
+            tree = ast.parse(stream.read())
+        return ast.dump(tree, include_attributes=False) == _TRANSPORT_SHIM_AST
+    except (OSError, SyntaxError, ValueError):
+        return False
+
+
+def _suite_env_identity(workspace: str, env: dict) -> list[tuple[str, str]]:
+    identity = []
+    for key in sorted(env or {}):
+        if key not in SUITE_CACHE_ENV_KEYS:
+            continue
+        value = str(env[key])
+        if key == "PYTHONPATH":
+            entries = [entry for entry in value.split(os.pathsep) if entry]
+            entries = [entry for entry in entries
+                       if not _transport_only_pythonpath_entry(workspace,
+                                                               entry)]
+            if not entries:
+                continue
+            value = os.pathsep.join(entries)
+        identity.append((key, value))
+    return identity
 
 
 def tree_fingerprint(workspace: str) -> "str | None":
@@ -1598,7 +1840,20 @@ def tree_fingerprint(workspace: str) -> "str | None":
             return None
         h.update(b"head\0" + head.stdout.strip().encode())
 
-        diff = _run(["git", "diff", "HEAD"], cwd=workspace)
+        # Runtime evidence is deliberately outside the governed tree
+        # identity.  The loop writes these paths between execute and
+        # evaluate; including them makes a byte-identical product tree miss
+        # the suite result it just produced.  Exclude the same runtime-owned
+        # paths from tracked and untracked inputs so an audit artifact cannot
+        # manufacture a test rerun (or a different cache key).
+        excludes = []
+        for prefix in SUITE_CACHE_VOLATILE:
+            clean = prefix.rstrip("/")
+            excludes.append(
+                f":(exclude){clean}/**" if prefix.endswith("/")
+                else f":(exclude){clean}")
+        diff = _run(["git", "diff", "HEAD", "--", ".", *excludes],
+                    cwd=workspace)
         if diff.returncode != 0:
             return None
         h.update(b"\0diff\0" + diff.stdout.encode("utf-8", "replace"))
@@ -1608,7 +1863,9 @@ def tree_fingerprint(workspace: str) -> "str | None":
         if others.returncode != 0:
             return None
         budget = SUITE_CACHE_MAX_UNTRACKED_BYTES
-        for rel in sorted(p for p in others.stdout.splitlines() if p.strip()):
+        for rel in sorted(p for p in others.stdout.splitlines()
+                          if p.strip() and not p.startswith(
+                              SUITE_CACHE_VOLATILE)):
             full = os.path.join(workspace, rel)
             try:
                 if os.path.islink(full) or not os.path.isfile(full):
@@ -1637,9 +1894,8 @@ def _suite_cache_key(workspace: str, command, env: dict) -> "str | None":
         h.update(b"\0engine\0" + engine_fingerprint().encode())
     except Exception:
         return None            # can't bind evidence to an engine → run it
-    for k in sorted(env or {}):
-        if k.startswith(SUITE_CACHE_ENV_PREFIXES):
-            h.update(b"\0env\0" + k.encode() + b"=" + str(env[k]).encode())
+    for key, value in _suite_env_identity(workspace, env):
+        h.update(b"\0env\0" + key.encode() + b"=" + value.encode())
     return h.hexdigest()
 
 
@@ -1898,7 +2154,8 @@ def dod_check(contract: dict, workspace: str,
               snapshot_ref: str | None,
               ignore_prefixes: tuple = (),
               regression_files=None,
-              notices: list | None = None) -> list:
+              notices: list | None = None,
+              suite_evidence: dict | None = None) -> list:
     """Return a list of DoD errors ([] = pass). Fails closed if a scope
     diff is required but no snapshot exists.
 
@@ -1951,11 +2208,21 @@ def dod_check(contract: dict, workspace: str,
         # DoD test subprocess (slot-sensitive tests would resolve the
         # GATE's contract, not their own). The parent env is untouched.
         env = {k: v for k, v in os.environ.items() if k != "TASKPLANE_TASK"}
+        suite_key = _suite_cache_key(workspace, tc, env)
         # P1: cite a completed run over byte-identical content instead of
         # recomputing it. Same command, same bytes, same engine, same env —
         # or it runs. Every hit is traced, so the evidence stays auditable.
         hit = suite_cache_lookup(workspace, tc, env)
         if hit is not None:
+            if suite_evidence is not None:
+                suite_evidence.update({
+                    "schema": "taskplane.suite-evidence/v1",
+                    "command": str(tc), "key": hit.get("key"),
+                    "returncode": int(hit.get("returncode")),
+                    "tail": str(hit.get("tail") or ""),
+                    "duration_s": hit.get("duration_s"),
+                    "source": "suite-cache",
+                })
             trace(workspace, "suite_cache_hit", command=str(tc),
                   key=hit.get("key"), returncode=hit.get("returncode"),
                   seconds_saved=hit.get("duration_s"),
@@ -1977,13 +2244,21 @@ def dod_check(contract: dict, workspace: str,
                               "re-execute)")
         else:
             _t0 = _time.time()
-            proc = _run(tc, cwd=workspace, shell=True, env=env)
+            proc = run_suite_command(workspace, tc, env=env)
             _elapsed = _time.time() - _t0
             tail = " | ".join((proc.stdout + proc.stderr).strip().splitlines()[-5:])
             suite_cache_store(workspace, tc, env, returncode=proc.returncode,
                               tail=tail, duration_s=_elapsed)
             trace(workspace, "suite_run", command=str(tc),
                   returncode=proc.returncode, seconds=round(_elapsed, 2))
+            if suite_evidence is not None:
+                suite_evidence.update({
+                    "schema": "taskplane.suite-evidence/v1",
+                    "command": str(tc), "key": suite_key,
+                    "returncode": int(proc.returncode), "tail": tail,
+                    "duration_s": round(_elapsed, 3),
+                    "source": "execute-gate",
+                })
             if proc.returncode != 0:
                 errors.append(f"tests_pass: '{tc}' exited {proc.returncode}: "
                               + tail)

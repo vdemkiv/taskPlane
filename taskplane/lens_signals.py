@@ -12,7 +12,10 @@ never masquerade as an honest one).
 Verdicts: deep >= 0.6, light >= 0.2, else n/a. Budget: deep set hard-capped
 at 8 ranked by score; overflow is DEMOTED to light, never dropped. Floors run
 AFTER the budget: security may not be n/a when enforcement/boundary surfaces
-are touched; architecture is at least light on any code change.
+are touched; architecture is DEEP on a structurally significant change (hub
+>= ARCH_HUB_DEPENDENTS, a named boundary contract, or a topology/contract
+path) and at least light on any other code change. No floor can lower a
+verdict — every floor write goes through the order-aware `_promote`.
 
 Fixtures-path discount (R-0006, D-0002): path/content/density hits whose
 ONLY support is fixture-class files (path segments fixtures/testdata/goldens
@@ -496,8 +499,28 @@ SPECS: dict[str, dict] = {
                    "no documentation keywords in the requirement"],
     },
     "qa": {
+        # D5. The qa spec carried NO path globs of its own, so the only
+        # surfaces it recognized were the catalog's (`**/tests/**`,
+        # `**/*.test.*`, `**/*.spec.*`, e2e/cypress/playwright/__tests__) —
+        # none of which a Go repo's `pkg/cache/cache_test.go` matches. A
+        # field review of a diff MADE of Go test files therefore reported
+        # "no test files": an n/a that ASSERTS there was nothing to check,
+        # which is the coverage-honesty feature inverted. These are the
+        # by-convention test surfaces of the languages the catalog's own
+        # code_extensions already admit.
+        "paths": ["**/*_test.go",                      # Go
+                  "**/test_*.py", "**/*_test.py",      # Python
+                  "**/*.test.*", "**/*.spec.*",        # JS/TS
+                  "**/*Test.java",                     # Java
+                  "**/*Tests.cs",                      # C#
+                  "**/*_spec.rb",                      # Ruby
+                  "**/tests/**", "**/test/**", "**/spec/**"],
+        # D5, second half: the construct regex was lowercase-only, so
+        # Ginkgo/Gomega (`Describe(`, `It(`, `Expect(`), xUnit's `Assert`
+        # and every other capitalized dialect read as prose. `i` here and
+        # nowhere else — the flags are per-pattern.
         "content": [("test constructs",
-                     r"(?m)(\bassert\b|expect\(|\bit\(|describe\(|"
+                     r"(?im)(\bassert\b|expect\(|\bit\(|describe\(|"
                      r"@pytest|unittest)")],
         "keywords": ["regression", "edge case", "e2e", "test strategy"],
         "absent": ["no test files", "no test constructs",
@@ -1016,28 +1039,111 @@ def _code_change_file(ctx: Ctx) -> str | None:
     return None
 
 
-def _promote(entry: dict, reason: str) -> None:
-    if entry["verdict"] == "n/a":
-        entry["verdict"] = "light"
+# D6 — the architecture floor promised a full pass and delivered a mention.
+#
+# The skill has claimed since v2.11.0 that a STRUCTURALLY SIGNIFICANT change
+# gets a full architecture pass. The floor promoted `n/a -> light` and
+# stopped, so a field review of a diff that touched a 12-dependent hub came
+# back `light` while carrying `hub module (12 direct dependents)` in its OWN
+# evidence, and was swept in one line.
+#
+# ARCH_HUB_DEPENDENTS is the "this is a design event whatever the path looks
+# like" bar, and is deliberately the same 8 as lens._HUB_FULL (which has
+# meant "a full design pass" since v2.0.0) — the two must not disagree about
+# what a hub is. It is NOT the much lower _HUB_DEPENDENTS=3 scoring signal,
+# which only earns graph weight.
+ARCH_HUB_DEPENDENTS = 8
+
+# Paths that ARE the structure: a service contract, a topology, or the
+# infrastructure the components run on. Sorted at the call site so the
+# reason a floor gives is deterministic.
+_ARCH_STRUCTURAL_GLOBS = ("**/*.proto", "**/docker-compose*", "**/*.tf",
+                          "**/k8s/**", "**/helm/**")
+
+
+def _structurally_significant(ctx: Ctx) -> str | None:
+    """The REASON this change is an architectural event, or None.
+
+    A reason rather than a bool on purpose: the defect was a floor that fired
+    and could not say what it saw, so its promotion read like a guess. Order
+    is fixed (graph before paths) so the same ctx always yields the same
+    sentence."""
+    try:
+        hub = int(ctx.graph.get("hub_dependents") or 0)
+    except (TypeError, ValueError):
+        hub = 0
+    if hub >= ARCH_HUB_DEPENDENTS:
+        return (f"hub module ({hub} direct dependents >= "
+                f"{ARCH_HUB_DEPENDENTS})")
+    bcs = sorted(ctx.graph.get("boundary_contracts") or [])
+    if bcs:
+        return "named boundary contract(s) in impact: " + ", ".join(bcs[:3])
+    hit = _glob_hit(ctx.files, sorted(_ARCH_STRUCTURAL_GLOBS))
+    if hit:
+        return f"structural surface: {hit[0]} matches {hit[1]}"
+    return None
+
+
+# A floor that can DEMOTE is not a floor. `_promote` is order-aware in BOTH
+# directions: it consults this table to decide whether the target is
+# actually higher than what is already recorded, and writes nothing at all
+# when it is not.
+_VERDICT_ORDER = {"n/a": 0, "light": 1, "deep": 2}
+
+
+def _verdict_rank(verdict) -> int:
+    """Rank a verdict for the never-lower comparison. 'deep (forced)' and
+    any other word this module did not mint rank at the TOP — an unknown
+    verdict is depth somebody else claimed, and a floor that overwrote it
+    would be lowering coverage while calling itself a floor."""
+    v = str(verdict or "n/a")
+    if v.startswith("deep"):
+        return _VERDICT_ORDER["deep"]
+    return _VERDICT_ORDER.get(v, _VERDICT_ORDER["deep"])
+
+
+def _promote(entry: dict, reason: str, to: str = "light") -> bool:
+    """Raise `entry` to at least `to`, or do nothing. Returns whether it
+    fired, so the caller can tell a promotion from a no-op. Idempotent: a
+    second identical application appends no second evidence line."""
+    if _VERDICT_ORDER[to] <= _verdict_rank(entry.get("verdict")):
+        # A floor is an applicability fact, not merely a mutation marker.
+        # Persist it even when the signal engine already met/exceeded the
+        # minimum; the stage-profile pass runs later and must be able to prove
+        # this lens is protected from narrowing.
+        entry["floor"] = reason
+        return False
+    entry["verdict"] = to
     entry["evidence"] = entry["evidence"] + [reason]
     entry["floor"] = reason
+    return True
 
 
 def _apply_floors(vmap: dict, ctx: Ctx) -> dict:
     """Idempotent floors (mutate vmap in place, return it): security may not
-    be n/a on enforcement/boundary diffs; architecture is at least light on
-    any code change. Reasons are recorded in evidence and under 'floor'."""
+    be n/a on enforcement/boundary diffs; architecture is DEEP on a
+    structurally significant change (D6) and at least light on any other
+    code change. Reasons are recorded in evidence and under 'floor'.
+
+    Every write goes through `_promote`, so no floor here can lower a
+    verdict the engine already scored higher."""
     sec = vmap.get("security")
-    if sec is not None and sec["verdict"] == "n/a":
+    if sec is not None:
         reason = _security_floor_reason(ctx)
         if reason:
-            _promote(sec, f"floor: security promoted to light — {reason}")
+            _promote(sec, f"floor: security promoted to light — {reason}",
+                     to="light")
     arch = vmap.get("architecture")
-    if arch is not None and arch["verdict"] == "n/a":
-        f = _code_change_file(ctx)
-        if f:
-            _promote(arch, "floor: architecture promoted to light — "
-                     f"code change ({f})")
+    if arch is not None:
+        significant = _structurally_significant(ctx)
+        if significant:
+            _promote(arch, "floor: architecture promoted to deep — "
+                     f"{significant}", to="deep")
+        else:
+            f = _code_change_file(ctx)
+            if f:
+                _promote(arch, "floor: architecture promoted to light — "
+                         f"code change ({f})", to="light")
     return vmap
 
 

@@ -1,0 +1,59 @@
+{
+  "schema": "taskplane.frozen-review-oracle/v1",
+  "required_callers": [
+    "InstanceProvider.Create",
+    "NodeClassValidationController.Reconcile",
+    "NodeClassValidationController.validate",
+    "LaunchTemplateProvider.EnsureAll",
+    "LaunchTemplateProvider.ensureLaunchTemplate",
+    "LaunchTemplateProvider.createLaunchTemplate",
+    "Bottlerocket.Script"
+  ],
+  "required_paths": [
+    [
+      "InstanceProvider.Create",
+      "LaunchTemplateProvider.EnsureAll",
+      "LaunchTemplateProvider.ensureLaunchTemplate",
+      "LaunchTemplateProvider.createLaunchTemplate",
+      "Bottlerocket.Script",
+      "BottlerocketSettings.MarshalTOML"
+    ],
+    [
+      "NodeClassValidationController.Reconcile",
+      "NodeClassValidationController.validate",
+      "LaunchTemplateProvider.EnsureAll",
+      "LaunchTemplateProvider.ensureLaunchTemplate",
+      "LaunchTemplateProvider.createLaunchTemplate",
+      "Bottlerocket.Script",
+      "BottlerocketSettings.MarshalTOML"
+    ]
+  ],
+  "finding_lenses": {
+    "backend": ["deep", "light"],
+    "code-quality": ["deep", "light"]
+  },
+  "lens_floors": {
+    "architecture": ["deep", "light"],
+    "security": ["deep", "light"]
+  },
+  "blocker": {
+    "id": "pr-9464-nodeclass-validation-reconcile-loop",
+    "class": "regression",
+    "severity": "Blocker",
+    "lens": "backend",
+    "title": "New non-AWS error class escapes into the NodeClass validation controller",
+    "scenario": "Malformed non-boolean Bottlerocket TOML reaches a presumed-unreachable validation branch and can repeat the reconcile loop",
+    "contract": "contract:bottlerocket-userdata"
+  },
+  "efficiency": {
+    "baseline_effective_tokens": 2360000,
+    "max_effective_tokens": 1180000,
+    "max_top_level_cli_calls": 12,
+    "duplicate_html_emissions": 0
+  },
+  "production_forbidden_symbols": [
+    "InstanceProvider.Create",
+    "NodeClassValidationController.Reconcile",
+    "BottlerocketSettings.MarshalTOML"
+  ]
+}

@@ -1,0 +1,6 @@
+{"event": "contract_activated", "ts": 1}
+{"event": "dor", "ready": true, "ts": 2}
+{"event": "workspace_write", "ts": 5}
+{"event": "dod", "passed": true, "ts": 14}
+{"event": "loop_submit", "ts": 15}
+{"event": "subagent_start", "lens": "security", "ts": 6}

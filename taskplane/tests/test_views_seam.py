@@ -59,12 +59,12 @@ class _Ws(unittest.TestCase):
 class TestAFailedRenderIsReported(_Ws):
     def _break_renderer(self):
         import dashboard
-        original = dashboard.widget
+        original = dashboard.report_widget
 
         def boom(*a, **k):
             raise RuntimeError("renderer exploded")
-        dashboard.widget = boom
-        self.addCleanup(setattr, dashboard, "widget", original)
+        dashboard.report_widget = boom
+        self.addCleanup(setattr, dashboard, "report_widget", original)
 
     def test_the_payload_carries_the_error(self):
         self._break_renderer()
@@ -112,6 +112,12 @@ class TestAFailedRenderIsReported(_Ws):
                       out["dashboard"]["render"])
         self.assertTrue(os.path.isfile(
             os.path.join(tp.tp_dir(self.ws), "dashboard.html")))
+        with open(os.path.join(tp.tp_dir(self.ws), "dashboard.html"),
+                  encoding="utf-8") as f:
+            doc = f.read()
+        self.assertTrue(doc.startswith("<!DOCTYPE html>"))
+        self.assertIn("--changed-bg", doc)
+        self.assertIn('id="tp-workflow-flow"', doc)
 
 
 class TestTheSeamIsRealNotCosmetic(unittest.TestCase):

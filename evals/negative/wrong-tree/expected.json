@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "present",
+  "instrument": "ok",
+  "score": 0.5,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "fail"
+  }
+ },
+ "why": "The review pinned a target and then reported on a different tree: the context record's target head is not the head the run says it reviewed. A rubric that only asked whether a target EXISTS would score this green."
+}

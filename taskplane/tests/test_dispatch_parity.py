@@ -53,6 +53,9 @@ BRIEFS = os.path.join(HERE, "fixtures", "briefs")
 WORKSPACE = os.path.join(BRIEFS, "workspace")
 DETECTORS = os.path.join(HERE, "fixtures", "detectors")
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(HERE))
+SHARED_CONTEXT_PATHS = {
+    "diff.patch": ".em-review/context/diff.patch",
+}
 
 # every env var that may vary tier->model resolution or the dispatch path —
 # cleared for determinism (the goldens' documented env scrub)
@@ -155,7 +158,9 @@ class TestGoldenReplay:
         assert tree_files(WORKSPACE) == frozen_files()
 
     def test_routed_dispatch_payload_matches_golden(self, scrubbed_env):
-        payload = lens.dispatch_briefs(lens.route(frozen_files()), base="HEAD")
+        payload = lens.dispatch_briefs(
+            lens.route(frozen_files()), base="HEAD",
+            context_paths=SHARED_CONTEXT_PATHS)
         assert normalize(payload) == golden_bytes(
             "golden_dispatch_routed.json")
 
@@ -163,7 +168,8 @@ class TestGoldenReplay:
         """breadth=all is the em-step shape: deep briefs + the batched sweep
         brief (cheap tier) — the sweep half of the contract is pinned too."""
         payload = lens.dispatch_briefs(
-            lens.route(frozen_files(), breadth="all"), base="HEAD")
+            lens.route(frozen_files(), breadth="all"), base="HEAD",
+            context_paths=SHARED_CONTEXT_PATHS)
         assert normalize(payload) == golden_bytes("golden_dispatch_all.json")
 
     def test_review_dispatch_payload_matches_golden(self, scrubbed_env):
@@ -172,7 +178,8 @@ class TestGoldenReplay:
         the summoned lenses get a brief."""
         payload = lens.dispatch_briefs(
             lens.route(frozen_files(), stage="review",
-                       workspace=WORKSPACE), base="HEAD")
+                       workspace=WORKSPACE), base="HEAD",
+            context_paths=SHARED_CONTEXT_PATHS)
         assert normalize(payload) == golden_bytes(
             "golden_dispatch_review.json")
         assert len(payload["routing_decision"]) == len(lens.load_catalog()["lenses"])

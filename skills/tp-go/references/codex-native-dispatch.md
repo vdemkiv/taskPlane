@@ -14,6 +14,10 @@ For every brief:
    message. Never replace it with a summary. Include the payload's exact
    `role_marker` as a standalone line so strict dispatch can bind this native
    Codex task to the taskplane role that owns the contract.
+   For review/evaluation briefs, the payload references a canonical review
+   context and a scoped view. Pass those references and fingerprints unchanged;
+   never paste the full diff/impact into the message or ask the child to run
+   `git diff`, graph impact, routing, or runnability discovery again.
 2. Call Codex's native `spawn_agent` with the brief's exact `task_name` and
    `reasoning_effort`. Pass `model` only when it is non-null; null means let
    the subagent inherit Codex's model choice. The human-facing taskplane role
@@ -44,6 +48,8 @@ Only the user starts a goal; do not claim that a skill or subagent started it.
 
 ## Claude parity
 
-Do not modify the Claude path while applying this procedure. Claude Dynamic
-Workflows remain an optional journaled transport. The portable task payload is
-still the mandatory fallback and carries the same contracts, briefs, and gates.
+Claude Dynamic Workflows remain an optional journaled transport. The portable
+task payload is the mandatory reference and carries the same canonical context
+and view fingerprints, contracts, routing decision, leases, provenance rules,
+DoR/DoD gates, and artifact references. Claude and Codex may deliver or dispatch
+those bytes differently; they may not derive different semantics.

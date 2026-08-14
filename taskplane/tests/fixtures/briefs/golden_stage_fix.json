@@ -188,6 +188,7 @@
   "model_tier": "standard",
   "reasoning_effort": "medium",
   "requirement": null,
+  "review_kernel": null,
   "role": "tp-fixer",
   "role_instructions": "<PLUGIN>/agents/tp-fixer.md",
   "role_marker": "taskplane-role:tp-fixer",

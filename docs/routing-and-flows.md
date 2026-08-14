@@ -10,12 +10,27 @@ repository. Environment variables are cross-referenced in
 `docs/configuration.md` (the complete table); the lens catalog itself is
 generated into `docs/lens-catalog.md` — never hand-edited.
 
-None of this loosens enforcement, and nothing on this page can: routing
-failure widens review coverage, the workflow rails are transport-only, and
+None of this loosens enforcement, and nothing on this page can: incomplete
+impact or routing evidence stops before dispatch, workflow rails are
+transport-only, and
 no gate is reachable only via workflows. Do not look here for a way to
 disable a guardrail — there isn't one, by design.
 
 ## Routing v2 — the diff picks the reviewers, with evidence
+
+Normal standalone Review, per-task Evaluate, and final engineering review all
+start from the same canonical routing decision inside one canonical review
+context. The context binds one target, one canonical diff, graph quality and
+blast radius, requirements/contracts and DoR/DoD evidence, and runnability.
+All 26 lenses receive a disposition; only `deep` slots plus at most one
+bounded `light` sweep receive briefs. No lens receives permission to derive
+its own diff, graph impact, routing decision, or runnability result.
+
+Graph quality runs first. Sparse module evidence gets at most one bounded
+changed-symbol caller expansion. Stale, truncated, unresolved, or still
+insufficient coverage produces `impact_incomplete` and zero lens dispatch.
+Mapper failure likewise produces `mapper_unavailable` and zero lens dispatch.
+Neither condition recovers through `breadth=all`.
 
 `tp lens route` selects lenses for a change. Since v2.4.0 the selection is
 a **signal engine** (`taskplane/lens_signals.py`), not a filename glob
@@ -49,16 +64,16 @@ Guardrails that hold at every granularity:
 - **Stage profiles.** `lenses/catalog.json` carries `stage_profiles`
   (design 8 · build 5 · review 26); a stage restricts the *candidate* set
   only. An unknown or absent stage fails open to the full catalog.
-- **Fail-open.** Any engine failure falls back to the legacy
-  `breadth=all` route — more coverage, never less. The legacy routing
-  surface is pinned byte-identical when the new machinery does not engage.
+- **Fail closed before dispatch.** Incomplete graph evidence or an unavailable
+  applicability mapper emits no briefs. `breadth=all` is reserved for an
+  explicit human request or an isolated calibration/audit, never recovery.
 
 Dogfood example (this repository — the reviews that shipped routing v2
 routed their own diffs; both full-codebase runs settled on 7 deep):
 
 ```bash
-python3 taskplane/tp.py lens route --base main --all
-# 26 lens(es) apply (N files changed):
+python3 taskplane/tp.py lens route --base main
+# 26 dispositions for N files changed; only deep + light dispatch:
 #   ▸ subagent  security       ← ...
 #   · inline    performance    ← ...
 #   ○ n/a       i18n           ← n/a: 0 i18n markers in the diff
@@ -115,14 +130,12 @@ after assembly. Every routed lens names which component(s) proposed it via
 and into the findings meta. The dashboard graph view renders component
 nodes inside their module grouping.
 
-**Fail-open is load-bearing.** The fail-open ladder only ever WIDENS: component
-assembly → module-level route (traced `component_layer_failed`, with a
-stderr remedy to re-run `tp graph scan --decompose`) → legacy
-`breadth=all`. A missing, stale (fingerprint drift), or corrupt layer can
-only give you *more* review coverage, never less; with the layer absent,
-routing is byte-identical to the pre-decomposition behavior. Derivation
-itself never raises — a module whose derivation fails degrades to a single
-`::core` component marked `degraded: true`.
+**Component degradation does not authorize broad dispatch.** A missing, stale,
+or corrupt component layer falls back only to the module-level signal engine
+(traced `component_layer_failed`). If that engine or its graph-quality input
+cannot produce a complete decision, routing stops with zero briefs. It never
+falls through to legacy `breadth=all`. Component derivation itself may degrade
+a module to one `::core` component, but that evidence remains visible.
 
 Dogfood example (this repository):
 
@@ -169,13 +182,16 @@ pattern — deterministic, schema-pinned receipts, transport-only:
 
 The rules that make this safe:
 
-- **The Task path is MANDATORY and byte-identical.** With `--emit task`
+- **Claude/Codex semantic parity.** The Task path is mandatory. With `--emit task`
   (or whenever no workflow runtime is detected) the CLI prints today's
   Task-dispatch payload byte-for-byte — the reference implementation,
   pinned by CI parity goldens (regenerated only via
   `taskplane/tests/fixtures/briefs/regen.py`). The workflow path wraps the
   *unmodified* payload as a single `workflow {name, args}` invocation;
-  agent prompts are consumed verbatim on both rails.
+  agent prompts are consumed verbatim on both rails. Both hosts consume the
+  same canonical context/view fingerprints, routing decision, leases,
+  provenance rules, DoR/DoD gates, and artifact-by-reference records. Only
+  dispatch and artifact-delivery transport differ.
 - **Codex uses native subagent tasks.** Codex has no Claude Dynamic Workflow
   runtime; on Codex hosts (`CODEX_HOME`/`CODEX_THREAD_ID` present) the
   portable task payload is ALWAYS chosen and no workflow opt-in can override
@@ -238,18 +254,12 @@ byte-frozen extraction are pinned by
 `taskplane/tests/test_audit_sweep.py` and
 `taskplane/tests/test_audit_extraction.py`.
 
-## Evaluate routes at the build stage (R-0006)
+## Evaluate and final engineering review use one selective kernel
 
-The loop's `evaluate` step now routes the real diff with `stage="build"`,
-so route v2 engages: build-profile candidates, the inherited cap-8 budget,
-floors surviving narrowing, and evidence-backed `n/a` entries in the
-verdict evidence. The final (`em`) review is **untouched**: it passes no
-stage and keeps its full-catalog mandate (`breadth=all` — routed lenses
-deep, everything else swept, nothing skipped).
-
-Dogfood example: on taskplane's own loop, an evaluate step's routed brief
-set is the build profile scored against the wave's real diff, while every
-em review that gates a merge runs all 26 lenses — both decisions land in
-the loop trace as `lens_route` events. The stage split (evaluate =
-`build`, em = no stage) is pinned by
-`taskplane/tests/test_evaluate_routing.py`.
+The loop's `evaluate` step and final engineering review consume the same
+canonical review context and complete 26-lens disposition. Stage and persona
+change which signals are relevant, not the evidence source: both dispatch
+exactly their mapped deep lenses plus at most one light sweep, retain the
+architecture/security floors, and keep every n/a backed by negative evidence.
+The final engineering review adds synthesis and human sign-off; it does not
+re-read the repository or broaden to all lenses.

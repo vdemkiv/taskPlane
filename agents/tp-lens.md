@@ -31,10 +31,10 @@ every `tp.py` call, including the final `clear`. Then never write outside your
 findings dir:
 
 ```bash
-export TASKPLANE_TASK=lens-<id>
+export TASKPLANE_TASK=<producer_contract.task_slot>
 python3 "$PLUGIN/taskplane/tp.py" new --read-only \
-    --write-allow ".em-review/lens-<id>/**" --max-actions 30 \
-    --tools "Read,Grep,Glob,Bash,Write" "lens <id>: <target>"
+    --write-allow "<result_path>" --max-actions 30 \
+    --tools "Read,Grep,Glob,Bash,Write" "<producer_contract.task>"
 ```
 
 The hook enforces this — a write to the reviewed source is blocked, not
@@ -52,12 +52,18 @@ checkout (`tp new` refuses bare roots).
 
 ## What you do
 
-1. Read the diff (`git diff <base>`) and the files it touches. Run your
-   lens's non-mutating checks (grep, ast, a linter/scanner if the brief names
-   one) — never a command that changes state.
+1. For a v2 leased brief, read its fingerprinted scoped view and full-envelope
+   reference; **do not run git diff, graph scan/impact, requirement lookup, or
+   runnability probing again**. Legacy briefs may still name a diff base. Run
+   only non-mutating checks that the scoped evidence actually requires.
 2. Judge strictly within your lens. Another tp-lens owns security, another
    owns a11y — don't stray; overlap wastes the parallelism.
-3. Write findings ONLY to `.em-review/lens-<id>/findings.json`:
+3. Follow the brief's `producer_contract` exactly and use the host **Write**
+   tool for its one `result_path`; that write hook is what records independent
+   producer provenance. Write the declared
+   `taskplane.lens-slot-output/v2` shape, including `authored_by: lens-slot`,
+   every lease identity field, one `lens_results` row per leased lens, and
+   findings:
    `{"lens":"<id>","findings":[{"severity":"blocker|major|minor|question|praise",
    "class":"regression|pre-existing|observation",
    "file":"…","line":N,"title":"…","scenario":"a concrete failure — inputs →

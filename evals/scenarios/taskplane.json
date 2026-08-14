@@ -1,0 +1,84 @@
+{
+  "schema": "taskplane.eval-scenario/v1",
+  "skill": "taskplane",
+  "title": "The facade: a goal arrives in plain language and leaves as governed delivery — every routed step under a contract, every gate a human's",
+  "source_files": [
+    "skills/taskplane/SKILL.md"
+  ],
+  "inputs_fingerprint": "4fb960ae1084a0966f41bea0d05e005da3d9a816ae33ff417f62963f6e4a6e72",
+  "expects_derivations": [
+    "impact"
+  ],
+  "declared_surfaces": [
+    "tp loop next",
+    "tp loop submit",
+    "tp loop gate"
+  ],
+  "steps": [
+    {
+      "id": "U1-CONTRACT",
+      "claim": "the run was governed before it changed anything — the contract was active before the first write, not declared after the fact",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "contract_activated"
+      },
+      "before": "first_write",
+      "universal": [
+        "contract"
+      ],
+      "required": true
+    },
+    {
+      "id": "U2-DOR",
+      "claim": "readiness was established before the work started — a DoR that passed, ahead of the first write",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "dor",
+        "ready": true
+      },
+      "before": "first_write",
+      "universal": [
+        "dor"
+      ],
+      "required": true
+    },
+    {
+      "id": "U3-DOD",
+      "claim": "the definition of done was checked before anything claimed the work was finished",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "dod",
+        "passed": true
+      },
+      "before": "completion_claim",
+      "universal": [
+        "dod"
+      ],
+      "required": true
+    },
+    {
+      "id": "U4-SHARED",
+      "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
+      "record": "derivations",
+      "check": "repeats",
+      "select": {
+        "event": "derived",
+        "probe": {
+          "absent": true
+        }
+      },
+      "distinct_by": [
+        "key",
+        "input_key"
+      ],
+      "max": 0,
+      "universal": [
+        "no_rederive"
+      ],
+      "required": true
+    }
+  ]
+}

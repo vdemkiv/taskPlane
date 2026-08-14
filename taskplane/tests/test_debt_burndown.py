@@ -10,8 +10,7 @@ external store):
   * D-0003 routed-audit hybrid MEASUREMENT: the frozen corpus, the
     `audit_hybrid_measured` event shape, the adoption bar (>=30% token
     reduction AND zero escaped n/a-lens findings; default DECLINE), and
-    determinism — measurement only, audit execution unchanged (the em
-    breadth="all" literal is pinned untouched);
+    determinism — measurement remains isolated while normal EM is selective;
   * the debt burn-down MECHANISM: debt records can be linked to a recorded
     decision and marked resolved (the REAL store flip for D-0002/D-0003
     happens at sign-off — this pins the mechanism, not the flip).
@@ -190,14 +189,13 @@ class TestHybridMeasurement(unittest.TestCase):
         self.assertNotIn("- security:", prompt)
         self.assertIn("READ-ONLY", prompt)
 
-    def test_audit_execution_unchanged(self):
-        # MEASURE, not adopt: the em step's full-catalog mandate survives —
-        # the breadth literal is untouched by this stream (loop.py is out
-        # of t6's scope; this is a read-only pin)
+    def test_normal_em_adopts_selective_execution(self):
+        """R-0005 removes full-catalog fan-out from normal final EM."""
         with open(os.path.join(REPO, "taskplane", "loop.py"),
                   encoding="utf-8") as f:
             src = f.read()
-        self.assertIn('breadth="all" if step == "em" else "routed"', src)
+        self.assertNotIn('"all" if step == "em" else "routed"', src)
+        self.assertIn('routing, breadth = None, "routed"', src)
 
 
 # ------------------------------ debt burn-down mechanism (flip at sign-off)

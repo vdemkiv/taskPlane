@@ -1,0 +1,52 @@
+{
+  "schema": "taskplane.eval-fixture/v1",
+  "why": "A frozen pull request. Every value below is pinned so the builder produces byte-identical commit SHAs on any machine, under any ambient identity, clock, TZ or locale.",
+  "branch": "main",
+  "identity": {
+    "author_name": "taskplane fixture",
+    "author_email": "fixture@taskplane.invalid",
+    "committer_name": "taskplane fixture",
+    "committer_email": "fixture@taskplane.invalid",
+    "tz": "UTC",
+    "locale": "C"
+  },
+  "config": {
+    "core.autocrlf": "false",
+    "core.eol": "lf",
+    "core.fileMode": "false",
+    "core.ignorecase": "false",
+    "core.symlinks": "false",
+    "commit.gpgsign": "false",
+    "gc.auto": "0",
+    "i18n.commitEncoding": "utf-8"
+  },
+  "commits": [
+    {
+      "tree": "tree-a",
+      "message": "pricing: catalog, checkout and their tests",
+      "date": "1700000000 +0000",
+      "sha": "904e9de4da1958791cf22fc13f13ee7f207db976"
+    },
+    {
+      "tree": "tree-b",
+      "message": "pricing: take a discount code off the subtotal",
+      "date": "1700003600 +0000",
+      "sha": "6ef0d80635c3ec066a0d1ac5c622ba9c8f8f3933"
+    }
+  ],
+  "base": "904e9de4da1958791cf22fc13f13ee7f207db976",
+  "head": "6ef0d80635c3ec066a0d1ac5c622ba9c8f8f3933",
+  "diff": {
+    "files": [
+      "README.md",
+      "pricing/checkout.py",
+      "pricing/discount.py",
+      "tests/test_checkout.py",
+      "tests/test_discount.py"
+    ],
+    "test_files": [
+      "tests/test_checkout.py",
+      "tests/test_discount.py"
+    ]
+  }
+}

@@ -32,6 +32,7 @@ import contextlib
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import lens                       # noqa: E402
+import depgraph                   # noqa: E402
 import review as rv               # noqa: E402
 import spend                      # noqa: E402
 import taskplane_lite as tp       # noqa: E402
@@ -211,6 +212,16 @@ class RenderByReference(_WS):
 
 class OneCallOpening(_WS):
     def _start(self, *extra):
+        # Positive fixture supplies actual complete scanner + symbol-index
+        # evidence at the pinned head. It therefore earns a normal route;
+        # the separate graph-quality tests keep partial evidence fail-closed.
+        graph = depgraph.scan(self.ws)
+        graph["meta"]["scanners"]["go"] = {
+            "coverage": "complete", "covered_files": ["pkg/a.go"],
+            "total_files": 1}
+        graph["symbol_edges"] = [{"caller": "main", "callee": "A",
+                                  "contract": "contract:entrypoint"}]
+        depgraph.save(self.ws, graph)
         rc, out, err = _run("review", "start", "--base", "HEAD~1",
                             "--workspace", self.ws, *extra)
         return rc, json.loads(out), err
@@ -218,29 +229,42 @@ class OneCallOpening(_WS):
     def test_it_establishes_every_fact_a_review_opens_with(self):
         rc, d, _ = self._start()
         self.assertEqual(rc, 0, d)
-        self.assertTrue(d["ok"])
-        got = {s["step"] for s in d["steps"] if s["ok"]}
-        self.assertEqual(got, {"tools", "target", "graph", "contract",
-                               "obligations", "route"})
+        self.assertEqual(d["status"], "ready")
+        self.assertEqual(sum(d["routing_counts"].values()),
+                         len(lens.load_catalog()["lenses"]))
+        self.assertLessEqual(len(json.dumps(d).encode()), 16 * 1024)
+
+    def test_cli_manifest_counter_covers_final_contract_and_tool_fields(self):
+        _, d, _ = self._start()
+        import review_evidence
+        self.assertIn("contract", d)
+        self.assertIn("tools", d)
+        self.assertEqual(d["manifest_bytes"],
+                         len(review_evidence.canonical_bytes(d)))
+        self.assertEqual(d["counters"]["emitted_bytes"],
+                         d["manifest_bytes"])
 
     def test_it_returns_the_briefs_ready_to_dispatch(self):
         _, d, _ = self._start()
-        self.assertIn("dispatch", d)
-        self.assertIn("routing_decision", d["dispatch"])
-        self.assertEqual(len(d["dispatch"]["routing_decision"]),
-                         len(lens.load_catalog()["lenses"]))
+        self.assertTrue(d["slots"])
+        self.assertLessEqual(sum(row["slot_id"] == "light-sweep"
+                                 for row in d["slots"]), 1)
+        self.assertNotIn("dispatch", d)
 
     def test_it_activates_the_contract_and_pins_the_target(self):
         _, d, _ = self._start()
         c = tp.load_active(self.ws)
         self.assertTrue(c["read_only"])
         self.assertEqual(c["target"]["fingerprint"],
-                         d["target"]["fingerprint"])
+                         d["target_fingerprint"])
 
     def test_it_seeds_the_obligations_a_review_owes(self):
         _, d, _ = self._start()
-        self.assertTrue(d["owes"])
-        self.assertTrue(any("render_graph" in o for o in d["owes"]))
+        # Owed state remains in the obligation ledger, not duplicated on
+        # compact stdout.
+        import obligations
+        self.assertTrue(obligations.status(self.ws)["issued"])
+        self.assertNotIn("owes", d)
 
     def test_it_decides_nothing(self):
         """It establishes facts. A step that produced findings or a verdict
@@ -250,9 +274,8 @@ class OneCallOpening(_WS):
         self.assertNotIn("verdict", d)
         # The only "verdict"s anywhere in the payload are ROUTING verdicts —
         # which lens runs, not what it concluded.
-        for lid, disp in d["dispatch"]["routing_decision"].items():
-            with self.subTest(lid):
-                self.assertIn(disp["verdict"], ("deep", "light", "n/a"))
+        self.assertEqual(d["routing_decision"]["kind"], "routing-decision")
+        self.assertNotIn("dispositions", d["routing_decision"])
         blob = json.dumps(d).lower()
         for word in ('"severity":', '"blocker"', '"sign_off"'):
             self.assertNotIn(word, blob, f"review start emitted {word}")
@@ -267,7 +290,8 @@ class OneCallOpening(_WS):
 
     def test_a_token_ceiling_can_be_set_at_the_opening(self):
         _, d, _ = self._start("--max-tokens", "750000")
-        self.assertEqual(d["contract"]["budget"]["max_tokens"], 750000)
+        self.assertEqual(tp.load_active(self.ws)["budget"]["max_tokens"],
+                         750000)
 
 
 # ------------------------------------- 3. one copy of the diff, not four

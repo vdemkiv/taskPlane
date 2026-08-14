@@ -9,10 +9,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
+import review  # noqa: E402
+import review_evidence  # noqa: E402
 
 _BRIEFS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "briefs")
@@ -130,6 +133,123 @@ class TestCodexHookProtocol(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["decision"], "block")
         self.assertIn("outside.py", payload["reason"])
+
+    def test_leased_result_cannot_be_authored_by_bash_or_hook_cli_replay(self):
+        result = ".em-review/kernel-v2/results/lease.json"
+        contract = tp.build_contract(
+            "leased lens", read_only=True, write_allow=[result],
+            tools=["Read", "Bash", "Write"])
+        ok, reason = tp.screen_tool(
+            contract, "Bash", {"command": f"printf fake > {result}"}, self.ws)
+        self.assertFalse(ok)
+        self.assertIn("host Write", reason)
+        for hook_command in ("screen", "subagent-start"):
+            with self.subTest(command=hook_command):
+                ok, reason = tp.screen_tool(
+                    contract, "Bash",
+                    {"command": f"python3 taskplane/tp.py {hook_command}"},
+                    self.ws)
+                self.assertFalse(ok)
+                self.assertIn("host hook", reason)
+
+    def test_claude_and_codex_write_hooks_authorize_leased_results(self):
+        for host_event in (
+                {"session_id": "claude-session"},
+                {"turn_id": "codex-turn"}):
+            with self.subTest(host=next(iter(host_event))):
+                ws = _repo()
+                target = {"fingerprint": "target-1", "head": "head-1"}
+                graph = {"meta": {"scanned_head": "head-1",
+                                    "content_fingerprint": "graph-1"},
+                         "modules": {"src": {"files": ["src/a.py"]}},
+                         "edges": []}
+                review.start_review(
+                    ws, target=target, graph=graph,
+                    impact={"touched": ["src"], "unknown": []},
+                    diff={"files": ["src/a.py"],
+                          "changed_symbols": ["changed"]},
+                    runnability={"summary": "available"})
+                state = review._load_state(ws)
+                store = review_evidence.ArtifactStore(ws)
+                parent = tp.build_contract(
+                    "evaluate parent", read_only=True,
+                    write_allow=[".eval/**"], tools=["Read", "Write"])
+                tp.activate(ws, parent, snapshot=tp.git_head(ws))
+                for index, slot in enumerate(state["slots"]):
+                    lease = store.read(slot["lease"])
+                    brief = store.read(slot["brief"])
+                    producer = brief["producer_contract"]
+                    row = {**lease,
+                           "schema": "taskplane.lens-slot-output/v2",
+                           "authored_by": "lens-slot", "findings": [],
+                           "lens_results": [
+                               {"lens": lid, "verdict": "pass", "blockers": 0}
+                               for lid in lease["lens_ids"]]}
+                    content = json.dumps(
+                        row, sort_keys=True, separators=(",", ":"))
+                    contract = tp.build_contract(
+                        producer["task"], read_only=True,
+                        write_allow=producer["write_allow"], tools=["Write"])
+                    env = {**os.environ,
+                           "TASKPLANE_TASK": producer["task_slot"]}
+                    parent_env = {key: value for key, value in os.environ.items()
+                                  if key != "TASKPLANE_TASK"}
+                    child_id = ("dispatched-" + next(iter(host_event))
+                                + f"-{index}")
+                    lifecycle = {**host_event, "cwd": ws,
+                                 "hook_event_name": "SubagentStart",
+                                 "agent_id": child_id,
+                                 "agent_type": "general"}
+                    started = subprocess.run(
+                        [sys.executable, TPPY, "subagent-start"], cwd=ws,
+                        env=parent_env, input=json.dumps(lifecycle), text=True,
+                        capture_output=True, encoding="utf-8", errors="replace")
+                    self.assertEqual(started.returncode, 0, started.stderr)
+                    with mock.patch.dict(os.environ, env, clear=True):
+                        tp.activate(ws, contract, snapshot=tp.git_head(ws))
+                    if "session_id" in host_event:
+                        tool_name = "Write"
+                        tool_input = {"file_path": slot["result_path"],
+                                      "content": content}
+                        written = content
+                    else:
+                        tool_name = "apply_patch"
+                        tool_input = {"command": (
+                            "*** Begin Patch\n"
+                            f"*** Add File: {slot['result_path']}\n"
+                            + "\n".join("+" + line
+                                        for line in content.splitlines())
+                            + "\n*** End Patch\n")}
+                        written = content + "\n"
+                    replay = {**host_event, "agent_id": "parent-or-sibling",
+                              "cwd": ws, "tool_name": tool_name,
+                              "tool_input": tool_input}
+                    denied = subprocess.run(
+                        [sys.executable, TPPY, "screen"], cwd=ws,
+                        env=env, input=json.dumps(replay), text=True,
+                        capture_output=True, encoding="utf-8", errors="replace")
+                    self.assertEqual(denied.returncode, 0, denied.stderr)
+                    self.assertEqual(json.loads(denied.stdout)["decision"],
+                                     "block")
+                    event = {**host_event, "agent_id": child_id,
+                             "cwd": ws, "tool_name": tool_name,
+                             "tool_input": tool_input}
+                    result = subprocess.run(
+                        [sys.executable, TPPY, "screen"], cwd=ws,
+                        env=env, input=json.dumps(event), text=True,
+                        capture_output=True, encoding="utf-8", errors="replace")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if "session_id" in host_event:
+                        self.assertEqual(json.loads(result.stdout),
+                                         {"decision": "approve"})
+                    else:
+                        self.assertEqual(result.stdout.strip(), "")
+                    path = os.path.join(ws, slot["result_path"])
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as stream:
+                        stream.write(written)
+                out = review.collect_review(ws, publish=False)
+                self.assertEqual(out["status"], "complete")
 
 
 class TestCodexSubagentLifecycle(unittest.TestCase):
@@ -609,6 +729,57 @@ class TestCodexOnboarding(unittest.TestCase):
                          if c["id"] == "workspace")
         self.assertIn("starting `codex`", workspace["hint"])
         self.assertIn("new task", workspace["hint"])
+
+
+class TestReviewManifestHostParity(unittest.TestCase):
+    def test_claude_and_codex_consume_identical_canonical_manifest_bytes(self):
+        ws = _repo()
+        target = {"fingerprint": "target-1", "head": "head-1"}
+        graph = {"meta": {"scanned_head": "head-1",
+                           "content_fingerprint": "graph-1"},
+                 "modules": {"src": {"files": ["src/a.py"]}}, "edges": []}
+        args = {"target": target, "graph": graph,
+                "impact": {"touched": ["src"], "unknown": [],
+                           "truncated": False},
+                "diff": {"files": ["src/a.py"],
+                         "changed_symbols": ["changed"]},
+                "runnability": {"summary": "available"}}
+        # The test runner itself may be a Codex process.  Clear every marker
+        # used by the shared host seam so the first capture is true Claude,
+        # then make the second true Codex independently of ambient state.
+        marker_names = ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_STORE")
+        prior = {key: os.environ.get(key) for key in marker_names}
+        try:
+            for key in marker_names:
+                os.environ.pop(key, None)
+            self.assertEqual(tp.host(), "claude")
+            claude = review.start_review(ws, **args)
+            store = review_evidence.ArtifactStore(ws)
+            claude_briefs = [store.read(row["brief"])
+                             for row in review._load_state(ws)["slots"]]
+            os.environ["CODEX_THREAD_ID"] = "transport-only"
+            self.assertEqual(tp.host(), "codex")
+            codex = review.start_review(ws, **args)
+            codex_briefs = [store.read(row["brief"])
+                            for row in review._load_state(ws)["slots"]]
+        finally:
+            for key, value in prior.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.assertEqual(review_evidence.canonical_bytes(claude),
+                         review_evidence.canonical_bytes(codex))
+        self.assertEqual(review_evidence.canonical_bytes(claude_briefs),
+                         review_evidence.canonical_bytes(codex_briefs))
+        self.assertTrue(claude_briefs, "premise: parity covers a real slot")
+        for brief in claude_briefs + codex_briefs:
+            self.assertNotIn("model", brief["role"])
+            self.assertIn("model_tier", brief["role"])
+            self.assertIn("reasoning_effort", brief["role"])
+        self.assertNotIn(os.path.abspath(ws), json.dumps(codex))
+        self.assertLessEqual(len(review_evidence.canonical_bytes(codex)),
+                             16 * 1024)
 
 
 if __name__ == "__main__":

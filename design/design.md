@@ -1,232 +1,165 @@
-# Design — v3 Phase 3: engine correctness, routing precision, host portability, docs currency, hygiene
+# R-0005 Design — Evidence-efficient, graph-complete governed review
 
-**Requirements:** R-0007 (anchored, WS-A) + R-0008..R-0011 (secondary; WS-B..WS-E).
-**Baseline:** graph fingerprint `beeb5b85…`, HEAD `43253c2`, v2.5.1 + freshness gate.
-**Scope:** 26 backlog items, 29 acceptance criteria, six named contracts touched — zero new contract nodes, zero new modules.
+Status: proposed
 
-Everything in this phase is one of three moves: **refuse loudly** (fail-closed),
-**degrade to the reference rail** (Task path), or **surface what was silent**
-(warn rows, degraded markers, traced reasons). Nothing loosens; the
-`contract:lens-brief` and `contract:findings-v2` shapes are untouched.
+Requirement: R-0005
 
----
+Baseline graph: `bdf441f3d32db17cb57af6e649b549f2273fb4c05b71f23720f9c9fe51dbd633`
 
-## 1. The blocking decision: A4 — gate/engine version skew
+Scanned head: `a2139b1ed93cad6e550712506d780b543d7c4b1b`
+Supersedes: R-0004 design binding (the R-0004 compliance kernel remains an invariant)
 
-**The defect (Phase 2, t7):** in a parallel wave, the evaluate gate validates a
-worktree's evidence with the *primary process's* engine
-(`_evaluation_errors`, loop.py:1928-1935 with `act_ws` = the worktree). When a
-task's diff changes the engine itself, the worktree's newer engine produced
-evidence the older primary validator rejects. t7 passed only after the merge
-landed — diagnosed by hand, no mechanical detection.
+## Decision
 
-**Three candidate mechanisms were weighed:**
+Extend the R-0004 deterministic compliance kernel with a **quality-gated evidence pipeline**. A review has one canonical target, one canonical derivation, one content-addressed full envelope, one routing decision over all 26 lenses, and one monotonic findings revision. It dispatches only the exact deep set plus at most one light-sweep slot. It never substitutes breadth for uncertainty: if the graph plus one bounded caller expansion cannot establish the impact radius, the run stops as `impact_incomplete` with zero lens dispatch.
 
-| | Mechanism | Verdict |
-|---|---|---|
-| (a) | **Engine-enforced merge-before-gate ordering** — the gate refuses until the branch is merged, so the primary validates with the merged engine | Rejected. Merges **unevaluated code into the mainline as routine**, inverting the evaluate-PASS-then-merge order every instruction and test pins; a failed post-merge evaluation needs revert machinery the engine doesn't have; and the ordering check must run on *every* parallel evaluate gate, so "non-skew paths byte-unchanged" is unprovable. Scoping it to "engine-touching diffs" needs a repo-layout path heuristic — the class of guess A4 exists to remove. |
-| (b) | **Validate with the agent workspace's engine** — sys.path-inject the worktree's `taskplane/` and run *its* `_evaluation_errors` | **Disqualified on the guardrail.** The worktree's loop.py is the worker's own diff: this executes agent-written code in the orchestrator's gate context. A worker could ship an `_evaluation_errors` that returns `[]` and gate itself — the L12 trust boundary (evidence validated by code the worker cannot author) dissolves at exactly the gate it protects. Module-cache poisoning of the primary process is a second, independent failure. |
-| (c) | **Validator-fingerprint refusal** — stamp the producing engine's identity into the submission; the gate refuses with a *named remedy* when engines differ | **Selected.** Fail-closed, explicit, no code-execution change, no reordering. |
+The host-neutral kernel remains authoritative. Claude and Codex adapters only start bounded native processes and translate transport. They consume byte-identical manifest, routing, view, provenance, and counter records. Normal Review, Evaluate, and final EM use the same kernel. The full catalog remains available only for explicit human `--all` or isolated evaluator calibration and is recorded as such.
 
-**Selected mechanism (c), precisely:**
+This preserves the useful R-0004 instrumentation, absolute workflow assertions, immutable context binding, graph freshness/disposition, orchestrator gate, host authentication boundary, secret-scrubbed model shells, timeouts, process-tree cancellation, and comparable-run policy.
 
-- `tp.engine_fingerprint()` = sha256 over the sorted `(module, sha256(file
-  bytes))` of the validator-surface modules **as loaded by the running
-  process** (`loop, lens, lens_signals, depgraph, audit, taskplane_lite,
-  design_contract, decompose, requirements` via each module's `__file__`).
-- `loop submit` stamps it into the submission (additive field).
-- The **evaluate gate** compares it against its own fingerprint *before*
-  `_evaluation_errors`. Equal (every non-dogfood repo; every dogfood task not
-  touching engine files): the comparison is the only added instruction —
-  **byte-unchanged**. Unequal or absent: **refuse**, no transition, traced
-  `loop_gate_blocked reason=engine_skew {submitted, validator}`, error text:
+## Measured baseline and target
 
-  > evidence was produced under engine `<fp12>` but this gate validates with
-  > `<fp12>` — merge the task branch into the primary
-  > (`git merge tp/<task>`) so one engine owns production and validation,
-  > then `loop submit` again.
+The optimization baseline is the measured 3.77M-token session: taskPlane 2.36M (63%), lens agents 754k, 52 CLI calls 601k, dashboards 548k, findings/docs 414k, and permanent taskPlane instructions 42k. The comparable frozen PR-9464 replay target is at most 1.18M taskPlane-attributed effective tokens, at most 12 top-level taskPlane CLI invocations, and zero duplicated dashboard HTML. These are not estimates to optimize around silently; the evaluator records them with a comparison key and rejects incomparable token claims.
 
-- **Cannot strand a re-evaluation:** the loop stays at evaluate; after the
-  merge, both processes run one engine, fingerprints match, and the identical
-  submission path proceeds. This mechanizes exactly the recovery Phase 2
-  performed by hand — with the diagnosis in the error message.
-- **Stated limit:** this detects producer-*process* vs validator-*process*
-  skew (the recorded t7 topology). Evidence hand-authored under a third
-  engine remains covered by the staleness fingerprint and DoD.
-  Escalation if dogfood ever hits the residual case: stamp the fingerprint
-  into `.eval/verdict.json` itself.
+The comparison key is exact: scenario id, frozen fixture/target id, before and after SHAs, taskPlane version, host, model, reasoning setting, token-telemetry method, and run mode. A mismatch or absent host telemetry yields `not_comparable`; structural efficiency and absolute workflow compliance still gate.
 
-See `design/visual.html` for the gate sequence with the skew branch.
+## Alternatives considered
 
-## 2. WS-A — the other six engine fixes (R-0007, anchored)
+| Alternative | Graph correctness | Read/token cost | Determinism | Decision |
+|---|---:|---:|---:|---|
+| Extend the R-0004 kernel with graph-quality gating, one bounded caller expansion, envelope/views, selective routing, and canonical revisions | High; uncertainty blocks | Low and measurable | High | **Selected** |
+| Build a complete repository-wide language-server call graph before every review | Potentially high | High startup/index cost; weak polyglot portability | Medium | Rejected for normal runs; may be an explicit calibration tool |
+| Let each lens retrieve diff/graph/requirements on demand | Inconsistent snapshots and hidden re-derivation | Repeats model reads and CLI work | Low | Rejected |
+| Keep module-only routing and hand every lens the full shared envelope | Misses sparse-graph callers | Storage dedupes bytes but not model reads | Medium | Rejected; reproduces PR-9464 risk |
+| Score transcripts with a model judge and infer completion | Cannot enforce ordering/provenance | Adds judge cost | Low | Retained only as secondary qualitative evidence, never compliance |
 
-| Item | Change | Where | Pinned by |
-|---|---|---|---|
-| A1 | `claim` refuses when `state.parallel` is false, **before** any contract/DoR work; remedy names `init --parallel` or a plan amendment; traced `loop_claim_blocked reason=serial_mode`. Backstop behind `wave()`'s existing refusal — closes the direct-claim path from decision 0011. | loop.py:563-622 | test_loop.py |
-| A2 | `dod_check` gains `ignore_prefixes` (default `()` — non-loop callers unchanged); the per-task DoD (serial + parallel gate) passes `lens.LOOP_OWNED`, mirroring the sign-off aggregate (loop.py:2113). No more re-claim/re-snapshot workaround. | taskplane_lite.py:1185-1204, loop.py:1229-1235/1794 | test_dor_dod.py (+ aggregate parity pin) |
-| A3 | `dod_check` runs the DoD test with `TASKPLANE_TASK` stripped from the **child** env (parent untouched). | taskplane_lite.py:1206-1212 | test_dor_dod.py slot-canary |
-| A5 | `router_audit` stops silently skipping unattributed/unknown-lens findings (audit.py:149-150): warn rows — class `observation` (non-blocking; the underlying finding still gates normally), owner `router`, domain `router+unattributed` / `router+unknown:<lens>` — appended idempotently, traced `router_audit_unattributed`. Attribution omission becomes visible instead of an evasion. | audit.py | test_audit_sweep.py |
-| A6 | `_stage_wave_run` validates entries; malformed → **Task-path fallback** with traced reason, never KeyError. Well-formed emission byte-unchanged. | tp.py:1084-1086 | test_stage_waves.py negative fixture |
-| A7 | `load_floors` clamps `<=0` floors to 1 with a `degraded_floors {key: given}` marker in stats + trace; `floors_hash` hashes clamped values. | decompose.py:130-157 | test_decompose.py |
+## Canonical records and contracts
 
-## 3. WS-B — routing precision + planning (R-0008)
+All records use canonical JSON (UTF-8, sorted keys, normalized paths, no insignificant whitespace) and SHA-256 fingerprints.
 
-- **B1 (recalibration approach):** class-weighted, not flattened. Functional
-  gaps keep today's 0.5-cycle weight. NFR-coverage gaps drop to 0.1 **only
-  when the functional axis is complete**; `security`/`data-safety` NFR gaps
-  are **never** discounted. The 17-task/1-fix-cycle corpus from phases 1+2 is
-  checked in as a versioned fixture (`fixtures/calibration/phase1-2-corpus.json`)
-  and re-scored by the test; 2-3 synthetic under-specified requirements are the
-  pinned **no-under-warn** corpus (new friction ≥ today's friction for each).
-  Well-scoped-wave fixtures must land below the old 0.33.
-- **B2:** engine plan-gate rule (not planner memory): every task whose scope
-  touches `taskplane/lens.py|lens_signals.py|tp.py` must be a dep of every
-  task touching `taskplane/tests/fixtures/briefs/`. Violating plans are
-  refused naming both tasks; t6∥t7 is the replay fixture. This rule governs
-  **this phase's own plan** too.
-- **B3:** a ≥600-line symbol-less file joins `::core` **with** its (file,
-  hash) member instead of vanishing (decompose.py:492). The layer stays
-  engaged; the `::core` map is computed over the file's full content, so the
-  `::core` route proposes everything the file's *own* signals support —
-  pinned by a superset-of-own-signals assertion.
-- **B4:** component assembly unions the **live requirement-keyword
-  contribution** into the proposed set (attributed `requirement-keywords`)
-  before the narrowing at lens.py:459-464 — cached maps are requirement-blind
-  (decompose.py:596-603) and can no longer narrow keyword-driven lenses away.
-  Union only widens.
-- **B5:** fixture-discount exception: a fixture-classed path whose graph
-  module has ≥1 dependents keeps full weight (evidence names the exemption).
-  Restores weight only — never deepens a discount. D-0002 test-fixture
-  discounting preserved by the negative fixture.
+### `TargetRecord`
 
-## 4. WS-C — host portability (R-0009)
+Pins repository identity, target ref, base/head SHAs, dirty-state digest, host-independent scenario id, graph fingerprint, and `scanned_head`. `target_fingerprint` is immutable for the review.
 
-- **C1:** stage prompts carry `set TASKPLANE_TASK=<slot>` (Windows/cmd,
-  the hooks.json `commandWindows` precedent) beside the POSIX export — same
-  validated slot. One regen.py goldens diff. The slot-less union-screen
-  fallback (taskplane_lite.py:938-943) is pinned by an explicit test: no
-  silent behavior change.
-- **C2:** `components.yaml` joins `DEFAULT_OUT_OF_SCOPE`
-  (taskplane_lite.py:1241). Deliberately **not** sacred: the plan-minted
-  literal override must keep working (Phase 2 shipped decomposition through
-  it). Deny case **and** the plan-minted literal positive case ship in the
-  same file — `test_governance_invariants.py` — so neither regresses silently.
-- **C3 (recorded product decision):** explicit `--emit workflow` on a
-  workflow-less host **refuses**: stderr reason naming the Task-path fallback
-  + the detector's reason, exit nonzero, traced `{path: refused}`. Both
-  surfaces (stage emitter tp.py:1112, review dispatch tp.py:1241). Default
-  and `--emit task` byte-unchanged; `workflow_available()` stays the single
-  detector; no gate reachable only via workflows.
+### `GraphQualityRecord`
 
-## 5. WS-D — docs & skills currency (R-0010)
+Produced before routing from the pinned target and graph. It records:
 
-- **D1:** tp-go/tp-status/tp-product/tp-tag/tp-northstar truthed to v2.5;
-  per-skill required-mentions table + stale-phrase denylist in
-  `test_release_freshness.py`.
-- **D2:** tp-go described as the *internal delivery driver invoked via the
-  taskplane facade*; facade keeps the "implement X" triggers; both pinned.
-- **D3:** `references/harness-rules.md` — the single canonical statement of
-  submit/gate/human-checkpoint invariants; both skills point at it;
-  keyword-coverage drift check proves no invariant dropped; restatement
-  detector prevents re-forking.
-- **D4:** tp-go pinned to the current minor exactly as tp-help
-  (test_release_freshness.py:37-44 pattern).
-- **D5 (decision):** new `tp help --md` autogenerates `docs/cli-reference.md`
-  from the live argparse tree — the generator **refuses any flag with empty
-  help text** (the ratchet gets stricter, not weaker). Committed + drift-gated
-  in CI (the ci.yml:113-118 generated-artifacts pattern). The freshness corpus
-  already globs `docs/*.md`, so `_LEGACY_UNDOCUMENTED` (34 flags) burns to
-  empty mechanically. D-0005 resolved on ship.
+- scanner support and coverage for every changed source file;
+- stale and truncated flags, graph fingerprint, and scanned head;
+- unresolved repository-internal edges and boundary-only external edges;
+- module-confidence evidence, not just a score;
+- changed symbols and caller-coverage status;
+- expansion state: `not_needed`, `completed`, `truncated`, `timed_out`, `unsupported`, or `failed`.
 
-## 6. WS-E — test/CI/UX hygiene (R-0011)
+Module impact is sufficient without expansion only when every changed source file is covered, the graph is fresh and untruncated, no changed-symbol-relevant internal edge is unresolved, and the evidence-backed module confidence is at least 0.90. Otherwise the kernel performs **exactly one** caller-expansion pass over the canonical snapshot: at most 128 changed symbols, six caller hops, 512 repository-internal caller edges, and 10 seconds. Language adapters implement one common protocol and return callers, contracts, terminals, unresolved edges, truncation, and coverage; production code contains no repository-specific symbol names.
 
-- **E1 (decision): floor + manifest, convert nothing.** The 10 pytest-only
-  files include the parity/no-loosening/stage-wave suites — rewriting them to
-  `TestCase` risks silent collection drift in exactly the tests that guard
-  guardrails (E1's own defect class, reintroduced by its fix).
-  `scripts/ci_unittest_floor.py`: collected count ≥ pinned floor (995 at
-  design time) **and** the TestCase-less file set equals a named 10-file
-  manifest — a new pytest-only file fails the leg. Floor only rises; manifest
-  only shrinks.
-- **E2:** `TASKPLANE_HOME` restore via addCleanup (test_debt_burndown.py:219);
-  conftest-level env-mutation guard (snapshot before / assert byte-identical
-  after each module, naming offenders).
-- **E3:** component nodes get the module-node `keydown/Escape` dismissal
-  (depgraph.py:1381 pattern at 1404-1416); ring radius `r(m)+24` →
-  `r(m)+f(component count)`, monotonic.
-- **E4:** decompose.py docstrings aligned to behavior (unsupported
-  components.yaml *line shapes* raise → whole file fails open, reported;
-  `_symbol_clusters` returns a 5-tuple) + pinning assertions.
-- **E5:** every task id validated against `_TASK_SLOT_RE`
-  (taskplane_lite.py:1360) **before** any `export TASKPLANE_TASK=` line is
-  composed; invalid → loud refusal (exit nonzero, id + charset named,
-  traced), never sanitized.
-- **E6 (decision): fix the comment, don't widen the seam.** loop.py:1449-1456
-  over-claims that patching `loop.<name>` governs the audit path;
-  `audit_due` resolves `audit_counter` module-locally (audit.py:117-132), and
-  `_loop()` late-binds only 4 loop names (audit.py:41-51). The comment is
-  corrected to name `audit.<name>` as the machinery seam and
-  `loop.finding_blocks`/etc. as the gate-math seam; the late-binding
-  regression test patches **both real seams** and asserts the comment text —
-  a stale comment fails the suite. Widening would churn byte-frozen code for
-  a testing convenience.
+After the pass, confidence is sufficient only if each changed symbol is traced to a declared repository entry point, contract boundary, or proven terminal within the bounds, with no truncation, timeout, stale graph, unsupported changed source, or unresolved relevant internal edge. Otherwise the run records `impact_incomplete`, emits a compact diagnostic manifest, and dispatches zero lenses. There is no fallback to all lenses and no claim of a small radius.
 
-## 7. Guardrail statement (strict-or-stricter, enumerated)
+### `RoutingInput` and `RoutingDecision`
 
-1. A1/A4/C3/E5 **add refusals**; no path that passed today starts passing more.
-2. A2 excludes only orchestrator-authored `LOOP_OWNED` artifacts — the same
-   tuple the sign-off aggregate already excludes; parity-pinned.
-3. A3 removes an env **leak**; no ambient trust added.
-4. A5 surfaces findings that were silently dropped; blocking behavior of
-   attributed findings byte-unchanged; findings-v2 shape untouched.
-5. A6 replaces a crash with the mandatory reference rail, traced.
-6. A7 clamps toward **more** decomposition, marked degraded.
-7. B1 is corpus-pinned with explicit no-under-warn negative cases;
-   security/data-safety never discount.
-8. B4/B5 only widen or restore routing weight; B3 preserves the folded file's
-   own signal set (superset pin); B2 adds a plan refusal.
-9. C2 only **widens** the default deny family; the plan-minted literal
-   override is proven by a positive test in the same file.
-10. D3's keyword coverage proves every harness invariant survives extraction;
-    D5's generator refuses undocumented flags (stricter ratchet).
-11. E1's floor/manifest only ratchet tighter; suite count only rises
-    (unittest ≥995, pytest >1122); workers still submit-never-advance; the
-    PreToolUse screen, slot protocol, and human-gate authority are untouched.
+One `RoutingInput` is assembled from the exact diff bytes, complete graph impact (dependents, expanded caller paths, boundary contracts, affected/dependent requirements, graph quality and fingerprints), requirement text and acceptance criteria, contract changes, task/change type, runnability, and component evidence. It is created before routing and included in the full envelope.
 
-## 8. Rollout / rollback
+The signal engine maps every catalog lens to `deep`, `light`, or `n/a`, with evidence and reason. Architecture and security are minimum floors: applicable uncertainty can promote them, and routing/budget/narrow component evidence cannot demote them below their required floor. `solution-design` follows its normal evidence; approved-design conformance is an orchestrator review obligation, not an artificial reason to execute that lens.
 
-Fail-closed, additive, item-sized commits with their pinned tests in-diff.
-Goldens regenerate **only** via `regen.py`, one reviewed diff per causing task
-(C1; any B-stream routed-set change) — and the B2 rule this phase ships
-enforces that ordering mechanically on this phase's own plan. A4 lands stamp +
-comparison together. Rollback is per-item commit revert everywhere; no data
-migrations; C2 rollback = remove one list entry; C3 rollback = restore
-force-print (the previous documented behavior).
+The complete 26-lens disposition is persisted and bound to the context fingerprint. Dispatch-set equality is exact:
 
-## 9. Graph honesty notes (for the approver)
+`expanded(dispatched_slots) == deep_lens_ids union light_lens_ids`
 
-- Baseline `beeb5b85…` is bound to the loop. `scanned_head 320f47ae` predates
-  HEAD `43253c2` by six commits; three touch code files (tp.py +14,
-  test_release_freshness.py +100, test_onboarding_docs.py +20). Design is
-  read-only toward the as-built graph, so no mid-design rescan (it would
-  invalidate this gate by the engine's own isolation rule). The drift is
-  entirely inside this phase's scope; the execute baseline re-captures at the
-  plan gate.
-- `skills/`, `hooks/`, and the new `references/` are **not** graph modules
-  (the scanner indexes code files only) and are deliberately not declared —
-  WS-D is validated by named tests in `taskplane/tests` instead.
-- R-0007's store record still lists the A4 open question **this design
-  resolves**. Before the orchestrator can attach R-0007 to the loop
-  (`design_attach_requirement` refuses open questions), the product seat must
-  record the A4 decision (option c, validator-fingerprint refusal) and clear
-  the question.
+Every deep lens gets one individual slot/view. All light lenses share at most one bounded sweep slot/view. An `n/a` lens gets no brief, no view, and no result slot. Normal Review, Evaluate, and final EM never set `breadth=all`; the full catalog is only explicit human `--all` or isolated evaluator calibration with `routing_mode` recorded distinctly. Total mapper failure is `mapper_unavailable` and dispatches zero. A component-cache failure may use module-signal routing only when the graph-quality record proves that mapping trustworthy.
 
-## 10. Open decisions left for the human gate
+### `EvidenceEnvelope` and `LensView`
 
-None inside the design. For the approver to confirm explicitly:
-1. **A4 = option (c)** — accept the stated false-negative limit (mixed-engine
-   evidence) with its escalation path, in exchange for zero trust-boundary and
-   zero ordering changes.
-2. **E1 = floor + manifest** (no conversions this phase).
-3. **D5 = generated CLI reference** (`tp help --md` → `docs/cli-reference.md`).
-4. **C2 stays plan-overridable** (not sacred) — the deadlock-avoidance choice.
+Exactly one content-addressed `EvidenceEnvelope` is written per target/context key, before lens fan-out, using exclusive creation and atomic rename. It contains target, immutable diff, graph quality, complete impact, runnability, requirements/acceptance, contracts, task type, component evidence, routing input/decision, and all constituent digests. `context_fingerprint` is the envelope digest.
+
+Shared storage does **not** eliminate model-read cost. The view builder therefore creates a deterministic `LensView` for each deep slot and one for the light-sweep slot. A view includes only evidence relevant to that lens set: selected diff hunks with stable offsets, directly relevant impact nodes and caller paths, applicable requirements/contracts, runnability, routing reasons, and provenance fields. Required architecture/security-floor evidence and affected requirements/contracts cannot be filtered out. The full envelope remains verifiably accessible by fingerprinted path and indexed byte ranges on demand, but is never pasted into every prompt. A lens may read more from that immutable envelope; it may not run git diff, derive graph impact, or replace canonical facts.
+
+`contract:shared-review-context-v2` defines the envelope/view schema, byte identity, filter determinism, indexed access, and no-rederivation rule. `contract:lens-brief-v2` binds slot, lens ids, target/context/view fingerprints, canonical revision base, output path, result schema, and deadline.
+
+### Slot-authored results and canonical revision
+
+`ReviewStart` allocates an unguessable dispatch lease and exclusive result path for every deep slot and the optional sweep slot. Hooks bind the active agent contract to that slot. A result row includes producer host/session, lease id, slot id, lens id, target/context/view fingerprints, base revision, content digest, and hook-observed write provenance. Sweep rows bind both the sweep slot and their individual lens id. The collector rejects missing results, duplicate lenses, reconstructed orchestrator output, copied or wrong-slot output, reused leases, fingerprint mismatch, and unexpected lenses. This is enforceable provenance, not a claim that model prose is cryptographically authored.
+
+Under a repository lock, `ReviewCollect` validates all expected slots, computes the canonical findings body and `findings_fingerprint`, and appends revision `n+1` with the prior revision link. The report and dashboard are projections from that same immutable findings record. Findings, report, dashboard, and gate must cite exactly `{target_fingerprint, context_fingerprint, findings_fingerprint, revision}`. The current-revision pointer advances only after every projection is written and fingerprinted. Stale, skipped, non-monotonic, or contradictory projections block the orchestrator gate.
+
+`contract:findings-provenance-v1` governs slot provenance and revision identity. `contract:review-efficiency-v1` governs counters, artifact emission, CLI limits, and comparison policy.
+
+## Coarse operations and output discipline
+
+Two coarse APIs replace chatty orchestration:
+
+1. `tp review start` validates target/graph, performs the at-most-once expansion, derives diff/impact/runnability/requirements/contracts once, routes, writes the envelope/views/briefs, allocates leases, and returns a compact start manifest.
+2. `tp review collect` validates slot results, closes leases, appends the canonical findings revision, renders report/dashboard once, evaluates readiness, and returns a compact collection manifest.
+
+Internal read-only control substeps are one observation bundle and count once at the top-level CLI boundary. This does not weaken governed work accounting: model-issued work actions, writes outside leased result paths, contract activation, denials, and host tool calls keep their existing budget and hook enforcement. A no-retry standalone review is designed for six taskPlane CLI calls or fewer and must never exceed 12; the counter counts every host-observed top-level `tp.py`/taskPlane CLI process, including subagent processes.
+
+Normal stdout is canonical JSON no larger than 16 KiB and contains status, fingerprints, counters, and artifact references. Full diff, impact, briefs, findings, and HTML are never emitted on stdout. Each large artifact is written once by content/revision key. Hosts with artifact transport receive an attachment reference; other hosts receive a canonical repository-relative path and digest. Any preview is at most 2 KiB and is not the artifact body. Dashboard/graph HTML render caches are keyed by input fingerprints, so one revision produces one file and zero duplicate HTML emission.
+
+Structural counters are: top-level CLI count, emitted bytes, repeated-derivation bytes, dispatched-agent count, prompt-view bytes, artifact-render bytes, duplicate-artifact bytes/count, envelope/view counts, diff/impact derivation counts, and caller-expansion count. Effective tokens are recorded only when the host exposes supported telemetry; otherwise they are unavailable rather than estimated.
+
+## PR-9464 frozen correctness oracle
+
+The evaluator fixture contains frozen repository inputs and an expected graph/routing/finding oracle; it is not imported by production routing. The sparse Go module graph must be augmented from changed symbols so both provisioning and NodeClass-validation callers are present, including:
+
+`EnsureAll → ensureLaunchTemplate → createLaunchTemplate → Bottlerocket.Script → MarshalTOML`
+
+The oracle requires the caller path that shows malformed non-boolean TOML errors escaping the userdata serialization path into the validation controller’s presumed-unreachable error branch, creating reconcile-loop risk. Routing must select the evidence-relevant backend and code-quality lenses while retaining architecture and security floors; the canonical findings must include the known Blocker with no lower severity. Fixture mutations prove that removing the validation caller makes impact incomplete or fails the oracle, and that production contains none of these symbol names.
+
+## Proposed modules and graph edges
+
+- `taskplane/graph_quality.py` — deterministic graph-quality record and bounded language-adapter caller expansion.
+- `taskplane/review_evidence.py` — canonical envelope, scoped views, leases, slot provenance, revision ledger, compact manifests, and counters.
+- `taskplane/review.py` — coarse start/collect orchestration only; delegates deterministic mechanics.
+- `taskplane/lens_signals.py` and `taskplane/lens.py` — consume the single routing input, emit 26 dispositions, exact deep/light dispatch, floors, and mapper failure.
+- `taskplane/depgraph.py`, `taskplane/decompose.py`, `taskplane/runnability.py`, `taskplane/target.py` — pure producers called once before routing.
+- `taskplane/views.py` and `taskplane/dashboard.py` — render fingerprinted projections once and return references.
+- `taskplane/yield_meter.py` — distinguish observation bundles from governed work without hiding either.
+- `taskplane/eval_drivers.py`, `taskplane/eval_scenario.py`, `taskplane/eval_rubric.py`, `scripts/eval_record.py`, `scripts/ci_evals.py` — native bounded Claude/Codex runs, canonical run schema, absolute gates, and comparable metrics.
+- `evals/frozen-pr-9464/` — immutable fixture, mutations, routing oracle, blocker oracle, and comparison key.
+- `skills/tp-engineering`, `skills/tp-go`, `skills/tp-build`, `agents`, and routing/help documentation — describe the same selective kernel, coarse commands, and artifact references.
+
+Contract-only boundaries are: host adapters → canonical run manifest; derivation producers → evidence builder; graph quality → routing; routing → dispatch planner; slot agents → result schema; collector → findings ledger; projections/gate → revision identity. No internal implementation object crosses a host or agent boundary.
+
+## Security, failure, and cancellation
+
+- Resolve all artifact paths relative to a pinned repository root; reject absolute, escaping, symlink, junction/reparse, hard-link alias, and post-validation replacement targets. Use exclusive files, restrictive permissions, atomic rename, canonical digests, and read-back verification.
+- The trusted host uses existing CLI authentication to start Claude/Codex. Model-launched shells inherit no secrets and receive only an include-listed environment. Codex keeps saved CLI auth while using a scrubbed model shell; an isolated `CODEX_HOME` is not required unless auth is explicitly seeded.
+- Host adapters use process groups/job objects, bounded stdout/stderr, absolute deadlines, graceful stop followed by process-tree kill, and cleanup of active leases. Timeout, cancellation, capability-unavailable, auth failure, and mapper unavailable are named canonical states.
+- Claude CLI absence is `capability_unavailable`, not missing implementation. Codex and Claude driver records differ only in transport metadata.
+- Graph expansion timeout/truncation/unsupported language and total mapper failure stop before dispatch. A missing/wrong slot blocks collection. An interrupted projection leaves the current-revision pointer unchanged and is safely rerunnable by content key.
+- Full-envelope access is read-only and auditable. Scoped views reduce exposure and model reads but do not relax a lens’s ability to inspect the referenced full evidence.
+
+## Observability
+
+Every run emits a compact event sequence with target/context/revision identity, graph-quality reasons, expansion bounds/coverage, routing mode and 26 dispositions, expected/dispatched/collected slot sets, artifact references/digests, provenance failures, structural counters, driver state, timeout/cancellation state, and comparison status. No event contains full source hunks, findings prose, HTML, credentials, or raw host environment.
+
+## Rollout and rollback
+
+1. Land canonical records, graph-quality assessment, fixture, and counters behind `review_kernel_v2=shadow`; compare routing and artifacts without dispatch changes.
+2. Enable scoped views and exact selective dispatch for frozen evaluator scenarios; keep R-0004 corpus mandatory.
+3. Enable standalone Review, then Evaluate, then final EM for Claude and Codex after byte-parity and PR-9464 gates pass.
+4. Make v2 default; retain one release of read-only v1 artifact decoding for audit, not v1 dispatch fallback.
+
+Rollback disables v2 before `review start` and returns to the last released R-0004 kernel. An in-flight v2 review is either collected by v2 or cancelled; it is never silently converted. R-0005 schema additions are additive/content-addressed, and rollback does not rewrite the revision ledger. If v1 cannot meet an active correctness or efficiency floor, reviews fail closed instead of widening to all lenses.
+
+## Graph DoR
+
+- Baseline graph fingerprint and scanned head equal the emitted action binding.
+- Every changed implementation module is represented; new graph-quality/evidence/driver/fixture modules and contract-only edges are declared.
+- The R-0004 acceptance bundle and all 16 exact R-0005 criteria have executable validation mappings.
+- PR-9464 fixture licensing/provenance and frozen SHAs are recorded; its changed symbols are fixture data only.
+- Claude/Codex executables may be capability-unavailable, but both adapter contracts and offline transcript fixtures exist.
+- No open design question remains.
+
+## Design DoD
+
+- Graph quality is assessed before routing; the one-pass caller expansion and `impact_incomplete` zero-dispatch outcomes are deterministic and tested.
+- One immutable envelope, deterministic scoped views, exact 26-lens dispatch, floor preservation, no-rederivation, and slot provenance are mechanically enforced.
+- One revision identity binds findings/report/dashboard/gate monotonically.
+- Coarse operations, compact output, artifact references, budgets, counters, comparison policy, and no duplicate HTML are executable gates.
+- Frozen PR-9464 replay retains the Blocker and meets the comparable 1.18M/12-call/zero-duplicate target.
+- The named unchanged R-0004 suite plus focused R-0005 and complete regression suites pass on Claude and Codex or record explicit capability-unavailable where execution is externally impossible.
+
+## Solution-design lens
+
+The design is proportional because it extends the existing compliance kernel and reuse points instead of replacing the CLI or lens system. Correctness uncertainty fails closed; the only expensive derivation is bounded and conditional. The main operational cost is content-addressed artifact lifecycle and language-adapter maintenance, offset by eliminating repeated derivation, over-dispatch, repeated full-context reads, and duplicate rendering. The decision remains reversible at the pre-start feature flag; artifact schemas are additive and auditable. No unresolved question prevents Build.

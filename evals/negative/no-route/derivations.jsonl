@@ -1,0 +1,2 @@
+{"event": "derived", "id": "p-1", "input_key": "H|abc", "key": "impact", "probe": true, "ts": 0.5}
+{"event": "derived", "input_key": "B..H", "key": "diff", "ts": 4}

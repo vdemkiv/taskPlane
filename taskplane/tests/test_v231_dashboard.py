@@ -25,9 +25,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import dashboard  # noqa: E402
+import depgraph  # noqa: E402
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
@@ -91,6 +93,19 @@ def _loop_ws_at_action_ceiling(tmp, n_tasks=40):
 
 # ----------------------------------------- H1: page-1 chrome never cut off
 
+class TestDashboardRenderingIsObservational(unittest.TestCase):
+    def test_signoff_dashboard_does_not_execute_dod(self):
+        state = {"step": "signoff", "tasks": [{"status": "passed"}]}
+        with mock.patch.object(
+                loop, "_signoff_dod",
+                side_effect=AssertionError("render attempted to execute DoD")):
+            html = dashboard._widget_gatebar(
+                ".", state, "signoff", state["tasks"], False, 0, 40)
+
+        self.assertIn("sign off", html)
+        self.assertIn("evaluated only when you act", html)
+
+
 class TestWidgetPagedChromeSurvivesTruncation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -123,6 +138,67 @@ class TestWidgetPagedChromeSurvivesTruncation(unittest.TestCase):
         for p in pages:
             self.assertLessEqual(_bytes(p["html"]), dashboard.PAGE_BUDGET,
                                  p["title"])
+
+
+class TestGraphContextIsDiscoverable(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.ws = _loop_ws_at_action_ceiling(self.tmp)
+
+    def test_graph_tab_is_visible_before_the_simple_view(self):
+        html = dashboard.widget(self.ws)
+        self.assertLess(html.index('id="tp-tab-map"'),
+                        html.index('id="tp-simple"'))
+
+    def test_graph_tab_opens_existing_detailed_panel(self):
+        html = dashboard.widget(self.ws)
+        self.assertIn('if(w==="map")tpView("detail")', html)
+        self.assertIn('if(!on)tpTab("loop")', html)
+        self.assertIn('id="tp-panel-map"', html)
+
+    def test_reference_style_graph_is_a_visible_change_path_svg(self):
+        depgraph.save(self.ws, {
+            "modules": {"caller": {}, "changed": {}, "contract:api": {}},
+            "files": {}, "recorded": [], "meta": {},
+            "edges": [
+                {"from": "caller", "to": "changed", "kind": "calls"},
+                {"from": "changed", "to": "contract:api",
+                 "kind": "consumes"}],
+        })
+        html = dashboard.render_dependency_flow(self.ws, impact={
+            "touched": ["changed"],
+            "impacted": {1: [{"module": "caller", "via": "changed",
+                               "kind": "calls"}]},
+            "total_impacted": 1, "depth_limit": 3, "truncated": False,
+            "boundary_nodes": ["contract:api"], "policy_blocked": [],
+        })
+        self.assertIn('<svg viewBox="0 0 880 ', html)
+        self.assertIn("caller", html)
+        self.assertIn("changed — CHANGED", html)
+        self.assertIn("contract boundary — traversal stops here", html)
+        self.assertIn("changed by this scope", html)
+
+    def test_workflow_and_graph_are_primary_sections_not_hidden_content(self):
+        depgraph.save(self.ws, {"modules": {"taskplane": {}}, "edges": [],
+                                "files": {}, "recorded": [], "meta": {}})
+        html = dashboard.widget(self.ws)
+        self.assertIn('id="tp-workflow-flow"', html)
+        self.assertIn('id="tp-dependency-flow"', html)
+        self.assertLess(html.index('id="tp-workflow-flow"'),
+                        html.index('id="tp-dependency-flow"'))
+        self.assertLess(html.index('id="tp-dependency-flow"'),
+                        html.index('id="tp-tab-map"'))
+
+    def test_durable_report_uses_reference_order_and_ends_at_the_gate(self):
+        depgraph.save(self.ws, {"modules": {"taskplane": {}}, "edges": [],
+                                "files": {}, "recorded": [], "meta": {}})
+        html = dashboard.report_widget(self.ws)
+        order = [html.index(probe) for probe in (
+            'id="tp-workflow-flow"', 'id="tp-dependency-flow"',
+            "execution — governed agents", "requirements, decisions",
+            "action budget exhausted")]
+        self.assertEqual(order, sorted(order))
+        self.assertNotIn('id="tp-simple"', html)
 
 
 # ------------------------------------ H2: canonical severity vocabulary

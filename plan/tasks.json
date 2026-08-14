@@ -1,181 +1,53 @@
 {
   "tasks": [
     {
-      "id": "t1-regression-gate",
-      "title": "Wire and generalize the fail-closed graph-scoped regression gate",
+      "id": "t1-close-graph-governance-evidence",
+      "title": "Close graph-governance evidence without broad revalidation",
       "scope": [
+        "taskplane/depgraph.py",
+        "taskplane/graph_quality.py",
+        "taskplane/dashboard.py",
         "taskplane/regression.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/loop.py",
-        "taskplane/tests/test_regression_dod.py",
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_graph_quality.py",
+        "taskplane/tests/test_governance_v2.py",
+        "taskplane/tests/test_v231_dashboard.py",
         "taskplane/tests/test_regression_gate.py",
-        "taskplane/tests/test_dor_dod.py",
-        "taskplane/tests/test_loop.py",
-        "taskplane/tests/test_selfreview_fixes.py"
+        "taskplane/tests/test_review_evidence.py",
+        "taskplane/tests/test_review_routing.py"
       ],
-      "tests": "python -m pytest -q taskplane/tests/test_regression_dod.py taskplane/tests/test_regression_gate.py taskplane/tests/test_dor_dod.py taskplane/tests/test_loop.py taskplane/tests/test_selfreview_fixes.py",
-      "req": "R-0001",
+      "tests": "python -m pytest -q taskplane/tests/test_graph_quality.py::TestGraphQualityRecord::test_policy_limited_impact_is_complete_when_depth_is_exhausted taskplane/tests/test_governance_v2.py::TestGovernanceV2::test_contract_boundary_depth_is_explicit_and_bounded taskplane/tests/test_v231_dashboard.py::TestDashboardRenderingIsObservational::test_signoff_dashboard_does_not_execute_dod taskplane/tests/test_regression_gate.py::test_selector_scoped_contract_does_not_widen_tier1 taskplane/tests/test_review_evidence.py::TestImmutableEnvelope::test_repeated_requirement_and_impact_facts_are_stored_once taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_start_maps_all_lenses_but_dispatches_only_deep_plus_one_sweep",
+      "req": "R-0005",
       "deps": [],
       "type": "architecture",
-      "contracts": ["contract:loop-gate"],
+      "contracts": [
+        {
+          "relation": "changes",
+          "id": "contract:graph-quality-v1"
+        },
+        {
+          "relation": "changes",
+          "id": "contract:review-efficiency-v1"
+        },
+        {
+          "relation": "preserves",
+          "id": "contract:lens-applicability-v2"
+        },
+        {
+          "relation": "preserves",
+          "id": "contract:findings-provenance-v1"
+        }
+      ],
       "new_modules": [],
       "design_edges": [],
       "impact_policy": {
-        "local_depth": 2,
+        "local_depth": 6,
         "boundary_mode": "contract-only",
         "contract_depth": 1,
         "requirement_depth": 1
       },
-      "model": "deep",
-      "criteria": [
-        "Governed execute/fix, task DoD, and sign-off contracts enable regression_gate.",
-        "Python radius selection supports arbitrary package directories and visibly widens to all discovered tests when imports cannot prove a narrower set.",
-        "The active interpreter runs pytest; runner startup, collection, usage, interruption, and internal errors become named blockers.",
-        "A baseline-green/current-red test still produces an exact regression blocker, with existing classification behavior preserved."
-      ],
-      "acceptance_refs": [
-        "Every governed execute/fix task and final sign-off enables the regression gate, and a was-green-now-red test blocks with baseline evidence.",
-        "A missing pytest module, collection error, or invalid runner invocation produces a regression_gate blocker rather than an empty failure set.",
-        "Python source and tests outside the taskplane/ package layout participate in Tier-1 radius selection, with a visible full-suite fallback when mapping is incomplete."
-      ]
-    },
-    {
-      "id": "t2-codex-native",
-      "title": "Adopt native Codex subagent dispatch identity, reasoning tiers, lifecycle hooks, and workflow guidance",
-      "scope": [
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/loop.py",
-        "taskplane/lens.py",
-        "hooks/hooks.json",
-        "skills/taskplane/SKILL.md",
-        "skills/tp-go/SKILL.md",
-        "skills/tp-go/references/**",
-        "skills/tp-help/SKILL.md",
-        "docs/onboarding.md",
-        "docs/configuration.md",
-        "docs/routing-and-flows.md",
-        "discipline/model-tiers.md",
-        "taskplane/tests/test_codex_compat.py",
-        "taskplane/tests/test_v101_fixes.py",
-        "taskplane/tests/test_v230_guardrails.py",
-        "taskplane/tests/test_stage_waves.py",
-        "taskplane/tests/test_dispatch_parity.py",
-        "taskplane/tests/fixtures/briefs/**"
-      ],
-      "tests": "python -m pytest -q taskplane/tests/test_codex_compat.py taskplane/tests/test_v101_fixes.py taskplane/tests/test_stage_waves.py taskplane/tests/test_dispatch_parity.py",
-      "req": "R-0001",
-      "deps": ["t1-regression-gate"],
-      "type": "architecture",
-      "contracts": ["contract:codex-dispatch", "contract:loop-gate"],
-      "new_modules": [
-        "discipline",
-        "docs",
-        "hooks",
-        "skills/taskplane",
-        "skills/tp-go",
-        "skills/tp-help",
-        "skills/tp-go/references/codex-native-dispatch.md"
-      ],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 2,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "model": "deep",
-      "criteria": [
-        "Briefs expose stable Codex task_name, taskPlane role identity, model and tier-derived reasoning_effort without provider model defaults.",
-        "Strict dispatch matches current spawn_agent-shaped task_name input and rejects role, model, or effort mismatch instead of accepting a missing expectation.",
-        "SubagentStart/SubagentStop trace lifecycle and add bounded contract context; PreToolUse and evidence gates remain the enforcement boundary.",
-        "Codex instructions explicitly spawn independent work concurrently, wait and collect, interrupt/escalate safely, preserve full role instructions, and recommend optional user-started /goal for long loops.",
-        "Claude Dynamic Workflow behavior and the byte-identical portable fallback remain available."
-      ],
-      "acceptance_refs": [
-        "Codex dispatch briefs expose a valid stable task_name, role id, model, and reasoning_effort; strict dispatch rejects mismatched model or effort using current spawn_agent-shaped input.",
-        "Codex workflow guidance directs parallel spawn, wait, result collection, interruption, lifecycle tracing, and optional user-started Goal mode; Claude workflow files remain excluded from the OpenAI ZIP."
-      ]
-    },
-    {
-      "id": "t3-package-ci",
-      "title": "Close the OpenAI package and add target-host CI/onboarding truth",
-      "scope": [
-        "scripts/package_openai.py",
-        "README.md",
-        "docs/**",
-        "skills/**",
-        "taskplane/tp.py",
-        "taskplane/tests/test_release_freshness.py",
-        "taskplane/tests/test_onboarding_docs.py",
-        ".github/workflows/ci.yml"
-      ],
-      "tests": "python -m pytest -q taskplane/tests/test_release_freshness.py taskplane/tests/test_onboarding_docs.py taskplane/tests/test_codex_compat.py",
-      "req": "R-0001",
-      "deps": ["t2-codex-native"],
-      "type": "documentation",
-      "contracts": ["contract:openai-package", "contract:codex-dispatch"],
-      "new_modules": ["(root)", ".github/workflows", "docs", "skills"],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 1,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "model": "standard",
-      "criteria": [
-        "The OpenAI ZIP contains README and every docs path referenced by shipped skills/runtime; package validation and tests inspect archive membership, not only the repository.",
-        "Codex onboarding uses current /plugins guidance and host-neutral tests isolate CODEX_HOME deliberately.",
-        "CI runs an explicit CODEX_HOME compatibility leg and preserves the neutral Python matrix.",
-        "Guardrail copy matches the documented Codex hook coverage and exceptions."
-      ],
-      "acceptance_refs": [
-        "Codex workflow guidance directs parallel spawn, wait, result collection, interruption, lifecycle tracing, and optional user-started Goal mode; Claude workflow files remain excluded from the OpenAI ZIP.",
-        "Every README/docs path referenced by a shipped skill or runtime file exists in the generated OpenAI ZIP.",
-        "A Codex-host CI leg passes, normal repository-root pytest collection succeeds, and staging directories are absent and ignored."
-      ]
-    },
-    {
-      "id": "t4-clean-release",
-      "title": "Remove analysis-polluting scratch, validate the complete release, and preserve 2.7.1 provenance",
-      "scope": [
-        ".gitignore",
-        "_incoming-2.6.0/**",
-        "_incoming-2.7.0/**",
-        ".fixwave/**",
-        "_to_delete/**",
-        "CHANGELOG.md",
-        "scripts/**",
-        "taskplane/tests/**",
-        ".codex-plugin/plugin.json",
-        ".claude-plugin/plugin.json",
-        ".claude-plugin/marketplace.json"
-      ],
-      "tests": "python -m pytest -q -p no:cacheprovider",
-      "req": "R-0001",
-      "deps": ["t3-package-ci"],
-      "type": "devops",
-      "contracts": ["contract:openai-package"],
-      "new_modules": ["(root)", ".claude-plugin", ".codex-plugin", "_to_delete"],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 1,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "model": "standard",
-      "criteria": [
-        "All four scratch roots are absent from the index and ignored for future local transfer/fix waves.",
-        "Repository-root pytest collection, canonical pytest, unittest discover/floor, cost ratchets, generated-doc drift, manifest verification, and deterministic OpenAI package validation pass.",
-        "All manifest versions resolve to the 2.7.1 patch release; release notes describe the hardening without claiming a new feature version.",
-        "Only after evidence and engineering review pass may the orchestrator create the release commit and v2.7.1 tag."
-      ],
-      "acceptance_refs": [
-        "A Codex-host CI leg passes, normal repository-root pytest collection succeeds, and staging directories are absent and ignored.",
-        "The complete canonical suite and package validation pass before the release commit and v2.7.1 tag are created."
-      ]
+      "model": "standard"
     }
   ]
 }

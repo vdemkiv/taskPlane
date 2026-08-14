@@ -1,0 +1,29 @@
+{
+ "schema": "taskplane.eval-scenario/v1",
+ "skill": "fixture",
+ "steps": [
+  {
+   "id": "N1",
+   "claim": "the review fanned out to more than one lens",
+   "record": "dispatch",
+   "check": "count",
+   "select": {},
+   "min": 2,
+   "required": true
+  },
+  {
+   "id": "C1",
+   "claim": "the contract was active before the run first touched the workspace \u2014 the control row, so a red fixture is red for the reason it names",
+   "record": "trace",
+   "check": "before",
+   "select": {
+    "event": "contract_activated"
+   },
+   "before": "first_write",
+   "universal": [
+    "contract"
+   ],
+   "required": true
+  }
+ ]
+}

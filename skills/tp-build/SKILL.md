@@ -65,7 +65,12 @@ acceptance criteria). Both sides for anything user-facing and structural.
    technical HOW; the mock makes user-facing behavior inspectable.
 6. **Loop, governed.** `$TP loop init --req R-XXXX [--design] [--parallel]` and drive
    as in `/tp-go`: optional design → human Design approval → plan → human approval → contracted build (TDD, budgets)
-   → evaluate → engineering review (full catalog) → visual sign-off.
+   → evaluate → selective engineering review → visual sign-off.
+   Evaluate and engineering review share one canonical review context per
+   immutable change: diff, graph blast radius, requirements/contracts, DoR,
+   DoD, and one complete lens disposition. Only the mapped deep lenses plus at
+   most one light sweep run; agents consume scoped references and never derive
+   their own diff or graph.
    Dashboard at every transition (auto-refreshed by gate/next — the payload's `dashboard` field points at the fragment; the step journey + agent→model stats ride along) — visualization is not decoration here,
    it IS the interface the human governs through (the graph tab now shows
    the product layer: requirements ↔ modules, depends edges, shared-surface

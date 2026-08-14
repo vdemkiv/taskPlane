@@ -1,0 +1,56 @@
+{
+  "schema": "taskplane.frozen-review-fixture/v1",
+  "id": "aws-karpenter-provider-aws-pr-9464",
+  "target_head": "pr-9464-frozen",
+  "changed_files": [
+    "pkg/providers/amifamily/bootstrap/bottlerocket.go",
+    "pkg/providers/amifamily/bootstrap/bottlerocketsettings.go",
+    "pkg/providers/amifamily/bootstrap/bottlerocket_test.go",
+    "website/content/en/preview/concepts/nodeclasses.md"
+  ],
+  "changed_symbols": [
+    "BottlerocketSettings.MarshalTOML"
+  ],
+  "task_type": "backend",
+  "requirement": "Validate untrusted Bottlerocket userdata safely at the input trust boundary. Follow error propagation through provisioning and EC2NodeClass validation, including controller reconcile behavior and contract boundaries.",
+  "hub_dependents": 2,
+  "graph": {
+    "files": {
+      "pkg/providers/amifamily/bootstrap/bottlerocket.go": {"hash": "frozen-a"},
+      "pkg/providers/amifamily/bootstrap/bottlerocketsettings.go": {"hash": "frozen-b"},
+      "pkg/providers/amifamily/bootstrap/bottlerocket_test.go": {"hash": "frozen-test"},
+      "pkg/controllers/nodeclass/validation.go": {"hash": "frozen-c"}
+    },
+    "modules": {
+      "providers/amifamily": {"files": 3},
+      "controllers/nodeclass": {"files": 1}
+    },
+    "edges": [],
+    "meta": {
+      "content_fingerprint": "pr-9464-graph-frozen",
+      "scanned_head": "pr-9464-frozen",
+      "module_confidence": "low",
+      "scanners": {
+        "go": {"coverage": "complete", "files": 3}
+      }
+    }
+  },
+  "impact": {
+    "touched": ["providers/amifamily"],
+    "impacted": {},
+    "unknown": [],
+    "truncated": false,
+    "module_confidence": "low"
+  },
+  "snapshot": {
+    "symbol_edges": [
+      {"caller": "InstanceProvider.Create", "callee": "LaunchTemplateProvider.EnsureAll"},
+      {"caller": "NodeClassValidationController.Reconcile", "callee": "NodeClassValidationController.validate"},
+      {"caller": "NodeClassValidationController.validate", "callee": "LaunchTemplateProvider.EnsureAll"},
+      {"caller": "LaunchTemplateProvider.EnsureAll", "callee": "LaunchTemplateProvider.ensureLaunchTemplate"},
+      {"caller": "LaunchTemplateProvider.ensureLaunchTemplate", "callee": "LaunchTemplateProvider.createLaunchTemplate"},
+      {"caller": "LaunchTemplateProvider.createLaunchTemplate", "callee": "Bottlerocket.Script"},
+      {"caller": "Bottlerocket.Script", "callee": "BottlerocketSettings.MarshalTOML", "contract": "contract:bottlerocket-userdata"}
+    ]
+  }
+}

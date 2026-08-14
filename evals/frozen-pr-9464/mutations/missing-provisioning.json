@@ -1,0 +1,5 @@
+{
+  "schema": "taskplane.frozen-review-mutation/v1",
+  "remove_callers": ["InstanceProvider.Create"],
+  "must_be_present": ["InstanceProvider.Create"]
+}

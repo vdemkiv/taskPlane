@@ -142,8 +142,12 @@ class TestAuthorityMatrixMatchesEngine(unittest.TestCase):
     def test_write_allows_match_agent_contracts(self):
         matrix = _read("docs", "authority-matrix.md")
         self.assertIn(".eval/**", matrix)
-        self.assertIn(".em-review/lens-<id>/**", matrix)
-        self.assertIn(".em-review/lens-<id>/**", _read("agents", "tp-lens.md"))
+        self.assertIn("one exact `<result_path>`", matrix)
+        self.assertIn("producer_contract.write_allow", matrix)
+        lens_agent = _read("agents", "tp-lens.md")
+        self.assertIn('--write-allow "<result_path>"', lens_agent)
+        self.assertNotIn(".em-review/lens-<id>/**", lens_agent,
+                         "a lens slot must not retain broad legacy authority")
         self.assertIn(".eval/**", _read("agents", "tp-evaluator.md"))
 
 

@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "present",
+  "instrument": "broken",
+  "score": 1.0,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "no_evidence"
+  }
+ },
+ "why": "A ledger with two clean derivations and no pre-flight probe row. The arithmetic comes out at zero repeats, and it is still not evidence: without the probe's write-and-read-back receipt, a short ledger cannot be told from a ledger nobody could append to."
+}

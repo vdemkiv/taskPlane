@@ -26,7 +26,6 @@ separately_from_a_skip` is the one to read first.
 
 Every assertion here was observed FAILING before it was kept.
 """
-import io
 import json
 import os
 import shutil
@@ -316,20 +315,27 @@ class TestTheCorpusProvesTheScorer(unittest.TestCase):
     CORPUS = os.path.join(REPO, "evals")
 
     def test_every_profile_scores_exactly_what_it_declares(self):
-        profiles = sorted(d for d in os.listdir(self.CORPUS)
-                          if os.path.isdir(os.path.join(self.CORPUS, d)))
-        self.assertGreaterEqual(len(profiles), 4)
-        for name in profiles:
-            d = os.path.join(self.CORPUS, name)
-            with io.open(os.path.join(d, "expected.json"), encoding="utf-8") as f:
-                expected = json.load(f)
-            res = ci_evals.score(
-                ci_evals._rows(os.path.join(d, "trace.jsonl")),
-                ci_evals._rows(os.path.join(d, "obligations.jsonl")),
-                json.load(io.open(os.path.join(d, "dispatch.json"),
-                                  encoding="utf-8")))
-            for area, want in expected["rates"].items():
-                with self.subTest(profile=name, area=area):
+        """Walked through ci_evals._discover, and that is load-bearing.
+
+        This test used to carry its OWN copy of the corpus walker —
+        `os.listdir(evals)` plus an unconditional
+        `open(<dir>/expected.json)` — the same defect `_score_corpus()` had.
+        Two copies of a hazard is one fixed hazard and one live one: the
+        first `evals/runs/` or `evals/fixture-repo/` directory would have
+        left the script green and blown up HERE with FileNotFoundError, on a
+        test whose subject is the scorer, not the loader. One walker, so the
+        discrimination is proven wherever the corpus is read.
+        """
+        records, _skipped = ci_evals._discover(self.CORPUS)
+        scored = [r for r in records if r["loadable"] and r["expected"]]
+        self.assertGreaterEqual(len(scored), 4)
+        self.assertEqual([r for r in records if not r["loadable"]], [],
+                         "a record missing a file is never silently scored")
+        for rec in scored:
+            res = ci_evals.score(rec["trace"], rec["obligations"],
+                                 rec["dispatch"])
+            for area, want in rec["expected"]["rates"].items():
+                with self.subTest(profile=rec["name"], area=area):
                     self.assertEqual(res[area]["rate"], want)
 
     def test_the_corpus_contains_both_complaint_shapes(self):

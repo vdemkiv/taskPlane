@@ -1,0 +1,35 @@
+{
+ "schema": "taskplane.eval-scenario/v1",
+ "skill": "fixture",
+ "steps": [
+  {
+   "id": "N1",
+   "claim": "the routing never used the --all breadth",
+   "record": "trace",
+   "check": "absent",
+   "select": {
+    "event": "lens_route",
+    "breadth": {
+     "in": [
+      "all"
+     ]
+    }
+   },
+   "required": true
+  },
+  {
+   "id": "C1",
+   "claim": "the contract was active before the run first touched the workspace \u2014 the control row, so a red fixture is red for the reason it names",
+   "record": "trace",
+   "check": "before",
+   "select": {
+    "event": "contract_activated"
+   },
+   "before": "first_write",
+   "universal": [
+    "contract"
+   ],
+   "required": true
+  }
+ ]
+}

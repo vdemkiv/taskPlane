@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "present",
+  "instrument": "ok",
+  "score": 0.5,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "fail"
+  }
+ },
+ "why": "The shared diff was written to disk AFTER the first lens was already dispatched, so whatever the first lens read, it was not the copy this run derived. The row exists; only its order is wrong."
+}

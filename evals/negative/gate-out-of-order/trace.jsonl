@@ -1,0 +1,5 @@
+{"event": "contract_activated", "ts": 1}
+{"event": "dor", "ready": true, "ts": 2}
+{"event": "workspace_write", "ts": 5}
+{"event": "loop_submit", "ts": 15}
+{"event": "dod", "passed": true, "ts": 16}

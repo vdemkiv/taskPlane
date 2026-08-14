@@ -191,6 +191,7 @@ class TestGovernanceV2(unittest.TestCase):
                     "contract_depth": 0, "requirement_depth": 1})
         self.assertEqual(stopped["total_impacted"], 0)
         self.assertTrue(stopped["truncated"])
+        self.assertFalse(stopped["depth_truncated"])
         self.assertTrue(all(row["reason"] == "contract-depth"
                             for row in stopped["policy_blocked"]))
 

@@ -165,10 +165,9 @@ class TestForcingEverythingStillWorks(_Case):
         self.assertNotIn("routing_decision", payload)
 
 
-class TestTheEngineFailsOpen(_Case):
-    def test_a_broken_engine_widens_the_review_and_says_so(self):
-        """The fail-safe direction is MORE coverage, never less — a broken
-        signal engine must not silently shrink a review to nothing."""
+class TestTheEngineFailsClosed(_Case):
+    def test_a_broken_engine_dispatches_zero_and_says_so(self):
+        """No complete mapping means no lens may run."""
         import lens_signals
         orig = lens_signals.route_verdicts
 
@@ -184,9 +183,10 @@ class TestTheEngineFailsOpen(_Case):
             lens_signals.route_verdicts = orig
         ids = {b["id"] for b in payload["deep"]} | set(
             (payload["sweep"] or {}).get("ids") or [])
-        self.assertEqual(len(ids), len(lens.load_catalog()["lenses"]),
-                         "a failed engine must fall open to full coverage")
+        self.assertEqual(ids, set())
+        self.assertTrue(payload["nothing_to_review"])
         self.assertIn("lens applicability engine unavailable", err.getvalue())
+        self.assertIn("mapper_unavailable", err.getvalue())
 
 
 class TestTheSkillDoesNotSpendAll(unittest.TestCase):

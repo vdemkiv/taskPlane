@@ -41,6 +41,51 @@ import sys
 import taskplane_lite as tp
 
 
+_REVISION_ID_KEYS = ("target_fingerprint", "context_fingerprint",
+                     "findings_fingerprint", "canonical_revision")
+
+
+def canonical_revision_identity(value: dict) -> dict:
+    """Validate and normalize the tuple shared by every review projection."""
+    source = value.get("identity") if isinstance(value, dict) \
+        and isinstance(value.get("identity"), dict) else value
+    source = source if isinstance(source, dict) else {}
+    if any(source.get(key) in (None, "") for key in _REVISION_ID_KEYS):
+        raise ValueError("complete canonical revision identity is required")
+    try:
+        revision = int(source["canonical_revision"])
+    except (TypeError, ValueError):
+        raise ValueError("canonical revision identity has invalid revision")
+    if revision < 1:
+        raise ValueError("canonical revision identity has invalid revision")
+    return {
+        "target_fingerprint": str(source["target_fingerprint"]),
+        "context_fingerprint": str(source["context_fingerprint"]),
+        "findings_fingerprint": str(source["findings_fingerprint"]),
+        "canonical_revision": revision,
+    }
+
+
+def canonical_report_projection(report: str, identity: dict) -> dict:
+    """A report projection that cannot drop or rename canonical identity."""
+    return {"schema": "taskplane.review-projection/v1", "kind": "report",
+            "identity": canonical_revision_identity(identity),
+            "body": str(report or "")}
+
+
+def projection_identity_problem(projection: dict,
+                                expected: dict) -> "str | None":
+    """Why a projection is stale/contradictory, or None."""
+    try:
+        have = canonical_revision_identity(projection)
+        want = canonical_revision_identity(expected)
+    except ValueError as exc:
+        return str(exc)
+    if have != want:
+        return "projection identity is stale or contradictory"
+    return None
+
+
 # ---- shared progress artifacts (v2.0.0) -------------------------------------
 # Every gate transition snapshots its decision artifacts into the ACTIVE
 # store (team plan: in-repo .taskplane-kb/; personal: the external store).
@@ -210,11 +255,17 @@ def refresh_views(ws: str, out: dict) -> dict:
     global _VIEW_FAILED_WARNED
     try:
         import dashboard as _dash
-        frag = _dash.widget(ws)
+        frag = _dash.report_widget(ws)
+        # The durable artifact is a real report document, not a raw widget
+        # fragment.  This uses the same 940px canvas, palette, dark-mode
+        # variables and section hierarchy as engineering-review reports, so
+        # Codex/Claude/file delivery all render the same bytes reliably.
+        doc = _dash.standalone_document(
+            [frag], title="taskplane — mission control")
         p = os.path.join(tp.tp_dir(ws), "dashboard.html")
         tmp = f"{p}.tmp.{os.getpid()}"
         with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(frag)
+            f.write(doc)
         os.replace(tmp, p)
         out["dashboard"] = {
             # logical pointer, not a path: os.path.join made

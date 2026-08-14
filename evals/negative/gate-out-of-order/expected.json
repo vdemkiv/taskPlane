@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "present",
+  "instrument": "ok",
+  "score": 0.5,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "fail"
+  }
+ },
+ "why": "The DoD gate ran, and it ran AFTER the run had already claimed to be finished. Both rows are present, so an exists-only rubric scores this as a fully gated run."
+}

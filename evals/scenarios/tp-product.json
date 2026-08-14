@@ -1,0 +1,86 @@
+{
+  "schema": "taskplane.eval-scenario/v1",
+  "skill": "tp-product",
+  "title": "The WHAT seat: requirements authored and scored, decisions recorded, and no code touched by enforced contract",
+  "source_files": [
+    "skills/tp-product/SKILL.md",
+    "agents/tp-product.md"
+  ],
+  "inputs_fingerprint": "fb7d784ed262c17fba7d7f02b713846d560f6104469b31a60cfaac528a7dfb9d",
+  "expects_derivations": [],
+  "declared_surfaces": [
+    "tp req new",
+    "tp req score",
+    "tp req debt",
+    "tp decision new"
+  ],
+  "steps": [
+    {
+      "id": "U1-CONTRACT",
+      "claim": "the run was governed before it changed anything — the contract was active before the first write, not declared after the fact",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "contract_activated"
+      },
+      "before": "first_write",
+      "universal": [
+        "contract"
+      ],
+      "required": true
+    },
+    {
+      "id": "U2-DOR",
+      "claim": "readiness was established before the work started — a DoR that passed, ahead of the first write",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "dor",
+        "ready": true
+      },
+      "before": "first_write",
+      "universal": [
+        "dor"
+      ],
+      "required": true
+    },
+    {
+      "id": "U3-DOD",
+      "claim": "the definition of done was checked before anything claimed the work was finished",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "dod",
+        "passed": true
+      },
+      "before": "completion_claim",
+      "universal": [
+        "dod"
+      ],
+      "required": true
+    },
+    {
+      "id": "U4-SHARED",
+      "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
+      "record": "derivations",
+      "check": "repeats",
+      "select": {
+        "event": "derived",
+        "probe": {
+          "absent": true
+        }
+      },
+      "distinct_by": [
+        "key",
+        "input_key"
+      ],
+      "max": 0,
+      "universal": [
+        "no_rederive"
+      ],
+      "required": true,
+      "applicable": false,
+      "reason": "tp-product is read-only toward code by enforced contract and derives none of the expensive artifacts the ledger tracks (no diff, no blast radius, no graph scan) — its `expects_derivations` is empty, so a live no-re-derivation row here could never fail. A row that cannot fail reads as a checked control point and is not one, which is the exact dishonesty this layer removes; it is declared inapplicable instead of scored green."
+    }
+  ]
+}

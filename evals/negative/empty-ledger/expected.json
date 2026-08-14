@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "empty",
+  "instrument": "broken",
+  "score": 1.0,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "no_evidence"
+  }
+ },
+ "why": "The ledger file exists and holds no rows. Different failure from an absent one \u2014 the recorder ran and wrote nothing \u2014 and the same verdict, because zero repeats over zero rows measures nothing either way."
+}

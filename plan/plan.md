@@ -1,56 +1,52 @@
-# Plan — taskPlane 2.7 Codex-native workflow and release hardening
+# Bounded repair plan — R-0005 graph-governance closure
 
-Requirement **R-0001** is refined to 0.91 with no blocking questions. The user
-approved all seven review recommendations. Work remains serial because the four
-tasks deliberately touch shared enforcement and documentation surfaces; the
-main orchestrator keeps authority over gates, commit, tag, and submission.
+This is a send-back repair for the final engineering gate. It preserves the
+completed 2.7 implementation and its existing evidence; it does not reopen the
+four historical delivery tasks or rerun their broad suites.
 
-## Order
+## One implementation task
 
-1. **t1-regression-gate — restore the core proof claim first.** Wire the gate
-   into real loop contracts, make Python radius discovery repository-generic,
-   widen visibly when narrowing is not provable, and make every runner failure
-   a blocker. This establishes the stronger DoD used by following tasks.
-2. **t2-codex-native — add the current host adapter.** Keep taskPlane briefs and
-   Claude workflows unchanged while giving Codex stable native task identity,
-   reasoning-effort tiers, exact spawn/wait/interrupt guidance, and lifecycle
-   tracing. Fix strict dispatch against current spawn input.
-3. **t3-package-ci — make the shipped artifact truthful.** Package README/docs,
-   validate reference closure inside the archive, update onboarding to `/plugins`,
-   isolate host tests, and add the Codex CI leg.
-4. **t4-clean-release — remove duplicated scratch and prove the release.** Clean
-   the index, add ignore rules, run every test/ratchet/package check, perform the
-   full engineering review, then create the commit and `v2.7.1` tag.
+1. Separate an intentional `contract-only` or requirement-depth policy stop
+   from genuine unexplored traversal. Keep the stop visible in
+   `policy_blocked`, while graph quality fails closed only for stale data,
+   unknown nodes, unresolved edges, incomplete scanners, or real depth
+   truncation.
+2. Make dashboard/report rendering observational. A render may display a
+   cached sign-off verdict, but it must never invoke `_signoff_dod`, discover a
+   regression radius, or execute tests.
+3. Keep selector-scoped validation selector-scoped. The regression gate may
+   still run its static coverage-gap guard, but it must not widen an approved
+   `file.py::test_name` contract into whole current/baseline test files.
+4. Store requirement acceptance and graph impact once in the immutable review
+   envelope. Scoped views preserve the facts and their envelope reference,
+   but do not duplicate those large lists under nested records.
+5. Verify and record the approved design's exact as-built edges in the graph.
+   Contract edges receive explicit file/test/probe evidence in the final EM
+   record; no edge is declared merely to satisfy the gate.
+6. Run one canonical selective Review from one shared diff and impact envelope,
+   collect the routed results, and generate the final EM report from that
+   revision. The report dispositions all 26 lenses and uses the same graph,
+   findings, and revision identity as the dashboard and gate.
 
-## Dependencies and contracts
+## Validation budget
 
-```text
-t1 regression/DoD
-  -> t2 Codex transport + lifecycle
-    -> t3 marketplace package + target-host CI
-      -> t4 repository cleanup + complete release evidence
-```
+The implementation task has exactly five focused regression selectors: one
+for graph-policy semantics, one for bounded contract traversal, and one proving
+dashboard rendering cannot execute DoD, plus one proving selector-scoped
+validation cannot widen into whole-file Tier-1 execution, and one proving the
+review envelope stores repeated requirement/impact facts once. Graph
+realization and documentation are static checks. The final review reuses
+already-passed task evidence and does not rerun T1–T4, the full repository
+suite, the corpus, or detached baselines.
 
-- `contract:loop-gate` changes in t1 and is consumed by t2.
-- `contract:codex-dispatch` is defined in t2 and validated/documented in t3.
-- `contract:openai-package` is closed in t3 and release-validated in t4.
-- Distributed reasoning stops at these named contracts; no external service
-  implementation is in scope.
+## Graph policy and risks
 
-## Risk controls
+Traversal remains six local hops, one contract hop, one requirement hop, with
+`contract-only` distributed boundaries. The change does not weaken uncertainty
+handling: genuine incomplete traversal still dispatches zero lenses. The main
+risk is incorrectly classifying a real depth cutoff as a policy stop; the
+focused tests require separate `depth_truncated` and `policy_blocked` evidence
+so the two states cannot collapse again.
 
-- The regression runner must distinguish assertion failures from infrastructure
-  failures; tests cover both and use the active interpreter.
-- Dispatch changes are additive fields with explicit Claude/Codex parity tests.
-- Lifecycle hooks are observability/context only and are described honestly.
-- Package closure is computed from the exact file set written to the ZIP.
-- Cleanup uses exact tracked roots and `git rm`, making every removal recoverable
-  from Git history until the release is committed.
-
-## Definition of Done
-
-- Eight R-0001 acceptance criteria pass with independent evidence.
-- Full neutral suite, explicit Codex-host suite, unittest floor, cost ratchets,
-  generated artifacts, manifests, package closure and deterministic ZIP pass.
-- Engineering review finds no unresolved high regression.
-- Repository is clean after the patch release commit and points to tag `v2.7.1`.
+No version, release, marketplace, packaging, archive cleanup, or unrelated
+refactoring is in scope.

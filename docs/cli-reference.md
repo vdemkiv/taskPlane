@@ -81,6 +81,7 @@ not repeated in the tables.
 | `tp.py req new` | record a requirement (or a change request) |
 | `tp.py req score` | score a requirement's refinement against the bar |
 | `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
+| `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
 | `tp.py review start` | establish the facts and activate the read-only contract |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
 | `tp.py screen-dispatch` | PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict) |
@@ -92,7 +93,7 @@ not repeated in the tables.
 | `tp.py share set` | set the default visibility of new decisions |
 | `tp.py share status` | show what is private and what is shared |
 | `tp.py status` | show the active contract |
-| `tp.py subagent-start` | SubagentStart lifecycle trace and bounded contract context (stdin event) |
+| `tp.py subagent-start` | SubagentStart lifecycle trace, bounded contract context, and leased review-child identity binding (stdin event) |
 | `tp.py subagent-stop` | SubagentStop lifecycle trace (stdin event; advisory, never a completion gate) |
 | `tp.py summary` | simple human view: progress and decisions, while agents keep the detailed harness |
 | `tp.py target` | what is being reviewed — acquire a pull request, pin the checkout, or check that git and gh are actually available |
@@ -167,7 +168,7 @@ render the mission-control view
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--out` | OUT | also write the fragment to this path |
+| `--out` | OUT | write the standalone reference-style mission-control report to this path |
 | `--paged` | flag | emit ordered <=14KB pages (JSON) for reliable inline rendering + a never-skippable headline |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
@@ -747,6 +748,16 @@ open a review in ONE call — tools, target pin, graph, impact, contract, obliga
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py review collect`
+
+validate leased lens results and publish one canonical findings revision
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--no-publish` | flag | skip the external artifact-store snapshot (tests and isolated calibration only) |
+| `--run-id` | RUN_ID | select one active review when several starts coexist |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py review start`
 
 establish the facts and activate the read-only contract
@@ -839,7 +850,7 @@ show the active contract
 
 ## `tp.py subagent-start`
 
-SubagentStart lifecycle trace and bounded contract context (stdin event)
+SubagentStart lifecycle trace, bounded contract context, and leased review-child identity binding (stdin event)
 
 ## `tp.py subagent-stop`
 

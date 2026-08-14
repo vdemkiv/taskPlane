@@ -13,6 +13,8 @@ import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
 import depgraph  # noqa: E402
+import review  # noqa: E402
+import review_evidence  # noqa: E402
 
 
 def git_ws(tmp, tasks):
@@ -86,7 +88,52 @@ def pass_eval(ws):
     return submit_gate(ws, "pass")
 
 
+def write_kernel_results(ws):
+    """Author canonical leased results through the observed hook protocol."""
+    state = review._load_state(ws)
+    store = review_evidence.ArtifactStore(ws)
+    for index, slot in enumerate(state["slots"]):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        payload = {
+            **lease,
+            "schema": "taskplane.lens-slot-output/v2",
+            "authored_by": "lens-slot",
+            "lens_results": [
+                {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                for lens_id in lease["lens_ids"]
+            ],
+            "findings": [],
+        }
+        content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        event = {
+            "session_id": "loop-em-session",
+            "agent_id": f"loop-em-child-{index}",
+            "tool_name": "Write",
+            "tool_input": {"file_path": slot["result_path"],
+                           "content": content},
+        }
+        contract = {
+            "task": brief["producer_contract"]["task"],
+            "task_id": f"loop-em-contract-{index}",
+            "read_only": True,
+            "write_allow": [slot["result_path"]],
+        }
+        review.register_slot_producer(
+            ws, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        review.record_slot_write_observation(
+            ws, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        path = os.path.join(ws, slot["result_path"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(content)
+    return review.collect_review(ws, publish=False, run_id=state["run_id"])
+
+
 def pass_em(ws):
+    canonical = write_kernel_results(ws)
     coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
     with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
@@ -97,7 +144,11 @@ def pass_em(ws):
         if not f.startswith(lens.LOOP_OWNED)]
     impact = depgraph.impact(ws, changed)
     with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
-        json.dump({"meta": {"lens_coverage": coverage, "impact": impact,
+        identity = {key: canonical[key] for key in (
+            "target_fingerprint", "context_fingerprint",
+            "findings_fingerprint", "canonical_revision")}
+        json.dump({"meta": {**identity,
+                            "lens_coverage": coverage, "impact": impact,
                             "tests": ["true"],
                             "gate": {"verdict": "recommend-pass"}},
                    "findings": []}, f)
@@ -321,7 +372,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         loop.next_action(ws)
         # the "build": touch an auth file, uncommitted
         with open(os.path.join(ws, "src", "auth", "b.py"), "w", encoding="utf-8") as f:
-            f.write("y=2\n")
+            f.write("def authorize():\n    return True\n")
         submit_gate(ws, "pass")                   # execute -> evaluate
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")

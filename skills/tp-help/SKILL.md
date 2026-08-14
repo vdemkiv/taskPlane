@@ -32,10 +32,23 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.13 — the review got a lot cheaper, and the budget
+**What's new in v2.14 — one selective review kernel governs Review,
+Evaluate, and final sign-off.** taskplane establishes graph quality and the
+bounded blast radius before it maps all 26 lenses to deep, light, or n/a.
+Only the deep set plus at most one light sweep runs; insufficient impact
+evidence stops with zero dispatch. Every reviewer receives a scoped reference
+to one immutable diff/impact/requirements/DoR/DoD context and writes a leased,
+fingerprint-bound result. The dashboard renders the same dependency graph,
+workflow state, and human approval gates as the final report. Claude and Codex
+consume the same canonical artifacts; after updating the plugin, start a new
+task so the host loads its lifecycle hooks.
+
+**In v2.13 — the review got a lot cheaper, and the budget
 finally counts what is scarce.** `tp review start` opens a review in one
-call instead of ten. Every lens agent reads ONE copy of the diff and the
-blast radius from `.em-review/context/` instead of carrying its own. A
+call instead of ten. It writes one canonical review context containing the
+diff, graph blast radius, requirements/contracts, DoR/DoD evidence, and the
+complete lens disposition. Every lens agent reads a scoped reference to that
+context instead of carrying or deriving its own. A
 findings document past 24k characters is DELIVERED as a file rather than
 retyped through a widget tool — same bytes, same fingerprint, and
 `tp ack <id> --delivered <path>` discharges the obligation. And a contract
@@ -104,13 +117,14 @@ documentation that merely DESCRIBES what they look for.
 **What routing looks like now (v2.7).** Reviews don't run all 26 lenses
 blindly: the router scores each lens against the ACTUAL diff — paths,
 content, density, the dependency graph — and stage profiles (design/build/
-review) narrow the candidates, so a typical review runs 5-8 lenses deep with
+review) narrow the candidates, so a typical review runs focused lenses with
 the rest as evidenced light passes or n/a-with-proof ("0 i18n markers").
 Security and architecture are floored, never dropped. The graph can also be
 DECOMPOSED into components (`tp graph scan --decompose`): each component
-carries its own lens map, a diff routes the components it touches, and any
-routing failure only ever WIDENS coverage (component → module → full
-catalog). Test fixtures no longer inflate routing (×0.25 discount). Every
+carries its own lens map and a diff routes the components it touches. If graph
+quality or the applicability map is insufficient, taskplane stops before lens
+dispatch instead of spending more to guess. Test fixtures no longer inflate
+routing (×0.25 discount). Every
 Nth review runs as a full-catalog audit that diffs findings against the
 routing — a finding on an n/a'd lens auto-files as a router regression and
 blocks sign-off. The DoD can run a graph-scoped regression gate: the blast

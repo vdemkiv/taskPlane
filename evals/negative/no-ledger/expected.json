@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "absent",
+  "instrument": "broken",
+  "score": 1.0,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "no_evidence"
+  }
+ },
+ "why": "THE fixture. There is no derivation ledger at all, and `repeats == 0` is arithmetically true over zero rows \u2014 which is how a broken instrument once scored a perfect efficiency result. The verdict must be no_evidence, never pass. Note the score of 1.0 beside it: that is why the scalar gates nothing."
+}

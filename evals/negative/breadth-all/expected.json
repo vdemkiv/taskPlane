@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "present",
+  "instrument": "ok",
+  "score": 0.5,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "fail"
+  }
+ },
+ "why": "The run routed with the --all breadth, which switches the applicability engine off. The routing row is present and carries lenses, so the positive half of R5 is satisfied \u2014 only the prohibition catches it."
+}

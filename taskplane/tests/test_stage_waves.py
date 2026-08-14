@@ -867,6 +867,41 @@ def _walk_design_contract(ws, req):
     return contract
 
 
+def _author_kernel_results(ws):
+    import review
+    import review_evidence
+    kernel = review._load_state(ws)
+    store = review_evidence.ArtifactStore(ws)
+    for index, slot in enumerate(kernel["slots"]):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        row = {**lease, "schema": "taskplane.lens-slot-output/v2",
+               "authored_by": "lens-slot", "findings": [],
+               "lens_results": [{"lens": lens_id, "verdict": "pass",
+                                  "blockers": 0}
+                                for lens_id in lease["lens_ids"]]}
+        producer = brief["producer_contract"]
+        content = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        event = {"session_id": "stage-lens-session",
+                 "agent_id": f"stage-lens-child-{index}",
+                 "tool_name": "Write",
+                 "tool_input": {"file_path": slot["result_path"],
+                                "content": content}}
+        contract = {"task": producer["task"], "task_id": "stage-lens",
+                    "read_only": True,
+                    "write_allow": producer["write_allow"]}
+        review.register_slot_producer(
+            ws, event=event, contract=contract,
+            task_slot=producer["task_slot"])
+        review.record_slot_write_observation(
+            ws, event=event, contract=contract,
+            task_slot=producer["task_slot"])
+        path = os.path.join(ws, slot["result_path"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+
 def _walk_pass_eval(ws):
     import depgraph
     import lens
@@ -900,6 +935,7 @@ def _walk_pass_eval(ws):
                        "requirements_checked": [],
                        "contracts_checked": contracts},
                    "failures": []}, f)
+    _author_kernel_results(act_ws)
     assert loop.submit(ws, "pass")["submitted"]
     return loop.gate(ws, "pass")
 
@@ -907,20 +943,28 @@ def _walk_pass_eval(ws):
 def _walk_pass_em(ws, state):
     import depgraph
     import lens
+    import review
+    import review_evidence
     # realize the designed edges so the as-built graph carries the designed
     # modules (the reviewer's evidence must match reality)
     depgraph.record_edge(ws, "skills/tp-design", "taskplane", kind="runtime")
     depgraph.record_edge(ws, "taskplane", "contract:design-artifact",
                          kind="provides")
-    coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
-    os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-    with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
-        f.write("# Engineering review\n\nAll required evidence passed.\n")
+    # Author one result per immutable lease, then let the production collect
+    # path validate provenance and create the single canonical revision.
+    kernel = review._load_state(ws)
+    store = review_evidence.ArtifactStore(ws)
+    _author_kernel_results(ws)
+    collected = review.collect_review(ws, publish=False)
+    assert collected["status"] == "complete"
     changed = [f for f in loop._diff_files(
         ws, state.get("baseline") or "HEAD")
         if not f.startswith(lens.LOOP_OWNED)]
     impact = depgraph.impact(ws, changed)
-    meta = {"lens_coverage": coverage, "impact": impact, "tests": ["true"],
+    findings_path = os.path.join(ws, ".em-review", "findings.json")
+    with open(findings_path, encoding="utf-8") as f:
+        findings = json.load(f)
+    meta = {**findings["meta"], "impact": impact, "tests": ["true"],
             "gate": {"verdict": "recommend-pass"},
             "design": {
                 "fingerprint": state["design_fingerprint"],
@@ -936,8 +980,8 @@ def _walk_pass_em(ws, state):
                                  "regression test passes",
                      "declared_by": "reviewer — hand-recorded edge"}],
                 "drift": []}}
-    with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
-        json.dump({"meta": meta, "findings": []}, f)
+    with open(findings_path, "w", encoding="utf-8") as f:
+        json.dump({"meta": meta, "findings": findings["findings"]}, f)
     assert loop.submit(ws, "pass")["submitted"]
     return loop.gate(ws, "pass")
 

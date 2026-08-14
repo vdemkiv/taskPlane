@@ -1,0 +1,113 @@
+{
+  "schema": "taskplane.eval-scenario/v1",
+  "skill": "tp-engineering",
+  "title": "A governed engineering review: pin the tree, take the blast radius, derive the shared context ONCE, fan the lenses out over it, and close only through the gates",
+  "source_files": [
+    "skills/tp-engineering/SKILL.md",
+    "agents/tp-engineering.md"
+  ],
+  "inputs_fingerprint": "2ad09bc37b924542d3c1b1488ecef01205cdf412f488533cd7177807e414afa1",
+  "expects_derivations": ["diff", "impact"],
+  "declared_surfaces": [
+    "tp review start",
+    "tp graph impact",
+    "tp lens dispatch",
+    "tp findings"
+  ],
+  "steps": [
+    {
+      "id": "R1",
+      "claim": "the review checked out the code it claims to have reviewed — a target is pinned, and its head is the head of the PR under review",
+      "record": "context",
+      "check": "field_equals",
+      "select": {"kind": "target"},
+      "field": "head",
+      "equals": {"record": "run", "field": "target_head"},
+      "required": true
+    },
+    {
+      "id": "R2",
+      "claim": "the blast radius was taken against the tree that was reviewed, not against whatever happened to be checked out",
+      "record": "trace",
+      "check": "field_equals",
+      "select": {"event": "graph_impact"},
+      "field": "scanned_head",
+      "equals": {"record": "context", "select": {"kind": "target"},
+                 "field": "head"},
+      "required": true
+    },
+    {
+      "id": "R3",
+      "claim": "the review's own findings file existed before any lens was briefed, so the lenses added to a review rather than becoming it",
+      "record": "context",
+      "check": "before",
+      "select": {"kind": "findings"},
+      "before": "first_brief",
+      "required": true
+    },
+    {
+      "id": "R4",
+      "claim": "the diff and the blast radius were written to disk BEFORE the first lens was dispatched — the shared copy has to exist before anyone is told to read it",
+      "record": "trace",
+      "check": "before",
+      "select": {"event": "review_context_written", "status": "written"},
+      "before": "first_dispatch",
+      "required": true
+    },
+    {
+      "id": "R5",
+      "claim": "the lenses were chosen for THIS diff — a routing decision carrying per-lens evidence, and never the --all breadth that switches the applicability engine off",
+      "record": "trace",
+      "check": "all",
+      "of": [
+        {"check": "exists",
+         "select": {"event": "lens_route", "lenses": {"present": true}}},
+        {"check": "absent",
+         "select": {"event": "lens_route", "breadth": {"in": ["all"]}}}
+      ],
+      "required": true
+    },
+    {
+      "id": "R6",
+      "claim": "every brief that was dispatched came back with its own findings file — a lens that was briefed and produced nothing is a lens that did not run",
+      "record": "dispatch",
+      "check": "pairs",
+      "select": {},
+      "with": {"record": "context", "select": {"kind": "lens_findings"}},
+      "key": "lens",
+      "required": true
+    },
+    {
+      "id": "R7",
+      "claim": "the expensive part ran ONCE and was SHARED — no derivation was repeated, and every brief cites the one context copy on disk instead of re-deriving it",
+      "record": "derivations",
+      "check": "all",
+      "of": [
+        {"record": "derivations", "check": "repeats",
+         "select": {"event": "derived", "probe": {"absent": true}},
+         "distinct_by": ["key", "input_key"], "max": 0},
+        {"record": "dispatch", "check": "pairs", "select": {},
+         "with": {"record": "context", "select": {"kind": "context_file"}},
+         "key": {"left": "context_path", "right": "path"}}
+      ],
+      "universal": ["no_rederive"],
+      "required": true
+    },
+    {
+      "id": "R8",
+      "claim": "the review ran inside its contract and closed through its gates — the contract was active before the first write, DoR before the first write, and DoD before any claim that the work was finished",
+      "record": "trace",
+      "check": "all",
+      "of": [
+        {"check": "before", "select": {"event": "contract_activated"},
+         "before": "first_write"},
+        {"check": "before", "select": {"event": "dor", "ready": true},
+         "before": "first_write"},
+        {"check": "before", "select": {"event": "dod", "passed": true},
+         "before": "completion_claim"}
+      ],
+      "universal": ["contract", "dor", "dod"],
+      "required": true
+    }
+  ]
+}

@@ -146,6 +146,51 @@ def _fixture(tmp):
     return ws
 
 
+def _author_leased_evaluation_results(ws: str) -> None:
+    """Model the evaluator's mandatory independent slot outputs.
+
+    This miniature loop is a structural cost harness, not a model run, so it
+    invokes the same hook-observation boundary directly and writes the exact
+    canonical payload each real lens brief requires. A free-form verdict alone
+    must never let this harness claim it reached the end.
+    """
+    import review
+    import review_evidence
+
+    state = review._load_state(ws)
+    store = review_evidence.ArtifactStore(ws)
+    for index, slot in enumerate(state.get("slots") or []):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        producer = brief["producer_contract"]
+        payload = {
+            **lease, "schema": "taskplane.lens-slot-output/v2",
+            "authored_by": "lens-slot", "findings": [],
+            "lens_results": [{"lens": lens_id, "verdict": "pass",
+                              "blockers": 0}
+                             for lens_id in lease["lens_ids"]],
+        }
+        content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        event = {"session_id": "ci-loop-cost-lens",
+                 "agent_id": f"ci-loop-cost-child-{index}",
+                 "tool_name": "Write",
+                 "tool_input": {"file_path": slot["result_path"],
+                                "content": content}}
+        contract = {"task": producer["task"], "task_id": "ci-lens",
+                    "read_only": True,
+                    "write_allow": producer["write_allow"]}
+        review.register_slot_producer(
+            ws, event=event, contract=contract,
+            task_slot=producer["task_slot"])
+        review.record_slot_write_observation(
+            ws, event=event, contract=contract,
+            task_slot=producer["task_slot"])
+        path = os.path.join(ws, slot["result_path"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(content)
+
+
 def measure() -> dict:
     """Drive one task through a full loop and count what the engine made it do."""
     import loop
@@ -194,10 +239,12 @@ def measure() -> dict:
             loop.gate(ws, "pass")
         loop.approve(ws, "plan")
         loop.next_action(ws)                                    # execute brief
-        open(os.path.join(ws, "src", "todo", "a.py"), "a").write("y = 2\n")
+        open(os.path.join(ws, "src", "todo", "a.py"), "a").write(
+            "\ndef complete():\n    return True\n")
         loop.submit(ws, "pass")
         loop.gate(ws, "pass")
         loop.next_action(ws)                                    # evaluate brief
+        _author_leased_evaluation_results(ws)
 
         bundle = loop.evidence(ws)
         for row in bundle.get("criteria") or []:

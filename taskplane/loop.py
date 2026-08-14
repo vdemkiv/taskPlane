@@ -44,8 +44,7 @@ LOOP_FILE = "loop.json"
 # inherited verbatim, component assembly from R-0003). ONE constant feeds
 # BOTH the evaluate brief's routing and _evaluation_errors' expected-lens
 # derivation, so the validator's expectation can never drift from what
-# was dispatched. The em step never uses this: it stays breadth="all"
-# (full catalog), where route v2 deliberately does not engage.
+# was dispatched. Final EM uses the review profile through the same kernel.
 EVALUATE_ROUTE_STAGE = "build"
 
 
@@ -403,6 +402,50 @@ def _diff_files(ws: str, base: str) -> list:
     return [f for f in (run(["diff", "--name-only", base])
                         + run(["ls-files", "--others",
                                "--exclude-standard"])).splitlines() if f]
+
+
+def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
+                   task: dict | None, graph: dict, impact: dict,
+                   requirement: dict | None) -> tuple[dict, dict]:
+    """One evidence/routing kernel shared by Evaluate and final EM."""
+    import hashlib
+    import subprocess
+    import review
+    import review_evidence
+
+    diff_rc, patch = review.canonical_diff_patch(diff_ws, base)
+    if diff_rc:
+        raise review.ReviewKernelError("canonical diff derivation failed")
+    files = [f for f in _diff_files(diff_ws, base)
+             if not f.startswith(lens_router.LOOP_OWNED)]
+    head = tp.git_head(diff_ws) or ""
+    target_material = {"workspace": os.path.realpath(diff_ws), "head": head,
+                       "base": base, "step": step,
+                       "task": (task or {}).get("id")}
+    target = {**target_material, "fingerprint": hashlib.sha256(
+        json.dumps(target_material, sort_keys=True, separators=(",", ":"))
+        .encode("utf-8")).hexdigest()}
+    store = review_evidence.ArtifactStore(diff_ws)
+    diff_ref = store.put("diff", {"base": base, "files": files,
+                                  "patch": patch})
+    stage = "review" if step == "em" else EVALUATE_ROUTE_STAGE
+    manifest = review.start_review(
+        diff_ws, target=target, graph=graph, impact=impact,
+        diff={"files": files,
+              "changed_symbols": review.changed_symbols_from_patch(patch),
+              "artifact": review._portable_ref(diff_ref)},
+        requirement=requirement or {},
+        acceptance=(requirement or {}).get("acceptance") or [],
+        contracts=(task or {}).get("contracts") or [],
+        stage=stage,
+        task_type=(task or {}).get("type"), base=base,
+        caller_expander=review.bounded_caller_expander(graph),
+        router=lambda: lens_router.route_git_diff(
+            diff_ws, base=base, task_type=(task or {}).get("type"),
+            breadth="routed", stage=stage))
+    state = review._load_state(diff_ws, manifest.get("run_id"))
+    return manifest, (state.get("routing") or {"lenses": [], "context": {
+        "status": manifest.get("status"), "breadth": "routed"}})
 
 
 # --------------------------------------------------------------- parallel
@@ -804,6 +847,10 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # Inject the handful of prior decisions relevant to this step's work, so
     # the role starts with context instead of re-deriving it (token savings).
     task = _current_task(state)
+    # The worker's tree — where a claimed task's change lands. NOT act_ws:
+    # that is parallel-gated, so a serial loop would name the PROJECT tree.
+    wtree = (task or {}).get("workspace") or ""
+    wtree = wtree if os.path.isdir(wtree) else ws
     query_files = (task or {}).get("scope") or []
     query_tags = ([task["id"]] if task else []) + [state["goal"][:24]]
     recalled = kb.retrieve(ws, files=query_files, tags=query_tags, limit=5)
@@ -814,13 +861,14 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # Lens wiring. EXECUTE/FIX: PRIME — the same lenses that will review the
     # change are named before it's built. EVALUATE/EM: ROUTE on the real diff
     # since plan approval, so review effort lands exactly where change did.
-    routing = None
+    # Normal Evaluate and final EM consume the same selective mapper. The
+    # explicit human/calibration `tp lens route --all` surface remains, but
+    # delivery never substitutes full-catalog fan-out for uncertainty.
+    routing, breadth = None, "routed"
     if step in ("pm", "plan"):
         # Advisory tier: C-level lenses run at STRATEGY level, always-on at
         # the pm/plan steps — never on code.
-        routing = lens_router.route(
-            [], artifact_type="strategy",
-            catalog=None)
+        routing = lens_router.route([], artifact_type="strategy", catalog=None)
     elif step == "design":
         # The design lens is mandatory at this phase, independent of diff
         # routing. Keep a fallback brief so an in-place minor update remains
@@ -838,36 +886,25 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         routing = lens_router.prime_scope((task or {}).get("scope"),
                                           task_type=(task or {}).get("type"))
     elif step in ("evaluate", "em"):
-        diff_ws = ws
-        if step == "evaluate" and state.get("parallel"):
-            tws = (task or {}).get("workspace")
-            diff_ws = tws if tws and os.path.isdir(tws) else ws
-        # EVALUATE verifies per-task with the routed lenses; EM is the
-        # FINAL review under the merged lead persona and runs the FULL
-        # catalog — routed lenses deep, the rest as a quick sweep, so a
-        # review never misses a category the router didn't predict.
-        # R-0006 row 1: evaluate passes the build stage so route v2
-        # engages (build-profile candidates, inherited budget, floors
-        # survive narrowing, n/a entries carry negative evidence). The em
-        # step passes NO stage — its full-catalog mandate is untouched.
-        routing = lens_router.route_git_diff(
-            diff_ws, base=state.get("baseline") or "HEAD",
-            task_type=(task or {}).get("type"),
-            stage=None if step == "em" else EVALUATE_ROUTE_STAGE,
-            breadth="all" if step == "em" else "routed")
+        # Deferred until graph quality and complete impact exist below.
+        # Mapping before that evidence is the ordering defect R-0005 closes.
+        routing = None
     if routing:
-        tp.trace(ws, "lens_route", step=step,
+        # RECORDING ONLY. Reading the breadth back off the lens LIST cannot
+        # work — see lens.LENS_BREADTH_EVENT. `breadth` is the ask, verbatim.
+        tp.trace(ws, "lens_route", step=step, requested_breadth=breadth,
+                 engine_ran="signals" in (routing.get("context") or {}),
                  lenses=[[x["id"], x["mode"]] for x in routing["lenses"]])
 
+    def heads():                    # lazy: only an emitting branch pays
+        return {"head": tp.git_head(ws if step == "em" else wtree),
+                "scanned_head": (depgraph.load(ws).get("meta")
+                                 or {}).get("scanned_head")}
     # Blast radius from the persistent dependency graph — the reviewer sees
     # what the change can break WITHOUT re-deriving dependencies (no tokens).
     imp = None
-    if routing and step in ("evaluate", "em"):
-        diff_ws = ws
-        if step == "evaluate":
-            tws = (task or {}).get("workspace")
-            if tws and os.path.isdir(tws):
-                diff_ws = tws
+    if step in ("evaluate", "em"):
+        diff_ws = wtree if step == "evaluate" else ws
         changed = [f for f in _diff_files(
             diff_ws, state.get("baseline") or "HEAD")
             if not f.startswith(lens_router.LOOP_OWNED)]
@@ -892,7 +929,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             tp.trace(ws, "graph_impact", step=step,
                      touched=imp["touched"],
                      impacted=imp["total_impacted"],
-                     affected_reqs=imp["affected_requirements"])
+                     affected_reqs=imp["affected_requirements"], **heads())
     elif step in ("execute", "fix") and task:
         # v2.0.0: the BUILDER sees the blast radius BEFORE changing code
         # (previously only the judges at evaluate/em did) - side effects
@@ -908,7 +945,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 else:
                     tp.trace(ws, "graph_impact", step=step,
                              touched=imp["touched"],
-                             impacted=imp["total_impacted"])
+                             impacted=imp["total_impacted"], **heads())
     elif step == "design":
         design_req = reqs.get_requirement(ws, state.get("requirement_id"))
         design_scope = (design_req or {}).get("context_files") or []
@@ -916,17 +953,16 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         if design_modules and depgraph.load(ws).get("modules"):
             design_policy = {"local_depth": 3,
                              "boundary_mode": "contract-only",
-                             "contract_depth": 1,
-                             "requirement_depth": 1}
+                             "contract_depth": 1, "requirement_depth": 1}
             imp = depgraph.impact(ws, design_modules, policy=design_policy)
             tp.trace(ws, "graph_impact", step=step,
                      touched=imp["touched"],
-                     impacted=imp["total_impacted"])
+                     impacted=imp["total_impacted"], **heads())
 
     # Audit cadence (v3 Phase 1): the em brief advertises audit mode — due
     # every Nth completed review (default 5) or on a release flag — and,
-    # when due, carries the recorded routing decision so the gate can diff
-    # the breadth=all findings against it (router-regression auto-filing).
+    # when due, carries the recorded routing decision so the gate can check
+    # findings against it (router-regression auto-filing).
     audit_info = None
     if step == "em":
         audit_info = _audit_brief(ws, state)
@@ -940,6 +976,26 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     rid = (task or {}).get("req") or state.get("requirement_id")
     if rid:
         req_rec = reqs.get_requirement(ws, rid)
+
+    review_kernel = None
+    if step in ("evaluate", "em"):
+        diff_ws = wtree if step == "evaluate" and state.get("parallel") else ws
+        base_ref = state.get("baseline") or "HEAD"
+        try:
+            review_kernel, routing = _review_kernel(
+                ws, diff_ws, base=base_ref, step=step, task=task,
+                graph=depgraph.load(ws), impact=imp or {},
+                requirement=req_rec)
+        except Exception as exc:
+            review_kernel = {"status": "kernel_unavailable", "slots": [],
+                             "reason": f"{exc.__class__.__name__}: {exc}"}
+            routing = {"lenses": [], "context": {
+                "status": "kernel_unavailable", "breadth": "routed"}}
+        tp.trace(ws, "lens_route", step=step, requested_breadth="routed",
+                 engine_ran="signals" in (routing.get("context") or {}),
+                 lenses=[[x["id"], x["mode"]]
+                         for x in routing.get("lenses") or []],
+                 kernel_status=review_kernel.get("status"))
 
     dispatch = tp.dispatch_fields(
         "step", STEP_ROLE[step], (task or {}).get("id") or step,
@@ -988,6 +1044,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                       "current_state": kb.current_state(ws),
                       "context": kb.render_context(recalled)},
         "lenses": routing["lenses"] if routing else None,
+        "review_kernel": review_kernel,
         "audit": audit_info,
         "impact": imp and {**imp, "context": depgraph.render_context(imp)},
         "design": _design_context(ws, state),
@@ -1052,10 +1109,10 @@ def _instruction(step: str, state: dict) -> str:
         "fix": f"Run the tp-fixer on task {t and t['id']}: repair the "
                "listed failures + add a regression test. Then `loop submit "
                "pass`; only the orchestrator calls `loop gate`.",
-        "em": "Run tp-engineering (read-only): the `lenses` list is "
-              "the FULL catalog — run tier=deep lenses at full depth (their "
-              "mode says inline vs subagent) and every tier=sweep lens as a "
-              "quick pass (its top checks against the diff; flag or clear). "
+        "em": "Run tp-engineering (read-only): `lenses` is the one complete "
+              "26-lens routing decision. Run exact tier=deep slots and at "
+              "most one bounded tier=light sweep; tier=n/a is evidence, "
+              "never a dispatch. Do not re-derive diff or impact per lens. "
               "Synthesize all verdicts + requirement-vs-implementation into "
               ".em-review/report.md AND .em-review/findings.json (including "
               "complete meta.lens_coverage, meta.impact, meta.design "
@@ -1219,9 +1276,18 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
     # Scope regression evidence to this task; loop-owned artifacts self-gate.
     regression_files = [f for f in (tp.changed_files(ws, snapshot) if snapshot else [])
                         if tp.match_any(f, task.get("scope") or [])]
-    return (_design_current_errors(ws, state) + tp.dod_check(
+    suite_evidence = {}
+    errors = (_design_current_errors(ws, state) + tp.dod_check(
         contract, ws, snapshot, ignore_prefixes=lens_router.LOOP_OWNED,
-        regression_files=regression_files))
+        regression_files=regression_files,
+        suite_evidence=suite_evidence))
+    # Preserve the long-standing four-argument patch seam used by race and
+    # failure-injection tests. This is transient validation output: gate()
+    # copies it into the fresh locked state only after all checks pass.
+    if suite_evidence:
+        state.setdefault("_validated_suite_evidence", {})[task["id"]] = \
+            suite_evidence
+    return errors
 
 
 def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
@@ -1231,6 +1297,35 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     if errors:
         return errors
     errors.extend(_design_current_errors(ws, state))
+    kernel = None
+    try:
+        import review as _review
+        kernel = _review._load_state(ws)
+    except Exception:
+        kernel = None
+    if not kernel or kernel.get("stage") != EVALUATE_ROUTE_STAGE:
+        # Compatibility for callers that historically submitted and gated an
+        # evaluator directly without first asking for `loop next`.  This is
+        # still a single mapping: materialize the normal brief once, then the
+        # validator below consumes only its persisted decision.
+        try:
+            action = getattr(next_action, "__wrapped__", next_action)(ws)
+            if not action.get("error"):
+                kernel = _review._load_state(ws)
+        except Exception:
+            kernel = None
+    if kernel and kernel.get("status") == "ready" and \
+            kernel.get("stage") == EVALUATE_ROUTE_STAGE:
+        try:
+            _review.collect_review(
+                ws, publish=False, run_id=kernel.get("run_id"))
+            kernel = _review._load_state(ws, kernel.get("run_id"))
+        except Exception as exc:
+            errors.append("evaluation leased slot collection failed: "
+                          f"{exc.__class__.__name__}: {exc}")
+    if not kernel or kernel.get("status") != "complete" or \
+            kernel.get("stage") != EVALUATE_ROUTE_STAGE:
+        errors.append("evaluation selective review kernel is missing or incomplete")
     if verdict.get("task") != task.get("id"):
         errors.append("evaluation evidence is for task "
                       f"{verdict.get('task')!r}, expected {task.get('id')!r}")
@@ -1258,12 +1353,29 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     # owe the evaluator a verdict row — n/a lenses carry their negative
     # evidence in the routing itself. On the legacy path no entry has mode
     # "none", so the filter is a no-op there.
-    routing = lens_router.route_git_diff(
-        ws, base=state.get("baseline") or "HEAD",
-        task_type=task.get("type"), stage=EVALUATE_ROUTE_STAGE,
-        breadth="routed")
+    # Consume the one decision created after graph quality; never map again
+    # inside the gate on potentially different inputs.
+    routing = ((kernel or {}).get("routing") or {"lenses": []})
     expected_lenses = {entry["id"] for entry in routing.get("lenses") or []
                        if entry.get("mode") != "none"}
+    canonical_rows = {str(row.get("lens") or ""): row for row in
+                      ((kernel or {}).get("lens_results") or [])
+                      if isinstance(row, dict)}
+    canonical_blocking = _review.blocking_findings_by_lens(
+        ((kernel or {}).get("revision") or {}).get("findings") or [])
+    for lens_id, count in sorted(canonical_blocking.items()):
+        errors.append(
+            f"canonical blocking finding prevents Evaluate pass: {lens_id} "
+            f"({count})")
+    if set(canonical_rows) != expected_lenses:
+        missing_slots = sorted(expected_lenses - set(canonical_rows))
+        unexpected_slots = sorted(set(canonical_rows) - expected_lenses)
+        if missing_slots:
+            errors.append("leased slot results omit routed lenses: "
+                          + ", ".join(missing_slots))
+        if unexpected_slots:
+            errors.append("leased slot results contain unexpected lenses: "
+                          + ", ".join(unexpected_slots))
     raw_lenses = verdict.get("lenses") or []
     if not isinstance(raw_lenses, list):
         errors.append("evaluation lenses must be a list")
@@ -1275,12 +1387,20 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
         if not row:
             errors.append(f"routed lens has no verdict: {lens_id}")
         else:
+            canonical = canonical_rows.get(lens_id)
+            if canonical is None:
+                errors.append(f"routed lens lacks a leased slot result: {lens_id}")
+                continue
             try:
                 blocker_count = int(row.get("blockers") or 0)
             except (TypeError, ValueError):
                 blocker_count = 1
             if row.get("verdict") != "pass" or blocker_count > 0:
                 errors.append(f"routed lens did not pass cleanly: {lens_id}")
+            if (row.get("verdict"), blocker_count) != \
+                    (canonical.get("verdict"), canonical.get("blockers")):
+                errors.append(
+                    f"routed lens verdict contradicts leased result: {lens_id}")
     if verdict.get("failures"):
         errors.append("evaluation contains unresolved failures")
     if state.get("graph_governance"):
@@ -1498,6 +1618,22 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
         errors.append("engineering narrative report is missing: "
                       + report_path)
     meta = findings.get("meta") or {}
+    try:
+        import review as _review
+        import review_evidence as _review_evidence
+        kernel = _review._load_state(ws)
+        if kernel.get("status") != "complete" or kernel.get("stage") != "review":
+            errors.append("engineering selective review kernel is incomplete")
+        else:
+            current = _review_evidence._read_current(
+                _review_evidence.ArtifactStore(ws))
+            for key, value in (current or {}).items():
+                if meta.get(key) != value:
+                    errors.append("engineering review contradicts canonical "
+                                  f"revision identity: {key}")
+    except Exception as exc:
+        errors.append("engineering canonical revision is missing: "
+                      f"{exc.__class__.__name__}: {exc}")
     if state:
         errors.extend(_design_review_errors(ws, state, meta))
     coverage = meta.get("lens_coverage") or {}
@@ -1834,6 +1970,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                             "step": step}
             tp.clear(t.get("workspace") or ws)
             t["status"] = "built"
+            verified_suite = ((state.get("_validated_suite_evidence") or {})
+                              .get(t["id"]))
+            if verified_suite:
+                locked.setdefault("_suite_evidence", {})[t["id"]] = \
+                    verified_suite
             t.pop("_submission", None)
             if outcome != "pass":
                 t["_build_failed"] = True
@@ -2033,6 +2174,13 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             # evaluate FAILs and routes to fix/escalate — one place owns the fail
             # policy (so the step transition itself is unconditional).
             state["step"] = "evaluate"
+            verified_suite = ((_validated.get(
+                "_validated_suite_evidence") or {}).get(
+                    _current_task(state)["id"]))
+            if verified_suite:
+                current = _current_task(state)
+                state.setdefault("_suite_evidence", {})[current["id"]] = \
+                    verified_suite
             if outcome != "pass":
                 state["_build_failed"] = True
         elif step == "evaluate":
@@ -2071,6 +2219,13 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     t["status"] = "failed"
                     state["step"] = "escalated"
         elif step == "fix":
+            verified_suite = ((_validated.get(
+                "_validated_suite_evidence") or {}).get(
+                    _current_task(state)["id"]))
+            if verified_suite:
+                current = _current_task(state)
+                state.setdefault("_suite_evidence", {})[current["id"]] = \
+                    verified_suite
             state["step"] = "evaluate"
         elif step == "em":
             # The graph was true-d up before the EM brief, so its fingerprint is
@@ -2513,7 +2668,7 @@ def select(ws: str, choice: str, note: str = "") -> dict:
             f"(`git merge tp/{win['id']}`), keep the losing branch as "
             "reference until the retro, clear the variant worktree "
             "contracts, then run the engineering review of the merged "
-            "result (full catalog).")
+            "result (the complete selective routing decision).")
     tp.trace(ws, "loop_select", choice=state["selection"]["choice"],
              note=note)
     kb.record_decision(

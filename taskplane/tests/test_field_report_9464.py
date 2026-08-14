@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -27,7 +28,178 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import dashboard                                              # noqa: E402
 import depgraph                                               # noqa: E402
 import taskplane_lite as tp                                   # noqa: E402
+import eval_rubric                                            # noqa: E402
+import graph_quality                                          # noqa: E402
+import lens                                                   # noqa: E402
 TP = os.path.join(ROOT, "taskplane", "tp.py")
+
+ORACLE_ROOT = os.path.join(ROOT, "evals", "frozen-pr-9464")
+
+
+def _oracle_json(name):
+    with io.open(os.path.join(ORACLE_ROOT, name), encoding="utf-8") as stream:
+        return json.load(stream)
+
+
+class R0005_FrozenPR9464Oracle(unittest.TestCase):
+    """The field-review miss is frozen as evaluator data, not product rules."""
+
+    def setUp(self):
+        self.fixture = _oracle_json("fixture.json")
+        self.oracle = _oracle_json("oracle.json")
+
+    def _quality(self, snapshot=None):
+        fixture = self.fixture
+        return graph_quality.assess(
+            fixture["graph"], target_head=fixture["target_head"],
+            changed_files=fixture["changed_files"],
+            changed_symbols=fixture["changed_symbols"],
+            impact=fixture["impact"], snapshot=snapshot or fixture["snapshot"],
+            caller_expander=depgraph.bounded_changed_symbol_callers)
+
+    def test_seed_diff_matches_pr_9464_and_validation_is_discovered_context(self):
+        self.assertEqual(set(self.fixture["changed_files"]), {
+            "pkg/providers/amifamily/bootstrap/bottlerocket.go",
+            "pkg/providers/amifamily/bootstrap/bottlerocketsettings.go",
+            "pkg/providers/amifamily/bootstrap/bottlerocket_test.go",
+            "website/content/en/preview/concepts/nodeclasses.md",
+        })
+        validation = "pkg/controllers/nodeclass/validation.go"
+        self.assertNotIn(validation, self.fixture["changed_files"])
+        self.assertIn(validation, self.fixture["graph"]["files"])
+        callers = set(self._quality()[
+            "changed_symbol_caller_coverage"]["callers"])
+        self.assertIn("NodeClassValidationController.validate", callers)
+
+    def test_bounded_expansion_reaches_both_entry_points(self):
+        quality = self._quality()
+        self.assertEqual(quality["status"], "complete")
+        callers = set(quality["changed_symbol_caller_coverage"]["callers"])
+        for caller in self.oracle["required_callers"]:
+            self.assertIn(caller, callers)
+        self.assertEqual(quality["expansion"]["count"], 1)
+
+    def test_both_paths_reach_the_changed_serialization_symbol(self):
+        edges = {(row["caller"], row["callee"])
+                 for row in self.fixture["snapshot"]["symbol_edges"]}
+        for path in self.oracle["required_paths"]:
+            for caller, callee in zip(path, path[1:]):
+                self.assertIn((caller, callee), edges)
+            self.assertIn(path[-1], self.fixture["changed_symbols"])
+
+    def test_removing_either_entry_path_fails_the_oracle(self):
+        for mutation_name in ("missing-provisioning.json",
+                              "missing-nodeclass-validation.json"):
+            mutation = _oracle_json(os.path.join("mutations", mutation_name))
+            removed = set(mutation["remove_callers"])
+            snapshot = {"symbol_edges": [
+                row for row in self.fixture["snapshot"]["symbol_edges"]
+                if row["caller"] not in removed
+            ]}
+            callers = set(self._quality(snapshot)[
+                "changed_symbol_caller_coverage"]["callers"])
+            self.assertFalse(set(mutation["must_be_present"]) <= callers,
+                             mutation_name)
+
+    def test_selective_routing_keeps_finding_lenses_and_floors(self):
+        graph_signal = {
+            "hub_dependents": self.fixture["hub_dependents"],
+            "boundary_contracts": ["contract:bottlerocket-userdata"],
+            "modules": ["providers/amifamily", "controllers/nodeclass"],
+            "module_dependents": {},
+        }
+        with mock.patch("lens_signals._graph_payload",
+                        return_value=graph_signal):
+            routing = lens.route(
+                self.fixture["changed_files"], stage="em",
+                task_type=self.fixture["task_type"],
+                requirement_text=self.fixture["requirement"],
+                hub_dependents=self.fixture["hub_dependents"])
+        by_id = {row["id"]: row for row in routing["lenses"]}
+        self.assertEqual(len(by_id), len(lens.load_catalog()["lenses"]))
+        for lens_id, allowed in self.oracle["finding_lenses"].items():
+            self.assertIn(by_id[lens_id]["tier"], allowed, lens_id)
+        for lens_id, allowed in self.oracle["lens_floors"].items():
+            self.assertIn(by_id[lens_id]["tier"], allowed, lens_id)
+        dispatched = {row["id"] for row in routing["lenses"]
+                      if row["tier"] in ("deep", "light")}
+        self.assertEqual(dispatched,
+                         {row["id"] for row in routing["lenses"]
+                          if row["tier"] != "n/a"})
+
+    def test_known_reconcile_loop_regression_remains_a_blocker(self):
+        finding = self.oracle["blocker"]
+        self.assertEqual(finding["class"], "regression")
+        self.assertEqual(finding["severity"].lower(), "blocker")
+        self.assertIn("NodeClass", finding["title"])
+        self.assertIn("reconcile", finding["scenario"].lower())
+
+    def test_efficiency_acceptance_envelope_is_explicit(self):
+        efficiency = self.oracle["efficiency"]
+        self.assertEqual(efficiency["baseline_effective_tokens"], 2_360_000)
+        self.assertEqual(efficiency["max_effective_tokens"],
+                         eval_rubric.PR_9464_TOKEN_LIMIT)
+        self.assertLessEqual(efficiency["max_top_level_cli_calls"],
+                             eval_rubric.CLI_LIMIT)
+        self.assertEqual(efficiency["duplicate_html_emissions"], 0)
+
+    def test_upstream_names_are_not_hardcoded_in_production_routing(self):
+        forbidden = set(self.oracle["production_forbidden_symbols"])
+        hits = []
+        for name in ("lens.py", "lens_signals.py", "graph_quality.py",
+                     "review.py"):
+            path = os.path.join(ROOT, "taskplane", name)
+            with io.open(path, encoding="utf-8") as stream:
+                source = stream.read()
+            hits.extend(f"{name}:{symbol}" for symbol in forbidden
+                        if symbol in source)
+        self.assertEqual(hits, [])
+
+
+class R0005_WorkflowGuidanceIsOneSemanticContract(unittest.TestCase):
+    def _read(self, rel):
+        with io.open(os.path.join(ROOT, rel), encoding="utf-8") as stream:
+            return stream.read()
+
+    def test_every_flow_names_the_canonical_review_context(self):
+        for rel in ("skills/tp-engineering/SKILL.md", "skills/tp-go/SKILL.md",
+                    "skills/tp-build/SKILL.md", "skills/tp-help/SKILL.md"):
+            text = self._read(rel)
+            self.assertIn("canonical review context", text, rel)
+            self.assertIn("DoR", text, rel)
+            self.assertIn("DoD", text, rel)
+
+    def test_review_guidance_forbids_lens_side_rederivation(self):
+        text = self._read("skills/tp-engineering/SKILL.md")
+        self.assertIn("one canonical diff", text.replace("\n", " "))
+        self.assertIn("zero lens dispatch", text)
+        self.assertIn("artifact reference", text)
+        self.assertNotIn("Lead every review with impact — it costs nothing",
+                         text)
+        self.assertNotIn("re-run `$TP lens dispatch", text)
+
+    def test_routing_reference_is_fail_closed_and_final_em_is_selective(self):
+        text = self._read("docs/routing-and-flows.md")
+        self.assertIn("impact_incomplete", text)
+        self.assertIn("zero lens dispatch", text)
+        self.assertIn("final engineering review", text)
+        self.assertIn("same canonical routing decision", text)
+        self.assertNotIn("keeps its full-catalog mandate", text)
+        self.assertNotIn("Any engine failure falls back", text)
+
+    def test_claude_and_codex_differ_only_in_transport(self):
+        text = self._read("docs/routing-and-flows.md")
+        self.assertIn("semantic parity", text.lower())
+        self.assertIn("artifact-by-reference", text)
+        self.assertIn("Claude", text)
+        self.assertIn("Codex", text)
+
+    def test_proportional_verification_is_documented(self):
+        text = self._read("docs/configuration.md")
+        self.assertIn("Documentation-only", text)
+        self.assertIn("static checks", text)
+        self.assertIn("does not invalidate runtime suite evidence",
+                      text.replace("\n", " "))
 
 
 class B6_TheHeadlineCarriesTheBlockingSet(unittest.TestCase):

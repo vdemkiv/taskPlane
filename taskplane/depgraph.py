@@ -1727,6 +1727,119 @@ def completion(ws: str, changed_files, planned_modules=None,
 
 # ------------------------------------------------------------------ impact
 
+def bounded_changed_symbol_callers(*, snapshot: dict, changed_symbols,
+                                   bounds: dict, clock=None) -> dict:
+    """Walk a canonical symbol index from callee to callers, once, bounded.
+
+    The snapshot schema is deliberately language-neutral: ``symbol_edges``
+    rows name ``caller`` and ``callee`` and may cite a boundary ``contract``.
+    Language adapters build that frozen index; this function never reads the
+    ambient checkout and therefore cannot drift to a different target while a
+    review is running.
+    """
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    supplied = dict(bounds or {})
+
+    def limit(name, default):
+        try:
+            return max(1, int(supplied.get(name, default)))
+        except (TypeError, ValueError):
+            return default
+
+    max_symbols = limit("max_symbols", 128)
+    max_hops = limit("max_hops", 6)
+    max_edges = limit("max_edges", 512)
+    timeout_seconds = limit("timeout_seconds", 10)
+    symbols = sorted({str(s).strip() for s in (changed_symbols or [])
+                      if str(s).strip()})
+    unresolved = symbols[max_symbols:]
+    symbols = symbols[:max_symbols]
+    reverse: dict[str, list] = {}
+    for raw in snapshot.get("symbol_edges") or []:
+        if not isinstance(raw, dict):
+            continue
+        caller = str(raw.get("caller") or "").strip()
+        callee = str(raw.get("callee") or "").strip()
+        if not caller or not callee:
+            continue
+        row = {"caller": caller, "callee": callee}
+        contract = str(raw.get("contract") or "").strip()
+        if contract:
+            row["contract"] = contract
+        reverse.setdefault(callee, []).append(row)
+    for rows in reverse.values():
+        rows.sort(key=lambda row: (row["caller"], row.get("contract", "")))
+
+    monotonic = clock or time.monotonic
+    deadline = monotonic() + timeout_seconds
+    frontier = list(symbols)
+    seen = set(symbols)
+    callers, contracts = set(), set()
+    examined = 0
+    truncated = bool(unresolved)
+    timed_out = False
+    for _hop in range(1, max_hops + 1):
+        current_frontier = sorted(frontier)
+        next_frontier = []
+        stopped = False
+        for callee_index, callee in enumerate(current_frontier):
+            rows = reverse.get(callee, [])
+            for row_index, row in enumerate(rows):
+                if monotonic() >= deadline:
+                    timed_out = truncated = True
+                    stopped = True
+                    break
+                examined += 1
+                caller = row["caller"]
+                callers.add(caller)
+                if row.get("contract"):
+                    contracts.add(row["contract"])
+                if caller not in seen:
+                    seen.add(caller)
+                    next_frontier.append(caller)
+                if examined >= max_edges:
+                    # Reaching the numeric bound is complete only when this
+                    # was the final reachable edge.  Account for later rows,
+                    # later changed symbols, and the next caller frontier.
+                    truncated = truncated or (
+                        row_index + 1 < len(rows)
+                        or any(reverse.get(node)
+                               for node in current_frontier[callee_index + 1:])
+                        or any(reverse.get(node) for node in next_frontier)
+                    )
+                    stopped = True
+                    break
+            if stopped:
+                break
+        if stopped:
+            break
+        frontier = sorted(set(next_frontier))
+        if not frontier:
+            break
+    else:
+        # ``frontier`` is the next, not the just-processed, hop here.
+        if any(reverse.get(node) for node in frontier):
+            truncated = True
+            unresolved.extend(frontier)
+    unresolved.extend(snapshot.get("unresolved_symbols") or [])
+    unresolved = sorted({str(v).strip() for v in unresolved if str(v).strip()})
+    complete = not truncated and not timed_out and not unresolved
+    return {
+        "schema": "taskplane.changed-symbol-callers/v1",
+        "adapter": "canonical-symbol-index",
+        "callers": sorted(callers),
+        "contracts": sorted(contracts),
+        "unresolved": unresolved,
+        "complete": complete,
+        "truncated": truncated,
+        "timed_out": timed_out,
+        "edges_examined": examined,
+        "bounds": {"max_symbols": max_symbols, "max_hops": max_hops,
+                   "max_edges": max_edges,
+                   "timeout_seconds": timeout_seconds},
+    }
+
+
 def impact(ws: str, changed_files, max_depth: int = 3,
            policy: dict | None = None) -> dict:
     """Blast radius of a change: the modules touched, then everything that
@@ -1813,9 +1926,15 @@ def impact(ws: str, changed_files, max_depth: int = 3,
                         {"module": dep, "via": m, "kind": kind})
                     nxt.append((dep, next_boundary, next_requirement))
         frontier = nxt
-    truncated = bool(policy_blocked) or any(
+    depth_truncated = any(
         dep not in seen for m, _bh, _rh in frontier
         for dep, _kind in rev.get(m, []))
+    # A named boundary/requirement policy stop is an intentional radius
+    # limit, not evidence that traversal ran out of budget.  Keep the legacy
+    # aggregate flag for callers that display every stopped path, while
+    # exposing the uncertainty-bearing condition separately so graph-quality
+    # can fail closed only on genuinely unexplored depth.
+    truncated = bool(policy_blocked) or depth_truncated
     return {
         "touched": touched,
         "impacted": by_depth,
@@ -1823,6 +1942,7 @@ def impact(ws: str, changed_files, max_depth: int = 3,
         "unknown": [m for m in touched if m not in g["modules"]],
         "depth_limit": max_depth,
         "truncated": truncated,
+        "depth_truncated": depth_truncated,
         "policy": resolved_policy,
         "policy_blocked": policy_blocked,
         "boundary_nodes": sorted(m for m in seen if _is_boundary(m)),

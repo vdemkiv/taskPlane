@@ -394,7 +394,7 @@ class TestNoWorkflowOnlyGate:
                 f"taskplane/{mod} must stay workflow-agnostic"
             assert "review-wave" not in src
 
-    def test_em_step_still_mandates_breadth_all_dispatch(self):
+    def test_em_step_uses_selective_dispatch(self):
         with open(os.path.join(ROOT, "taskplane", "loop.py"), encoding="utf-8") as f:
             src = f.read()
-        assert '"all" if step == "em" else "routed"' in src
+        assert '"all" if step == "em" else "routed"' not in src

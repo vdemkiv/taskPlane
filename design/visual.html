@@ -1,164 +1,64 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>v3 Phase 3 — A4 evaluate-gate engine-skew sequence &amp; emitter refusal ladder</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R-0005 governed review sequence</title>
 <style>
-  body{margin:0;font:14px/1.5 -apple-system,'Segoe UI',sans-serif;background:#fcfcfb;color:#1a1a18;padding:24px}
-  h1{font-size:18px;margin:0 0 4px}
-  h2{font-size:15px;margin:28px 0 8px}
-  .sub{color:#6b6b66;font-size:12.5px;margin-bottom:18px}
-  svg{display:block;max-width:980px;width:100%;height:auto;background:#fff;border:1px solid #e3e3de;border-radius:8px}
-  .cap{max-width:980px;color:#44443f;font-size:12.5px;margin:8px 0 0}
-  text{font:12.5px -apple-system,'Segoe UI',sans-serif;fill:#1a1a18}
-  .small{font-size:11px;fill:#6b6b66}
-  .mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:11.5px}
+:root{--ink:#18212f;--muted:#667085;--line:#cbd5e1;--panel:#f8fafc;--blue:#2563eb;--green:#047857;--amber:#b45309;--red:#b42318;--violet:#6d28d9}*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:1180px;margin:0 auto;padding:28px}h1{font-size:27px;margin:0 0 6px}h2{font-size:17px;margin:24px 0 10px}.sub{color:var(--muted);margin:0 0 20px}.card{background:white;border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 1px 3px #0f172a12}.sequence{display:grid;grid-template-columns:repeat(7,minmax(108px,1fr));gap:22px;align-items:stretch}.step{position:relative;border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:10px;padding:11px;background:var(--panel);min-height:112px}.step:not(:last-child):after{content:"→";position:absolute;right:-19px;top:42%;font-size:22px;color:var(--muted)}.step b{display:block;margin-bottom:5px}.step small{color:var(--muted)}.quality{border-top-color:var(--amber)}.dispatch{border-top-color:var(--violet)}.collect{border-top-color:var(--green)}.branch{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.ok,.stop{border-radius:10px;padding:12px;border:1px solid}.ok{background:#ecfdf3;border-color:#86efac}.stop{background:#fff1f0;border-color:#fda29b}.lanes{display:grid;grid-template-columns:180px 1fr;gap:0;border:1px solid var(--line);border-radius:10px;overflow:hidden}.lane,.flow{padding:11px;border-bottom:1px solid var(--line)}.lane{font-weight:700;background:#f1f5f9}.flow{background:#fff}.lanes>:nth-last-child(-n+2){border-bottom:0}.pill{display:inline-block;padding:3px 8px;border-radius:999px;margin:2px;background:#e0e7ff;color:#3730a3;font-size:12px}.pill.light{background:#fef3c7;color:#92400e}.pill.na{background:#f1f5f9;color:#64748b}.costs{display:grid;grid-template-columns:1.2fr 1fr;gap:16px}.barrow{display:grid;grid-template-columns:170px 1fr 80px;gap:10px;align-items:center;margin:9px 0}.bar{height:14px;background:#e2e8f0;border-radius:8px;overflow:hidden}.fill{height:100%;background:var(--blue)}.target{background:var(--green)}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px;border-bottom:1px solid #e2e8f0}th{color:var(--muted);font-size:12px}.note{margin-top:12px;color:var(--muted);font-size:12px}.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+@media(max-width:900px){.sequence{grid-template-columns:1fr}.step:not(:last-child):after{content:"↓";right:50%;top:auto;bottom:-24px}.costs{grid-template-columns:1fr}.lanes{grid-template-columns:130px 1fr}}
 </style>
 </head>
-<body>
-<h1>v3 Phase 3 — the two decisions this design asks you to approve</h1>
-<p class="sub">Panel 1: the A4 mechanism (validator-fingerprint refusal) as the parallel evaluate-gate sequence — where the fingerprint is stamped, where it is compared, and why the non-skew path is byte-unchanged. Panel 2: the stage-emitter decision ladder after A6/C3/E5 — every abnormal input ends in a traced fallback or a traced refusal, never a crash or silent uninvokable output.</p>
+<body><main class="wrap">
+<h1>R-0005: one derivation, selective evidence, one revision</h1>
+<p class="sub">Human approval view · baseline graph <code>bdf441f3…dbd633</code> · normal Review, Evaluate and final EM share this sequence.</p>
 
-<h2>1 · A4 — evaluate gate with engine-skew refusal (sequence)</h2>
-<svg viewBox="0 0 980 560" role="img" aria-label="A4 sequence diagram">
-  <!-- lifelines -->
-  <g>
-    <rect x="40" y="16" width="200" height="30" rx="6" fill="#eef3fa" stroke="#7d9cc0"/>
-    <text x="140" y="36" text-anchor="middle">Worker (worktree engine)</text>
-    <line x1="140" y1="46" x2="140" y2="540" stroke="#c9c9c2" stroke-dasharray="4 3"/>
-    <rect x="400" y="16" width="180" height="30" rx="6" fill="#f2eefa" stroke="#9c86c9"/>
-    <text x="490" y="36" text-anchor="middle">loop.json (state)</text>
-    <line x1="490" y1="46" x2="490" y2="540" stroke="#c9c9c2" stroke-dasharray="4 3"/>
-    <rect x="720" y="16" width="220" height="30" rx="6" fill="#eef7f0" stroke="#6fae85"/>
-    <text x="830" y="36" text-anchor="middle">Orchestrator gate (primary engine)</text>
-    <line x1="830" y1="46" x2="830" y2="540" stroke="#c9c9c2" stroke-dasharray="4 3"/>
-  </g>
-  <!-- submit -->
-  <g>
-    <line x1="140" y1="90" x2="484" y2="90" stroke="#1a1a18" marker-end="url(#arr)"/>
-    <text x="150" y="82" class="mono">loop submit pass --task t7</text>
-    <text x="150" y="106" class="small">submission += engine_fingerprint = sha256(validator-surface</text>
-    <text x="150" y="119" class="small">modules AS LOADED by this process: loop, lens, lens_signals,</text>
-    <text x="150" y="132" class="small">depgraph, audit, taskplane_lite, design_contract, decompose, requirements)</text>
-  </g>
-  <!-- gate reads -->
-  <g>
-    <line x1="830" y1="170" x2="496" y2="170" stroke="#1a1a18" marker-end="url(#arr)"/>
-    <text x="560" y="162" class="mono">loop gate pass — read submission</text>
-    <rect x="700" y="190" width="260" height="46" rx="6" fill="#fbf7ea" stroke="#c9b26a"/>
-    <text x="830" y="209" text-anchor="middle" class="mono">compare submission.engine_fingerprint</text>
-    <text x="830" y="224" text-anchor="middle" class="mono">vs tp.engine_fingerprint() (own)</text>
-  </g>
-  <!-- equal branch -->
-  <g>
-    <rect x="560" y="262" width="180" height="24" rx="12" fill="#eef7f0" stroke="#6fae85"/>
-    <text x="650" y="279" text-anchor="middle">EQUAL — the common case</text>
-    <text x="560" y="308" class="small">_evaluation_errors → staleness re-attest under lock → transition.</text>
-    <text x="560" y="322" class="small">The comparison is the ONLY added instruction:</text>
-    <text x="560" y="336" class="small">gate ordering, outputs, and outcomes BYTE-UNCHANGED (pinned).</text>
-  </g>
-  <!-- skew branch -->
-  <g>
-    <rect x="60" y="262" width="300" height="24" rx="12" fill="#faeeee" stroke="#c07d7d"/>
-    <text x="210" y="279" text-anchor="middle">UNEQUAL or ABSENT — the t7 topology</text>
-    <text x="60" y="308" class="small">REFUSE before _evaluation_errors runs. No state transition.</text>
-    <text x="60" y="322" class="mono">loop_gate_blocked reason=engine_skew {submitted, validator}</text>
-    <text x="60" y="340" class="small">error: "evidence was produced under engine &lt;fp12&gt; but this gate</text>
-    <text x="60" y="354" class="small">validates with &lt;fp12&gt; — merge the task branch into the primary</text>
-    <text x="60" y="368" class="small">(git merge tp/&lt;task&gt;), then loop submit again"</text>
-  </g>
-  <!-- recovery -->
-  <g>
-    <rect x="60" y="396" width="420" height="30" rx="6" fill="#eef3fa" stroke="#7d9cc0"/>
-    <text x="270" y="416" text-anchor="middle" class="mono">operator: git merge tp/t7   (the named remedy)</text>
-    <line x1="140" y1="452" x2="484" y2="452" stroke="#1a1a18" marker-end="url(#arr)"/>
-    <text x="150" y="444" class="mono">loop submit pass --task t7 (re-stamp)</text>
-    <text x="60" y="478" class="small">Post-merge the primary runs the merged engine → fingerprints match →</text>
-    <text x="60" y="492" class="small">same gate path proceeds. The loop stayed at evaluate throughout:</text>
-    <text x="60" y="506" class="small">a re-evaluation can never be stranded.</text>
-    <text x="560" y="478" class="small">Rejected alternatives: (a) merge-before-gate — merges unevaluated</text>
-    <text x="560" y="492" class="small">code as routine, needs revert machinery, not byte-unchanged-provable;</text>
-    <text x="560" y="506" class="small">(b) import worktree engine — executes agent-written code in the gate</text>
-    <text x="560" y="520" class="small">context; a worker could gate itself. Disqualified.</text>
-  </g>
-  <defs>
-    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0 0 L8 4 L0 8 z" fill="#1a1a18"/>
-    </marker>
-  </defs>
-</svg>
-<p class="cap">The fingerprint is stamped by the engine that runs <span class="mono">loop submit</span> and compared by the engine that runs <span class="mono">loop gate</span>. Equal → today's path, byte for byte. Unequal → a refusal that carries its own diagnosis and remedy — the hand-debugging Phase 2 did for t7, mechanized. Stated limit: producer-process vs validator-process skew is detected; evidence hand-authored under a third engine stays covered by the staleness fingerprint + DoD.</p>
+<section class="card">
+<h2>Canonical review sequence</h2>
+<div class="sequence">
+  <div class="step"><b>1 · Pin target</b><small>SHAs, dirty digest, requirement, contracts, graph fingerprint and scanned head.</small></div>
+  <div class="step"><b>2 · Derive once</b><small>One diff, module/requirement impact, runnability and component evidence.</small></div>
+  <div class="step quality"><b>3 · Assess graph</b><small>Coverage, freshness, truncation, internal edges, confidence and caller coverage.</small></div>
+  <div class="step quality"><b>4 · Expand if needed</b><small>Exactly one bounded changed-symbol caller pass: 128 symbols, 6 hops, 512 edges, 10 s.</small></div>
+  <div class="step"><b>5 · Route + seal</b><small>Complete impact → 26 dispositions → one content-addressed envelope and scoped views.</small></div>
+  <div class="step dispatch"><b>6 · Exact dispatch</b><small>One slot per deep lens; at most one light-sweep slot; no slot for n/a.</small></div>
+  <div class="step collect"><b>7 · Collect + project</b><small>Validate slot provenance; commit one findings revision; report/dashboard/gate cite it.</small></div>
+</div>
+<div class="branch">
+  <div class="ok"><b>Sufficient impact</b><br>Continue from the exact caller-augmented bytes. Architecture and security floors survive narrowing and budget.</div>
+  <div class="stop"><b>Still uncertain</b><br><code>impact_incomplete</code> → zero briefs, zero lens dispatch, no <code>breadth=all</code>, no small-radius claim.</div>
+</div>
+</section>
 
-<h2>2 · Stage-emitter decision ladder (A6 · C3 · E5 on both --emit surfaces)</h2>
-<svg viewBox="0 0 980 470" role="img" aria-label="emitter decision ladder">
-  <g>
-    <rect x="330" y="14" width="320" height="34" rx="8" fill="#eef3fa" stroke="#7d9cc0"/>
-    <text x="490" y="36" text-anchor="middle" class="mono">loop wave / loop next payload → emitter</text>
-    <line x1="490" y1="48" x2="490" y2="76" stroke="#1a1a18" marker-end="url(#arr2)"/>
-  </g>
-  <!-- E5 -->
-  <g>
-    <rect x="330" y="76" width="320" height="34" rx="8" fill="#fbf7ea" stroke="#c9b26a"/>
-    <text x="490" y="98" text-anchor="middle">E5: every task id matches _TASK_SLOT_RE ?</text>
-    <line x1="650" y1="93" x2="770" y2="93" stroke="#b04a4a" marker-end="url(#arr2)"/>
-    <text x="712" y="85" class="small" text-anchor="middle">no</text>
-    <rect x="770" y="76" width="196" height="48" rx="8" fill="#faeeee" stroke="#c07d7d"/>
-    <text x="868" y="96" text-anchor="middle">REFUSE · exit ≠ 0</text>
-    <text x="868" y="112" text-anchor="middle" class="small">id + charset named · traced "refused"</text>
-    <line x1="490" y1="110" x2="490" y2="138" stroke="#1a1a18" marker-end="url(#arr2)"/>
-  </g>
-  <!-- A6 -->
-  <g>
-    <rect x="330" y="138" width="320" height="34" rx="8" fill="#fbf7ea" stroke="#c9b26a"/>
-    <text x="490" y="160" text-anchor="middle">A6: every wave entry well-formed (task.id present)?</text>
-    <line x1="330" y1="155" x2="210" y2="155" stroke="#b04a4a" marker-end="url(#arr2)"/>
-    <text x="268" y="147" class="small" text-anchor="middle">no</text>
-    <rect x="14" y="138" width="196" height="48" rx="8" fill="#eef7f0" stroke="#6fae85"/>
-    <text x="112" y="158" text-anchor="middle">TASK-PATH FALLBACK</text>
-    <text x="112" y="174" text-anchor="middle" class="small">payload printed verbatim · traced reason</text>
-    <line x1="490" y1="172" x2="490" y2="200" stroke="#1a1a18" marker-end="url(#arr2)"/>
-  </g>
-  <!-- emit switch -->
-  <g>
-    <rect x="330" y="200" width="320" height="34" rx="8" fill="#fbf7ea" stroke="#c9b26a"/>
-    <text x="490" y="222" text-anchor="middle" class="mono">--emit ? (workflow | task | auto)</text>
-  </g>
-  <!-- workflow explicit -->
-  <g>
-    <line x1="360" y1="234" x2="250 " y2="270" stroke="#1a1a18" marker-end="url(#arr2)"/>
-    <text x="270" y="252" class="mono small">workflow (explicit)</text>
-    <rect x="120" y="270" width="290" height="34" rx="8" fill="#fbf7ea" stroke="#c9b26a"/>
-    <text x="265" y="292" text-anchor="middle">C3: workflow_available() ?</text>
-    <line x1="120" y1="287" x2="40" y2="330" stroke="#b04a4a" marker-end="url(#arr2)"/>
-    <text x="60" y="310" class="small">no</text>
-    <rect x="14" y="330" width="256" height="62" rx="8" fill="#faeeee" stroke="#c07d7d"/>
-    <text x="142" y="350" text-anchor="middle">REFUSE · exit ≠ 0 (was: force-print)</text>
-    <text x="142" y="366" text-anchor="middle" class="small">stderr names the Task path + detector reason</text>
-    <text x="142" y="382" text-anchor="middle" class="small">traced {path: refused} · Codex always lands here</text>
-    <line x1="330" y1="304" x2="420" y2="360" stroke="#4a7d4a" marker-end="url(#arr2)"/>
-    <text x="380" y="330" class="small">yes</text>
-    <rect x="360" y="360" width="240" height="52" rx="8" fill="#eef3fa" stroke="#7d9cc0"/>
-    <text x="480" y="380" text-anchor="middle">ONE workflow run per stage</text>
-    <text x="480" y="398" text-anchor="middle" class="small">wraps UNMODIFIED payload · C1: prompts carry
-    </text>
-  </g>
-  <text x="480" y="426" text-anchor="middle" class="mono small">export TASKPLANE_TASK=&lt;slot&gt;  +  set TASKPLANE_TASK=&lt;slot&gt; (Windows)</text>
-  <!-- task / auto -->
-  <g>
-    <line x1="620" y1="234" x2="750" y2="270" stroke="#1a1a18" marker-end="url(#arr2)"/>
-    <text x="660" y="252" class="mono small">task · auto</text>
-    <rect x="660" y="270" width="300" height="62" rx="8" fill="#eef7f0" stroke="#6fae85"/>
-    <text x="810" y="292" text-anchor="middle">TASK PATH (mandatory fallback)</text>
-    <text x="810" y="308" text-anchor="middle" class="small">stdout BYTE-IDENTICAL to pre-workflow bytes</text>
-    <text x="810" y="324" text-anchor="middle" class="small">auto: workflow only when detector says available</text>
-    <text x="810" y="352" class="small" text-anchor="middle">Every gate remains reachable on this rail alone</text>
-  </g>
-  <defs>
-    <marker id="arr2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0 0 L8 4 L0 8 z" fill="#1a1a18"/>
-    </marker>
-  </defs>
-</svg>
-<p class="cap">Reading order top-down: E5 (invalid slot id → loud refusal before any prompt line exists), A6 (malformed entry → the mandatory Task-path fallback with a traced reason, never a KeyError), then the emit switch — where C3 turns the old "force-print an uninvokable payload" into a refusal that names the working alternative. Green boxes are the reference rail; red boxes are traced refusals; nothing exits silently.</p>
-</body>
-</html>
+<section class="card" style="margin-top:16px">
+<h2>Ownership and immutable hand-offs</h2>
+<div class="lanes">
+  <div class="lane">Host adapter</div><div class="flow">Start bounded native Claude/Codex process with host auth; scrub model-shell secrets; enforce timeout and process-tree cancellation. Transport differs, canonical bytes do not.</div>
+  <div class="lane">Compliance kernel</div><div class="flow"><span class="pill">target</span><span class="pill">graph quality</span><span class="pill">routing input</span><span class="pill">26 dispositions</span><span class="pill">envelope</span></div>
+  <div class="lane">Lens slots</div><div class="flow"><span class="pill">deep view × N</span><span class="pill light">one light sweep</span><span class="pill na">n/a: nothing</span> Views contain relevant hunks/nodes/contracts; full evidence remains available by verified reference. Storage alone is not counted as model-read savings.</div>
+  <div class="lane">Collector</div><div class="flow">Reject missing/copied/reconstructed/wrong-slot results → aggregate canonical findings → append revision <code>n+1</code> → render each artifact once.</div>
+  <div class="lane">Orchestrator</div><div class="flow">Gate only when findings, report, dashboard and gate share <code>{target, context, findings, revision}</code>; then stop for the human.</div>
+</div>
+</section>
+
+<section class="costs" style="margin-top:16px">
+<div class="card">
+<h2>Comparable PR-9464 cost gate</h2>
+<div class="barrow"><span>Measured taskPlane</span><div class="bar"><div class="fill" style="width:100%"></div></div><b>2.36M</b></div>
+<div class="barrow"><span>R-0005 maximum</span><div class="bar"><div class="fill target" style="width:50%"></div></div><b>1.18M</b></div>
+<div class="barrow"><span>Total measured session</span><div class="bar"><div class="fill" style="width:100%;background:#94a3b8"></div></div><b>3.77M</b></div>
+<p class="note">Token comparison is eligible only after full compliance and an exact comparison-key match. Missing telemetry or key drift is <code>not_comparable</code>; structural gates still apply.</p>
+</div>
+<div class="card">
+<h2>Absolute structural gates</h2>
+<table><tr><th>Measure</th><th>Gate</th></tr><tr><td>Top-level taskPlane CLI</td><td>≤ 12</td></tr><tr><td>Diff / impact derivations</td><td>1 / 1 per key</td></tr><tr><td>Caller expansion</td><td>0 or exactly 1</td></tr><tr><td>Duplicate dashboard HTML</td><td>0</td></tr><tr><td>Large artifacts</td><td>one copy + digest reference</td></tr><tr><td>Normal full-catalog mode</td><td>forbidden</td></tr></table>
+</div>
+</section>
+
+<section class="card" style="margin-top:16px">
+<h2>Frozen correctness oracle</h2>
+<p><b>Provisioning and NodeClass validation must both reach the changed serialization path:</b></p>
+<p><code>EnsureAll → ensureLaunchTemplate → createLaunchTemplate → Bottlerocket.Script → MarshalTOML</code></p>
+<p>The caller-augmented impact must expose malformed non-boolean TOML errors reaching the validation controller’s presumed-unreachable branch and reconcile-loop risk. The known finding stays <b>Blocker</b>. The fixture carries these names; production routing does not hardcode them.</p>
+</section>
+</main></body></html>

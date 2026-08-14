@@ -15,12 +15,30 @@ out of the user's way unless they ask. Do not simplify any of them for
 agents. The CLI surfaces named below are current as of v2.7 — verify against
 `$TP --help` before citing anything not listed here.
 
-**New in v2.13 — one opening call, one copy of the context.**
+**New in v2.14 — one selective evidence kernel across every review stage.**
+Graph quality and bounded caller impact are established before routing all 26
+lenses. Dispatch is exactly the deep set plus at most one light sweep; an
+`impact_incomplete` run dispatches nobody. Review, Evaluate, and final EM reuse
+one immutable diff/impact/requirements/DoR/DoD envelope, deterministic scoped
+views, leased lens results, and one canonical revision. Never remap or rederive
+those facts inside a lens. Claude and Codex consume byte-equivalent canonical
+artifacts; a newly installed build needs a new host task to load lifecycle
+hooks before provenance can pass.
+
+**In v2.13 — one opening call, one copy of the context.**
 `tp review start <target> --base <ref>` returns tools, target pin, graph,
 impact, contract, obligations, routing, runnability and the briefs as one
 payload. Large artifacts come back as `RENDER-BY-REFERENCE: <path>` —
 deliver the file, do not paste it. `--max-tokens` sets an effective-token
 ceiling read from the host's transcript.
+
+That payload is the canonical review context for standalone Review, per-task
+Evaluate, and final engineering review: one diff, one graph-quality/blast-radius
+record, one requirements/contracts and DoR/DoD record, one 26-lens disposition,
+then exactly the deep slots plus at most one light sweep. Agents consume scoped
+artifact references and never re-derive diff, graph, routing, or runnability.
+Insufficient graph evidence is `impact_incomplete` and dispatches zero agents;
+it never expands to all lenses.
 
 **In v2.12 — bind the review to a tree.** `tp new --target <pr>
 --fetch --base <ref>` fetches `pull/N/head`, pins the checkout, and writes
@@ -245,8 +263,9 @@ explicit approval in conversation. Never run the loop silently.
    scored against the wave's real diff, cap-8 budget, floors, evidenced
    n/a; when a component layer exists — `tp graph scan --decompose` — the
    touched components assemble the candidates and each routed lens names
-   its proposers). The engineering review synthesizes with the full
-   catalog, and every Nth completed review (default 5,
+   its proposers). The engineering review uses the same canonical review
+   context and exact selective routing decision, and every Nth completed
+   review (default 5,
    `TASKPLANE_AUDIT_EVERY`) also runs the full-catalog audit sweep: a
    finding on a lens the router marked n/a auto-files as a router
    regression that blocks sign-off. Full routing detail:

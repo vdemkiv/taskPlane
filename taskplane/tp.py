@@ -756,6 +756,21 @@ def cmd_subagent_start(a) -> int:
         tp.trace(ws, "subagent_context_error", agent_id=agent_id,
                  error=type(exc).__name__)
     if isinstance(contract, dict) and contract:
+        try:
+            import review as _review
+            assignment = _review.register_slot_producer(
+                ws, event=event, contract=contract, task_slot=tp.task_slot())
+            if assignment:
+                tp.trace(ws, "review_slot_producer_bound",
+                         agent_id=agent_id,
+                         task_slot=assignment["contract_task_slot"],
+                         lease_fingerprint=assignment["lease_fingerprint"])
+        except Exception as exc:
+            # Lifecycle remains advisory; the authoritative write hook will
+            # fail closed because no matching producer assignment exists.
+            tp.trace(ws, "review_slot_producer_bind_failed", agent_id=agent_id,
+                     error=type(exc).__name__)
+    if isinstance(contract, dict) and contract:
         coding = contract.get("coding")
         coding = coding if isinstance(coding, dict) else {}
         scopes = coding.get("scope_paths")
@@ -1243,6 +1258,25 @@ def _screen(a) -> int:
     # has anything to protect against them. `clear` is NOT among them — see
     # _RELEASE_VERBS for why.
     if _is_release_command(tool_input.get("command") or ""):
+        # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
+        #
+        # The abstain above happens LONG before the approve path where the
+        # ledger is written, so `status`, `contracts`, `version` and `ack`
+        # left no row at all: R10 (did the run invent a CLI surface) and
+        # every efficiency reading were blind to the release verbs, and a
+        # run that polled `tp status` twenty times looked like one that
+        # never called it.
+        #
+        # Same rule, same ordering as the approve site: the decision is
+        # already final when this runs — an abstain emits the EMPTY payload,
+        # which is complete before the instrument is touched — and nothing
+        # here can change it. Failures are swallowed at both layers.
+        try:
+            sys.stdout.flush()
+            import derivation as _dv
+            _dv.record(ws, tool_input.get("command") or "", "abstain")
+        except Exception:                            # noqa: BLE001
+            pass
         return 0                      # abstain: not metered, not denied
 
     # TOKEN CEILING (v2.13.0) — the budget that tracks what is scarce.
@@ -1337,6 +1371,29 @@ def _screen(a) -> int:
 
     allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
     if allow:
+        # A leased review result needs evidence stronger than the JSON's own
+        # `authored_by` string.  The always-on write hook records the observed
+        # host session and exact active producer contract before the write is
+        # allowed; collect later requires this separate receipt.
+        _write_paths = tp.write_paths(tool_name, tool_input)
+        _review_result_write = any(
+            "/kernel-v2/results/" in "/" + str(path).replace("\\", "/")
+            for path in _write_paths)
+        if _review_result_write:
+            try:
+                import review as _review
+                _review.record_slot_write_observation(
+                    ws, event=event, contract=contract,
+                    task_slot=tp.task_slot())
+            except Exception as exc:
+                _meter_bump(ws, tid, "denies")
+                tp.trace(ws, "slot_provenance_deny", tool=tool_name,
+                         error=type(exc).__name__)
+                print(json.dumps({
+                    "decision": "block",
+                    "reason": "taskplane: leased review result provenance "
+                              f"could not be established ({exc})"}))
+                return 0
         _meter_bump(ws, tid, "actions")
         # Codex does not support the legacy PreToolUse
         # {"decision":"approve"} shape. A successful hook with no output
@@ -1346,6 +1403,26 @@ def _screen(a) -> int:
         # compatibility.
         if "turn_id" not in event:
             print(json.dumps({"decision": "approve"}))
+        # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST.
+        #
+        # Until now an ALLOWED command left no trace of WHAT RAN: only
+        # refusals reached trace.jsonl (`hook_deny`, just below), so nothing
+        # could answer "did this run re-derive the diff/impact it already
+        # had" (R7a) or "did it invoke a subcommand that does not exist"
+        # (R10). This records the VERB — never the command text or its
+        # arguments — beside the meter that already counted the action.
+        #
+        # Ordering is deliberate and tested: the decision payload is written
+        # and flushed BEFORE the instrument is touched, so a slow, blocked
+        # or broken ledger cannot delay, alter or lose a decision the agent
+        # is waiting on. derivation.record swallows its own failures; this
+        # try/except is the layer that still stands if it ever stops.
+        try:
+            sys.stdout.flush()
+            import derivation as _dv
+            _dv.record(ws, tool_input.get("command") or "", "approve")
+        except Exception:                            # noqa: BLE001
+            pass
         return 0
     _meter_bump(ws, tid, "denies")
     tp.trace(ws, "hook_deny", tool=tool_name, reason=reason)
@@ -1950,16 +2027,8 @@ def tp_target_diff(ws: str, base: str) -> tuple:
     """The diff every lens agent would otherwise re-derive. Bounded: a diff
     too large to be shared cheaply is not shared at all, and the briefs fall
     back to embedding the blast radius as before."""
-    import subprocess
-    try:
-        p = subprocess.run(["git", "diff", base], cwd=ws,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           text=True, encoding="utf-8", errors="replace",
-                           timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        return 1, ""
-    out = p.stdout or ""
-    return p.returncode, (out if len(out) <= 400_000 else "")
+    import review
+    return review.canonical_diff_patch(ws, base)
 
 
 def _lane_landed(ws: str, lid: str) -> bool:
@@ -2967,8 +3036,14 @@ def cmd_dashboard(a) -> int:
     --out also writes a standalone HTML file (no-desktop fallback)."""
     import dashboard
     ws = _workspace(a.workspace)
+    report = dashboard.report_widget(ws)
     if a.out:
-        dashboard.render(ws, out=a.out)
+        doc = dashboard.standalone_document(
+            [report], title="taskplane — mission control")
+        os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".",
+                    exist_ok=True)
+        with open(a.out, "w", encoding="utf-8", newline="") as f:
+            f.write(doc)
     # v1.5.3: headline first (never-skippable), then the widget / pages.
     print("HEADLINE: " + dashboard.headline_loop(ws))
     if getattr(a, "paged", False):
@@ -2979,7 +3054,7 @@ def cmd_dashboard(a) -> int:
                           "PER PAGE, in order, each page's html VERBATIM — "
                           "no edits, no restyling, no re-authoring"}, indent=2))
         return 0
-    print(dashboard.widget(ws))
+    print(report)
     return 0
 
 
@@ -3002,6 +3077,19 @@ def cmd_review(a) -> int:
     import target as tgt
     import review as rv
     ws = _workspace(a.workspace)
+    if getattr(a, "review_action", None) == "collect":
+        try:
+            result = rv.collect_review(
+                ws, publish=not bool(getattr(a, "no_publish", False)),
+                run_id=getattr(a, "run_id", None))
+        except Exception as exc:
+            print(json.dumps({"schema": "taskplane.review-collect-manifest/v2",
+                              "status": "collect_failed",
+                              "reason": f"{exc.__class__.__name__}: {exc}"},
+                             sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
     out = {"steps": []}
 
     def step(name, ok, **extra):
@@ -3028,6 +3116,24 @@ def cmd_review(a) -> int:
         out["next"] = rec.get("reason")
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
+    # IS THIS THE TREE THE REVIEW CLAIMS TO BE ABOUT? (D1)
+    #
+    # Checked BEFORE any work. A field run against
+    # aws/karpenter-provider-aws#9464 reviewed an 83-file working tree as a
+    # 4-file pull request and came back fully governed — contract activated,
+    # target pinned and fingerprinted, obligations discharged,
+    # `steps.target ok: true` throughout — with seven deep lenses citing
+    # evidence from files the pull request never touches. The binding proved
+    # the findings came from the pinned tree; nothing proved the pinned tree
+    # was the pull request. Refusing later would still have spent the
+    # contract, the graph scan and the entire lens wave on the wrong tree.
+    _wrong = tgt.wrong_tree(ws, rec)
+    if _wrong:
+        step("target", False, reason=_wrong)
+        out["ok"] = False
+        out["next"] = _wrong
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 1
     tgt.save(ws, rec)
     out["target"] = rec
     base = rec.get("base_ref") or getattr(a, "base", None) or "HEAD"
@@ -3039,7 +3145,13 @@ def cmd_review(a) -> int:
     try:
         import depgraph as dg
         g = dg.load(ws)
-        if not g.get("modules"):
+        # RESCAN A GRAPH THAT DESCRIBES ANOTHER TREE (D2). The blast radius
+        # is the one input every lens is told NOT to re-derive, so a stored
+        # graph scanned at a different head hands the wrong revision to the
+        # whole wave at once. A graph with no `scanned_head` at all cannot
+        # say which tree it describes, so it is rescanned too.
+        _scanned = ((g.get("meta") or {}).get("scanned_head") or "")[:12]
+        if not g.get("modules") or _scanned != (rec.get("head") or "")[:12]:
             g = dg.scan(ws)
         files = rec.get("changed_files") or []
         imp = dg.impact(ws, files) if files else {}
@@ -3077,41 +3189,45 @@ def cmd_review(a) -> int:
     except Exception as e:
         step("obligations", False, reason=e.__class__.__name__)
 
-    # 5. routing + runnability + briefs — the wave, ready to dispatch.
+    # 5. One normal-flow kernel call: quality before mapping, then exactly
+    #    one immutable envelope and exact deep/light slots. Large bytes are
+    #    artifacts; stdout is only the compact manifest.
     try:
-        import lens as lensmod
         import runnability as runmod
-        routing = lensmod.route_git_diff(ws, base=base, stage="review")
         probe = runmod.probe_once(ws)
-        ctx = rv.write_context(ws, diff=tp_target_diff(ws, base)[1],
-                               blast_radius=blast, impact=imp or None)
-        briefs = lensmod.dispatch_briefs(
-            routing, base=base, impact_context=(None if ctx else blast),
-            runnability=probe, context_paths=ctx)
-        out["runnability"] = probe
-        out["context"] = ctx
-        out["dispatch"] = briefs
-        dec = briefs.get("routing_decision") or {}
-        step("route", True, deep=len(briefs.get("deep") or []),
-             sweep=bool(briefs.get("sweep")), dispositioned=len(dec))
+        diff_rc, patch = tp_target_diff(ws, base)
+        if diff_rc:
+            raise RuntimeError("canonical diff derivation failed")
+        import review_evidence as _re
+        store = _re.ArtifactStore(ws)
+        diff_ref = store.put("diff", {"base": base, "patch": patch,
+                                      "files": files})
+        symbols = rv.changed_symbols_from_patch(patch)
+        manifest = rv.start_review(
+            ws, target=rec, graph=g, impact=imp,
+            diff={"files": files, "changed_symbols": symbols,
+                  "artifact": rv._portable_ref(diff_ref)},
+            runnability=runmod.evidence_record(probe),
+            requirement={}, acceptance=[], contracts=[], stage="review",
+            task_type="review", base=base,
+            caller_expander=rv.bounded_caller_expander(g))
+        manifest["contract"] = {"task_id": c["task_id"],
+                                "read_only": True}
+        manifest["tools"] = {"git": bool(t["git"]["present"]),
+                             "gh": bool(t["gh"]["present"])}
+        manifest = rv._manifest(manifest)
+        kernel_state = rv._load_state(ws, manifest.get("run_id"))
+        rv._save_state(ws, dict(kernel_state, manifest=manifest,
+                                counters=manifest["counters"]))
     except Exception as e:
         step("route", False, reason=f"{e.__class__.__name__}: {e}")
-        out["ok"] = False
-        print(json.dumps(out, indent=2, sort_keys=True))
+        print(json.dumps({"schema": "taskplane.review-start-manifest/v2",
+                          "status": "start_failed",
+                          "reason": f"{e.__class__.__name__}: {e}"},
+                         sort_keys=True, separators=(",", ":")))
         return 1
-
-    out["ok"] = True
-    out["instruction"] = (
-        "Everything below is FACT — nothing here is a finding or a verdict. "
-        "Render the wave board (`tp lens dispatch --dashboard`), dispatch one "
-        "tp-lens agent per deep brief IN PARALLEL plus the sweep, then merge "
-        "their findings.json files and render THAT. Every brief cites the "
-        "shared context under .em-review/context/ — do not re-derive the diff "
-        "or the blast radius. Copy target.fingerprint into the findings "
-        "`meta.target`, impact into `meta.impact`, runnability.summary into "
-        "`meta.tests`, and routing_decision into `meta.lens_coverage`.")
-    print(json.dumps(out, indent=2, sort_keys=True))
-    return 0
+    print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    return 0 if manifest.get("status") == "ready" else 1
 
 
 def cmd_target(a) -> int:
@@ -3999,8 +4115,10 @@ def main(argv=None) -> int:
                         "(inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict)")
     sd.set_defaults(fn=cmd_screen_dispatch)
 
-    sas = sub.add_parser("subagent-start", help="SubagentStart lifecycle "
-                         "trace and bounded contract context (stdin event)")
+    sas = sub.add_parser(
+        "subagent-start", help="SubagentStart lifecycle trace, bounded "
+        "contract context, and leased review-child identity binding "
+        "(stdin event)")
     sas.set_defaults(fn=cmd_subagent_start)
     saz = sub.add_parser("subagent-stop", help="SubagentStop lifecycle trace "
                          "(stdin event; advisory, never a completion gate)")
@@ -4366,7 +4484,7 @@ def main(argv=None) -> int:
     gp.set_defaults(fn=cmd_graph)
 
     db = sub.add_parser("dashboard", help="render the mission-control view")
-    db.add_argument("--out", help="also write the fragment to this path")
+    db.add_argument("--out", help="write the standalone report to this path")
     db.add_argument("--paged", action="store_true",
                     help="emit ordered <=14KB pages (JSON) for reliable "
                          "inline rendering + a never-skippable headline")
@@ -4499,6 +4617,15 @@ def main(argv=None) -> int:
                      help="effective-token ceiling for the review contract")
     rvs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvs.set_defaults(fn=cmd_review)
+    rvc = rvsub.add_parser("collect", help="validate leased lens results and "
+                           "publish one canonical findings revision")
+    rvc.add_argument("--no-publish", action="store_true",
+                     help="skip the external artifact-store snapshot (tests "
+                          "and isolated calibration only)")
+    rvc.add_argument("--run-id", default=None,
+                     help="select one active review when several starts coexist")
+    rvc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvc.set_defaults(fn=cmd_review)
     rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvp.set_defaults(fn=cmd_review)
 

@@ -258,10 +258,14 @@ def route(changed_files, task_type: str | None = None,
     architecture floors). EVERY catalog lens appears in the output —
     n/a entries are included with their negative evidence (coverage
     honesty: the renderer needs them). With stage=None, use_signals=False,
-    breadth="all", or no stage_profiles key: the legacy path, byte-
-    identical to today. Any engine failure falls back to legacy
-    breadth="all" routing — MORE coverage, never less (the hub_signal
-    fail-safe precedent) — and marks the degradation in context.
+    breadth="all", or no stage_profiles key: the explicit legacy/calibration
+    path. A normal routed engine failure returns mapper_unavailable with zero
+    lenses; uncertainty can never be recovered by full-catalog fan-out.
+
+    Every exit RECORDS the breadth it decided (`_record_breadth`, event
+    `lens_breadth`) into a governed workspace's trace, so `--all` is a fact
+    on the record instead of something a consumer has to infer from the
+    routed set. Recording only — see the block below this function.
     """
     cat = catalog or load_catalog()
     v2 = (use_signals is not False
@@ -270,21 +274,20 @@ def route(changed_files, task_type: str | None = None,
           and (stage is not None or use_signals is True))
     if v2:
         try:
-            return _route_v2(changed_files, cat, stage=stage,
-                             task_type=task_type,
-                             artifact_type=artifact_type, only=only,
-                             skip=skip, hub_dependents=hub_dependents,
-                             workspace=workspace,
-                             requirement_text=requirement_text)
+            routed = _route_v2(changed_files, cat, stage=stage,
+                               task_type=task_type,
+                               artifact_type=artifact_type, only=only,
+                               skip=skip, hub_dependents=hub_dependents,
+                               workspace=workspace,
+                               requirement_text=requirement_text)
         except Exception as exc:
-            # Fail toward MORE review coverage, never less — and never
-            # silently (the hub_signal precedent above). A broken engine
-            # must widen the review, not shrink it.
+            # R-0005: uncertainty is not recoverable with breadth. A broken
+            # mapper has no valid 26-lens decision, so normal delivery must
+            # dispatch ZERO rather than silently running all lenses.
             import sys
             print(f"taskplane: lens applicability engine unavailable "
-                  f"({exc}) — falling back to legacy breadth=all routing "
-                  "(fail-safe: more review coverage, not less). Repair "
-                  "lens_signals to restore signal-driven routing.",
+                  f"({exc}) — mapper_unavailable; dispatching zero lenses. "
+                  "Repair lens_signals and retry from the same envelope.",
                   file=sys.stderr)
             if workspace:
                 try:
@@ -292,15 +295,114 @@ def route(changed_files, task_type: str | None = None,
                              error=str(exc), stage=stage)
                 except Exception:
                     pass
-            fallback = _route_legacy(changed_files, task_type,
-                                     artifact_type, cat, only, skip,
-                                     "all", hub_dependents)
-            fallback["context"]["lens_engine_failed"] = str(exc)
-            fallback["context"]["degraded"] = (
-                "applicability engine failed — legacy breadth=all routing")
-            return fallback
-    return _route_legacy(changed_files, task_type, artifact_type, cat,
-                         only, skip, breadth, hub_dependents)
+            refused = {"lenses": [], "context": {
+                "status": "mapper_unavailable", "breadth": "routed",
+                "stage": stage, "lens_engine_failed": str(exc),
+                "changed_files": len(list(changed_files or []))}}
+            _record_breadth(workspace, requested=breadth, effective="routed",
+                            engine_ran=False, stage=stage, routing=refused,
+                            reason=f"mapper_unavailable: {exc}")
+            return refused
+        _record_breadth(workspace, requested=breadth, effective="routed",
+                        engine_ran=True, stage=stage, routing=routed)
+        return routed
+    legacy = _route_legacy(changed_files, task_type, artifact_type, cat,
+                           only, skip, breadth, hub_dependents)
+    _record_breadth(workspace, requested=breadth, effective=breadth,
+                    engine_ran=False, stage=stage, routing=legacy,
+                    reason=_engine_off_reason(cat, breadth, stage,
+                                              use_signals))
+    return legacy
+
+
+# ------------------------------------------------- recorded routing breadth
+#
+# WHICH lenses a review ran is traced (`lens_route`: step + lenses). WHY that
+# set was chosen was not: `route` branches on `breadth != "all"` above, and
+# `--all` — the flag that switches the applicability engine OFF — was decided
+# here and then thrown away. The eval rubric scores exactly that distinction
+# (forcing all 26 lenses is the "ignore the routing engine" behaviour the
+# review layer exists to catch), so the recorder had to INFER it from the
+# routed set: routed-set ⊇ catalog ⇒ "all".
+#
+# That inference cannot work, and not only at the edge: `_route_v2` emits an
+# entry for EVERY catalog lens — n/a ones included, carrying their negative
+# evidence, because coverage honesty needs them — so a signal-routed review's
+# lens list IS the whole catalog and reads as `--all` every single time. The
+# engine being on and the engine being off produced the same record.
+#
+# So the fact is recorded instead of guessed. RECORDING ONLY: nothing below
+# is read back by routing, and `_record_breadth` swallows everything — a
+# broken audit log must not narrow, widen or crash a review (the `trace`
+# precedent in taskplane_lite). A differential test pins the returned
+# routings, the dispatch briefs and the exception path byte-for-byte against
+# the previous revision, including with `tp.trace` patched to raise.
+LENS_BREADTH_EVENT = "lens_breadth"
+
+
+def _engine_off_reason(cat, breadth, stage, use_signals) -> str:
+    """Every reason the applicability engine did not run, in one line.
+
+    All applicable causes, not the first: `--all` on a catalog that also has
+    no stage_profiles is two different repairs, and a reader who is told only
+    one of them fixes the wrong thing. `breadth="all"` leads because it is
+    the operator-chosen cause and the one being scored.
+    """
+    why = []
+    if breadth == "all":
+        why.append("breadth='all' — the full-catalog sweep disables the "
+                   "applicability engine")
+    if use_signals is False:
+        why.append("use_signals=False")
+    if not isinstance(cat.get("stage_profiles"), dict):
+        why.append("catalog carries no stage_profiles")
+    if stage is None and use_signals is not True:
+        why.append("no stage requested")
+    return "; ".join(why) or "engine not engaged"
+
+
+def _record_breadth(workspace, *, requested, effective, engine_ran, stage,
+                    routing, reason=None) -> None:
+    """Write the breadth decision to the workspace trace. Never raises.
+
+    Fields, and what a consumer reads:
+      requested_breadth  the caller's `breadth` argument, VERBATIM — "all"
+                         means `--all` was passed, whatever routing then did.
+      effective_breadth  the breadth the routing actually ran under; differs
+                         from the request only on the fail-open path, where a
+                         routed request is widened to the full catalog.
+      engine_ran         True only when the applicability engine produced the
+                         verdicts. "the engine ran and happened to select
+                         everything" is engine_ran=True; "the engine was
+                         switched off" is engine_ran=False. The two can never
+                         collide, whatever the lens list looks like.
+      engine_off_reason  present ONLY when engine_ran is False — which of the
+                         several off-switches was thrown.
+      stage, lens_count  join keys back to the loop's own `lens_route` row,
+                         which this row is written immediately before.
+
+    Writes ONLY into a workspace that already has a `.taskplane/` record.
+    Routing is handed checked-in fixture directories as `workspace=` by the
+    existing suites; creating a governance dir inside the repo as a side
+    effect of reading a diff would be a new behaviour, not a new record.
+    """
+    if not workspace:
+        return
+    try:
+        if not os.path.isdir(tp.tp_dir(workspace)):
+            return
+        row = {
+            "requested_breadth": requested,
+            "effective_breadth": effective,
+            "engine_ran": bool(engine_ran),
+            "stage": stage,
+            "lens_count": len(routing.get("lenses") or []),
+        }
+        if not engine_ran:
+            row["engine_off_reason"] = reason or "engine not engaged"
+        tp.trace(workspace, LENS_BREADTH_EVENT, **row)
+    except Exception:
+        pass
 
 
 def _route_legacy(changed_files, task_type, artifact_type, cat,
@@ -580,15 +682,15 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
     + security/architecture floors applied inside); legacy glob/task-type
     reasons merged with signal evidence. EVERY catalog lens gets an output
     entry — n/a included, carrying its negative evidence (coverage
-    honesty). Raises on any engine problem; route() catches and fails
-    open to legacy breadth=all.
+    honesty). Raises on any engine problem; route() catches and returns a
+    named zero-dispatch mapper_unavailable result.
 
     v3 Phase 2 (R-0003): when the graph carries a `components` layer, the
     candidate verdicts come from _assemble_components (capped union of the
     touched components' cached maps, re-evidenced on the live diff). The
-    fail-open ladder only ever WIDENS: component assembly -> module-level
-    route (traced `component_layer_failed`) -> legacy breadth=all (route()'s
-    catch). With the layer absent this path is byte-identical Phase 1."""
+    fallback ladder permits component assembly -> module-level route; if the
+    module mapper fails too, route() returns mapper_unavailable with zero
+    dispatch. With the layer absent this path is Phase 1."""
     import lens_signals
 
     code_ext = cat.get("code_extensions", [])
@@ -683,7 +785,7 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
 
         if verdict == "n/a" and not negative:
             # Coverage honesty is non-negotiable: an unevidenced n/a must
-            # halt v2 routing (route() then fails open to breadth=all).
+            # halt v2 routing (route() then returns mapper_unavailable).
             raise ValueError(f"lens {lid}: n/a without negative evidence")
 
         merged = reasons + [e for e in evidence if e not in reasons]

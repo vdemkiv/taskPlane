@@ -15,50 +15,38 @@ All review runs read-only toward code under an enforced contract:
 `$TP new --read-only --write-allow ".em-review/**" --owes review
 "engineering review: <target>"`.
 
-**OPEN THE REVIEW IN ONE CALL (v2.13.0).** `$TP review start <pr-url|ref>
---base <ref> [--fetch]` establishes every fact a review opens with — tools,
-target pin, graph, impact, contract, seeded obligations, lens routing,
-runnability, and the ready-to-dispatch briefs — as ONE JSON payload. It
-decides nothing. Do NOT walk the ten separate commands it replaces: on the
-measured review they cost ~11k effective tokens each, and each command and
-its output then sits in the conversation to be re-read on every later turn.
+**OPEN THE REVIEW IN ONE CALL.** `$TP review start <pr-url|ref> --base <ref>
+[--fetch]` pins the target and derives one canonical review context. It contains
+one canonical diff, graph-quality record and blast radius, runnability result,
+requirements/contracts, DoR/DoD evidence, and one complete 26-lens routing
+decision. It returns compact artifact references plus the exact briefs; it
+does not print or duplicate the artifact bodies. Do not walk the older
+target/graph/impact/route/dispatch commands during a normal review.
 
-**DELIVER LARGE ARTIFACTS, DO NOT RETYPE THEM.** When `tp findings` prints
-`RENDER-BY-REFERENCE: <path>`, the document is too large to paste back
-through a widget tool — deliver the FILE (SendUserFile / the host's artifact
-channel) and discharge with `tp ack <id> --delivered <path>`. It is the same
-bytes and the same fingerprint check, and it does not re-author ~52k
-characters the engine already wrote. Inline dashboards were 450k effective
-tokens of one review, caused by the obligation mechanism rather than by the
-work. Small fragments still render inline, unchanged.
+Graph quality is a gate before routing. Sparse module evidence gets one bounded
+changed-symbol caller expansion. If coverage is still insufficient, stop as
+`impact_incomplete` with zero lens dispatch. Never recover by running all 26.
 
-**Every lens agent reads ONE copy of the context.** `review start` and
-`lens dispatch` write the diff and the blast radius to
-`.em-review/context/` and every brief cites the paths. Do not re-derive
-them, and do not paste them into a brief.
+**DELIVER LARGE ARTIFACTS, DO NOT RETYPE THEM.** When output carries an
+artifact reference or `RENDER-BY-REFERENCE: <path>`, deliver that file through
+Claude's or Codex's artifact channel and acknowledge the same path/fingerprint.
+Do not read it back and paste its bytes into a widget. Small fragments may
+still render inline.
 
-**BIND THE REVIEW TO A TREE FIRST (v2.12.0).** Start with
-`$TP target tools` — `git` and `gh` are dependencies, not conveniences. A
-clone carries the code and NONE of the intent: a pull request's title, body,
-linked issues and review conversation are not in the git objects, so without
-`gh` that context either goes missing or arrives over unauthenticated web
-reads nobody recorded. If `gh` is absent, say so and install it
-(`tp target tools --install`) before reviewing a remote PR.
+**Every lens consumes a scoped view of the same context.** The canonical review
+context is written once under `.em-review/`; every brief cites its context and
+view fingerprints. A lens must not run `git diff`, `graph impact`, routing, or
+runnability discovery again. It judges only its view and writes only its leased
+result. This makes independence mean independent judgment, not duplicated
+retrieval.
 
-Then acquire and pin: `$TP new --read-only --write-allow ".em-review/**"
---owes review --target <pr-url> --fetch --base <ref> "engineering review:
-<target>"`. That fetches `pull/N/head`, checks it out, and records origin,
-head, base, dirty state and a fingerprint. Copy that fingerprint into the
-findings `meta.target`. Until the workspace is pinned, `tp dod`,
-`tp loop submit`, `tp loop approve` and `tp loop retro` are refused — doing
-the review is never blocked, only declaring it finished. This exists
-because two field reviews of the same PR both cloned the repository and
-neither could prove it: a review conducted entirely from a rendered web
-diff would have produced identical artifacts and an identical gate.
+`review start` also checks the target tools, fetches when requested, activates
+the read-only contract, pins head/base/dirty state, and seeds the review
+obligations. Use the lower-level target and contract commands only to diagnose
+a refused start; do not repeat successful opening work.
 
-**`--owes review` is not optional.** It records, before any of the work
-starts, the two artifacts a review owes a human: the wave board re-rendered
-after dispatch, and the product's own dependency view. Those are BINDING —
+The obligations created by `review start` are not optional. They record,
+before work starts, the review artifacts owed to the human. They are BINDING —
 `tp dod`, `tp loop submit`, `tp loop approve` and `tp loop retro` are
 refused at the PreToolUse hook until each has been shown and acknowledged
 (`tp ack <id>`, `tp ack --status` to list). Nothing about doing the work is
@@ -86,9 +74,8 @@ the engine applies it, and the security floor, inside routing — a
 structurally significant change still gets a full pass whatever the
 signals say.
 
-**Fan the lenses out — don't walk them in sequence.** Lenses are
-first-class governed agents. `$TP lens dispatch --base <ref>`
-returns ready-to-dispatch briefs — one per DEEP lens plus one SWEEP —
+**Fan out only the exact mapped set.** `review start` returns one brief per
+`deep` lens plus at most one bounded `light` sweep —
 each carrying its own **read-only contract** (write-allow only
 `.em-review/lens-<id>/**`, budget-capped). Dispatch one `tp-lens` agent
 per brief IN PARALLEL (single message, multiple Task calls): each applies
@@ -96,11 +83,10 @@ exactly its lens to the diff and writes `.em-review/lens-<id>/findings.json`,
 and none can touch code (the harness holds — read-only, metered). A
 7-lens review runs in one wall-clock pass instead of seven.
 
-**Runnability is probed ONCE, by the dispatcher (v2.10.0).** `lens dispatch`
-answers "can `go test` / `npm test` / `pytest` even start in this checkout"
-before composing briefs, states the verdict in every brief, and returns it as
-`runnability.summary`. Carry that string into the findings `meta.tests` so
-the headline says it. Do NOT let an agent re-probe, and do not re-probe
+**Runnability is probed ONCE, before briefs.** `review start` answers
+"can `go test` / `npm test` / `pytest` even start in this checkout"
+before composing briefs, states the verdict in every brief, and records it in
+the canonical context for collect/headline projection. Do NOT let an agent re-probe, and do not re-probe
 yourself: on karpenter#9464 six lens agents each burned actions rediscovering
 that `go test` could not run — one fact about the environment, paid for six
 times. When the suite cannot run, the review is static by construction: say
@@ -111,36 +97,13 @@ On hosts that do not register `agents/` as named definitions, dispatch a
 general subagent with the brief plus `agents/tp-lens.md` as its role
 instructions. The contract and output path remain identical.
 
-**SHOW THE PROGRESS, NOT JUST THE RESULT.** A review is agent work the
-human should watch, not a black box that ends in a report. So:
-1. BEFORE you dispatch, render the live wave board —
-   `$TP lens dispatch --base <ref> --dashboard` prints it — via
-   an inline widget tool when available (unique title), otherwise deliver the
-   generated dashboard artifact. The person sees every
-   lens-agent about to run, in parallel, read-only.
-2. Dispatch the agents.
-3. AFTER they land, re-run `$TP lens dispatch --base <ref> --dashboard`
-   and render it again — lane status now derives from each lens's
-   findings.json (v2.2.1), so the human SEES the completed fan-out with
-   per-lens counts instead of trusting your narration. Then MERGE every
-   lens's findings into `$TP findings` and
-   render THAT. Two renders minimum — the wave forming, then the findings
-   — never a single dashboard dumped at the very end. (For a big wave you
-   may render an intermediate wave board as agents report.)
+**SHOW PROGRESS WITHOUT RE-DERIVING.** Render or deliver the wave-board
+artifact referenced by `review start`, dispatch the returned briefs, then run
+`$TP review collect` once. Collect validates each leased result, commits one
+canonical findings revision, and returns the final report/dashboard references.
+Deliver those references. Do not call route/dispatch again to refresh status.
 
-(Small diff or a quick check? `tp lens route` inline is still fine —
-dispatch is for when the catalog is wide and speed matters.) Browse the
-catalog anytime: `$TP lens list`, `$TP lens show <id>`.
-
-Lead every review with impact — it costs nothing, and it is NOT optional
-(v1.5.4): `$TP graph impact --files …` (blast radius by depth),
-`references/graph.md`. Put the result in the findings `meta.impact` block so
-the review dashboard renders the dependency-graph blast radius and the
-headline carries "touches N modules" — a review without it is incomplete. If
-the graph is empty (a polyglot repo where cross-service calls aren't import
-edges), run `$TP graph scan` first; if it's still sparse, say so and record
-the missing links with `$TP graph edge` rather than omitting the panel.
-The impact payload carries BOTH sides of the graph: dependent modules
+The canonical impact payload carries BOTH sides of the graph: dependent modules
 (engineering) and `affected_requirements` + `dependent_requirements`
 (product) — when a diff touches another requirement's realized surface,
 re-check THAT requirement's acceptance criteria too, not just this one's.
@@ -149,7 +112,7 @@ Walk the diff against EACH acceptance criterion of its R-record
 completeness and scope fidelity (gaps AND creep). Before the EM brief, the
 loop trues-up the product graph (realizes edges + rescan), and the action's
 `impact.graph.content_fingerprint` binds your evidence to that exact map.
-Copy the full impact payload into `meta.impact`. When the loop carries an
+Lens results cite it by fingerprint; do not copy it into every result. When the loop carries an
 approved Design Contract, also copy its approval fingerprint into
 `meta.design`, verify every designed module, edge, and named contract, report
 `verdict: conformant`, and leave `drift: []`. Missing/stale design evidence
@@ -165,11 +128,12 @@ review makes the map honest for the next contract. Deep session procedure:
 `references/em-session.md`; security depth: `references/security.md`;
 feedback per `references/feedback-craft.md`.
 
-**Show ALL findings — the review needs its own dashboard.** A pure review
-has no loop, so `$TP dashboard` (loop state) has nothing to render — that's
-why a review must emit its findings and render them itself. Write every
-finding (ALL severities, not just the blockers) to `.em-review/findings.json`
-— each `{severity, domain, file, line, title, scenario, fix, status, class}`.
+**Show ALL findings — the review needs its own dashboard.** Each lens writes
+only its leased slot result. `$TP review collect` validates those results and
+publishes `.em-review/findings.json`, report, and dashboard as one canonical
+artifact revision. Do not hand-merge or reconstruct them. The final projection
+includes every severity, not only blockers; each finding carries
+`{severity, domain, file, line, title, scenario, fix, status, class}`.
 
 **Classify every finding (v2.3.1) — this is what stops a review from reading
 as "100 blockers."** `class` is one of `regression | pre-existing |

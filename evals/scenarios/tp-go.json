@@ -1,0 +1,87 @@
+{
+  "schema": "taskplane.eval-scenario/v1",
+  "skill": "tp-go",
+  "title": "The delivery driver: the loop run end to end, personas routed, waves dispatched, and no human gate self-approved",
+  "source_files": [
+    "skills/tp-go/SKILL.md"
+  ],
+  "inputs_fingerprint": "aca780198d5182b1b36f71208f2b43c52b0464256ea578627936335fe2cca38d",
+  "expects_derivations": [
+    "diff",
+    "impact"
+  ],
+  "declared_surfaces": [
+    "tp review start",
+    "tp graph impact",
+    "tp lens dispatch",
+    "tp loop wave",
+    "tp loop gate"
+  ],
+  "steps": [
+    {
+      "id": "U1-CONTRACT",
+      "claim": "the run was governed before it changed anything — the contract was active before the first write, not declared after the fact",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "contract_activated"
+      },
+      "before": "first_write",
+      "universal": [
+        "contract"
+      ],
+      "required": true
+    },
+    {
+      "id": "U2-DOR",
+      "claim": "readiness was established before the work started — a DoR that passed, ahead of the first write",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "dor",
+        "ready": true
+      },
+      "before": "first_write",
+      "universal": [
+        "dor"
+      ],
+      "required": true
+    },
+    {
+      "id": "U3-DOD",
+      "claim": "the definition of done was checked before anything claimed the work was finished",
+      "record": "trace",
+      "check": "before",
+      "select": {
+        "event": "dod",
+        "passed": true
+      },
+      "before": "completion_claim",
+      "universal": [
+        "dod"
+      ],
+      "required": true
+    },
+    {
+      "id": "U4-SHARED",
+      "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
+      "record": "derivations",
+      "check": "repeats",
+      "select": {
+        "event": "derived",
+        "probe": {
+          "absent": true
+        }
+      },
+      "distinct_by": [
+        "key",
+        "input_key"
+      ],
+      "max": 0,
+      "universal": [
+        "no_rederive"
+      ],
+      "required": true
+    }
+  ]
+}

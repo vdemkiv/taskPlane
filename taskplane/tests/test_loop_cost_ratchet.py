@@ -33,8 +33,10 @@ class TestTheHarnessMeasuresTheRealLoop(unittest.TestCase):
         caller started re-running identical content again."""
         self.assertEqual(self.got["suite_executions"], 1)
 
-    def test_the_evaluation_cited_rather_than_re_ran(self):
-        self.assertGreaterEqual(self.got["suite_citations"], 1)
+    def test_the_evaluation_did_not_re_run_the_suite(self):
+        # The coarse evidence path now consumes the one suite artifact
+        # directly; no cache lookup is needed merely to cite it.
+        self.assertEqual(self.got["suite_citations"], 0)
 
     def test_the_loop_really_reached_the_end(self):
         """A harness that measured a loop which never completed would pin a

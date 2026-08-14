@@ -1,0 +1,17 @@
+{
+ "briefs": [
+  {
+   "context_path": ".em-review/ctx",
+   "lens": "security",
+   "ts": 10
+  },
+  {
+   "context_path": ".em-review/ctx",
+   "lens": "arch",
+   "ts": 11
+  }
+ ],
+ "expected": 2,
+ "hook_active": true,
+ "unobserved": 0
+}

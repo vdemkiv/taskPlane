@@ -20,7 +20,8 @@ is documented and applied identically at capture and replay):
     and <PLUGIN> (loop payloads carry task worktree paths, the artifacts
     cache path, and role_instructions);
   * no timestamps — unix-time values under the keys updated_at/scanned_at/
-    submitted_at are zeroed, git shas / graph fingerprints under
+    submitted_at are zeroed, immutable artifact-reference digests/byte sizes
+    are normalized, git shas / graph fingerprints under
     scanned_head/content_fingerprint/snapshot/fingerprint/baseline become
     <SHA>, and calendar dates (YYYY-MM-DD, e.g. the KB decision date) become
     <DATE> wherever they appear in strings;
@@ -67,7 +68,7 @@ TASKS = [
 
 _ZERO_KEYS = ("updated_at", "scanned_at", "submitted_at")
 _SHA_KEYS = ("scanned_head", "content_fingerprint", "snapshot",
-             "fingerprint", "baseline")
+             "fingerprint", "baseline", "run_id")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -195,11 +196,21 @@ def scrub(payload, ws: str, store: "str | None" = None):
 
     def clean(obj):
         if isinstance(obj, dict):
+            if obj.get("schema") == "taskplane.artifact-reference/v1":
+                obj = dict(obj)
+                obj["fingerprint"] = "<SHA>"
+                obj["digest"] = "<SHA>"
+                obj["bytes"] = 0
+                if isinstance(obj.get("relative_path"), str):
+                    obj["relative_path"] = re.sub(
+                        r"/[0-9a-f]{64}\.json$", "/<SHA>.json",
+                        obj["relative_path"])
             out = {}
             for k, v in obj.items():
                 if k in _ZERO_KEYS and isinstance(v, (int, float)):
                     out[k] = 0
-                elif k in _SHA_KEYS and isinstance(v, str) and v:
+                elif (k in _SHA_KEYS or k.endswith("_fingerprint")) \
+                        and isinstance(v, str) and v:
                     out[k] = "<SHA>"
                 else:
                     out[k] = clean(v)

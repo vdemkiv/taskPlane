@@ -19,12 +19,10 @@ pass a gate. What the agent stops doing is transcription; what it still
 owes is exactly the reasoning it always owed.
 
 WHY THIS MODULE IS DELIBERATELY NOT IN tp.VALIDATOR_SURFACE. The bundle is
-UNTRUSTED INPUT. The evaluate gate re-derives the criteria set, the routed
-lens set and the graph obligations independently in loop._evaluation_errors
-and validates the submitted verdict against its OWN derivation. A bundle
-that under-stated an obligation therefore cannot smuggle a pass — it just
-walks its evaluator into a refusal. Adding this module to the fingerprint
-surface would imply the gate trusts it; the gate does not, and must not.
+UNTRUSTED INPUT. Criteria and graph dispositions are checked by the gate,
+while routed lens obligations are cited from the immutable decision already
+owned by the ReviewKernel and checked against that same decision. The bundle
+never maps again and therefore cannot drift from a fail-closed kernel.
 """
 
 from __future__ import annotations
@@ -33,10 +31,56 @@ import os
 
 import taskplane_lite as tp
 import depgraph
-import lens as lens_router
 
 
 EVIDENCE_JUDGMENT_KEYS = ("status", "verdict", "evidence", "blockers")
+
+
+def _canonical_kernel_obligations(ws: str, expected_stage: str) -> dict:
+    """Read the live kernel's terminal graph/routing decision by reference."""
+    import review
+    import review_evidence
+
+    kernel = review._load_state(ws)
+    status = str(kernel.get("status") or "")
+    stage = str(kernel.get("stage") or "")
+    manifest = kernel.get("manifest") or {}
+    citation = {
+        "schema": "taskplane.review-kernel-citation/v1",
+        "run_id": kernel.get("run_id"), "status": status, "stage": stage,
+        "target_fingerprint": (kernel.get("target") or {}).get(
+            "fingerprint") or manifest.get("target_fingerprint"),
+        "graph_quality": manifest.get("graph_quality"),
+        "routing_decision": manifest.get("routing_decision"),
+    }
+    if stage != expected_stage:
+        raise RuntimeError(
+            f"live review kernel stage is {stage!r}, expected {expected_stage!r}")
+    if status not in {"ready", "prepared", "committed", "complete"}:
+        return {"citation": citation, "lenses": [], "not_applicable": [],
+                "error": (f"live review kernel is {status}; graph quality "
+                          "must be repaired before lens evaluation")}
+    decision_ref = kernel.get("routing_decision")
+    if not isinstance(decision_ref, dict):
+        raise RuntimeError("live review kernel has no routing decision")
+    payload = review_evidence.ArtifactStore(ws).read(decision_ref)
+    dispositions = payload.get("dispositions")
+    if not isinstance(dispositions, dict) or len(dispositions) != 26:
+        raise RuntimeError("live review kernel routing decision is incomplete")
+    lenses, not_applicable = [], []
+    for lens_id, row in sorted(dispositions.items()):
+        verdict = (row or {}).get("verdict")
+        if verdict == "n/a":
+            not_applicable.append(lens_id)
+        elif verdict in {"deep", "light"}:
+            lenses.append({"lens": lens_id,
+                           "mode": "subagent" if verdict == "deep" else "inline",
+                           "verdict": "", "blockers": None})
+        else:
+            raise RuntimeError(
+                f"live review kernel has invalid disposition for {lens_id}")
+    return {"citation": citation, "lenses": lenses,
+            "not_applicable": not_applicable, "error": None}
 
 
 def evidence(ws: str, task_id: "str | None" = None,
@@ -71,13 +115,43 @@ def evidence(ws: str, task_id: "str | None" = None,
                  "generated_by": "tp loop evidence",
                  "judgment_owed": list(EVIDENCE_JUDGMENT_KEYS)}
 
-    # --- the suite. Goes through dod_check's cache, so a wave's tasks over
-    # identical content pay for one execution between them, not one each.
+    # --- the suite. The execute/fix gate already paid for and bound this
+    # result to the exact command/tree/engine/env key. Consume that record
+    # directly: asking the cache again is needless work and, before T3, a
+    # kernel-authored runtime file could even turn it into a hidden rerun.
+    # An absent/stale record retains the old fail-safe cache/run path.
     tests = str(task.get("tests") or "").strip()
     if tests:
         env = {k: v for k, v in os.environ.items() if k != "TASKPLANE_TASK"}
-        hit = tp.suite_cache_lookup(ws, tests, env)
-        if hit is not None:
+        force_run = not tp.suite_cache_enabled()
+        direct = ((state.get("_suite_evidence") or {}).get(
+            str(task.get("id"))) or {})
+        direct_key = tp._suite_cache_key(ws, tests, env)
+        direct_valid = (
+            direct.get("schema") == "taskplane.suite-evidence/v1"
+            and direct.get("command") == tests
+            and direct_key is not None
+            and direct.get("key") == direct_key
+            and isinstance(direct.get("returncode"), int)
+        )
+        if direct_valid and not force_run:
+            out["suite"] = {
+                "command": tests, "returncode": direct["returncode"],
+                "cited": True, "tail": direct.get("tail"),
+                "seconds_saved": direct.get("duration_s"),
+                "source": "execute-gate",
+            }
+            tp.trace(ws, "suite_evidence_direct", command=tests,
+                     key=direct_key, returncode=direct["returncode"],
+                     produced_by=direct.get("source"))
+        elif not force_run:
+            hit = tp.suite_cache_lookup(ws, tests, env)
+            if direct:
+                tp.trace(ws, "suite_evidence_stale", command=tests,
+                         recorded_key=direct.get("key"), current_key=direct_key)
+        else:
+            hit = None
+        if not force_run and not direct_valid and hit is not None:
             out["suite"] = {"command": tests, "returncode": hit.get("returncode"),
                             "cited": True, "tail": hit.get("tail"),
                             "seconds_saved": hit.get("duration_s")}
@@ -87,10 +161,10 @@ def evidence(ws: str, task_id: "str | None" = None,
                      key=hit.get("key"), returncode=hit.get("returncode"),
                      seconds_saved=hit.get("duration_s"),
                      produced_in=hit.get("produced_in"), via="evidence_bundle")
-        else:
+        elif force_run or not direct_valid:
             import time as _t
             t0 = _t.time()
-            proc = tp._run(tests, cwd=ws, shell=True, env=env)
+            proc = tp.run_suite_command(ws, tests, env=env)
             elapsed = _t.time() - t0
             tail = " | ".join(
                 (proc.stdout + proc.stderr).strip().splitlines()[-5:])
@@ -115,26 +189,23 @@ def evidence(ws: str, task_id: "str | None" = None,
     out["criteria"] = [{"criterion": c, "status": "", "evidence": ""}
                        for c in loop._criteria_for(ws, state, task)]
 
-    # --- which lenses owe a verdict. Derived with EVALUATE_ROUTE_STAGE, the
-    #     same single source the gate validates against, so the bundle can
-    #     never brief a narrower set than the gate will demand.
+    # --- which lenses owe a verdict. Consume the one live ReviewKernel
+    #     decision. Mapping here would create a second truth and can turn a
+    #     terminal impact_incomplete/zero-slot decision into fresh work.
     try:
-        routing = lens_router.route_git_diff(
-            ws, base=base, task_type=task.get("type"),
-            stage=loop.EVALUATE_ROUTE_STAGE, breadth="routed")
-        out["lenses"] = [{"lens": e["id"], "mode": e.get("mode"),
-                          "verdict": "", "blockers": None}
-                         for e in routing.get("lenses") or []
-                         if e.get("mode") != "none"]
-        out["lenses_not_applicable"] = [
-            e["id"] for e in routing.get("lenses") or []
-            if e.get("mode") == "none"]
+        obligations = _canonical_kernel_obligations(
+            ws, loop.EVALUATE_ROUTE_STAGE)
+        out["review_kernel"] = obligations["citation"]
+        out["lenses"] = obligations["lenses"]
+        out["lenses_not_applicable"] = obligations["not_applicable"]
+        if obligations["error"]:
+            out["lenses_error"] = obligations["error"]
     except Exception as e:
-        # Fail LOUD, never quiet: a bundle that silently dropped the lens
-        # obligation would look complete while briefing nothing.
+        out["lenses"] = []
+        out["lenses_not_applicable"] = []
         out["lenses_error"] = (f"{e.__class__.__name__}: {e} — route the "
-                               "lenses manually (`tp lens route`); do not "
-                               "submit without lens verdicts")
+                               "ReviewKernel first; do not independently "
+                               "remap or submit without its decision")
 
     # --- graph obligations, when the loop governs the graph
     if state.get("graph_governance"):

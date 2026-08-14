@@ -15,11 +15,14 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
+import review  # noqa: E402
+import review_evidence  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
 
@@ -48,6 +51,49 @@ def submit_gate(ws, outcome="pass", task_id=None):
     return loop.gate(ws, outcome, task_id=task_id)
 
 
+def author_leased_results(ws):
+    """Produce the canonical per-slot evidence the Evaluate gate consumes.
+
+    A filled free-form verdict is intentionally insufficient: every routed
+    lens must come from its leased, hook-observed producer slot.
+    """
+    state = review._load_state(ws)
+    store = review_evidence.ArtifactStore(ws)
+    for index, slot in enumerate(state["slots"]):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        payload = {
+            **lease,
+            "schema": "taskplane.lens-slot-output/v2",
+            "authored_by": "lens-slot",
+            "lens_results": [
+                {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                for lens_id in lease["lens_ids"]
+            ],
+            "findings": [],
+        }
+        content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        event = {"session_id": "evidence-bundle-lens",
+                 "agent_id": f"evidence-bundle-child-{index}",
+                 "tool_name": "Write",
+                 "tool_input": {"file_path": slot["result_path"],
+                                "content": content}}
+        contract = {"task": brief["producer_contract"]["task"],
+                    "task_id": "evidence-bundle-contract",
+                    "read_only": True,
+                    "write_allow": [slot["result_path"]]}
+        review.register_slot_producer(
+            ws, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        review.record_slot_write_observation(
+            ws, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        path = os.path.join(ws, slot["result_path"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(content)
+
+
 class _AtEvaluate(unittest.TestCase):
     """Drive a loop to the evaluate step with one real task."""
 
@@ -60,7 +106,8 @@ class _AtEvaluate(unittest.TestCase):
         loop.gate(self.ws, "pass")               # plan → plan_approval
         loop.approve(self.ws, "plan")
         loop.next_action(self.ws)                # execute
-        open(os.path.join(self.ws, "src", "todo", "a.py"), "a", encoding="utf-8").write("y=2\n")
+        open(os.path.join(self.ws, "src", "todo", "a.py"), "a",
+             encoding="utf-8").write("\ndef complete():\n    return True\n")
         submit_gate(self.ws, "pass")             # execute → evaluate
         loop.next_action(self.ws)
 
@@ -157,6 +204,7 @@ class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
             b["graph"]["contracts_checked"] = \
                 b["graph"].pop("contracts_to_verify")
         b["verdict"] = "pass"
+        author_leased_results(self.ws)
         os.makedirs(os.path.join(self.ws, ".eval"), exist_ok=True)
         with open(os.path.join(self.ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
             json.dump(b, f)
@@ -182,25 +230,188 @@ class TestWriteIsNonDestructive(_AtEvaluate):
 
 
 class TestDegradationIsLoud(_AtEvaluate):
-    def test_a_routing_failure_surfaces_instead_of_briefing_no_lenses(self):
-        """A bundle that silently dropped the lens obligation would look
-        complete while briefing nothing — the dangerous direction."""
+    def test_post_kernel_mapper_failure_cannot_replace_canonical_decision(self):
+        """Once persisted, the one governed decision is the only authority."""
         with mock.patch.object(loop.lens_router, "route_git_diff",
                                side_effect=RuntimeError("catalog gone")):
             b = self.bundle()
-        self.assertIn("lenses_error", b)
-        self.assertIn("do not submit", b["lenses_error"])
+        self.assertNotIn("lenses_error", b)
+        self.assertEqual(b["review_kernel"]["status"], "ready")
+        self.assertTrue(b["lenses"])
 
     def test_an_unknown_task_id_is_refused(self):
         self.assertIn("error", self.bundle(task_id="nope"))
 
     def test_no_loop_is_refused(self):
-        import tempfile
         bare = tempfile.mkdtemp()
         self.assertIn("error", loop.evidence(bare))
 
+    def test_bundle_consumes_live_kernel_and_never_reroutes(self):
+        kernel = review._load_state(self.ws)
+        store = review_evidence.ArtifactStore(self.ws)
+        decision = store.read(kernel["routing_decision"])["dispositions"]
+        expected = {lens_id for lens_id, row in decision.items()
+                    if row["verdict"] != "n/a"}
+        with mock.patch.object(loop.lens_router, "route_git_diff",
+                               side_effect=AssertionError("must not remap")):
+            bundle = self.bundle()
+        self.assertEqual(bundle["review_kernel"]["run_id"], kernel["run_id"])
+        self.assertEqual({row["lens"] for row in bundle["lenses"]}, expected)
+
+    def test_impact_incomplete_kernel_produces_zero_lens_obligations(self):
+        second = os.path.join(self.tmp, "impact-incomplete")
+        os.makedirs(second)
+        ws = git_ws(second, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        loop.next_action(ws); loop.gate(ws, "pass")
+        loop.approve(ws, "plan"); loop.next_action(ws)
+        with open(os.path.join(ws, "src", "todo", "a.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("x=2\n")
+        submit_gate(ws, "pass")
+        action = loop.next_action(ws)
+        self.assertEqual(action["review_kernel"]["status"],
+                         "impact_incomplete")
+        with mock.patch.object(loop.lens_router, "route_git_diff",
+                               side_effect=AssertionError("must not remap")):
+            bundle = loop.evidence(ws)
+        self.assertEqual(bundle["review_kernel"]["status"],
+                         "impact_incomplete")
+        self.assertEqual(bundle["lenses"], [])
+        self.assertEqual(bundle["lenses_not_applicable"], [])
+        self.assertIn("impact_incomplete", bundle["lenses_error"])
+
 
 class TestTheSuiteIsCitedNotRerun(_AtEvaluate):
+    @staticmethod
+    def _transport_shim(root):
+        package = os.path.join(root, "taskplane")
+        os.makedirs(package)
+        with open(os.path.join(package, "__init__.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("from pathlib import Path\n"
+                         "__path__ = [str(Path.cwd() / 'taskplane')]\n")
+
+    def test_native_executor_and_evaluator_task_ids_share_suite_identity(self):
+        base = dict(os.environ)
+        producer = {**base, "CODEX_THREAD_ID": "executor-thread",
+                    "TASKPLANE_TASK": "execute-t1"}
+        consumer = {**base, "CODEX_THREAD_ID": "evaluator-thread",
+                    "TASKPLANE_TASK": "evaluate-t1"}
+        self.assertEqual(
+            tp._suite_cache_key(self.ws, TASK["tests"], producer),
+            tp._suite_cache_key(self.ws, TASK["tests"], consumer))
+        changed = {**producer, "TASKPLANE_AUDIT_EVERY": "different"}
+        self.assertNotEqual(
+            tp._suite_cache_key(self.ws, TASK["tests"], producer),
+            tp._suite_cache_key(self.ws, TASK["tests"], changed))
+
+    def test_transport_only_pythonpath_is_not_suite_behavior_identity(self):
+        shim = tempfile.mkdtemp()
+        self._transport_shim(shim)
+        native = {"LANG": "C.UTF-8"}
+        transported = {**native, "PYTHONPATH": shim}
+        self.assertEqual(
+            tp._suite_cache_key(self.ws, TASK["tests"], native),
+            tp._suite_cache_key(self.ws, TASK["tests"], transported))
+        with open(os.path.join(shim, "behavior.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("VALUE = 'changes imports'\n")
+        self.assertNotEqual(
+            tp._suite_cache_key(self.ws, TASK["tests"], native),
+            tp._suite_cache_key(self.ws, TASK["tests"], transported))
+
+    def test_native_evaluator_cites_gate_record_across_transport_shim(self):
+        shim = tempfile.mkdtemp()
+        self._transport_shim(shim)
+        state = loop.load(self.ws)
+        record = state["_suite_evidence"][TASK["id"]]
+        producer_env = {**os.environ, "PYTHONPATH": shim,
+                        "CODEX_THREAD_ID": "execute-thread",
+                        "TASKPLANE_TASK": "execute-t1"}
+        record["key"] = tp._suite_cache_key(
+            self.ws, TASK["tests"], producer_env)
+        record["returncode"] = 0
+        record["source"] = "execute-gate"
+        loop.save(self.ws, state)
+        original = tp._run
+
+        def refuse_suite(command, *args, **kwargs):
+            if kwargs.get("shell"):
+                raise AssertionError("native evaluator must never rerun suite")
+            return original(command, *args, **kwargs)
+
+        consumer = {**os.environ, "CODEX_THREAD_ID": "evaluate-thread",
+                    "TASKPLANE_TASK": "evaluate-t1"}
+        consumer.pop("PYTHONPATH", None)
+        with mock.patch.dict(os.environ, consumer, clear=True), \
+                mock.patch.object(tp, "_run", side_effect=refuse_suite):
+            bundle = self.bundle()
+        self.assertTrue(bundle["suite"]["cited"])
+        self.assertEqual(bundle["suite"]["source"], "execute-gate")
+        self.assertEqual(bundle["suite"]["returncode"], 0)
+
+    def test_native_no_record_runner_binds_imports_to_checkout(self):
+        checkout = tempfile.mkdtemp()
+        package = os.path.join(checkout, "taskplane", "tests")
+        os.makedirs(package)
+        with open(os.path.join(package, "__init__.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("LOCAL = True\n")
+        with open(os.path.join(package, "test_native.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write(
+                "import taskplane.tests\n"
+                "def test_checkout_package_wins():\n"
+                "    assert taskplane.tests.LOCAL is True\n")
+        proc = tp.run_suite_command(
+            checkout,
+            "python -m pytest -q -p no:cacheprovider "
+            "taskplane/tests/test_native.py",
+            env=dict(os.environ))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_checkout_binding_propagates_to_nested_python_processes(self):
+        checkout = tempfile.mkdtemp()
+        package = os.path.join(checkout, "taskplane", "tests")
+        os.makedirs(package)
+        with open(os.path.join(package, "__init__.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("LOCAL = True\n")
+        with open(os.path.join(package, "test_nested.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write(
+                "import subprocess,sys\n"
+                "def test_nested_checkout_wins():\n"
+                "    child = subprocess.run([sys.executable, '-c', "
+                "'import taskplane.tests; assert taskplane.tests.LOCAL'], "
+                "capture_output=True, text=True)\n"
+                "    assert child.returncode == 0, child.stderr\n")
+        polluted = tempfile.mkdtemp()
+        os.makedirs(os.path.join(polluted, "taskplane"))
+        with open(os.path.join(polluted, "taskplane", "__init__.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("REGULAR_INSTALLED_PACKAGE = True\n")
+        proc = tp.run_suite_command(
+            checkout,
+            "python -m pytest -q -p no:cacheprovider "
+            "taskplane/tests/test_nested.py",
+            env={**os.environ, "PYTHONPATH": polluted})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_no_record_bundle_executes_checkout_bound_python_fallback(self):
+        state = loop.load(self.ws)
+        state.pop("_suite_evidence", None)
+        state["tasks"][0]["tests"] = (
+            "python -c \"import os,taskplane; "
+            "assert taskplane.__path__ == "
+            "[os.path.join(os.getcwd(),'taskplane')]\"")
+        loop.save(self.ws, state)
+        with mock.patch.object(tp, "suite_cache_lookup", return_value=None):
+            bundle = self.bundle()
+        self.assertEqual(bundle["suite"]["returncode"], 0, bundle["suite"])
+        self.assertFalse(bundle["suite"]["cited"])
+
     def test_the_bundle_cites_the_run_the_execute_gate_already_paid_for(self):
         """The wave economics in one assertion: the execute gate ran this
         task's tests, so the evaluator's bundle must cite that run rather

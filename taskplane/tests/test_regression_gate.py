@@ -494,6 +494,45 @@ def test_run_pytest_sanitizes_credentials_and_isolates_home(
     assert seen["env"]["HOME"] != os.environ.get("HOME")
 
 
+def test_current_and_baseline_runners_share_one_configured_timeout(
+        monkeypatch, tmp_path):
+    seen = []
+
+    def fake_run(workspace, command, *, env, timeout):
+        seen.append((workspace, timeout))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setenv("TASKPLANE_REGRESSION_TIMEOUT_SECONDS", "750")
+    monkeypatch.setattr(rg.tp, "run_suite_command", fake_run)
+    rg.run_pytest(str(tmp_path), ["tests/test_x.py"])
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+    rg.run_pytest(str(baseline), ["tests/test_x.py"])
+
+    assert seen == [(str(tmp_path), 750), (str(baseline), 750)]
+
+
+def test_run_pytest_timeout_is_bounded_and_fails_closed(
+        monkeypatch, tmp_path):
+    def timeout(_workspace, command, *, env, timeout):
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setenv("TASKPLANE_REGRESSION_TIMEOUT_SECONDS", "37")
+    monkeypatch.setattr(rg.tp, "run_suite_command", timeout)
+    with pytest.raises(rg.RegressionRunnerError,
+                       match="timed out after 37 seconds"):
+        rg.run_pytest(str(tmp_path), ["tests/test_x.py"])
+
+
+@pytest.mark.parametrize("value", ["not-a-number", "29", "1801"])
+def test_regression_timeout_configuration_cannot_remove_the_bound(
+        monkeypatch, tmp_path, value):
+    monkeypatch.setenv("TASKPLANE_REGRESSION_TIMEOUT_SECONDS", value)
+    with pytest.raises(rg.RegressionRunnerError,
+                       match="TASKPLANE_REGRESSION_TIMEOUT_SECONDS"):
+        rg.run_pytest(str(tmp_path), ["tests/test_x.py"])
+
+
 def test_symlinked_test_is_refused(tmp_path):
     outside = tmp_path.parent / "test_outside.py"
     outside.write_text("def test_outside(): assert True\n")
@@ -536,3 +575,21 @@ def test_dod_errors_turns_runner_failure_into_a_named_blocker(tmp_path):
 
     assert any(e.startswith("regression_gate: current runner failed")
                for e in errors)
+
+
+def test_selector_scoped_contract_does_not_widen_tier1(tmp_path):
+    ws = _mk_pkg(tmp_path)
+    calls = []
+
+    errors = rg.dod_errors(
+        ws, "abcdef123456", ["taskplane/loop.py"],
+        test_command=(
+            "python -m pytest -q "
+            "taskplane/tests/test_loop_x.py::test_g"),
+        runner=lambda _ws, _files: calls.append("current") or set(),
+        baseline_failures=(
+            lambda _ws, _base, _files:
+            calls.append("baseline") or set()))
+
+    assert errors == []
+    assert calls == []

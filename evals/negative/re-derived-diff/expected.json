@@ -1,0 +1,20 @@
+{
+ "rates": {
+  "agent_fanout": 1.0,
+  "artifact_surfacing": null,
+  "cross_host": null,
+  "gate_discipline": null,
+  "product_graph": null,
+  "skill_flow": null
+ },
+ "rubric": {
+  "derivation_ledger": "present",
+  "instrument": "ok",
+  "score": 0.5,
+  "verdicts": {
+   "C1": "pass",
+   "N1": "fail"
+  }
+ },
+ "why": "The diff was derived twice at the same base..head \u2014 the expensive part run again instead of shared. The ledger is healthy and its probe row is present, so this is a real repeat and not an instrument artefact."
+}

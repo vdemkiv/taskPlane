@@ -58,6 +58,10 @@ for var in ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
 import lens  # noqa: E402
 import stage_fixture  # noqa: E402  (lives next to this script)
 
+SHARED_CONTEXT_PATHS = {
+    "diff.patch": ".em-review/context/diff.patch",
+}
+
 HEADER = """\
 # GOLDEN — frozen Codex Task-dispatch payload (t6, R-0002 / contract:lens-brief).
 # Any change to the dispatch-payload shape fails CI's parity leg even when the
@@ -166,10 +170,13 @@ def main():
               encoding="utf-8") as f:
         f.write(json.dumps(files, indent=2, sort_keys=True) + "\n")
     print(f"wrote changed_files.json ({len(files)} files)")
-    routed = lens.dispatch_briefs(lens.route(files), base="HEAD")
+    routed = lens.dispatch_briefs(
+        lens.route(files), base="HEAD",
+        context_paths=SHARED_CONTEXT_PATHS)
     write_golden("golden_dispatch_routed.json", routed)
     everything = lens.dispatch_briefs(lens.route(files, breadth="all"),
-                                      base="HEAD")
+                                      base="HEAD",
+                                      context_paths=SHARED_CONTEXT_PATHS)
     write_golden("golden_dispatch_all.json", everything)
     # v2.11.0: the CLI's DEFAULT is now signal-driven routing (stage=
     # "review"), so the payload a review actually dispatches needs its own
@@ -178,7 +185,7 @@ def main():
     review = lens.dispatch_briefs(
         lens.route(files, stage="review",
                    workspace=os.path.join(HERE, "workspace")),
-        base="HEAD")
+        base="HEAD", context_paths=SHARED_CONTEXT_PATHS)
     write_golden("golden_dispatch_review.json", review)
     regen_stage_goldens()
 

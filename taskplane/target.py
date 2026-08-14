@@ -269,6 +269,121 @@ def acquire(root: str, spec, *, base: str | None = None,
     return rec
 
 
+# ------------------------------------------- is this the tree it claims to be
+
+def resolve_pr_head(root: str, target: dict | None,
+                    remote: str = "origin") -> dict:
+    """The sha the remote serves for `refs/pull/N/head`, read not inferred.
+
+    `refs/pull/N/head` is the pull request's OWN tip. Deliberately not
+    `pull/N/merge` — that is GitHub's throwaway merge commit, and comparing
+    a checkout against it would refuse every correctly checked-out pull
+    request. Never raises, never touches the remote for a non-PR target."""
+    t = target if isinstance(target, dict) else {}
+    if t.get("kind") != "pr" or not t.get("number"):
+        return {"ok": False, "sha": None, "remote": remote,
+                "reason": "not a pull-request target"}
+    ref = f"refs/pull/{int(t['number'])}/head"
+    # A SHORT timeout on purpose. The answer is advisory — an unreachable
+    # remote is not a wrong tree — so a sandbox with no network must pay
+    # seconds for the question, not a minute before every review opens.
+    rc, out = git(root, "ls-remote", remote, ref, timeout=30)
+    sha = ""
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == ref:
+            sha = parts[0].strip()
+            break
+    if rc != 0 or not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+        return {"ok": False, "sha": None, "ref": ref, "remote": remote,
+                "reason": f"could not resolve {ref} from {remote} — the "
+                          f"remote may be unreachable, private, or not the "
+                          f"repository this pull request belongs to"}
+    return {"ok": True, "sha": sha, "ref": ref, "remote": remote}
+
+
+def _sha_match(a, b) -> bool:
+    """Abbreviations name the same commit. `git ls-remote` serves 40
+    characters; a record may carry an abbreviated head, and treating that as
+    a mismatch would refuse a correct tree."""
+    a = str(a or "").strip().lower()
+    b = str(b or "").strip().lower()
+    if len(a) < 7 or len(b) < 7:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def wrong_tree(root: str, rec: dict | None,
+               remote: str = "origin") -> str | None:
+    """Why this checkout is not the pull request's head — or None.
+
+    THE DEFECT THIS EXISTS FOR: a field run reviewed an 83-file working tree
+    as a 4-file pull request. Contract activated, target pinned,
+    fingerprinted, every obligation discharged, `steps.target ok: true`
+    throughout — and seven deep lenses cited evidence from files the pull
+    request never touches. The binding proved the findings came from the
+    pinned tree; nothing proved the pinned tree was the pull request.
+
+    Two deliberate non-refusals, because a refusal that fires when it should
+    not is a refusal someone switches off:
+
+      * a NON-PR target returns None WITHOUT touching the remote — reviewing
+        a branch or a range is legitimate and must stay free;
+      * an UNRESOLVABLE remote returns None. Offline is an environment fact,
+        not a wrong tree.
+    """
+    r = rec if isinstance(rec, dict) else {}
+    t = r.get("target")
+    t = t if isinstance(t, dict) else {}
+    if t.get("kind") != "pr":
+        return None
+    res = resolve_pr_head(root, t, remote=remote)
+    want = res.get("sha") if res.get("ok") else None
+    if not want:
+        return None                     # advisory, never blocking
+    have = r.get("head") or ""
+    if _sha_match(have, want):
+        return None
+    owner, repo, n = t.get("owner"), t.get("repo"), t.get("number")
+    label = (f"{owner}/{repo}#{n}" if owner and repo
+             else f"pull request #{n}")
+    return (f"this checkout is not the tree {label} is about: the pull "
+            f"request's head ({res.get('ref')} on {remote}) is "
+            f"{want[:12]}, but this workspace is at {have[:12] or '(none)'}. "
+            f"A review of the wrong tree passes every gate — the run that "
+            f"prompted this scored an 83-file working tree as a 4-file pull "
+            f"request, with seven lenses citing files the pull request never "
+            f"touched. Check the pull request out (`tp target fetch "
+            f"{label}` or `tp review start {label} --fetch`) and re-run.")
+
+
+def graph_problem(rec: dict | None, findings: dict | None) -> str | None:
+    """Why the blast radius describes another revision — or None.
+
+    The dependency graph is the one input a reviewer is told NOT to
+    re-derive, so a graph scanned at a different head names files as they
+    were somewhere else and the review that reads it looks exactly like a
+    review that read the right one.
+
+    FAILS OPEN ON ABSENCE. An older findings file carries no `scanned_head`
+    at all; inventing a mismatch there would block reviews that are fine,
+    which is how a refusal gets deleted rather than fixed."""
+    meta = (findings or {}).get("meta") if isinstance(findings, dict) else None
+    impact = meta.get("impact") if isinstance(meta, dict) else None
+    graph = impact.get("graph") if isinstance(impact, dict) else None
+    scanned = graph.get("scanned_head") if isinstance(graph, dict) else None
+    scanned = str(scanned or "")[:12]
+    head = str((rec or {}).get("head") or "")[:12] \
+        if isinstance(rec, dict) else ""
+    if not scanned or not head or scanned == head:
+        return None
+    return (f"the blast radius was read out of a dependency graph scanned at "
+            f"{scanned}, but the reviewed tree is {head} — the impact names "
+            f"modules as they were at another revision, and every lens that "
+            f"cited it cited that revision. Re-run `tp graph scan` in the "
+            f"reviewed checkout and recompute the impact.")
+
+
 # ------------------------------------------------------------------ storage
 
 def record_path(ws: str) -> str:
@@ -300,11 +415,25 @@ def load(ws: str) -> dict | None:
 
 def cited_fingerprint(findings: dict) -> str | None:
     """The fingerprint a findings document CITES, if any."""
+    identity = (findings or {}).get("identity") or {}
+    if isinstance(identity, dict) and identity.get("target_fingerprint"):
+        return str(identity["target_fingerprint"])
     meta = (findings or {}).get("meta") or {}
     t = meta.get("target")
     if isinstance(t, dict):
         return t.get("fingerprint") or None
     return t if isinstance(t, str) and t else None
+
+
+def canonical_identity(rec: dict) -> dict:
+    """The one target tuple used by context, findings and projections."""
+    row = rec if isinstance(rec, dict) else {}
+    fp = str(row.get("fingerprint") or "").strip()
+    if not fp:
+        raise ValueError("target fingerprint is required")
+    return {"target_fingerprint": fp,
+            "target_head": str(row.get("head") or ""),
+            "target_base": str(row.get("base") or "")}
 
 
 def binding_problem(ws: str, findings: dict | None = None) -> str | None:
@@ -334,4 +463,7 @@ def binding_problem(ws: str, findings: dict | None = None) -> str | None:
                 f"pinned to {rec['fingerprint']} "
                 f"({(rec.get('head') or '')[:9]}) — they were derived from "
                 f"a different checkout than the one being signed off.")
-    return None
+    # LAST, and here rather than beside it: `binding_problem` is what the
+    # screener and the sign-off gate consult. A graph check they never call
+    # is a mechanism that does not exist.
+    return graph_problem(rec, findings)

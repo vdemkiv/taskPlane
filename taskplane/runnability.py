@@ -193,6 +193,23 @@ def can_run_tests(result: dict) -> bool:
     return bool(checks) and all(c.get("verdict") == RUNS for c in checks)
 
 
+def evidence_record(result: dict | None) -> dict:
+    """Stable envelope input, excluding cache-observation annotations.
+
+    ``cached`` describes how this process obtained the record, not whether
+    the target can run.  Including it made first-use and later lenses cite
+    different context fingerprints for the same probe.
+    """
+    row = dict(result or {})
+    for key in ("cached", "cache_hit", "loaded_at", "observed_at"):
+        row.pop(key, None)
+    row["checks"] = sorted(
+        [dict(check) for check in (row.get("checks") or [])],
+        key=lambda check: (str(check.get("id", "")),
+                           str(check.get("command", ""))))
+    return row
+
+
 # ------------------------------------------------------------------ cache
 
 def _cache_path(workspace: str) -> str:

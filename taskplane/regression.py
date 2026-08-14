@@ -28,6 +28,8 @@ import subprocess
 import sys
 import tempfile
 
+import taskplane_lite as tp
+
 # Enforcement / public entry points: a change here that ships with no covering
 # test is the coverage-gap the v2.3.0 wave fell through (broken CI invocation,
 # tp.py self-blocked, contract-slot unwired). Path-suffix / basename patterns.
@@ -61,6 +63,16 @@ _RUNNER_ENV_ALLOW = {
     "TMPDIR", "TMP", "TEMP", "CI", "GITHUB_ACTIONS",
     "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC",
 }
+
+# One bounded policy for both current and detached-baseline processes. The
+# original subprocess default was 600s, which let a current checkout finish
+# but killed a byte-equivalent baseline radius during a cold import/cache run.
+# Operators may tune the shared bound without making it unbounded; invalid
+# values fail closed instead of silently changing comparison semantics.
+REGRESSION_TIMEOUT_ENV = "TASKPLANE_REGRESSION_TIMEOUT_SECONDS"
+REGRESSION_TIMEOUT_DEFAULT_S = 1200
+REGRESSION_TIMEOUT_MIN_S = 30
+REGRESSION_TIMEOUT_MAX_S = 1800
 
 
 class RegressionDiscoveryError(RuntimeError):
@@ -331,19 +343,13 @@ def _pytest_positionals(argv: list[str]) -> list[str] | None:
     return out
 
 
-def approved_test_roots(ws: str, test_command: str | None) -> set[str]:
-    """Test roots explicitly named by the approved command.
-
-    A bare `pytest` command approves repository-wide discovery. When files or
-    directories are named, fallback may widen only within their directories.
-    """
-    if test_command is None:
-        return {"."}  # direct API compatibility: caller explicitly opted in
+def _approved_pytest_positionals(test_command: str) -> list[str] | None:
+    """Parse one approved pytest command without inferring extra targets."""
     if "\n" in test_command or "\r" in test_command:
-        return set()  # shell command separators must never widen discovery
+        return None
     try:
         lexer = shlex.shlex(
-            test_command or "", posix=True, punctuation_chars=True)
+            test_command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         lexer.commenters = ""
         # Preserve Windows path separators. Quoted whitespace still works;
@@ -354,8 +360,27 @@ def approved_test_roots(ws: str, test_command: str | None) -> set[str]:
         raise RegressionDiscoveryError(
             f"could not parse approved test command: {exc}") from exc
     pytest_argv = _pytest_argv(tokens)
-    positionals = (_pytest_positionals(pytest_argv)
-                   if pytest_argv is not None else None)
+    return (_pytest_positionals(pytest_argv)
+            if pytest_argv is not None else None)
+
+
+def selector_scoped_test_command(test_command: str | None) -> bool:
+    """True when every approved pytest target is an exact node selector."""
+    if not test_command:
+        return False
+    positionals = _approved_pytest_positionals(test_command)
+    return bool(positionals and all("::" in token for token in positionals))
+
+
+def approved_test_roots(ws: str, test_command: str | None) -> set[str]:
+    """Test roots explicitly named by the approved command.
+
+    A bare `pytest` command approves repository-wide discovery. When files or
+    directories are named, fallback may widen only within their directories.
+    """
+    if test_command is None:
+        return {"."}  # direct API compatibility: caller explicitly opted in
+    positionals = _approved_pytest_positionals(test_command)
     if positionals is None:
         return set()  # non-Python command authorizes no additional Python code
     roots: set[str] = set()
@@ -599,6 +624,24 @@ class RegressionRunnerError(RuntimeError):
     """The regression test runner did not produce a trustworthy verdict."""
 
 
+def regression_timeout_seconds() -> int:
+    raw = os.environ.get(REGRESSION_TIMEOUT_ENV)
+    if raw in (None, ""):
+        return REGRESSION_TIMEOUT_DEFAULT_S
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise RegressionRunnerError(
+            f"{REGRESSION_TIMEOUT_ENV} must be an integer between "
+            f"{REGRESSION_TIMEOUT_MIN_S} and {REGRESSION_TIMEOUT_MAX_S}") \
+            from None
+    if not REGRESSION_TIMEOUT_MIN_S <= value <= REGRESSION_TIMEOUT_MAX_S:
+        raise RegressionRunnerError(
+            f"{REGRESSION_TIMEOUT_ENV} must be between "
+            f"{REGRESSION_TIMEOUT_MIN_S} and {REGRESSION_TIMEOUT_MAX_S}")
+    return value
+
+
 def _runner_env(home: str) -> dict:
     """Minimal runtime environment: credential locators never cross."""
     env = {k: v for k, v in os.environ.items()
@@ -629,10 +672,15 @@ def run_pytest(ws: str, test_files) -> set:
             raise RegressionRunnerError(f"test file escapes workspace: {rel}")
     cmd = [sys.executable, "-m", "pytest", *files,
            "-q", "--no-header", "--tb=no", "-rfE", "-p", "no:cacheprovider"]
+    timeout_s = regression_timeout_seconds()
     try:
         with tempfile.TemporaryDirectory(prefix="tp-regenv-") as home:
-            proc = subprocess.run(cmd, cwd=ws, capture_output=True, text=True,
-                                  env=_runner_env(home), encoding="utf-8", errors="replace")
+            proc = tp.run_suite_command(
+                ws, cmd, env=_runner_env(home), timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        raise RegressionRunnerError(
+            f"pytest timed out after {timeout_s} seconds over "
+            f"{len(files)} radius test file(s)") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise RegressionRunnerError(
             f"could not start pytest with {sys.executable}: {exc}") from exc
@@ -701,8 +749,12 @@ def dod_errors(ws: str, snapshot_ref: str | None, changed_files,
             "point changed with no test exercising it — add a covering "
             "behavioral test so a future break is detectable")
 
-    # Tier 1 — baseline test-diff (needs a baseline)
-    if radius and snapshot_ref:
+    # Tier 1 — baseline test-diff (needs a baseline). Exact pytest node
+    # selectors are already the approved executable proof. Keep the cheap
+    # Tier-2 coverage guard above, but do not silently reinterpret selectors
+    # as permission to execute their whole files in current + detached trees.
+    selector_scoped = selector_scoped_test_command(test_command)
+    if radius and snapshot_ref and not selector_scoped:
         try:
             base_fail = baseline_failures(ws, snapshot_ref, radius)
         except RegressionRunnerError as exc:
