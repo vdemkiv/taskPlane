@@ -1,0 +1,91 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|str_replace|Bash|BashOutput|apply_patch|.*(write|edit|patch|delete|remove|rename|move|create|upload|execute|run|shell|command).*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \".taskplane/codex-hook.py\" screen",
+            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" screen",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Task|Agent|spawn_agent|.*spawn_agent.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \".taskplane/codex-hook.py\" screen-dispatch",
+            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" screen-dispatch",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__visualize__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \".taskplane/codex-hook.py\" screen-render",
+            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" screen-render",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \".taskplane/codex-hook.py\" context",
+            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" context",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \".taskplane/codex-hook.py\" subagent-start",
+            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" subagent-start",
+            "additionalContextLimit": 600,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \".taskplane/codex-hook.py\" subagent-stop",
+            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" subagent-stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \".taskplane/codex-hook.py\" session-verify",
+            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" session-verify",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -35,6 +35,8 @@ DIFF_NAME = "diff.patch"
 IMPACT_NAME = "impact.json"
 BRIEF_NAME = "blast-radius.md"
 MAX_MANIFEST_BYTES = 16 * 1024
+MAX_ROUTING_FILES = 200
+MAX_ROUTING_FILE_BYTES = 64 * 1024
 KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
 RESULT_SCHEMA = "taskplane.lens-slot-output/v2"
@@ -239,14 +241,17 @@ def changed_symbols_from_patch(patch: str) -> list[str]:
 
 
 def changed_content_from_patch(patch: str) -> dict[str, str]:
-    """Changed lines grouped by file from the one canonical unified diff.
+    """Bounded changed-hunk content from the one canonical unified diff.
 
     Applicability markers must describe this change, not unrelated words
-    elsewhere in a large touched file. Both additions and removals count:
-    deleting an auth check still summons the security lens.
+    elsewhere in a large touched file. Added, removed, and nearby unchanged
+    hunk lines count: deleting an auth check still summons the security lens,
+    while a deny-to-allow edit retains its enclosing authorization context.
     """
     current = None
     rows: dict[str, list[str]] = {}
+    sizes: dict[str, int] = {}
+    in_hunk = False
     for line in str(patch or "").splitlines():
         if line.startswith("diff --git "):
             try:
@@ -256,13 +261,32 @@ def changed_content_from_patch(patch: str) -> dict[str, str]:
             current = None
             if len(parts) >= 4:
                 candidate = parts[3]
-                current = (candidate[2:] if candidate.startswith("b/")
-                           else candidate)
-                rows.setdefault(current, [])
+                candidate = (candidate[2:] if candidate.startswith("b/")
+                             else candidate)
+                if candidate in rows or len(rows) < MAX_ROUTING_FILES:
+                    current = candidate
+                    rows.setdefault(current, [])
+                    sizes.setdefault(current, 0)
+            in_hunk = False
             continue
-        if current and line.startswith(("+", "-")) \
-                and not line.startswith(("+++", "---")):
-            rows[current].append(line[1:])
+        if line.startswith("@@"):
+            in_hunk = current is not None
+            continue
+        if not current or not in_hunk or not line.startswith(("+", "-", " ")) \
+                or line.startswith(("+++", "---")):
+            continue
+        text = line[1:]
+        encoded = (text + "\n").encode("utf-8")
+        remaining = MAX_ROUTING_FILE_BYTES - sizes[current]
+        if remaining <= 0:
+            continue
+        if len(encoded) > remaining:
+            text = text.encode("utf-8")[:max(0, remaining - 1)] \
+                .decode("utf-8", "ignore")
+            encoded = (text + "\n").encode("utf-8") if text else b""
+        if encoded:
+            rows[current].append(text)
+            sizes[current] += len(encoded)
     return {path: "\n".join(lines) + ("\n" if lines else "")
             for path, lines in sorted(rows.items())}
 

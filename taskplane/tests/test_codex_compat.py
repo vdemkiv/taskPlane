@@ -28,6 +28,28 @@ TPPY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "tp.py")
 
 
+class TestCodexWorkspaceHookInstall(unittest.TestCase):
+    def test_onboarding_preserves_other_hooks_and_installs_local_bridge(self):
+        ws = tempfile.mkdtemp()
+        os.makedirs(os.path.join(ws, ".codex"))
+        custom = {"matcher": "custom", "hooks": [{
+            "type": "command", "command": "true"}]}
+        with open(os.path.join(ws, ".codex", "hooks.json"), "w",
+                  encoding="utf-8") as handle:
+            json.dump({"hooks": {"SessionStart": [custom]}}, handle)
+
+        report = cli._install_codex_hooks(ws)
+
+        self.assertTrue(report["ok"])
+        config = tp.load_json(os.path.join(ws, ".codex", "hooks.json"))
+        self.assertIn(custom, config["hooks"]["SessionStart"])
+        self.assertIn(".taskplane/codex-hook.py", json.dumps(config))
+        runner = os.path.join(ws, ".taskplane", "codex-hook.py")
+        self.assertTrue(os.path.isfile(runner))
+        with open(runner, encoding="utf-8") as handle:
+            self.assertIn(os.path.abspath(cli.__file__), handle.read())
+
+
 def _repo():
     ws = tempfile.mkdtemp()
     os.makedirs(os.path.join(ws, "src"))

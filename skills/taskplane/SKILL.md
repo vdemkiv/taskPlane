@@ -41,6 +41,11 @@ Set `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 On a fresh repository, run `$TP onboard --json` before governed work. Resolve
 only the missing prerequisite it names. Do not dump setup mechanics unless the
 user asks; say what is missing and help complete it.
+On Codex, if `next_action` is `install_codex_hooks`, run
+`$TP onboard --install-codex-hooks --json` within the repository and ask the
+user to start a new Codex task. Do not dispatch governed workers until the
+`codex_hooks` check is ready: marketplace skills do not themselves establish
+the repo-local lifecycle/write receipts required by taskplane provenance.
 
 ## Keep the harness internal
 

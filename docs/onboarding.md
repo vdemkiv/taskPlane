@@ -35,13 +35,15 @@ checks are green:
 
 ## Codex onboarding
 
-1. Install and enable taskplane, approve its bundled hooks when prompted,
-   then start a **new** Codex task/session.
+1. Install and enable taskplane, then start a **new** Codex task/session.
 2. Make the target repository the working folder. In Codex CLI, `cd` to the
    repository before running `codex`; in the desktop app, open or create a
    local environment for that repository.
 3. Prompt **"set up taskplane"** or **"use taskplane for …"**. The plugin runs
-   `tp onboard --json` before governed work.
+   `tp onboard --json` before governed work. On first use it installs the
+   portable `.codex/hooks.json` workspace configuration plus an ignored local
+   `.taskplane/codex-hook.py` bridge, then asks you to start one more new task
+   so Codex loads the lifecycle hooks.
 4. If the folder is not a committed Git repository, approve initialization or
    make the first commit yourself. taskplane needs the commit as its diff and
    Definition-of-Done baseline.
@@ -61,7 +63,7 @@ role instructions and payload in the delegated message, spawns scope-disjoint
 work concurrently, waits in bounded intervals for every requested result, and
 interrupts/escalates a stalled or mis-scoped agent rather than declaring partial
 work complete.
-`SubagentStart`/`SubagentStop` add bounded context and lifecycle traces; the
+Repo-local `SubagentStart`/`SubagentStop` hooks add bounded context and lifecycle traces; the
 PreToolUse screen and evidence gates remain authoritative. For a long run you
 may start Goal mode with `/goal`; it changes neither permissions nor gates.
 

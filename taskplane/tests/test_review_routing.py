@@ -122,7 +122,20 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                  "@@ -1,2 +1,2 @@\n-password = old\n+value = 2\n"
                  " unchanged context\n")
         self.assertEqual(review.changed_content_from_patch(patch), {
-            "src/service.py": "password = old\nvalue = 2\n"})
+            "src/service.py":
+                "password = old\nvalue = 2\nunchanged context\n"})
+
+    def test_changed_hunk_context_is_bounded_before_lens_routing(self):
+        oversized = "x" * (review.MAX_ROUTING_FILE_BYTES + 100)
+        patch = ("diff --git a/src/auth.py b/src/auth.py\n"
+                 "--- a/src/auth.py\n+++ b/src/auth.py\n"
+                 "@@ -1,2 +1,2 @@ def authorize(user):\n"
+                 " if user.is_admin:\n-old = 1\n+" + oversized + "\n")
+        content = review.changed_content_from_patch(patch)
+        self.assertIn("if user.is_admin", content["src/auth.py"])
+        self.assertLessEqual(
+            len(content["src/auth.py"].encode("utf-8")),
+            review.MAX_ROUTING_FILE_BYTES)
 
     def test_impact_uncertainty_dispatches_zero(self):
         graph = {**self.graph,

@@ -193,6 +193,103 @@ def _install_paths_lines(ctx: str) -> list[str]:
     ]
 
 
+_CODEX_HOOK_CONFIG = os.path.join(".codex", "hooks.json")
+_CODEX_HOOK_RUNNER = os.path.join(".taskplane", "codex-hook.py")
+_CODEX_HOOK_MARKER = ".taskplane/codex-hook.py"
+
+
+def _codex_hooks_report(ws: str) -> dict:
+    """Mechanical readiness of the repo-local Codex hook bridge."""
+    config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
+    runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
+    try:
+        config = tp.load_json(config_path, default=None,
+                              what="Codex hook configuration")
+        encoded = json.dumps(config, sort_keys=True) if isinstance(config, dict) else ""
+        with open(runner_path, encoding="utf-8") as handle:
+            runner_body = handle.read()
+        current_engine = os.path.abspath(__file__)
+    except Exception as exc:
+        return {"ok": False, "status": "missing", "path": config_path,
+                "reason": str(exc)}
+    configured = _CODEX_HOOK_MARKER in encoded
+    runner = current_engine in runner_body
+    return {
+        "ok": bool(configured and runner),
+        "status": "ready" if configured and runner else "stale",
+        "config": config_path, "runner": runner_path,
+        "hint": (None if configured and runner else
+                 "Run `tp onboard --install-codex-hooks --json`, then start "
+                 "a new Codex task so repo-local lifecycle hooks load."),
+    }
+
+
+def _codex_hook_action(command: str) -> str:
+    match = re.search(r'tp\.py"?\s+([a-z][a-z0-9-]*)', str(command or ""))
+    if not match:
+        raise RuntimeError("bundled hook command has no taskplane action")
+    return match.group(1)
+
+
+def _codex_hook_rows() -> dict:
+    """Translate bundled host-neutral hooks to a repo-local Codex runner."""
+    source_path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "hooks", "hooks.json")
+    source = tp.load_json(source_path, what="bundled hook configuration")
+    generated = json.loads(json.dumps(source.get("hooks") or {}))
+    for rows in generated.values():
+        for row in rows:
+            for hook in row.get("hooks") or []:
+                action = _codex_hook_action(hook.get("command"))
+                hook["command"] = (
+                    f'python3 "{_CODEX_HOOK_MARKER}" {action}')
+                hook["commandWindows"] = (
+                    f'py -3 ".taskplane\\codex-hook.py" {action}')
+    return generated
+
+
+def _install_codex_hooks(ws: str) -> dict:
+    """Install the portable workspace config and ignored local engine bridge.
+
+    Marketplace plugins provide skills/apps, while Codex lifecycle hooks load
+    from workspace configuration. The committed config stays portable; the
+    ignored runner holds the machine-local plugin path and is refreshed by
+    onboarding after every plugin update.
+    """
+    config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
+    prior = tp.load_json(config_path, default={"hooks": {}},
+                         what="Codex hook configuration")
+    if not isinstance(prior, dict) or not isinstance(prior.get("hooks"), dict):
+        raise RuntimeError("existing .codex/hooks.json is not a hook object")
+    hooks = prior["hooks"]
+    for event, rows in _codex_hook_rows().items():
+        existing = [row for row in hooks.get(event, [])
+                    if _CODEX_HOOK_MARKER not in json.dumps(row)]
+        hooks[event] = existing + rows
+    tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
+
+    runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
+    os.makedirs(os.path.dirname(runner_path), exist_ok=True)
+    engine = os.path.abspath(__file__)
+    body = ("# Generated locally by taskplane onboarding; .taskplane is ignored.\n"
+            "import os, runpy, sys\n"
+            f"ENGINE = {engine!r}\n"
+            "if not os.path.isfile(ENGINE):\n"
+            "    raise SystemExit('taskplane Codex hook bridge is stale; run "
+            "tp onboard --install-codex-hooks --json')\n"
+            "sys.argv = [ENGINE, *sys.argv[1:]]\n"
+            "runpy.run_path(ENGINE, run_name='__main__')\n")
+    tmp = runner_path + f".tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as handle:
+            handle.write(body)
+        os.replace(tmp, runner_path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return _codex_hooks_report(ws)
+
+
 def _tool_report() -> dict:
     try:
         import target as _tgt
@@ -263,6 +360,14 @@ def _onboard_report(ws: str) -> dict:
          "hint": "`tp init` scaffolds context docs, the KB, and the graph — "
                  "I run it for you once a folder + repo are in place."},
     ]
+    codex_hooks = _codex_hooks_report(ws) if is_codex else None
+    if codex_hooks is not None:
+        checks.append({
+            "id": "codex_hooks", "label": "Codex governance hooks",
+            "ok": codex_hooks["ok"],
+            "detail": codex_hooks["status"],
+            "hint": codex_hooks.get("hint"),
+        })
     ready = all(c["ok"] for c in checks)
     if not looks_like_project:
         nxt = "attach_folder"
@@ -270,6 +375,8 @@ def _onboard_report(ws: str) -> dict:
         nxt = "init_git"
     elif not has_context:
         nxt = "tp_init"
+    elif codex_hooks is not None and not codex_hooks["ok"]:
+        nxt = "install_codex_hooks"
     else:
         nxt = "ready"
     artifacts = None
@@ -284,6 +391,7 @@ def _onboard_report(ws: str) -> dict:
         artifacts = None
     _ictx = _install_context()
     return {"workspace": ws, "host": host, "artifacts": artifacts,
+            "codex_hooks": codex_hooks,
             # R-0005 install truth: the account-type install/update paths,
             # matched to the detected context (org-managed / personal) or
             # the honest by-account-type triage when undetectable — never
@@ -3343,6 +3451,8 @@ def cmd_onboard(a) -> int:
     --json prints the readiness report instead (for the driver to branch on)."""
     import dashboard
     ws = _workspace(a.workspace)
+    if getattr(a, "install_codex_hooks", False):
+        _install_codex_hooks(ws)
     report = _onboard_report(ws)
     if a.json:
         print(json.dumps(report, indent=2))
@@ -4509,6 +4619,9 @@ def main(argv=None) -> int:
     op.add_argument("--json", action="store_true",
                     help="print the readiness report instead of the widget")
     op.add_argument("--out", help="also write the fragment to this path")
+    op.add_argument("--install-codex-hooks", action="store_true",
+                    help="install/refresh the repo-local Codex lifecycle hook "
+                         "bridge before reporting readiness")
     op.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     op.set_defaults(fn=cmd_onboard)
 

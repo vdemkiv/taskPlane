@@ -201,12 +201,13 @@ codex
 the `taskplane-marketplace` source after adding it, and install **taskplane**.
 Open the repository as a local environment and start a new task.
 
-Codex loads newly installed skills and hooks only in a new task/session, and asks
-you to review and trust the bundled lifecycle hooks (`/plugins` confirms taskplane
-is enabled). Keep Codex's own sandbox and approval controls enabled — taskplane's
+Codex loads newly installed skills in a new task/session. On first setup,
+taskPlane installs a portable repo-local `.codex/hooks.json` and an ignored
+machine-local bridge, then asks you to start one more task so Codex loads the
+lifecycle hooks. Keep Codex's own sandbox and approval controls enabled — taskplane's
 scope contract is an additional guardrail, not a replacement. Plugins are supported
-in Codex CLI and the Codex desktop app, not the IDE extension; until the public
-listing is approved, install from this GitHub marketplace source. See
+in Codex CLI and the Codex desktop app. Install the published plugin from the
+catalog, or use this GitHub marketplace source for local development. See
 [Codex plugins](https://developers.openai.com/codex/plugins).
 
 Requires `git` in your workspace (the gates need a commit snapshot) and Python 3
@@ -241,7 +242,7 @@ Open your project repository (it needs a git commit), then say **"set up taskpla
 ```bash
 codex plugin marketplace add vdemkiv/taskPlane
 codex plugin add taskplane
-codex   # start a NEW task; approve the bundled hooks when prompted
+codex   # start a NEW task; taskPlane onboarding installs repo-local hooks
 ```
 
 `cd` to your project repository first (desktop: open it as a local environment),
