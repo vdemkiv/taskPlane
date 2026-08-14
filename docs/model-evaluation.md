@@ -5,7 +5,7 @@ The evaluator has two layers:
 - deterministic tests validate scenarios, evidence synthesis, workflow grading, and the native driver without spending model tokens;
 - `scripts/eval_skills.py` runs the nine Codex-visible skills with a real Claude or Codex model.
 
-The native runner copies the current checkout into each disposable fixture and fingerprints that bundle before and after the run. It initializes personal/private knowledge storage, installs the fixture-local Codex hooks, ignores the user's Codex configuration, and instructs the model to use only that staged skill and CLI. This prevents a marketplace install from being mixed with repository code.
+The native runner copies the current checkout into each disposable fixture and fingerprints that bundle before and after the run. It initializes personal/private knowledge storage, installs the fixture-local Codex hooks, ignores the user's Codex configuration, and instructs the model to use only that staged skill and CLI. Codex uses a disposable home with only the existing authentication linked in: its host-authored session metadata is the dispatch receipt when a repo hook is silent, and is retained only for the evaluation without adding tasks or plugin state to the user's normal Codex home. This prevents a marketplace install from being mixed with repository code and prevents real native workers from being graded as inline work.
 
 ```bash
 python3 scripts/eval_skills.py all \

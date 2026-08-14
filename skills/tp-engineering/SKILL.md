@@ -104,6 +104,9 @@ artifact referenced by `review start`, dispatch the returned briefs, then run
 `$TP review collect` once. Collect validates each leased result, commits one
 canonical findings revision, and returns the final report/dashboard references.
 Deliver those references. Do not call route/dispatch again to refresh status.
+If collection reports that producer provenance is unavailable, stop with that
+named host/provenance blocker. Do not inspect taskplane's implementation,
+reconstruct a receipt, hand-merge results, or dispatch replacement lenses.
 
 The canonical impact payload carries BOTH sides of the graph: dependent modules
 (engineering) and `affected_requirements` + `dependent_requirements`

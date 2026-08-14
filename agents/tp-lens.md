@@ -62,9 +62,11 @@ checkout (`tp new` refuses bare roots).
    tool for its one `result_path`; that write hook is what records independent
    producer provenance. Write the declared
    `taskplane.lens-slot-output/v2` shape, including `authored_by: lens-slot`,
-   every lease identity field, one `lens_results` row per leased lens, and
-   findings:
-   `{"lens":"<id>","findings":[{"severity":"blocker|major|minor|question|praise",
+   every lease identity field, one `lens_results` row per leased lens, and a
+   top-level **flat** `findings` array. Each `lens_results` row is exactly
+   `{"lens":"<id>","verdict":"pass|fail","blockers":N}` where `N` is a
+   non-negative integer count, never an array. Every finding names its lens:
+   `{"findings":[{"lens":"<id>","severity":"blocker|major|minor|question|praise",
    "class":"regression|pre-existing|observation",
    "file":"…","line":N,"title":"…","scenario":"a concrete failure — inputs →
    wrong result","fix":"the direction, not a patch"}]}`. **Set `class` on
@@ -89,6 +91,22 @@ checkout (`tp new` refuses bare roots).
    result** — it means your lens is clean; say so, don't invent findings.
 4. Every finding cites `file:line` and a scenario someone could reproduce.
    No speculation dressed as a defect.
+5. On Codex, after the exact result file is written, compute its SHA-256 and
+   finish with these two standalone lines using the brief's exact relative
+   path and the digest of the bytes actually written:
+
+   ```text
+   taskplane-result-path:<result_path>
+   taskplane-result-sha256:<64 lowercase hex characters>
+   ```
+
+   This is a host-observed completion receipt when Codex's repository hook
+   transport is unavailable. It does not replace the Write action and it
+   cannot bless changed bytes. Do not inspect taskplane's implementation,
+   CLI source, help, or KB to reverse-engineer the result protocol: the
+   immutable brief, scoped view, envelope reference, and this role contract
+   are the complete input. If they are insufficient, stop with that named
+   contract defect instead of widening the review.
 
 You never fix, never refactor, never touch code — you judge one dimension and
 report. The review that dispatched you merges your findings with the other

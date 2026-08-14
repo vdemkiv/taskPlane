@@ -932,7 +932,9 @@ def _driver_artifacts(out_dir: str, result) -> dict:
     """Store bounded host output once and return digest references only."""
     if not isinstance(result, dict):
         return {}
-    clean = {k: v for k, v in result.items() if k not in ("stdout", "stderr")}
+    clean = {k: v for k, v in result.items()
+             if k not in ("stdout", "stderr", "native_trace",
+                          "native_derivations")}
     refs = {}
     for name in ("stdout", "stderr"):
         value = result.get(name)
@@ -950,6 +952,85 @@ def _driver_artifacts(out_dir: str, result) -> dict:
     if refs:
         clean["artifacts"] = refs
     return clean
+
+
+def merge_native_dispatch_report(report: dict, expected: list,
+                                 trace_rows: list) -> dict:
+    """Overlay Codex-host session evidence without forging hook queue rows."""
+    report = dict(report or {})
+    native_starts = [row for row in trace_rows
+                     if row.get("event") == "subagent_start"
+                     and row.get("source") == "codex_session_store"
+                     and row.get("host_observed") is True]
+    if not native_starts:
+        return report
+    expected_by_name = {row.get("task_name"): row for row in expected
+                        if row.get("task_name")}
+    covered = set()
+    native_mismatches = []
+    for row in native_starts:
+        planned = expected_by_name.get(row.get("task_name"))
+        model_ok = bool(planned) and (
+            planned.get("model") in (None, row.get("model")))
+        effort_ok = bool(planned) and (
+            planned.get("reasoning_effort") in
+            (None, row.get("reasoning_effort")))
+        if planned and model_ok and effort_ok:
+            covered.add(planned.get("task_name"))
+        else:
+            native_mismatches.append({
+                "agent": row.get("task_name"),
+                "model": row.get("model"),
+                "reasoning_effort": row.get("reasoning_effort"),
+                "ok": False, "source": "codex_session_store",
+                "reason": "unexpected native task or routing mismatch",
+            })
+    already_matched = {row.get("task_name") for row in expected
+                       if row.get("matched")}
+    report["observed"] = int(report.get("observed") or 0) + len(
+        {row.get("task_name") for row in native_starts} - already_matched)
+    report["unobserved"] = sum(
+        not row.get("matched") and row.get("task_name") not in covered
+        for row in expected)
+    report["mismatches"] = list(report.get("mismatches") or []) + \
+        native_mismatches
+    report["hook_active"] = True
+    report["observation_source"] = "codex_session_store"
+    report["native_observed"] = len(native_starts)
+    report["note"] = None
+    return report
+
+
+def merge_native_derivations(ledger: list, native: list) -> list:
+    """Take the maximum observed count per safe derivation signature.
+
+    Hook and native-session evidence may describe the same command. Using a
+    maximum rather than concatenating prevents one real ReviewKernel call
+    from looking like a repeated derivation, while two native calls still
+    remain two and fail the efficiency rule.
+    """
+    from collections import Counter
+
+    def signature(row):
+        if not isinstance(row, dict):
+            return None
+        if row.get("event") == "command":
+            return ("command", row.get("verb"))
+        if row.get("event") == "derived" and not row.get("probe"):
+            return ("derived", row.get("key"), row.get("input_key"))
+        return None
+
+    merged = list(ledger or [])
+    have = Counter(sig for row in merged if (sig := signature(row)))
+    seen = Counter()
+    for row in native or []:
+        sig = signature(row)
+        if sig is None:
+            continue
+        seen[sig] += 1
+        if seen[sig] > have[sig]:
+            merged.append(dict(row))
+    return sorted(merged, key=lambda row: float(row.get("ts") or 0.0))
 
 
 def _efficiency(*, ledger, obligation_rows, report, context_rows,
@@ -1041,6 +1122,23 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
     trace_rows = []
     for path in tp.trace_paths(ws):
         trace_rows += _read_jsonl(path)
+    native_trace = ((driver_result or {}).get("native_trace") or []
+                    if isinstance(driver_result, dict) else [])
+    expected = _queue(ws, "expected_dispatch.json")
+    expected_by_name = {row.get("task_name"): row for row in expected
+                        if row.get("task_name")}
+    for raw in native_trace:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        planned = expected_by_name.get(row.get("task_name"))
+        if planned:
+            row["agent_type"] = planned.get("agent") or row.get("agent_type")
+            row["dispatch_ref"] = planned.get("ref")
+            row["expected_model"] = planned.get("model")
+            row["expected_reasoning_effort"] = planned.get(
+                "reasoning_effort")
+        trace_rows.append(row)
     contract = tp.load_active(ws)
     loop_state = loop_mod.load(ws)
     trace_rows = synthesize_trace(
@@ -1050,6 +1148,7 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
     context_rows = synthesize_context(ws, trace_rows=trace_rows,
                                       fallback_ts=started_at)
     report = tp.dispatch_report(ws)
+    report = merge_native_dispatch_report(report, expected, trace_rows)
     report[eval_rubric.DISPATCH_ROWS] = synthesize_briefs(
         ws, trace_rows=trace_rows,
         context_path=primary_context_path(trace_rows))
@@ -1058,7 +1157,10 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
     _write_jsonl(os.path.join(out_dir, files["trace"]), trace_rows)
     obligation_rows = obligations.read(ws)
     _write_jsonl(os.path.join(out_dir, files["obligations"]), obligation_rows)
-    ledger_rows = derivation.read(ws)
+    ledger_rows = merge_native_derivations(
+        derivation.read(ws),
+        ((driver_result or {}).get("native_derivations") or []
+         if isinstance(driver_result, dict) else []))
     _write_jsonl(os.path.join(out_dir, files["derivations"]), ledger_rows)
     _write_jsonl(os.path.join(out_dir, files["context"]), context_rows)
     _write_json(os.path.join(out_dir, files["dispatch"]), report)
@@ -1069,11 +1171,6 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
     host = ((driver_result or {}).get("host")
             if isinstance(driver_result, dict) else None) or tp.host()
     proof = eval_drivers.hook_proof(trace_rows)
-    if hook_active and not proof["proved"]:
-        proof = {"proved": True, "event": "dispatch_observed",
-                 "host": host, "ts": max((_ts(r) or started_at
-                                            for r in trace_rows),
-                                           default=started_at)}
     efficiency = _efficiency(ledger=ledger_rows,
                              obligation_rows=obligation_rows, report=report,
                              context_rows=context_rows,

@@ -546,7 +546,7 @@ def design_dod_errors(ws: str, state: dict) -> list:
             errors.append("solution-design lens evidence is not bound to the "
                           "current design content — re-run the lens against "
                           "this design and record its content_fingerprint "
-                          f"(design_content_fingerprint, now {expected_fp[:12]}…)")
+                          f"(design_content_fingerprint, now {expected_fp})")
         independent = row.get("independent") is True
         self_attested = row.get("self_attested") is True
         if independent == self_attested:
@@ -787,5 +787,4 @@ def design_review_notices(meta: dict) -> list:
                 f"{str(row.get('evidence') or '').strip()} "
                 f"(declared by {who})")
     return notices
-
 

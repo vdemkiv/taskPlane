@@ -11,6 +11,19 @@ step is this persona. Its counterpart, `/tp-engineering`, owns whether the
 built thing is sound — deliberately separate seats so definition is never
 graded by its own author.
 
+The commands and schema in this skill and its requirement reference are the
+executable contract. Do not spend the product budget on `$TP --help`,
+subcommand help, taskplane implementation/tests, repeated status/list calls,
+a graph rescan, or KB discovery. Onboarding already built the current graph
+and supplied project context. A normal standalone refinement is one compact
+sequence: activate the read-only Product contract first; author one complete
+`req new`; run `req score R-XXXX --files "comma,separated,globs"` once; link
+the same globs once with `graph link --req R-XXXX --kind planned --files
+"comma,separated,globs"`; choose `req mode` once. Do not run delivery `dod`
+for standalone Product refinement. Render the dashboard only
+when a human-facing product gate is actually being requested. Diagnose beyond
+that sequence only when one of those commands returns a named blocker.
+
 ## Author & refine (the core act)
 
 Full procedure in `references/requirements.md`: record the requirement
@@ -77,6 +90,7 @@ resolved in that decision record, not by a flag, and `$TP req list` keeps
 listing it until the follow-up ships — say that rather than implying a
 command that does not exist. Also: the approve/send-back recommendation at
 the plan gate, recorded product decisions. Contract: work read-only toward code
-(`$TP new --scope "docs/**,specs/**,knowledge/**" "product: <goal>"`).
+(`$TP new --scope "docs/**,specs/**,knowledge/**" --read-only
+"product: <goal>"`). Activate it before requirement authoring, never after.
 A requirement gap tp-product fixes personally; a build gap goes back
 through the loop. Deep persona spec: `agents/tp-product.md`.

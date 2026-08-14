@@ -5,11 +5,8 @@
   "source_files": [
     "skills/tp-build/SKILL.md"
   ],
-  "inputs_fingerprint": "9beb6d89f401295345592ebf4e95611a6fc0a971a4f61f6a656be4f5fc6dc2d9",
-  "expects_derivations": [
-    "impact",
-    "graph_scan"
-  ],
+  "inputs_fingerprint": "c6bed915ad16a8bc5aaaea1ce40151ca7fa9d24e779cb826fb7422c22fb072a5",
+  "expects_derivations": [],
   "declared_surfaces": [
     "tp req new",
     "tp req score",
@@ -65,6 +62,26 @@
       "reason": "the build evaluation stops at design approval; implementation DoD is downstream of the human-approved Design Contract"
     },
     {
+      "id": "B1-NATIVE-DISPATCH",
+      "claim": "the new-feature flow dispatched product and design roles through the host instead of executing them inline",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "subagent_start"
+      },
+      "required": true
+    },
+    {
+      "id": "B2-DESIGN-GRAPH",
+      "claim": "the Design Contract's proposed graph and contracts passed the mechanical design gate before human approval",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "design_contracts_recorded"
+      },
+      "required": true
+    },
+    {
       "id": "U4-SHARED",
       "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
       "record": "derivations",
@@ -83,7 +100,9 @@
       "universal": [
         "no_rederive"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the build flow stops at design approval before implementation derives a diff or shared review envelope; the design graph is evaluated separately by B2"
     }
   ]
 }

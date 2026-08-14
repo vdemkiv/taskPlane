@@ -496,6 +496,24 @@ class TestPairs(unittest.TestCase):
         self.assertEqual(_one(_step(**ONE_OF_EACH["pairs"]), none),
                          "no_evidence")
 
+    def test_selective_zero_dispatch_is_proven_not_vacuous(self):
+        step = _step(**ONE_OF_EACH["pairs"])
+        step["allow_empty_with"] = {
+            "record": "trace", "select": {
+                "event": "review_kernel_started",
+                "routing_complete": True, "slots": []}}
+        rec = er.record(
+            dispatch=[],
+            context=[{"ts": 3, "kind": "target"}],
+            trace=[{"ts": 2, "event": "review_kernel_started",
+                    "routing_complete": True, "slots": []}])
+        self.assertEqual(_one(step, rec), "pass")
+        stopped = er.record(
+            dispatch=[], context=[{"ts": 3, "kind": "target"}],
+            trace=[{"ts": 2, "event": "review_kernel_started",
+                    "routing_complete": False, "slots": []}])
+        self.assertEqual(_one(step, stopped), "no_evidence")
+
     def test_a_key_no_left_row_carries_is_no_evidence(self):
         rec = er.record(dispatch=[{"ts": 1}],
                         context=[{"ts": 2, "kind": "lens_findings",

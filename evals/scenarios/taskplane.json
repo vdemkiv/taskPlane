@@ -6,9 +6,7 @@
     "skills/taskplane/SKILL.md"
   ],
   "inputs_fingerprint": "72f78e54b23eac1f32d9183beac80e699c800e3a9152ba399182590673a8314d",
-  "expects_derivations": [
-    "impact"
-  ],
+  "expects_derivations": [],
   "declared_surfaces": [
     "tp loop next",
     "tp loop submit",
@@ -63,6 +61,26 @@
       "reason": "the facade evaluation deliberately stops at the first human approval gate; delivery DoD is downstream and must not be fabricated before that decision"
     },
     {
+      "id": "F1-NATIVE-DISPATCH",
+      "claim": "the facade dispatched its product and planning roles through the host instead of performing their work inline",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "subagent_start"
+      },
+      "required": true
+    },
+    {
+      "id": "F2-GRAPH-DOR",
+      "claim": "the validated plan linked its scoped modules into the requirement graph before asking for approval",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "graph_req_link"
+      },
+      "required": true
+    },
+    {
       "id": "U4-SHARED",
       "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
       "record": "derivations",
@@ -81,7 +99,9 @@
       "universal": [
         "no_rederive"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the facade run stops at plan approval before any implementation diff or review envelope exists; graph readiness is evaluated separately by F2"
     }
   ]
 }

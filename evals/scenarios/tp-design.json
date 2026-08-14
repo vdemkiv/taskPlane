@@ -6,9 +6,7 @@
     "skills/tp-design/SKILL.md"
   ],
   "inputs_fingerprint": "819831dd6df5b1dc81fe721a1d3a10ee1ee22a6c3ce7e0caf57c8473987b434f",
-  "expects_derivations": [
-    "impact"
-  ],
+  "expects_derivations": [],
   "declared_surfaces": [
     "tp loop init",
     "tp loop next",
@@ -64,6 +62,26 @@
       "reason": "the design-only evaluation stops for human approval; build Definition of Done is not yet applicable"
     },
     {
+      "id": "D1-NATIVE-DISPATCH",
+      "claim": "the design flow dispatched its governed product and designer roles through the host instead of executing them inline",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "subagent_start"
+      },
+      "required": true
+    },
+    {
+      "id": "D2-DESIGN-GRAPH",
+      "claim": "the proposed graph, contracts, boundaries, and Design DoR/DoD passed the mechanical design gate before human approval",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "design_contracts_recorded"
+      },
+      "required": true
+    },
+    {
       "id": "U4-SHARED",
       "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
       "record": "derivations",
@@ -82,7 +100,9 @@
       "universal": [
         "no_rederive"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the design-only run stops at design approval before an implementation diff or shared review envelope exists; design graph evidence is evaluated separately by D2"
     }
   ]
 }

@@ -5,14 +5,9 @@
   "source_files": [
     "skills/tp-go/SKILL.md"
   ],
-  "inputs_fingerprint": "ec3b6d4a578909b2c7a1f582037cdee69a8cc1a39527549ddb76c68cd9c397f8",
-  "expects_derivations": [
-    "diff",
-    "impact"
-  ],
+  "inputs_fingerprint": "9259bb351dffa60fa91c235152645c91a071cf63d4c2967a97f888c18e6aa21b",
+  "expects_derivations": [],
   "declared_surfaces": [
-    "tp review start",
-    "tp graph impact",
     "tp lens dispatch",
     "tp loop wave",
     "tp loop gate"
@@ -66,6 +61,26 @@
       "reason": "the delivery-driver evaluation intentionally stops at its first human gate; final DoD belongs after that decision"
     },
     {
+      "id": "G1-NATIVE-DISPATCH",
+      "claim": "the delivery driver dispatched its governed roles through the host instead of executing every persona inline",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "subagent_start"
+      },
+      "required": true
+    },
+    {
+      "id": "G2-GRAPH-DOR",
+      "claim": "the plan's exact scoped modules were linked into the requirement graph before human approval",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "graph_req_link"
+      },
+      "required": true
+    },
+    {
       "id": "U4-SHARED",
       "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
       "record": "derivations",
@@ -84,7 +99,9 @@
       "universal": [
         "no_rederive"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the driver run stops at plan approval before implementation derives a diff or shared review envelope; graph readiness is evaluated separately by G2"
     }
   ]
 }

@@ -267,6 +267,7 @@ class M3LensEvidenceBound(_DesignEnv):
         joined = " ".join(dc.design_dod_errors(self.ws, self._dod_state()))
         self.assertIn("produced_by", joined)
         self.assertIn("not bound", joined)
+        self.assertIn(dc.design_content_fingerprint(self.ws, contract), joined)
         self.assertIn("exactly one of independent: true or "
                       "self_attested: true", joined)
 

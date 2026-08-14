@@ -784,6 +784,48 @@ class TestTheFrozenRecordIsWhatTheScorerReads(unittest.TestCase):
 
 
 class TestScenarioAwareRecorderBoundaries(unittest.TestCase):
+    def test_native_codex_dispatch_closes_the_matching_expected_brief(self):
+        expected = [{"task_name": "tp_step_product", "agent": "tp-product",
+                     "model": None, "reasoning_effort": "high",
+                     "matched": False}]
+        trace = [{"event": "subagent_start",
+                  "source": "codex_session_store", "host_observed": True,
+                  "task_name": "tp_step_product", "model": "gpt-test",
+                  "reasoning_effort": "high"}]
+        got = eval_record.merge_native_dispatch_report(
+            {"observed": 0, "unobserved": 1, "mismatches": [],
+             "hook_active": False}, expected, trace)
+        self.assertEqual(got["observed"], 1)
+        self.assertEqual(got["unobserved"], 0)
+        self.assertEqual(got["mismatches"], [])
+        self.assertEqual(got["observation_source"], "codex_session_store")
+
+    def test_native_derivations_fill_silent_hooks_without_double_counting(self):
+        hook = [
+            {"event": "derived", "key": "impact", "input_key": "H|F",
+             "ts": 1},
+        ]
+        native = [
+            {"event": "command", "verb": "tp review start", "ts": 2,
+             "source": "codex_session_store"},
+            {"event": "derived", "key": "impact", "input_key": "H|F",
+             "ts": 2, "source": "codex_session_store"},
+            {"event": "derived", "key": "diff", "input_key": "B..H",
+             "ts": 2, "source": "codex_session_store"},
+        ]
+        got = eval_record.merge_native_derivations(hook, native)
+        self.assertEqual(sum(row.get("key") == "impact" for row in got), 1)
+        self.assertEqual(sum(row.get("key") == "diff" for row in got), 1)
+        self.assertEqual(sum(row.get("verb") == "tp review start"
+                             for row in got), 1)
+
+    def test_two_native_review_starts_remain_a_repeat(self):
+        one = {"event": "derived", "key": "diff", "input_key": "B..H",
+               "source": "codex_session_store"}
+        got = eval_record.merge_native_derivations([], [one, dict(one)])
+        self.assertEqual(len(got), 2)
+        self.assertEqual(derivation.repeats(rows=got), 1)
+
     def test_evaluator_setup_is_not_misreported_as_a_model_workspace_write(self):
         with tempfile.TemporaryDirectory() as ws:
             _write(os.path.join(ws, ".codex", "hooks.json"), "{}")

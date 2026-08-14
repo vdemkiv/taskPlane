@@ -9,9 +9,11 @@ native host is told to read that exact SKILL.md and execute that copy's CLI.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
 import eval_drivers  # noqa: E402
 import eval_record  # noqa: E402
+import derivation  # noqa: E402
 
 STAGE_DIR = os.path.join(".taskplane-eval", "plugin")
 STAGED_PATHS = (
@@ -43,6 +46,9 @@ PROMPTS = {
     "tp-northstar": "Assess checkout discount validation against the configured north star; remain advisory and honest if it is unset.",
 }
 NATIVE_SKILLS = tuple(PROMPTS)
+DELEGATING_SKILLS = frozenset({
+    "taskplane", "tp-go", "tp-build", "tp-design", "tp-engineering",
+})
 
 
 def _files(root: str):
@@ -98,21 +104,35 @@ def stage_bundle(root: str, ws: str) -> dict:
             "version": manifest.get("version")}
 
 
-def skill_manifest(*, skill: str, bundle: dict, ws: str, host: str) -> dict:
+def skill_manifest(*, skill: str, bundle: dict, ws: str, host: str,
+                   base: str | None = None,
+                   head: str | None = None) -> dict:
     rel_root = os.path.relpath(bundle["root"], ws).replace(os.sep, "/")
     skill_path = f"{rel_root}/skills/{skill}/SKILL.md"
+    instructions = [
+        f"Read {skill_path} completely before acting and follow it exactly.",
+        f"Use only the taskPlane CLI under {rel_root}/taskplane/tp.py; do not use an ambient installed plugin copy.",
+        "The fixture is pre-onboarded with private knowledge storage.",
+        "Never approve a human gate. Stop and report it when reached.",
+    ]
+    if skill in DELEGATING_SKILLS:
+        instructions.append(
+            "The user explicitly requests and authorizes every native "
+            "subagent delegation required by this skill. Dispatch each role "
+            "emitted by taskPlane with its exact native brief; never replace "
+            "a required worker by performing that role inline.")
+    if skill == "tp-engineering" and base and head:
+        instructions.append(
+            f"Review the exact fixture target {head} against base {base}. "
+            "Pass those immutable SHAs to `review start`; do not substitute "
+            "a branch name such as main, which may already point at HEAD.")
     return {
         "schema": "taskplane.skill-validation/v2", "skill": skill,
         "host": host, "goal": PROMPTS[skill],
         "bundle": {"version": bundle["version"],
                    "fingerprint": bundle["fingerprint"],
                    "root": rel_root, "skill_path": skill_path},
-        "instructions": [
-            f"Read {skill_path} completely before acting and follow it exactly.",
-            f"Use only the taskPlane CLI under {rel_root}/taskplane/tp.py; do not use an ambient installed plugin copy.",
-            "The fixture is pre-onboarded with private knowledge storage.",
-            "Never approve a human gate. Stop and report it when reached.",
-        ],
+        "instructions": instructions,
     }
 
 
@@ -137,6 +157,189 @@ def prepare_fixture(*, bundle: dict, ws: str, env: dict) -> dict:
     return {"returncode": 0, "steps": outputs}
 
 
+def prepare_codex_home(destination: str) -> str:
+    """Give eval Codex a private transcript store and only shared auth.
+
+    Native SubagentStart/Stop provenance resolves parent and child records
+    from the thread store.  ``--ephemeral`` removes that store and therefore
+    makes the collaboration workflow mechanically unprovable.  A disposable
+    CODEX_HOME keeps those records out of the user's normal task list while
+    ``--ignore-user-config`` still excludes ambient plugins and preferences.
+    """
+    target = os.path.join(destination, "codex-home")
+    os.makedirs(target, exist_ok=False)
+    auth = os.path.join(DEFAULT_CODEX_HOME, "auth.json")
+    if not os.path.isfile(auth):
+        raise eval_record.RecorderError(
+            "Codex evaluation requires an authenticated CODEX_HOME/auth.json")
+    os.symlink(auth, os.path.join(target, "auth.json"))
+    return target
+
+
+def _event_time(value) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.datetime.fromisoformat(
+            value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def codex_session_trace(codex_home: str | None) -> list[dict]:
+    """Read native parent/child lifecycle from Codex's private session store.
+
+    The model cannot write this directory through its checkout sandbox; Codex
+    itself authors it. This keeps a real ``spawn_agent`` call from being
+    graded as inline work merely because a repo hook produced no row.
+    """
+    if not codex_home:
+        return []
+    root = os.path.join(codex_home, "sessions")
+    paths = []
+    for dirpath, _dirs, names in os.walk(root):
+        paths.extend(os.path.join(dirpath, name) for name in names
+                     if name.startswith("rollout-") and name.endswith(".jsonl"))
+    rows = []
+    for path in sorted(paths)[:256]:
+        spawn = None
+        child_id = None
+        started = None
+        model = None
+        effort = None
+        completed = None
+        try:
+            with open(path, encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    if len(line) > 2 * 1024 * 1024:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    payload = row.get("payload") or {}
+                    if row.get("type") == "session_meta" and spawn is None:
+                        source = payload.get("source") or {}
+                        candidate = (((source.get("subagent") or {})
+                                      .get("thread_spawn"))
+                                     if isinstance(source, dict) else None)
+                        if isinstance(candidate, dict):
+                            spawn = candidate
+                            child_id = payload.get("id")
+                            started = _event_time(row.get("timestamp"))
+                    elif row.get("type") == "turn_context" and model is None:
+                        model = payload.get("model")
+                        effort = (payload.get("effort") or
+                                  payload.get("reasoning_effort"))
+                    elif row.get("type") == "event_msg" and \
+                            payload.get("type") == "task_complete":
+                        completed = payload
+        except OSError:
+            continue
+        if not spawn or not child_id:
+            continue
+        task_name = os.path.basename(str(spawn.get("agent_path") or ""))
+        if not task_name:
+            continue
+        common = {
+            "host": "codex", "source": "codex_session_store",
+            "host_observed": True, "agent_id": child_id,
+            "agent_type": task_name, "task_name": task_name,
+            "parent_thread_id": spawn.get("parent_thread_id"),
+            "depth": spawn.get("depth"), "model": model,
+            "reasoning_effort": effort,
+        }
+        rows.append(dict(common, event="subagent_start", ts=started or 0.0))
+        if isinstance(completed, dict):
+            finished = completed.get("completed_at")
+            stop_ts = (float(finished) if isinstance(finished, (int, float))
+                       else started or 0.0)
+            if started is not None and stop_ts < started:
+                stop_ts = started
+            rows.append(dict(common, event="subagent_stop",
+                             ts=stop_ts,
+                             status="completed"))
+    return sorted(rows, key=lambda row: (row.get("ts", 0), row["event"],
+                                         row["task_name"]))
+
+
+def _codex_tool_command(payload: dict) -> str | None:
+    """Extract one exec command from a host-authored rollout tool call."""
+    if payload.get("type") == "function_call" and payload.get("name") in {
+            "exec_command", "functions.exec_command"}:
+        raw = payload.get("arguments") or payload.get("input") or "{}"
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return None
+        return str((args or {}).get("cmd") or "") or None
+    if payload.get("type") != "custom_tool_call" or \
+            payload.get("name") != "exec":
+        return None
+    source = str(payload.get("input") or "")
+    match = re.search(r"tools\.exec_command\((\{.*?\})\)\s*;", source,
+                      re.DOTALL)
+    if not match:
+        return None
+    try:
+        args = json.loads(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return str(args.get("cmd") or "") or None
+
+
+def codex_session_derivations(codex_home: str | None,
+                              workspace: str) -> list[dict]:
+    """Derivation rows from native Codex tool calls, never command text.
+
+    The checkout hook ledger remains primary. This is the out-of-band
+    evaluator's host-authored fallback when the Codex CLI does not deliver
+    repository hooks. Only the bounded verb/classification output crosses
+    into the record; command arguments and prose never do.
+    """
+    if not codex_home:
+        return []
+    root = os.path.join(codex_home, "sessions")
+    paths = []
+    for dirpath, _dirs, names in os.walk(root):
+        paths.extend(os.path.join(dirpath, name) for name in names
+                     if name.startswith("rollout-") and name.endswith(".jsonl"))
+    rows = []
+    for path in sorted(paths)[:256]:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    if len(line) > 2 * 1024 * 1024:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    payload = event.get("payload") or {}
+                    if event.get("type") != "response_item" or not isinstance(
+                            payload, dict):
+                        continue
+                    command = _codex_tool_command(payload)
+                    verb = derivation.verb(command) if command else ""
+                    if not verb:
+                        continue
+                    common = {"ts": _event_time(event.get("timestamp")) or 0.0,
+                              "host": "codex",
+                              "source": "codex_session_store",
+                              "host_observed": True}
+                    rows.append({**common, "event": "command", "verb": verb,
+                                 "decision": "observed"})
+                    for key in derivation.classify(command):
+                        rows.append({**common, "event": "derived", "key": key,
+                                     "input_key": derivation.input_key(
+                                         workspace, key)})
+        except OSError:
+            continue
+    return sorted(rows, key=lambda row: (
+        row.get("ts", 0), row.get("event", ""), row.get("verb", ""),
+        row.get("key", "")))
+
+
 class EvalCodexAdapter(eval_drivers.CodexAdapter):
     def __init__(self, *, model=None, reasoning_effort=None, **kw):
         super().__init__(**kw)
@@ -145,14 +348,39 @@ class EvalCodexAdapter(eval_drivers.CodexAdapter):
 
     def argv(self, cwd: str) -> list[str]:
         argv = [self.executable, "exec", "--json", "--cd", cwd,
-                "--ephemeral", "--ignore-user-config", "--approve-for-me",
-                "--dangerously-bypass-hook-trust"]
+                "--ignore-user-config", "--approve-for-me",
+                "--dangerously-bypass-hook-trust",
+                # Native worker dispatch is part of the workflow under test.
+                # Make the capability explicit because ignore-user-config
+                # must isolate ambient plugins without silently removing the
+                # Codex collaboration tool that taskplane is evaluating.
+                "--enable", "multi_agent", "--enable", "multi_agent_v2",
+                # The model reads the staged bundle by exact path.  Account-
+                # installed plugins/apps are unrelated evaluator inputs and
+                # must not be synced into the disposable host.
+                "--disable", "plugins", "--disable", "remote_plugin",
+                "--disable", "apps"]
         if self.model:
             argv += ["--model", self.model]
         if self.reasoning_effort:
             argv += ["--config", "model_reasoning_effort=" +
                      json.dumps(self.reasoning_effort)]
         return argv + ["-"]
+
+    def run(self, manifest, *, cwd: str, timeout_s: float = 900,
+            cancel=None, env=None) -> dict:
+        result = super().run(manifest, cwd=cwd, timeout_s=timeout_s,
+                             cancel=cancel, env=env)
+        native = codex_session_trace((env or {}).get("CODEX_HOME"))
+        native_derivations = codex_session_derivations(
+            (env or {}).get("CODEX_HOME"), cwd)
+        result["native_trace"] = native
+        result["native_derivations"] = native_derivations
+        result["native_dispatches"] = sum(
+            row.get("event") == "subagent_start" for row in native)
+        if native or native_derivations:
+            result["telemetry_method"] = "codex_session_store"
+        return result
 
 
 class EvalClaudeAdapter(eval_drivers.ClaudeAdapter):
@@ -191,10 +419,8 @@ def run_skill(*, skill: str, host: str, output_root: str,
         env["PLUGIN_ROOT"] = bundle["root"]
         env["CLAUDE_PLUGIN_ROOT"] = bundle["root"]
         env["PYTHONDONTWRITEBYTECODE"] = "1"
-        if host == "codex" and os.path.isdir(DEFAULT_CODEX_HOME):
-            # `--ignore-user-config` still reads authentication from
-            # CODEX_HOME, while refusing that directory's config/plugins.
-            env["CODEX_HOME"] = DEFAULT_CODEX_HOME
+        if host == "codex":
+            env["CODEX_HOME"] = prepare_codex_home(dest)
         onboard = prepare_fixture(bundle=bundle, ws=ws, env=env)
         if onboard["returncode"]:
             last = onboard["steps"][-1]
@@ -212,8 +438,9 @@ def run_skill(*, skill: str, host: str, output_root: str,
                    if host == "codex" else
                    EvalClaudeAdapter(plugin_root=bundle["root"], model=model,
                                      reasoning_effort=reasoning_effort))
-        manifest = skill_manifest(skill=skill, bundle=bundle, ws=ctx.ws,
-                                  host=host)
+        manifest = skill_manifest(
+            skill=skill, bundle=bundle, ws=ctx.ws, host=host,
+            base=ctx.base, head=ctx.head)
         result = adapter.run(manifest, cwd=ctx.ws, timeout_s=timeout_s,
                              env=ctx.env)
         result["onboarding"] = onboard

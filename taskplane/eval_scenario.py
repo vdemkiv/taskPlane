@@ -178,6 +178,12 @@ ANCHORS: dict = {
         "select": {"event": {"in": ["subagent_start",
                                     "review_dispatch_path"]}},
     },
+    "first_dispatch_or_collection": {
+        "record": "trace",
+        "select": {"event": {"in": ["subagent_start",
+                                    "review_dispatch_path",
+                                    "review_kernel_collected"]}},
+    },
     "first_brief": {
         "record": "trace",
         "select": {"event": {"in": ["subagent_start", "lens_route",
@@ -205,7 +211,8 @@ UNIVERSAL = ("contract", "dor", "dod", "no_rederive")
 # sites. A scenario that selects on an event outside this set is selecting on
 # nothing and would score `no evidence` forever.
 ENGINE_EVENTS = (
-    "dod", "dor", "graph_impact", "graph_scan", "lens_route", "loop_approve",
+    "design_contracts_recorded", "dod", "dor", "graph_impact",
+    "graph_req_link", "graph_scan", "lens_route", "loop_approve",
     "loop_gate", "loop_retro", "loop_step", "loop_submit",
     "review_context_written", "review_dispatch_path", "review_kernel_collected",
     "review_kernel_started", "subagent_start",
@@ -253,7 +260,7 @@ _TOP_KEYS = ("schema", "skill", "title", "source_files", "inputs_fingerprint",
              "expects_derivations", "declared_surfaces", "terminal", "steps")
 _STEP_KEYS = ("id", "claim", "record", "check", "select", "event", "before",
               "after", "field", "value", "equals", "with", "key", "min",
-              "max", "distinct_by", "of", "required", "universal",
+              "max", "distinct_by", "of", "allow_empty_with", "required", "universal",
               "applicable", "reason")
 
 
@@ -555,6 +562,15 @@ def _bad_constraint(c: dict, where: str) -> list:
                    f"check counts rows, not re-derivations")
     if check == "pairs" and not (c.get("with") and c.get("key")):
         out.append(f"{where}: `pairs` needs `with` and `key`")
+    empty = c.get("allow_empty_with")
+    if empty is not None:
+        if check != "pairs" or not isinstance(empty, dict) or \
+                empty.get("record") not in RECORDS:
+            out.append(f"{where}: `allow_empty_with` is only valid on "
+                       "`pairs` and must name a known record")
+        else:
+            out += _bad_select(empty.get("select"),
+                               where + " (allow_empty_with)")
     if check == "field_equals" and not c.get("field"):
         out.append(f"{where}: `field_equals` needs `field`")
     equals = c.get("equals")

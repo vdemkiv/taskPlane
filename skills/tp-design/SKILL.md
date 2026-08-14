@@ -26,18 +26,35 @@ Design is read-only toward product code. The `tp-designer` role may write only `
 
 ## Start
 
+Separation of duties starts with requirement refinement, not only with the
+later design artifact. The orchestrator never authors Product or Design work.
+For every `loop next` Product/Design payload, immediately dispatch the exact
+role named by the engine and wait for its result. On Codex use the emitted
+`task_name`, role instructions, standalone `role_marker`, model when non-null,
+and `reasoning_effort`, following
+[`../tp-go/references/codex-native-dispatch.md`](../tp-go/references/codex-native-dispatch.md).
+Claude dispatches the same complete brief through its named agent. If the host
+cannot dispatch, stop as a host-capability blocker; never refine or design
+inline as a fallback.
+
 Run onboarding first:
 
 ```bash
 python3 "$TP" onboard --json
 ```
 
-If setup is incomplete, complete the safe setup steps directly. Then ensure the goal is anchored to a refined requirement with testable acceptance criteria and no blocking open questions. Use `tp-product` when the WHAT is not ready; do not let Design silently invent product scope.
+If setup is incomplete, complete the safe setup steps directly. Then ensure
+the goal is anchored to a refined requirement with testable acceptance
+criteria and no blocking open questions. When the WHAT is not ready,
+initialize once without `--req` so the loop's Product step emits the
+`tp-product` worker brief; dispatch it, then attach its returned R-id with
+`loop gate pass --req R-XXXX`. Do not run standalone Product first, create a
+second requirement, or let the orchestrator/Design invent product scope.
 
 Choose one execution form:
 
-- The user asked only for a design: initialize with `loop init --design --design-only --req R-…`.
-- The user wants Design followed by implementation: initialize with `loop init --design --req R-…`.
+- The user asked only for a design: initialize with `loop init --design --design-only [--req R-…] "<goal>"`.
+- The user wants Design followed by implementation: initialize with `loop init --design [--req R-…] "<goal>"`.
 - An existing spec may be passed with `--spec`; otherwise the Product step runs first.
 
 ## When Build should route through Design
@@ -54,7 +71,11 @@ Small, local, reversible, single-module work with an obvious implementation may 
 
 ## Drive the Design phase
 
-Call `loop next`. The Design brief includes the requirement, accepted decisions, current-state inventory, baseline graph fingerprint, bounded impact, and the mandatory `solution-design` lens.
+Call `loop next` once for the Design step and apply the same mandatory native
+dispatch rule from Start; wait for and collect the worker before the
+orchestrator gates the handoff.
+
+The Design brief includes the requirement, accepted decisions, current-state inventory, baseline graph fingerprint, bounded impact, and the mandatory `solution-design` lens.
 
 Have `tp-designer` inspect the cited code and write:
 

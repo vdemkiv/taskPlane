@@ -6,7 +6,7 @@
     "skills/tp-engineering/SKILL.md",
     "agents/tp-engineering.md"
   ],
-  "inputs_fingerprint": "462abfecc7d5de08a7a3eb37ba63e4c4475795436e53b9b9da13947469323f4a",
+  "inputs_fingerprint": "f18194fab9be8cf2348b522a0fe27f04301d62c261328739f60afe91fd913bfc",
   "expects_derivations": [
     "diff",
     "impact"
@@ -56,7 +56,7 @@
       "record": "context",
       "check": "before",
       "select": {"kind": "review_envelope"},
-      "before": "first_dispatch",
+      "before": "first_dispatch_or_collection",
       "required": true
     },
     {
@@ -65,7 +65,7 @@
       "record": "trace",
       "check": "before",
       "select": {"event": "review_kernel_started", "context_fingerprint": {"present": true}},
-      "before": "first_dispatch",
+      "before": "first_dispatch_or_collection",
       "required": true
     },
     {
@@ -103,6 +103,9 @@
       "select": {"kind": "review-kernel-slot"},
       "with": {"record": "context", "select": {"kind": "slot_result"}},
       "key": "slot_id",
+      "allow_empty_with": {"record": "trace", "select": {
+        "event": "review_kernel_started", "routing_complete": true,
+        "slots": []}},
       "required": true
     },
     {
@@ -123,7 +126,10 @@
           "check": "pairs",
           "select": {"kind": "review-kernel-slot"},
           "with": {"record": "context", "select": {"kind": "review_envelope"}},
-          "key": {"left": "context_fingerprint", "right": "fingerprint"}
+          "key": {"left": "context_fingerprint", "right": "fingerprint"},
+          "allow_empty_with": {"record": "trace", "select": {
+            "event": "review_kernel_started", "routing_complete": true,
+            "slots": []}}
         }
       ],
       "universal": ["no_rederive"],
@@ -135,8 +141,8 @@
       "record": "trace",
       "check": "all",
       "of": [
-        {"check": "before", "select": {"event": "contract_activated"}, "before": "first_dispatch"},
-        {"check": "before", "select": {"event": "dor", "ready": true}, "before": "first_dispatch"},
+        {"check": "before", "select": {"event": "contract_activated"}, "before": "first_dispatch_or_collection"},
+        {"check": "before", "select": {"event": "dor", "ready": true}, "before": "first_dispatch_or_collection"},
         {"check": "exists", "select": {"event": "review_kernel_collected"}}
       ],
       "universal": ["contract", "dor", "dod"],

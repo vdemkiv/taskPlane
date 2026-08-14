@@ -7,6 +7,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import eval_rubric as er  # noqa: E402
 import eval_scenario as es  # noqa: E402
+import eval_drivers  # noqa: E402
 
 
 def run(trace):
@@ -118,6 +119,28 @@ class TestAbsoluteWorkflow(unittest.TestCase):
         result = er.evaluate_run_v2(scenario, rec)
         self.assertFalse(result["eligible"])
         self.assertIn("response_missing", result["workflow"]["failures"])
+
+    def test_an_expected_brief_is_not_falsely_counted_as_a_dispatch(self):
+        scenario = {
+            "schema": es.SCHEMA, "skill": "advisory", "terminal": "response",
+            "expects_derivations": [], "steps": [
+                {"id": "A", "claim": "ran", "record": "trace",
+                 "check": "exists", "select": {"event": "evaluation_started"}},
+            ]}
+        rec = v2_run(
+            [{"ts": 1, "event": "evaluation_started"}],
+            dispatch=[{"source": "expected_dispatch", "lens": "tp-product"}])
+        result = er.evaluate_run_v2(scenario, rec)
+        self.assertTrue(result["eligible"], result)
+        self.assertNotIn("hook_unproved", result["workflow"]["failures"])
+
+    def test_codex_session_metadata_is_host_observed_dispatch_proof(self):
+        proof = eval_drivers.hook_proof([{
+            "event": "subagent_start", "source": "codex_session_store",
+            "host_observed": True, "ts": 4,
+        }])
+        self.assertTrue(proof["proved"])
+        self.assertEqual(proof["source"], "codex_session_store")
 
     def test_product_is_graded_as_product_work_not_as_a_review(self):
         scenario = es.load(os.path.join(es.scenario_dir(ROOT),

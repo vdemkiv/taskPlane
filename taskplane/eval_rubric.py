@@ -586,9 +586,24 @@ def _pairs(c, rec, sel):
     if unknown_ops(spec.get("select")):
         return NO_EVIDENCE, "partner selector uses an unknown operator", {}
     if not sel:
-        # "every brief came back with findings" over zero briefs is the
-        # vacuous truth again: a review that dispatched nothing is not a
-        # review that dispatched perfectly.
+        # Zero dispatched briefs are valid only when another engine record
+        # proves this was the selective routing decision, rather than a
+        # stopped or uninstrumented review. The manifest must opt into that
+        # evidence explicitly; ordinary empty pairs remain no-evidence.
+        empty = c.get("allow_empty_with")
+        if isinstance(empty, dict):
+            name = empty.get("record")
+            bad = _guard(rec, name)
+            if bad:
+                return NO_EVIDENCE, f"empty-dispatch proof: {bad}", {}
+            if unknown_ops(empty.get("select")):
+                return NO_EVIDENCE, ("empty-dispatch proof selector uses an "
+                                     "unknown operator"), {}
+            proof = _select(_rows(rec, name), empty.get("select"))
+            if proof:
+                return PASS, ("zero rows are justified by the selective "
+                              "zero-dispatch engine record"), \
+                    {"matched": 0, "empty_proof": _ev(proof)}
         return NO_EVIDENCE, ("no row matches the selector, so there is "
                              "nothing to pair"), {"matched": 0}
     if _present(sel, left_field) == "none":
@@ -672,7 +687,10 @@ def _constraint(c, rec) -> dict:
         return out
     name = c.get("record")
     bad = _guard(rec, name)
-    if bad:
+    allowed_empty_pairs = (
+        check == "pairs" and status(rec, name) == "empty"
+        and isinstance(c.get("allow_empty_with"), dict))
+    if bad and not allowed_empty_pairs:
         out.update(verdict=NO_EVIDENCE, reason=bad)
         return out
     bad_ops = unknown_ops(c.get("select"))
@@ -820,7 +838,9 @@ def absolute_compliance(rec, scenario=None) -> dict:
         failures.append("driver_" + str(driver.get("status") or "unknown"))
     proof = run.get("hook_proof") or {}
     dispatch_rows = (rec.get("rows") or {}).get("dispatch") or []
-    dispatched = bool(dispatch_rows) or any(
+    # The dispatch record contains planned briefs as well as observed work.
+    # Expected work is not proof that a host actually spawned it.
+    dispatched = any(
         row.get("event") in ("subagent_start", "lens_dispatch")
         for _, row in events)
     if dispatched and not proof.get("proved"):

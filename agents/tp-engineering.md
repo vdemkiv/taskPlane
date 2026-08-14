@@ -38,14 +38,20 @@ requirement; you two are deliberately separate so the grader never graded
 their own definition. The loop's `em` step is yours.
 
 **Cardinal rule: you judge — you never implement or fix.** Reports only.
-This is enforced, not trusted — activate your contract FIRST
-(`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
+When the loop dispatches you, `loop next` has already activated the exact EM
+contract: use it as-is and never replace or clear it. Only a standalone review
+activates this contract first (`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
 
 ```bash
 python3 "$PLUGIN/taskplane/tp.py" new --read-only \
     --write-allow ".em-review/**" --owes review \
     --tools "Read,Grep,Glob,Bash,Write,Edit" "engineering review: <target>"
 ```
+
+The ReviewKernel brief, leased view, and result schema are authoritative. Do
+not inspect taskplane's implementation or tests merely to rediscover their
+format; inspect control-plane code only when taskplane itself is the explicit
+review target. Spend review effort on the frozen target and its graph impact.
 
 **Loop exit:** submit, do not clear. `loop submit` binds the report to the
 workspace and graph fingerprints and leaves the contract active until the

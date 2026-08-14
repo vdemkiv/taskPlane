@@ -147,6 +147,31 @@ class TestCodexHookProtocol(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "")
 
+    def test_exec_command_cmd_uses_bash_policy_and_records_derivations(self):
+        contract = tp.build_contract("review", scope=["src/**"],
+                                     tools=["Bash"])
+        tp.activate(self.ws, contract, snapshot=tp.git_head(self.ws))
+        event = {"turn_id": "turn-1", "cwd": self.ws,
+                 "tool_name": "exec_command",
+                 "tool_input": {"cmd": "python3 taskplane/tp.py review start"}}
+        result = self._run(event)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "")
+        import derivation
+        derived = [row.get("key") for row in derivation.read(self.ws)
+                   if row.get("event") == "derived"]
+        self.assertEqual(derived, ["impact", "diff"])
+
+    def test_exec_command_cmd_cannot_bypass_read_only_screening(self):
+        contract = tp.build_contract(
+            "read only", read_only=True, write_allow=[".eval/**"],
+            tools=["Bash"])
+        ok, reason = tp.screen_tool(
+            contract, "exec_command", {"cmd": "touch src/forbidden.py"},
+            self.ws)
+        self.assertFalse(ok)
+        self.assertIn("outside", reason)
+
     def test_claude_allow_keeps_legacy_approve(self):
         event = {"cwd": self.ws, "tool_name": "Edit",
                  "tool_input": {"file_path": "src/a.py"}}

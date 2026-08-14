@@ -12,105 +12,24 @@ This is the internal delivery driver behind the user-facing `taskplane`
 facade — user phrasing like "build X" arrives via the facade and routes
 here. Keep role names, CLI choreography, graph policies, and evidence files
 out of the user's way unless they ask. Do not simplify any of them for
-agents. The CLI surfaces named below are current as of v2.7 — verify against
-`$TP --help` before citing anything not listed here.
+agents. The command forms in this skill and the engine's returned action are
+authoritative; do not call `$TP --help`, inspect taskplane source/tests, or
+run exploratory status/list commands during the normal path.
 
-**New in v2.14 — one selective evidence kernel across every review stage.**
-Graph quality and bounded caller impact are established before routing all 26
-lenses. Dispatch is exactly the deep set plus at most one light sweep; an
-`impact_incomplete` run dispatches nobody. Review, Evaluate, and final EM reuse
-one immutable diff/impact/requirements/DoR/DoD envelope, deterministic scoped
-views, leased lens results, and one canonical revision. Never remap or rederive
-those facts inside a lens. Claude and Codex consume byte-equivalent canonical
-artifacts; a newly installed build needs a new host task to load lifecycle
-hooks before provenance can pass.
+**One owner per phase.** The orchestrator never authors Product, Design,
+Plan, Build, Evaluate, or Engineering artifacts inline. It initializes the
+loop, dispatches the exact role emitted by `loop next`, waits, and applies the
+mechanical gate. A goal with no existing R-id starts the loop without `--req`:
+the first PM action creates exactly one complete requirement and spec. Attach
+that returned R-id on the PM gate with `loop gate pass --req R-XXXX`. Never
+run standalone Product refinement first and then repeat it inside the loop.
 
-**In v2.13 — one opening call, one copy of the context.**
-`tp review start <target> --base <ref>` returns tools, target pin, graph,
-impact, contract, obligations, routing, runnability and the briefs as one
-payload. Large artifacts come back as `RENDER-BY-REFERENCE: <path>` —
-deliver the file, do not paste it. `--max-tokens` sets an effective-token
-ceiling read from the host's transcript.
-
-That payload is the canonical review context for standalone Review, per-task
-Evaluate, and final engineering review: one diff, one graph-quality/blast-radius
-record, one requirements/contracts and DoR/DoD record, one 26-lens disposition,
-then exactly the deep slots plus at most one light sweep. Agents consume scoped
-artifact references and never re-derive diff, graph, routing, or runnability.
-Insufficient graph evidence is `impact_incomplete` and dispatches zero agents;
-it never expands to all lenses.
-
-**In v2.12 — bind the review to a tree.** `tp new --target <pr>
---fetch --base <ref>` fetches `pull/N/head`, pins the checkout, and writes
-the pin into the contract; findings cite it in `meta.target`. `tp target
-tools` says whether `git` and `gh` are present and authenticated, and
-`--install` installs gh through the host's package manager.
-
-**In v2.11 — routed, not exhaustive.** `lens dispatch` asks the
-applicability engine which lenses this change actually summons; unrouted
-lenses get no agent and carry the evidence for why. `--all` still forces the
-whole catalog and now says that it disables the engine. Also: `tp ack` is
-unmetered, a budget's last actions are reserved for closing rather than
-spent on work, and `tp init` ignores runtime paths via `.git/info/exclude`
-instead of dirtying a reviewed repo's `.gitignore`.
-
-**In v2.10 — a fan-out of lens agents actually fans out.** Sibling lens
-contracts (every member read-only, every write-allow under one common root)
-now merge their write-allows and SUM their budgets, instead of intersecting
-to the empty set and handing six agents one agent's action budget. The
-findings headline reports the engine's blocking split — `N BLOCK (R·H·P·O)`
-— rather than a severity count that can read `0 high` over a regression.
-`graph impact` sees intra-repo Go: a root `go.mod` is consumed as a module
-PREFIX instead of being skipped.
-
-**In v2.9 — a run declares what it owes you, and cannot close without
-it.** `tp new --owes <run-type>` records the artifacts a run owes BEFORE the
-work begins; taskplane's own completion commands stay blocked until each is
-shown and acknowledged. Doing the work is never blocked — only declaring it
-finished. `TASKPLANE_OBLIGATIONS=off` disables the block while still
-recording.
-
-**In v2.8 — trust the graph, and watch the fan-out.**
-Module ids now come from build manifests where a repo declares them, so on a
-monorepo `graph impact` answers `@acme/ui` rather than an invented `ui` — an
-id you can carry back to the codebase. Markdown skills/agents/lenses, SQL,
-IaC and CI are graph nodes with their files, and references between
-components (a skill naming an agent, a module reading a catalog) are edges,
-so blast radius covers the non-code half of a repo for the first time. Two
-consequences for you: the graph tab will be much denser than you remember,
-and a `--all` review now DEMOTES lenses past the deep cap to inline rather
-than dispatching a subagent each — everything still runs, and each demotion
-records why. A `tests_pass` satisfied by CITING an identical-content run says
-so in the DoD output now; if you are signing off, read that line. And when
-the dashboard fails to render, the payload says so explicitly instead of
-silently omitting the field — do not present a stale board as current.
-
-**New in v2.7 — the lenses got sharper and the fan-out got a budget.**
-All 26 lenses were rewritten against current industry practice. Two things
-change what you will see: many lenses now carry an ABSTAIN rule and will
-return no findings on a diff they have nothing to say about — that is the
-lens working, not a lens failing — and several carry a standing caveat that
-bounds what they may claim (a coverage percentage, for instance, is never on
-its own a blocker). Twelve lenses previously could not fire on the change
-class they exist to judge; that is fixed, so expect security to fire on CI
-workflows and lockfiles, i18n on components rather than only locale files,
-and `qa` on a change that adds no test at all. Review cost is now pinned in
-CI (`scripts/ci_loop_cost.py`) alongside per-task cost, so widening a lens's
-routing is a decision someone makes on the record.
-
-**New in v2.6 — stop paying twice for the same evidence.** At the
-evaluate step, START with `$TP loop evidence --write`: one call returns
-the suite result, the diff, and the exact criteria, routed-lens and
-graph obligations the gate will demand, with every judgment slot left
-EMPTY. Do not rebuild any of that by hand — hand-assembly cost about
-sixty shell calls per evaluation and produced nothing the engine did
-not already hold. The bundle states obligations; it never discharges
-one, and a bundle submitted unchanged is refused at the gate.
-The DoD test command is now cited rather than re-run when an identical
-run over byte-identical content already exists (same command, same
-engine, same governing env); `TASKPLANE_NO_SUITE_CACHE=1` forces a
-real run. And a finding may block a gate only if it carries a claim —
-trigger, outcome, repro — so commentary stops reading like a bug.
+**One selective evidence kernel.** Review, Evaluate, and final EM use one
+pinned diff, graph-quality/blast-radius record, requirements/contracts and
+DoR/DoD envelope, one complete 26-lens disposition, and leased results.
+Dispatch exactly the deep slots plus at most one light sweep. An
+`impact_incomplete` run dispatches nobody. Lenses consume scoped artifact
+references and never rederive diff, graph, routing, or runnability.
 
 **Model tiers.** Each `loop next` payload and each `lens dispatch` brief carries
 an exact Codex-safe `task_name`, the taskplane `role`/`agent`, a `model` (a
@@ -138,70 +57,13 @@ needs alternatives, dependency/contract decisions, or rollout evidence before
 implementation; reach for tp-build whenever the goal is a new feature rather
 than a fix or review.
 
-**SHOW THE WORK — render the live dashboard at every transition.** Use the
-host's inline HTML/widget capability when available. When it is not, relay the
-`HEADLINE:` and provide `.taskplane/dashboard.html` as the dashboard artifact;
-never pretend unavailable widget buttons were shown.
-
-**Progress-first, not result-only.** Render BEFORE a burst of work, not
-just after it. When you're about to dispatch agents (a parallel wave, a
-lens fan-out), render the "starting" board FIRST so the person sees the
-work forming — then render again as it lands. A dashboard that only
-appears at the end is the failure mode; the whole point is to watch
-progress. If a step will take several tool calls, show the board going in.
-
-After each `loop next`, `loop submit`, `loop gate`, `loop wave`, and
-`loop approve`:
-0. **The fragment is already on disk.** Every successful `loop gate` /
-   `loop next` refreshes `.taskplane/dashboard.html` and returns a
-   `dashboard` field in its JSON — rendering is part of the flow, not an
-   optional extra call. Read that file (or run `$TP dashboard`) and SHOW it;
-   never skip a transition. The board now also carries the **step journey**
-   (click any traversed step for its execution + decision detail) and an
-   always-on **stats band with the agent→model table** (who ran which
-   step/lens on which model — expected vs dispatched).
-1. `$TP dashboard` — prints the mission-control HTML fragment. Four tabs:
-   **loop** (governance rail PM→Design→Approve Design→Plan→Approve→Build→EM→Sign-off→Done,
-   with Design omitted for simple direct builds; inside
-   Build, one lane per task showing its own build → evaluate ⟲ fix
-   mini-pipeline — parallel lanes visible side by side — plus live feed and,
-   at `plan_approval`/`signoff`/`escalated`, gate buttons wired to
-   `sendPrompt`), **stats** (agents/steps/waves/fixes/blocks + KB counts),
-   **graph** (hubs + blast radius of the current scope), **context**
-   (requirement, acceptance criteria, routed lenses, recent decisions, debt).
-2. Put the decision context in TEXT first (what happened, what's the call),
-   THEN call `mcp__visualize__show_widget` when available, with that fragment
-   as `widget_code`, as the LAST thing in the reply. Otherwise link the
-   refreshed `.taskplane/dashboard.html` artifact after the text. Title:
-   `taskplane_<goal-slug>_<step>` — UNIQUE per render; a repeated title
-   updates the earlier widget in place instead of drawing a new one at the
-   current position.
-
-3. **Acknowledge it: `$TP ack <id>`.** Every transition payload carries
-   `dashboard.obligation` — an id the engine recorded when it built the
-   artifact. The engine can render, write and point at the dashboard; it
-   cannot see whether it reached a human, because `show_widget` happens in
-   the host. So an obligation left unacknowledged is RECORDED AS NOT SHOWN,
-   and `scripts/ci_evals.py` counts it. This is not a gate: skipping the ack
-   blocks nothing, costs nothing, and refuses nothing. It only means the
-   session's record says the human never saw the board — which is the
-   complaint this whole mechanism exists to make visible instead of
-   deniable. Acknowledge what you actually showed, and nothing else: `tp ack`
-   reads the fingerprint off the artifact the obligation names, so citing
-   your own hand-built chart instead is recorded as a substitute, not a
-   success. `$TP ack --status` lists what is still open.
-
-**Render contract (v1.5.3/4) — the same flow every taskplane command uses.**
-`$TP dashboard` prints a `HEADLINE:` line first — relay it to the human as
-plain text, always: it is the never-skippable carrier of step + gate +
-lens/graph coverage, so the status lands even if a render is skipped. For an
-unusually large board use `$TP dashboard --paged` (ordered ≤14 KB pages) and
-render EACH page in order via `show_widget`, each page's html VERBATIM
-(no edits, restyling, or re-authoring) — never collapse them into one
-giant widget and never replace them with a prose recap. The loop board's
-**context tab shows the full lens catalog** (sourced from `catalog.json`, so
-a newly added lens appears automatically) and the **graph tab shows blast
-radius**; if the graph is empty on a polyglot repo, say so — don't omit it.
+**Show decision points, not internal chatter.** Every transition already
+refreshes `.taskplane/dashboard.html`; do not call `$TP dashboard` or `ack`
+after each internal step. Relay the returned `HEADLINE`/dashboard path by
+reference while agents are working. Render the engine-authored HTML verbatim
+only before a human gate, an explicit status request, or a long fan-out where
+progress materially helps. Acknowledge only a dashboard actually rendered to
+the human. Never paste the HTML into model context or regenerate its graph.
 
 **Shared progress artifacts (v2.0.0).** Every `loop gate`/`next`/`approve`/
 `retro` also snapshots the decision artifacts (dashboard, plan, findings,
@@ -234,22 +96,25 @@ explicit approval in conversation. Never run the loop silently.
    missing, run `$TP init` yourself (details: `references/setup.md`) and fill
    the three context docs from the conversation — only ask what you can't
    infer.
-2. **Requirement (the product phase):** author it WITH the user and score
-   it — full procedure in `../tp-product/references/requirements.md`
-   (record, score, refine on gaps, quick vs full with tracked debt). For a
-   NEW FEATURE, follow `../tp-build/SKILL.md` instead: a north-star check first for
-   significant ones, refine until the forecast is clean, render a visual
-   mock of the spec BEFORE building.
-3. **Loop:** `$TP loop init --req R-XXXX "<goal>"` (add `--design` for a
+2. **Initialize once:** when the user supplied an existing R-id, run
+   `$TP loop init --req R-XXXX "<goal>"`. Otherwise run `$TP loop init
+   "<goal>"`; the PM step owns the first requirement/spec. Never run a
+   standalone `req new` before this loop. Add `--design` for a
    complex/risky/contract-changing or explicitly requested proposed-HOW phase;
    add `--design-only` when the deliverable is the approved design itself;
-   add `--parallel` when
-   the plan will have independent tasks; `--spec path` if a spec exists).
-   Then repeat `$TP loop next` and DO what its `instruction` says, playing
-   the named role under its activated contract. On Codex, follow
+   add `--parallel` when the plan will have independent tasks; use `--spec
+   path` only for an existing complete spec.
+3. **Dispatch, never impersonate:** call `$TP loop next` once for the current
+   step and dispatch the named role under its already-active contract. On
+   Codex, follow
    `references/codex-native-dispatch.md`: use the exact `task_name`, model and
-   `reasoning_effort`, and preserve the complete `role_instructions` file plus
-   action payload; never improvise a reduced role prompt. Design writes
+   `reasoning_effort`, standalone `role_marker`, and complete
+   `role_instructions` file plus action payload. Wait with bounded native
+   waits and collect the final result. Do not perform the role inline, call
+   `loop next` again while it is running, or replace its contract. The PM
+   worker returns one R-id; attach it on its mechanical gate with
+   `$TP loop gate pass --req R-XXXX`. Product/planner return artifacts; only
+   execute/fix/evaluate/engineering workers submit. Design writes
    `design/contract.json` and
    `design/design.md`, compares alternatives, declares a proposed graph
    overlay with bounded contract-level boundaries, runs the mandatory

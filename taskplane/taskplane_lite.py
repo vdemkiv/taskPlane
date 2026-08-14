@@ -205,10 +205,14 @@ WRITE_TOOL_PATH_FIELDS = {
     "apply_patch": (),
 }
 WRITE_TOOLS = set(WRITE_TOOL_PATH_FIELDS)
-COMMAND_TOOLS = {"Bash", "BashOutput"}
+COMMAND_TOOLS = {"Bash", "BashOutput", "exec_command",
+                 "functions.exec_command"}
 TOOL_ALIASES = {
     "apply_patch": ("apply_patch", "Edit", "Write"),
     "Agent": ("Agent", "Task"),
+    "exec_command": ("exec_command", "Bash"),
+    "functions.exec_command": ("functions.exec_command", "exec_command",
+                               "Bash"),
 }
 _PATCH_TARGET_RE = re.compile(
     r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):\s*"
@@ -1466,6 +1470,19 @@ def tool_aliases(tool_name: str) -> tuple[str, ...]:
     return TOOL_ALIASES.get(tool_name, (tool_name,))
 
 
+def command_text(tool_name: str, tool_input: dict) -> str:
+    """One command payload for Claude Bash and Codex exec_command.
+
+    Codex names the capability ``exec_command`` and puts the shell text in
+    ``cmd``. Treating only Claude's ``Bash``/``command`` shape as a command
+    silently bypasses screening and makes the derivation ledger grade a real
+    ReviewKernel run as if it never derived its diff or impact.
+    """
+    if tool_name in {"exec_command", "functions.exec_command"}:
+        return str(tool_input.get("cmd") or "")
+    return str(tool_input.get("command") or "")
+
+
 def write_paths(tool_name: str, tool_input: dict) -> list[str]:
     """Return every filesystem target named by a host write tool."""
     if tool_name == "apply_patch":
@@ -1505,7 +1522,7 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
     if tool_name in COMMAND_TOOLS:
         hook_command = host_hook_cli_invocation(
-            str(tool_input.get("command", "")))
+            command_text(tool_name, tool_input))
         if hook_command:
             return False, ("host hook entry point cannot be invoked through "
                            f"an agent shell: {hook_command}")
@@ -1533,7 +1550,7 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                f"'{bad}' is outside it; the reviewed source "
                                "is protected")
         if tool_name in COMMAND_TOOLS:
-            targets, opaque = _analyze(str(tool_input.get("command", "")))
+            targets, opaque = _analyze(command_text(tool_name, tool_input))
             leased_paths = [path for path in allow
                             if "/kernel-v2/results/" in
                             "/" + str(path).replace("\\", "/")]
@@ -1571,7 +1588,7 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                 return False, v
 
     if tool_name in COMMAND_TOOLS:
-        v = screen_command(str(tool_input.get("command", "")), coding,
+        v = screen_command(command_text(tool_name, tool_input), coding,
                            workspace)
         if v:
             return False, v

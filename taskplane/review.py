@@ -363,10 +363,18 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                          "context_fingerprint", "view_fingerprint",
                          "canonical_revision", "authored_by",
                          "lens_results", "findings"],
-            "lens_result": {"required": ["lens", "verdict", "blockers"],
-                            "verdict": ["pass", "fail"]},
-            "finding": {"required": ["severity", "class", "file", "line",
-                                      "title", "scenario", "fix"]},
+            "lens_result": {
+                "type": "object",
+                "required": ["lens", "verdict", "blockers"],
+                "verdict": ["pass", "fail"],
+                "blockers": {"type": "integer", "minimum": 0}},
+            "findings": {"type": "array", "items": "finding"},
+            "finding": {"type": "object",
+                        "required": ["lens", "severity", "class", "file",
+                                     "line", "title", "scenario", "fix"]},
+            "codex_completion_receipt": {
+                "required_lines": ["taskplane-result-path:<result_path>",
+                                   "taskplane-result-sha256:<sha256>"]},
         }
         brief = {
             "schema": "taskplane.lens-brief/v2", "slot_id": slot_id,
@@ -834,6 +842,130 @@ def record_slot_write_observation(ws: str, *, event: dict, contract: dict,
     return receipt
 
 
+def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
+                           raw_result: bytes) -> dict | None:
+    """Recover host provenance from Codex's native, read-only task store.
+
+    Repo hooks remain the preferred immediate receipt.  Codex also persists a
+    host-authored child record outside the model's writable checkout.  A child
+    that names the exact leased path and digest in its final answer therefore
+    gives collection an equivalent byte-bound receipt when a hook transport is
+    unavailable.  Parent thread + hashed task name + model/effort + result
+    bytes are all matched; a prose claim or merely existing child is not.
+    """
+    if tp.host() != "codex":
+        return None
+    parent_thread = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if not parent_thread:
+        return None
+    brief = store.read(slot["brief"])
+    role = brief.get("role") or {}
+    task_name = str(role.get("task_name") or "").strip()
+    if not task_name:
+        return None
+    expected_path = tp.norm(slot["result_path"])
+    expected_digest = hashlib.sha256(raw_result).hexdigest()
+    home = os.path.realpath(os.environ.get("CODEX_HOME") or
+                            os.path.join(os.path.expanduser("~"), ".codex"))
+    sessions = os.path.join(home, "sessions")
+    paths = []
+    for directory, _dirs, names in os.walk(sessions):
+        paths.extend(os.path.join(directory, name) for name in names
+                     if name.startswith("rollout-") and name.endswith(".jsonl"))
+    observed = None
+    for path in sorted(paths, reverse=True)[:512]:
+        spawn = None
+        child_id = None
+        model = None
+        effort = None
+        final_messages = []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    if len(line) > 2 * 1024 * 1024:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    payload = event.get("payload") or {}
+                    if event.get("type") == "session_meta" and spawn is None:
+                        source = payload.get("source") or {}
+                        candidate = (((source.get("subagent") or {})
+                                      .get("thread_spawn"))
+                                     if isinstance(source, dict) else None)
+                        if isinstance(candidate, dict):
+                            spawn = candidate
+                            child_id = str(payload.get("id") or "")
+                    elif event.get("type") == "turn_context" and model is None:
+                        model = payload.get("model")
+                        effort = (payload.get("effort") or
+                                  payload.get("reasoning_effort"))
+                    elif event.get("type") == "event_msg" and \
+                            payload.get("type") == "task_complete":
+                        final_messages.append(str(
+                            payload.get("last_agent_message") or ""))
+        except OSError:
+            continue
+        if not spawn or spawn.get("parent_thread_id") != parent_thread or \
+                os.path.basename(str(spawn.get("agent_path") or "")) != task_name:
+            continue
+        if role.get("model") not in (None, model) or \
+                role.get("reasoning_effort") not in (None, effort):
+            continue
+        path_line = "taskplane-result-path:" + expected_path
+        digest_line = "taskplane-result-sha256:" + expected_digest
+        if not any(path_line in {part.strip() for part in message.splitlines()}
+                   and digest_line in {part.strip() for part in message.splitlines()}
+                   for message in final_messages):
+            continue
+        observed = {"child_id": child_id, "model": model, "effort": effort}
+        break
+    if not observed or not observed["child_id"]:
+        return None
+    expected = slot["producer_contract"]
+    assignment = {
+        "schema": "taskplane.slot-producer-assignment/v1",
+        "run_id": slot.get("run_id"),
+        "lease_fingerprint": lease["lease_fingerprint"],
+        "slot_id": lease["slot_id"], "result_path": slot["result_path"],
+        "contract_task": expected["task"],
+        "contract_task_slot": expected["task_slot"],
+        "producer_host": "codex", "producer_session": parent_thread,
+        "producer_child_id": observed["child_id"],
+    }
+    assignment_path = _producer_assignment_path(
+        ws, lease["lease_fingerprint"])
+    prior_assignment = tp.load_json(
+        assignment_path, default=None, what="slot producer assignment")
+    if prior_assignment is not None and prior_assignment != assignment:
+        return None
+    if prior_assignment is None:
+        tp.atomic_write_json(assignment_path, assignment, sort_keys=True)
+    assignment_fingerprint = hashlib.sha256(json.dumps(
+        assignment, sort_keys=True, separators=(",", ":"))
+        .encode("utf-8")).hexdigest()
+    receipt = {
+        "schema": "taskplane.slot-write-observation/v3",
+        **{key: assignment[key] for key in (
+            "run_id", "lease_fingerprint", "slot_id", "result_path",
+            "contract_task", "contract_task_slot", "producer_session",
+            "producer_host", "producer_child_id")},
+        "producer_assignment_fingerprint": assignment_fingerprint,
+        "result_sha256": expected_digest, "result_bytes": len(raw_result),
+        "host_event": "CodexTaskComplete",
+        "tool": "native-session-result-receipt",
+    }
+    receipt_path = _receipt_path(ws, lease["lease_fingerprint"])
+    prior_receipt = tp.load_json(
+        receipt_path, default=None, what="slot write observation")
+    if prior_receipt is not None and prior_receipt != receipt:
+        return None
+    if prior_receipt is None:
+        tp.atomic_write_json(receipt_path, receipt, sort_keys=True)
+    return receipt
+
+
 def _validate_finding(row: dict, lens_ids: list[str]) -> dict:
     required = ("severity", "class", "file", "line", "title", "scenario", "fix")
     if not isinstance(row, dict) or any(key not in row for key in required):
@@ -942,6 +1074,8 @@ def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
                 "blocking finding contradicts lens verdict summary: " + lens_id)
     receipt = tp.load_json(_receipt_path(ws, lease["lease_fingerprint"]),
                            default=None, what="slot write observation")
+    if not isinstance(receipt, dict):
+        receipt = _codex_session_receipt(ws, store, slot, lease, raw_result)
     expected_receipt = {
         "run_id": slot.get("run_id"),
         "lease_fingerprint": lease["lease_fingerprint"],
@@ -953,7 +1087,8 @@ def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
             "taskplane.slot-write-observation/v3" or any(
                 receipt.get(key) != value for key, value in expected_receipt.items()):
         raise evidence.ProvenanceError(
-            "slot result has no matching hook-observed producer receipt")
+            "slot result has no matching hook-observed or Codex-session "
+            "producer receipt")
     if not str(receipt.get("producer_session") or ""):
         raise evidence.ProvenanceError("slot result producer session is missing")
     if receipt.get("producer_host") not in {"claude", "codex"}:

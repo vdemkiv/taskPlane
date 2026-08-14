@@ -6,7 +6,7 @@
     "skills/tp-product/SKILL.md",
     "agents/tp-product.md"
   ],
-  "inputs_fingerprint": "fb7d784ed262c17fba7d7f02b713846d560f6104469b31a60cfaac528a7dfb9d",
+  "inputs_fingerprint": "0b21e04def511822f1849b62eb8f4ff04aeb4ad80fcac4b5294f1f41c44deca7",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp req new",
@@ -18,13 +18,13 @@
   "steps": [
     {
       "id": "U1-CONTRACT",
-      "claim": "the run was governed before it changed anything — the contract was active before the first write, not declared after the fact",
+      "claim": "the run was governed before it changed product state — the contract was active before the requirement was recorded, not declared after the fact",
       "record": "trace",
       "check": "before",
       "select": {
         "event": "contract_activated"
       },
-      "before": "first_write",
+      "before": {"record": "trace", "select": {"event": "requirement_recorded"}},
       "universal": [
         "contract"
       ],

@@ -260,6 +260,39 @@ class TestLoop(unittest.TestCase):
                 self.assertTrue(
                     contract["coding"]["dod"]["regression_gate"])
 
+    def test_read_only_workflow_roles_can_call_the_governed_cli(self):
+        """Codex exposes CLI calls through Bash even for read-only roles."""
+        state = {"goal": "g", "current_task": 0, "tasks": [TASK]}
+        for step in ("pm", "design", "plan"):
+            with self.subTest(step=step):
+                contract = loop._step_contract(step, state)
+                self.assertTrue(contract["read_only"])
+                self.assertIn("Bash", contract["allowed_tools"])
+                ok, reason = loop.tp.screen_tool(
+                    contract, "Bash",
+                    {"command": "python3 taskplane/tp.py status"}, self.tmp)
+                self.assertTrue(ok, reason)
+
+    def test_step_contract_is_active_before_definition_of_ready(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        order = []
+        original_activate = loop.tp.activate
+        original_dor = loop.tp.dor_check
+
+        def activate(*args, **kwargs):
+            order.append("contract")
+            return original_activate(*args, **kwargs)
+
+        def dor(*args, **kwargs):
+            order.append("dor")
+            return original_dor(*args, **kwargs)
+
+        with unittest.mock.patch.object(loop.tp, "activate", activate), \
+                unittest.mock.patch.object(loop.tp, "dor_check", dor):
+            loop.next_action(ws)
+        self.assertEqual(order[:2], ["contract", "dor"])
+
     def test_task_dod_enables_regression_gate(self):
         """The submit/gate reconstruction keeps the same governed DoD."""
         with unittest.mock.patch.object(

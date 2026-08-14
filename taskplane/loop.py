@@ -307,16 +307,16 @@ def _step_contract(step: str, state: dict) -> dict:
         return tp.build_contract(
             f"PM: {state['goal']}", read_only=True,
             write_allow=["specs/**", "docs/**"],
-            tools=["Read", "Grep", "Glob", "WebSearch", "Write"])
+            tools=["Read", "Grep", "Glob", "WebSearch", "Bash", "Write"])
     if step == "design":
         return tp.build_contract(
             f"DESIGN: {state['goal']}", read_only=True,
             write_allow=["design/**"],
-            tools=["Read", "Grep", "Glob", "WebSearch", "Write"])
+            tools=["Read", "Grep", "Glob", "WebSearch", "Bash", "Write"])
     if step == "plan":
         return tp.build_contract(
             f"PLAN: {state['goal']}", read_only=True, write_allow=["plan/**"],
-            tools=["Read", "Grep", "Glob", "Write"])
+            tools=["Read", "Grep", "Glob", "Bash", "Write"])
     if step in ("execute", "fix"):
         verb = "EXECUTE" if step == "execute" else "FIX"
         return tp.build_contract(
@@ -797,6 +797,11 @@ def next_action(ws: str, rid: str | None = None) -> dict:
 
     contract = _step_contract(step, state)
     snapshot = tp.git_head(act_ws)
+    # Governance starts before readiness is evaluated.  A failing DoR must
+    # still leave the attempted step inside its exact contract; recording
+    # readiness first made the audit say work was judged before it was
+    # governed and let host actions race the enforcement boundary.
+    tp.activate(act_ws, contract, snapshot=snapshot)
     dor_ready, blockers, warnings = tp.dor_check(
         contract, act_ws, snapshot)
     if step == "design":
@@ -840,8 +845,6 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 return {"error": f"graph refresh failed before {step}: {exc}",
                         "step": step, "status": status(ws)}
             tp.trace(ws, "graph_refresh_failed", step=step, error=str(exc))
-    tp.activate(act_ws, contract, snapshot=snapshot)
-
     # Inject the handful of prior decisions relevant to this step's work, so
     # the role starts with context instead of re-deriving it (token savings).
     task = _current_task(state)

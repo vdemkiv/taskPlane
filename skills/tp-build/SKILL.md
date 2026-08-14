@@ -10,10 +10,20 @@ agents waste the most — vague specs, invisible progress, one unexamined
 design. tp-build inverts that: **refine before you plan, see before you
 sign, and when the design space is wide, build it twice and choose.**
 
-Two entry sides, one flow — from the PRODUCT side (an idea that needs a
-spec: run `/tp-product` refinement first) or the ENGINEERING side (a tech
-design that needs realizing: capture it as an R-record with technical
-acceptance criteria). Both sides for anything user-facing and structural.
+Separation of duties applies from the first refinement step. The orchestrator
+never performs Product, Design, Plan, Build, Evaluate, or Engineering work
+inline. Every role emitted by `loop next` is dispatched as a real host-native
+worker and collected before the orchestrator gates it. On Codex use the exact
+`task_name`, role instructions, standalone `role_marker`, model when non-null,
+and `reasoning_effort` from the payload, following
+[`../tp-go/references/codex-native-dispatch.md`](../tp-go/references/codex-native-dispatch.md).
+Claude dispatches the same complete brief through its named agent. If native
+dispatch is unavailable, stop as a host-capability blocker; never collapse the
+personas into the orchestrator.
+
+Two entry sides, one flow — an idea may need Product refinement, while an
+existing approved requirement/design may enter later. Both still use one
+loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
 
 1. **Strategic check first (significant features) — summoned, human's call.**
    Before sinking effort into a plan, the human may run the north-star review
@@ -23,8 +33,12 @@ acceptance criteria). Both sides for anything user-facing and structural.
    the sharpest tension + proceed / eyes-open / reconsider). Cheapest reshape
    point — but summoned, not automatic, and advisory, never a gate.
    (`../tp-northstar/SKILL.md`.)
-2. **Refine until it forecasts clean.** `$TP req new` with functional,
-   NFR-by-lens AND acceptance criteria — `--depends R-YYYY` for every
+2. **Initialize once, then refine.** If the user supplied an existing R-id,
+   initialize with `$TP loop init --req R-XXXX --design "<goal>"`. Otherwise
+   initialize with `$TP loop init --design "<goal>"`; do not create a
+   requirement first. Call `loop next` and dispatch its `tp-product` worker;
+   that worker uses `$TP req new` with functional, NFR-by-lens AND acceptance
+   criteria — `--depends R-YYYY` for every
    requirement this one builds on (product dependencies are graph edges,
    not prose), and repeatable
    `--contract provides|consumes|changes:NAME` for every named API, event,
@@ -49,10 +63,12 @@ acceptance criteria). Both sides for anything user-facing and structural.
    `$TP graph edge` for runtime deps static analysis can't see. Between
    distributed entities, stop at `contract:`/`resource:`; do not pull remote
    implementation details into the local graph.
-4. **Show the spec.** Render a visual mock of the feature from the acceptance
-   criteria BEFORE building. Use an inline HTML widget when available;
-   otherwise deliver the self-contained HTML artifact. The human corrects a
-   mock in seconds; a built feature costs a fix cycle. State what's assumed.
+4. **Show the spec when visual feedback changes the decision.** For UI or
+   interaction work, render a visual mock from the acceptance criteria before
+   building. For backend/API/infrastructure work where a mock adds no signal,
+   record a one-line skip reason and use the Design dependency/sequence visual
+   only when it materially clarifies the approach. Never generate a decorative
+   dashboard merely to satisfy this step.
 5. **Settle the HOW when complexity earns it.** Add `--design` before Plan
    when the feature crosses modules/services, changes an API/event/data/runtime
    contract, has meaningful alternatives, is costly to reverse, or carries
@@ -63,9 +79,12 @@ acceptance criteria). Both sides for anything user-facing and structural.
    local, reversible work with an obvious implementation can skip this phase.
    This is distinct from the product/UI mock below: Design settles the
    technical HOW; the mock makes user-facing behavior inspectable.
-6. **Loop, governed.** `$TP loop init --req R-XXXX [--design] [--parallel]` and drive
-   as in `/tp-go`: optional design → human Design approval → plan → human approval → contracted build (TDD, budgets)
+6. **Loop, governed.** Continue the loop already initialized in step 2; do
+   not initialize a second loop. Drive as in `/tp-go`: Product → optional
+   design → human Design approval → plan → human approval → contracted build (TDD, budgets)
    → evaluate → selective engineering review → visual sign-off.
+   Apply the mandatory native-dispatch rule above to every emitted role and
+   wait for each result before the orchestrator advances it.
    Evaluate and engineering review share one canonical review context per
    immutable change: diff, graph blast radius, requirements/contracts, DoR,
    DoD, and one complete lens disposition. Only the mapped deep lenses plus at

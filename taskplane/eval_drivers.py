@@ -177,6 +177,12 @@ def hook_proof(trace_rows) -> dict:
         if not isinstance(row, dict):
             continue
         event = row.get("event")
+        if event == "subagent_start" and \
+                row.get("source") == "codex_session_store" and \
+                row.get("host_observed") is True:
+            return {"proved": True, "event": event, "host": "codex",
+                    "ts": row.get("ts"),
+                    "source": "codex_session_store"}
         if event in _HOOK_EVENTS:
             return {"proved": True, "event": event, "host": row.get("host"),
                     "ts": row.get("ts")}

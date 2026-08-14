@@ -1322,6 +1322,7 @@ def _screen(a) -> int:
     tool_input = event.get("tool_input", {})
     if not isinstance(tool_input, dict):
         tool_input = {}
+    command = tp.command_text(tool_name, tool_input)
 
     contract = tp.load_active(ws)
     if contract is None:
@@ -1386,7 +1387,7 @@ def _screen(a) -> int:
     # contract, a budget, or a ledger, so neither the ceiling nor the meter
     # has anything to protect against them. `clear` is NOT among them — see
     # _RELEASE_VERBS for why.
-    if _is_release_command(tool_input.get("command") or ""):
+    if _is_release_command(command):
         # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
         #
         # The abstain above happens LONG before the approve path where the
@@ -1403,7 +1404,7 @@ def _screen(a) -> int:
         try:
             sys.stdout.flush()
             import derivation as _dv
-            _dv.record(ws, tool_input.get("command") or "", "abstain")
+            _dv.record(ws, command, "abstain")
         except Exception:                            # noqa: BLE001
             pass
         return 0                      # abstain: not metered, not denied
@@ -1414,7 +1415,7 @@ def _screen(a) -> int:
     # "tuned": raising it bought tokens sight unseen. This reads what the
     # host RECORDED and fails open in every direction, with the action
     # ceiling still standing underneath.
-    if not _is_release_command(tool_input.get("command") or ""):
+    if not _is_release_command(command):
         try:
             import spend as _spend
             _tpath = _spend.event_transcript(event)
@@ -1434,7 +1435,7 @@ def _screen(a) -> int:
 
     ok, reason = tp.budget_status(
         contract, used, reserve=_CLOSING_RESERVE,
-        closing=_is_closing_command(tool_input.get("command") or ""))
+        closing=_is_closing_command(command))
     if not ok:
         _meter_bump(ws, tid, "denies")
         tp.trace(ws, "budget_deny", tool=tool_name, used=used,
@@ -1460,7 +1461,7 @@ def _screen(a) -> int:
     # broken instrument must not become a broken product.
     try:
         import obligations as _ob
-        _owed = _ob.blocked_reason(ws, tool_input.get("command") or "")
+        _owed = _ob.blocked_reason(ws, command)
     except Exception:
         _owed = None
     if _owed:
@@ -1486,7 +1487,7 @@ def _screen(a) -> int:
             import target as _tgt
             _unbound = (
                 _tgt.binding_problem(ws)
-                if _is_completion_command(tool_input.get("command") or "")
+                if _is_completion_command(command)
                 else None)
         except Exception:
             _unbound = None
@@ -1549,7 +1550,7 @@ def _screen(a) -> int:
         try:
             sys.stdout.flush()
             import derivation as _dv
-            _dv.record(ws, tool_input.get("command") or "", "approve")
+            _dv.record(ws, command, "approve")
         except Exception:                            # noqa: BLE001
             pass
         return 0

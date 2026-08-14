@@ -223,7 +223,73 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         schema = brief["result_schema"]
         self.assertEqual(schema["schema"], "taskplane.lens-slot-output/v2")
         self.assertIn("lens_results", schema["required"])
+        self.assertEqual(schema["lens_result"]["blockers"],
+                         {"type": "integer", "minimum": 0})
+        self.assertEqual(schema["findings"],
+                         {"type": "array", "items": "finding"})
+        self.assertIn("lens", schema["finding"]["required"])
+        self.assertEqual(
+            schema["codex_completion_receipt"]["required_lines"],
+            ["taskplane-result-path:<result_path>",
+             "taskplane-result-sha256:<sha256>"])
         self.assertIn("producer_contract", brief)
+
+    def test_codex_native_session_store_can_bind_exact_slot_result_bytes(self):
+        """A native child completion is provenance, not model self-assertion."""
+        import hashlib
+
+        self._start()
+        state = review._load_state(self.ws)
+        store = review_evidence.ArtifactStore(self.ws)
+        codex_home = tempfile.mkdtemp(prefix="tp-codex-session-")
+        session_dir = os.path.join(codex_home, "sessions", "2026", "08", "14")
+        os.makedirs(session_dir)
+        parent = "codex-parent-thread"
+        for index, slot in enumerate(state["slots"]):
+            lease = store.read(slot["lease"])
+            brief = store.read(slot["brief"])
+            row = {**lease, "schema": "taskplane.lens-slot-output/v2",
+                   "authored_by": "lens-slot", "findings": [],
+                   "lens_results": [
+                       {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                       for lens_id in lease["lens_ids"]]}
+            raw = json.dumps(row, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8")
+            result = os.path.join(self.ws, slot["result_path"])
+            os.makedirs(os.path.dirname(result), exist_ok=True)
+            with open(result, "wb") as stream:
+                stream.write(raw)
+            role = brief["role"]
+            final = ("review complete\n"
+                     f"taskplane-result-path:{slot['result_path']}\n"
+                     "taskplane-result-sha256:"
+                     f"{hashlib.sha256(raw).hexdigest()}")
+            events = [
+                {"type": "session_meta", "payload": {
+                    "id": f"child-{index}", "source": {"subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": parent,
+                            "agent_path": "/root/" + role["task_name"]}}}}},
+                {"type": "turn_context", "payload": {
+                    "model": "gpt-test",
+                    "reasoning_effort": role["reasoning_effort"]}},
+                {"type": "event_msg", "payload": {
+                    "type": "task_complete", "last_agent_message": final}},
+            ]
+            rollout = os.path.join(session_dir, f"rollout-{index}.jsonl")
+            with open(rollout, "w", encoding="utf-8") as stream:
+                for event in events:
+                    stream.write(json.dumps(event) + "\n")
+        with mock.patch.dict(os.environ, {
+                "CODEX_HOME": codex_home, "CODEX_THREAD_ID": parent}):
+            out = review.collect_review(self.ws, publish=False)
+        self.assertEqual(out["status"], "complete")
+        for slot in state["slots"]:
+            lease = store.read(slot["lease"])
+            receipt = tp.load_json(review._receipt_path(
+                self.ws, lease["lease_fingerprint"]))
+            self.assertEqual(receipt["host_event"], "CodexTaskComplete")
+            self.assertEqual(receipt["tool"], "native-session-result-receipt")
 
     def test_self_asserted_authorship_without_hook_receipt_is_rejected(self):
         self._start()
