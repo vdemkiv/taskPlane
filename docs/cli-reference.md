@@ -168,7 +168,7 @@ render the mission-control view
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--out` | OUT | write the standalone reference-style mission-control report to this path |
+| `--out` | OUT | write the standalone report to this path |
 | `--paged` | flag | emit ordered <=14KB pages (JSON) for reliable inline rendering + a never-skippable headline |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
@@ -656,6 +656,7 @@ cold-start readiness — folder + git snapshot + init; renders the onboarding da
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--install-codex-hooks` | flag | install/refresh the repo-local Codex lifecycle hook bridge before reporting readiness |
 | `--json` | flag | print the readiness report instead of the widget |
 | `--out` | OUT | also write the fragment to this path |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |

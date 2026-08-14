@@ -116,8 +116,8 @@ class TestProseDoesNotMoveTheFingerprint(_MutationCase):
     def test_rewording_a_sentence_around_a_mandate_leaves_it_identical(self):
         """The sentence changes; the surface it mandates does not."""
         got = self.mutate(lambda t: t.replace(
-            "Lead every review with impact",
-            "Every review is led by its impact"))
+            "Graph quality is a gate before routing.",
+            "Routing begins only after graph quality is established."))
         self.assertEqual(self.baseline, got)
 
     def test_fixing_a_typo_leaves_it_identical(self):
@@ -140,7 +140,7 @@ class TestProseDoesNotMoveTheFingerprint(_MutationCase):
     def test_rewrapping_a_paragraph_leaves_it_identical(self):
         """Line breaks are typography. A re-flowed paragraph — including one
         carrying inline surfaces AND a prohibition — is the same flow."""
-        anchor = "**Every lens agent reads ONE copy of the context.**"
+        anchor = "**Every lens consumes a scoped view of the same context.**"
 
         def rewrap(text):
             i = text.index(anchor)

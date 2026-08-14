@@ -379,11 +379,10 @@ class TestGraphImpactHeads(unittest.TestCase):
         loop.next_action(self.ws)
         self.assertNotIn("affected_reqs", self._row("execute"))
 
-    def test_routing_still_reads_the_project_tree_in_a_serial_loop(self):
-        """The two workspace predicates are NOT the same and the repack that
-        made room for the heads must not merge them: lens ROUTING follows
-        the parallel-gated predicate (project tree when serial), the impact
-        block follows the task workspace whenever it exists."""
+    def test_review_kernel_reads_the_selected_tree_once(self):
+        """The canonical review kernel owns routing now. It reads the project
+        tree in a serial loop and the claimed worktree in a parallel loop;
+        no legacy pre-kernel route pass is allowed."""
         worktree = os.path.join(self.root, "wt")
         _git(self.ws, "clone", "-q", self.ws, worktree)
         _git(worktree, "config", "user.email", "e@e")
@@ -392,7 +391,7 @@ class TestGraphImpactHeads(unittest.TestCase):
         task = dict(TASK, workspace=worktree)
 
         seen = []
-        original = loop.lens_router.route_git_diff
+        original = review.start_review
 
         def spy(w, *a, **kw):
             seen.append(w)
@@ -400,16 +399,16 @@ class TestGraphImpactHeads(unittest.TestCase):
 
         _state(self.ws, "evaluate", baseline=self.base, task=task,
                parallel=False)
-        with mock.patch.object(loop.lens_router, "route_git_diff", spy):
+        with mock.patch.object(review, "start_review", spy):
             loop.next_action(self.ws)
-        self.assertEqual(seen, [self.ws], "serial routing reads the project")
+        self.assertEqual(seen, [self.ws], "serial kernel reads the project")
 
         seen.clear()
         _state(self.ws, "evaluate", baseline=self.base, task=task,
                parallel=True)
-        with mock.patch.object(loop.lens_router, "route_git_diff", spy):
+        with mock.patch.object(review, "start_review", spy):
             loop.next_action(self.ws)
-        self.assertEqual(seen, [worktree], "parallel routing reads the claim")
+        self.assertEqual(seen, [worktree], "parallel kernel reads the claim")
 
     def test_every_graph_impact_site_carries_the_heads(self):
         """Source-level backstop for the per-site tests: dropping the kwargs

@@ -5,7 +5,7 @@
   "source_files": [
     "skills/tp-go/SKILL.md"
   ],
-  "inputs_fingerprint": "aca780198d5182b1b36f71208f2b43c52b0464256ea578627936335fe2cca38d",
+  "inputs_fingerprint": "ec3b6d4a578909b2c7a1f582037cdee69a8cc1a39527549ddb76c68cd9c397f8",
   "expects_derivations": [
     "diff",
     "impact"

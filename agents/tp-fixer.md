@@ -21,8 +21,15 @@ after that the loop escalates to the human, and that's correct behavior.
 2. Fix the root cause, not the symptom; if the failure points at the
    requirement or the design (not the code), say so in the gate note —
    that feedback is worth more than a patch.
-3. Add a regression test per fixed failure.
-4. Run the task's tests; `tp.py loop submit pass` requests validation. Stop
+3. Add a regression test per fixed failure. Batch failures that share one
+   root cause into one repair instead of cycling separately.
+4. Verify proportionally per `discipline/verification-before-completion.md`:
+   run each distinct failure cluster once, then one combined affected-radius
+   check. Documentation-only drift gets static checks, not a runtime suite.
+   Do not run the full local suite repeatedly; CI is the full-matrix authority
+   unless the contract or human explicitly requires otherwise.
+5. Run the task's declared tests only when they are part of that affected
+   radius; `tp.py loop submit pass` requests validation. Stop
    and return the evidence to the orchestrator, which alone calls `loop gate`
    to send it back to tp-evaluator. You don't accept your own repair or decide
    done.

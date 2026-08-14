@@ -73,10 +73,14 @@ stale evidence or unexplained implementation drift is a failure, not a note.
    design. Steps 2 through 4 below are still yours in full — the bundle only
    spares you the transcription.
 
-1. **Run the task's test command** exactly as declared, unless step 0 already
-   returned a result for it. Capture output to `.eval/tests.log`. No tests
-   declared = a finding, not a pass. If you doubt the cited run, force a real
-   one with `TASKPLANE_NO_SUITE_CACHE=1` — never by narrating that you did.
+1. **Use the task's test evidence** exactly as declared. When step 0 returns a
+   matching execute-gate result, cite it; do not rerun it. Otherwise run the
+   graph-selected affected radius once and capture output to `.eval/tests.log`.
+   Documentation-only changes use their static checks and do not trigger a
+   runtime suite. No tests declared = a finding, not a pass. If you doubt a
+   cited run, force one real execution with `TASKPLANE_NO_SUITE_CACHE=1` —
+   never by narrating that you did, and never by repeatedly running the full
+   suite after unrelated small edits.
 2. **Check every acceptance criterion** one by one against the actual
    behavior (run the code, inspect outputs — don't infer from source alone).
    Record per-criterion evidence: met / not-met / cannot-verify, with the

@@ -634,10 +634,9 @@ class TestForceAndSkip(unittest.TestCase):
         self.assertTrue(any("--skip" in e for e in sec["negative_evidence"]))
 
 
-class TestEngineFailureFailsOpen(unittest.TestCase):
-    def test_engine_exception_falls_back_to_legacy_breadth_all(self):
+class TestEngineFailureStopsDispatch(unittest.TestCase):
+    def test_engine_exception_emits_mapper_unavailable_and_zero_dispatch(self):
         files = ["src/todo/core.py"]
-        expected = lens.route(files, catalog=CAT, breadth="all")
 
         def boom(*a, **k):
             raise RuntimeError("engine exploded")
@@ -652,11 +651,9 @@ class TestEngineFailureFailsOpen(unittest.TestCase):
             shutil.rmtree(ws)
         # degradation marker present and honest
         self.assertIn("engine exploded", r["context"]["lens_engine_failed"])
-        self.assertIn("degraded", r["context"])
-        # the fallback IS legacy breadth=all — MORE coverage, never less
-        self.assertEqual(r["context"]["breadth"], "all")
-        self.assertEqual(r["lenses"], expected["lenses"])
-        self.assertGreaterEqual(len(r["lenses"]), len(ALL_IDS))
+        self.assertEqual(r["context"]["status"], "mapper_unavailable")
+        self.assertEqual(r["context"]["breadth"], "routed")
+        self.assertEqual(r["lenses"], [])
 
 
 class TestBreadthAllUnchanged(unittest.TestCase):

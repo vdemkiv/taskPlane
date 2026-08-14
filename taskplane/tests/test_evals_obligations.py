@@ -188,10 +188,10 @@ class TestThePayloadCarriesTheObligation(_Ws):
         """Demanding that someone show an artifact that was never built
         would make the instrument's own numbers fiction."""
         import dashboard
-        original = dashboard.widget
-        dashboard.widget = lambda *a, **k: (_ for _ in ()).throw(
+        original = dashboard.report_widget
+        dashboard.report_widget = lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("renderer down"))
-        self.addCleanup(setattr, dashboard, "widget", original)
+        self.addCleanup(setattr, dashboard, "report_widget", original)
         import views
         views._VIEW_FAILED_WARNED = True
         loop.init(self.ws, "goal")

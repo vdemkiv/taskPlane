@@ -26,6 +26,7 @@ import audit  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
 import depgraph  # noqa: E402
+from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
 
 
 def git_ws(tmp, tasks):
@@ -77,19 +78,15 @@ def pass_eval(ws):
 def pass_em(ws, coverage=None, findings_rows=None):
     if coverage is None:
         coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
-    os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-    with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
-        f.write("# Engineering review\n\nAll required evidence passed.\n")
     state = loop.load(ws)
     changed = [f for f in loop._diff_files(
         ws, state.get("baseline") or "HEAD")
         if not f.startswith(lens.LOOP_OWNED)]
     impact = depgraph.impact(ws, changed)
-    with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
-        json.dump({"meta": {"lens_coverage": coverage, "impact": impact,
-                            "tests": ["true"],
-                            "gate": {"verdict": "recommend-pass"}},
-                   "findings": findings_rows or []}, f)
+    complete_review(
+        ws, coverage=coverage, impact=impact, tests=["true"],
+        findings=findings_rows or [],
+        report="# Engineering review\n\nAll required evidence passed.\n")
     return submit_gate(ws, "pass")
 
 

@@ -442,8 +442,10 @@ class TestRtlAndResponsive(unittest.TestCase):
                     "text-align:right", "border-left:"):
             self.assertNotIn(bad, self.frag, bad)
 
-    def test_no_uppercase_transform_on_labels(self):
-        self.assertNotIn("text-transform:uppercase", self.frag)
+    def test_uppercase_is_limited_to_reference_style_kickers(self):
+        self.assertIn(".tp-kicker", self.frag)
+        self.assertIn("text-transform:uppercase", self.frag)
+        self.assertNotIn("button{text-transform:uppercase", self.frag)
         self.assertNotIn(".upper()", self.frag)
 
     def test_widget_grids_collapse_below_640(self):

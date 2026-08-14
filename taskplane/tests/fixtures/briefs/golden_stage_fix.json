@@ -42,6 +42,7 @@
     "boundary_nodes": [],
     "context": "Change blast radius (dependency graph, no re-derivation needed): touches alpha.\n  policy: local depth 3; boundary contract-only; contract depth 1",
     "depth_limit": 3,
+    "depth_truncated": false,
     "graph": {
       "content_fingerprint": "<SHA>",
       "scanned_at": 0,

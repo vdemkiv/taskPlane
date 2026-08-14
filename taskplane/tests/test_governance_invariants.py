@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
+from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
 
 
 def _repo():
@@ -52,14 +53,7 @@ def _write_eval(ws, state):
 
 def _write_em(ws):
     coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
-    os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-    with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
-        f.write("# Engineering review\n\nNo blockers.\n")
-    with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
-        json.dump({"meta": {"lens_coverage": coverage, "impact": {},
-                            "tests": ["true"],
-                            "gate": {"verdict": "recommend-pass"}},
-                   "findings": []}, f)
+    complete_review(ws, coverage=coverage)
 
 
 class TestGovernanceInvariants(unittest.TestCase):

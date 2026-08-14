@@ -17,6 +17,7 @@ import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import dashboard  # noqa: E402
 import lens  # noqa: E402
+from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
 
 
 def _git(ws, *a):
@@ -55,14 +56,7 @@ class TestSignoffDoD(unittest.TestCase):
     def _review_evidence(self, ws):
         coverage = {x["id"]: "sweep"
                     for x in lens.load_catalog()["lenses"]}
-        os.makedirs(os.path.join(ws, ".em-review"), exist_ok=True)
-        with open(os.path.join(ws, ".em-review", "report.md"), "w", encoding="utf-8") as f:
-            f.write("# Engineering review\n\nNo blockers.\n")
-        with open(os.path.join(ws, ".em-review", "findings.json"), "w", encoding="utf-8") as f:
-            json.dump({"meta": {"lens_coverage": coverage, "impact": {},
-                                "tests": ["true"],
-                                "gate": {"verdict": "recommend-pass"}},
-                       "findings": []}, f)
+        complete_review(ws, coverage=coverage)
 
     def test_in_scope_change_passes(self):
         ws = _repo(self.tmp)

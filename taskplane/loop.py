@@ -1616,22 +1616,28 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
         errors.append("engineering narrative report is missing: "
                       + report_path)
     meta = findings.get("meta") or {}
-    try:
-        import review as _review
-        import review_evidence as _review_evidence
-        kernel = _review._load_state(ws)
-        if kernel.get("status") != "complete" or kernel.get("stage") != "review":
-            errors.append("engineering selective review kernel is incomplete")
-        else:
-            current = _review_evidence._read_current(
-                _review_evidence.ArtifactStore(ws))
-            for key, value in (current or {}).items():
-                if meta.get(key) != value:
-                    errors.append("engineering review contradicts canonical "
-                                  f"revision identity: {key}")
-    except Exception as exc:
-        errors.append("engineering canonical revision is missing: "
-                      f"{exc.__class__.__name__}: {exc}")
+    # Real EM/sign-off gates always pass loop state and therefore require the
+    # canonical selective kernel. ``state=None`` is the long-standing pure
+    # classification seam used by audit/finding unit tests; keeping it free
+    # of repository orchestration lets those tests judge only the rule they
+    # name without constructing a fake review transaction.
+    if state is not None:
+        try:
+            import review as _review
+            import review_evidence as _review_evidence
+            kernel = _review._load_state(ws)
+            if kernel.get("status") != "complete" or kernel.get("stage") != "review":
+                errors.append("engineering selective review kernel is incomplete")
+            else:
+                current = _review_evidence._read_current(
+                    _review_evidence.ArtifactStore(ws))
+                for key, value in (current or {}).items():
+                    if meta.get(key) != value:
+                        errors.append("engineering review contradicts canonical "
+                                      f"revision identity: {key}")
+        except Exception as exc:
+            errors.append("engineering canonical revision is missing: "
+                          f"{exc.__class__.__name__}: {exc}")
     if state:
         errors.extend(_design_review_errors(ws, state, meta))
     coverage = meta.get("lens_coverage") or {}

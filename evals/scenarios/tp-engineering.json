@@ -6,7 +6,7 @@
     "skills/tp-engineering/SKILL.md",
     "agents/tp-engineering.md"
   ],
-  "inputs_fingerprint": "2ad09bc37b924542d3c1b1488ecef01205cdf412f488533cd7177807e414afa1",
+  "inputs_fingerprint": "92195697ac2432f814acdc69fdca5370cc9a5654de2b4e90d26534e67e407233",
   "expects_derivations": ["diff", "impact"],
   "declared_surfaces": [
     "tp review start",

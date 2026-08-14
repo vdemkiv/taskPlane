@@ -32,6 +32,13 @@ suite is explicitly requested, the general suite-cache identity remains strict
 and content-addressed. This distinction avoids turning a typo or missing
 configuration sentence into another full product test cycle.
 
+Repair cycles batch related fixes before verification: run each distinct
+failure cluster once, then one combined dependency-graph affected-radius check,
+then submit once. The remote CI matrix is the full-suite authority unless the
+task contract or human explicitly requires a local full run. A newly exposed
+cluster reruns only its failed selector and the final radius check; it does not
+restart every already-green cluster.
+
 | Variable | Default | Effect | Enforcement-relevant |
 | --- | --- | --- | --- |
 | `TASKPLANE_AGENT_PID` | *(unset)* | Exported by the activating agent; recorded on the contract as the authoritative liveness token. A live PID is **never** idle-released; a dead PID orphans (and auto-releases) the contract immediately. Must be a real positive PID. | **Yes** — with it, liveness beats the TTL in both directions. |

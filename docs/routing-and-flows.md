@@ -63,7 +63,8 @@ Guardrails that hold at every granularity:
   force. The force holds at component granularity too.
 - **Stage profiles.** `lenses/catalog.json` carries `stage_profiles`
   (design 8 · build 5 · review 26); a stage restricts the *candidate* set
-  only. An unknown or absent stage fails open to the full catalog.
+  only. An unknown or absent stage uses the explicit `fail-open` policy and
+  widens to the full catalog.
 - **Fail closed before dispatch.** Incomplete graph evidence or an unavailable
   applicability mapper emits no briefs. `breadth=all` is reserved for an
   explicit human request or an isolated calibration/audit, never recovery.
@@ -263,3 +264,7 @@ exactly their mapped deep lenses plus at most one light sweep, retain the
 architecture/security floors, and keep every n/a backed by negative evidence.
 The final engineering review adds synthesis and human sign-off; it does not
 re-read the repository or broaden to all lenses.
+
+The canonical Evaluate routing input records `stage="build"`; final
+engineering review records the review stage. This distinction changes the
+stage profile, never the shared diff, graph impact, or evidence identity.

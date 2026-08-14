@@ -5,7 +5,7 @@
   "source_files": [
     "skills/taskplane/SKILL.md"
   ],
-  "inputs_fingerprint": "4fb960ae1084a0966f41bea0d05e005da3d9a816ae33ff417f62963f6e4a6e72",
+  "inputs_fingerprint": "72f78e54b23eac1f32d9183beac80e699c800e3a9152ba399182590673a8314d",
   "expects_derivations": [
     "impact"
   ],

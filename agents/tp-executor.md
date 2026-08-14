@@ -27,8 +27,11 @@ work ONLY there.
    silently redesign during implementation.
 2. TDD per `discipline/tdd.md`: failing test per acceptance criterion →
    smallest passing code → refactor green.
-3. Run the task's declared test command yourself before submitting; a scope
-   denial from the hook means adjust your approach, not the scope.
+3. Run the task's declared test command yourself before submitting. During a
+   multi-fix cycle, batch related edits and follow proportional verification
+   in `discipline/verification-before-completion.md`: targeted failure
+   clusters, then one affected-radius check, not repeated full-suite runs. A
+   scope denial from the hook means adjust your approach, not the scope.
 4. In a wave: COMMIT in your worktree (`git add -A && git commit`) first —
    the engine refuses to validate uncommitted work. Then `tp.py loop submit
    pass` (or `fail --note "<why>"` if you couldn't build it; in a wave:
