@@ -5,6 +5,10 @@ description: "The internal delivery driver behind the taskplane facade — goal-
 
 # /tp-go — goal in, governed delivery out
 
+Current workflow contract: **v2.14**. Review, Evaluate, and final Engineering
+all consume the same **canonical review context**; transport may differ by
+host, but the workflow and evidence contract do not.
+
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Drive the whole loop;
 pause ONLY at the human gates. Follow each step's returned `instruction`.
 

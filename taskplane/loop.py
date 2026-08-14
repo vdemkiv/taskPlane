@@ -875,7 +875,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         # routing. Keep a fallback brief so an in-place minor update remains
         # resumable while the catalog file itself is being upgraded.
         routed = lens_router.route(
-            [], task_type="solution-design", only=["solution-design"])
+            lens_router.workspace_language_markers(ws),
+            task_type="solution-design", only=["solution-design"])
         routing = routed if routed.get("lenses") else {"lenses": [{
             "id": "solution-design", "name": "Solution design",
             "mode": "inline", "tier": "deep",
@@ -885,7 +886,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         }]}
     elif step in ("execute", "fix"):
         routing = lens_router.prime_scope((task or {}).get("scope"),
-                                          task_type=(task or {}).get("type"))
+                                          task_type=(task or {}).get("type"),
+                                          workspace=wtree)
     elif step in ("evaluate", "em"):
         # Deferred until graph quality and complete impact exist below.
         # Mapping before that evidence is the ordering defect R-0005 closes.
@@ -1045,6 +1047,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                       "current_state": kb.current_state(ws),
                       "context": kb.render_context(recalled)},
         "lenses": routing["lenses"] if routing else None,
+        "language_references": ((routing.get("context") or {}).get(
+            "language_references") if routing else None),
         "review_kernel": review_kernel,
         "audit": audit_info,
         "impact": imp and {**imp, "context": depgraph.render_context(imp)},

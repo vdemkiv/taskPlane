@@ -33,6 +33,111 @@ _CATALOG_CACHE: dict | None = None
 _HARD_LENSES = {"security", "architecture", "scalability", "data-safety",
                 "backend", "dba", "sre", "privacy-compliance"}
 
+# Language depth is useful only when it reaches the worker.  Keep resolution
+# deterministic and data-shaped so Review, Build, Design, Claude and Codex all
+# receive the same repo-relative references without embedding their bodies in
+# every brief.
+_LANGUAGE_REFERENCES = {
+    "go": {
+        "extensions": (".go",), "manifests": ("go.mod", "go.sum"),
+        "code-quality": "lenses/references/go-code-quality.md",
+        "solution-design": "lenses/references/go-solution-design.md",
+    },
+    "python": {
+        "extensions": (".py",),
+        "manifests": ("pyproject.toml", "requirements.txt", "setup.py"),
+        "code-quality": "lenses/references/python-code-quality.md",
+    },
+    "typescript": {
+        "extensions": (".ts", ".tsx"),
+        "manifests": ("tsconfig.json",),
+        "code-quality": "lenses/references/typescript-code-quality.md",
+    },
+}
+
+
+def language_references(files, task_type: str | None = None) -> list[dict]:
+    """Resolve applicable language references from repo-relative paths."""
+    paths = [str(p).replace("\\", "/") for p in files or []]
+    refs = []
+    for language, spec in _LANGUAGE_REFERENCES.items():
+        present = any(
+            p.lower().endswith(tuple(spec["extensions"]))
+            or os.path.basename(p).lower() in spec["manifests"]
+            for p in paths)
+        if not present:
+            continue
+        purposes = ["solution-design"] if task_type == "solution-design" \
+            and spec.get("solution-design") else ["code-quality"]
+        for lens_id in purposes:
+            refs.append({"language": language, "lens": lens_id,
+                         "path": spec[lens_id]})
+    return refs
+
+
+def workspace_language_markers(workspace: str | None,
+                               scope_globs=None) -> list[str]:
+    """Cheap manifest hints for pre-diff Build and Design routing.
+
+    Inspect the root, literal scope prefixes, and one directory below those
+    prefixes.  This covers ordinary monorepos without turning priming into a
+    repository walk.
+    """
+    if not workspace:
+        return []
+    names = {m for spec in _LANGUAGE_REFERENCES.values()
+             for m in spec["manifests"]}
+    roots = {workspace}
+    for glob in scope_globs or []:
+        literal = str(glob).replace("\\", "/")
+        literal = literal[:min(
+            [literal.find(c) for c in "*?[" if c in literal]
+            or [len(literal)])].rstrip("/")
+        candidate = os.path.join(workspace, literal)
+        if not os.path.isdir(candidate):
+            candidate = os.path.dirname(candidate)
+        if os.path.isdir(candidate):
+            roots.add(candidate)
+            try:
+                roots.update(entry.path for entry in os.scandir(candidate)
+                             if entry.is_dir(follow_symlinks=False))
+            except OSError:
+                pass
+    found = []
+    for root in roots:
+        for name in names:
+            path = os.path.join(root, name)
+            if os.path.isfile(path):
+                found.append(os.path.relpath(path, workspace).replace(
+                    os.sep, "/"))
+    return sorted(set(found))
+
+
+def _attach_language_context(routing: dict, files,
+                             task_type: str | None) -> dict:
+    refs = language_references(files, task_type)
+    if not refs:
+        return routing
+    routing.setdefault("context", {})["language_references"] = refs
+    by_lens = {}
+    for ref in refs:
+        by_lens.setdefault(ref["lens"], []).append(ref)
+    for row in routing.get("lenses") or []:
+        if row.get("id") in by_lens:
+            row["language_references"] = list(by_lens[row["id"]])
+    return routing
+
+
+def _language_note(refs) -> str:
+    paths = sorted({str(r.get("path")) for r in refs or [] if r.get("path")})
+    if not paths:
+        return ""
+    return ("\nLANGUAGE REFERENCES: read and apply " + ", ".join(paths)
+            + ". Resolve these plugin-relative paths against the plugin root "
+              "that contains your role_instructions file. These pinned "
+              "standards are part of this brief; do not substitute model "
+              "memory for them.\n")
+
 
 def _lens_tier(lens_id: str, brief_tier: str) -> str:
     """Capability tier for a lens brief: the quick sweep is `cheap`; a deep
@@ -267,6 +372,7 @@ def route(changed_files, task_type: str | None = None,
     on the record instead of something a consumer has to infer from the
     routed set. Recording only — see the block below this function.
     """
+    files = list(changed_files or [])
     cat = catalog or load_catalog()
     v2 = (use_signals is not False
           and isinstance(cat.get("stage_profiles"), dict)
@@ -274,7 +380,7 @@ def route(changed_files, task_type: str | None = None,
           and (stage is not None or use_signals is True))
     if v2:
         try:
-            routed = _route_v2(changed_files, cat, stage=stage,
+            routed = _route_v2(files, cat, stage=stage,
                                task_type=task_type,
                                artifact_type=artifact_type, only=only,
                                skip=skip, hub_dependents=hub_dependents,
@@ -299,21 +405,21 @@ def route(changed_files, task_type: str | None = None,
             refused = {"lenses": [], "context": {
                 "status": "mapper_unavailable", "breadth": "routed",
                 "stage": stage, "lens_engine_failed": str(exc),
-                "changed_files": len(list(changed_files or []))}}
+                "changed_files": len(files)}}
             _record_breadth(workspace, requested=breadth, effective="routed",
                             engine_ran=False, stage=stage, routing=refused,
                             reason=f"mapper_unavailable: {exc}")
             return refused
         _record_breadth(workspace, requested=breadth, effective="routed",
                         engine_ran=True, stage=stage, routing=routed)
-        return routed
-    legacy = _route_legacy(changed_files, task_type, artifact_type, cat,
+        return _attach_language_context(routed, files, task_type)
+    legacy = _route_legacy(files, task_type, artifact_type, cat,
                            only, skip, breadth, hub_dependents)
     _record_breadth(workspace, requested=breadth, effective=breadth,
                     engine_ran=False, stage=stage, routing=legacy,
                     reason=_engine_off_reason(cat, breadth, stage,
                                               use_signals))
-    return legacy
+    return _attach_language_context(legacy, files, task_type)
 
 
 # ------------------------------------------------- recorded routing breadth
@@ -846,7 +952,8 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
 
 
 def prime_scope(scope_globs, task_type: str | None = None,
-                catalog: dict | None = None, **kw) -> dict:
+                catalog: dict | None = None, workspace: str | None = None,
+                **kw) -> dict:
     """Route lenses from a task's SCOPE GLOBS, before any file exists.
 
     Used to PRIME the executor at EXECUTE/FIX: the same lenses that will
@@ -857,17 +964,28 @@ def prime_scope(scope_globs, task_type: str | None = None,
     fire; file-specific deep matches still apply at review time on the
     real diff.
     """
-    files = []
+    cat = catalog or load_catalog()
+    markers = workspace_language_markers(workspace, scope_globs)
+    inferred = language_references(markers)
+    extension_by_language = {"go": ".go", "python": ".py",
+                             "typescript": ".ts"}
+    representative_ext = next(
+        (extension_by_language[r["language"]] for r in inferred
+         if r["language"] in extension_by_language),
+        (cat.get("code_extensions") or [""])[0])
+    files = list(markers)
     for g in scope_globs or []:
         files.append(g)
         base_name = os.path.basename(g)
         if g.endswith("**"):
-            files.append(g.rstrip("*").rstrip("/") + "/x.py")
+            files.append(g.rstrip("*").rstrip("/") + "/x"
+                         + representative_ext)
         elif "*" in base_name:
             files.append(base_name.replace("*", "x"))
-    routing = route(files, task_type=task_type, catalog=catalog, **kw)
+    routing = route(files, task_type=task_type, catalog=cat, **kw)
     routing["context"]["primed_from_scope"] = True
     routing["context"]["changed_files"] = 0
+    routing["context"]["files"] = sorted(set(files))
     return routing
 
 
@@ -1058,13 +1176,16 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                          "task_slot": f"lens-{lid}",
                          "write_allow": [f".em-review/lens-{lid}/**"],
                          "max_actions": actions_for("deep", max_actions)},
-            "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base) + (
+            "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base)
+                + _language_note(x.get("language_references")) + (
                 "\nBLAST RADIUS (from the dependency graph - factor "
                 "these dependents into your verdict):\n"
                 + impact_context + "\n" if impact_context else "")
                 + ctx_note + run_note,
             "looks_for": x.get("looks_for", ""), "checks": x.get("checks", []),
         }
+        if x.get("language_references"):
+            brief["language_references"] = list(x["language_references"])
         if "verdict" in x:   # contract:lens-brief — ADDITIVE v2 fields only
             brief["verdict"] = x["verdict"]
             brief["score"] = x.get("score")
@@ -1077,6 +1198,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     sweep_brief = None
     if sweep:
         names = ", ".join(s["name"] for s in sweep)
+        sweep_refs = [ref for row in sweep
+                      for ref in row.get("language_references") or []]
         sweep_brief = {**tp.dispatch_fields(
             "lens", "tp-lens", "sweep", "cheap"),
             "ids": [s["id"] for s in sweep], "agent": "tp-lens",
@@ -1092,8 +1215,11 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                 f"one line each. READ-ONLY: write findings (each with a "
                 f"`lens` field and a `class` field — regression|pre-existing|"
                 f"observation) to `.em-review/lens-sweep/findings.json`, "
-                f"change no code.\n" + ctx_note + run_note + CLEAR_ALWAYS),
+                f"change no code.\n" + _language_note(sweep_refs)
+                + ctx_note + run_note + CLEAR_ALWAYS),
         }
+        if sweep_refs:
+            sweep_brief["language_references"] = sweep_refs
     # Full routing-decision object (v2 only): EVERY lens's disposition —
     # n/a lenses run no agent but their verdict + negative evidence must
     # reach the renderer/coverage map (coverage honesty).

@@ -147,7 +147,8 @@ class TestAbsoluteWorkflow(unittest.TestCase):
                                         "tp-product.json"))
         rec = v2_run([
             {"ts": 1, "event": "contract_activated"},
-            {"ts": 2, "event": "workspace_write", "path": "specs/spec.md"},
+            {"ts": 2, "event": "requirement_recorded", "id": "R-0001"},
+            {"ts": 3, "event": "workspace_write", "path": "specs/spec.md"},
         ])
         result = er.evaluate_run_v2(scenario, rec)
         self.assertTrue(result["eligible"], result)

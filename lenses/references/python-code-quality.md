@@ -1,6 +1,8 @@
 
 # Python Code Quality
 
+Target language version: **Python 3.14**.
+
 The language-specific standard for Python. `the code-quality lens` delegates here whenever changed files are `.py`. Python's flexibility means the type checker and linter — not the interpreter — are the quality gate. Code that *runs* is not code that *passes*.
 
 ## 1. Tooling Gate (hard PASS/FAIL)
@@ -45,7 +47,7 @@ Type hints are mandatory on all public functions, methods, and module-level cons
 | Missing return annotation | Every public callable annotates its return (`-> None` included) |
 
 ```bash
-grep -rnE '\bAny\b|# type: ignore(?!\[)|# noqa(?!:)|\bcast\(' --include='*.py' src/
+grep -rnP '\bAny\b|# type: ignore(?!\[)|# noqa(?!:)|\bcast\(' --include='*.py' src/
 ```
 
 ## 4. Naming Conventions (PEP 8)

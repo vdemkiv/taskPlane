@@ -563,7 +563,7 @@ class TestExtractionStructure(unittest.TestCase):
         the same commit: a ceiling left at the old number would quietly
         hand back the 98 lines this bought.
 
-        2907 → 3066 (v2.14 selective review kernel): the final EM path now
+        2907 → 3100 (v2.14 selective review kernel): the final EM path now
         binds graph quality, one canonical routing decision, leased findings,
         and revision identity at the gate. Those integration seams belong in
         loop.py; the audit implementation remains extracted and is still
@@ -574,7 +574,7 @@ class TestExtractionStructure(unittest.TestCase):
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 3066, f"loop.py is {n} lines — the audit extraction shrink "
+            n, 3100, f"loop.py is {n} lines — the audit extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):

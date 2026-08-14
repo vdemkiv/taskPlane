@@ -44,6 +44,13 @@
             "**suppression delta**: NEW escape hatches introduced by this diff only \u2014"
           ],
           "id": "code-quality",
+          "language_references": [
+            {
+              "language": "python",
+              "lens": "code-quality",
+              "path": "lenses/references/python-code-quality.md"
+            }
+          ],
           "looks_for": "logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality",
           "mode": "inline",
           "name": "Code quality",
@@ -148,6 +155,13 @@
             "**suppression delta**: NEW escape hatches introduced by this diff only \u2014"
           ],
           "id": "code-quality",
+          "language_references": [
+            {
+              "language": "python",
+              "lens": "code-quality",
+              "path": "lenses/references/python-code-quality.md"
+            }
+          ],
           "looks_for": "logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality",
           "mode": "inline",
           "name": "Code quality",

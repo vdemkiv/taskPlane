@@ -57,13 +57,15 @@ def _write_em(ws):
 
 
 class TestGovernanceInvariants(unittest.TestCase):
-    def test_failed_dor_does_not_activate_or_start(self):
+    def test_failed_dor_is_governed_but_does_not_start(self):
         ws = _repo()
         _state(ws, "execute", tests=None)
         out = loop.next_action(ws)
         self.assertIn("error", out)
         self.assertFalse(out["dor"]["ready"])
-        self.assertIsNone(tp.load_active(ws))
+        active = tp.load_active(ws)
+        self.assertIsNotNone(active)
+        self.assertEqual(active["task"], "EXECUTE: t1")
         self.assertEqual(loop.load(ws)["step"], "execute")
 
     def test_execute_pass_is_rejected_when_tests_fail(self):

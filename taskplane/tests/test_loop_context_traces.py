@@ -267,12 +267,9 @@ class TestReviewContextRow(unittest.TestCase):
         paths = review.write_context(self.ws, diff=diff, blast_radius=brief,
                                      impact=impact)
         self.assertEqual(paths, {
-            review.DIFF_NAME: os.path.join(review.CONTEXT_DIR,
-                                           review.DIFF_NAME),
-            review.BRIEF_NAME: os.path.join(review.CONTEXT_DIR,
-                                            review.BRIEF_NAME),
-            review.IMPACT_NAME: os.path.join(review.CONTEXT_DIR,
-                                             review.IMPACT_NAME)})
+            review.DIFF_NAME: f"{review.CONTEXT_DIR}/{review.DIFF_NAME}",
+            review.BRIEF_NAME: f"{review.CONTEXT_DIR}/{review.BRIEF_NAME}",
+            review.IMPACT_NAME: f"{review.CONTEXT_DIR}/{review.IMPACT_NAME}"})
         for name, body in ((review.DIFF_NAME, diff),
                            (review.BRIEF_NAME, brief),
                            (review.IMPACT_NAME,

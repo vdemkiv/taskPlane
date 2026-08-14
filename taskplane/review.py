@@ -394,7 +394,13 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                        "probe. Activate producer_contract under its exact "
                        "task_slot, then use the host Write tool to author the "
                        "declared result_schema at result_path. Copy every "
-                       "identity field exactly; authored_by is lens-slot."),
+                       "identity field exactly; authored_by is lens-slot."
+                       + ((" Read and apply the plugin-pinned language "
+                           "references, resolving them against the plugin "
+                           "root that contains role_instructions: " + ", ".join(
+                               r["path"] for r in
+                               source.get("language_references") or []) + ".")
+                          if source.get("language_references") else "")),
             # Concrete model ids are host-adapter transport, not canonical
             # review evidence: Claude's cheap default is `haiku`, while Codex
             # inherits.  Persist the portable capability request only.
@@ -402,6 +408,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                      ("agent", "model_tier", "reasoning_effort",
                       "task_name", "role_marker") if source.get(key) is not None},
         }
+        if source.get("language_references"):
+            brief["language_references"] = list(
+                source["language_references"])
         brief_ref = store.put("lens-brief", brief)
         row = {"slot_id": slot_id, "lens_ids": lens_ids,
                "view": view_ref, "lease": lease_ref,

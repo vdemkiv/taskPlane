@@ -214,6 +214,7 @@ ENGINE_EVENTS = (
     "design_contracts_recorded", "dod", "dor", "graph_impact",
     "graph_req_link", "graph_scan", "lens_route", "loop_approve",
     "loop_gate", "loop_retro", "loop_step", "loop_submit",
+    "requirement_recorded",
     "review_context_written", "review_dispatch_path", "review_kernel_collected",
     "review_kernel_started", "subagent_start",
 )

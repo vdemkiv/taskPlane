@@ -101,20 +101,29 @@ jobs:
       - name: Per-task cost ratchet (governance has a budget too)
         run: python3 scripts/ci_loop_cost.py
 
-  # Advisory portability leg: hooks/hooks.json ships Windows hook commands
-  # (`py -3 …`) and the kernel has fcntl-less lock fallbacks, but the suite has
-  # only ever run on Linux. continue-on-error keeps this leg from gating merges
-  # until the POSIX-only tests carry `skipif` markers; promote it to required
-  # (drop continue-on-error) once it is green. It only ADDS signal — the
-  # required ubuntu matrix above is unchanged.
+  # Host portability without a second full-suite tax. Windows runs the
+  # cross-host contract plus the two integration files that previously found
+  # real Windows-only failures. Those defects are also reproduced on Linux by
+  # test_windows_portability.py, so the hosted leg validates the actual host
+  # boundary rather than spending ~27 minutes duplicating the full suite.
+  # macOS remains an advisory whole-suite signal.
   tests-portability:
-    name: tests advisory (${{ matrix.os }})
+    name: tests portability (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
+    continue-on-error: ${{ matrix.advisory }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            advisory: false
+            tests: >-
+              taskplane/tests/test_windows_portability.py
+              taskplane/tests/test_loop_context_traces.py
+              taskplane/tests/test_eval_recorder.py
+          - os: macos-latest
+            advisory: true
+            tests: taskplane/tests
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -127,7 +136,7 @@ jobs:
           git config --global user.email "ci@taskplane"
           git config --global user.name "taskplane-ci"
       - name: Run the suite
-        run: python -m pytest taskplane/tests -q
+        run: python -m pytest ${{ matrix.tests }} -q
 
   validate-plugin:
     name: plugin manifest validation

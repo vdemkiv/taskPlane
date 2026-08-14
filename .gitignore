@@ -36,3 +36,6 @@ taskplane.plugin
 
 # graph-accuracy corpus scratch (each fixture scans into its own store)
 /corpus/*/.tp-accuracy-home/
+
+# Local planning scratch — specs not yet promoted into a governed track.
+/backlog/

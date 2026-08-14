@@ -1,6 +1,10 @@
 
 # TypeScript Code Quality
 
+Target language version: **TypeScript 7.0**. TypeScript 7 adopts the 6.0
+configuration defaults; projects that still require the programmatic compiler
+API may need the supported TypeScript 6 compatibility package.
+
 The language-specific standard for TypeScript and TSX. `the code-quality lens` delegates here whenever changed files are `.ts`/`.tsx`. The compiler alone proves *valid* TypeScript; this skill proves *well-typed, consistently styled, safe* TypeScript.
 
 ## 1. Tooling Gate (hard PASS/FAIL)
@@ -13,6 +17,11 @@ npx eslint . --max-warnings 0    # lint errors OR warnings → FAIL
 npx prettier --check .           # formatting drift → FAIL
 npm run build                    # build break → FAIL
 ```
+
+When the policy below requires type-aware rules such as
+`@typescript-eslint/no-floating-promises`, the ESLint configuration must enable
+typed linting (`parserOptions.projectService: true`, or an explicit `project`).
+An ESLint run without typed parser services does not satisfy this gate.
 
 If `eslint`/`prettier` are not configured, that absence is itself a FAIL finding — note it and recommend the baseline below.
 

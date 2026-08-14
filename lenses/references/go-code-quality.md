@@ -1,6 +1,9 @@
 
 # Go Code Quality
 
+Target language version: **Go 1.26**. Go 1.27 is still an unreleased draft as
+of 2026-08-14, so draft-only behavior is not an adopted review rule.
+
 The language-specific standard for Go. `the code-quality lens` delegates here whenever changed files are `.go`. Go compiles strictly, so the quality bar shifts to what the compiler *doesn't* enforce: error handling, concurrency safety, and idiom. The single highest-value check in Go is **error handling** — treat it as the headline.
 
 ## 1. Tooling Gate (hard PASS/FAIL)
@@ -37,7 +40,7 @@ grep -rnE '\b_\s*[:=]=?\s*[a-zA-Z].*\(|panic\(' --include='*.go' . | grep -v _te
 
 | Pattern | Rule |
 |---|---|
-| `any` / `interface{}` | Avoid as a type cop-out; use concrete types or generics (`[T any]`). Each use is a finding to justify |
+| `any` / `interface{}` | Prefer a concrete type or the smallest behavior interface. Use generics for duplicated type-safe algorithms, not as a replacement for ordinary polymorphism. Each broad value type needs a boundary-specific reason |
 | Type assertions `x.(T)` | Use the two-value form `v, ok := x.(T)` — never the panicking single form on untrusted values |
 | Accept interfaces, return structs | Functions take the narrowest interface they need, return concrete types |
 | Small interfaces | Prefer single-method interfaces (`io.Reader` style) over broad ones |
@@ -85,7 +88,7 @@ dupl -threshold 50 ./...      # Go clone detector (also available as the `dupl` 
 |---|---|
 | Verbatim / near-duplicate | dupl clones under the threshold; repeated logic extracted to a shared func/package |
 | Reinvention (failure to reuse) | Reuse the stdlib and existing internal packages before writing new helpers; check the module's existing packages first |
-| Shared placement | Common code lives in a shared package (e.g. `internal/...`), not copied across packages |
+| Shared placement | Keep code flat by default. Extract a cohesive domain package when callers share a real capability; use `internal/` only when its compiler-enforced import boundary adds value |
 
 Go caveat: the community prefers a little duplication over the *wrong* abstraction ("a little copying is better than a little dependency"). Flag genuine clones, but don't force a shared abstraction onto two things that only look similar today.
 
