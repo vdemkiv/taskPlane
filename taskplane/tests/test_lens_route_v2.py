@@ -862,5 +862,28 @@ class TestB4RequirementKeywordUnionAtAssembly(unittest.TestCase):
                 self.assertIn(x["id"], proposals)
 
 
+class TestCanonicalDiffContentSignals(unittest.TestCase):
+    def test_untouched_markers_in_a_changed_file_do_not_route_lenses(self):
+        ws = tempfile.mkdtemp(prefix="tp-diff-signals-")
+        self.addCleanup(shutil.rmtree, ws, True)
+        os.makedirs(os.path.join(ws, "src"))
+        with open(os.path.join(ws, "src", "app.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("password = 'old'\naria-label = 'old'\nvalue = 2\n")
+
+        whole_file = lens.route(
+            ["src/app.py"], stage="review", workspace=ws)
+        canonical_diff = lens.route(
+            ["src/app.py"], stage="review", workspace=ws,
+            content_by_file={"src/app.py": "value = 2\n"})
+
+        self.assertNotEqual(entry(whole_file, "security")["tier"], "n/a")
+        self.assertNotEqual(entry(whole_file, "accessibility")["tier"], "n/a")
+        self.assertEqual(entry(canonical_diff, "security")["tier"], "n/a")
+        self.assertEqual(entry(canonical_diff, "accessibility")["tier"], "n/a")
+        self.assertEqual(canonical_diff["context"]["content_source"],
+                         "canonical-diff")
+
+
 if __name__ == "__main__":
     unittest.main()

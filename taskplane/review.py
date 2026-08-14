@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import tempfile
 from typing import Callable, Iterable
 
@@ -237,6 +238,35 @@ def changed_symbols_from_patch(patch: str) -> list[str]:
     return sorted(found)
 
 
+def changed_content_from_patch(patch: str) -> dict[str, str]:
+    """Changed lines grouped by file from the one canonical unified diff.
+
+    Applicability markers must describe this change, not unrelated words
+    elsewhere in a large touched file. Both additions and removals count:
+    deleting an auth check still summons the security lens.
+    """
+    current = None
+    rows: dict[str, list[str]] = {}
+    for line in str(patch or "").splitlines():
+        if line.startswith("diff --git "):
+            try:
+                parts = shlex.split(line)
+            except ValueError:
+                parts = line.split()
+            current = None
+            if len(parts) >= 4:
+                candidate = parts[3]
+                current = (candidate[2:] if candidate.startswith("b/")
+                           else candidate)
+                rows.setdefault(current, [])
+            continue
+        if current and line.startswith(("+", "-")) \
+                and not line.startswith(("+++", "---")):
+            rows[current].append(line[1:])
+    return {path: "\n".join(lines) + ("\n" if lines else "")
+            for path, lines in sorted(rows.items())}
+
+
 def _routing_decision(routing: dict, catalog: dict) -> dict:
     """Validate one complete catalog mapping and preserve its evidence."""
     expected = [str(row.get("id")) for row in catalog.get("lenses") or []]
@@ -365,7 +395,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  contracts: Iterable | None = None, stage: str = "review",
                  task_type: str | None = None, base: str = "HEAD",
                  caller_expander: Callable | None = None,
-                 router: Callable | None = None) -> dict:
+                 router: Callable | None = None,
+                 routing_content: dict | None = None) -> dict:
     """Run the normal Review/Evaluate/final-EM evidence kernel once.
 
     The absolute order is target -> graph quality/one expansion -> complete
@@ -447,7 +478,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
 
     route_fn = router or (lambda: lensmod.route(
         files, task_type=task_type, breadth="routed", stage=stage,
-        workspace=ws, requirement_text=(requirement or {}).get("text")))
+        workspace=ws, requirement_text=(requirement or {}).get("text"),
+        content_by_file=routing_content))
     try:
         routing = route_fn()
         if (routing.get("context") or {}).get("status") == "mapper_unavailable":

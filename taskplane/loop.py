@@ -440,9 +440,7 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         stage=stage,
         task_type=(task or {}).get("type"), base=base,
         caller_expander=review.bounded_caller_expander(graph),
-        router=lambda: lens_router.route_git_diff(
-            diff_ws, base=base, task_type=(task or {}).get("type"),
-            breadth="routed", stage=stage))
+        routing_content=review.changed_content_from_patch(patch))
     state = review._load_state(diff_ws, manifest.get("run_id"))
     return manifest, (state.get("routing") or {"lenses": [], "context": {
         "status": manifest.get("status"), "breadth": "routed"}})

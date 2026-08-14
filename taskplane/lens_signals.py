@@ -244,9 +244,10 @@ class Ctx:
     """
 
     __slots__ = ("workspace", "files", "requirement_text", "graph", "stage",
-                 "fixture_exempt", "_contents")
+                 "fixture_exempt", "_contents", "_content_by_file")
 
-    def __init__(self, workspace, files, requirement_text, graph, stage):
+    def __init__(self, workspace, files, requirement_text, graph, stage,
+                 content_by_file=None):
         self.workspace = workspace
         self.files = sorted({str(f).replace(os.sep, "/") for f in files or []})
         if isinstance(requirement_text, (list, tuple)):
@@ -256,6 +257,11 @@ class Ctx:
                                "boundary_contracts": [], "modules": []}
         self.stage = stage
         self.fixture_exempt = _fixture_exemptions(self.files, self.graph)
+        self._content_by_file = (
+            {str(path).replace(os.sep, "/"): str(text)
+             for path, text in content_by_file.items()
+             if str(path).replace(os.sep, "/") in self.files}
+            if isinstance(content_by_file, dict) else None)
         self._contents = None
 
     def is_discounted(self, path: str) -> bool:
@@ -305,7 +311,13 @@ class Ctx:
             for rel in self.files:
                 if len(out) >= MAX_FILES:
                     break
-                text = self.read(rel)
+                if self._content_by_file is not None:
+                    text = self._content_by_file.get(rel)
+                    if text is not None:
+                        text = text.encode("utf-8")[:MAX_FILE_BYTES].decode(
+                            "utf-8", "replace")
+                else:
+                    text = self.read(rel)
                 if text is not None:
                     out.append((rel, text))
             self._contents = out
@@ -313,7 +325,7 @@ class Ctx:
 
 
 def make_ctx(workspace, files, requirement_text=None, graph=None,
-             stage=None) -> Ctx:
+             stage=None, content_by_file=None) -> Ctx:
     """Build a detector context. graph=None -> derive a payload from the
     dependency graph (hub dependents + boundary contracts adjacent to the
     touched modules); any graph failure degrades to an empty payload rather
@@ -321,7 +333,8 @@ def make_ctx(workspace, files, requirement_text=None, graph=None,
     and route v2 fails open to breadth=all at the router seam — t2)."""
     if graph is None:
         graph = _graph_payload(workspace, files)
-    return Ctx(workspace, files, requirement_text, graph, stage)
+    return Ctx(workspace, files, requirement_text, graph, stage,
+               content_by_file=content_by_file)
 
 
 def _graph_payload(workspace, files) -> dict:
@@ -1178,7 +1191,7 @@ def apply_budget(verdict_map: dict, cap: int = DEEP_CAP,
 # -------------------------------------------------------------- entry point
 
 def route_verdicts(workspace, files, stage=None, requirement_text=None,
-                   graph=None) -> dict:
+                   graph=None, content_by_file=None) -> dict:
     """The one-call entry the router (t2) uses: verdicts for EVERY catalog
     lens over the changed files, budget-capped, floors applied after the
     budget. `stage` is carried on the ctx for the router's stage profiles
@@ -1186,7 +1199,8 @@ def route_verdicts(workspace, files, stage=None, requirement_text=None,
     complete well under 1s on a repo-sized change list."""
     cat = load_catalog()
     ctx = make_ctx(workspace, files, requirement_text=requirement_text,
-                   graph=graph, stage=stage)
+                   graph=graph, stage=stage,
+                   content_by_file=content_by_file)
     vmap = verdicts([l["id"] for l in cat["lenses"]], ctx, floors=False)
     return apply_budget(vmap, cap=DEEP_CAP, target=DEEP_TARGET, ctx=ctx)
 

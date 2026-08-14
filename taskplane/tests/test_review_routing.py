@@ -116,6 +116,14 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertNotIn("breadth", json.dumps(out).lower())
         self.assertLessEqual(len(json.dumps(out).encode()), 16 * 1024)
 
+    def test_changed_content_is_extracted_once_from_the_canonical_patch(self):
+        patch = ("diff --git a/src/service.py b/src/service.py\n"
+                 "--- a/src/service.py\n+++ b/src/service.py\n"
+                 "@@ -1,2 +1,2 @@\n-password = old\n+value = 2\n"
+                 " unchanged context\n")
+        self.assertEqual(review.changed_content_from_patch(patch), {
+            "src/service.py": "password = old\nvalue = 2\n"})
+
     def test_impact_uncertainty_dispatches_zero(self):
         graph = {**self.graph,
                  "meta": {**self.graph["meta"], "truncated": True}}

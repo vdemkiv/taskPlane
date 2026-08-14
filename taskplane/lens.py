@@ -236,7 +236,7 @@ def route(changed_files, task_type: str | None = None,
           only=None, skip=None, breadth: str = "routed",
           hub_dependents: int = 0, stage: str | None = None,
           use_signals: bool | None = None, workspace: str | None = None,
-          requirement_text=None) -> dict:
+          requirement_text=None, content_by_file=None) -> dict:
     """Return the routing decision.
 
     {"lenses": [{id, name, mode, tier, reasons[], checks[], looks_for}],
@@ -279,7 +279,8 @@ def route(changed_files, task_type: str | None = None,
                                artifact_type=artifact_type, only=only,
                                skip=skip, hub_dependents=hub_dependents,
                                workspace=workspace,
-                               requirement_text=requirement_text)
+                               requirement_text=requirement_text,
+                               content_by_file=content_by_file)
         except Exception as exc:
             # R-0005: uncertainty is not recoverable with breadth. A broken
             # mapper has no valid 26-lens decision, so normal delivery must
@@ -553,7 +554,8 @@ def _scan_hash(workspace: str, rel: str) -> str | None:
         return None
 
 
-def _assemble_components(workspace, files, cat, *, stage, requirement_text):
+def _assemble_components(workspace, files, cat, *, stage, requirement_text,
+                         content_by_file=None):
     """Route v2 COMPONENT assembly (R-0003, contract:component-map).
 
     The graph's `components` layer maps changed files -> touched components;
@@ -641,7 +643,8 @@ def _assemble_components(workspace, files, cat, *, stage, requirement_text):
         # would score (never trust the cache for final verdicts).
         ctx = lens_signals.make_ctx(workspace, files,
                                     requirement_text=requirement_text,
-                                    stage=stage)
+                                    stage=stage,
+                                    content_by_file=content_by_file)
         raw = lens_signals.verdicts([l["id"] for l in cat["lenses"]], ctx,
                                     floors=False)
         # B4 (R-0008): cached lens_maps are derived WITHOUT requirement_text,
@@ -676,7 +679,7 @@ def _assemble_components(workspace, files, cat, *, stage, requirement_text):
 
 def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
               only, skip, hub_dependents, workspace,
-              requirement_text) -> dict:
+              requirement_text, content_by_file=None) -> dict:
     """Signal-driven routing (v3 Phase 1). Candidates restricted to the
     stage profile; verdicts from lens_signals.route_verdicts (budget cap 8
     + security/architecture floors applied inside); legacy glob/task-type
@@ -715,7 +718,8 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
     if workspace:
         vmap, proposed, comp_info = _assemble_components(
             workspace, files, cat, stage=stage,
-            requirement_text=requirement_text)
+            requirement_text=requirement_text,
+            content_by_file=content_by_file)
         if comp_info is not None and comp_info.get("miss"):
             import sys
             print("taskplane: component layer unusable "
@@ -736,7 +740,8 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
         # change).
         vmap = lens_signals.route_verdicts(
             workspace or ".", files, stage=stage,
-            requirement_text=requirement_text)
+            requirement_text=requirement_text,
+            content_by_file=content_by_file)
 
     selected = []
     for lens in cat["lenses"]:
@@ -823,6 +828,8 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
         "stage": stage,
         "stage_profile": sorted(candidates),
         "signals": True,
+        "content_source": ("canonical-diff" if content_by_file is not None
+                           else "current-files"),
     }
     if proposed is not None:
         # Component path engaged: record the touched components and the

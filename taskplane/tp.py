@@ -3214,7 +3214,8 @@ def cmd_review(a) -> int:
             runnability=runmod.evidence_record(probe),
             requirement={}, acceptance=[], contracts=[], stage="review",
             task_type="review", base=base,
-            caller_expander=rv.bounded_caller_expander(g))
+            caller_expander=rv.bounded_caller_expander(g),
+            routing_content=rv.changed_content_from_patch(patch))
         manifest["contract"] = {"task_id": c["task_id"],
                                 "read_only": True}
         manifest["tools"] = {"git": bool(t["git"]["present"]),
