@@ -162,6 +162,27 @@ class TestTagSkill(unittest.TestCase):
                 if ln.startswith("description:")][0]
         self.assertNotIn("<", desc)
 
+    def test_approved_flow_contract_is_exact_and_attributable(self):
+        p = os.path.join(ROOT, "skills", "tp-tag", "flow.json")
+        with open(p, encoding="utf-8") as stream:
+            flow = json.load(stream)
+        self.assertEqual(flow["schema"], "taskplane.skill-flow/v1")
+        self.assertEqual(
+            [node["id"] for node in flow["nodes"]],
+            ["thread", "store", "loop", "work", "dashboard", "reply",
+             "approve", "persist"])
+        self.assertEqual(
+            flow["edges"],
+            [["thread", "store"], ["store", "loop"], ["loop", "work"],
+             ["work", "dashboard"], ["dashboard", "reply"],
+             ["reply", "approve"], ["approve", "persist"]])
+        self.assertEqual(flow["invariants"]["store"],
+                         "TASKPLANE_STORE=repo")
+        self.assertEqual(flow["invariants"]["dashboard"],
+                         ".taskplane/dashboard.html")
+        self.assertEqual(flow["invariants"]["approval_requires"], "--by")
+        self.assertFalse(flow["invariants"]["self_approval"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,20 @@ conversation goes idle), there are **no PreToolUse hooks** here, and the
 people who must approve gates are **in the thread with you**. This skill
 adapts the taskplane loop to exactly those three facts.
 
+## Approved flow contract
+
+`flow.json` is the canonical graph for this skill. Follow its order exactly:
+
+**Slack thread goal → repo-persisted KB → governed loop → role dispatch +
+evidence → dashboard attached → human reply in thread → attributed approval
+→ commit KB + resume state.**
+
+Do not skip directly from work to approval, and do not synthesize the human
+reply. A request for changes is not approval: leave the loop parked at its
+human gate, report the requested change, and resume only through the governed
+role the orchestrator assigns. The `approve` node is reached only after an
+explicit approving reply and always carries `--by`.
+
 ## Setup (start of every Tag session)
 
 ```bash
@@ -27,7 +41,7 @@ mode the KB travels with the branch/PR, and the next Tag session picks the
 loop up by cloning the branch.
 
 **Commit `.taskplane-kb/` with your work.** It is the session's memory.
-The current layout (v2.5): `knowledge/` (decisions, requirements, debt,
+The current v2.15 layout: `knowledge/` (decisions, requirements, debt,
 flows — and, in repo mode only, `knowledge/state/loop.json`: Tag is the ONE
 mode where loop state is committed, which is exactly what lets the next
 session resume), `artifacts/` (the per-gate decision snapshots — dashboard,
@@ -39,17 +53,21 @@ trace lines into the thread at each gate so the audit survives the sandbox.
 
 - **Post the loop's state compactly** as you go: step, task, what happened.
   Tag already posts checklists; keep taskplane updates to a few lines.
-- **At every gate, attach the dashboard** (`.taskplane/dashboard.html`) to
-  the thread so the channel can review without leaving Slack.
+- **At every human gate, attach the engine-authored dashboard**
+  (`.taskplane/dashboard.html`) to the thread by reference so the channel can
+  review the workflow, dependency graph/blast radius, evidence, and the exact
+  approval/request-changes decision without leaving Slack. Do not re-author
+  its HTML in the conversation.
 - **Keep replies short**; long artifacts (specs, plans, reports) go as file
   attachments, with a two-line summary in the thread.
 
 ## Human gates — the one rule that is absolute
 
-At `plan_approval` and `signoff` (and A/B `selection`):
+At `design_approval`, `plan_approval`, and `signoff` (and A/B `selection`):
 
-1. Post the gate summary to the thread: the plan (or verdict), the
-   acceptance criteria, and the exact question you need answered.
+1. Attach `.taskplane/dashboard.html` and post the gate summary to the
+   thread: the decision, acceptance criteria, graph impact, and the exact
+   approve/request-changes question.
 2. **STOP. Do not run `loop approve`. Wait for a human reply.**
 3. Only when a person in the thread has explicitly approved, run:
 
@@ -83,7 +101,7 @@ translation — visibility replaces interception, never the rules.
 
 ## Scope discipline without hooks
 
-Unchanged in v2.5: Tag still has no tool interception, so scope stays
+Tag still has no tool interception, so scope stays
 cooperative and must be stated honestly.
 The contract's scope still governs even though nothing intercepts writes:
 before each execute step, restate the task's scope paths in the thread;

@@ -11,16 +11,11 @@ This is deliberate and cuts against the system's default. When operating as this
 
 ### The cardinal rule is enforced by taskplane, not merely trusted
 
-Before acquiring the target, the agent activates a **read-only review contract** (`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
+`review start` activates the **read-only review contract** and returns its
+exact leased result paths. Do not precede it with a separate `new` call and do
+not replace the contract it creates.
 
-```bash
-python3 "$PLUGIN/taskplane/tp.py" new --read-only \
-    --write-allow ".em-review/**" \
-    --tools "Read,Grep,Glob,Bash,Write,Edit" \
-    "EM review: <target>"
-```
-
-The plugin's PreToolUse hook then **mechanically blocks** any Write/Edit or shell command that writes to the reviewed source — writes are permitted only under `.em-review/**` (reports, scratch checkouts, mocks, harnesses). This turns the cardinal rule from a promise into an enforced boundary: an instruction-following lapse can no longer mutate the code under review. Clone into `.em-review/scratch/<repo>`, write reports to `.em-review/`, and run `python3 "$PLUGIN/taskplane/tp.py" clear` when the session ends. The verdict and the human's sign-off land in `.taskplane/trace.jsonl` as the audit record.
+The plugin's PreToolUse hook then **mechanically blocks** any Write/Edit or shell command that writes to the reviewed source — writes are permitted only under `.em-review/**` (reports, scratch checkouts, mocks, harnesses). This turns the cardinal rule from a promise into an enforced boundary: an instruction-following lapse can no longer mutate the code under review. Clone into `.em-review/scratch/<repo>` when acquisition needs a clone; all review projections stay under `.em-review/`. A governed loop submits and leaves clearing to the orchestrator; a standalone review clears only after its human gate closes. The verdict and the human's sign-off land in `.taskplane/trace.jsonl` as the audit record.
 
 > **Terminology.** This skill uses **DoR** for the *engineering-quality lens* (code quality, security, integrability, scalability, testability) and **DoD** for the *requirements lens*. The EM applies the DoR lens to already-delivered code as a merge-readiness read-out — distinct in *timing* from the loop's entry-gate DoR in `definition-of-ready-done` (which gates whether a step may *begin*). Same lens, different checkpoint. taskplane's own `tp.py ready` DoR is the entry-gate sense; the EM's Step 4 is the exit read-out.
 
@@ -36,15 +31,27 @@ The EM does not auto-approve or auto-reject into the loop. It is read-only and a
 
 ## This is an interactive session, not a report
 
-The EM review is a guided, human-paced session. **Do not run straight to a final markdown report.** Review the feature *with* the human through a progression of simulations, and stop and wait for them at the interaction points below. An EM review that ends by dumping a report, or that never gets the human in front of the running app, has failed its purpose.
+The EM review is a guided, human-paced session. **Do not run straight to a
+final markdown report.** Review the feature *with* the human through the
+canonical visual surface and whatever runtime evidence is material, and stop
+at the decision point below. A review that ends by dumping prose without the
+taskPlane gate surface has failed its purpose.
 
-**All three simulations run every time**, in increasing fidelity, ending on the live app for final review. Fixed session order:
+Verification is proportional to the change. Use the highest-fidelity existing
+evidence that materially changes the decision; do not generate three versions
+of the same simulation merely to satisfy a ritual. Fixed session order:
 
-**(0) start live app + DoR in background → (1) prototype + Storybook previews → (2) interactive DoD review → (3) LIVE app: final review & sign-off → (4) DoR results last.**
+**(0) one ReviewKernel start → (1) deliver workflow + dependency graph → (2)
+dispatch only mapped lenses → (3) one canonical collect → (4) requirements
+walk + the best relevant runtime/visual evidence → (5) human sign-off.**
 
 ### No human to drive it (headless / unattended)
 
-If the session is unattended (a scheduled run, a CI/Cowork context with no human answering), do **not** fabricate a sign-off. Run the simulations and checks as far as they go automatically, then produce the DoD comparison matrix marked **AWAITING HUMAN SIGN-OFF** (each row assessed as far as evidence allows, unresolved rows marked *Cannot verify — needs human*) plus the engineering-quality read-out, write them under `.em-review/`, and **stop without a verdict**. The final Met/Not-met determination remains the human's; a headless run prepares the review, it never closes it.
+If the session is unattended (a scheduled run, CI, or other context with no
+human answering), do **not** fabricate a sign-off. Complete the mapped review
+and material automated checks, then produce the DoD comparison marked
+**AWAITING HUMAN SIGN-OFF** (unresolved rows are *Cannot verify — needs human*)
+plus the engineering-quality read-out and **stop without a verdict**.
 
 ## Acquiring the target — before Step 0 (local path · git URL · pull request)
 
@@ -70,7 +77,13 @@ The review runs against code **on disk**. Resolve the target first, then continu
 
 ## Simulation strategy — detect the code type first
 
-The three-simulation progression is frontend-shaped by default; for other code, "simulate" means something different. Detect what's under review (file extensions; `package.json` / `pyproject.toml` / `go.mod`; IaC files) and pick the matching strategy. **All simulation scaffolding — generated prototypes, mocks, harnesses, request collections — is an ephemeral review artifact created in a scratch dir outside the reviewed source tree, never committed and never modifying the code under review (cardinal rule).**
+Simulation is conditional and code-shaped. Detect what's under review (file
+extensions; `package.json` / `pyproject.toml` / `go.mod`; IaC files) and pick
+the smallest evidence that answers a material acceptance or risk question.
+**Any simulation scaffolding — generated prototypes, mocks, harnesses, request
+collections — is an ephemeral review artifact created in a scratch dir outside
+the reviewed source tree, never committed and never modifying the code under
+review (cardinal rule).**
 
 | Code type | Detect by | Early simulation (fast, low-fidelity) | Final simulation (high-fidelity) |
 |---|---|---|---|
@@ -87,16 +100,21 @@ To exercise backend, library, or infra code in isolation, create mocks/stubs/fix
 
 How hard it was to mock the code *is itself a testability finding*. Clean seams (dependency injection, interfaces/protocols, side-effects pushed to the edges) make mocking trivial; hidden globals, hard-coded clients, and side-effects buried in business logic make it hard. Feed this into the DoR **testability** perspective: if simulating required heroics to stub a dependency, report the specific missing seam as a testability/maintainability observation.
 
-## Step 0 — Setup (background, nothing shown yet)
+## Step 0 — Open once
 
-Kick off the two slow things immediately so they're ready when needed:
+Run `review start` exactly once. It pins the target, derives the diff and graph
+blast radius once, probes runnability once, maps all 26 lenses, writes one
+immutable shared context, and returns only the deep slots plus at most one
+light sweep. Deliver its workflow/wave and dependency-graph artifacts by
+reference. Do not separately run target, graph impact, lens route, runnability,
+or a second review start.
 
-1. **Start the high-fidelity simulation preparing in the background** (per the Simulation strategy for the detected code type): boot the dev server for a frontend, boot the service with its mocks for a backend, prepare the mocked harness for a library/CLI, or run the dry-run/validate for infra — capture the URL/output for the final step. Don't wait on it here.
-2. **Start DoR in the background.** Run lint, typecheck, tests, duplication, and the dependency / change-impact graph, and route the lens catalog (`tp.py lens route` — signal-driven; every lens is dispositioned, only the summoned ones run) — the security, code-quality and testability lenses lead here. Do not block on these and do not surface them until the end.
+## Step 1 — Optional early evidence (by code type)
 
-## Step 1 — Early simulation (by code type)
-
-Give the human something to engage with immediately, while the high-fidelity simulation prepares. Run the **early simulation for the detected code type** (see Simulation strategy):
+Use early evidence only when it helps the human clarify expected behavior
+before final evidence is available. Prefer existing stories, examples, request
+collections, harnesses, or plan output; do not author decorative artifacts for
+non-visual changes.
 
 - **Frontend:** a generated interactive prototype (all states: default / loading / empty / error / success) **and** the feature's existing Storybook stories. Use existing stories only; if there's no Storybook, say so and move on (never author stories — cardinal rule).
 - **Backend service:** a request/response walkthrough of the key endpoints — a generated request collection (curl / `.http`) showing inputs and expected outputs.
@@ -124,7 +142,9 @@ Flag scope **gaps** (required, not found), **creep** (built, not required), and 
 
 ## Step 3 — Final simulation: the high-fidelity run (the definitive step)
 
-By now the high-fidelity simulation from Step 0 should be ready. Bring the human to it for the final review — the basis for sign-off — matching the code type (see Simulation strategy):
+When runnable high-fidelity evidence is material to sign-off, bring the human
+to it, matching the code type below. Reuse the ReviewKernel's one runnability
+result; do not let each lens reprobe the environment.
 
 - **Frontend:** the live app (`npm run dev`) — exercise the real running feature.
 - **Backend service:** the service running **with mocked external dependencies** — hit the endpoints and observe real responses.
@@ -138,7 +158,10 @@ Have the human confirm or revise each DoD assessment against this real behavior,
 
 ## Step 4 — DoR results (automated, surfaced last, no interaction needed)
 
-Once the live final review is done (or when the human asks), surface the DoR checks that have been running since Step 0. This layer is **informational** — the human does not drive it; it's the engineering-readiness read-out for the team to act on. Present it concisely and as growth-oriented feedback per `references/feedback-craft.md` (strengths first, labeled, with the why and one or two themes), not a raw defect dump.
+After canonical collection (or when the human asks), surface the mapped
+engineering checks. This layer is **informational** — the human does not drive
+it; it is the engineering-readiness read-out for the team to act on. Present
+it concisely per `references/feedback-craft.md`, not as a raw defect dump.
 
 | Perspective | Inspected via | Looking for |
 |---|---|---|
@@ -151,4 +174,10 @@ Severity uses a CRITICAL/HIGH/MEDIUM/LOW grading; blocking and high-severity sec
 
 ## Invocation
 
-Runs as an independent, **human-paced** checkpoint outside the auto-fix loop. The **target** may be a local path/branch, a **git repository URL** (shallow-cloned into a scratch dir and reviewed), or a **pull request** (checked out and scoped to its diff, with the PR description as the DoD requirements source) — see *Acquiring the target*. The session order is fixed: background setup (live app + DoR) → prototype + Storybook previews → interactive DoD review → **live app final review & sign-off** → DoR results last. **All three simulations run every time**; the live app is always the final review step. It is a session, not a one-shot report. The reviewer may set the feedback detail level (`0` very detailed / `1` middle / `2` high-level, default `1`); it never suppresses a blocking or high-severity security finding.
+Runs as an independent, **human-paced** checkpoint outside the auto-fix loop.
+The target may be a local path/branch, repository URL, or pull request — see
+*Acquiring the target*. One ReviewKernel start and one collect are the
+control-plane boundary. Simulations are proportional and conditional; the
+final taskPlane dashboard plus material runtime/visual evidence forms the
+human sign-off surface. Feedback detail never suppresses a blocking or
+high-severity security finding.

@@ -1,0 +1,19 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "tp-build",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "idea", "label": "feature idea", "kind": "input"},
+    {"id": "product", "label": "complete requirement", "kind": "stage"},
+    {"id": "design", "label": "conditional design", "kind": "stage"},
+    {"id": "design_approval", "label": "design approval", "kind": "gate"},
+    {"id": "plan", "label": "graph-aware plan", "kind": "stage"},
+    {"id": "plan_approval", "label": "plan approval", "kind": "gate"},
+    {"id": "variants", "label": "build one or A/B variants", "kind": "parallel"},
+    {"id": "selection", "label": "A/B selection if used", "kind": "gate"},
+    {"id": "evaluate", "label": "Evaluate", "kind": "parallel"},
+    {"id": "review", "label": "Engineering review", "kind": "parallel"},
+    {"id": "signoff", "label": "feature sign-off", "kind": "gate"}
+  ],
+  "edges": [["idea", "product"], ["product", "design"], ["design", "design_approval"], ["design_approval", "plan"], ["plan", "plan_approval"], ["plan_approval", "variants"], ["variants", "selection"], ["selection", "evaluate"], ["evaluate", "review"], ["review", "signoff"]]
+}

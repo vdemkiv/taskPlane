@@ -218,6 +218,34 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         self.new("--owes", "review")
         self.assertEqual(len(obligations.blocking(self.ws)), 2)
 
+    def test_graph_render_binds_the_seeded_review_obligation(self):
+        """Review owes one graph before bytes exist; rendering those bytes
+        must enrich that demand, not mint a second graph delivery."""
+        self.assertEqual(self.new("--owes", "review").returncode, 0)
+        with io.open(os.path.join(self.ws, "a.py"), "w", encoding="utf-8") as f:
+            f.write("value = 1\n")
+        env = dict(os.environ)
+        scan = subprocess.run(
+            [sys.executable, TP, "graph", "--workspace", self.ws, "scan"],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(scan.returncode, 0, scan.stderr)
+        out = os.path.join(self.ws, "graph-view.html")
+        render = subprocess.run(
+            [sys.executable, TP, "graph", "--workspace", self.ws, "html",
+             "--files", "a.py", "--out", out],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(render.returncode, 0, render.stderr)
+        issued = {row["id"]: row for row in obligations.read(self.ws)
+                  if row.get("event") == "issued"}
+        self.assertEqual(len(issued), 2)
+        graphs = [row for row in issued.values()
+                  if row.get("kind") == "render_graph"]
+        self.assertEqual(len(graphs), 1)
+        self.assertEqual(graphs[0].get("step"), "review")
+        self.assertEqual(graphs[0].get("artifact"), out)
+        self.assertEqual(graphs[0].get("fingerprint"),
+                         obligations.artifact_fingerprint(out))
+
     def test_the_screener_refuses_the_conclusion_end_to_end(self):
         """Through the real hook, not the helper."""
         self.new("--owes", "review")

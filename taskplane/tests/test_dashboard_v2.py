@@ -175,6 +175,9 @@ class TestArtifactsInDetail(unittest.TestCase):   # sign-off feedback r2
         import requirements as reqs
         rec = reqs.record_requirement(
             self.ws, "demo feature",
+            functional=["show the complete governed delivery plan"],
+            nfr={"security": "the dashboard escapes repository content",
+                 "architecture": "the plan preserves declared dependencies"},
             acceptance=["criterion one: gate works", "criterion two: table",
                         "criterion three: escaped", "criterion four: tests"])
         loop.init(self.ws, "g", requirement_id=rec["id"])

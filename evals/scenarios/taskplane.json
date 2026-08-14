@@ -3,9 +3,10 @@
   "skill": "taskplane",
   "title": "The facade: a goal arrives in plain language and leaves as governed delivery — every routed step under a contract, every gate a human's",
   "source_files": [
-    "skills/taskplane/SKILL.md"
+    "skills/taskplane/SKILL.md",
+    "skills/taskplane/flow.json"
   ],
-  "inputs_fingerprint": "72f78e54b23eac1f32d9183beac80e699c800e3a9152ba399182590673a8314d",
+  "inputs_fingerprint": "09e9480a8cebbfee56c49a52da91f0089273242c8462f11604200436633733bc",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp loop next",

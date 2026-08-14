@@ -1,0 +1,25 @@
+{
+  "schema": "taskplane.review-convergence-scenario/v1",
+  "id": "unchanged-tree-after-settlement",
+  "expect": {
+    "first_pass_admissible": 1,
+    "second_pass_new_admissible": 0,
+    "second_pass_refused_recurrences": 1
+  },
+  "finding": {
+    "lens": "code-quality",
+    "kind": "defect",
+    "severity": "high",
+    "class": "regression",
+    "file": "src/service.py",
+    "line": 10,
+    "title": "stale lease crosses review runs",
+    "scenario": "two concurrent review runs finish out of order",
+    "fix": "bind the result to its exact run and lease",
+    "claim": {
+      "trigger": "submit a review result with a stale lease identity",
+      "outcome": "the canonical revision accepts evidence from another run",
+      "repro": "start two review runs and submit the first result to the second"
+    }
+  }
+}

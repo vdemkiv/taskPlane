@@ -86,7 +86,7 @@ workspace fingerprint before the orchestrator gate.
 
 | Step | Role | Contract | May write | DoR (enter) | DoD (exit) |
 | --- | --- | --- | --- | --- | --- |
-| PM | product-manager | planning | `specs/**`,`docs/**` | goal stated | **mechanically enforced (v2.2.1, fail-closed):** a non-empty `specs/spec.md` exists OR a requirement R-id is attached — nothing more. Testable-criteria quality and requirement dependencies/contracts are the role's obligation, validated later by the refinement gate at plan approval, not by the pm gate |
+| PM | product-manager | planning | `specs/**`,`docs/**` | goal stated | non-empty spec or attached R-id; when an R-id is attached the PM gate mechanically requires complete functional/acceptance fields plus `security` and `architecture` NFRs, stores the refinement result, and links its context files into the planned graph before Plan |
 | DESIGN *(optional/explicit)* | tp-designer | read-only toward code | `design/**` | refined requirement, no blocking questions, current graph baseline | `taskplane.design/v1`: alternatives, selected approach, modules/edges/contracts, bounded depth, graph DoR/DoD, acceptance map, risks/failures/observability/rollout, solution-design PASS, conditional visual; then human approval |
 | PLAN | loop-planner | read-only + allow `plan/**` | `plan/**` | spec + criteria exist | every criterion → task; scope/tests/deps/contracts/new modules/impact policy pass graph DoR |
 | EXECUTE | loop-executor | build (per-task scope) | the task's `scope_paths` | deps done; scope+tests+graph policy set | task test passes; diff in scope; fingerprinted submission. Realized graph truth is checked at EVALUATE and finalized before EM. |

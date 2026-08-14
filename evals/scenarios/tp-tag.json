@@ -3,19 +3,18 @@
   "skill": "tp-tag",
   "title": "Governed work inside Claude Tag: the same loop in an ephemeral sandbox, with gates answered by real people replying in the thread",
   "source_files": [
-    "skills/tp-tag/SKILL.md"
+    "skills/tp-tag/SKILL.md",
+    "skills/tp-tag/flow.json"
   ],
-  "inputs_fingerprint": "42a47aaef5ca7c1e63aba7510a38e56b6e76661bc7d187921eaf49a5beb41884",
-  "expects_derivations": [
-    "impact"
-  ],
+  "inputs_fingerprint": "41faa7f111eb7af02189a7aa388e9c63e64aa2727ac7357c6c34f9497945eca1",
+  "expects_derivations": [],
   "declared_surfaces": [
     "tp loop gate",
     "tp loop submit",
     "tp share push",
     "tp share set"
   ],
-  "terminal": "completion",
+  "terminal": "human_gate",
   "steps": [
     {
       "id": "U1-CONTRACT",
@@ -29,6 +28,26 @@
       "universal": [
         "contract"
       ],
+      "required": true
+    },
+    {
+      "id": "T1-NATIVE-DISPATCH",
+      "claim": "the governed Tag loop dispatched the assigned role and collected evidence instead of performing every persona inline",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "subagent_start"
+      },
+      "required": true
+    },
+    {
+      "id": "T2-GRAPH-DOR",
+      "claim": "the requirement's scoped modules were linked into the dependency graph before the Slack approval gate",
+      "record": "trace",
+      "check": "exists",
+      "select": {
+        "event": "graph_req_link"
+      },
       "required": true
     },
     {
@@ -59,7 +78,9 @@
       "universal": [
         "dod"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the Tag evaluation stops at the first real Slack approval gate; downstream delivery DoD must not be fabricated without a human reply"
     },
     {
       "id": "U4-SHARED",
@@ -80,7 +101,9 @@
       "universal": [
         "no_rederive"
       ],
-      "required": true
+      "required": true,
+      "applicable": false,
+      "reason": "the Tag evaluation stops at plan approval before implementation derives a diff or shared review envelope; graph readiness is evaluated separately by T2"
     }
   ]
 }

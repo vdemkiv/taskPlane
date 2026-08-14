@@ -7,6 +7,11 @@ description: "The pre-build solution-design flow of taskplane. Use when the user
 
 The user provides the goal and material decisions. Keep the interface simple; internally run the same strict taskplane harness as Build and Review.
 
+`flow.json` is the approved Design graph: **requirement/code context → baseline
+graph → alternatives/trade-offs → Design Contract → solution-design evidence
+→ conditional technical visual → human Design approval**. Design never exits
+through a worker-authored verdict; the human gate is part of the contract.
+
 Resolve the engine once from the installed plugin root:
 
 ```bash

@@ -87,6 +87,15 @@ AXIS_WEIGHT_NONCRITICAL = 0.1
 # non-blocking threshold: hard cap just below it.
 CRITICAL_GAP_SCORE_CAP = 0.5
 
+# Product sign-off is stricter than the generic advisory refinement score.
+# These two concerns must be stated for every approved product requirement,
+# even when the changed-file router has too little information to infer them.
+PRODUCT_REQUIRED_NFR_LENSES = frozenset({"security", "architecture"})
+
+
+class ProductSignoffError(ValueError):
+    """A human product decision could not be recorded safely."""
+
 
 def kb_dir(ws: str) -> str:
     # External per-project store, not the repo — see taskplane_lite.kb_root.
@@ -138,6 +147,49 @@ def _today() -> str:
     return datetime.date.today().isoformat()
 
 
+def _write_requirement_file(ws: str, entry: dict) -> None:
+    """Project the authoritative requirement index row to its readable file."""
+    def bullets(items):
+        return "\n".join(f"- {x}" for x in items) or "—"
+
+    path = os.path.join(kb_dir(ws), entry["file"])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with tp.file_lock(path):
+        # A slower earlier writer must not overwrite a newer amend/sign-off
+        # projection. Re-read the atomic index after acquiring the file lock.
+        entry = get_requirement(ws, entry["id"]) or entry
+        nfr_lines = "\n".join(
+            f"- **{k}**: {v}" for k, v in entry.get("nfr", {}).items()) or "—"
+        approval = entry.get("product_signoff") or {}
+        approval_line = (json.dumps(approval, sort_keys=True)
+                         if approval else "—")
+        body = f"""# {entry['id']} · {entry['title']}
+
+- status: {entry['status']}
+- date: {entry['date']}
+- tags: {', '.join(entry.get('tags') or []) or '—'}
+- context_files: {', '.join(entry.get('context_files') or []) or '—'}
+- links: {json.dumps(entry.get('links') or {}) if entry.get('links') else '—'}
+- depends_on: {', '.join(entry.get('depends_on') or []) or '—'}
+- contracts: {json.dumps(entry.get('contracts') or []) if entry.get('contracts') else '—'}
+- product_signoff: {approval_line}
+
+## Functional requirements
+{bullets(entry.get('functional') or [])}
+
+## Non-functional requirements (by lens)
+{nfr_lines}
+
+## Acceptance criteria (→ DoD)
+{bullets(entry.get('acceptance') or [])}
+
+## Open questions
+{bullets(entry.get('open_questions') or [])}
+"""
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(body)
+
+
 # --------------------------------------------------------------- record
 
 def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
@@ -182,37 +234,7 @@ def record_requirement(ws: str, title: str, *, functional=None, nfr=None,
         idx["requirements"].append(entry)
         _save_index(ws, idx)
 
-    os.makedirs(os.path.join(kb_dir(ws), "requirements"), exist_ok=True)
-
-    def bullets(items):
-        return "\n".join(f"- {x}" for x in items) or "—"
-
-    nfr_lines = "\n".join(f"- **{k}**: {v}" for k, v in entry["nfr"].items()) \
-        or "—"
-    body = f"""# {rid} · {title}
-
-- status: {entry['status']}
-- date: {entry['date']}
-- tags: {', '.join(entry['tags']) or '—'}
-- context_files: {', '.join(entry['context_files']) or '—'}
-- links: {json.dumps(entry['links']) if entry['links'] else '—'}
-- depends_on: {', '.join(entry['depends_on']) or '—'}
-- contracts: {json.dumps(entry['contracts']) if entry['contracts'] else '—'}
-
-## Functional requirements
-{bullets(entry['functional'])}
-
-## Non-functional requirements (by lens)
-{nfr_lines}
-
-## Acceptance criteria (→ DoD)
-{bullets(entry['acceptance'])}
-
-## Open questions
-{bullets(entry['open_questions'])}
-"""
-    with open(os.path.join(kb_dir(ws), entry["file"]), "w", encoding="utf-8") as f:
-        f.write(body)
+    _write_requirement_file(ws, entry)
     tp.trace(ws, "requirement_recorded", id=rid, title=title,
              status=entry["status"], changed_from=changed_from)
     return entry
@@ -230,12 +252,176 @@ def list_requirements(ws: str) -> list:
 
 
 def set_status(ws: str, rid: str, status: str) -> None:
+    changed = None
     with _index_lock(ws):
         idx = load_index(ws)
         for r in idx["requirements"]:
             if r["id"] == rid:
                 r["status"] = status
+                changed = dict(r)
         _save_index(ws, idx)
+    if changed:
+        _write_requirement_file(ws, changed)
+
+
+def amend_requirement(ws: str, rid: str, *, functional=None, nfr=None,
+                      acceptance=None, open_questions=None,
+                      clear_open: bool = False, context_files=None) -> dict:
+    """Revise one existing R-record after Product requests changes."""
+    supplied = any(value is not None for value in (
+        functional, nfr, acceptance, open_questions, context_files)) \
+        or clear_open
+    if not supplied:
+        raise ProductSignoffError("req amend needs at least one changed field")
+    with _index_lock(ws):
+        idx = load_index(ws)
+        entry = next((row for row in idx["requirements"]
+                      if row.get("id") == rid), None)
+        if entry is None:
+            raise ProductSignoffError(f"no requirement {rid}")
+        if functional is not None:
+            entry["functional"] = list(functional)
+        if nfr is not None:
+            entry["nfr"] = {**dict(entry.get("nfr") or {}), **dict(nfr)}
+        if acceptance is not None:
+            entry["acceptance"] = list(acceptance)
+        if clear_open:
+            entry["open_questions"] = []
+        elif open_questions is not None:
+            entry["open_questions"] = list(open_questions)
+        if context_files is not None:
+            entry["context_files"] = list(context_files)
+        if entry.get("product_signoff"):
+            entry.setdefault("product_signoff_history", []).append(
+                entry.pop("product_signoff"))
+        entry["status"] = "draft"
+        result = dict(entry)
+        _save_index(ws, idx)
+    _write_requirement_file(ws, result)
+    tp.trace(ws, "requirement_amended", id=rid,
+             fields=[name for name, value in (
+                 ("functional", functional), ("nfr", nfr),
+                 ("acceptance", acceptance),
+                 ("open_questions", [] if clear_open else open_questions),
+                 ("context_files", context_files)) if value is not None])
+    return result
+
+
+def product_dor(req: dict | None, *, changed_files=None,
+                task_type: str = "implementation") -> dict:
+    """Mechanical Product Definition of Ready used by every product gate.
+
+    Product DoR blocks unresolved functional questions, missing acceptance,
+    any risk-bearing NFR discovered by routing, and the always-required
+    security/architecture statements.  Keeping this here prevents standalone
+    ``tp-product`` and the governed PM step from drifting apart.
+    """
+    if not isinstance(req, dict):
+        return {"passed": False, "errors": ["requirement is missing"],
+                "refinement": None}
+    refinement = score_refinement(
+        req,
+        changed_files=(changed_files if changed_files is not None
+                       else req.get("context_files") or []),
+        task_type=task_type)
+    gaps = [
+        gap for gap in refinement.get("gaps") or []
+        if gap.get("axis") == "functional"
+        or gap.get("lens") in CRITICAL_NFR_LENSES
+    ]
+    stated = set(req.get("nfr") or {})
+    for lens_id in sorted(PRODUCT_REQUIRED_NFR_LENSES - stated):
+        gaps.append({"axis": "nfr", "lens": lens_id,
+                     "detail": f"no {lens_id} NFR stated"})
+    errors = []
+    for gap in gaps:
+        detail = str(gap.get("detail") or gap)
+        if detail not in errors:
+            errors.append(detail)
+    return {"passed": not errors, "errors": errors,
+            "refinement": refinement,
+            "dependencies": list(req.get("depends_on") or []),
+            "contracts": list(req.get("contracts") or [])}
+
+
+def product_signoff(ws: str, rid: str, *, decision: str, by: str,
+                    note: str = "") -> dict:
+    """Record the explicit human Product gate for one requirement.
+
+    ``approve`` is refused until Product DoR passes. ``changes`` records the
+    rejection against the same R-record so refinement resumes without minting
+    a replacement requirement.  The record is idempotent for an exact retry
+    and refuses silent overwrite by a different decision.
+    """
+    decision = str(decision or "").strip().lower()
+    by = str(by or "").strip()
+    note = str(note or "").strip()
+    if decision not in {"approve", "changes"}:
+        raise ProductSignoffError("decision must be approve|changes")
+    if not by:
+        raise ProductSignoffError(
+            "product sign-off needs --by with the human's words")
+    current = get_requirement(ws, rid)
+    if current is None:
+        raise ProductSignoffError(f"no requirement {rid}")
+    record_key = json.dumps(current, sort_keys=True, separators=(",", ":"))
+    dor = product_dor(current)
+    if decision == "approve" and not dor["passed"]:
+        raise ProductSignoffError(
+            "Product Definition of Ready failed: " + "; ".join(dor["errors"]))
+    prior = current.get("product_signoff")
+    if prior:
+        if all(prior.get(key) == value for key, value in (
+                ("decision", decision), ("by", by), ("note", note))):
+            return {"requirement": rid, "status": current["status"],
+                    "signoff": prior, "dor": dor, "idempotent": True}
+        raise ProductSignoffError(
+            "requirement already has a different product sign-off; amend "
+            "the same R-record before presenting it again")
+    if decision == "approve" and current.get("context_files"):
+        # The planned ownership edge is part of Product DoR. Establish it
+        # before approval so a graph failure cannot leave Build with an
+        # apparently approved but graph-unaware requirement.
+        import depgraph
+        depgraph.link_requirement(
+            ws, rid, list(current["context_files"]),
+            kind="planned", replace=True)
+    signoff = {"decision": decision, "by": by, "note": note,
+               "date": _today(), "dor_passed": bool(dor["passed"])}
+    with _index_lock(ws):
+        idx = load_index(ws)
+        entry = next((row for row in idx["requirements"]
+                      if row.get("id") == rid), None)
+        if entry is None:
+            raise ProductSignoffError(f"no requirement {rid}")
+        if json.dumps(entry, sort_keys=True, separators=(",", ":")) != record_key:
+            raise ProductSignoffError(
+                "requirement changed during product sign-off; review the "
+                "latest R-record and retry")
+        concurrent = entry.get("product_signoff")
+        if concurrent:
+            if all(concurrent.get(key) == value for key, value in (
+                    ("decision", decision), ("by", by), ("note", note))):
+                return {"requirement": rid, "status": entry["status"],
+                        "signoff": concurrent, "dor": dor,
+                        "idempotent": True}
+            raise ProductSignoffError(
+                "requirement already has a different product sign-off")
+        entry["product_signoff"] = signoff
+        entry["status"] = ("product-approved" if decision == "approve"
+                           else "changes-requested")
+        result_entry = dict(entry)
+        _save_index(ws, idx)
+    _write_requirement_file(ws, result_entry)
+    tp.trace(ws, "requirement_product_signoff", id=rid,
+             decision=decision, by=by, dor_passed=dor["passed"])
+    return {"requirement": rid,
+            "status": ("product-approved" if decision == "approve"
+                       else "changes-requested"),
+            "signoff": signoff, "dor": dor, "idempotent": False,
+            "next": ("start governed Build with this R-id"
+                     if decision == "approve"
+                     else "revise this same R-record and present it again")}
 
 
 # --------------------------------------------------------------- refinement

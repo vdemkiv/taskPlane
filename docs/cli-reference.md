@@ -75,13 +75,16 @@ not repeated in the tables.
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
 | `tp.py ready` | Definition-of-Ready entry gate |
 | `tp.py req` | requirements: record, refine, mode, debt |
+| `tp.py req amend` | revise the same requirement after Product requests changes |
 | `tp.py req debt` | record technical debt taken on knowingly |
 | `tp.py req list` | list recorded requirements |
 | `tp.py req mode` | pick the delivery mode for a refinement score and change size |
 | `tp.py req new` | record a requirement (or a change request) |
 | `tp.py req score` | score a requirement's refinement against the bar |
+| `tp.py req signoff` | record the human Product gate |
 | `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
 | `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
+| `tp.py review signoff` | record the human decision for a collected standalone review |
 | `tp.py review start` | establish the facts and activate the read-only contract |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
 | `tp.py screen-dispatch` | PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict) |
@@ -677,6 +680,23 @@ requirements: record, refine, mode, debt
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py req amend`
+
+revise the same requirement after Product requests changes
+
+Positional arguments:
+
+- `R-XXXX`
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--acceptance` | ACCEPTANCE (repeatable) | replace acceptance criteria (repeatable) |
+| `--clear-open` | flag | close every open product question |
+| `--files` | FILES | replace comma-separated context globs |
+| `--functional` | FUNCTIONAL (repeatable) | replace functional statements (repeatable) |
+| `--nfr` | LENS=STATEMENT (repeatable) | add or replace an NFR by lens (repeatable) |
+| `--open` | OPEN (repeatable) | replace open questions (repeatable) |
+
 ## `tp.py req debt`
 
 record technical debt taken on knowingly
@@ -741,6 +761,20 @@ Positional arguments:
 | `--task-type` | TASK_TYPE | declared task type — sets the refinement bar this requirement is scored against |
 | `--threshold` | THRESHOLD | refinement score the requirement must reach (default 0.6) |
 
+## `tp.py req signoff`
+
+record the human Product gate
+
+Positional arguments:
+
+- `R-XXXX`
+- `decision`
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | the human approval or change-request words |
+| `--note` | NOTE | optional decision rationale |
+
 ## `tp.py review`
 
 open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload
@@ -757,6 +791,21 @@ validate leased lens results and publish one canonical findings revision
 | --- | --- | --- |
 | `--no-publish` | flag | skip the external artifact-store snapshot (tests and isolated calibration only) |
 | `--run-id` | RUN_ID | select one active review when several starts coexist |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py review signoff`
+
+record the human decision for a collected standalone review
+
+Positional arguments:
+
+- `decision`
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | the human approval or change-request words |
+| `--note` | NOTE | optional decision rationale |
+| `--run-id` | RUN_ID | select the collected review run |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py review start`
@@ -986,7 +1035,7 @@ record a human verdict on one finding: acted or dismissed
 Positional arguments:
 
 - `finding` — the finding fingerprint from `tp yield`
-- `verdict`
+- `verdict` — durable human disposition
 
 | Flag | Value | What it does |
 | --- | --- | --- |

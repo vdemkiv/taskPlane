@@ -5,12 +5,18 @@ description: "The internal delivery driver behind the taskplane facade — goal-
 
 # /tp-go — goal in, governed delivery out
 
-Current workflow contract: **v2.14**. Review, Evaluate, and final Engineering
+Current workflow contract: **v2.15**. Review, Evaluate, and final Engineering
 all consume the same **canonical review context**; transport may differ by
 host, but the workflow and evidence contract do not.
 
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Drive the whole loop;
 pause ONLY at the human gates. Follow each step's returned `instruction`.
+
+`flow.json` is the approved end-to-end graph: **goal → Product → optional
+Design → Design approval → Plan → Plan approval → scoped Build waves →
+Evaluate → Engineering review → final sign-off → retro/graph true-up**.
+Optional branches may be skipped only when their engine condition is false;
+the three human gates may never be collapsed or self-approved.
 
 This is the internal delivery driver behind the user-facing `taskplane`
 facade — user phrasing like "build X" arrives via the facade and routes

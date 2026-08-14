@@ -3,9 +3,10 @@
   "skill": "tp-go",
   "title": "The delivery driver: the loop run end to end, personas routed, waves dispatched, and no human gate self-approved",
   "source_files": [
-    "skills/tp-go/SKILL.md"
+    "skills/tp-go/SKILL.md",
+    "skills/tp-go/flow.json"
   ],
-  "inputs_fingerprint": "9259bb351dffa60fa91c235152645c91a071cf63d4c2967a97f888c18e6aa21b",
+  "inputs_fingerprint": "c8dcc38b5abd45fa3617daee8cc9b8f7e921807917ba0efd1e3b0ced029eb8f0",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp lens dispatch",

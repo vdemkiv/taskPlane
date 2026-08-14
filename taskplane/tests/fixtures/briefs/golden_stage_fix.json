@@ -26,10 +26,9 @@
     "write_allow": null
   },
   "dashboard": {
-    "ack": "after showing it, run: tp ack o-4d218e0a58 \u2014 an obligation left unacknowledged is recorded as not shown",
-    "obligation": "o-4d218e0a58",
+    "obligation": "o-d452794682",
     "path": ".taskplane/dashboard.html",
-    "render": "refreshed for this transition \u2014 show it (mcp__visualize__show_widget) before proceeding; the dashboard is the interface the human governs through"
+    "render": "refreshed for this internal transition \u2014 keep using this path as the progress reference; do not render or acknowledge it until a human gate or explicit status request"
   },
   "design": null,
   "design_graph": null,
@@ -112,21 +111,21 @@
       "path": "lenses/references/python-code-quality.md"
     },
     {
-      "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
       "language": "python",
       "lens": "qa",
       "path": "lenses/references/python-engineering.md",
       "section": "QA"
     },
     {
-      "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
       "language": "python",
       "lens": "security",
       "path": "lenses/references/python-engineering.md",
       "section": "Security"
     },
     {
-      "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
       "language": "python",
       "lens": "testability",
       "path": "lenses/references/python-engineering.md",
@@ -144,7 +143,7 @@
       "id": "security",
       "language_references": [
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "security",
           "path": "lenses/references/python-engineering.md",
@@ -190,7 +189,7 @@
       "id": "testability",
       "language_references": [
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "testability",
           "path": "lenses/references/python-engineering.md",
@@ -221,7 +220,7 @@
       "id": "qa",
       "language_references": [
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "qa",
           "path": "lenses/references/python-engineering.md",

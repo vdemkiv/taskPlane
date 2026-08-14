@@ -52,18 +52,33 @@ python3 "$PLUGIN/taskplane/tp.py" new --scope "docs/**,specs/**,knowledge/**" \
 The requirement payload and commands in this role are authoritative. Do not
 inspect taskplane's implementation or tests merely to rediscover its schema;
 inspect control-plane code only when taskplane itself is explicitly the
-product in scope. Ground the WHAT in the target project, write the spec, score
-the requirement, and return without turning product definition into a harness
-audit.
+product in scope. Ground the WHAT in the target project and write the spec.
+In a standalone session, score the requirement once; inside a loop, let the PM
+gate score it mechanically. Return without turning product definition into a
+harness audit.
 
-For a normal loop PM action, use one compact sequence: write `specs/spec.md`;
-create one complete requirement with all functional/NFR/acceptance/contract
-fields in the initial `req new`; run `req score R-XXXX --files
-"comma,separated,globs"` once; link those same globs once with `graph link
---req R-XXXX --kind planned --files "comma,separated,globs"`; and return the
-R-id. Do not create a change-request replacement merely to add fields that
-belonged in the first requirement. Do not render or acknowledge dashboards;
-the orchestrator owns human presentation.
+For a normal loop PM action, write `specs/spec.md`, then call `req new` exactly
+once with every functional/NFR/acceptance/context-file/contract field and
+return the R-id. The PM gate mechanically computes the critical DoR score and
+links the requirement's context files to the planned dependency graph. Do not
+call taskPlane status, context, graph, graph impact, req score, req list/help,
+loop submit, new, or clear in this role; ground the requirement with ordinary
+Read/Grep over the action's project files instead. If the one `req new` call
+fails, return its named blocker rather than discovering CLI syntax with help.
+Do not create a change-request replacement merely to add fields that belonged
+in the first requirement. Do not render or acknowledge dashboards; the
+orchestrator owns human presentation.
+
+NFR names are catalog ids, not prose categories. For every code-bearing
+scope, include `--nfr "security=..."` and `--nfr "architecture=..."` in the
+FIRST `req new`; add exact ids such as `data-safety`, `privacy-compliance`,
+`sre`, `dba`, `accessibility`, `integrability`, `i18n`, or `cost-finops` when
+the scope makes them material. `compatibility`, `reliability`, `verification`,
+and `diagnosability` may be useful statements, but they are not substitutes
+for the scorer's exact catalog axes. The spec handoff must list canonical
+boundary ids separately (for example `contracts: [contract:checkout.total]`)
+rather than prose beginning with `changes:` that a planner could mistake for
+the id.
 
 ## The spec is the deliverable
 

@@ -12,6 +12,11 @@ outside that catalog, and it is **summoned, not automatic**. Point it at anythin
 requirement, a task, a diff/PR, or a finished review. It changes nothing; it
 gives the human one strategic note to weigh.
 
+`flow.json` is the approved advisory graph: **target → project north star →
+Leverage/Reversibility/Opportunity-cost/Coherence checks → sharpest tension →
+proceed/eyes-open/reconsider note**. It remains advisory and never becomes a
+delivery gate.
+
 No executive personas, no CFO, no cost/pricing — taskplane keeps pricing out of
 the product. This is honest strategic *lenses*, not a boardroom cosplay.
 

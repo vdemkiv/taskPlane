@@ -5,6 +5,11 @@ description: "Use when the user asks how taskplane works or how to get started: 
 
 # /tp-help — the guided tour
 
+`flow.json` is the approved guidance graph: **help request → taskPlane mental
+model → folder/git/init/hooks setup → route by intent → one concrete next
+action**. Help never starts parallel delivery or invents a human gate; it
+hands the user to the selected governed skill.
+
 **FIRST, always:** run `python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" onboard --json`
 for the current folder. If `ready` is **false**, do NOT open with the tour —
 open with setup: tell them this folder isn't set up yet, name the ONE missing
@@ -32,8 +37,12 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.14 — one selective review kernel governs Review,
-Evaluate, and final sign-off.** taskplane establishes graph quality and the
+**What's new in v2.15 — approved skill flows and convergent review.** The ten
+user-facing skills now carry human-approved flow graphs, Product has an explicit
+DoR and approval boundary, and Engineering admits only reproducible defects or
+violations of named repository declarations. Settled findings stay settled unless
+new evidence is named. The selective review kernel from v2.14 still governs Review,
+Evaluate, and final sign-off. taskplane establishes graph quality and the
 bounded blast radius before it maps all 26 lenses to deep, light, or n/a.
 Only the deep set plus at most one light sweep runs; insufficient impact
 evidence stops with zero dispatch. Every reviewer receives a scoped reference

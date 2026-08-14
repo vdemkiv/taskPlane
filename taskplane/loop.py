@@ -47,7 +47,6 @@ LOOP_FILE = "loop.json"
 # was dispatched. Final EM uses the review profile through the same kernel.
 EVALUATE_ROUTE_STAGE = "build"
 
-
 def _state_dir(ws: str) -> str:
     """Loop coordination state. v1.5.1: state is PER-USER even in team/repo
     knowledge mode — share knowledge, not the state machine. Two teammates'
@@ -1074,6 +1073,20 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             "id": req_rec["id"], "title": req_rec["title"],
             "acceptance": req_rec["acceptance"],
             "open_questions": req_rec["open_questions"],
+            # Structured requirement data is authoritative.  The rendered
+            # context includes relations such as
+            # ``changes:contract:pricing.checkout.total`` for humans; a
+            # planner copying that entire display string as a contract id
+            # produces an invalid ``changes:contract:...`` plan boundary.
+            # Give both hosts the exact id and relation separately so the
+            # plan can copy ``contract:...`` without rediscovery or retry.
+            "contracts": [
+                {"relation": row.get("relation"), "id": row.get("id")}
+                for row in (req_rec.get("contracts") or [])
+                if isinstance(row, dict) and row.get("id")
+            ],
+            "depends": list(req_rec.get("depends_on") or []),
+            "context_files": list(req_rec.get("context_files") or []),
             "context": reqs.render_context([req_rec])},
         "instruction": _instruction(step, state),
     }
@@ -1082,9 +1095,14 @@ def next_action(ws: str, rid: str | None = None) -> dict:
 def _instruction(step: str, state: dict) -> str:
     t = _current_task(state)
     return {
-        "pm": "Run tp-product: author specs/spec.md with "
-              "testable acceptance criteria + a contract handoff. Return to "
-              "the orchestrator; it validates with `loop gate pass`.",
+        "pm": "Run tp-product: author specs/spec.md, then call `req new` "
+              "exactly once with complete functional, acceptance, "
+              "context-file, contract, and NFR fields. Code-bearing scope "
+              "must include exact `security` and `architecture` NFR ids. Do "
+              "not call status, context, graph, graph impact, req score, req "
+              "list/help, loop submit, new, or clear: the PM gate "
+              "mechanically scores DoR and links context files to the "
+              "planned graph. Return the R-id to the orchestrator.",
         "design": "Run tp-designer (read-only toward product code): inspect "
                   "the requirement, current state, decisions, and baseline "
                   "graph; author design/design.md and design/contract.json "
@@ -1095,9 +1113,13 @@ def _instruction(step: str, state: dict) -> str:
                   "when it materially clarifies the choice. Never mutate the "
                   "as-built graph. Return to the orchestrator; it validates "
                   "with `loop gate pass` and then pauses for human approval.",
-        "plan": "Run the tp-planner role: write plan/tasks.json (machine) "
+        "plan": "Run the tp-planner role: derive impact once with `tp graph "
+                "impact --files \"comma,separated,paths\" --json`; write "
+                "plan/tasks.json (machine) "
                 "and plan/plan.md (human) — tasks with scope, tests, "
-                "criteria, dependencies, contracts, design_edges, and impact policy. When "
+                "criteria, dependencies, contracts, design_edges, and impact "
+                "policy. Copy only `requirement.contracts[].id` into task "
+                "contracts; the relation is metadata, not part of the id. When "
                 "`design.approved` is true, cover its modules, edges, contracts, "
                 "depth policy, and acceptance mapping without drift. Return "
                 "to the orchestrator; it validates with `loop gate pass`.",
@@ -2034,6 +2056,29 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                                        "requirement_id is attached — the pm "
                                        "step authors the WHAT before the "
                                        "loop advances"]}}
+        if has_req:
+            rec = reqs.get_requirement(ws, state["requirement_id"])
+            product_dor = reqs.product_dor(rec)
+            refinement = product_dor["refinement"]
+            if not product_dor["passed"]:
+                errors = ([f"requirement {state['requirement_id']} is missing"]
+                          if not rec else product_dor["errors"])
+                tp.trace(ws, "loop_gate_blocked", step=step,
+                         reason="requirement_dor", errors=errors)
+                return {"error": "pm Definition of Ready failed — refine the "
+                                 "same requirement before planning",
+                        "step": "pm",
+                        "dor": {"passed": False, "errors": errors,
+                                "refinement": refinement}}
+            # Dependencies and named contracts are recorded by req new. The
+            # context-file ownership edge is equally mechanical and belongs
+            # at this gate, not in a second model-authored graph command.
+            context_files = list(rec.get("context_files") or [])
+            if context_files:
+                depgraph.link_requirement(
+                    ws, rec["id"], context_files,
+                    kind="planned", replace=True)
+            state["requirement_refinement"] = refinement
 
     # Validate the proposed HOW while its read-only contract is active. The
     # designer cannot self-certify or mutate the as-built graph; a complete
@@ -2174,6 +2219,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 _validated["design_graph_fingerprint"]
         state.pop("_submission", None)
         if step == "pm":
+            if "requirement_refinement" in _validated:
+                state["requirement_refinement"] = \
+                    _validated["requirement_refinement"]
             state["step"] = ("design" if state.get("design_required") else "plan")
         elif step == "design":
             state["step"] = "design_approval"

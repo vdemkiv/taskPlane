@@ -233,10 +233,14 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
             brief_row = store.read(slot["brief"])
             is_blocking = blocking_lens in lease["lens_ids"]
             findings = ([{
-                "lens": blocking_lens, "severity": "high",
+                "lens": blocking_lens, "kind": "defect", "severity": "high",
                 "class": "regression", "file": "src/app/feature.py",
                 "line": 1, "title": "broken behavior",
                 "scenario": "production", "fix": "repair it",
+                "claim": {
+                    "trigger": "run the changed feature on its production input",
+                    "outcome": "the feature returns the wrong production result",
+                    "repro": "invoke the feature and compare its required output"},
             }] if is_blocking else [])
             rows = [{"lens": lid,
                      "verdict": "fail" if lid == blocking_lens else "pass",

@@ -280,11 +280,21 @@ class TestLegacyByteIdentity(unittest.TestCase):
     `test_the_lens_selection_itself_is_untouched` below pins that separately
     so a future edit cannot hide a selection change inside a context diff."""
 
+    @staticmethod
+    def _routing_only(value):
+        """Language references are an intentional additive handoff field."""
+        value = copy.deepcopy(value)
+        value.get("context", {}).pop("language_references", None)
+        for row in value.get("lenses") or []:
+            row.pop("language_references", None)
+        return value
+
     def test_the_lens_selection_itself_is_untouched(self):
         """The half of the snapshot that must never move for a disclosure
         change: same lenses, same modes, same tiers, same reasons."""
         r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT)
-        self.assertEqual(r["lenses"], LEGACY_SNAPSHOT["lenses"])
+        self.assertEqual(self._routing_only(r)["lenses"],
+                         LEGACY_SNAPSHOT["lenses"])
         self.assertEqual(
             [(e["id"], e["mode"], e["tier"]) for e in r["lenses"]],
             [(e["id"], e["mode"], e["tier"])
@@ -292,19 +302,19 @@ class TestLegacyByteIdentity(unittest.TestCase):
 
     def test_route_without_stage_is_byte_identical_to_snapshot(self):
         r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT)
-        self.assertEqual(r, LEGACY_SNAPSHOT)
+        self.assertEqual(self._routing_only(r), LEGACY_SNAPSHOT)
 
     def test_no_stage_profiles_key_means_legacy_even_with_stage(self):
         cat = copy.deepcopy(CAT)
         cat.pop("stage_profiles", None)
         r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=cat,
                        stage="review")
-        self.assertEqual(r, LEGACY_SNAPSHOT)
+        self.assertEqual(self._routing_only(r), LEGACY_SNAPSHOT)
 
     def test_use_signals_false_forces_legacy(self):
         r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT,
                        stage="review", use_signals=False)
-        self.assertEqual(r, LEGACY_SNAPSHOT)
+        self.assertEqual(self._routing_only(r), LEGACY_SNAPSHOT)
 
     def test_catalog_carries_stage_profiles_data(self):
         # contract:stage-profiles — the key exists, every profile id is a

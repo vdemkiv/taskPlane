@@ -1,0 +1,16 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "tp-product",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "idea", "label": "idea / change request", "kind": "input"},
+    {"id": "context", "label": "product context + decisions", "kind": "stage"},
+    {"id": "requirement", "label": "complete R-record", "kind": "stage"},
+    {"id": "contracts", "label": "contracts + dependencies", "kind": "stage"},
+    {"id": "dor", "label": "Product DoR definition", "kind": "parallel"},
+    {"id": "review", "label": "product review", "kind": "stage"},
+    {"id": "approval", "label": "human approve / sign-off", "kind": "gate"},
+    {"id": "build", "label": "trigger governed Build", "kind": "stage"}
+  ],
+  "edges": [["idea", "context"], ["context", "requirement"], ["requirement", "contracts"], ["contracts", "dor"], ["dor", "review"], ["review", "approval"], ["approval", "build"]]
+}

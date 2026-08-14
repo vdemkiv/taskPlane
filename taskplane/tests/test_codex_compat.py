@@ -238,6 +238,9 @@ class TestCodexHookProtocol(unittest.TestCase):
                            "lens_results": [
                                {"lens": lid, "verdict": "pass", "blockers": 0}
                                for lid in lease["lens_ids"]]}
+                    if brief.get("language_references"):
+                        row["references_applied"] = list(
+                            brief["language_references"])
                     content = json.dumps(
                         row, sort_keys=True, separators=(",", ":"))
                     contract = tp.build_contract(

@@ -27,21 +27,21 @@
           "path": "lenses/references/python-code-quality.md"
         },
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "qa",
           "path": "lenses/references/python-engineering.md",
           "section": "QA"
         },
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "security",
           "path": "lenses/references/python-engineering.md",
           "section": "Security"
         },
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "testability",
           "path": "lenses/references/python-engineering.md",
@@ -59,7 +59,7 @@
           "id": "security",
           "language_references": [
             {
-              "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
               "language": "python",
               "lens": "security",
               "path": "lenses/references/python-engineering.md",
@@ -105,7 +105,7 @@
           "id": "testability",
           "language_references": [
             {
-              "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
               "language": "python",
               "lens": "testability",
               "path": "lenses/references/python-engineering.md",
@@ -136,7 +136,7 @@
           "id": "qa",
           "language_references": [
             {
-              "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
               "language": "python",
               "lens": "qa",
               "path": "lenses/references/python-engineering.md",
@@ -195,21 +195,21 @@
           "path": "lenses/references/python-code-quality.md"
         },
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "qa",
           "path": "lenses/references/python-engineering.md",
           "section": "QA"
         },
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "security",
           "path": "lenses/references/python-engineering.md",
           "section": "Security"
         },
         {
-          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
           "language": "python",
           "lens": "testability",
           "path": "lenses/references/python-engineering.md",
@@ -227,7 +227,7 @@
           "id": "security",
           "language_references": [
             {
-              "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
               "language": "python",
               "lens": "security",
               "path": "lenses/references/python-engineering.md",
@@ -273,7 +273,7 @@
           "id": "testability",
           "language_references": [
             {
-              "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
               "language": "python",
               "lens": "testability",
               "path": "lenses/references/python-engineering.md",
@@ -304,7 +304,7 @@
           "id": "qa",
           "language_references": [
             {
-              "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
               "language": "python",
               "lens": "qa",
               "path": "lenses/references/python-engineering.md",

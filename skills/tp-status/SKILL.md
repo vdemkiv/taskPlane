@@ -8,6 +8,11 @@ description: "Use when the user asks where things stand with taskplane-governed 
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Gather compactly
 (skip empty sections):
 
+`flow.json` is the approved read-only graph: one status request fans out to
+loop/task state, requirements/debt, and dependency graph reads; those converge
+into one mission-control dashboard and one truthful action/no-action banner.
+This flow introduces no new gate and mutates no state.
+
 - `$TP summary` — the user-facing headline, human decision, progress, graph,
   and enforcement assurance. Use this as the primary read model.
 - `$TP context` — the one-screen summary (track, loop, reqs, debt, graph, KB)

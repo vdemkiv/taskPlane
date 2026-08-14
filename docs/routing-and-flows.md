@@ -269,6 +269,22 @@ The canonical Evaluate routing input records `stage="build"`; final
 engineering review records the review stage. This distinction changes the
 stage profile, never the shared diff, graph impact, or evidence identity.
 
+## Review convergence and adjudication memory
+
+Canonical collection admits two finite kinds of finding: a `defect` with a
+structural trigger/outcome/repro claim, or a `violation` naming a repository
+declaration the engine can resolve (requirement, decision, config key, budget,
+or language-reference section). Other commentary is recorded as a durable
+`note`; it stays measurable but does not enter the findings headline or gate.
+
+The yield ledger's line-independent finding identity is fed back into the next
+review as one bounded, file-scoped artifact reference. Human dispositions
+`resolved`, `accepted`, `closed`, `deferred`, and `not-a-defect` are settled.
+A lens may re-file one only when `recurrence` names materially new evidence,
+such as a reverted fix or a changed repro. A frozen two-pass scenario pins the
+result: after first-pass findings are settled, an unchanged second pass adds
+zero admissible findings.
+
 ## Go, Python, and TypeScript references are workflow inputs
 
 Language guidance is attached after lens applicability is decided, so it

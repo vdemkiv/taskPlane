@@ -11,6 +11,12 @@ learn. The loop's `em` step is this persona. Its counterpart,
 `/tp-product`, owns the requirement — deliberately separate seats so the
 grader never graded their own definition.
 
+`flow.json` is the approved Review graph: **pin target → derive one diff and
+graph impact → graph-quality gate → 26 dispositions → deep slots plus one
+light sweep → canonical collect → workflow/graph/findings dashboard → human
+approve or request changes**. Collection is not completion; the final human
+decision is mandatory for loop and standalone reviews.
+
 All review runs read-only toward code under an enforced contract:
 `$TP new --read-only --write-allow ".em-review/**" --owes review
 "engineering review: <target>"`.
@@ -100,10 +106,16 @@ general subagent with the brief plus `agents/tp-lens.md` as its role
 instructions. The contract and output path remain identical.
 
 **SHOW PROGRESS WITHOUT RE-DERIVING.** Render or deliver the wave-board
-artifact referenced by `review start`, dispatch the returned briefs, then run
-`$TP review collect` once. Collect validates each leased result, commits one
-canonical findings revision, and returns the final report/dashboard references.
-Deliver those references. Do not call route/dispatch again to refresh status.
+artifact at `review start.visuals.workflow_and_wave` and the exact blast-radius
+artifact at `review start.visuals.dependency_graph`; both are already rendered
+in taskPlane's canonical visual language from the sealed ReviewKernel state.
+Dispatch the returned briefs, then run `$TP review collect` once. Collect
+validates each leased result, commits one canonical findings revision, and
+returns `visuals.final_dashboard`, whose structure is workflow/gates first,
+dependency graph second, then the complete findings and approval/rejection
+surface. Deliver those files by reference. Do not call `lens dispatch
+--dashboard`, `graph html`, `findings --paged`, route/dispatch again, or author a
+replacement visualization during the normal ReviewKernel path.
 If collection reports that producer provenance is unavailable, stop with that
 named host/provenance blocker. Do not inspect taskplane's implementation,
 reconstruct a receipt, hand-merge results, or dispatch replacement lenses.
@@ -140,7 +152,17 @@ artifact revision. Do not hand-merge or reconstruct them. The final projection
 includes every severity, not only blockers; each finding carries
 `{severity, domain, file, line, title, scenario, fix, status, class}`.
 
-**Classify every finding (v2.3.1) — this is what stops a review from reading
+**Meet the admissibility bar before filing.** Every row is exactly one of:
+`defect` with a concrete `claim.trigger`, `claim.outcome`, and `claim.repro`;
+`violation` naming a resolvable `declares` identity from this repository's
+requirements, decisions, config, budgets, or language references; or `note`.
+Notes remain durable and measurable but stay out of the findings headline and
+never gate. The brief carries settled fingerprints by bounded artifact
+reference. Do not re-file one unless `recurrence` names materially new evidence
+(a changed repro, reverted fix, or changed premise). A complete structural
+defect claim is always admitted even if the producer labelled it a note.
+
+**Classify every admitted finding (v2.3.1) — this is what stops a review from reading
 as "100 blockers."** `class` is one of `regression | pre-existing |
 observation`, orthogonal to severity: a **regression** is a behavior
 verifiably worse than a named baseline (cite the baseline and the
@@ -176,7 +198,9 @@ blast-radius panel renders). Both also fold into the never-skippable
 headline. Then render it.
 
 **Render contract — the findings ARE the deliverable, never a prose summary
-(v1.5.3).** For anything past a handful of findings, use
+(v1.5.3).** The normal ReviewKernel path delivers the final taskPlane-styled
+dashboard referenced by `review collect`; do not read that HTML back into model
+context or re-render it. The lower-level diagnostic/legacy path may use
 `$TP findings --paged`: it prints a `HEADLINE:` line and a JSON
 `{headline, pages:[{title, html}], render}` where every page is a
 self-contained fragment under 14 KB (summary → high → medium → low, split
@@ -222,3 +246,9 @@ record the review's synthesis as a knowledge-base decision
 headline numbers>" …`), and record every blocker/high finding the human
 intends to fix in a *later session* as tracked debt (`$TP req debt …`) —
 that is what makes "review here, fix next session" actually work.
+For a loop review, present the final dashboard and wait at `signoff`; only the
+human's explicit yes permits `loop approve`. For a standalone review, present
+the same approve/request-changes decision and wait; persist it with `$TP review
+signoff approve|changes --by "<human words>" [--run-id ID]` and the synthesis
+decision record. The command refuses an uncollected review; report generation
+is never implicit approval.

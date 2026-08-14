@@ -1,0 +1,13 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "tp-northstar",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "target", "label": "idea / plan / diff", "kind": "input"},
+    {"id": "north_star", "label": "project north star", "kind": "stage"},
+    {"id": "checks", "label": "leverage · reversibility · opportunity · coherence", "kind": "parallel"},
+    {"id": "tension", "label": "sharpest tension", "kind": "stage"},
+    {"id": "note", "label": "proceed / eyes-open / reconsider", "kind": "stage"}
+  ],
+  "edges": [["target", "north_star"], ["north_star", "checks"], ["checks", "tension"], ["tension", "note"]]
+}

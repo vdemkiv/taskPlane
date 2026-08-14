@@ -1,4 +1,4 @@
-"""Defect-claim bar — what may be filed as a FINDING at all (R-0013).
+"""Finding admissibility — what may enter the findings surface (R-0013).
 
 WHY THIS EXISTS. The v3 phase 3 review produced twenty-one findings. On
 human read-back, roughly seven were not defects: a critique of a calibration
@@ -33,21 +33,22 @@ explicit claim block:
 Writing that block is the reviewer's judgment, made explicit. The engine
 only checks it is there and non-empty — which it can do honestly.
 
-WHAT HAPPENS TO COMMENTARY. Nothing is deleted. A finding with no claim
-block is UNCLAIMED: it still renders, still gets tracked, and can still be
-acted on — it simply cannot block a gate, and a reviewer who wants it to
-block must say what breaks. A reviewer may also mark a row `kind: note`
-outright, which drops its severity so it stops reading as a bug.
+WHAT HAPPENS TO COMMENTARY. Nothing is deleted. A row that is neither a
+structural defect claim nor a violation of a repository declaration is routed
+to the note stream. It remains durable and measurable, but it does not render
+as a finding and cannot gate the change.
 
-THE DIRECTION THIS FAILS. It can only make blocking HARDER to claim, never
-easier: `blocking_errors` ADDS a refusal for a blocker with no claim and
-removes none. Nothing that blocks today stops blocking; the frozen
-`finding_blocks` rule is untouched and still decides which findings block.
+THE DIRECTION THIS FAILS. A complete claim block always wins, even when a
+producer labelled the row as a note. The engine never scores prose. It checks
+only structural fields and resolvable declaration identities. The frozen
+`finding_blocks` rule remains untouched and decides which *admissible*
+findings block.
 """
 
 from __future__ import annotations
 
 import re
+import os
 
 REQUIRED = ("trigger", "outcome", "repro")
 
@@ -97,7 +98,112 @@ def is_defect_claim(finding) -> bool:
 # unresolved-high sweep). A settled row owes nothing: demanding a claim for
 # a finding somebody already resolved would be the engine arguing with a
 # closed ticket.
-SETTLED_STATUSES = ("resolved", "accepted", "closed", "deferred")
+SETTLED_STATUSES = (
+    "acted", "dismissed", "resolved", "accepted", "closed", "deferred",
+    "not-a-defect",
+)
+
+NOTE_CATEGORIES = frozenset({
+    "recorded-decision", "hypothetical-scale", "review-meta",
+    "tool-enforced", "pre-existing-documented", "unrequired-absence",
+})
+
+
+def _safe_repo_file(workspace: str, raw_path: str) -> str | None:
+    """Resolve a repo-relative declaration path without accepting traversal."""
+    rel = str(raw_path or "").strip().replace("\\", "/").lstrip("/")
+    if not rel:
+        return None
+    root = os.path.realpath(workspace)
+    candidate = os.path.realpath(os.path.join(root, rel))
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            return None
+    except (OSError, ValueError):
+        return None
+    return candidate if os.path.isfile(candidate) else None
+
+
+def declaration_resolves(workspace: str, identity) -> bool:
+    """Resolve the finite declaration identities a violation may cite.
+
+    Accepted forms are deliberately mechanical, never prose:
+    ``R-0001``; ``decision:0001``; ``config:path#key``;
+    ``budget:path#name``; and ``reference:path#Heading``.  Config/budget keys
+    must occur in the named repository file.  Reference headings must match an
+    actual Markdown heading in ``lenses/references``.
+    """
+    value = str(identity or "").strip()
+    if not value:
+        return False
+    if re.fullmatch(r"R-\d{4,}", value):
+        try:
+            import requirements
+            return requirements.get_requirement(workspace, value) is not None
+        except Exception:
+            return False
+    if value.startswith("decision:"):
+        decision_id = value.split(":", 1)[1].strip()
+        if not decision_id:
+            return False
+        try:
+            import kb
+            return kb.get_decision(workspace, decision_id) is not None
+        except Exception:
+            return False
+    match = re.fullmatch(r"(config|budget|reference):([^#]+)#(.+)", value)
+    if not match:
+        return False
+    kind, rel, anchor = match.groups()
+    path = _safe_repo_file(workspace, rel)
+    if not path:
+        return False
+    if kind == "reference" and not rel.replace("\\", "/").startswith(
+            "lenses/references/"):
+        return False
+    try:
+        with open(path, encoding="utf-8") as stream:
+            text = stream.read()
+    except OSError:
+        return False
+    if kind == "reference":
+        wanted = re.sub(r"\s+", " ", anchor.strip()).casefold()
+        return any(re.sub(r"\s+", " ", line.lstrip("#").strip()).casefold()
+                   == wanted for line in text.splitlines()
+                   if line.startswith("#"))
+    # Config and budget declarations are identifiers, not arbitrary prose.
+    token = anchor.strip().split(".")[-1]
+    return bool(token and re.search(r"(?<![A-Za-z0-9_-])" +
+                                    re.escape(token) +
+                                    r"(?![A-Za-z0-9_-])", text))
+
+
+def admissibility(finding, *, workspace: str | None = None,
+                  resolver=None) -> dict:
+    """Classify one producer row as defect, violation, or note.
+
+    Complete defect claims have priority over every producer label.  A
+    violation is admissible only when its ``declares`` identity resolves.
+    Everything else is a note; no row is silently discarded.
+    """
+    if not isinstance(finding, dict):
+        return {"kind": "note", "admissible": False,
+                "reason": "finding is not an object"}
+    if is_defect_claim(finding):
+        return {"kind": "defect", "admissible": True, "reason": "claim"}
+    kind = str(finding.get("kind") or "").strip().lower()
+    if kind == "violation":
+        check = resolver
+        if check is None and workspace is not None:
+            check = lambda identity: declaration_resolves(workspace, identity)
+        if check is not None and check(finding.get("declares")):
+            return {"kind": "violation", "admissible": True,
+                    "reason": "declared-standard"}
+        return {"kind": "note", "admissible": False,
+                "reason": "unresolved-declaration"}
+    category = str(finding.get("note_category") or "").strip().lower()
+    reason = category if category in NOTE_CATEGORIES else "no-admissible-claim"
+    return {"kind": "note", "admissible": False, "reason": reason}
 
 
 def _settled(finding) -> bool:

@@ -2556,6 +2556,112 @@ def render_workflow_flow(state, step, tasks):
         'Only the human closes approval, selection, and sign-off gates.</p></div>')
 
 
+def render_review_workflow(*, status: str, slots=None,
+                           graph_complete: bool = True) -> str:
+    """Standalone ReviewKernel workflow in the canonical taskPlane style.
+
+    A pure engineering review has no delivery-loop PM/Plan/Build state, so the
+    generic loop spine cannot truthfully visualize it.  This is the smaller
+    review spine the human actually governs: pin -> graph/impact -> selective
+    map -> leased wave -> canonical collection -> explicit decision.  It uses
+    the same palette, typography, SVG grammar, and gate callout as
+    ``render_workflow_flow`` and is intentionally rendered before the
+    dependency SVG in the final review document.
+    """
+    slots = list(slots or [])
+    complete = status == "complete"
+    impact_blocked = status == "impact_incomplete" or not graph_complete
+    done = sum(1 for row in slots if row.get("status") == "done")
+    total = len(slots)
+    rows = [
+        ("target", "target pinned", True,
+         "immutable head · base · fingerprint"),
+        ("impact", "graph + blast radius", not impact_blocked,
+         "blocked — graph evidence incomplete" if impact_blocked else
+         "one bounded impact derivation"),
+        ("route", "selective lens mapping",
+         bool(total) or complete, "26 dispositions · deep/light/n-a"),
+        ("wave", "leased review wave", complete,
+         f"{done}/{total} slots reported · one shared context"),
+        ("collect", "canonical collection", complete,
+         "one revision · findings/report/dashboard identity"),
+        ("gate", "human approval or rejection", False,
+         "explicit decision required"),
+    ]
+    if impact_blocked:
+        current = "impact"
+    elif complete:
+        current = "gate"
+    else:
+        current = "wave" if total else "route"
+    width, box_x, box_w, box_h, gap = 880, 170, 490, 52, 72
+    height = 14 + len(rows) * gap
+    token = hashlib.sha256(
+        (status + "|" + "|".join(str(x.get("slot_id") or x.get("id") or "")
+                                  for x in slots)).encode()).hexdigest()[:10]
+    marker = f"tp-review-workflow-ar-{token}"
+    arrows, nodes = [], []
+    for idx, (sid, label, is_done, meta) in enumerate(rows):
+        y = 14 + idx * gap
+        if idx < len(rows) - 1:
+            arrows.append(
+                f'<line x1="{box_x + box_w / 2}" y1="{y + box_h}" '
+                f'x2="{box_x + box_w / 2}" y2="{y + gap}" '
+                'stroke="var(--line)" stroke-width="1.4" '
+                f'marker-end="url(#{marker})"/>')
+        active = sid == current
+        if active:
+            gate = sid == "gate"
+            fill = "var(--danger-bg)" if gate or impact_blocked else \
+                "var(--changed-bg)"
+            stroke = "var(--danger)" if gate or impact_blocked else \
+                "var(--accent)"
+            sw = "1.6"
+        elif is_done:
+            fill, stroke, sw = "var(--surface-1)", "var(--line)", "1"
+        else:
+            fill, stroke, sw = "none", "var(--line)", "1"
+        nodes.append(
+            f'<rect x="{box_x}" y="{y}" width="{box_w}" height="{box_h}" '
+            f'rx="7" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"/>'
+            f'<text x="{box_x + 14}" y="{y + 22}" '
+            'font-family="var(--font-sans)" font-size="13" font-weight="600" '
+            f'fill="var(--text-primary)">{_esc(label)}</text>'
+            f'<text x="{box_x + 14}" y="{y + 40}" '
+            'font-family="var(--font-mono)" font-size="10.5" '
+            f'fill="var(--text-secondary)">{_esc(meta)}</text>')
+        if sid == "gate" and active:
+            nodes.append(
+                f'<path d="M{box_x + box_w},{y + box_h / 2} '
+                f'L690,{y + box_h / 2}" fill="none" stroke="var(--danger)" '
+                'stroke-width="1.4"/>'
+                f'<rect x="690" y="{max(4, y - 6)}" width="174" height="64" '
+                'rx="7" fill="var(--danger-bg)" stroke="var(--danger)"/>'
+                f'<text x="702" y="{max(4, y - 6) + 23}" '
+                'font-family="var(--font-sans)" font-size="11.5" '
+                'font-weight="600" fill="var(--text-primary)">your decision</text>'
+                f'<text x="702" y="{max(4, y - 6) + 43}" '
+                'font-family="var(--font-mono)" font-size="9.5" '
+                'fill="var(--text-secondary)">approve · request changes</text>')
+    return (
+        '<div class="tp-sec" id="tp-review-workflow">'
+        '<p class="tp-kicker">workflow execution — governed engineering review</p>'
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-labelledby="tp-review-workflow-title-{token} '
+        f'tp-review-workflow-desc-{token}" style="margin-top:10px">'
+        f'<title id="tp-review-workflow-title-{token}">Engineering review '
+        'workflow and current gate.</title>'
+        f'<desc id="tp-review-workflow-desc-{token}">Current review state: '
+        f'{_esc(status)}. The final approval or rejection belongs to the human.</desc>'
+        f'<defs><marker id="{marker}" viewBox="0 0 10 10" refX="9" refY="5" '
+        'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        '<path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/></marker></defs>'
+        + "".join(arrows) + "".join(nodes) + '</svg>'
+        '<p class="tp-lede">The diff and graph are derived once, scoped views '
+        'fan out only to mapped lenses, and collection seals one canonical '
+        'revision before the human gate.</p></div>')
+
+
 def _graph_panel(ws, tasks):
     """Graph tab: module/edge summary, most-connected hubs, and the blast
     radius of the current tasks' scope — all from the committed graph."""

@@ -66,6 +66,51 @@ class TestRequirementRecords(unittest.TestCase):
         self.assertEqual(chg["status"], "changed")
         self.assertEqual(chg["links"]["changed_from"], base["id"])
 
+    def test_product_signoff_is_human_and_dor_gated(self):
+        thin = req.record_requirement(
+            self.ws, "thin", functional=["works"], acceptance=["verified"],
+            nfr={"security": "no new trust boundary"})
+        with self.assertRaises(req.ProductSignoffError):
+            req.product_signoff(
+                self.ws, thin["id"], decision="approve", by="approved")
+
+        ready = req.record_requirement(
+            self.ws, "ready", functional=["works"], acceptance=["verified"],
+            nfr={"security": "no new trust boundary",
+                 "architecture": "local and reversible"})
+        result = req.product_signoff(
+            self.ws, ready["id"], decision="approve", by="approved by user")
+        self.assertTrue(result["dor"]["passed"])
+        self.assertEqual(req.get_requirement(
+            self.ws, ready["id"])["status"], "product-approved")
+        self.assertTrue(req.product_signoff(
+            self.ws, ready["id"], decision="approve",
+            by="approved by user")["idempotent"])
+
+    def test_product_changes_return_to_same_requirement(self):
+        row = req.record_requirement(self.ws, "revise me")
+        result = req.product_signoff(
+            self.ws, row["id"], decision="changes", by="needs clearer AC")
+        self.assertEqual(result["requirement"], row["id"])
+        self.assertEqual(req.get_requirement(
+            self.ws, row["id"])["status"], "changes-requested")
+        amended = req.amend_requirement(
+            self.ws, row["id"], functional=["clear behavior"],
+            acceptance=["observable outcome"], clear_open=True,
+            nfr={"security": "no new trust boundary",
+                 "architecture": "local and reversible"})
+        self.assertEqual(amended["id"], row["id"])
+        self.assertEqual(amended["status"], "draft")
+        self.assertNotIn("product_signoff", amended)
+        approved = req.product_signoff(
+            self.ws, row["id"], decision="approve", by="approved revision")
+        self.assertEqual(approved["requirement"], row["id"])
+        with open(os.path.join(req.kb_dir(self.ws), amended["file"]),
+                  encoding="utf-8") as stream:
+            body = stream.read()
+        self.assertIn("- status: product-approved", body)
+        self.assertIn("observable outcome", body)
+
 
 class TestRefinementScorer(unittest.TestCase):
     def setUp(self):

@@ -9,6 +9,7 @@ native host is told to read that exact SKILL.md and execute that copy's CLI.
 from __future__ import annotations
 
 import argparse
+import ast
 import datetime
 import hashlib
 import json
@@ -263,29 +264,73 @@ def codex_session_trace(codex_home: str | None) -> list[dict]:
                                          row["task_name"]))
 
 
-def _codex_tool_command(payload: dict) -> str | None:
-    """Extract one exec command from a host-authored rollout tool call."""
+def _codex_tool_commands(payload: dict) -> list[str]:
+    """Extract every exec command from a host-authored rollout tool call.
+
+    Code mode can orchestrate several ``tools.exec_command`` calls inside one
+    host tool item.  Counting only the first makes a busy run look cheaper and
+    can hide a second diff/impact derivation in the same item.
+    """
     if payload.get("type") == "function_call" and payload.get("name") in {
             "exec_command", "functions.exec_command"}:
         raw = payload.get("arguments") or payload.get("input") or "{}"
         try:
             args = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, ValueError):
-            return None
-        return str((args or {}).get("cmd") or "") or None
+            return []
+        command = str((args or {}).get("cmd") or "")
+        return [command] if command else []
     if payload.get("type") != "custom_tool_call" or \
             payload.get("name") != "exec":
-        return None
+        return []
     source = str(payload.get("input") or "")
-    match = re.search(r"tools\.exec_command\((\{.*?\})\)\s*;", source,
-                      re.DOTALL)
-    if not match:
-        return None
-    try:
-        args = json.loads(match.group(1))
-    except (TypeError, ValueError):
-        return None
-    return str(args.get("cmd") or "") or None
+    markers = [match.start() for match in re.finditer(
+        r"tools\.exec_command\(", source)]
+    if not markers:
+        return []
+    # Current Codex code-mode emits a JavaScript object literal, not JSON:
+    # `tools.exec_command({cmd:"...",workdir:"..."})`.  The previous parser
+    # tried json.loads() on the whole object, so it silently missed every
+    # parent taskPlane command while older JSON-shaped test fixtures passed.
+    # Extract only the bounded string literal assigned to `cmd`; no command
+    # arguments are persisted, and derivation.verb/classify still reduce it
+    # to the existing safe vocabulary before anything reaches the record.
+    commands = []
+    for index, marker in enumerate(markers):
+        end = markers[index + 1] if index + 1 < len(markers) else len(source)
+        call = source[marker:min(end, marker + 64 * 1024)]
+        match = re.search(
+            r"[\"']?cmd[\"']?\s*:\s*(\"(?:\\\\.|[^\"\\\\])*\"|"
+            r"'(?:\\\\.|[^'\\\\])*')", call, re.DOTALL)
+        if match:
+            literal = match.group(1)
+            try:
+                value = (json.loads(literal) if literal.startswith('"')
+                         else ast.literal_eval(literal))
+            except (SyntaxError, TypeError, ValueError):
+                continue
+            if isinstance(value, str) and value:
+                commands.append(value)
+                continue
+        # Retain compatibility with the older fully-JSON call shape.
+        match = re.search(r"tools\.exec_command\((\{.*?\})\)\s*;?", call,
+                          re.DOTALL)
+        if not match:
+            continue
+        try:
+            args = json.loads(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        command = str(args.get("cmd") or "")
+        if command:
+            commands.append(command)
+    return commands
+
+
+def _codex_tool_command(payload: dict) -> str | None:
+    """Compatibility helper for callers that need only the first command."""
+    commands = _codex_tool_commands(payload)
+    return commands[0] if commands else None
 
 
 def codex_session_derivations(codex_home: str | None,
@@ -319,20 +364,21 @@ def codex_session_derivations(codex_home: str | None,
                     if event.get("type") != "response_item" or not isinstance(
                             payload, dict):
                         continue
-                    command = _codex_tool_command(payload)
-                    verb = derivation.verb(command) if command else ""
-                    if not verb:
-                        continue
-                    common = {"ts": _event_time(event.get("timestamp")) or 0.0,
-                              "host": "codex",
-                              "source": "codex_session_store",
-                              "host_observed": True}
-                    rows.append({**common, "event": "command", "verb": verb,
-                                 "decision": "observed"})
-                    for key in derivation.classify(command):
-                        rows.append({**common, "event": "derived", "key": key,
-                                     "input_key": derivation.input_key(
-                                         workspace, key)})
+                    for command in _codex_tool_commands(payload):
+                        verb = derivation.verb(command)
+                        if not verb:
+                            continue
+                        common = {
+                            "ts": _event_time(event.get("timestamp")) or 0.0,
+                            "host": "codex",
+                            "source": "codex_session_store",
+                            "host_observed": True}
+                        rows.append({**common, "event": "command", "verb": verb,
+                                     "decision": "observed"})
+                        for key in derivation.classify(command):
+                            rows.append({**common, "event": "derived", "key": key,
+                                         "input_key": derivation.input_key(
+                                             workspace, key)})
         except OSError:
             continue
     return sorted(rows, key=lambda row: (

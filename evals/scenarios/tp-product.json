@@ -4,17 +4,20 @@
   "title": "The WHAT seat: requirements authored and scored, decisions recorded, and no code touched by enforced contract",
   "source_files": [
     "skills/tp-product/SKILL.md",
+    "skills/tp-product/flow.json",
     "agents/tp-product.md"
   ],
-  "inputs_fingerprint": "0b21e04def511822f1849b62eb8f4ff04aeb4ad80fcac4b5294f1f41c44deca7",
+  "inputs_fingerprint": "510c3c7fa9cd992f81a567f400233ab1a1d3736c822deb25f02ced849a3a9ec1",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp req new",
+    "tp req amend",
     "tp req score",
+    "tp req signoff",
     "tp req debt",
     "tp decision new"
   ],
-  "terminal": "response",
+  "terminal": "human_gate",
   "steps": [
     {
       "id": "U1-CONTRACT",

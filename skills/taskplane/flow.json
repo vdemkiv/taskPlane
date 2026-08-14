@@ -1,0 +1,17 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "taskplane",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "goal", "label": "user goal", "kind": "input"},
+    {"id": "route", "label": "intent + state route", "kind": "control"},
+    {"id": "help", "label": "help / setup", "kind": "branch"},
+    {"id": "status", "label": "status snapshot", "kind": "branch"},
+    {"id": "product", "label": "define WHAT", "kind": "branch"},
+    {"id": "design", "label": "settle HOW", "kind": "branch"},
+    {"id": "build", "label": "build feature", "kind": "branch"},
+    {"id": "review", "label": "engineering review", "kind": "branch"},
+    {"id": "signoff", "label": "human approve / request changes", "kind": "gate"}
+  ],
+  "edges": [["goal", "route"], ["route", "help"], ["route", "status"], ["route", "product"], ["route", "design"], ["route", "build"], ["route", "review"], ["review", "signoff"]]
+}

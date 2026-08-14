@@ -796,6 +796,7 @@ class TestScenarioAwareRecorderBoundaries(unittest.TestCase):
             {"observed": 0, "unobserved": 1, "mismatches": [],
              "hook_active": False}, expected, trace)
         self.assertEqual(got["observed"], 1)
+        self.assertEqual(got["expected"], 1)
         self.assertEqual(got["unobserved"], 0)
         self.assertEqual(got["mismatches"], [])
         self.assertEqual(got["observation_source"], "codex_session_store")
@@ -863,7 +864,10 @@ class TestScenarioAwareRecorderBoundaries(unittest.TestCase):
                 envelope = f".em-review/kernel-v2/{marker}-envelope.json"
                 brief = f".em-review/kernel-v2/{marker}-brief.json"
                 _write(os.path.join(ws, envelope), "{}")
-                _write(os.path.join(ws, brief), "{}")
+                _write(os.path.join(ws, brief), json.dumps({"role": {
+                    "agent": "tp-lens",
+                    "task_name": "tp_lens_" + marker,
+                    "reasoning_effort": "medium"}}))
                 state = {
                     "run_id": run_id,
                     "target": {"head": marker.upper()},
@@ -886,6 +890,19 @@ class TestScenarioAwareRecorderBoundaries(unittest.TestCase):
             self.assertEqual([r["run_id"] for r in context
                               if r["kind"] == "review_envelope"], ["b" * 32])
             self.assertEqual([r["slot_id"] for r in briefs], ["deep.b"])
+            self.assertEqual(briefs[0]["task_name"], "tp_lens_b")
+            self.assertEqual(briefs[0]["reasoning_effort"], "medium")
+            got = eval_record.merge_native_dispatch_report(
+                {"observed": 0, "unobserved": 0, "mismatches": [],
+                 "hook_active": False}, briefs,
+                [{"event": "subagent_start",
+                  "source": "codex_session_store", "host_observed": True,
+                  "task_name": "tp_lens_b", "model": "gpt-test",
+                  "reasoning_effort": "medium"}])
+            self.assertEqual(got["expected"], 1)
+            self.assertEqual(got["observed"], 1)
+            self.assertEqual(got["unobserved"], 0)
+            self.assertEqual(got["mismatches"], [])
 
 
 # ============================================ the breadth is READ, not GUESSED

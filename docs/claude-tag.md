@@ -24,6 +24,19 @@ beta). taskplane adapts to that environment with three mechanisms:
   execute step, and a hard rule the skill never breaks — it does not
   approve gates on its own, under any phrasing of urgency.
 
+The approved flow contract is stored with the skill at
+`skills/tp-tag/flow.json`:
+
+`Slack thread goal → repo-persisted KB → governed loop → role dispatch +
+evidence → dashboard attached → human reply in thread → attributed approval
+→ commit KB + resume state`.
+
+The dashboard is the engine-authored `.taskplane/dashboard.html`; it shows the
+workflow/gate state and dependency graph/blast radius. Tag attaches those
+bytes by reference at a human gate and waits. A request for changes leaves the
+loop parked; only an explicit approving reply advances it, with the person's
+identity and exact words recorded through `--by`.
+
 To deploy: an Owner attaches the taskplane plugin to a scope (channel,
 workspace, or org) from the Access bundle's Plugins tab or a skills
 repository — see [Customize Claude

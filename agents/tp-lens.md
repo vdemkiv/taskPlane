@@ -71,10 +71,17 @@ checkout (`tp new` refuses bare roots).
    top-level **flat** `findings` array. Each `lens_results` row is exactly
    `{"lens":"<id>","verdict":"pass|fail","blockers":N}` where `N` is a
    non-negative integer count, never an array. Every finding names its lens:
-   `{"findings":[{"lens":"<id>","severity":"blocker|major|minor|question|praise",
+   `{"findings":[{"lens":"<id>","kind":"defect|violation|note",
+   "severity":"blocker|major|minor|question|praise",
    "class":"regression|pre-existing|observation",
    "file":"…","line":N,"title":"…","scenario":"a concrete failure — inputs →
-   wrong result","fix":"the direction, not a patch"}]}`. **Set `class` on
+   wrong result","fix":"the direction, not a patch"}]}`. A `defect` also
+   carries `claim:{trigger,outcome,repro}`; a `violation` carries a resolvable
+   `declares` identity from the requirement, decision, config, budget, or
+   language-reference set. Everything else is a `note`: it remains durable
+   but is not a finding and cannot gate. If the brief names a settled
+   fingerprint, do not re-file it unless `recurrence` names materially new
+   evidence. **Set `class` on
    every finding (v2.3.1):** `regression` only when you can name a baseline the
    behavior was better at (was-green/now-red) — cite it; `pre-existing` for a
    real defect that predates the change under review; `observation` for taste,

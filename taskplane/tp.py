@@ -2578,6 +2578,28 @@ def cmd_req(a) -> int:
                           "depends": deps or None,
                           "contracts": contracts or None,
                           "file": e["file"]}, indent=2))
+    elif a.req_action == "amend":
+        try:
+            nfr = (dict(kv.split("=", 1) for kv in (a.nfr or []))
+                   if a.nfr is not None else None)
+        except ValueError:
+            print("taskplane: --nfr expects LENS=STATEMENT", file=sys.stderr)
+            return 1
+        try:
+            e = req.amend_requirement(
+                ws, a.id,
+                functional=a.functional,
+                nfr=nfr,
+                acceptance=a.acceptance,
+                open_questions=a.open,
+                clear_open=bool(a.clear_open),
+                context_files=(a.files.split(",")
+                               if a.files is not None else None))
+        except req.ProductSignoffError as exc:
+            print(f"taskplane: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps({"amended": e["id"], "status": e["status"],
+                          "file": e["file"]}, indent=2))
     elif a.req_action == "score":
         r = req.get_requirement(ws, a.id)
         if r is None:
@@ -2588,6 +2610,15 @@ def cmd_req(a) -> int:
                      changed_files=files, task_type=a.task_type)
         print(json.dumps(g, indent=2))
         return 1 if g["blocking"] else 0
+    elif a.req_action == "signoff":
+        try:
+            result = req.product_signoff(
+                ws, a.id, decision=a.decision, by=a.by,
+                note=a.note or "")
+        except req.ProductSignoffError as exc:
+            print(f"taskplane: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2))
     elif a.req_action == "mode":
         m = req.suggest_mode(a.refinement, a.size)
         print(json.dumps(m, indent=2))
@@ -3188,6 +3219,157 @@ def cmd_dashboard(a) -> int:
     return 0
 
 
+def _write_review_html(ws: str, name: str, fragments, *, title: str) -> dict:
+    """Write one taskPlane-styled review artifact and return a compact ref."""
+    import dashboard
+    import hashlib
+
+    path = os.path.join(ws, ".em-review", name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    body = dashboard.standalone_document(list(fragments), title=title)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8", newline="") as stream:
+        stream.write(body)
+    os.replace(tmp, path)
+    raw = body.encode("utf-8")
+    return {
+        "path": os.path.relpath(path, ws).replace(os.sep, "/"),
+        "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+        "delivery": "deliver this engine-authored file by reference; do not "
+                    "paste, redraw, or restyle its HTML",
+    }
+
+
+def _bind_review_visual_obligation(ws: str, kind: str, artifact: str) -> dict:
+    """Bind a seeded Review obligation to the bytes now on disk."""
+    import obligations
+
+    seeded = next((row for row in reversed(obligations.read(ws))
+                   if row.get("event") == "issued"
+                   and row.get("kind") == kind
+                   and row.get("step") == "review"), None)
+    detail = ("deliver the taskPlane lens workflow/dashboard by reference"
+              if kind == "render_dashboard" else
+              "deliver the taskPlane dependency/blast-radius graph by reference")
+    oid = obligations.issue(
+        ws, kind, detail=detail, step="review", artifact=artifact,
+        key=f"review:{kind}", session=(seeded or {}).get("session"),
+        binding=True)
+    return {"kind": kind, "id": oid,
+            "path": os.path.relpath(artifact, ws).replace(os.sep, "/")}
+
+
+def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list]:
+    """Project the ReviewKernel into the canonical taskPlane visual system.
+
+    This is a driver/presentation seam, not a second review derivation.  It
+    reads the already sealed envelope/routing/revision and writes three files:
+    the live wave board, the exact dependency graph, and (after collection)
+    the complete human-gate dashboard.  The compact CLI manifest returns only
+    references, keeping HTML out of model context.
+    """
+    import dashboard
+    import review as rv
+    import review_evidence as evidence
+
+    state = rv._load_state(ws, manifest.get("run_id"))
+    store = evidence.ArtifactStore(ws)
+    envelope = {}
+    if state.get("envelope"):
+        envelope = store.read(state["envelope"])
+    impact = envelope.get("impact") or {}
+    quality = {}
+    if state.get("quality"):
+        quality = store.read(state["quality"])
+    findings = list((state.get("revision") or {}).get("findings") or [])
+    by_lens = {}
+    for finding in findings:
+        lid = str(finding.get("lens") or "")
+        by_lens[lid] = by_lens.get(lid, 0) + 1
+    lanes = []
+    for slot in state.get("slots") or []:
+        lids = list(slot.get("lens_ids") or [])
+        lanes.append({
+            "id": str(slot.get("slot_id") or ",".join(lids)),
+            "name": ", ".join(lids),
+            "status": "done" if final else "running",
+            "findings": (sum(by_lens.get(lid, 0) for lid in lids)
+                         if final else None),
+            "slot_id": slot.get("slot_id"),
+        })
+    status = str(manifest.get("status") or state.get("status") or "ready")
+    workflow = dashboard.render_review_workflow(
+        status=status, slots=lanes,
+        graph_complete=quality.get("status") == "complete")
+    wave = dashboard.render_lens_wave(lanes, {
+        "title": ("review — canonical collection complete" if final else
+                  "review — selective lenses running"),
+        "subtitle": (f"{len(lanes)} leased slot(s) · one immutable context · "
+                     "no per-lens diff or graph re-derivation"),
+    })
+    graph = dashboard.render_review_graph(ws, impact)
+    visuals = {
+        "workflow_and_wave": _write_review_html(
+            ws, "wave-board.html", [workflow, wave],
+            title="taskplane — governed review workflow"),
+        "dependency_graph": _write_review_html(
+            ws, "graph.html", [graph],
+            title="taskplane — dependency graph and blast radius"),
+    }
+    if final:
+        findings_path = os.path.join(ws, ".em-review", "findings.json")
+        try:
+            with open(findings_path, encoding="utf-8") as stream:
+                projection = json.load(stream)
+        except (OSError, ValueError):
+            projection = {"findings": findings, "meta": {}}
+        final_findings = list(projection.get("findings") or [])
+        meta = dict(projection.get("meta") or {})
+        decision = {}
+        if state.get("routing_decision"):
+            decision = store.read(state["routing_decision"]).get(
+                "dispositions") or {}
+        runnability = envelope.get("runnability") or {}
+        meta.update({
+            "ws": ws, "impact": impact, "routing_decision": decision,
+            "title": "Engineering review",
+            "subtitle": "one canonical diff · graph-qualified selective lenses",
+            "tests": runnability.get("summary"),
+            "clean": [f"{row.get('lens')}: pass" for row in
+                      (state.get("lens_results") or [])
+                      if row.get("verdict") == "pass"],
+            "gate": True,
+            "gate_title": "review complete — approve or request changes",
+            "gate_buttons": [
+                {"label": "Approve", "prompt": "Approve this review",
+                 "primary": True},
+                {"label": "Request changes",
+                 "prompt": "Request changes from this review"},
+            ],
+            "note": "Approval remains a human decision; taskPlane does not "
+                    "self-approve this gate.",
+        })
+        findings_fragment = dashboard.render_findings(final_findings, meta)
+        visuals["final_dashboard"] = _write_review_html(
+            ws, "dashboard.html", [workflow, wave, findings_fragment],
+            title="taskplane — engineering review")
+    dashboard_ref = (visuals["final_dashboard"] if final else
+                     visuals["workflow_and_wave"])
+    obligations = [
+        _bind_review_visual_obligation(
+            ws, "render_dashboard",
+            os.path.join(ws, dashboard_ref["path"])),
+        _bind_review_visual_obligation(
+            ws, "render_graph",
+            os.path.join(ws, visuals["dependency_graph"]["path"])),
+    ]
+    if final:
+        for row in obligations:
+            row["ack"] = (f"tp ack {row['id']} --delivered {row['path']}"
+                          if row.get("id") else None)
+    return visuals, obligations
+
+
 def cmd_review(a) -> int:
     """Open a review in ONE call.
 
@@ -3212,9 +3394,25 @@ def cmd_review(a) -> int:
             result = rv.collect_review(
                 ws, publish=not bool(getattr(a, "no_publish", False)),
                 run_id=getattr(a, "run_id", None))
+            visuals, owed = _review_visuals(ws, result, final=True)
+            result = rv._manifest({**result, "visuals": visuals,
+                                   "obligations": owed})
         except Exception as exc:
             print(json.dumps({"schema": "taskplane.review-collect-manifest/v2",
                               "status": "collect_failed",
+                              "reason": f"{exc.__class__.__name__}: {exc}"},
+                             sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+    if getattr(a, "review_action", None) == "signoff":
+        try:
+            result = rv.signoff_review(
+                ws, decision=a.decision, by=a.by, note=a.note or "",
+                run_id=getattr(a, "run_id", None))
+        except Exception as exc:
+            print(json.dumps({"schema": "taskplane.review-signoff/v1",
+                              "status": "signoff_failed",
                               "reason": f"{exc.__class__.__name__}: {exc}"},
                              sort_keys=True, separators=(",", ":")))
             return 1
@@ -3350,6 +3548,9 @@ def cmd_review(a) -> int:
                                 "read_only": True}
         manifest["tools"] = {"git": bool(t["git"]["present"]),
                              "gh": bool(t["gh"]["present"])}
+        visuals, owed = _review_visuals(ws, manifest, final=False)
+        manifest["visuals"] = visuals
+        manifest["obligations"] = owed
         manifest = rv._manifest(manifest)
         kernel_state = rv._load_state(ws, manifest.get("run_id"))
         rv._save_state(ws, dict(kernel_state, manifest=manifest,
@@ -3735,11 +3936,25 @@ def cmd_graph(a) -> int:
         if getattr(a, "out", None):
             try:
                 import obligations
+                # A standalone Review seeds its graph obligation before the
+                # artifact exists.  Re-issue that SAME logical obligation
+                # now that graph.html has bytes instead of creating a second
+                # graph debt for the same file.  The append-only ledger keeps
+                # the demand timestamp while its deterministic id lets the
+                # artifact-bound row replace the placeholder during status
+                # reconciliation.  Outside Review, graph html retains its
+                # ordinary graph-scoped obligation.
+                seeded = next((row for row in reversed(obligations.read(ws))
+                               if row.get("event") == "issued"
+                               and row.get("kind") == "render_graph"
+                               and row.get("step") == "review"), None)
                 oid = obligations.issue(
                     ws, "render_graph",
                     detail="show the product's own dependency/system-design "
                            "view — not a re-drawn substitute",
-                    step="graph", artifact=a.out)
+                    step="review" if seeded else "graph", artifact=a.out,
+                    key="review:render_graph" if seeded else None,
+                    session=seeded.get("session") if seeded else None)
                 if oid:
                     print(f"OBLIGATION {oid}: show this view, then "
                           f"`tp ack {oid}`", file=sys.stderr)
@@ -4476,7 +4691,9 @@ def main(argv=None) -> int:
     ym = ylsub.add_parser("mark", help="record a human verdict on one "
                           "finding: acted or dismissed")
     ym.add_argument("finding", help="the finding fingerprint from `tp yield`")
-    ym.add_argument("verdict", choices=["acted", "dismissed"])
+    ym.add_argument("verdict", choices=[
+        "acted", "dismissed", "resolved", "accepted", "closed", "deferred",
+        "not-a-defect"], help="durable human disposition")
     ym.add_argument("--by", help="who decided (attribution, like gates)")
     ym.add_argument("--note", default="", help="why, in one line")
     yl.set_defaults(fn=cmd_yield)
@@ -4531,6 +4748,20 @@ def main(argv=None) -> int:
                     metavar="RELATION:CONTRACT",
                     help="repeatable requirement boundary: provides, consumes, "
                          "or changes a named API/event/data/runtime contract")
+    ra = rqsub.add_parser("amend", help="revise the same requirement after "
+                            "Product requests changes")
+    ra.add_argument("id", metavar="R-XXXX")
+    ra.add_argument("--functional", action="append",
+                    help="replace functional statements (repeatable)")
+    ra.add_argument("--nfr", action="append", metavar="LENS=STATEMENT",
+                    help="add or replace an NFR by lens (repeatable)")
+    ra.add_argument("--acceptance", action="append",
+                    help="replace acceptance criteria (repeatable)")
+    ra.add_argument("--open", action="append",
+                    help="replace open questions (repeatable)")
+    ra.add_argument("--clear-open", action="store_true",
+                    help="close every open product question")
+    ra.add_argument("--files", help="replace comma-separated context globs")
     rs = rqsub.add_parser("score", help="score a requirement's refinement against the bar")
     rs.add_argument("id")
     rs.add_argument("--files", help="comma-separated changed-file globs")
@@ -4541,6 +4772,12 @@ def main(argv=None) -> int:
                          "(default 0.6)")
     rs.add_argument("--high-cost", action="store_true",
                     help="hard-block below threshold (irreversible work)")
+    rsg = rqsub.add_parser("signoff", help="record the human Product gate")
+    rsg.add_argument("id", metavar="R-XXXX")
+    rsg.add_argument("decision", choices=("approve", "changes"))
+    rsg.add_argument("--by", required=True,
+                     help="the human approval or change-request words")
+    rsg.add_argument("--note", help="optional decision rationale")
     rm = rqsub.add_parser("mode", help="pick the delivery mode for a refinement score and change size")
     rm.add_argument("--refinement", type=float, required=True,
                     help="the requirement's refinement score (0.0-1.0)")
@@ -4774,6 +5011,16 @@ def main(argv=None) -> int:
                      help="select one active review when several starts coexist")
     rvc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvc.set_defaults(fn=cmd_review)
+    rvsg = rvsub.add_parser("signoff", help="record the human decision for a "
+                            "collected standalone review")
+    rvsg.add_argument("decision", choices=("approve", "changes"))
+    rvsg.add_argument("--by", required=True,
+                      help="the human approval or change-request words")
+    rvsg.add_argument("--note", help="optional decision rationale")
+    rvsg.add_argument("--run-id", default=None,
+                      help="select the collected review run")
+    rvsg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvsg.set_defaults(fn=cmd_review)
     rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvp.set_defaults(fn=cmd_review)
 

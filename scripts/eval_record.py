@@ -568,7 +568,22 @@ def breadth_of(row, known) -> "str | None":
     return None if set(known) <= named else "routed"
 
 
-def first_write(ws: str, contract, since) -> "dict | None":
+def workspace_snapshot(ws: str) -> dict:
+    """Stable file identity immediately before the measured model phase."""
+    out = {}
+    for dirpath, dirs, files in os.walk(ws):
+        dirs[:] = [d for d in dirs if d not in _RUNTIME_DIRS]
+        for name in files:
+            path = os.path.join(dirpath, name)
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            out[_rel(ws, path)] = (stat.st_mtime_ns, stat.st_size)
+    return out
+
+
+def first_write(ws: str, contract, since, initial_files=None) -> "dict | None":
     """When the run first CHANGED the workspace.
 
     The engine traces no such event. The contract's write-allow globs say
@@ -594,8 +609,13 @@ def first_write(ws: str, contract, since) -> "dict | None":
     best = None
     for path in candidates:
         try:
-            when = float(os.stat(path).st_mtime)
+            stat = os.stat(path)
+            when = float(stat.st_mtime)
         except OSError:
+            continue
+        rel = _rel(ws, path)
+        if initial_files is not None and initial_files.get(rel) == (
+                stat.st_mtime_ns, stat.st_size):
             continue
         if since is not None and when < float(since):
             continue
@@ -837,6 +857,7 @@ def synthesize_briefs(ws: str, *, trace_rows, context_path) -> list:
     that did not happen.
     """
     rows = {}
+    planned_task_names = set()
     for state in _review_kernel_states(ws, trace_rows=trace_rows):
         envelope = state.get("envelope") or {}
         for slot in state.get("slots") or ():
@@ -844,6 +865,16 @@ def synthesize_briefs(ws: str, *, trace_rows, context_path) -> list:
             if not slot_id:
                 continue
             brief = slot.get("brief") or {}
+            brief_body = {}
+            brief_path = os.path.join(ws, brief.get("relative_path", ""))
+            try:
+                brief_body = _read_json(brief_path)
+            except (OSError, TypeError, ValueError):
+                pass
+            role = ((brief_body or {}).get("role") or {}
+                    if isinstance(brief_body, dict) else {})
+            task_name = role.get("task_name") or slot_id
+            planned_task_names.add(task_name)
             rows["slot:" + slot_id] = {
                 "lens": slot_id, "slot_id": slot_id,
                 "lens_ids": list(slot.get("lens_ids") or ()),
@@ -852,7 +883,10 @@ def synthesize_briefs(ws: str, *, trace_rows, context_path) -> list:
                 "ts": _mtime(os.path.join(ws, brief.get("relative_path", "")),
                              0.0),
                 "kind": "review-kernel-slot",
-                "task_name": slot_id, "source": "review kernel state"}
+                "task_name": task_name, "agent": role.get("agent"),
+                "model": role.get("model"),
+                "reasoning_effort": role.get("reasoning_effort"),
+                "source": "review kernel state"}
     for entry in _queue(ws, "expected_dispatch.json"):
         lens = brief_lens(entry)
         if not lens or lens in rows:
@@ -866,6 +900,8 @@ def synthesize_briefs(ws: str, *, trace_rows, context_path) -> list:
                       "source": "expected_dispatch"}
     for row in trace_rows:
         if row.get("event") != "subagent_start":
+            continue
+        if row.get("task_name") in planned_task_names:
             continue
         lens = lens_name(row.get("agent_type") or "")
         if not lens or lens in rows:
@@ -989,6 +1025,8 @@ def merge_native_dispatch_report(report: dict, expected: list,
                        if row.get("matched")}
     report["observed"] = int(report.get("observed") or 0) + len(
         {row.get("task_name") for row in native_starts} - already_matched)
+    report["expected"] = max(int(report.get("expected") or 0),
+                             len(expected_by_name))
     report["unobserved"] = sum(
         not row.get("matched") and row.get("task_name") not in covered
         for row in expected)
@@ -1117,7 +1155,7 @@ def _fingerprint(root: str, skill: str) -> "str | None":
 def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
            mode: str, fixture: dict, probe, started_at: float,
            transcript=None, schema: str = RUN_SCHEMA, driver_result=None,
-           model=None, reasoning_effort=None) -> dict:
+           model=None, reasoning_effort=None, initial_files=None) -> dict:
     """Write the record the scorer reads, under the names it reads them by."""
     trace_rows = []
     for path in tp.trace_paths(ws):
@@ -1143,15 +1181,20 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
     loop_state = loop_mod.load(ws)
     trace_rows = synthesize_trace(
         trace_rows, known_lenses=catalog_ids(root), contract=contract,
-        write=first_write(ws, contract, started_at), started_at=started_at,
+        write=first_write(ws, contract, started_at, initial_files),
+        started_at=started_at,
         loop_state=loop_state)
     context_rows = synthesize_context(ws, trace_rows=trace_rows,
                                       fallback_ts=started_at)
-    report = tp.dispatch_report(ws)
-    report = merge_native_dispatch_report(report, expected, trace_rows)
-    report[eval_rubric.DISPATCH_ROWS] = synthesize_briefs(
+    brief_rows = synthesize_briefs(
         ws, trace_rows=trace_rows,
         context_path=primary_context_path(trace_rows))
+    planned_dispatches = expected + [
+        row for row in brief_rows if row.get("kind") == "review-kernel-slot"]
+    report = tp.dispatch_report(ws)
+    report = merge_native_dispatch_report(
+        report, planned_dispatches, trace_rows)
+    report[eval_rubric.DISPATCH_ROWS] = brief_rows
 
     files = eval_rubric.RECORD_FILES
     _write_jsonl(os.path.join(out_dir, files["trace"]), trace_rows)
@@ -1294,6 +1337,7 @@ def record_run(*, root: str, dest: str, driver, skill: str = "tp-engineering",
         # Otherwise a help/status response is blamed for the harness's own
         # files and every cost/ordering timestamp starts too early.
         started_at = time.time()
+        initial_files = workspace_snapshot(ws)
         probe = derivation.probe(ws)
         if not probe:
             raise InstrumentBroken(
@@ -1313,7 +1357,9 @@ def record_run(*, root: str, dest: str, driver, skill: str = "tp-engineering",
                      run_id=run_id, mode=mode, fixture=fixture, probe=probe,
                      started_at=started_at, transcript=transcript,
                      schema=schema, driver_result=driver_result, model=model,
-                     reasoning_effort=reasoning_effort)
+                     reasoning_effort=reasoning_effort,
+                     initial_files=initial_files)
+
     return {"path": out_dir, "run": run, "checkout": ws, "dest": dest,
             "origin": origin, "fixture": fixture, "probe": probe,
             "setup": setup_result}

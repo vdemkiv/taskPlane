@@ -58,6 +58,10 @@ import time
 import taskplane_lite as tp
 
 LEDGER = "yield.jsonl"
+SETTLED_VERDICTS = frozenset({
+    "acted", "dismissed", "resolved", "accepted", "closed", "deferred",
+    "not-a-defect",
+})
 
 # Reporting order, cheapest bucket first. Derived from BUCKETS below rather
 # than restated, because the first version was a hand-written second list
@@ -158,6 +162,8 @@ def record_findings(ws: str, findings, *, caught_at: str,
                      "label": _WS.sub(" ", str(
                          f.get("title") or f.get("summary") or "")).strip()[:70],
                      "lens": str(f.get("lens") or f.get("domain") or ""),
+                     "file": tp.to_posix(str(
+                         f.get("file") or f.get("path") or "")),
                      "class": str(f.get("class") or ""),
                      "severity": str(f.get("severity") or ""),
                      "blocks": fp in blocking,
@@ -166,9 +172,30 @@ def record_findings(ws: str, findings, *, caught_at: str,
     return n
 
 
+def record_notes(ws: str, notes, *, caught_at: str,
+                 review_id: str | None = None) -> int:
+    """Persist routed commentary without polluting the findings surface."""
+    n = 0
+    for row in notes or []:
+        if not isinstance(row, dict):
+            continue
+        _append(ws, {
+            "kind": "note", "review": review_id,
+            "fp": fingerprint(row),
+            "label": _WS.sub(" ", str(
+                row.get("title") or row.get("summary") or "")).strip()[:70],
+            "lens": str(row.get("lens") or row.get("domain") or ""),
+            "file": tp.to_posix(str(row.get("file") or row.get("path") or "")),
+            "reason": str(row.get("admissibility_reason") or "note"),
+            "caught_at": caught_at,
+        })
+        n += 1
+    return n
+
+
 def record_disposition(ws: str, fp: str, verdict: str, *,
                        by: str | None = None, note: str = "") -> dict:
-    """A human's verdict on one finding: `acted` or `dismissed`.
+    """A human's durable verdict on one finding.
 
     Explicit dispositions are asked for on BLOCKERS only. Those are the
     findings a human already reads at the gate, so the marginal cost is a
@@ -176,13 +203,50 @@ def record_disposition(ws: str, fp: str, verdict: str, *,
     friction this meter exists to help remove.
     """
     verdict = str(verdict or "").strip().lower()
-    if verdict not in ("acted", "dismissed"):
-        return {"error": f"verdict must be acted or dismissed, got {verdict!r}"}
+    if verdict not in SETTLED_VERDICTS:
+        return {"error": "verdict must be one of " +
+                ", ".join(sorted(SETTLED_VERDICTS)) + f", got {verdict!r}"}
     if not fp:
         return {"error": "no finding fingerprint"}
     _append(ws, {"kind": "disposition", "fp": fp, "verdict": verdict,
                  "by": by or "(unattributed)", "note": note})
     return {"recorded": fp, "verdict": verdict}
+
+
+def settled_findings(ws: str, *, files=None, limit: int = 200) -> list:
+    """Bounded settled identities for a future review brief.
+
+    Full historical bodies never cross the agent boundary.  The last
+    disposition wins, and only identities scoped to changed files are
+    returned when file metadata exists.
+    """
+    records = read_ledger(ws)
+    metadata, dispositions = {}, {}
+    for row in records:
+        fp = str(row.get("fp") or "")
+        if not fp:
+            continue
+        if row.get("kind") == "finding":
+            metadata[fp] = {key: row.get(key) for key in
+                            ("fp", "label", "lens", "file")}
+        elif row.get("kind") == "disposition":
+            dispositions[fp] = str(row.get("verdict") or "").lower()
+    scope = {tp.to_posix(str(path)) for path in (files or []) if str(path)}
+    rows = []
+    for fp in sorted(dispositions):
+        verdict = dispositions[fp]
+        if verdict not in SETTLED_VERDICTS:
+            continue
+        meta = metadata.get(fp)
+        if not meta:
+            continue
+        path = str(meta.get("file") or "")
+        if scope and path and path not in scope:
+            continue
+        rows.append({**meta, "disposition": verdict})
+        if len(rows) >= max(0, min(int(limit), 500)):
+            break
+    return rows
 
 
 def record_counts(ws: str, lens: str, blockers: int, *,
@@ -368,6 +432,7 @@ def report(ws: str) -> dict:
     records = read_ledger(ws)
     reviews = [r for r in records if r.get("kind") == "review"]
     findings = [r for r in records if r.get("kind") == "finding"]
+    notes = [r for r in records if r.get("kind") == "note"]
     dispositions = {}
     for r in records:
         if r.get("kind") == "disposition" and r.get("fp"):
@@ -416,9 +481,9 @@ def report(ws: str) -> dict:
             continue
         seen_fp.add(fp)
         verdict = dispositions.get(fp)
-        if verdict == "acted":
+        if verdict in {"acted", "resolved", "closed"}:
             row["acted"] += 1
-        elif verdict == "dismissed":
+        elif verdict in {"dismissed", "accepted", "deferred", "not-a-defect"}:
             row["dismissed"] += 1
         else:
             # Only reviews THIS lens fired in can say anything about
@@ -477,6 +542,7 @@ def report(ws: str) -> dict:
         "reviews": len(reviews),
         "open_blockers": open_blockers,
         "findings": len(findings),
+        "notes": len(notes),
         "lenses": sorted(lenses.values(),
                          key=lambda x: (-x["findings"], x["lens"])),
         "escape": escape,

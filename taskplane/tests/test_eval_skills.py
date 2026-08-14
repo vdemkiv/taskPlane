@@ -173,8 +173,8 @@ class TestCheckoutLocalBundle(unittest.TestCase):
                                 "rollout-parent.jsonl")
             tool_input = (
                 'const r = await tools.exec_command('
-                '{"cmd":"python3 taskplane/tp.py review start HEAD --base '
-                'HEAD^","workdir":"/checkout"});\ntext(r.output);')
+                '{cmd:"python3 taskplane/tp.py review start HEAD --base '
+                'HEAD^",workdir:"/checkout"});\ntext(r.output)')
             write(path, json.dumps({
                 "timestamp": "2026-08-14T16:43:32Z",
                 "type": "response_item", "payload": {
@@ -188,6 +188,29 @@ class TestCheckoutLocalBundle(unittest.TestCase):
              ("derived", None, "impact")])
         self.assertTrue(all(row["host_observed"] for row in got))
         self.assertNotIn("HEAD", json.dumps(got))
+
+    def test_codex_code_mode_records_every_nested_exec_command(self):
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as workspace:
+            path = os.path.join(home, "sessions", "2026", "08", "14",
+                                "rollout-parent.jsonl")
+            tool_input = (
+                'const a = await tools.exec_command({cmd:"python3 '
+                'taskplane/tp.py review start HEAD --base HEAD^"}); '
+                'const b = await tools.exec_command({cmd:"python3 '
+                'taskplane/tp.py findings --paged"}); text(a.output+b.output)')
+            write(path, json.dumps({
+                "timestamp": "2026-08-14T16:43:32Z",
+                "type": "response_item", "payload": {
+                    "type": "custom_tool_call", "name": "exec",
+                    "input": tool_input}}) + "\n")
+            got = eval_skills.codex_session_derivations(home, workspace)
+        self.assertEqual([row.get("verb") for row in got
+                          if row["event"] == "command"],
+                         ["tp findings", "tp review start"])
+        self.assertEqual(sorted(row.get("key") for row in got
+                                if row["event"] == "derived"),
+                         ["diff", "findings", "impact"])
 
     def test_claude_adapter_loads_only_the_staged_plugin_and_project_settings(self):
         argv = eval_skills.EvalClaudeAdapter(

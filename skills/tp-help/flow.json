@@ -1,0 +1,13 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "tp-help",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "ask", "label": "help request", "kind": "input"},
+    {"id": "mental_model", "label": "taskPlane mental model", "kind": "stage"},
+    {"id": "setup", "label": "folder · git · init · hooks", "kind": "parallel"},
+    {"id": "route", "label": "choose skill by intent", "kind": "stage"},
+    {"id": "next", "label": "one concrete next action", "kind": "stage"}
+  ],
+  "edges": [["ask", "mental_model"], ["mental_model", "setup"], ["setup", "route"], ["route", "next"]]
+}

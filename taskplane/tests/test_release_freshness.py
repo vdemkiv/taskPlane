@@ -132,6 +132,7 @@ class TestSkillsTruthedToCurrentReality(unittest.TestCase):
         "skills/tp-tag/SKILL.md": (
             ".taskplane-kb/", "knowledge/", "state", "artifacts",
             "meta.json",               # the current store layout
+            "flow.json", ".taskplane/dashboard.html",
             "../taskplane/references/harness-rules.md",
         ),
         "skills/tp-northstar/SKILL.md": (
@@ -148,7 +149,8 @@ class TestSkillsTruthedToCurrentReality(unittest.TestCase):
             text = " ".join(_read(rel).split())
             missing = [n for n in needles if n not in text]
             self.assertEqual(missing, [],
-                             f"{rel} is stale for v2.5 — missing required "
+                             f"{rel} is stale for the current release — "
+                             "missing required "
                              f"mention(s): {missing}")
 
     # stale-phrase denylist: instructions that would weaken the harness may

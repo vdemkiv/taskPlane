@@ -30,7 +30,9 @@ from typing import Callable, Iterable
 
 import taskplane_lite as tp
 
-CONTEXT_DIR = os.path.join(".em-review", "context")
+# This value crosses host boundaries inside immutable briefs. Keep the
+# reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
+CONTEXT_DIR = ".em-review/context"
 DIFF_NAME = "diff.patch"
 IMPACT_NAME = "impact.json"
 BRIEF_NAME = "blast-radius.md"
@@ -319,7 +321,7 @@ def _routing_decision(routing: dict, catalog: dict) -> dict:
 
 def _slot_plan(store, envelope_ref: dict, routing: dict,
                decision: dict, *, base: str, runnability: dict,
-               stage: str) -> tuple[list, list]:
+               stage: str, settled_ref: dict | None = None) -> tuple[list, list]:
     """Allocate exact deep slots plus at most one bounded light sweep."""
     import lens as lensmod
     import review_evidence as evidence
@@ -371,8 +373,12 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                 "blockers": {"type": "integer", "minimum": 0}},
             "findings": {"type": "array", "items": "finding"},
             "finding": {"type": "object",
-                        "required": ["lens", "severity", "class", "file",
+                        "required": ["lens", "kind", "severity", "class", "file",
                                      "line", "title", "scenario", "fix"]},
+            "finding_kinds": {
+                "defect": "requires claim.trigger/outcome/repro",
+                "violation": "requires resolvable declares identity",
+                "note": "recorded outside the findings surface"},
             "codex_completion_receipt": {
                 "required_lines": ["taskplane-result-path:<result_path>",
                                    "taskplane-result-sha256:<sha256>"]},
@@ -399,7 +405,13 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                        "probe. Activate producer_contract under its exact "
                        "task_slot, then use the host Write tool to author the "
                        "declared result_schema at result_path. Copy every "
-                       "identity field exactly; authored_by is lens-slot."
+                       "identity field exactly; authored_by is lens-slot. "
+                       "Classify every row structurally as kind defect, "
+                       "violation, or note. Defects require claim.trigger, "
+                       "claim.outcome, and claim.repro; violations require a "
+                       "resolvable declares identity. Notes remain durable "
+                       "but do not gate. Do not re-file a settled fingerprint "
+                       "unless recurrence names materially new evidence."
                        + ((" Read and apply the plugin-pinned language "
                            "references, resolving them against the plugin "
                            "root that contains role_instructions. Read only "
@@ -418,6 +430,8 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
         }
         if required_references:
             brief["language_references"] = required_references
+        if settled_ref:
+            brief["settled_findings"] = _portable_ref(settled_ref)
         brief_ref = store.put("lens-brief", brief)
         row = {"slot_id": slot_id, "lens_ids": lens_ids,
                "view": view_ref, "lease": lease_ref,
@@ -563,6 +577,13 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "acceptance": list(acceptance or []),
         "contracts": sorted({str(x) for x in contracts or []}),
         "change": {"type": task_type, "stage": stage}})
+    settled_rows = yield_meter.settled_findings(ws, files=files, limit=200)
+    settled_ref = store.put("settled-findings", {
+        "schema": "taskplane.settled-findings/v1",
+        "scope_files": files,
+        "count": len(settled_rows),
+        "rows": settled_rows,
+    })
     envelope_ref = evidence.create_envelope(
         store, target=target, diff=diff,
         impact=quality.get("impact") or impact, graph_quality=quality,
@@ -570,10 +591,11 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         acceptance=acceptance or [], contracts=contracts or [],
         change={"type": task_type, "stage": stage,
                 "routing_input": _portable_ref(routing_input_ref),
-                "routing_decision": _portable_ref(decision_ref)})
+                "routing_decision": _portable_ref(decision_ref),
+                "settled_findings": _portable_ref(settled_ref)})
     internal_slots, slots = _slot_plan(
         store, envelope_ref, routing, decision, base=base,
-        runnability=runnability, stage=stage)
+        runnability=runnability, stage=stage, settled_ref=settled_ref)
     counters.update({
         "dispatched_agent_count": len(slots), "envelope_count": 1,
         "view_count": len(slots),
@@ -983,7 +1005,8 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
 
 
 def _validate_finding(row: dict, lens_ids: list[str]) -> dict:
-    required = ("severity", "class", "file", "line", "title", "scenario", "fix")
+    required = ("kind", "severity", "class", "file", "line", "title",
+                "scenario", "fix")
     if not isinstance(row, dict) or any(key not in row for key in required):
         raise __import__("review_evidence").ProvenanceError(
             "finding schema is missing required fields")
@@ -995,6 +1018,16 @@ def _validate_finding(row: dict, lens_ids: list[str]) -> dict:
     if row.get("class") not in {"regression", "pre-existing", "observation"}:
         raise __import__("review_evidence").ProvenanceError(
             "finding schema has invalid class")
+    if row.get("kind") not in {"defect", "violation", "note"}:
+        raise __import__("review_evidence").ProvenanceError(
+            "finding schema has invalid kind")
+    if row.get("claim") is not None and not isinstance(row.get("claim"), dict):
+        raise __import__("review_evidence").ProvenanceError(
+            "finding schema has invalid claim")
+    if row.get("declares") is not None and not isinstance(
+            row.get("declares"), str):
+        raise __import__("review_evidence").ProvenanceError(
+            "finding schema has invalid declares identity")
     if isinstance(row.get("line"), bool) or not isinstance(row.get("line"), int) \
             or row["line"] < 1:
         raise __import__("review_evidence").ProvenanceError(
@@ -1013,6 +1046,33 @@ def _validate_finding(row: dict, lens_ids: list[str]) -> dict:
         raise __import__("review_evidence").ProvenanceError(
             "finding schema cites a lens outside its slot")
     return row
+
+
+def _adjudicate_findings(ws: str, store, brief: dict,
+                         findings: Iterable[dict]) -> tuple[list, list]:
+    """Split a slot's rows into canonical findings and durable notes."""
+    import defect_claim
+    import review_evidence as evidence
+    import yield_meter
+
+    settled_ref = brief.get("settled_findings")
+    settled = store.read(settled_ref) if settled_ref else {"rows": []}
+    settled_by_fp = {str(item.get("fp")): item
+                     for item in (settled.get("rows") or [])
+                     if isinstance(item, dict) and item.get("fp")}
+    admissible, notes = [], []
+    for finding in findings:
+        result = defect_claim.admissibility(finding, workspace=ws)
+        finding = dict(finding, kind=result["kind"])
+        fp = yield_meter.fingerprint(finding)
+        if fp in settled_by_fp and not str(finding.get("recurrence") or "").strip():
+            raise evidence.ProvenanceError(
+                "settled finding recurrence requires named new evidence: " + fp)
+        if result["admissible"]:
+            admissible.append(finding)
+        else:
+            notes.append(dict(finding, admissibility_reason=result["reason"]))
+    return admissible, notes
 
 
 def blocking_findings_by_lens(findings: Iterable[dict]) -> dict[str, int]:
@@ -1085,6 +1145,7 @@ def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
     if not isinstance(findings, list):
         raise evidence.ProvenanceError("finding schema must be a list")
     findings = [_validate_finding(item, lease["lens_ids"]) for item in findings]
+    findings, notes = _adjudicate_findings(ws, store, brief, findings)
     blocking = blocking_findings_by_lens(findings)
     for lens_id in lease["lens_ids"]:
         expected_blockers = blocking.get(lens_id, 0)
@@ -1141,6 +1202,7 @@ def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
     ref = evidence.write_slot_result(
         store, slot["lease"], authored_slot=row["slot_id"],
         lens_ids=row["lens_ids"], findings=findings,
+        notes=notes,
         authored_by=row["authored_by"],
         references_applied=expected_references)
     return ref, [by_lens[lid] for lid in sorted(by_lens)]
@@ -1157,11 +1219,15 @@ def _revision_record(store, envelope_ref: dict, collected: dict) -> tuple[dict, 
     if collected.get("target_fingerprint") != envelope["target_fingerprint"] or \
             collected.get("context_fingerprint") != envelope["context_fingerprint"]:
         raise evidence.RevisionError("slot results contradict envelope identity")
+    notes = [note for result in (collected.get("results") or [])
+             for note in (result.get("notes") or [])]
     material = {
         "result_fingerprints": collected.get("result_fingerprints") or [],
         "findings": [finding for result in (collected.get("results") or [])
                      for finding in (result.get("findings") or [])],
     }
+    if notes:
+        material["notes"] = notes
     record = {
         "schema": "taskplane.findings-revision/v1",
         "target_fingerprint": envelope["target_fingerprint"],
@@ -1172,6 +1238,8 @@ def _revision_record(store, envelope_ref: dict, collected: dict) -> tuple[dict, 
         "findings": copy.deepcopy(material["findings"]),
         "supersedes_revision": revision_number - 1 if revision_number > 1 else None,
     }
+    if notes:
+        record["notes"] = copy.deepcopy(notes)
     return dict(record, artifact=store.put("findings-revision", record)), prior
 
 
@@ -1442,6 +1510,13 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             }
         revision, prior = _revision_record(
             store, state["envelope"], collected)
+        try:
+            import yield_meter
+            yield_meter.record_notes(
+                ws, revision.get("notes") or [], caught_at=state.get("stage") or
+                "review", review_id="n" + revision["findings_fingerprint"][:11])
+        except Exception:
+            pass
         decision = store.read(state["routing_decision"])["dispositions"]
         identity = evidence.revision_identity(revision)
         body = {"meta": {**identity, "lens_coverage": decision,
@@ -1450,7 +1525,10 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         lines = ["# Engineering review", "",
                  f"Canonical revision: {identity['canonical_revision']}",
                  f"Context: `{identity['context_fingerprint']}`", "",
-                 f"Findings: {len(revision['findings'])}", ""]
+                 f"Findings: {len(revision['findings'])}"]
+        if revision.get("notes"):
+            lines.append(f"Notes: {len(revision['notes'])}")
+        lines.append("")
         markdown = "\n".join(lines)
         counters = dict(state.get("counters") or {})
         counters["top_level_cli_count"] = int(
@@ -1473,6 +1551,57 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         # This durable reservation precedes every authoritative projection.
         _save_state(ws, prepared)
         return _resume_collection(ws, prepared, store)
+
+
+def signoff_review(ws: str, *, decision: str, by: str, note: str = "",
+                   run_id: str | None = None) -> dict:
+    """Record the standalone Review human gate against a canonical revision.
+
+    The delivery loop keeps using ``loop approve`` at its sign-off step. This
+    function is deliberately for the facade/standalone Review path, which
+    otherwise rendered approval buttons without a durable decision behind
+    them.
+    """
+    import review_evidence as evidence
+
+    decision = str(decision or "").strip().lower()
+    by = str(by or "").strip()
+    note = str(note or "").strip()
+    if decision not in {"approve", "changes"}:
+        raise ReviewKernelError("review sign-off decision must be approve|changes")
+    if not by:
+        raise ReviewKernelError(
+            "review sign-off needs --by with the human's words")
+    selected = _load_state(ws, run_id)
+    with tp.file_lock(_collection_lock_path(ws)):
+        state = _load_state(ws, selected["run_id"])
+        if state.get("status") != "complete" or not state.get("revision"):
+            raise ReviewKernelError(
+                "review sign-off requires a collected canonical revision")
+        identity = evidence.revision_identity(state["revision"])
+        current = evidence._read_current(evidence.ArtifactStore(ws))
+        if current != identity:
+            raise ReviewKernelError(
+                "review sign-off revision is not the canonical current revision")
+        signoff = {"decision": decision, "by": by, "note": note,
+                   "canonical_revision": identity["canonical_revision"],
+                   "target_fingerprint": identity["target_fingerprint"],
+                   "context_fingerprint": identity["context_fingerprint"]}
+        prior = state.get("human_signoff")
+        if prior:
+            if prior == signoff:
+                return {"run_id": state["run_id"], "signoff": prior,
+                        "idempotent": True}
+            raise ReviewKernelError(
+                "review already has a different human sign-off")
+        state = dict(state, human_signoff=signoff)
+        _save_state(ws, state)
+    tp.trace(ws, "review_human_signoff", run_id=state["run_id"],
+             decision=decision, by=by, **identity)
+    return {"run_id": state["run_id"], "signoff": signoff,
+            "idempotent": False,
+            "next": ("review accepted" if decision == "approve"
+                     else "address findings and open a new review revision")}
 
 
 def context_dir(ws: str) -> str:

@@ -12,9 +12,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lens  # noqa: E402
 import loop  # noqa: E402
+import depgraph  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
+import tp as cli  # noqa: E402
 
 
 class TestSelectiveReviewKernel(unittest.TestCase):
@@ -121,6 +123,27 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertNotIn("breadth", json.dumps(out).lower())
         self.assertLessEqual(len(json.dumps(out).encode()), 16 * 1024)
 
+    def test_standalone_signoff_requires_collection_and_human_words(self):
+        opened = self._start()
+        with self.assertRaises(review.ReviewKernelError):
+            review.signoff_review(
+                self.ws, decision="approve", by="approved",
+                run_id=opened["run_id"])
+        self._write_slot_results(run_id=opened["run_id"])
+        review.collect_review(
+            self.ws, publish=False, run_id=opened["run_id"])
+        with self.assertRaises(review.ReviewKernelError):
+            review.signoff_review(
+                self.ws, decision="approve", by="",
+                run_id=opened["run_id"])
+        signed = review.signoff_review(
+            self.ws, decision="approve", by="approved by user",
+            run_id=opened["run_id"])
+        self.assertEqual(signed["signoff"]["decision"], "approve")
+        self.assertTrue(review.signoff_review(
+            self.ws, decision="approve", by="approved by user",
+            run_id=opened["run_id"])["idempotent"])
+
     def test_changed_content_is_extracted_once_from_the_canonical_patch(self):
         patch = ("diff --git a/src/service.py b/src/service.py\n"
                  "--- a/src/service.py\n+++ b/src/service.py\n"
@@ -171,6 +194,36 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(out["context_fingerprint"],
                          started["context_fingerprint"])
         self.assertEqual(out["counters"]["top_level_cli_count"], 2)
+
+    def test_review_visuals_reuse_the_sealed_context_and_show_the_human_gate(self):
+        depgraph.save(self.ws, self.graph)
+        started = self._start()
+        visuals, obligations = cli._review_visuals(
+            self.ws, started, final=False)
+        self.assertEqual(set(visuals), {
+            "workflow_and_wave", "dependency_graph"})
+        self.assertTrue(all("ack" not in row for row in obligations))
+        self.assertEqual(next(row for row in obligations
+                              if row["kind"] == "render_dashboard")["path"],
+                         ".em-review/wave-board.html")
+        for row in visuals.values():
+            self.assertTrue(os.path.isfile(os.path.join(self.ws, row["path"])))
+
+        self._write_slot_results()
+        collected = review.collect_review(self.ws, publish=False)
+        final, obligations = cli._review_visuals(
+            self.ws, collected, final=True)
+        path = os.path.join(self.ws, final["final_dashboard"]["path"])
+        with open(path, encoding="utf-8") as stream:
+            body = stream.read()
+        self.assertLess(body.index('id="tp-review-workflow"'),
+                        body.index('id="tp-dependency-flow"'))
+        self.assertIn("your decision", body)
+        self.assertIn("approve · request changes", body)
+        self.assertEqual(next(row for row in obligations
+                              if row["kind"] == "render_dashboard")["path"],
+                         ".em-review/dashboard.html")
+        self.assertTrue(all(row.get("ack") for row in obligations))
 
     def test_floor_marker_survives_stage_narrowing_when_already_satisfied(self):
         # Pin the input explicitly. Routing the taskPlane checkout vs HEAD made
@@ -352,10 +405,15 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             {"lens": item["lens"], "verdict": "fail", "blockers": 1}
             for item in row["lens_results"]]
         row["findings"] = [{
-            "lens": row["lens_ids"][0], "severity": "blocker",
+            "lens": row["lens_ids"][0], "kind": "defect",
+            "severity": "blocker",
             "class": "regression", "file": "src/service.py", "line": 1,
             "title": "changed after observation", "scenario": "production",
             "fix": "preserve observed bytes",
+            "claim": {
+                "trigger": "change a leased result after hook observation",
+                "outcome": "collection accepts bytes the hook never observed",
+                "repro": "write a blocker after recording pass result bytes"},
         }]
         with open(path, "w", encoding="utf-8") as stream:
             json.dump(row, stream, sort_keys=True, separators=(",", ":"))
@@ -412,10 +470,15 @@ class TestSelectiveReviewKernel(unittest.TestCase):
     def test_blocking_finding_cannot_hide_behind_pass_zero_summary(self):
         self._start()
         self._write_slot_results(findings=lambda lease: [{
-            "lens": lease["lens_ids"][0], "severity": "high",
+            "lens": lease["lens_ids"][0], "kind": "defect",
+            "severity": "high",
             "class": "regression", "file": "src/service.py", "line": 1,
             "title": "unsafe behavior", "scenario": "production request",
             "fix": "repair the invariant",
+            "claim": {
+                "trigger": "send a production request through the unsafe path",
+                "outcome": "the request violates the required safety invariant",
+                "repro": "run the failing request against the changed service"},
         }])
         with self.assertRaisesRegex(review_evidence.ProvenanceError,
                                     "blocking finding"):

@@ -44,6 +44,22 @@ import taskplane_lite as tp
 _REVISION_ID_KEYS = ("target_fingerprint", "context_fingerprint",
                      "findings_fingerprint", "canonical_revision")
 
+# A transition always refreshes the durable dashboard, but only a HUMAN gate
+# needs the model to stop, surface it, and acknowledge delivery.  Issuing and
+# acknowledging a fresh render obligation at every internal PM/Plan/Evaluate
+# hop turned progress reporting into repeated CLI work and repeatedly sent the
+# same HTML through model context.  Keep one open, deterministic obligation
+# through the internal transitions; the gate payload carries the one ack.
+_HUMAN_DASHBOARD_STEPS = frozenset({
+    "design_approval", "plan_approval", "selection", "signoff", "escalated",
+})
+
+
+def _transition_step(out: dict) -> str:
+    state = out.get("status") or out.get("state") or {}
+    return str((state.get("step") if isinstance(state, dict) else None)
+               or out.get("step") or "")
+
 
 def canonical_revision_identity(value: dict) -> dict:
     """Validate and normalize the tuple shared by every review projection."""
@@ -267,14 +283,19 @@ def refresh_views(ws: str, out: dict) -> dict:
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(doc)
         os.replace(tmp, p)
+        step = _transition_step(out)
+        human_gate = step in _HUMAN_DASHBOARD_STEPS
         out["dashboard"] = {
             # logical pointer, not a path: os.path.join made
             # this '\\' on Windows and the goldens disagreed
             "path": ".taskplane/dashboard.html",
-            "render": "refreshed for this transition — show it "
-                      "(mcp__visualize__show_widget) before "
-                      "proceeding; the dashboard is the interface "
-                      "the human governs through"}
+            "render": (
+                "human gate — deliver this engine-authored file by reference "
+                "before asking for approval or rejection"
+                if human_gate else
+                "refreshed for this internal transition — keep using this "
+                "path as the progress reference; do not render or acknowledge "
+                "it until a human gate or explicit status request")}
         # WS-F: the engine can render, write and point at the artifact, and
         # has no way to see whether it reached a human — which is exactly how
         # "no inline dashboard, no report, nothing" kept happening against a
@@ -286,14 +307,18 @@ def refresh_views(ws: str, out: dict) -> dict:
             oid = obligations.issue(
                 ws, "render_dashboard",
                 detail="show the refreshed dashboard inline",
-                step=str((out.get("state") or {}).get("step")
-                         or out.get("step") or ""),
+                # This is one durable dashboard obligation for the whole
+                # delivery loop. The current step still controls whether the
+                # payload asks for delivery, but must not mint a new debt at
+                # every transition.
+                step="loop",
                 artifact=p, key=".taskplane/dashboard.html")
             if oid:
                 out["dashboard"]["obligation"] = oid
-                out["dashboard"]["ack"] = (
-                    f"after showing it, run: tp ack {oid} — an obligation "
-                    "left unacknowledged is recorded as not shown")
+                if human_gate:
+                    out["dashboard"]["ack"] = (
+                        f"after delivering it, run once: tp ack {oid} "
+                        f"--delivered .taskplane/dashboard.html")
     except Exception as exc:
         detail = f"{exc.__class__.__name__}: {exc}"
         out["dashboard"] = {

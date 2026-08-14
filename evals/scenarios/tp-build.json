@@ -3,9 +3,10 @@
   "skill": "tp-build",
   "title": "The new-feature flow: a requirement scored, the graph told about it, and the builder shown the blast radius BEFORE the code changes",
   "source_files": [
-    "skills/tp-build/SKILL.md"
+    "skills/tp-build/SKILL.md",
+    "skills/tp-build/flow.json"
   ],
-  "inputs_fingerprint": "c6bed915ad16a8bc5aaaea1ce40151ca7fa9d24e779cb826fb7422c22fb072a5",
+  "inputs_fingerprint": "364277dead4c1ef125c2059402ee6bd6a184e8e8f6d846b4311bd9901e233863",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp req new",
@@ -77,7 +78,9 @@
       "record": "trace",
       "check": "exists",
       "select": {
-        "event": "design_contracts_recorded"
+        "event": "loop_gate",
+        "step": "design",
+        "outcome": "pass"
       },
       "required": true
     },

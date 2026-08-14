@@ -397,6 +397,91 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         self.assertEqual(act["requirement"]["id"], "R-0001")
         self.assertTrue(act["requirement"]["acceptance"])
 
+    def test_plan_brief_exposes_canonical_contract_ids_structurally(self):
+        import requirements as reqs
+        ws = tempfile.mkdtemp()
+        for c in (["init", "-q"], ["add", "-A"]):
+            subprocess.run(["git", *c], cwd=ws)
+        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
+                        "commit", "--allow-empty", "-qm", "i"], cwd=ws)
+        r = reqs.record_requirement(
+            ws, "change API", functional=["change it"],
+            nfr={"security": "fail closed", "architecture": "stay local"},
+            acceptance=["changed behavior is tested"],
+            contracts=[{"relation": "changes",
+                        "id": "contract:pricing.checkout.total"}],
+            context_files=["pricing/checkout.py"])
+        loop.init(ws, "change API", spec_path="specs/spec.md",
+                  requirement_id=r["id"])
+        action = loop.next_action(ws)
+        self.assertEqual(action["step"], "plan")
+        self.assertEqual(
+            action["requirement"]["contracts"],
+            [{"relation": "changes",
+              "id": "contract:pricing.checkout.total"}])
+        self.assertNotIn("changes:contract:", json.dumps(
+            action["requirement"]["contracts"]))
+
+    def test_pm_gate_scores_dor_and_links_planned_graph_once(self):
+        import requirements as reqs
+        ws = tempfile.mkdtemp()
+        os.makedirs(os.path.join(ws, "src", "auth"))
+        os.makedirs(os.path.join(ws, "specs"))
+        with open(os.path.join(ws, "src", "auth", "a.py"), "w",
+                  encoding="utf-8") as f:
+            f.write("def authorize():\n    return True\n")
+        with open(os.path.join(ws, "specs", "spec.md"), "w",
+                  encoding="utf-8") as f:
+            f.write("# Auth requirement\n")
+        for command in (["init", "-q"], ["add", "-A"]):
+            subprocess.run(["git", *command], cwd=ws, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+             "commit", "-qm", "initial"], cwd=ws, check=True)
+        depgraph.scan(ws)
+        rec = reqs.record_requirement(
+            ws, "authorize users", functional=["authorize a user"],
+            nfr={"security": "deny by default",
+                 "architecture": "preserve the auth boundary"},
+            acceptance=["unauthorized users receive 403"],
+            context_files=["src/auth/a.py"])
+        loop.init(ws, "authorize users", requirement_id=rec["id"])
+        loop.next_action(ws)
+
+        out = loop.gate(ws, "pass")
+
+        self.assertEqual(out["step"], "plan")
+        state = loop.load(ws)
+        self.assertEqual(state["requirement_refinement"]["functional"], 1.0)
+        graph = depgraph.load(ws)
+        planned = [edge for edge in graph["edges"]
+                   if edge.get("from") == "req:" + rec["id"]
+                   and edge.get("kind") == "planned"]
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0]["to"], "auth")
+
+    def test_pm_gate_blocks_missing_security_and_architecture_nfrs(self):
+        import requirements as reqs
+        ws = tempfile.mkdtemp()
+        os.makedirs(os.path.join(ws, "specs"))
+        with open(os.path.join(ws, "specs", "spec.md"), "w",
+                  encoding="utf-8") as f:
+            f.write("# Thin requirement\n")
+        rec = reqs.record_requirement(
+            ws, "thin", functional=["change behavior"],
+            acceptance=["behavior is verified"],
+            context_files=["src/feature.py"])
+        loop.init(ws, "thin", requirement_id=rec["id"])
+        loop.next_action(ws)
+
+        out = loop.gate(ws, "pass")
+
+        self.assertIn("Definition of Ready", out["error"])
+        details = " ".join(out["dor"]["errors"])
+        self.assertIn("security", details)
+        self.assertIn("architecture", details)
+        self.assertEqual(loop.load(ws)["step"], "pm")
+
     def test_evaluate_routes_on_real_diff(self):
         """R-0006 row 1: EVALUATE routes the real diff with stage='build'
         (route v2) — not the legacy stage-less route it pinned pre-design."""

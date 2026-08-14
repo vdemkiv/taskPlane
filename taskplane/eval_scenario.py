@@ -400,8 +400,22 @@ def _extract_text(root: str, rel: str) -> str:
     path = os.path.join(root, rel.replace("/", os.sep))
     try:
         with io.open(path, encoding="utf-8") as f:
-            body = flow_extract(f.read())
-    except OSError:
+            raw = f.read()
+        if rel.endswith("/flow.json"):
+            flow = json.loads(raw)
+            if flow.get("schema") != "taskplane.skill-flow/v1":
+                raise ValueError("unsupported skill-flow schema")
+            # Unlike prose, the approved graph is already a compact semantic
+            # contract. Fingerprint its complete canonical structure so an
+            # edge, gate kind, id, or label change cannot inherit approval
+            # from the previous flow.
+            body = ("approved-flow " + json.dumps(
+                {key: flow.get(key) for key in
+                 ("schema", "skill", "approval", "nodes", "edges")},
+                sort_keys=True, separators=(",", ":")),)
+        else:
+            body = flow_extract(raw)
+    except (OSError, ValueError, json.JSONDecodeError):
         return f"file {rel}\nmissing\n"
     return "file %s\n%s\n" % (rel, "\n".join(body))
 

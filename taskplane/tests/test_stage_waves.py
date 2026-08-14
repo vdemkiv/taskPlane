@@ -1002,6 +1002,9 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     ws = _walk_repo(str(tmp_path))
     req = reqs.record_requirement(
         ws, "governed walk", functional=["walk every gate"],
+        nfr={"reliability": "every governed gate remains reachable",
+             "security": "workflow disablement never weakens a gate",
+             "architecture": "dispatch remains independent of workflows"},
         acceptance=["every gate is reachable via dispatch",
                     "no step depends on a workflow runtime"],
         contracts=[{"relation": "provides",

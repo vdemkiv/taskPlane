@@ -170,6 +170,8 @@ def _author_leased_evaluation_results(ws: str) -> None:
                               "blockers": 0}
                              for lens_id in lease["lens_ids"]],
         }
+        if brief.get("language_references"):
+            payload["references_applied"] = brief["language_references"]
         content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         event = {"session_id": "ci-loop-cost-lens",
                  "agent_id": f"ci-loop-cost-child-{index}",

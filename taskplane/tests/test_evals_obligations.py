@@ -167,12 +167,23 @@ class TestTheInstrumentGatesNothing(_Ws):
 
 
 class TestThePayloadCarriesTheObligation(_Ws):
-    def test_a_transition_names_the_id_and_how_to_discharge_it(self):
+    def test_an_internal_transition_defers_the_ack_until_a_human_gate(self):
         loop.init(self.ws, "goal")
         d = loop.next_action(self.ws)["dashboard"]
         self.assertTrue(d["obligation"].startswith("o-"))
+        self.assertNotIn("ack", d)
+        self.assertIn("do not render or acknowledge", d["render"])
+
+    def test_a_human_gate_names_one_delivery_and_ack(self):
+        import views
+        loop.init(self.ws, "goal")
+        internal = loop.next_action(self.ws)["dashboard"]["obligation"]
+        out = {"step": "plan_approval"}
+        views.refresh_views(self.ws, out)
+        d = out["dashboard"]
+        self.assertEqual(d["obligation"], internal)
         self.assertIn("tp ack", d["ack"])
-        self.assertIn(d["obligation"], d["ack"])
+        self.assertIn("--delivered .taskplane/dashboard.html", d["ack"])
 
     def test_the_obligation_fingerprints_the_dashboard_the_engine_built(self):
         loop.init(self.ws, "goal")

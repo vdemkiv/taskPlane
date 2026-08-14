@@ -25,8 +25,10 @@ plan artifacts and return. This is a planning judgment, not a framework audit.
 
 1. Read the spec/requirement (the action payload carries the R-record and
    recalled KB decisions — honor settled calls), the context docs
-   (`knowledge/context/*.md`), and the dependency graph (`tp.py graph
-   impact` on the areas you'll touch) before shaping tasks. If `design` is
+   (`knowledge/context/*.md`), and the dependency graph with exactly one
+   `tp.py graph impact --files "comma,separated,paths" --json` call before
+   shaping tasks. `--files` takes ONE comma-separated value: do not try
+   positional paths, an empty/default call, or repeated `--files` flags. If `design` is
    present, read the approved Design Contract and verify its fingerprint is
    current before shaping tasks; never silently reinterpret or narrow it.
 2. Write `plan/tasks.json`: `{"tasks":[{"id","scope":[globs],"tests":
@@ -37,7 +39,10 @@ plan artifacts and return. This is a planning judgment, not a framework audit.
    (the hook will hold the executor to it), tests runnable, deps honest.
    Copy every assigned acceptance criterion into `criteria` **verbatim**;
    paraphrases are not ownership evidence. Copy the requirement/design's
-   exact API/event/data/runtime contract ids; never invent an alias. For a new
+   exact API/event/data/runtime contract ids from
+   `requirement.contracts[].id`; copy `contract:NAME` or `resource:NAME`,
+   NEVER the rendered relation+id string such as
+   `changes:contract:NAME`. Never invent an alias. For a new
    graph surface, declare every exact unknown module id returned by the
    bounded impact result in `new_modules`; otherwise a
    high-cost or distributed plan fails Ready instead of silently inventing a

@@ -155,6 +155,11 @@ def load_baseline_lens():
     spec = importlib.util.spec_from_file_location("lens_at_head", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)          # not registered in sys.modules
+    # The source copy deliberately lives outside the plugin. Reference
+    # resolution is a runtime-global rooted at ``__file__``; point only that
+    # root back at the real checkout so the differential measures routing,
+    # not the scratch loader's missing sibling files.
+    mod.__file__ = lens.__file__
     mod._scratch_dir = scratch
     return mod
 

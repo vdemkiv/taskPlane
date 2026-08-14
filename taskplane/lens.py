@@ -129,7 +129,7 @@ def language_references(files, task_type: str | None = None,
     """Resolve scoped, content-bound references from repo-relative paths.
 
     The public default remains the code-quality reference for compatibility.
-    Workflow routing passes its active lens ids and receives the complete
+    Callers pass their active lens ids and receive the complete
     lens-owned set without widening which lenses execute.
     """
     wanted = ({"solution-design"} if task_type == "solution-design" else

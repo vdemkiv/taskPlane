@@ -4,9 +4,10 @@
   "title": "A governed engineering review: one pinned target, one graph-qualified envelope, selective leased slots, one canonical collection",
   "source_files": [
     "skills/tp-engineering/SKILL.md",
+    "skills/tp-engineering/flow.json",
     "agents/tp-engineering.md"
   ],
-  "inputs_fingerprint": "f18194fab9be8cf2348b522a0fe27f04301d62c261328739f60afe91fd913bfc",
+  "inputs_fingerprint": "b158d5a4db7f3ce7b32052d63555daea9888bf204802354c051e062173ec7511",
   "expects_derivations": [
     "diff",
     "impact"
@@ -14,10 +15,11 @@
   "declared_surfaces": [
     "tp review start",
     "tp review collect",
+    "tp review signoff",
     "tp graph impact",
     "tp findings"
   ],
-  "terminal": "review_complete",
+  "terminal": "human_gate",
   "steps": [
     {
       "id": "R1",

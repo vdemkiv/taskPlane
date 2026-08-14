@@ -1,0 +1,14 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "tp-status",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "request", "label": "status request", "kind": "input"},
+    {"id": "state", "label": "loop + task state", "kind": "parallel"},
+    {"id": "requirements", "label": "requirements + debt", "kind": "parallel"},
+    {"id": "graph", "label": "dependency graph", "kind": "parallel"},
+    {"id": "view", "label": "mission-control dashboard", "kind": "visual"},
+    {"id": "action", "label": "action banner / no action", "kind": "stage"}
+  ],
+  "edges": [["request", "state"], ["request", "requirements"], ["request", "graph"], ["state", "view"], ["requirements", "view"], ["graph", "view"], ["view", "action"]]
+}

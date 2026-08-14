@@ -10,6 +10,11 @@ agents waste the most — vague specs, invisible progress, one unexamined
 design. tp-build inverts that: **refine before you plan, see before you
 sign, and when the design space is wide, build it twice and choose.**
 
+`flow.json` is the approved feature graph: **idea → complete requirement →
+conditional Design → Design approval → graph-aware Plan → Plan approval → one
+build or A/B variants → selection when used → Evaluate → Engineering review →
+feature sign-off**. Every gate in that graph is a real human stop.
+
 Separation of duties applies from the first refinement step. The orchestrator
 never performs Product, Design, Plan, Build, Evaluate, or Engineering work
 inline. Every role emitted by `loop next` is dispatched as a real host-native
@@ -90,8 +95,11 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    DoD, and one complete lens disposition. Only the mapped deep lenses plus at
    most one light sweep run; agents consume scoped references and never derive
    their own diff or graph.
-   Dashboard at every transition (auto-refreshed by gate/next — the payload's `dashboard` field points at the fragment; the step journey + agent→model stats ride along) — visualization is not decoration here,
-   it IS the interface the human governs through (the graph tab now shows
+   The dashboard is auto-refreshed by gate/next and the payload carries its
+   path. Reuse that path as progress state; do not call `dashboard`, render,
+   or acknowledge it on internal transitions. Deliver and acknowledge it once
+   when the payload marks a human gate, where visualization is the interface
+   the human governs through (the graph tab shows
    the product layer: requirements ↔ modules, depends edges, shared-surface
    warnings).
    When Design exists, Plan must cover every approved module, contract, graph

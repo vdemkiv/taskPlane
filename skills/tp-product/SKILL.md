@@ -11,6 +11,11 @@ step is this persona. Its counterpart, `/tp-engineering`, owns whether the
 built thing is sound — deliberately separate seats so definition is never
 graded by its own author.
 
+`flow.json` is the approved Product graph: **idea/change request → product
+context → complete requirement → contracts/dependencies → Product DoR →
+product review → human approve/sign-off → governed Build handoff**. A scored
+requirement is ready for review, not automatically approved for implementation.
+
 The commands and schema in this skill and its requirement reference are the
 executable contract. Do not spend the product budget on `$TP --help`,
 subcommand help, taskplane implementation/tests, repeated status/list calls,
@@ -19,10 +24,39 @@ and supplied project context. A normal standalone refinement is one compact
 sequence: activate the read-only Product contract first; author one complete
 `req new`; run `req score R-XXXX --files "comma,separated,globs"` once; link
 the same globs once with `graph link --req R-XXXX --kind planned --files
-"comma,separated,globs"`; choose `req mode` once. Do not run delivery `dod`
-for standalone Product refinement. Render the dashboard only
-when a human-facing product gate is actually being requested. Diagnose beyond
-that sequence only when one of those commands returns a named blocker.
+"comma,separated,globs"`; choose `req mode` once. Then present the complete
+requirement, Product DoR result, dependencies/contracts, exclusions, forecast,
+and recommended mode at a human approve/request-changes gate. Do not run
+delivery `dod` for standalone Product refinement and do not start Build before
+an explicit yes. Diagnose beyond that sequence only when one command returns a
+named blocker.
+
+Inside a governed loop, the sequence is smaller and stricter: write the spec,
+call `req new` exactly once with all fields, and return the R-id. Do not call
+status, context, graph, graph impact, req score, req list/help, loop submit,
+new, or clear. The PM gate mechanically recomputes critical DoR and links the
+requirement's context files into the planned graph, so repeating those queries
+would create two sources of truth rather than more assurance.
+
+For a standalone Product request, the orchestrator owns the transition after
+approval: record the human's product decision, then initialize the governed
+Build loop with the SAME R-id. Run `$TP req signoff R-XXXX approve --by
+"<human words>"` first; only its successful Product DoR-backed result permits
+`$TP loop init --req R-XXXX "<goal>"` and the handoff to `/tp-go`. If the human
+requests changes, run `$TP req signoff R-XXXX changes --by "<human words>"`,
+revise the same R-record with `$TP req amend R-XXXX ...`, and re-run Product
+DoR; do not create a replacement requirement or trigger Build. tp-product
+itself remains read-only and never impersonates Build.
+
+Use exact lens ids for NFR fields. Any code-bearing requirement includes
+`security` and `architecture` in its FIRST `req new`, plus the material
+risk/domain axes (`data-safety`, `privacy-compliance`, `sre`, `dba`,
+`accessibility`, `integrability`, `i18n`, `cost-finops`) when applicable.
+Generic labels such as compatibility, reliability, verification, or
+diagnosability do not cover those catalog axes. In the spec handoff, list
+canonical `contract:...` / `resource:...` ids separately from their
+provides|consumes|changes relation so Planner cannot copy a display string as
+an invalid id.
 
 ## Author & refine (the core act)
 

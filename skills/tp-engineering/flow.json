@@ -1,0 +1,16 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "tp-engineering",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "target", "label": "target pinned", "kind": "input"},
+    {"id": "diff", "label": "one diff + graph impact", "kind": "stage"},
+    {"id": "quality", "label": "graph-quality gate", "kind": "stage"},
+    {"id": "route", "label": "26 lens dispositions", "kind": "stage"},
+    {"id": "wave", "label": "deep slots + one light sweep", "kind": "parallel"},
+    {"id": "collect", "label": "canonical collection", "kind": "stage"},
+    {"id": "dashboard", "label": "workflow + graph + findings", "kind": "visual"},
+    {"id": "signoff", "label": "approve / request changes", "kind": "gate"}
+  ],
+  "edges": [["target", "diff"], ["diff", "quality"], ["quality", "route"], ["route", "wave"], ["wave", "collect"], ["collect", "dashboard"], ["dashboard", "signoff"]]
+}

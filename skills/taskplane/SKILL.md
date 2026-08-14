@@ -20,6 +20,14 @@ internal gate to make the interaction look simpler.
 
 Set `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
+## Approved flow contract
+
+`flow.json` is the canonical facade graph: **user goal → intent/state route →
+the smallest matching specialist flow**. The Review branch is never complete
+when the report is generated: engineering review must deliver its canonical
+workflow/graph/findings dashboard and stop at the explicit **human approve /
+request changes** gate. Only the human decision closes Review/sign-off.
+
 ## Route the request
 
 - Design a new feature or approach before code changes, compare technical
@@ -32,7 +40,10 @@ Set `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
   distributed, risky, or materially ambiguous Build work through Design;
   small local reversible work may go directly to Plan/Build.
 - Review, validate, blast radius, architecture/security review, or sign-off:
-  follow `../tp-engineering/SKILL.md`; remain read-only toward reviewed code.
+  follow `../tp-engineering/SKILL.md`; remain read-only toward reviewed code
+  and wait at its human sign-off gate after presenting the final dashboard.
+  A standalone decision is recorded with `review signoff`; dashboard delivery
+  alone is never approval.
 - Requirements, acceptance criteria, or change requests without delivery:
   follow `../tp-product/SKILL.md`.
 - Status or “what needs me?”: follow `../tp-status/SKILL.md` and run
@@ -104,8 +115,11 @@ changing it would alter a material risk or delivery decision.
 
 ## What the user sees
 
-After each material transition run `$TP summary`. Lead with its plain-text
-headline and say:
+Every transition already returns its current step, headline/dashboard path,
+and next action. Reuse that payload; do not call `$TP summary` after internal
+transitions. Run it only for an explicit status request or once at a human
+gate when the transition payload is unavailable. Lead with the available
+plain-text headline and say:
 
 - what is happening or what finished;
 - whether the harness passed or blocked it, with the concrete reason;

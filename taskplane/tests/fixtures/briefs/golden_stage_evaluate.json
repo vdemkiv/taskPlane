@@ -26,10 +26,9 @@
     ]
   },
   "dashboard": {
-    "ack": "after showing it, run: tp ack o-d91b0f31ab \u2014 an obligation left unacknowledged is recorded as not shown",
-    "obligation": "o-d91b0f31ab",
+    "obligation": "o-d452794682",
     "path": ".taskplane/dashboard.html",
-    "render": "refreshed for this transition \u2014 show it (mcp__visualize__show_widget) before proceeding; the dashboard is the interface the human governs through"
+    "render": "refreshed for this internal transition \u2014 keep using this path as the progress reference; do not render or acknowledge it until a human gate or explicit status request"
   },
   "design": null,
   "design_graph": null,

@@ -1,0 +1,15 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "tp-design",
+  "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "nodes": [
+    {"id": "input", "label": "requirement + code context", "kind": "input"},
+    {"id": "graph", "label": "baseline graph", "kind": "stage"},
+    {"id": "alternatives", "label": "alternatives + trade-offs", "kind": "parallel"},
+    {"id": "contract", "label": "Design Contract", "kind": "stage"},
+    {"id": "lens", "label": "solution-design evidence", "kind": "parallel"},
+    {"id": "visual", "label": "conditional technical visual", "kind": "stage"},
+    {"id": "approval", "label": "design approval", "kind": "gate"}
+  ],
+  "edges": [["input", "graph"], ["graph", "alternatives"], ["alternatives", "contract"], ["contract", "lens"], ["lens", "visual"], ["visual", "approval"]]
+}

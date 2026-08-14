@@ -133,7 +133,11 @@ class ArtifactStore:
             raise ArtifactIntegrityError("artifact reference must be an object")
         kind = self._validate_kind(ref.get("kind"))
         expected = os.path.abspath(self._path(kind, ref.get("fingerprint")))
-        supplied = os.path.abspath(str(ref.get("path") or ""))
+        supplied_path = ref.get("path")
+        if not supplied_path:
+            relative = str(ref.get("relative_path") or "")
+            supplied_path = os.path.join(self.workspace, *relative.split("/"))
+        supplied = os.path.abspath(str(supplied_path))
         if supplied != expected:
             raise ArtifactIntegrityError("artifact reference points outside canonical store path")
         if os.path.islink(supplied):
@@ -158,8 +162,9 @@ class ArtifactStore:
         return True
 
     def read(self, ref: dict):
+        path = self._validated_path(ref)
         self.verify(ref)
-        with open(ref["path"], "rb") as stream:
+        with open(path, "rb") as stream:
             try:
                 return json.loads(stream.read().decode("utf-8"))
             except (UnicodeError, ValueError) as exc:
@@ -351,7 +356,7 @@ def create_slot_lease(store: ArtifactStore, envelope_ref: dict, view_ref: dict,
 def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
                       authored_slot: str, lens_ids, findings,
                       authored_by: str = "lens-slot",
-                      references_applied=None) -> dict:
+                      references_applied=None, notes=None) -> dict:
     lease = store.read(lease_ref)
     if lease.get("schema") != "taskplane.slot-lease/v1":
         raise ProvenanceError("result lease is invalid")
@@ -374,6 +379,8 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
         "authored_by": authored_by,
         "findings": copy.deepcopy(list(findings or [])),
     }
+    if notes:
+        base["notes"] = copy.deepcopy(list(notes))
     if references_applied:
         base["references_applied"] = copy.deepcopy(
             list(references_applied))
