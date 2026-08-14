@@ -11,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lens  # noqa: E402
+import loop  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
@@ -50,6 +51,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         for index, slot in enumerate(state["slots"]):
             lease = store.read(slot["lease"])
             brief = store.read(slot["brief"])
+            slot_findings = findings(lease) if callable(findings) else findings
             row = {
                 **lease,
                 "schema": "taskplane.lens-slot-output/v2",
@@ -59,7 +61,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                      "blockers": 0 if verdict == "pass" else 1}
                     for lens_id in lease["lens_ids"]
                 ],
-                "findings": list(findings or []),
+                "findings": list(slot_findings or []),
             }
             content = json.dumps(row, sort_keys=True, separators=(",", ":"))
             event = {"session_id": f"lens-session-{state['run_id']}",
@@ -311,9 +313,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
 
     def test_blocking_finding_cannot_hide_behind_pass_zero_summary(self):
         self._start()
-        self._write_slot_results(findings=[{
-            "severity": "blocker", "class": "regression",
-            "file": "src/service.py", "line": 1,
+        self._write_slot_results(findings=lambda lease: [{
+            "lens": lease["lens_ids"][0], "severity": "high",
+            "class": "regression", "file": "src/service.py", "line": 1,
             "title": "unsafe behavior", "scenario": "production request",
             "fix": "repair the invariant",
         }])
@@ -322,6 +324,23 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             review.collect_review(self.ws, publish=False)
         self.assertIsNone(review_evidence._read_current(
             review_evidence.ArtifactStore(self.ws)))
+
+    def test_review_blocking_policy_matches_the_canonical_class_rule(self):
+        cases = [
+            ({"lens": "security", "severity": "high",
+              "class": "regression"}, True),
+            ({"lens": "security", "severity": "low",
+              "class": "regression"}, True),
+            ({"lens": "security", "severity": "high",
+              "class": "pre-existing"}, False),
+            ({"lens": "security", "severity": "high",
+              "class": "observation"}, False),
+        ]
+        for finding, expected in cases:
+            with self.subTest(finding=finding):
+                counts = review.blocking_findings_by_lens([finding])
+                self.assertEqual(bool(counts), expected)
+                self.assertEqual(bool(counts), loop.finding_blocks(finding))
 
     def test_publication_failure_restores_prior_revision_and_retry_completes(self):
         first = self._start()

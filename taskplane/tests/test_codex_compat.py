@@ -47,7 +47,13 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
         runner = os.path.join(ws, ".taskplane", "codex-hook.py")
         self.assertTrue(os.path.isfile(runner))
         with open(runner, encoding="utf-8") as handle:
-            self.assertIn(os.path.abspath(cli.__file__), handle.read())
+            self.assertEqual(cli._codex_runner_engine(handle.read()),
+                             os.path.abspath(cli.__file__))
+
+    def test_runner_engine_parser_handles_escaped_windows_paths(self):
+        engine = r"C:\plugin\taskplane\tp.py"
+        self.assertEqual(
+            cli._codex_runner_engine(f"ENGINE = {engine!r}\n"), engine)
 
 
 def _repo():
@@ -268,7 +274,7 @@ class TestCodexHookProtocol(unittest.TestCase):
                         self.assertEqual(result.stdout.strip(), "")
                     path = os.path.join(ws, slot["result_path"])
                     os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "w", encoding="utf-8") as stream:
+                    with open(path, "w", encoding="utf-8", newline="") as stream:
                         stream.write(written)
                 out = review.collect_review(ws, publish=False)
                 self.assertEqual(out["status"], "complete")

@@ -23,6 +23,7 @@ Subcommands the govern-under-contract skill drives:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -213,7 +214,9 @@ def _codex_hooks_report(ws: str) -> dict:
         return {"ok": False, "status": "missing", "path": config_path,
                 "reason": str(exc)}
     configured = _CODEX_HOOK_MARKER in encoded
-    runner = current_engine in runner_body
+    installed_engine = _codex_runner_engine(runner_body)
+    runner = bool(installed_engine and os.path.normcase(
+        os.path.abspath(installed_engine)) == os.path.normcase(current_engine))
     return {
         "ok": bool(configured and runner),
         "status": "ready" if configured and runner else "stale",
@@ -222,6 +225,24 @@ def _codex_hooks_report(ws: str) -> dict:
                  "Run `tp onboard --install-codex-hooks --json`, then start "
                  "a new Codex task so repo-local lifecycle hooks load."),
     }
+
+
+def _codex_runner_engine(runner_body: str) -> str | None:
+    """Read the generated ENGINE literal without comparing escaped source.
+
+    Windows ``repr`` doubles backslashes in the runner source.  Comparing the
+    unescaped absolute path to those source bytes therefore reported every
+    correctly installed bridge as stale.  Parse only the one generated
+    literal and compare path values instead.
+    """
+    match = re.search(r"^ENGINE = (.+)$", str(runner_body or ""), re.MULTILINE)
+    if not match:
+        return None
+    try:
+        value = ast.literal_eval(match.group(1))
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, str) and value else None
 
 
 def _codex_hook_action(command: str) -> str:

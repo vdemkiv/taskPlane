@@ -28,6 +28,7 @@ import sys
 import tempfile
 import unittest
 import contextlib
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
@@ -343,7 +344,11 @@ class SharedReviewContext(_WS):
         self.assertNotIn("SHARED REVIEW CONTEXT", out["deep"][0]["prompt"])
 
     def test_an_unwritable_workspace_returns_no_paths(self):
-        self.assertEqual(rv.write_context("/proc/nonexistent/x", diff="d"), {})
+        # `/proc` is a POSIX assumption and becomes a writable drive-root path
+        # on Windows.  Exercise the refusal itself without touching the host.
+        with mock.patch.object(rv.os, "makedirs", side_effect=PermissionError), \
+                mock.patch.object(rv, "_record"):
+            self.assertEqual(rv.write_context(self.ws, diff="d"), {})
 
     def test_four_agents_share_one_diff(self):
         """The measured shape: N briefs, one payload."""

@@ -41,7 +41,6 @@ KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
 RESULT_SCHEMA = "taskplane.lens-slot-output/v2"
 RESULT_AUTHOR = "lens-slot"
-BLOCKING_FINDING_SEVERITIES = frozenset({"blocker"})
 
 
 class ReviewKernelError(RuntimeError):
@@ -861,11 +860,18 @@ def _validate_finding(row: dict, lens_ids: list[str]) -> dict:
 
 
 def blocking_findings_by_lens(findings: Iterable[dict]) -> dict[str, int]:
-    """Derive gate authority from canonical findings, never a summary row."""
+    """Derive gate authority through the canonical class-aware policy.
+
+    Lens producers use multiple severity vocabularies.  The loop policy is
+    authoritative: every regression blocks regardless of severity, while
+    pre-existing findings and observations remain visible but non-blocking.
+    Late binding preserves that single policy seam without duplicating it.
+    """
+    import loop as loop_engine
+
     counts: dict[str, int] = {}
     for finding in findings or []:
-        if not isinstance(finding, dict) or \
-                finding.get("severity") not in BLOCKING_FINDING_SEVERITIES:
+        if not isinstance(finding, dict) or not loop_engine.finding_blocks(finding):
             continue
         lens_id = str(finding.get("lens") or "").strip()
         if lens_id:
@@ -1362,7 +1368,10 @@ def write_context(ws: str, *, diff: str = "", impact: dict | None = None,
         try:
             with open(p, "w", encoding="utf-8") as f:
                 f.write(body)
-            out[name] = os.path.join(CONTEXT_DIR, name)
+            # These paths cross the host boundary inside immutable briefs.
+            # Keep filesystem construction host-native, but emit portable
+            # POSIX references so Claude/Codex payload bytes match on Windows.
+            out[name] = tp.to_posix(os.path.join(CONTEXT_DIR, name))
         except OSError:
             continue
     _record(ws, out, "written" if out else "empty")
