@@ -72,6 +72,9 @@ def author_leased_results(ws):
             ],
             "findings": [],
         }
+        if brief.get("language_references"):
+            payload["references_applied"] = list(
+                brief["language_references"])
         content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         event = {"session_id": "evidence-bundle-lens",
                  "agent_id": f"evidence-bundle-child-{index}",

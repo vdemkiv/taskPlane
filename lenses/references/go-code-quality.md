@@ -4,6 +4,10 @@
 Target language version: **Go 1.26**. Go 1.27 is still an unreleased draft as
 of 2026-08-14, so draft-only behavior is not an adopted review rule.
 
+Sources and attribution: [SOURCES.md](SOURCES.md). Concepts from
+`spf13/go-skills` are adapted under MIT from commit
+`e67851cfcca008592c7c4965b8220c7cb37e2f1c` and checked against Go 1.26.
+
 The language-specific standard for Go. `the code-quality lens` delegates here whenever changed files are `.go`. Go compiles strictly, so the quality bar shifts to what the compiler *doesn't* enforce: error handling, concurrency safety, and idiom. The single highest-value check in Go is **error handling** — treat it as the headline.
 
 ## 1. Tooling Gate (hard PASS/FAIL)

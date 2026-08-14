@@ -18,6 +18,9 @@ after that the loop escalates to the human, and that's correct behavior.
 
 1. Read `.eval/verdict.json`: every failure carries a repro. Reproduce it
    FIRST (`discipline/systematic-debugging.md`) — never fix unverified.
+   Also apply every scoped `language_references` record in the action payload:
+   resolve it from the plugin root, verify `content_sha256`, and use only the
+   named section when one is present.
 2. Fix the root cause, not the symptom; if the failure points at the
    requirement or the design (not the code), say so in the gate note —
    that feedback is worth more than a patch.

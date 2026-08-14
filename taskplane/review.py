@@ -346,6 +346,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             lens_ids=lens_ids, canonical_revision=revision)
         source = full_briefs.get(
             "light-sweep" if slot_id == "light-sweep" else lens_ids[0]) or {}
+        required_references = list(source.get("language_references") or [])
         result_path = os.path.join(
             ".eval" if stage == "build" else ".em-review",
             "kernel-v2", "results",
@@ -376,6 +377,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                 "required_lines": ["taskplane-result-path:<result_path>",
                                    "taskplane-result-sha256:<sha256>"]},
         }
+        if required_references:
+            result_schema["required"].append("references_applied")
+            result_schema["references_applied"] = {
+                "type": "array", "exact": required_references}
         brief = {
             "schema": "taskplane.lens-brief/v2", "slot_id": slot_id,
             "lens_ids": lens_ids, "target_fingerprint":
@@ -397,10 +402,13 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                        "identity field exactly; authored_by is lens-slot."
                        + ((" Read and apply the plugin-pinned language "
                            "references, resolving them against the plugin "
-                           "root that contains role_instructions: " + ", ".join(
-                               r["path"] for r in
-                               source.get("language_references") or []) + ".")
-                          if source.get("language_references") else "")),
+                           "root that contains role_instructions. Read only "
+                           "the named section when present, verify each "
+                           "content_sha256, and copy the exact records into "
+                           "references_applied: " + json.dumps(
+                               required_references, sort_keys=True,
+                               separators=(",", ":")) + ".")
+                          if required_references else "")),
             # Concrete model ids are host-adapter transport, not canonical
             # review evidence: Claude's cheap default is `haiku`, while Codex
             # inherits.  Persist the portable capability request only.
@@ -408,9 +416,8 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                      ("agent", "model_tier", "reasoning_effort",
                       "task_name", "role_marker") if source.get(key) is not None},
         }
-        if source.get("language_references"):
-            brief["language_references"] = list(
-                source["language_references"])
+        if required_references:
+            brief["language_references"] = required_references
         brief_ref = store.put("lens-brief", brief)
         row = {"slot_id": slot_id, "lens_ids": lens_ids,
                "view": view_ref, "lease": lease_ref,
@@ -1048,6 +1055,12 @@ def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
                 f"slot result {field} does not match lease")
     if row.get("schema") != RESULT_SCHEMA or row.get("authored_by") != RESULT_AUTHOR:
         raise evidence.ProvenanceError("slot result violates canonical result schema")
+    brief = store.read(slot["brief"])
+    expected_references = list(brief.get("language_references") or [])
+    if expected_references and row.get("references_applied") != \
+            expected_references:
+        raise evidence.ProvenanceError(
+            "slot result did not apply its exact language references")
     lens_rows = row.get("lens_results")
     if not isinstance(lens_rows, list):
         raise evidence.ProvenanceError("slot result lens_results must be a list")
@@ -1128,7 +1141,8 @@ def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
     ref = evidence.write_slot_result(
         store, slot["lease"], authored_slot=row["slot_id"],
         lens_ids=row["lens_ids"], findings=findings,
-        authored_by=row["authored_by"])
+        authored_by=row["authored_by"],
+        references_applied=expected_references)
     return ref, [by_lens[lid] for lid in sorted(by_lens)]
 
 

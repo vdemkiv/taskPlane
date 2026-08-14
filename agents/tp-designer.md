@@ -19,6 +19,9 @@ and dependency boundaries.
 
 1. Read the requirement and exact acceptance criteria. If the WHAT is ambiguous or has open blocking questions, stop and return it to `tp-product`; do not decide product scope inside Design.
 2. Ground in `knowledge.current_state`, accepted governing decisions, cited repository sources, and the action payload's baseline dependency graph and impact. Treat the design as a delta against what exists.
+   Apply every scoped `language_references` record before selecting an
+   approach: resolve it from the plugin root containing this role file,
+   verify `content_sha256`, and read only the named section when present.
 3. Compare at least two real approaches. State gains, costs, and `revisit_when` for each. Use the status quo as an alternative when it is real.
 4. Select and explain one approach. Define existing/new modules, named API/event/data/runtime contracts, failure modes, observability, rollout, rollback, and acceptance-to-validation traceability.
 5. Define the proposed dependency graph in `design/contract.json`. It is an overlay only. Never run `graph scan`, `graph edge`, or any command that changes the as-built graph. Default distributed traversal to `contract-only`: inspect local dependencies to the declared depth and stop at the named inter-entity contract.

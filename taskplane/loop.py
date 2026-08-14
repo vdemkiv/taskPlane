@@ -502,8 +502,12 @@ def wave(ws: str) -> dict:
     for t in ready:
         dispatch = tp.dispatch_fields(
             "step", "tp-executor", t["id"], tp.step_tier("execute", t))
+        task_ws = t.get("workspace") or os.path.join(ws, ".tp-work", t["id"])
+        if not os.path.isdir(task_ws):
+            task_ws = ws
         prime = lens_router.prime_scope(t.get("scope"),
-                                        task_type=t.get("type"))
+                                        task_type=t.get("type"),
+                                        workspace=task_ws)
         recalled = kb.retrieve(ws, files=t.get("scope") or [],
                                tags=[t["id"]], limit=3)
         rid = t.get("req") or state.get("requirement_id")
@@ -516,6 +520,8 @@ def wave(ws: str) -> dict:
             "worktree": f".tp-work/{t['id']}",
             "merge_on_pass": not is_variant,
             "lenses": prime["lenses"],
+            "language_references": (prime.get("context") or {}).get(
+                "language_references") or [],
             "requirement": rec and {"id": rec["id"], "title": rec["title"],
                                     "acceptance": rec["acceptance"]},
             "design": _design_context(ws, state),
@@ -874,8 +880,12 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         # The design lens is mandatory at this phase, independent of diff
         # routing. Keep a fallback brief so an in-place minor update remains
         # resumable while the catalog file itself is being upgraded.
+        design_req = reqs.get_requirement(ws, state.get("requirement_id"))
+        design_scope = (design_req or {}).get("context_files") or []
+        design_files = list(design_scope) + \
+            lens_router.workspace_language_markers(ws, design_scope)
         routed = lens_router.route(
-            lens_router.workspace_language_markers(ws),
+            design_files,
             task_type="solution-design", only=["solution-design"])
         routing = routed if routed.get("lenses") else {"lenses": [{
             "id": "solution-design", "name": "Solution design",

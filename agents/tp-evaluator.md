@@ -53,6 +53,9 @@ the work to**; if absent, use the task's criteria from plan/tasks.json),
 `lenses` (the ROUTED lens list for the real diff, each with mode and
 reasons), `impact` (the fresh, policy-bounded dependency graph), and
 `knowledge` (prior decisions — respect settled calls; flag, don't relitigate).
+Language-specific standards are carried in the canonical leased lens briefs
+as content-bound `language_references`; consume those exact records and never
+reselect a language guide from model memory.
 When `design` is present it is an approved, fingerprinted Design Contract;
 stale evidence or unexplained implementation drift is a failure, not a note.
 

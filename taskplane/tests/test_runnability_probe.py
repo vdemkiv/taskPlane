@@ -45,6 +45,12 @@ class TestDetection(unittest.TestCase):
             open(os.path.join(d, "package.json"), "w").close()
             self.assertEqual(runnability.detect(d), ["go", "node"])
 
+    def test_typescript_is_a_first_class_toolchain_not_only_generic_node(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "tsconfig.json"), "w").close()
+            open(os.path.join(d, "package.json"), "w").close()
+            self.assertEqual(runnability.detect(d), ["typescript", "node"])
+
     def test_a_repo_with_no_manifests_detects_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(runnability.detect(d), [])
@@ -120,6 +126,21 @@ class TestTheProbeIsNotTheSuite(unittest.TestCase):
                 runnability.shutil.which = orig
             self.assertEqual(res["checks"][0]["verdict"], runnability.BROKEN)
             self.assertIn("node_modules", res["checks"][0]["detail"])
+
+    def test_typescript_requires_the_checkout_local_compiler(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "tsconfig.json"), "w").close()
+            os.makedirs(os.path.join(d, "node_modules"))
+            orig = runnability.shutil.which
+            runnability.shutil.which = lambda t: "/usr/bin/" + t
+            try:
+                res = runnability.probe(d)
+            finally:
+                runnability.shutil.which = orig
+            self.assertEqual(res["checks"][0]["id"], "typescript")
+            self.assertEqual(res["checks"][0]["verdict"],
+                             runnability.BROKEN)
+            self.assertIn("TypeScript compiler", res["checks"][0]["detail"])
 
     def test_the_probe_never_raises_even_when_the_child_cannot_start(self):
         with tempfile.TemporaryDirectory() as d:

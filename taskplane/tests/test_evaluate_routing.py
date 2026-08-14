@@ -99,6 +99,8 @@ def _write_kernel_results(ws, *, dropped=None):
                "authored_by": "lens-slot", "findings": [],
                "lens_results": [{"lens": lid, "verdict": "pass",
                                   "blockers": 0} for lid in lens_ids]}
+        if brief.get("language_references"):
+            row["references_applied"] = list(brief["language_references"])
         content = json.dumps(row, sort_keys=True, separators=(",", ":"))
         event = {"session_id": "eval-lens-session",
                  "agent_id": f"eval-lens-child-{index}",
@@ -244,6 +246,9 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
                        "schema": "taskplane.lens-slot-output/v2",
                        "authored_by": "lens-slot",
                        "lens_results": rows, "findings": findings}
+            if brief_row.get("language_references"):
+                payload["references_applied"] = list(
+                    brief_row["language_references"])
             content = json.dumps(
                 payload, sort_keys=True, separators=(",", ":"))
             event = {"session_id": "eval-child",

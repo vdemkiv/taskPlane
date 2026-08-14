@@ -63,6 +63,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 ],
                 "findings": list(slot_findings or []),
             }
+            if brief.get("language_references"):
+                row["references_applied"] = list(
+                    brief["language_references"])
             content = json.dumps(row, sort_keys=True, separators=(",", ":"))
             event = {"session_id": f"lens-session-{state['run_id']}",
                      "agent_id": f"lens-child-{state['run_id'][:8]}-{index}",
@@ -234,6 +237,26 @@ class TestSelectiveReviewKernel(unittest.TestCase):
              "taskplane-result-sha256:<sha256>"])
         self.assertIn("producer_contract", brief)
 
+    def test_language_reference_ack_is_exact_and_canonical(self):
+        self._start()
+        state = review._load_state(self.ws)
+        store = review_evidence.ArtifactStore(self.ws)
+        slot = next(row for row in state["slots"]
+                    if store.read(row["brief"]).get("language_references"))
+        brief = store.read(slot["brief"])
+        self.assertEqual(
+            brief["result_schema"]["references_applied"]["exact"],
+            brief["language_references"])
+        self._write_slot_results()
+        path = os.path.join(self.ws, slot["result_path"])
+        row = json.load(open(path, encoding="utf-8"))
+        row.pop("references_applied")
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(row, stream, sort_keys=True, separators=(",", ":"))
+        with self.assertRaisesRegex(review_evidence.ProvenanceError,
+                                    "exact language references"):
+            review.collect_review(self.ws, publish=False)
+
     def test_codex_native_session_store_can_bind_exact_slot_result_bytes(self):
         """A native child completion is provenance, not model self-assertion."""
         import hashlib
@@ -253,6 +276,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                    "lens_results": [
                        {"lens": lens_id, "verdict": "pass", "blockers": 0}
                        for lens_id in lease["lens_ids"]]}
+            if brief.get("language_references"):
+                row["references_applied"] = list(
+                    brief["language_references"])
             raw = json.dumps(row, sort_keys=True,
                              separators=(",", ":")).encode("utf-8")
             result = os.path.join(self.ws, slot["result_path"])
@@ -297,11 +323,15 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         store = review_evidence.ArtifactStore(self.ws)
         for slot in state["slots"]:
             lease = store.read(slot["lease"])
+            brief = store.read(slot["brief"])
             row = {**lease, "schema": "taskplane.lens-slot-output/v2",
                    "authored_by": "lens-slot", "findings": [],
                    "lens_results": [
                        {"lens": lid, "verdict": "pass", "blockers": 0}
                        for lid in lease["lens_ids"]]}
+            if brief.get("language_references"):
+                row["references_applied"] = list(
+                    brief["language_references"])
             path = os.path.join(self.ws, slot["result_path"])
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as stream:
@@ -346,6 +376,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             "authored_by": "lens-slot", "findings": [],
             "lens_results": [{"lens": lid, "verdict": "pass", "blockers": 0}
                              for lid in lease["lens_ids"]],
+            **({"references_applied": list(brief["language_references"])}
+               if brief.get("language_references") else {}),
         }, sort_keys=True, separators=(",", ":"))
         lifecycle = {"turn_id": "turn-real", "agent_id": "child-real"}
         parent = {"task": "EVALUATE: parent", "read_only": True,

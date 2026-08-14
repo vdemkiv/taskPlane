@@ -268,3 +268,33 @@ re-read the repository or broaden to all lenses.
 The canonical Evaluate routing input records `stage="build"`; final
 engineering review records the review stage. This distinction changes the
 stage profile, never the shared diff, graph impact, or evidence identity.
+
+## Go, Python, and TypeScript references are workflow inputs
+
+Language guidance is attached after lens applicability is decided, so it
+cannot widen the review. Detection uses changed source files and bounded
+workspace manifests; generic Build scopes receive one representative path per
+detected language, while Design also uses the requirement's actual context
+files. The same content-bound records then travel through serial Execute/Fix,
+parallel waves, Design, Evaluate, and final engineering review.
+
+Each record identifies its owning lens, plugin-relative path, optional section,
+and SHA-256. Workers resolve it against the plugin root, verify the digest, and
+read only the named section. Selective reviewers must return the exact records
+as `references_applied`; collection rejects an omitted or changed path,
+section, or digest before canonical revision commit. Reference bodies remain
+on disk and are not copied into every brief.
+
+The language layer complements rather than replaces executable evidence:
+
+- Go imports and declared module paths feed the dependency graph; runnability
+  probes `go list ./...` once and states whether `go test ./...` can start.
+- Python imports feed the graph and regression-radius discovery; runnability
+  verifies that the checkout's Python/pytest path is available.
+- TypeScript/JavaScript imports feed the graph; `tsconfig.json` activates a
+  first-class local TypeScript compiler probe, while `package.json` retains the
+  generic Node/npm check.
+
+Canonical sources and the pinned upstream Go reference revision are recorded
+in `lenses/references/SOURCES.md`. Missing reference files or named sections
+fail closed at routing time rather than silently falling back to model memory.

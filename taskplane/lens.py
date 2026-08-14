@@ -14,6 +14,7 @@ are touched or the change is large. Pure stdlib.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 
@@ -40,39 +41,108 @@ _HARD_LENSES = {"security", "architecture", "scalability", "data-safety",
 _LANGUAGE_REFERENCES = {
     "go": {
         "extensions": (".go",), "manifests": ("go.mod", "go.sum"),
-        "code-quality": "lenses/references/go-code-quality.md",
-        "solution-design": "lenses/references/go-solution-design.md",
+        "references": {
+            "code-quality": {"path": "lenses/references/go-code-quality.md"},
+            "solution-design": {"path": "lenses/references/go-solution-design.md"},
+            "architecture": {"path": "lenses/references/go-engineering.md", "section": "Architecture"},
+            "backend": {"path": "lenses/references/go-engineering.md", "section": "Backend"},
+            "sre": {"path": "lenses/references/go-engineering.md", "section": "SRE"},
+            "security": {"path": "lenses/references/go-engineering.md", "section": "Security"},
+            "qa": {"path": "lenses/references/go-engineering.md", "section": "QA"},
+            "testability": {"path": "lenses/references/go-engineering.md", "section": "Testability"},
+            "scalability": {"path": "lenses/references/go-engineering.md", "section": "Scalability"},
+            "integrability": {"path": "lenses/references/go-engineering.md", "section": "Integrability"},
+            "data-safety": {"path": "lenses/references/go-engineering.md", "section": "Data safety"},
+        },
     },
     "python": {
         "extensions": (".py",),
         "manifests": ("pyproject.toml", "requirements.txt", "setup.py"),
-        "code-quality": "lenses/references/python-code-quality.md",
+        "references": {
+            "code-quality": {"path": "lenses/references/python-code-quality.md"},
+            "solution-design": {"path": "lenses/references/python-solution-design.md"},
+            "scalability": {"path": "lenses/references/python-engineering.md", "section": "Scalability"},
+            "qa": {"path": "lenses/references/python-engineering.md", "section": "QA"},
+            "testability": {"path": "lenses/references/python-engineering.md", "section": "Testability"},
+            "devops": {"path": "lenses/references/python-engineering.md", "section": "Packaging and DevOps"},
+            "integrability": {"path": "lenses/references/python-engineering.md", "section": "Integrability"},
+            "security": {"path": "lenses/references/python-engineering.md", "section": "Security"},
+            "sre": {"path": "lenses/references/python-engineering.md", "section": "SRE"},
+        },
     },
     "typescript": {
         "extensions": (".ts", ".tsx"),
         "manifests": ("tsconfig.json",),
-        "code-quality": "lenses/references/typescript-code-quality.md",
+        "references": {
+            "code-quality": {"path": "lenses/references/typescript-code-quality.md"},
+            "solution-design": {"path": "lenses/references/typescript-solution-design.md"},
+            "integrability": {"path": "lenses/references/typescript-engineering.md", "section": "Integrability"},
+            "devops": {"path": "lenses/references/typescript-engineering.md", "section": "DevOps"},
+            "scalability": {"path": "lenses/references/typescript-engineering.md", "section": "Scalability"},
+            "architecture": {"path": "lenses/references/typescript-engineering.md", "section": "Architecture"},
+            "frontend": {"path": "lenses/references/typescript-engineering.md", "section": "Frontend async"},
+            "security": {"path": "lenses/references/typescript-engineering.md", "section": "Security"},
+        },
     },
 }
 
 
-def language_references(files, task_type: str | None = None) -> list[dict]:
-    """Resolve applicable language references from repo-relative paths."""
+def detected_languages(files) -> list[str]:
+    """Languages declared by file extensions or root/build manifests."""
     paths = [str(p).replace("\\", "/") for p in files or []]
-    refs = []
+    found = []
     for language, spec in _LANGUAGE_REFERENCES.items():
         present = any(
             p.lower().endswith(tuple(spec["extensions"]))
             or os.path.basename(p).lower() in spec["manifests"]
             for p in paths)
-        if not present:
-            continue
-        purposes = ["solution-design"] if task_type == "solution-design" \
-            and spec.get("solution-design") else ["code-quality"]
-        for lens_id in purposes:
-            refs.append({"language": language, "lens": lens_id,
-                         "path": spec[lens_id]})
-    return refs
+        if present:
+            found.append(language)
+    return found
+
+
+def _reference_record(language: str, lens_id: str, spec: dict) -> dict:
+    path = str(spec["path"]).replace("\\", "/")
+    plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    absolute = os.path.realpath(os.path.join(plugin_root, *path.split("/")))
+    if os.path.commonpath((os.path.realpath(plugin_root), absolute)) != \
+            os.path.realpath(plugin_root) or not os.path.isfile(absolute):
+        raise FileNotFoundError(f"language reference is missing or unsafe: {path}")
+    with open(absolute, "rb") as stream:
+        content = stream.read()
+    section = str(spec.get("section") or "")
+    if section:
+        heading = "## " + section
+        if heading not in content.decode("utf-8", errors="replace").splitlines():
+            raise ValueError(
+                f"language reference section is missing: {path}#{section}")
+    digest = hashlib.sha256(content).hexdigest()
+    row = {"language": language, "lens": lens_id, "path": path,
+           "content_sha256": digest}
+    if section:
+        row["section"] = section
+    return row
+
+
+def language_references(files, task_type: str | None = None,
+                        lens_ids=None) -> list[dict]:
+    """Resolve scoped, content-bound references from repo-relative paths.
+
+    The public default remains the code-quality reference for compatibility.
+    Workflow routing passes its active lens ids and receives the complete
+    lens-owned set without widening which lenses execute.
+    """
+    wanted = ({"solution-design"} if task_type == "solution-design" else
+              ({str(x) for x in lens_ids} if lens_ids is not None else
+               {"code-quality"}))
+    refs = []
+    for language in detected_languages(files):
+        for lens_id, ref_spec in _LANGUAGE_REFERENCES[language][
+                "references"].items():
+            if lens_id in wanted:
+                refs.append(_reference_record(language, lens_id, ref_spec))
+    return sorted(refs, key=lambda row: (
+        row["language"], row["lens"], row["path"], row.get("section", "")))
 
 
 def workspace_language_markers(workspace: str | None,
@@ -115,7 +185,12 @@ def workspace_language_markers(workspace: str | None,
 
 def _attach_language_context(routing: dict, files,
                              task_type: str | None) -> dict:
-    refs = language_references(files, task_type)
+    active_lenses = {
+        str(row.get("id")) for row in routing.get("lenses") or []
+        if row.get("tier") != "n/a" and row.get("verdict") != "n/a"
+        and row.get("mode") not in {"none", "n/a"}
+    }
+    refs = language_references(files, task_type, active_lenses)
     if not refs:
         return routing
     routing.setdefault("context", {})["language_references"] = refs
@@ -129,14 +204,19 @@ def _attach_language_context(routing: dict, files,
 
 
 def _language_note(refs) -> str:
-    paths = sorted({str(r.get("path")) for r in refs or [] if r.get("path")})
-    if not paths:
+    entries = sorted({
+        str(r.get("path")) + ("#" + str(r.get("section"))
+                              if r.get("section") else "")
+        + " sha256=" + str(r.get("content_sha256"))
+        for r in refs or [] if r.get("path") and r.get("content_sha256")})
+    if not entries:
         return ""
-    return ("\nLANGUAGE REFERENCES: read and apply " + ", ".join(paths)
+    return ("\nLANGUAGE REFERENCES: read and apply " + ", ".join(entries)
             + ". Resolve these plugin-relative paths against the plugin root "
               "that contains your role_instructions file. These pinned "
               "standards are part of this brief; do not substitute model "
-              "memory for them.\n")
+              "memory for them. Copy the exact reference records into "
+              "references_applied in the leased result.\n")
 
 
 def _lens_tier(lens_id: str, brief_tier: str) -> str:
@@ -966,20 +1046,21 @@ def prime_scope(scope_globs, task_type: str | None = None,
     """
     cat = catalog or load_catalog()
     markers = workspace_language_markers(workspace, scope_globs)
-    inferred = language_references(markers)
+    inferred = detected_languages(markers)
     extension_by_language = {"go": ".go", "python": ".py",
                              "typescript": ".ts"}
-    representative_ext = next(
-        (extension_by_language[r["language"]] for r in inferred
-         if r["language"] in extension_by_language),
-        (cat.get("code_extensions") or [""])[0])
+    representative_exts = [
+        extension_by_language[language] for language in inferred
+        if language in extension_by_language]
+    if not representative_exts:
+        representative_exts = [(cat.get("code_extensions") or [""])[0]]
     files = list(markers)
     for g in scope_globs or []:
         files.append(g)
         base_name = os.path.basename(g)
         if g.endswith("**"):
-            files.append(g.rstrip("*").rstrip("/") + "/x"
-                         + representative_ext)
+            prefix = g.rstrip("*").rstrip("/") + "/x"
+            files.extend(prefix + ext for ext in representative_exts)
         elif "*" in base_name:
             files.append(base_name.replace("*", "x"))
     routing = route(files, task_type=task_type, catalog=cat, **kw)
@@ -1198,8 +1279,14 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     sweep_brief = None
     if sweep:
         names = ", ".join(s["name"] for s in sweep)
-        sweep_refs = [ref for row in sweep
-                      for ref in row.get("language_references") or []]
+        sweep_refs = []
+        seen_refs = set()
+        for row in sweep:
+            for ref in row.get("language_references") or []:
+                key = json.dumps(ref, sort_keys=True, separators=(",", ":"))
+                if key not in seen_refs:
+                    sweep_refs.append(ref)
+                    seen_refs.add(key)
         sweep_brief = {**tp.dispatch_fields(
             "lens", "tp-lens", "sweep", "cheap"),
             "ids": [s["id"] for s in sweep], "agent": "tp-lens",

@@ -880,6 +880,8 @@ def _author_kernel_results(ws):
                "lens_results": [{"lens": lens_id, "verdict": "pass",
                                   "blockers": 0}
                                 for lens_id in lease["lens_ids"]]}
+        if brief.get("language_references"):
+            row["references_applied"] = list(brief["language_references"])
         producer = brief["producer_contract"]
         content = json.dumps(row, sort_keys=True, separators=(",", ":"))
         event = {"session_id": "stage-lens-session",

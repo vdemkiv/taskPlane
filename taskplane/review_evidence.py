@@ -350,7 +350,8 @@ def create_slot_lease(store: ArtifactStore, envelope_ref: dict, view_ref: dict,
 
 def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
                       authored_slot: str, lens_ids, findings,
-                      authored_by: str = "lens-slot") -> dict:
+                      authored_by: str = "lens-slot",
+                      references_applied=None) -> dict:
     lease = store.read(lease_ref)
     if lease.get("schema") != "taskplane.slot-lease/v1":
         raise ProvenanceError("result lease is invalid")
@@ -373,6 +374,9 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
         "authored_by": authored_by,
         "findings": copy.deepcopy(list(findings or [])),
     }
+    if references_applied:
+        base["references_applied"] = copy.deepcopy(
+            list(references_applied))
     result_fp = content_fingerprint(base)
     return store.put("slot-result", dict(base, result_fingerprint=result_fp),
                      fingerprint=result_fp)

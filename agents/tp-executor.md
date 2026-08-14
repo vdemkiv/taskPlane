@@ -25,6 +25,11 @@ work ONLY there.
    contracts, boundary depth, failure handling, rollout, and validation map as
    part of the task contract. Stop on a conflict or necessary drift; do not
    silently redesign during implementation.
+   When `language_references` is non-empty, resolve each plugin-relative path
+   against the plugin root containing this role file, verify its
+   `content_sha256`, read only its named section when present, and apply it
+   before writing code. Do not substitute model memory for a pinned project
+   standard.
 2. TDD per `discipline/tdd.md`: failing test per acceptance criterion →
    smallest passing code → refactor green.
 3. Run the task's declared test command yourself before submitting. During a

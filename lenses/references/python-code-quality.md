@@ -3,6 +3,9 @@
 
 Target language version: **Python 3.14**.
 
+Sources and attribution: [SOURCES.md](SOURCES.md). Guidance is original text
+checked against Python 3.14 and PyPA specifications.
+
 The language-specific standard for Python. `the code-quality lens` delegates here whenever changed files are `.py`. Python's flexibility means the type checker and linter — not the interpreter — are the quality gate. Code that *runs* is not code that *passes*.
 
 ## 1. Tooling Gate (hard PASS/FAIL)
@@ -50,6 +53,14 @@ Type hints are mandatory on all public functions, methods, and module-level cons
 grep -rnP '\bAny\b|# type: ignore(?!\[)|# noqa(?!:)|\bcast\(' --include='*.py' src/
 ```
 
+Model domain distinctions instead of only prohibiting `Any`: use `NewType`
+for primitive identities, discriminated unions for mutually exclusive states,
+and `assert_never` to make exhaustiveness checkable. Prefer a consumer-owned
+`Protocol` for structural capability; choose an ABC only when runtime
+inheritance or shared implementation is part of the contract. `@overload`
+describes one runtime implementation—it is not permission for divergent
+behaviors hidden behind type-only signatures.
+
 ## 4. Naming Conventions (PEP 8)
 
 | Element | Convention | Example |
@@ -81,14 +92,29 @@ Forbid: single-char names (except loop indices/comprehensions), mutable default 
 
 Catch specific exceptions, never bare `except:` or `except Exception` without re-raise/handling. Define custom exception types for domain errors. Never swallow silently — log via `logging`, never `print`. Use `raise ... from err` to preserve context. Do not use `assert` for runtime validation (stripped under `-O`).
 
-## 7. Security Quick-Scan
+For async code, prefer owned concurrency with `asyncio.TaskGroup`; bound load
+explicitly and never block the event loop. `CancelledError` is a
+`BaseException`: cleanup may catch it, but must normally re-raise it. A
+`TaskGroup` can raise an `ExceptionGroup`, so handling may require `except*`—a
+plain `except SomeError` does not select members of the group.
+
+## 7. Test and package integrity
+
+Reject false-green tests: conditional assertions, duplicate-blind presence
+checks, mocks of the unit under test, and fixture values for which correct and
+buggy implementations agree. Build success is not package success: inspect the
+wheel, install it in a clean environment, and import a real public symbol from
+outside the repository root. Put development tools in standardized dependency
+groups rather than product extras.
+
+## 8. Security Quick-Scan
 
 ```bash
 bandit -r src/ -ll    # high/medium severity → review
 ```
 Flag: `eval`/`exec`/`pickle` on untrusted data; f-string/`%`-built SQL (require parameterized queries); `subprocess(..., shell=True)`; `yaml.load` without `SafeLoader`; hardcoded secrets; `requests` calls without `timeout=`; `assert` used for validation; `tempfile.mktemp`.
 
-## 8. Reuse & Duplication
+## 9. Reuse & Duplication
 
 ```bash
 pylint --disable=all --enable=duplicate-code src/      # R0801 duplicate-code
@@ -104,7 +130,7 @@ pylint --disable=all --enable=duplicate-code src/      # R0801 duplicate-code
 
 Report duplication locations and whether extraction is warranted; don't over-abstract one-off similarity.
 
-## 9. Report Format (slots into the code-quality lens)
+## 10. Report Format (slots into the code-quality lens)
 
 ```markdown
 ### Python Quality: PASS ✅ / FAIL ❌

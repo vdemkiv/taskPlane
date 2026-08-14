@@ -106,9 +106,31 @@
   },
   "language_references": [
     {
+      "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
       "language": "python",
       "lens": "code-quality",
       "path": "lenses/references/python-code-quality.md"
+    },
+    {
+      "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+      "language": "python",
+      "lens": "qa",
+      "path": "lenses/references/python-engineering.md",
+      "section": "QA"
+    },
+    {
+      "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+      "language": "python",
+      "lens": "security",
+      "path": "lenses/references/python-engineering.md",
+      "section": "Security"
+    },
+    {
+      "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+      "language": "python",
+      "lens": "testability",
+      "path": "lenses/references/python-engineering.md",
+      "section": "Testability"
     }
   ],
   "lenses": [
@@ -120,6 +142,15 @@
         "zizmor (GitHub Actions workflows, when `.github/**` is in the diff)"
       ],
       "id": "security",
+      "language_references": [
+        {
+          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "language": "python",
+          "lens": "security",
+          "path": "lenses/references/python-engineering.md",
+          "section": "Security"
+        }
+      ],
       "looks_for": "secrets (exposure = compromise, rotate not delete), authz gaps incl. object-level/IDOR, injection, SSRF, unsafe input, security misconfiguration, supply-chain & build integrity (deps, lockfiles, CI workflows, install scripts, pinning), fail-open error paths, AI/agent surface risk",
       "mode": "inline",
       "name": "Security",
@@ -138,6 +169,7 @@
       "id": "code-quality",
       "language_references": [
         {
+          "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
           "language": "python",
           "lens": "code-quality",
           "path": "lenses/references/python-code-quality.md"
@@ -156,6 +188,15 @@
         "coverage \u2014 use ONLY as evidence for check 4: which new branches NO test can reach at all. Do not report a coverage percentage or judge coverage adequacy; that is qa's. [Inozemtseva & Holmes, ICSE 2014: coverage correlates only weakly-to-moderately with suite effectiveness once suite size is controlled \u2014 a number here would be an unsupported quality claim]"
       ],
       "id": "testability",
+      "language_references": [
+        {
+          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "language": "python",
+          "lens": "testability",
+          "path": "lenses/references/python-engineering.md",
+          "section": "Testability"
+        }
+      ],
       "looks_for": "seams and substitutability (clock, network, filesystem, DB, model/LLM client), hidden globals and shared state OUTSIDE the process, non-determinism, parallel-safety, reachability of new branches from a public surface, a pure side-effect-free core that invariants could be stated against",
       "mode": "inline",
       "name": "Testability",
@@ -178,6 +219,15 @@
     {
       "checks": [],
       "id": "qa",
+      "language_references": [
+        {
+          "content_sha256": "4c144134c4a10697bffcb806c964278abb3fc5ecadb9401a554a784395e69ace",
+          "language": "python",
+          "lens": "qa",
+          "path": "lenses/references/python-engineering.md",
+          "section": "QA"
+        }
+      ],
       "looks_for": "test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths",
       "mode": "inline",
       "name": "QA",

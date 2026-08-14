@@ -5,6 +5,9 @@ Target language version: **TypeScript 7.0**. TypeScript 7 adopts the 6.0
 configuration defaults; projects that still require the programmatic compiler
 API may need the supported TypeScript 6 compatibility package.
 
+Sources and attribution: [SOURCES.md](SOURCES.md). Guidance is original text
+checked against TypeScript and typescript-eslint documentation.
+
 The language-specific standard for TypeScript and TSX. `the code-quality lens` delegates here whenever changed files are `.ts`/`.tsx`. The compiler alone proves *valid* TypeScript; this skill proves *well-typed, consistently styled, safe* TypeScript.
 
 ## 1. Tooling Gate (hard PASS/FAIL)
@@ -38,6 +41,13 @@ If `eslint`/`prettier` are not configured, that absence is itself a FAIL finding
 | `"noFallthroughCasesInSwitch": true` | Catches missing `break`/`return` |
 | `"isolatedModules": true` + `"verbatimModuleSyntax": true` | Forces `import type`, safe for bundlers |
 | `"forceConsistentCasingInFileNames": true` | Cross-OS import safety |
+
+TypeScript 6+ treats several older settings as migration defects: do not use
+`moduleResolution: node10`/`node`, `classic`, AMD/UMD/SystemJS module targets,
+or `outFile` as a modern baseline. Choose `bundler` when a bundler owns runtime
+resolution and `nodenext` for Node execution or library declarations. The
+package `type`, source extensions, exports, emitted JavaScript, and declaration
+resolution must agree.
 
 ## 3. Type Safety & Escape Hatches
 
@@ -85,6 +95,16 @@ grep -rnE '\bas any\b|as unknown as|@ts-ignore|: any\b|eslint-disable' --include
 ## 6. Error Handling
 
 `try/catch` on all async; user-facing feedback on failure; empty/loading/error states handled; no swallowed errors. In `catch (e)`, `e` is `unknown` — narrow before use (`e instanceof Error`). Forbid floating promises (`@typescript-eslint/no-floating-promises`): every promise is `await`ed, `.catch()`ed, or explicitly `void`ed.
+
+Also enable `@typescript-eslint/no-misused-promises`: a promise used as a
+condition or passed to a void-returning callback is not the same failure as a
+floating expression. Propagate `AbortSignal` through cancellable layers and
+define stale-result behavior; `void promise` acknowledges a promise but does
+not cancel it. Preserve causal chains with `Error.cause`.
+
+For monorepos or separate runtime environments, use project references and
+`tsc --build`; diagnose checker cost with `--extendedDiagnostics`,
+`--generateTrace`, and `--explainFiles` before disabling safety.
 
 ## 7. Security Quick-Scan
 

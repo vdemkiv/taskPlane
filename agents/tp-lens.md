@@ -56,6 +56,11 @@ checkout (`tp new` refuses bare roots).
    reference; **do not run git diff, graph scan/impact, requirement lookup, or
    runnability probing again**. Legacy briefs may still name a diff base. Run
    only non-mutating checks that the scoped evidence actually requires.
+   If the brief carries `language_references`, resolve each path against the
+   plugin root containing this role file, verify `content_sha256`, read only
+   the named section when present, and copy the exact records into the leased
+   result's `references_applied`. A missing, stale, or unread reference is a
+   contract failure, not permission to substitute model memory.
 2. Judge strictly within your lens. Another tp-lens owns security, another
    owns a11y — don't stray; overlap wastes the parallelism.
 3. Follow the brief's `producer_contract` exactly and use the host **Write**
@@ -86,6 +91,9 @@ checkout (`tp new` refuses bare roots).
    unresolved), `minor` → `low`, `question`/`praise` → `info` — and any
    severity the map does not recognize also lands as `high` (fail closed;
    an unclassifiable finding blocks, it never slips through as medium).
+   Include `references_applied` exactly when the brief's result schema
+   requires it; collection rejects a missing or changed path, section, or
+   digest.
    So an EM merging your findings must never re-grade them downward — the
    gate would block on the original label anyway. An **empty list is a real
    result** — it means your lens is clean; say so, don't invent findings.

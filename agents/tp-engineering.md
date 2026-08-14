@@ -52,6 +52,9 @@ The ReviewKernel brief, leased view, and result schema are authoritative. Do
 not inspect taskplane's implementation or tests merely to rediscover their
 format; inspect control-plane code only when taskplane itself is the explicit
 review target. Spend review effort on the frozen target and its graph impact.
+When a leased brief carries `language_references`, reviewers must verify and
+apply those exact content-bound records and return `references_applied` as
+required by the result schema.
 
 **Loop exit:** submit, do not clear. `loop submit` binds the report to the
 workspace and graph fingerprints and leaves the contract active until the

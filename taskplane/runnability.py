@@ -51,12 +51,20 @@ SPECS = (
      # sandbox with no module cache and no network fails HERE, in seconds,
      # instead of failing once per agent halfway through a review.
      },
+    {"id": "typescript", "markers": ("tsconfig.json",), "tool": "node",
+     "test_cmd": "npm exec tsc -- --noEmit",
+     "probe": ("node", "node_modules/typescript/bin/tsc", "--version"),
+     "needs_dir": "node_modules",
+     "needs_dir_reason": "dependencies are not installed (no `node_modules`)",
+     "needs_file": "node_modules/typescript/bin/tsc",
+     "needs_file_reason": "the local TypeScript compiler is not installed"},
     {"id": "node", "markers": ("package.json",), "tool": "node",
      "test_cmd": "npm test",
      "probe": ("node", "--version"),
      "needs_dir": "node_modules",
      "needs_dir_reason": "dependencies are not installed (no `node_modules`)"},
-    {"id": "python", "markers": ("pyproject.toml", "setup.py", "tox.ini",
+    {"id": "python", "markers": ("pyproject.toml", "requirements.txt",
+                                 "setup.py", "setup.cfg", "tox.ini",
                                  "pytest.ini"),
      "tool": "python3", "test_cmd": "pytest",
      "probe": ("python3", "-c", "import pytest")},
@@ -111,6 +119,16 @@ def fingerprint(root: str) -> str:
             except OSError:
                 continue
             h.update(f"{m}:{st.st_size}:{st.st_mtime_ns}\n".encode("utf-8"))
+        for dependency in (spec.get("needs_dir"), spec.get("needs_file")):
+            if not dependency:
+                continue
+            path = os.path.join(root, dependency)
+            try:
+                st = os.stat(path)
+                present = f"{dependency}:{st.st_size}:{st.st_mtime_ns}\n"
+            except OSError:
+                present = f"{dependency}:missing\n"
+            h.update(present.encode("utf-8"))
     h.update(("PATH=" + (os.environ.get("PATH") or "")).encode("utf-8"))
     return h.hexdigest()[:16]
 
@@ -128,6 +146,12 @@ def _probe_one(root: str, spec, timeout: int) -> dict:
         entry["verdict"] = BROKEN
         entry["detail"] = spec.get("needs_dir_reason",
                                    f"`{need}` is missing")
+        return entry
+    need_file = spec.get("needs_file")
+    if need_file and not os.path.isfile(os.path.join(root, need_file)):
+        entry["verdict"] = BROKEN
+        entry["detail"] = spec.get(
+            "needs_file_reason", f"`{need_file}` is missing")
         return entry
     try:
         # encoding= is mandatory here: text=True alone decodes with the
