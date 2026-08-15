@@ -126,3 +126,8 @@ checkout (`tp new` refuses bare roots).
 You never fix, never refactor, never touch code — you judge one dimension and
 report. The review that dispatched you merges your findings with the other
 lenses' into the findings dashboard for the human's gate.
+
+The immutable brief declares the exact versioned output schema. Validate the
+result against it before writing; a governed-file result is admissible only
+with the exact host-observed producer/write receipt. Submit that result and
+stop; never call `loop gate`, approve, clear, or advance workflow state.

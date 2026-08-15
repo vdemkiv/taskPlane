@@ -11,18 +11,151 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from functools import lru_cache
+from typing import Any
 
 
 SCHEMA = "taskplane.runtime-evals/v1"
 GUIDANCE_SCHEMA = "taskplane.runtime-guidance/v1"
+LIFECYCLE_SCHEMA = "taskplane.evaluation-lifecycle/v1"
 CONTROL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "skills", "taskplane", "references", "runtime-evals.json")
 _VALID_CLASSES = {"mechanical", "recoverable", "irreversible"}
 REVIEW_FACTS = (
     "graph_before_route", "shared_review_context",
-    "selective_lens_mapping", "lens_results_collected")
+    "selective_lens_mapping", "lens_results_collected",
+    "output_schema_declared", "output_schema_validated",
+    "output_producer_observed")
+
+_LIFECYCLE_TERMINAL = {"success", "failed", "timeout", "cancelled",
+                       "unavailable"}
+_VALIDATION_STATUSES = {"valid", "invalid", "unavailable"}
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|"
+    r"CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*)\s*=\s*[^\s,;]+")
+_ABSOLUTE_PATH = re.compile(
+    r"(?:(?:[A-Za-z]:[\\/])|/)(?:[^\s,;]+[\\/])*[^\s,;]*")
+
+
+def _bounded_diagnostic(value: Any, limit: int = 512) -> str:
+    text = _SECRET_ASSIGNMENT.sub("<redacted>", str(value or ""))
+    text = _ABSOLUTE_PATH.sub("<redacted-path>", text)
+    raw = text.encode("utf-8", errors="replace")[:limit]
+    while raw:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return ""
+
+
+def build_evaluation_lifecycle(
+        *, run_id: str, host: str, host_version: str | None,
+        capability_source: str, transport: str, schema_transport: str,
+        schema_fallback_reason: str | None, task: str | None,
+        slot: str | None, lease: str | None, planned_model: str | None,
+        planned_effort: str | None, observed_model: str | None,
+        observed_effort: str | None, attempts: list[dict], duration_ms: int,
+        terminal_status: str, validation_status: str, telemetry: dict,
+        diagnostics: list[Any]) -> dict:
+    """Build the bounded host-neutral lifecycle record accepted by evals."""
+    safe_attempts = []
+    for index, raw in enumerate(attempts if isinstance(attempts, list) else []):
+        row = raw if isinstance(raw, dict) else {}
+        safe_attempts.append({
+            "attempt": int(row.get("attempt") or index + 1),
+            "status": str(row.get("status") or "failed"),
+            "duration_ms": max(0, int(row.get("duration_ms") or 0)),
+        })
+    safe_diagnostics = []
+    for raw in diagnostics if isinstance(diagnostics, list) else []:
+        if isinstance(raw, dict):
+            code, message = raw.get("code"), raw.get("message")
+        else:
+            code, message = "evaluation", raw
+        safe_diagnostics.append({
+            "code": _bounded_diagnostic(code, 64) or "evaluation",
+            "message": _bounded_diagnostic(message),
+        })
+    telemetry_row = telemetry if isinstance(telemetry, dict) else {}
+    return {
+        "schema": LIFECYCLE_SCHEMA,
+        "run_id": _bounded_diagnostic(run_id, 128),
+        "host": _bounded_diagnostic(host, 32),
+        "host_version": _bounded_diagnostic(host_version, 64)
+        if host_version else None,
+        "capability_source": _bounded_diagnostic(capability_source, 256),
+        "transport": _bounded_diagnostic(transport, 64),
+        "schema_transport": _bounded_diagnostic(schema_transport, 64),
+        "schema_fallback_reason": _bounded_diagnostic(
+            schema_fallback_reason) if schema_fallback_reason else None,
+        "identity": {"task": _bounded_diagnostic(task, 128) if task else None,
+                     "slot": _bounded_diagnostic(slot, 128) if slot else None,
+                     "lease": _bounded_diagnostic(lease, 128) if lease else None},
+        "routing": {
+            "planned": {"model": _bounded_diagnostic(planned_model, 128)
+                         if planned_model else None,
+                        "reasoning_effort": _bounded_diagnostic(
+                            planned_effort, 32) if planned_effort else None},
+            "observed": {"model": _bounded_diagnostic(observed_model, 128)
+                          if observed_model else None,
+                         "reasoning_effort": _bounded_diagnostic(
+                             observed_effort, 32) if observed_effort else None},
+        },
+        "attempts": safe_attempts,
+        "duration_ms": max(0, int(duration_ms or 0)),
+        "terminal_status": str(terminal_status or "unavailable"),
+        "validation_status": str(validation_status or "unavailable"),
+        "telemetry": {
+            "available": telemetry_row.get("available") is True,
+            "reason": _bounded_diagnostic(telemetry_row.get("reason"))
+            if telemetry_row.get("reason") else None,
+        },
+        "diagnostics": safe_diagnostics,
+    }
+
+
+def validate_evaluation_lifecycle(row: dict) -> list[str]:
+    """Return exact schema errors; records do not enter evals when non-empty."""
+    if not isinstance(row, dict):
+        return ["evaluation lifecycle must be an object"]
+    errors = []
+    if row.get("schema") != LIFECYCLE_SCHEMA:
+        errors.append(f"schema must be {LIFECYCLE_SCHEMA}")
+    for key in ("run_id", "host", "capability_source", "transport",
+                "schema_transport"):
+        if not isinstance(row.get(key), str) or not row[key].strip():
+            errors.append(f"missing {key}")
+    if row.get("terminal_status") not in _LIFECYCLE_TERMINAL:
+        errors.append("invalid terminal_status")
+    if row.get("validation_status") not in _VALIDATION_STATUSES:
+        errors.append("invalid validation_status")
+    attempts = row.get("attempts")
+    if not isinstance(attempts, list):
+        errors.append("attempts must be a list")
+    elif any(not isinstance(item, dict)
+             or not isinstance(item.get("attempt"), int)
+             or not isinstance(item.get("duration_ms"), int)
+             for item in attempts):
+        errors.append("attempt record is invalid")
+    if not isinstance(row.get("routing"), dict):
+        errors.append("routing must be an object")
+    if not isinstance(row.get("identity"), dict):
+        errors.append("identity must be an object")
+    telemetry = row.get("telemetry")
+    if not isinstance(telemetry, dict) or not isinstance(
+            telemetry.get("available"), bool):
+        errors.append("telemetry availability is missing")
+    diagnostics = row.get("diagnostics")
+    if not isinstance(diagnostics, list):
+        errors.append("diagnostics must be a list")
+    elif any(not isinstance(item, dict)
+             or len(str(item.get("message") or "").encode("utf-8")) > 512
+             for item in diagnostics):
+        errors.append("diagnostic is invalid or oversized")
+    return errors
 
 
 class RuntimeEvalError(ValueError):
@@ -149,6 +282,62 @@ def review_facts(ws: str, step: str) -> dict:
             state.get("routing_decision") and state.get("routing"))
         facts["lens_results_collected"] = bool(
             state.get("status") == "complete" and state.get("revision"))
+        if step == "evaluate":
+            verdict_path = os.path.join(ws, ".eval", "verdict.json")
+            try:
+                with open(verdict_path, "rb") as stream:
+                    raw = stream.read(1024 * 1024 + 1)
+                verdict = json.loads(raw.decode("utf-8"))
+                import evaluation_output
+
+                facts["output_schema_declared"] = (
+                    isinstance(verdict, dict) and
+                    verdict.get("output_schema") ==
+                    evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID)
+                graph = verdict.get("graph") if isinstance(
+                    verdict.get("graph"), dict) else {}
+                projection = {
+                    "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+                    "task": str(verdict.get("task") or ""),
+                    "requirement": str(verdict.get("requirement") or
+                                       verdict.get("req") or ""),
+                    "verdict": verdict.get("verdict"),
+                    "criteria": [{key: row.get(key) for key in
+                                  ("criterion", "status", "evidence")}
+                                 for row in verdict.get("criteria") or []
+                                 if isinstance(row, dict)],
+                    "lenses": [{key: row.get(key) for key in
+                                ("lens", "verdict", "blockers")}
+                               for row in verdict.get("lenses") or []
+                               if isinstance(row, dict)],
+                    "graph": {
+                        "dispositions": [
+                            {key: row.get(key) for key in
+                             ("node", "status", "evidence")}
+                            for row in graph.get("dispositions") or []
+                            if isinstance(row, dict)],
+                        "requirements_checked": list(
+                            graph.get("requirements_checked") or []),
+                        "contracts_checked": list(
+                            graph.get("contracts_checked") or []),
+                    },
+                    "failures": list(verdict.get("failures") or []),
+                }
+                evaluation_output.validate_output_bytes(
+                    evaluation_output.canonical_bytes(projection), {
+                        "output_schema":
+                            evaluation_output.evaluator_output_schema(),
+                        "max_bytes": evaluation_output.MAX_OUTPUT_BYTES,
+                    })
+                facts["output_schema_validated"] = \
+                    facts["output_schema_declared"]
+            except Exception:
+                facts["output_schema_validated"] = False
+            # The outer verdict is admissible only after the canonical leased
+            # evidence beneath it has an observed producer/write receipt and
+            # has been collected into one revision.
+            facts["output_producer_observed"] = facts[
+                "lens_results_collected"]
     except Exception:
         pass
     return facts

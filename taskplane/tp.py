@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
+import io
 import json
 import os
 import re
@@ -162,12 +164,15 @@ def _install_paths_lines(ctx: str) -> list[str]:
     are the wrong universe — print the Codex marketplace path instead."""
     if os.environ.get("CODEX_HOME") or os.environ.get("CODEX_THREAD_ID"):
         return [
-            "install (Codex host): taskplane ships as an OpenAI marketplace "
+            "install (Codex host, personal or team): taskplane ships "
+            "as an OpenAI marketplace "
             "package — install/update it with the Codex plugin tooling "
             "(`codex plugin` in the CLI, or the desktop app's plugin "
             "catalog). See README > Quickstart: Codex.",
-            "The Claude org-admin/marketplace paths do not apply on this "
-            "host.",
+            "A managed Codex member cannot override organization policy; "
+            "ask a Codex admin to make taskplane available when the catalog "
+            "or hook policy blocks it.",
+            "The Claude org-admin/marketplace paths do not apply on this host.",
         ]
     if ctx == "org-managed":
         return [
@@ -725,9 +730,15 @@ def cmd_session_verify(a) -> int:
     actually holds — this is the net under it.
     """
     try:
-        json.load(sys.stdin)
+        event = json.load(sys.stdin)
+        event = event if isinstance(event, dict) else {}
     except Exception:
-        pass
+        event = {}
+    submission = _submission_stop_check(
+        event, workspace=getattr(a, "workspace", None))
+    if submission and submission.get("block"):
+        _emit_submission_stop_block("Stop", submission)
+        return 2
     try:
         import obligations
         ws = _workspace(getattr(a, "workspace", None))
@@ -949,6 +960,61 @@ def _subagent_workspace(event: dict) -> str:
     return _workspace(cwd if isinstance(cwd, str) and cwd else None)
 
 
+def _submission_stop_check(event: dict, *, workspace: str | None = None,
+                           loop_state=None) -> dict | None:
+    """Read-only Stop/SubagentStop submission decision for the active slot."""
+    ws = _workspace(workspace) if workspace else _subagent_workspace(event)
+    try:
+        contract = tp.load_active(ws)
+    except Exception as exc:
+        tp.trace(ws, "submission_stop_checked", status="contract_error",
+                 error=type(exc).__name__)
+        return {"schema": tp.SUBMISSION_STATUS_SCHEMA, "status": "corrupt",
+                "valid": False, "required": True, "block": True,
+                "contract_id": None, "task": None, "stage": None,
+                "slot": tp.task_slot(), "artifact": "active contract",
+                "recovery": "return to the orchestrator or human"}
+    if not isinstance(contract, dict) or not contract:
+        return None
+    if loop_state is None:
+        try:
+            import loop as loop_engine
+            loop_state = loop_engine.load(ws)
+        except Exception:
+            loop_state = None
+    observed_slot = (event.get("task_slot")
+                     if isinstance(event.get("task_slot"), str)
+                     else tp.task_slot())
+    decision = tp.stop_submission_decision(
+        ws, contract, observed_slot=observed_slot, loop_state=loop_state)
+    tp.trace(ws, "submission_stop_checked", status=decision.get("status"),
+             contract_id=decision.get("contract_id"),
+             task=decision.get("task"), stage=decision.get("stage"),
+             task_slot=decision.get("slot"), block=decision.get("block"),
+             artifact=decision.get("artifact"))
+    if decision.get("block"):
+        tp.trace(ws, "submission_stop_blocked",
+                 status=decision.get("status"),
+                 contract_id=decision.get("contract_id"),
+                 task=decision.get("task"), stage=decision.get("stage"),
+                 task_slot=decision.get("slot"))
+    return decision
+
+
+def _emit_submission_stop_block(event_name: str, status: dict) -> None:
+    reason = (
+        "taskplane blocked lifecycle completion: "
+        f"contract={status.get('contract_id')}; task={status.get('task')}; "
+        f"stage={status.get('stage')}; slot={status.get('slot')}; "
+        f"status={status.get('status')}; missing artifact="
+        f"{status.get('artifact')}. Recovery: {status.get('recovery')}")
+    print(json.dumps({"decision": "block", "reason": reason,
+                      "hookSpecificOutput": {
+                          "hookEventName": event_name,
+                          "permissionDecision": "deny",
+                          "permissionDecisionReason": reason}}))
+
+
 def cmd_subagent_start(a) -> int:
     """Codex lifecycle trace plus bounded, advisory contract context."""
     event = _subagent_event()
@@ -1010,6 +1076,10 @@ def cmd_subagent_stop(a) -> int:
              turn_id=event.get("turn_id"),
              has_transcript=bool(event.get("agent_transcript_path")),
              has_message=bool(event.get("last_assistant_message")))
+    submission = _submission_stop_check(event)
+    if submission and submission.get("block"):
+        _emit_submission_stop_block("SubagentStop", submission)
+        return 2
     print("{}")  # SubagentStop requires JSON on successful exit.
     return 0
 
@@ -3119,6 +3189,131 @@ def cmd_context(a) -> int:
     return 0
 
 
+_HOOK_COMMANDS = frozenset({
+    "screen", "screen-dispatch", "screen-render", "context",
+    "subagent-start", "subagent-stop", "session-verify",
+})
+
+
+def _hook_response_class(command: str, output: str, returncode: int) -> str:
+    """Reduce a hook response to the only datum safe to replay.
+
+    The response body may contain contract details or model-supplied context,
+    so the claim journal deliberately stores only this bounded class.  Empty
+    and explicit allow remain distinct: replaying an approval for a Codex
+    hook that originally abstained would bypass the host's normal permission
+    policy.
+    """
+    if returncode:
+        return "block" if returncode > 0 else "error"
+    body = output.strip()
+    if not body:
+        return "empty"
+    try:
+        payload = json.loads(body)
+    except (TypeError, json.JSONDecodeError):
+        return "context" if command == "context" else "advisory"
+    if not isinstance(payload, dict):
+        return "advisory"
+    hook_output = payload.get("hookSpecificOutput")
+    hook_output = hook_output if isinstance(hook_output, dict) else {}
+    if payload.get("decision") == "block" or \
+            hook_output.get("permissionDecision") == "deny":
+        return "block"
+    if "additionalContext" in hook_output:
+        return "context"
+    if "systemMessage" in payload:
+        return "advisory"
+    if payload.get("decision") == "approve" or not payload:
+        return "allow"
+    return "advisory"
+
+
+def _replay_hook_response(command: str, response_class: str) -> int:
+    """Replay protocol semantics without replaying a hook's side effects."""
+    if response_class in {"block", "error"}:
+        reason = ("taskplane already processed this lifecycle event; the "
+                  "first blocking decision remains authoritative.")
+        event_name = {
+            "subagent-stop": "SubagentStop",
+            "session-verify": "Stop",
+        }.get(command, "PreToolUse")
+        print(json.dumps({
+            "decision": "block", "reason": reason,
+            "hookSpecificOutput": {
+                "hookEventName": event_name,
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            },
+        }))
+        return 2 if command in {"subagent-stop", "session-verify"} else 0
+    if response_class == "allow":
+        if command == "screen":
+            print(json.dumps({"decision": "approve"}))
+        elif command == "subagent-stop":
+            print("{}")
+        return 0
+    if response_class == "context":
+        event_name = ("SubagentStart" if command == "subagent-start"
+                      else "SessionStart")
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": ("[taskplane] This lifecycle event was "
+                                  "already processed by the other installed "
+                                  "hook path."),
+        }}))
+        return 0
+    if response_class == "advisory":
+        print(json.dumps({
+            "systemMessage": ("taskplane already processed this lifecycle "
+                              "event through the other installed hook path.")
+        }))
+    return 0
+
+
+def _run_hook_command(a) -> int:
+    """Claim native/bridge hook events once, execute once, replay by class."""
+    hook_path = (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower()
+    if a.cmd not in _HOOK_COMMANDS or hook_path not in {"native", "bridge"}:
+        return a.fn(a)
+
+    raw = sys.stdin.read()
+    try:
+        event = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        event = {}
+    if not isinstance(event, dict):
+        event = {}
+    event_cwd = event.get("cwd")
+    workspace = _workspace(
+        event_cwd if isinstance(event_cwd, str) and event_cwd
+        else getattr(a, "workspace", None))
+    claim = tp.claim_hook_event(
+        workspace, a.cmd, event, hook_path=hook_path)
+    if not claim.get("execute"):
+        return _replay_hook_response(
+            a.cmd, str(claim.get("response_class") or "block"))
+
+    original_stdin = sys.stdin
+    captured = io.StringIO()
+    try:
+        sys.stdin = io.StringIO(raw)
+        with contextlib.redirect_stdout(captured):
+            returncode = a.fn(a)
+    except Exception:
+        tp.complete_hook_event(workspace, claim, response_class="error")
+        raise
+    finally:
+        sys.stdin = original_stdin
+
+    output = captured.getvalue()
+    response_class = _hook_response_class(a.cmd, output, int(returncode or 0))
+    tp.complete_hook_event(
+        workspace, claim, response_class=response_class)
+    sys.stdout.write(output)
+    return int(returncode or 0)
+
+
 def cmd_summary(a) -> int:
     """User control-plane view: outcome, progress, and decisions only."""
     import loop as loopmod
@@ -5204,7 +5399,7 @@ def main(argv=None) -> int:
     # block decision on stdout, which this boundary preserves by never
     # reaching it.)
     try:
-        return a.fn(a)
+        return _run_hook_command(a)
     except BrokenPipeError:
         raise                    # handled at the __main__ boundary below
     except Exception as exc:     # noqa: BLE001 — the user-layer boundary

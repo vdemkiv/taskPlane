@@ -27,7 +27,9 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
 import eval_drivers  # noqa: E402
 import eval_record  # noqa: E402
+import host_capabilities  # noqa: E402
 import derivation  # noqa: E402
+import taskplane_lite  # noqa: E402
 
 STAGE_DIR = os.path.join(".taskplane-eval", "plugin")
 STAGED_PATHS = (
@@ -444,6 +446,32 @@ class EvalClaudeAdapter(eval_drivers.ClaudeAdapter):
         return argv
 
 
+def _evaluation_dispatch_route(host: str, model: str | None,
+                               reasoning_effort: str | None) -> dict:
+    """Resolve explicit evaluator CLI controls through its adapter contract."""
+    allowed_efforts = (taskplane_lite.REASONING_EFFORTS if host == "codex"
+                       else ("low", "medium", "high", "max"))
+    observations = {
+        "model_selection": host_capabilities.Observation(
+            "supported", f"adapter-contract:{host}:model", "high"),
+        "supported_model_aliases": host_capabilities.Observation(
+            "supported", f"operator-config:{host}:model", "high",
+            value=[model] if model else ["inherit"]),
+        "effort_selection": host_capabilities.Observation(
+            "supported", f"adapter-contract:{host}:effort", "high"),
+        "supported_effort_values": host_capabilities.Observation(
+            "supported", f"adapter-contract:{host}:efforts", "high",
+            value=list(allowed_efforts)),
+    }
+    snapshot = host_capabilities.probe_snapshot(
+        ROOT, host=host, install_context="personal", native_installed=None,
+        bridge_configured=None, observations=observations)
+    return host_capabilities.resolve_dispatch_route(
+        snapshot, tier="explicit-evaluator", requested_model=model,
+        requested_effort=reasoning_effort,
+        mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH", "default"))
+
+
 def run_skill(*, skill: str, host: str, output_root: str,
               timeout_s: float, model: str | None,
               reasoning_effort: str | None) -> dict:
@@ -473,16 +501,30 @@ def run_skill(*, skill: str, host: str, output_root: str,
     def drive(ctx):
         bundle = prepared["bundle"]
         onboard = prepared["onboarding"]
-        adapter = (EvalCodexAdapter(model=model,
-                                    reasoning_effort=reasoning_effort)
+        route = _evaluation_dispatch_route(host, model, reasoning_effort)
+        if route["block_before_dispatch"]:
+            return {
+                "schema": eval_drivers.SCHEMA, "host": host,
+                "status": "capability_unavailable", "attempted": False,
+                "returncode": None, "duration_ms": 0,
+                "transport": "pre-dispatch-block",
+                "reason": route["reason"], "dispatch_route": route,
+                "capability_source": route["capability_source"],
+            }
+        adapter = (EvalCodexAdapter(model=route["effective_model"],
+                                    reasoning_effort=route["effective_effort"])
                    if host == "codex" else
-                   EvalClaudeAdapter(plugin_root=bundle["root"], model=model,
-                                     reasoning_effort=reasoning_effort))
+                   EvalClaudeAdapter(
+                       plugin_root=bundle["root"],
+                       model=route["effective_model"],
+                       reasoning_effort=route["effective_effort"]))
         manifest = skill_manifest(
             skill=skill, bundle=bundle, ws=ctx.ws, host=host,
             base=ctx.base, head=ctx.head)
         result = adapter.run(manifest, cwd=ctx.ws, timeout_s=timeout_s,
                              env=ctx.env)
+        result["dispatch_route"] = route
+        result["capability_source"] = route["capability_source"]
         result["onboarding"] = onboard
         after = bundle_fingerprint(bundle["root"])
         result["bundle"] = dict(bundle, fingerprint_after=after,

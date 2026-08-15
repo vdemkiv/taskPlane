@@ -27,7 +27,10 @@ export const meta = {
 // contract:wave-workflow — the schema-pinned submission receipt per
 // build agent: receipts[{task, outcome, note}].
 const RECEIPT_SCHEMA = {
+  '$schema': 'https://json-schema.org/draft/2020-12/schema',
+  '$id': 'taskplane.execute-receipt/v1',
   type: 'object',
+  additionalProperties: false,
   required: ['task', 'outcome', 'note'],
   properties: {
     task: { type: 'string' },
@@ -41,12 +44,15 @@ export default async function executeWave({ args, agent, parallel, phase }) {
   const briefs = args.briefs || [];
   // One governed build agent per claimed task brief, fanned out with a
   // barrier — tasks in one wave are independent by plan construction.
-  const runs = briefs.map((b) => () =>
-    agent(b.prompt, {
+  const runs = briefs.map((b) => () => {
+    const output_contract = b.output_contract || {};
+    return agent(b.prompt, {
       label: 'task:' + b.id,
       phase: 'Build',
-      schema: RECEIPT_SCHEMA,
-    }));
+      schema: output_contract.output_schema || RECEIPT_SCHEMA,
+      outputContract: output_contract,
+    });
+  });
   const results = await parallel(runs);
 
   phase('Collect');

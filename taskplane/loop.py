@@ -31,6 +31,7 @@ import os
 import time
 
 import depgraph
+import host_capabilities
 import kb
 import lens as lens_router
 import loop_recovery
@@ -339,6 +340,20 @@ def _step_contract(step: str, state: dict) -> dict:
     raise ValueError(f"no contract for step {step}")
 
 
+def _bind_worker_submission(ws: str, state: dict, step: str,
+                            contract: dict, task: dict | None) -> dict:
+    """Bind worker lifecycle to its exact loop submission, without gating."""
+    if not state.get("submission_required") or step not in {
+            "execute", "fix", "evaluate", "em"}:
+        return contract
+    task_name = ((task or {}).get("id") or "engineering-signoff"
+                 if step == "em" else (task or {}).get("id"))
+    return tp.bind_submission_contract(
+        contract, ws, task=str(task_name), stage=step, slot=tp.task_slot(),
+        locator={"type": "loop_submission"},
+        validation_rule="loop-submission/v1")
+
+
 def _current_task(state: dict):
     tasks = state.get("tasks")
     if not tasks:
@@ -628,6 +643,8 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                "MultiEdit"])
     agent_ws = os.path.abspath(agent_ws)
+    contract = _bind_worker_submission(
+        agent_ws, state, "execute", contract, t)
     snapshot = tp.git_head(agent_ws)
     dor_ready, blockers, warnings = tp.dor_check(
         contract, agent_ws, snapshot)
@@ -820,6 +837,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                     state = fresh
 
     contract = _step_contract(step, state)
+    contract = _bind_worker_submission(
+        act_ws, state, step, contract, _current_task(state))
     snapshot = tp.git_head(act_ws)
     # Governance starts before readiness is evaluated.  A failing DoR must
     # still leave the attempted step inside its exact contract; recording
@@ -1028,9 +1047,27 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                          for x in routing.get("lenses") or []],
                  kernel_status=review_kernel.get("status"))
 
+    capability_vars = {
+        "TASKPLANE_MODEL_SELECTION", "TASKPLANE_EFFORT_SELECTION",
+        "TASKPLANE_SUPPORTED_MODEL_ALIASES",
+        "TASKPLANE_SUPPORTED_EFFORT_VALUES",
+    }
+    capability_snapshot = (
+        host_capabilities.dispatch_snapshot_from_environment(
+            ws, host=tp.host(), environment=os.environ)
+        if any(name in os.environ for name in capability_vars) else None)
     dispatch = tp.dispatch_fields(
         "step", STEP_ROLE[step], (task or {}).get("id") or step,
-        tp.step_tier(step, task))
+        tp.step_tier(step, task), capability_snapshot=capability_snapshot,
+        enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"))
+    if dispatch.get("dispatch_blocked"):
+        tp.trace(ws, "dispatch_route_resolved", step=step,
+                 task=(task or {}).get("id"),
+                 resolution="blocked",
+                 reason=dispatch["dispatch_route"].get("reason"))
+        return {"error": "strict host dispatch route cannot be honored — "
+                         + dispatch["dispatch_route"].get("reason", ""),
+                "step": step, **dispatch}
     model_tier, model = dispatch["model_tier"], dispatch["model"]
     reasoning_effort, task_name = (dispatch["reasoning_effort"],
                                    dispatch["task_name"])
@@ -1041,7 +1078,15 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                                 model, ref=(task or {}).get("id") or step,
                                 task_name=task_name,
                                 reasoning_effort=reasoning_effort,
-                                role_marker_value=dispatch["role_marker"])
+                                role_marker_value=dispatch["role_marker"],
+                                dispatch_route=dispatch.get("dispatch_route"))
+    if dispatch.get("dispatch_route"):
+        tp.trace(ws, "dispatch_route_resolved", step=step,
+                 task=(task or {}).get("id"),
+                 resolution=dispatch["dispatch_route"].get("resolution"),
+                 capability_source=dispatch["dispatch_route"].get(
+                     "capability_source"),
+                 exact_route_verified=False)
     model_note = None
     if model is None and (model_tier or "standard") != "standard":
         model_note = (f"tier '{model_tier}' resolves to inherit on this "
@@ -1351,6 +1396,28 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
     return errors
 
 
+def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
+                                verdict: dict) -> list:
+    """Static DoD evidence check, safe to compose with runtime guidance."""
+    errors = []
+    expected_criteria = _criteria_for(ws, state, task)
+    rows = verdict.get("criteria") or []
+    if not isinstance(rows, list):
+        errors.append("evaluation criteria must be a list")
+        rows = []
+    by_criterion = {str(r.get("criterion", "")).strip(): r
+                    for r in rows if isinstance(r, dict)}
+    for criterion in expected_criteria:
+        row = by_criterion.get(criterion)
+        if not row:
+            errors.append(f"acceptance criterion has no evidence: {criterion}")
+        elif row.get("status") != "met" or not str(
+                row.get("evidence") or "").strip():
+            errors.append(
+                f"acceptance criterion is not proven met: {criterion}")
+    return errors
+
+
 def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     """Validate evaluator evidence instead of trusting `gate pass`."""
     path = os.path.join(ws, ".eval", "verdict.json")
@@ -1393,19 +1460,7 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     if verdict.get("verdict") != "pass":
         errors.append("evaluation verdict is not pass")
 
-    expected_criteria = _criteria_for(ws, state, task)
-    rows = verdict.get("criteria") or []
-    if not isinstance(rows, list):
-        errors.append("evaluation criteria must be a list")
-        rows = []
-    by_criterion = {str(r.get("criterion", "")).strip(): r
-                    for r in rows if isinstance(r, dict)}
-    for criterion in expected_criteria:
-        row = by_criterion.get(criterion)
-        if not row:
-            errors.append(f"acceptance criterion has no evidence: {criterion}")
-        elif row.get("status") != "met" or not str(row.get("evidence") or "").strip():
-            errors.append(f"acceptance criterion is not proven met: {criterion}")
+    errors.extend(_acceptance_evidence_errors(ws, state, task, verdict))
 
     # Derive the expected lens set with the SAME stage the evaluate brief
     # routed with (EVALUATE_ROUTE_STAGE — single-sourced, R-0006 row 1), so
@@ -1863,6 +1918,13 @@ def submit(ws: str, outcome: str, note: str = "",
                     "runtime_eval": runtime_guidance}
         if runtime_guidance.get("status") != "on_path":
             status = runtime_guidance.get("status")
+            evidence_errors = []
+            if step == "evaluate":
+                verdict, read_errors = _read_json(
+                    os.path.join(act_ws, ".eval", "verdict.json"))
+                evidence_errors = (read_errors or
+                                   _acceptance_evidence_errors(
+                                       act_ws, state, task, verdict))
             return {
                 "error": ("runtime eval detected recoverable execution drift; "
                           "apply the supplied correction before pass submission"
@@ -1871,6 +1933,9 @@ def submit(ws: str, outcome: str, note: str = "",
                           "drift; submit fail or return to the orchestrator"),
                 "submitted": False, "transitioned": False,
                 "runtime_eval": runtime_guidance,
+                **({"dod": {"passed": False,
+                            "errors": evidence_errors}}
+                   if evidence_errors else {}),
             }
 
     snapshot = tp.snapshot_ref(act_ws)

@@ -81,6 +81,7 @@ import eval_scenario                   # noqa: E402
 import lens as lens_router             # noqa: E402
 import loop as loop_mod                # noqa: E402
 import obligations                     # noqa: E402
+import runtime_eval                    # noqa: E402
 import spend                           # noqa: E402
 import target as target_mod            # noqa: E402
 import taskplane_lite as tp            # noqa: E402
@@ -947,15 +948,23 @@ def _eligibility(mode: str, hook_active: bool) -> tuple:
     return True, "a clean out-of-band run, observed by the dispatch hook"
 
 
-def _cost(transcript) -> dict:
+def _cost(transcript, provider=None) -> dict:
     if not transcript:
         return {"available": False, "reason": "no transcript path given",
                 "effective": None}
-    got = spend.read_transcript(transcript)
-    return {"available": bool(got.get("available")),
-            "reason": got.get("reason"),
-            "effective": got.get("effective") if got.get("available") else None,
-            "messages": got.get("messages")}
+    got = (spend.read_provider_transcript(transcript, provider=provider)
+           if provider else spend.read_transcript(transcript))
+    result = {"available": bool(got.get("available")),
+              "reason": got.get("reason"),
+              "effective": got.get("effective") if got.get("available") else None,
+              "messages": got.get("messages")}
+    for key in ("schema", "provider", "uncached_input_tokens",
+                "cached_input_tokens", "cache_creation_tokens",
+                "output_tokens", "raw_total_tokens", "effective_tokens",
+                "duplicates_removed"):
+        if key in got:
+            result[key] = got[key]
+    return result
 
 
 def _nonnegative(value, default=0):
@@ -987,6 +996,68 @@ def _driver_artifacts(out_dir: str, result) -> dict:
     if refs:
         clean["artifacts"] = refs
     return clean
+
+
+def _lifecycle_record(*, run_id: str, host: str, driver_result,
+                      model, reasoning_effort, cost: dict) -> dict:
+    """Project only bounded machine-owned driver fields into lifecycle v1."""
+    result = driver_result if isinstance(driver_result, dict) else {}
+    native_starts = [row for row in result.get("native_trace") or []
+                     if isinstance(row, dict)
+                     and row.get("event") == "subagent_start"
+                     and row.get("host_observed") is True]
+    receipt = native_starts[-1] if native_starts else {}
+    output_contract = (result.get("output_contract")
+                       if isinstance(result.get("output_contract"), dict)
+                       else {})
+    validation = (result.get("output_validation")
+                  if isinstance(result.get("output_validation"), dict)
+                  else {})
+    terminal = str(result.get("status") or "unavailable")
+    if terminal == "capability_unavailable":
+        terminal = "unavailable"
+    if terminal not in {"success", "failed", "timeout", "cancelled",
+                        "unavailable"}:
+        terminal = "failed"
+    attempts = result.get("attempts")
+    if not isinstance(attempts, list):
+        attempts = ([{"attempt": 1, "status": terminal,
+                      "duration_ms": result.get("duration_ms") or 0}]
+                    if result else [])
+    capability_source = result.get("capability_source")
+    if isinstance(capability_source, list):
+        capability_source = ",".join(str(item) for item in capability_source)
+    capability_source = str(capability_source or
+                            result.get("telemetry_method") or "unavailable")
+    lifecycle = runtime_eval.build_evaluation_lifecycle(
+        run_id=run_id, host=host, host_version=result.get("host_version"),
+        capability_source=capability_source,
+        transport=str(result.get("transport") or "unavailable"),
+        schema_transport=str(output_contract.get("transport")
+                             or result.get("schema_transport")
+                             or "unavailable"),
+        schema_fallback_reason=(output_contract.get("fallback_reason")
+                                or result.get("schema_fallback_reason")),
+        task=result.get("task"), slot=result.get("slot"),
+        lease=result.get("lease"), planned_model=model,
+        planned_effort=reasoning_effort,
+        observed_model=receipt.get("model") or result.get("observed_model"),
+        observed_effort=receipt.get("reasoning_effort")
+        or result.get("observed_reasoning_effort"),
+        attempts=attempts, duration_ms=result.get("duration_ms") or 0,
+        terminal_status=terminal,
+        validation_status=str(validation.get("status") or
+                              result.get("validation_status") or "unavailable"),
+        telemetry={"available": bool(cost.get("available")),
+                   "reason": cost.get("reason")},
+        diagnostics=([{"code": terminal,
+                       "message": result.get("reason")}]
+                     if result.get("reason") else []))
+    errors = runtime_eval.validate_evaluation_lifecycle(lifecycle)
+    if errors:
+        raise RecorderError("evaluation lifecycle is invalid: " +
+                            "; ".join(errors))
+    return lifecycle
 
 
 def merge_native_dispatch_report(report: dict, expected: list,
@@ -1209,9 +1280,9 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
 
     hook_active = bool(report.get("hook_active"))
     eligible, why = _eligibility(mode, hook_active)
-    cost = _cost(transcript)
     host = ((driver_result or {}).get("host")
             if isinstance(driver_result, dict) else None) or tp.host()
+    cost = _cost(transcript, provider=host)
     proof = eval_drivers.hook_proof(trace_rows)
     efficiency = _efficiency(ledger=ledger_rows,
                              obligation_rows=obligation_rows, report=report,
@@ -1256,6 +1327,9 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
             "reasoning_effort": reasoning_effort,
             "taskplane_version": _plugin_version(root),
             "efficiency": efficiency,
+            "evaluation_lifecycle": _lifecycle_record(
+                run_id=run_id, host=host, driver_result=driver_result,
+                model=model, reasoning_effort=reasoning_effort, cost=cost),
             "comparison_key": {
                 "scenario": skill, "fixture": fixture_key,
                 "start_sha": fixture.get("base"),

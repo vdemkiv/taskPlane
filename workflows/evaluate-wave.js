@@ -23,32 +23,11 @@ export const meta = {
   phases: [{ title: 'Evaluate' }, { title: 'Collect' }],
 };
 
-// contract:findings-v2 — the schema-pinned findings shape per evaluation
-// agent (byte-identical to review-wave.js's pin: one shape, zero drift).
-const FINDINGS_SCHEMA = {
+const EVALUATOR_SCHEMA = {
+  '$schema': 'https://json-schema.org/draft/2020-12/schema',
+  '$id': 'taskplane.evaluator-output/v1',
   type: 'object',
-  required: ['lens', 'findings'],
-  properties: {
-    lens: { type: 'string' },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['severity', 'class', 'file', 'line', 'title',
-                   'scenario', 'fix'],
-        properties: {
-          severity: { type: 'string' },
-          class: { type: 'string' },
-          file: { type: 'string' },
-          line: { type: 'number' },
-          title: { type: 'string' },
-          scenario: { type: 'string' },
-          fix: { type: 'string' },
-        },
-      },
-    },
-    clean: { type: 'array', items: { type: 'string' } },
-  },
+  additionalProperties: false,
 };
 
 export default async function evaluateWave({ args, agent, parallel, phase }) {
@@ -56,12 +35,21 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
   const briefs = args.briefs || [];
   // One governed read-only evaluator per built-task brief, fanned out
   // with a barrier — evaluations are independent by construction.
-  const runs = briefs.map((b) => () =>
-    agent(b.prompt, {
+  const runs = briefs.map((b) => () => {
+    const output_contract = b.output_contract || {};
+    const output_schema = b.output_schema || output_contract.output_schema ||
+      EVALUATOR_SCHEMA;
+    const resume_identity = b.resume_identity;
+    const max_attempts = b.max_attempts || output_contract.max_attempts || 2;
+    return agent(b.prompt, {
       label: 'eval:' + b.id,
       phase: 'Evaluate',
-      schema: FINDINGS_SCHEMA,
-    }));
+      schema: output_schema,
+      outputContract: output_contract,
+      resumeKey: resume_identity,
+      maxAttempts: max_attempts,
+    });
+  });
   const results = await parallel(runs);
 
   phase('Collect');
@@ -69,7 +57,5 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
   // read-only contracts; the return value hands the driver the
   // schema-validated verdicts only — the harness still owns every state
   // transition.
-  return {
-    verdicts: results.filter(Boolean),
-  };
+  return { receipts: results.filter(Boolean) };
 }

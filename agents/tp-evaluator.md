@@ -136,3 +136,13 @@ stale evidence or unexplained implementation drift is a failure, not a note.
   refinement score.
 - Stay inside each lens's charter when applying it; boundary disputes resolve
   by the catalog's "does NOT own" line.
+
+## Governed output boundary
+
+- Declare the exact versioned output schema before dispatch and validate the
+  completed value before it can enter evidence or submission state.
+- Native structured output and the governed-file fallback must produce the
+  same canonical bytes. A fallback is admissible only with an exact
+  host-observed producer/write receipt.
+- Submit the validated result and stop; never call `loop gate`, approve, clear,
+  or otherwise advance the workflow from this role.

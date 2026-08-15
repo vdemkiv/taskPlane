@@ -216,7 +216,8 @@ class NativeAdapter:
         raise NotImplementedError
 
     def run(self, manifest, *, cwd: str, timeout_s: float = 900,
-            cancel=None, env=None) -> dict:
+            cancel=None, env=None, output_contract: dict | None = None,
+            observed_write: dict | None = None) -> dict:
         body = manifest if isinstance(manifest, bytes) else canonical_bytes(manifest)
         resolved = (self.executable if os.path.isabs(self.executable)
                     else shutil.which(self.executable))
@@ -248,6 +249,40 @@ class NativeAdapter:
         # only to the recorder seam, which may store it as a separate artifact.
         result["stdout"] = outcome.stdout.decode("utf-8", "replace")
         result["stderr"] = outcome.stderr.decode("utf-8", "replace")
+        if output_contract is not None:
+            import evaluation_output
+
+            result["output_contract"] = {key: output_contract.get(key)
+                                         for key in (
+                "schema", "task", "stage", "slot", "lease", "producer",
+                "canonical_revision", "result_path", "output_schema_id",
+                "output_schema_sha256", "schema_transport", "transport",
+                "fallback_reason", "max_bytes", "max_attempts")}
+            if outcome.status == "success":
+                try:
+                    if output_contract.get("schema_transport") == \
+                            "native_schema":
+                        validated = evaluation_output.validate_output_bytes(
+                            outcome.stdout, output_contract)
+                    else:
+                        validated = evaluation_output.validate_output_file(
+                            cwd, output_contract,
+                            observed_write=observed_write)
+                    result["output_validation"] = {
+                        "status": "valid", "sha256": validated["sha256"],
+                        "bytes": validated["bytes"],
+                    }
+                    result["validated_output"] = validated["value"]
+                except evaluation_output.OutputValidationError as exc:
+                    result["status"] = "failed"
+                    result["reason"] = f"output validation failed: {exc.code}"
+                    result["output_validation"] = {
+                        "status": "invalid", "code": exc.code,
+                    }
+            else:
+                result["output_validation"] = {
+                    "status": "unavailable", "code": outcome.status,
+                }
         return result
 
 

@@ -2742,6 +2742,299 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
     return c
 
 
+# ------------------------------------------------------ submission authority
+
+SUBMISSION_CONTRACT_SCHEMA = "taskplane.submission-contract/v1"
+SUBMISSION_STATUS_SCHEMA = "taskplane.submission-status/v1"
+SUBMISSION_ARTIFACT_MAX_BYTES = 1024 * 1024
+
+
+def _workspace_identity_fingerprint(workspace: str) -> str:
+    """Opaque checkout identity used to bind lifecycle evidence.
+
+    This is deliberately an identity digest, not ``workspace_fingerprint``:
+    the source bytes are expected to change while the contract is active.
+    """
+    return hashlib.sha256(
+        _workspace_identity(workspace).encode("utf-8")).hexdigest()
+
+
+def _submission_relative_path(workspace: str, value) -> str | None:
+    """Return one contained, non-symlink-escaped repository path."""
+    raw = str(value or "").replace("\\", "/").strip()
+    if (not raw or os.path.isabs(raw) or raw == ".."
+            or raw.startswith("../") or "/../" in raw):
+        return None
+    normal = posixpath.normpath(raw)
+    if normal in ("", ".", "..") or normal.startswith("../"):
+        return None
+    root = _workspace_identity(workspace)
+    candidate = os.path.realpath(os.path.join(root, *normal.split("/")))
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            return None
+    except ValueError:
+        return None
+    return normal
+
+
+def bind_submission_contract(contract: dict, workspace: str, *, task: str,
+                             stage: str, slot: str | None = None,
+                             locator: dict, validation_rule: str,
+                             required: bool = True) -> dict:
+    """Return a JSON-isolated contract bound to one exact submission.
+
+    The locator is declarative.  This helper never creates evidence, changes
+    loop state, clears a contract, or performs a gate.
+    """
+    if not isinstance(contract, dict):
+        raise ValueError("submission binding needs a contract object")
+    task_name = str(task or "").strip()
+    stage_name = str(stage or "").strip()
+    rule = str(validation_rule or "").strip()
+    if not task_name or not stage_name or not rule:
+        raise ValueError("submission task, stage, and validation rule are required")
+    if slot is not None and not _TASK_SLOT_RE.fullmatch(str(slot)):
+        raise ValueError("submission slot is invalid")
+    if not isinstance(locator, dict):
+        raise ValueError("submission locator must be an object")
+    locator_copy = json.loads(json.dumps(locator))
+    locator_type = locator_copy.get("type")
+    if locator_type not in {"loop_submission", "artifact"}:
+        raise ValueError("unsupported submission locator type")
+    if locator_type == "artifact":
+        for key in ("path", "receipt_path"):
+            normalized = _submission_relative_path(workspace,
+                                                   locator_copy.get(key))
+            if normalized is None:
+                raise ValueError(f"artifact locator {key} must stay in workspace")
+            locator_copy[key] = normalized
+        schema = str(locator_copy.get("schema") or "").strip()
+        if not schema:
+            raise ValueError("artifact locator schema is required")
+        locator_copy["schema"] = schema
+    bound = json.loads(json.dumps(contract))
+    bound["submission_contract"] = {
+        "schema": SUBMISSION_CONTRACT_SCHEMA,
+        "required": bool(required),
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        "task": task_name,
+        "stage": stage_name,
+        "slot": str(slot) if slot is not None else None,
+        "locator": locator_copy,
+        "validation_rule": rule,
+    }
+    return bound
+
+
+def _submission_result(contract: dict, binding: dict | None, status: str, *,
+                       valid: bool = False, block: bool = True,
+                       artifact: str = "submission evidence",
+                       recovery: str = "return to the orchestrator or human") -> dict:
+    binding = binding if isinstance(binding, dict) else {}
+    required = binding.get("required") is True
+    return {
+        "schema": SUBMISSION_STATUS_SCHEMA,
+        "status": status,
+        "valid": bool(valid),
+        "required": required,
+        "block": bool(block and required),
+        "contract_id": contract.get("task_id") if isinstance(contract, dict)
+        else None,
+        "workspace_fingerprint": binding.get("workspace_fingerprint"),
+        "task": binding.get("task"),
+        "stage": binding.get("stage"),
+        "slot": binding.get("slot"),
+        "artifact": artifact,
+        "recovery": recovery,
+    }
+
+
+def _loop_submission_status(workspace: str, contract: dict, binding: dict,
+                            loop_state) -> dict:
+    artifact = "exact loop submission for this task and stage"
+    recovery = ("run `loop submit pass|fail` for this exact task, then let "
+                "the orchestrator evaluate `loop gate`")
+    if not isinstance(loop_state, dict):
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    if loop_state.get("submission_required") is not True:
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    stage = binding["stage"]
+    if loop_state.get("step") != stage:
+        return _submission_result(contract, binding, "wrong_stage",
+                                  artifact=artifact, recovery=recovery)
+    task_name = binding["task"]
+    if stage == "execute" and loop_state.get("parallel"):
+        rows = loop_state.get("tasks")
+        if not isinstance(rows, list):
+            return _submission_result(contract, binding, "corrupt",
+                                      artifact=artifact, recovery=recovery)
+        target = next((row for row in rows if isinstance(row, dict)
+                       and str(row.get("id")) == task_name), None)
+        submission = target.get("_submission") if target else None
+    else:
+        submission = loop_state.get("_submission")
+    if submission is None:
+        return _submission_result(contract, binding, "missing",
+                                  artifact=artifact, recovery=recovery)
+    if not isinstance(submission, dict):
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    if submission.get("step") != stage:
+        return _submission_result(contract, binding, "wrong_stage",
+                                  artifact=artifact, recovery=recovery)
+    if str(submission.get("task")) != task_name:
+        return _submission_result(contract, binding, "wrong_task",
+                                  artifact=artifact, recovery=recovery)
+    submission_workspace = submission.get("workspace")
+    if not isinstance(submission_workspace, str) or \
+            _workspace_identity_fingerprint(submission_workspace) != \
+            binding["workspace_fingerprint"]:
+        return _submission_result(contract, binding, "wrong_workspace",
+                                  artifact=artifact, recovery=recovery)
+    snapshot = submission.get("snapshot")
+    fingerprint = submission.get("fingerprint")
+    evidence_paths = submission.get("evidence_paths")
+    if (not isinstance(snapshot, str) or not snapshot
+            or not isinstance(fingerprint, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+            or not isinstance(evidence_paths, list)
+            or len(evidence_paths) > 128
+            or any(_submission_relative_path(submission_workspace, item) is None
+                   for item in evidence_paths)):
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    try:
+        current = workspace_fingerprint(
+            submission_workspace, snapshot, extra_paths=evidence_paths)
+    except Exception:
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    if current != fingerprint:
+        return _submission_result(contract, binding, "stale",
+                                  artifact=artifact, recovery=recovery)
+    return _submission_result(contract, binding, "valid", valid=True,
+                              block=False, artifact=artifact,
+                              recovery="submission is ready for orchestrator review")
+
+
+def _artifact_submission_status(workspace: str, contract: dict,
+                                binding: dict) -> dict:
+    locator = binding["locator"]
+    result_rel = _submission_relative_path(workspace, locator.get("path"))
+    receipt_rel = _submission_relative_path(workspace,
+                                           locator.get("receipt_path"))
+    artifact = result_rel or "leased review result"
+    recovery = ("write the exact leased artifact and its matching host "
+                "observation receipt, or return to the orchestrator/human")
+    if result_rel is None or receipt_rel is None:
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    result_path = os.path.join(workspace, *result_rel.split("/"))
+    receipt_path = os.path.join(workspace, *receipt_rel.split("/"))
+    try:
+        if os.path.getsize(result_path) > SUBMISSION_ARTIFACT_MAX_BYTES:
+            return _submission_result(contract, binding, "corrupt",
+                                      artifact=artifact, recovery=recovery)
+        with open(result_path, "rb") as stream:
+            raw = stream.read(SUBMISSION_ARTIFACT_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return _submission_result(contract, binding, "missing",
+                                  artifact=artifact, recovery=recovery)
+    except OSError:
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    if len(raw) > SUBMISSION_ARTIFACT_MAX_BYTES:
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    if not isinstance(payload, dict) or payload.get("schema") != \
+            locator.get("schema"):
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    try:
+        if os.path.getsize(receipt_path) > SUBMISSION_ARTIFACT_MAX_BYTES:
+            return _submission_result(contract, binding, "corrupt",
+                                      artifact=artifact, recovery=recovery)
+        receipt = load_json(receipt_path, what="submission receipt")
+    except FileNotFoundError:
+        return _submission_result(contract, binding, "unobserved",
+                                  artifact=artifact, recovery=recovery)
+    except StateError as exc:
+        if "missing submission receipt" in str(exc):
+            return _submission_result(contract, binding, "unobserved",
+                                      artifact=artifact, recovery=recovery)
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    except OSError:
+        return _submission_result(contract, binding, "corrupt",
+                                  artifact=artifact, recovery=recovery)
+    expected_digest = hashlib.sha256(raw).hexdigest()
+    if (not isinstance(receipt, dict)
+            or receipt.get("schema") != "taskplane.slot-write-observation/v3"
+            or receipt.get("contract_task_slot") != binding.get("slot")
+            or _submission_relative_path(workspace,
+                                         receipt.get("result_path")) != result_rel
+            or receipt.get("result_sha256") != expected_digest):
+        return _submission_result(contract, binding, "unobserved",
+                                  artifact=artifact, recovery=recovery)
+    return _submission_result(contract, binding, "valid", valid=True,
+                              block=False, artifact=artifact,
+                              recovery="submission is ready for orchestrator review")
+
+
+def submission_status(workspace: str, contract: dict, *,
+                      observed_slot: str | None = None,
+                      loop_state=None) -> dict:
+    """Read-only validation of the evidence named by an active contract."""
+    if not isinstance(contract, dict):
+        return _submission_result({}, None, "corrupt")
+    binding = contract.get("submission_contract")
+    if binding is None:
+        return _submission_result(contract, None, "not_required",
+                                  block=False,
+                                  recovery="no submission contract is active")
+    if not isinstance(binding, dict):
+        return _submission_result(contract, None, "corrupt")
+    if binding.get("required") is not True:
+        return _submission_result(contract, binding, "not_required",
+                                  block=False,
+                                  recovery="this contract does not require a submission")
+    if (binding.get("schema") != SUBMISSION_CONTRACT_SCHEMA
+            or not isinstance(binding.get("workspace_fingerprint"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}",
+                                binding.get("workspace_fingerprint", ""))
+            or not str(binding.get("task") or "").strip()
+            or not str(binding.get("stage") or "").strip()
+            or not str(binding.get("validation_rule") or "").strip()
+            or not isinstance(binding.get("locator"), dict)):
+        return _submission_result(contract, binding, "corrupt")
+    if _workspace_identity_fingerprint(workspace) != \
+            binding["workspace_fingerprint"]:
+        return _submission_result(contract, binding, "wrong_workspace")
+    expected_slot = binding.get("slot")
+    if observed_slot is not None and observed_slot != expected_slot:
+        return _submission_result(contract, binding, "wrong_slot")
+    locator_type = binding["locator"].get("type")
+    if locator_type == "loop_submission":
+        return _loop_submission_status(workspace, contract, binding,
+                                       loop_state)
+    if locator_type == "artifact":
+        return _artifact_submission_status(workspace, contract, binding)
+    return _submission_result(contract, binding, "corrupt")
+
+
+def stop_submission_decision(workspace: str, contract: dict, **kwargs) -> dict:
+    """Host-neutral lifecycle alias; validation only, never a transition."""
+    return submission_status(workspace, contract, **kwargs)
+
+
 def requirement_coverage_errors(tasks, requirement_lookup,
                                 default_requirement=None,
                                 *, require_passed=False) -> list[str]:
@@ -3022,6 +3315,15 @@ def orphan_status(workspace: str, contract: dict,
         # human clears stale slots with TASKPLANE_TASK=<slot> tp.py clear.
         return False, ("union of active per-task contracts — never "
                        "auto-released; clear individual slots")
+    submission_contract = contract.get("submission_contract")
+    if isinstance(submission_contract, dict) and \
+            submission_contract.get("required") is True:
+        # A required handoff is an orchestrator/human authority boundary.
+        # Even a dead worker or expired idle timer does not prove that its
+        # evidence is valid, nor authorize this host lifecycle hook to erase
+        # the contract before the orchestrator evaluates it.
+        return False, ("submission-required contract — never auto-released; "
+                       "orchestrator/human releases it after the gate")
     pid = contract.get("activated_pid")
     if pid is not None:
         # PID is the AUTHORITATIVE liveness signal. A live owner is NEVER
@@ -3398,19 +3700,40 @@ def role_marker(agent: str) -> str:
 
 
 def dispatch_fields(kind: str, agent: str, ref: str,
-                    model_tier: str) -> dict:
+                    model_tier: str, *, capability_snapshot=None,
+                    enforcement_mode: str | None = None,
+                    observed_route: dict | None = None) -> dict:
     """Host-neutral dispatch identity carried by every Codex task brief."""
     role_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "agents", agent + ".md"))
-    return {
+    requested_model = model_for_tier(model_tier)
+    requested_effort = reasoning_for_tier(model_tier)
+    route = None
+    if capability_snapshot is not None:
+        import host_capabilities
+
+        route = host_capabilities.resolve_dispatch_route(
+            capability_snapshot, tier=model_tier,
+            requested_model=requested_model,
+            requested_effort=requested_effort,
+            mode=enforcement_mode or os.environ.get(
+                "TASKPLANE_ENFORCE_DISPATCH", "default"),
+            observed=observed_route)
+    fields = {
         "role": agent,
         "role_marker": role_marker(agent),
         "role_instructions": to_posix(role_path),
         "task_name": dispatch_task_name(kind, agent, ref),
         "model_tier": model_tier,
-        "model": model_for_tier(model_tier),
-        "reasoning_effort": reasoning_for_tier(model_tier),
+        "model": (route["effective_model"] if route is not None
+                  else requested_model),
+        "reasoning_effort": (route["effective_effort"] if route is not None
+                             else requested_effort),
     }
+    if route is not None:
+        fields["dispatch_route"] = route
+        fields["dispatch_blocked"] = route["block_before_dispatch"]
+    return fields
 
 
 # --- dispatch verification (tier routing is only real if the driver passes
@@ -3480,7 +3803,8 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                              ref: str | None = None,
                              task_name: str | None = None,
                              reasoning_effort: str | None = None,
-                             role_marker_value: str | None = None) -> None:
+                             role_marker_value: str | None = None,
+                             dispatch_route: dict | None = None) -> None:
     """Called when a brief is emitted (`loop next` / `lens dispatch`): what
     agent SHOULD be dispatched next, on what model. A queue, not a scalar —
     a parallel wave emits many briefs with different tiers at once."""
@@ -3494,6 +3818,8 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                  "model_tier": model_tier, "model": model,
                  "reasoning_effort": reasoning_effort or
                  reasoning_for_tier(model_tier), "matched": False}
+        if isinstance(dispatch_route, dict):
+            entry["dispatch_route"] = dispatch_route
         # Emission is observational and may be repeated (refreshing a wave,
         # reopening a brief). Keep one pending expectation per native
         # identity and refresh its routing fields instead of manufacturing a
@@ -3569,7 +3895,16 @@ def record_observed_dispatch(workspace: str, agent: str, model: str | None,
                   "expected_reasoning_effort": expected and expected.get(
                       "reasoning_effort"),
                   "expected_tier": expected and expected.get("model_tier"),
-                  "ref": expected and expected.get("ref")})
+                  "ref": expected and expected.get("ref"),
+                  "route_resolution": ((expected or {}).get(
+                      "dispatch_route") or {}).get("resolution"),
+                  "capability_source": ((expected or {}).get(
+                      "dispatch_route") or {}).get("capability_source"),
+                  "exact_route_verified": bool(ok and expected and
+                      (((expected.get("model") is None) or
+                        expected.get("model") == model) and
+                       ((expected.get("reasoning_effort") is None) or
+                        expected.get("reasoning_effort") == reasoning_effort)))})
         _save_queue(path, q)
 
 
@@ -3610,6 +3945,15 @@ def commit_dispatch_verification(workspace: str, agent: str,
                     "reasoning_effort"),
                 "expected_tier": expected and expected.get("model_tier"),
                 "ref": expected and expected.get("ref"),
+                "route_resolution": ((expected or {}).get(
+                    "dispatch_route") or {}).get("resolution"),
+                "capability_source": ((expected or {}).get(
+                    "dispatch_route") or {}).get("capability_source"),
+                "exact_route_verified": bool(ok and expected and
+                    (((expected.get("model") is None) or
+                      expected.get("model") == model) and
+                     ((expected.get("reasoning_effort") is None) or
+                      expected.get("reasoning_effort") == reasoning_effort))),
             })
             _save_queue(obs_path, obs_q)
         if ok and match is not None:
@@ -3695,6 +4039,198 @@ def tp_dir(workspace: str) -> str:
     # and it must never be committed. The KNOWLEDGE base, by contrast, lives
     # in the external store below so it never rides along on `git add -A`.
     return os.path.join(workspace, ".taskplane")
+
+
+# ----------------------------------------------- host hook exactly-once seam
+
+HOOK_CLAIM_SCHEMA = "taskplane.hook-claims/v1"
+HOOK_CLAIM_CAP = 512
+HOOK_CLAIM_TTL_SECONDS = 24 * 60 * 60
+HOOK_CLAIM_WAIT_SECONDS = 2.0
+_HOOK_RESPONSE_CLASSES = frozenset(
+    ("allow", "block", "advisory", "context", "empty", "error"))
+
+
+def hook_claim_journal_path(workspace: str) -> str:
+    """Per-checkout duplicate boundary; never committed or externally shared."""
+    return os.path.join(tp_dir(workspace), "hook-claims.json")
+
+
+def _bounded_hook_identity(value, limit: int = 160) -> str:
+    raw = str(value or "").encode("utf-8", errors="replace")[:limit]
+    while raw:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return ""
+
+
+def hook_event_identity(workspace: str, action: str, event: dict) -> str:
+    """Canonical stable hook identity, excluding prompts and tool arguments.
+
+    Native and bridge entry points intentionally produce the same value.  A
+    tool event needs a host call/event id; lifecycle events may use their
+    bounded session + turn/child identity.  Returning ``""`` means the host
+    supplied too little authority to deduplicate safely.
+    """
+    if not isinstance(event, dict):
+        return ""
+    action = _bounded_hook_identity(action, 64).strip().lower()
+    event_name = _bounded_hook_identity(
+        event.get("hook_event_name") or event.get("event_name") or action,
+        64).strip()
+    session = _bounded_hook_identity(
+        event.get("session_id") or event.get("thread_id")
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID"), 160).strip()
+    stable_id = _bounded_hook_identity(
+        event.get("hook_event_id") or event.get("event_id")
+        or event.get("tool_use_id") or event.get("call_id"), 160).strip()
+    turn = _bounded_hook_identity(event.get("turn_id"), 160).strip()
+    child = _bounded_hook_identity(
+        event.get("agent_id") or event.get("child_id"), 160).strip()
+    lower = event_name.lower().replace("_", "-")
+    if not stable_id:
+        if lower in {"sessionstart", "session-start", "stop", "sessionend",
+                     "session-end"}:
+            stable_id = turn or session
+        elif lower in {"subagentstart", "subagent-start", "subagentstop",
+                       "subagent-stop"}:
+            stable_id = "|".join(part for part in (turn, child) if part)
+    if not action or not event_name or not session or not stable_id:
+        return ""
+    payload = {
+        "action": action,
+        "event": event_name,
+        "session": session,
+        "event_identity": stable_id,
+        "slot": _bounded_hook_identity(
+            event.get("task_slot") or os.environ.get("TASKPLANE_TASK"),
+            64).strip(),
+        "workspace": hashlib.sha256(os.path.normcase(
+            _workspace_identity(workspace)).encode("utf-8")).hexdigest(),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _load_hook_claims(path: str) -> dict:
+    journal = load_json(path, default={"schema": HOOK_CLAIM_SCHEMA,
+                                      "claims": []},
+                        what="hook claim journal")
+    if not isinstance(journal, dict) or journal.get("schema") != \
+            HOOK_CLAIM_SCHEMA or not isinstance(journal.get("claims"), list):
+        raise StateError(path, "invalid hook claim journal",
+                         "remove it only after reviewing duplicate hook state")
+    return journal
+
+
+def claim_hook_event(workspace: str, action: str, event: dict, *,
+                     hook_path: str, now: float | None = None,
+                     wait_seconds: float = HOOK_CLAIM_WAIT_SECONDS) -> dict:
+    """Claim one native/bridge hook event or replay its response class.
+
+    The journal stores only a digest and bounded lifecycle metadata.  It does
+    not persist the event, prompt, command, tool arguments, or host transcript.
+    A duplicate pending claim waits at most two seconds, then returns a safe
+    block instead of executing the action twice.
+    """
+    identity = hook_event_identity(workspace, action, event)
+    path_name = str(hook_path or "").strip().lower()
+    if path_name not in {"native", "bridge"}:
+        return {"schema": HOOK_CLAIM_SCHEMA,
+                "status": "invalid_hook_path", "execute": False,
+                "duplicate": False, "response_class": "block",
+                "claim_id": None}
+    if not identity:
+        return {"schema": HOOK_CLAIM_SCHEMA,
+                "status": "identity_unavailable", "execute": False,
+                "duplicate": False, "response_class": "block",
+                "claim_id": None}
+    claim_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    path = hook_claim_journal_path(workspace)
+    current = _time.time() if now is None else float(now)
+    deadline = _time.monotonic() + max(0.0, min(float(wait_seconds),
+                                                 HOOK_CLAIM_WAIT_SECONDS))
+    while True:
+        with file_lock(path):
+            journal = _load_hook_claims(path)
+            fresh = []
+            for row in journal["claims"]:
+                if not isinstance(row, dict):
+                    raise StateError(path, "corrupt hook claim row")
+                try:
+                    updated = float(row.get("updated_at"))
+                except (TypeError, ValueError):
+                    raise StateError(path, "corrupt hook claim timestamp") from None
+                if current - updated <= HOOK_CLAIM_TTL_SECONDS:
+                    fresh.append(row)
+            prior = next((row for row in fresh
+                          if row.get("claim_id") == claim_id), None)
+            if prior is None:
+                row = {
+                    "claim_id": claim_id,
+                    "created_at": current,
+                    "updated_at": current,
+                    "status": "pending",
+                    "response_class": None,
+                    "hook_path": path_name,
+                }
+                fresh.append(row)
+                journal["claims"] = fresh[-HOOK_CLAIM_CAP:]
+                atomic_write_json(path, journal, sort_keys=True)
+                return {"schema": HOOK_CLAIM_SCHEMA, "status": "claimed",
+                        "execute": True, "duplicate": False,
+                        "response_class": None, "claim_id": claim_id}
+            if prior.get("status") == "completed" and \
+                    prior.get("response_class") in _HOOK_RESPONSE_CLASSES:
+                return {"schema": HOOK_CLAIM_SCHEMA, "status": "replay",
+                        "execute": False, "duplicate": True,
+                        "response_class": prior["response_class"],
+                        "claim_id": claim_id}
+            if prior.get("status") != "pending":
+                raise StateError(path, "corrupt hook claim status")
+        if _time.monotonic() >= deadline:
+            return {"schema": HOOK_CLAIM_SCHEMA,
+                    "status": "duplicate_pending", "execute": False,
+                    "duplicate": True, "response_class": "block",
+                    "claim_id": claim_id}
+        _time.sleep(0.05)
+
+
+def complete_hook_event(workspace: str, claim: dict, *,
+                        response_class: str,
+                        now: float | None = None) -> dict:
+    """Complete a claim with the only replayable datum: response class."""
+    response = str(response_class or "").strip().lower()
+    if response not in _HOOK_RESPONSE_CLASSES:
+        raise ValueError("unsupported hook response class")
+    claim_id = claim.get("claim_id") if isinstance(claim, dict) else None
+    if not isinstance(claim_id, str) or not re.fullmatch(r"[0-9a-f]{64}",
+                                                         claim_id):
+        raise ValueError("completion needs a valid hook claim id")
+    path = hook_claim_journal_path(workspace)
+    current = _time.time() if now is None else float(now)
+    with file_lock(path):
+        journal = _load_hook_claims(path)
+        row = next((item for item in journal["claims"]
+                    if isinstance(item, dict)
+                    and item.get("claim_id") == claim_id), None)
+        if row is None:
+            raise StateError(path, "hook claim disappeared before completion")
+        if row.get("status") == "completed":
+            if row.get("response_class") != response:
+                raise StateError(path, "contradictory hook completion")
+            return {"schema": HOOK_CLAIM_SCHEMA, "status": "completed",
+                    "claim_id": claim_id, "response_class": response}
+        if row.get("status") != "pending":
+            raise StateError(path, "corrupt hook claim status")
+        row["status"] = "completed"
+        row["response_class"] = response
+        row["updated_at"] = current
+        atomic_write_json(path, journal, sort_keys=True)
+    return {"schema": HOOK_CLAIM_SCHEMA, "status": "completed",
+            "claim_id": claim_id, "response_class": response}
 
 
 # ------------------------------------------------------ external KB store

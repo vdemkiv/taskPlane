@@ -109,7 +109,8 @@ def evidence(ws: str, task_id: "str | None" = None,
         return {"error": "no current task"}
 
     base = state.get("baseline") or "HEAD"
-    out: dict = {"task": task.get("id"),
+    out: dict = {"output_schema": "taskplane.evaluator-output/v1",
+                 "task": task.get("id"),
                  "req": task.get("req") or state.get("requirement_id"),
                  "baseline": base,
                  "generated_by": "tp loop evidence",

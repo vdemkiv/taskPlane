@@ -168,6 +168,46 @@ def observations_from_environment(
     return result
 
 
+def _list_observation(environment: Mapping[str, str], variable: str,
+                      capability: str) -> Observation | None:
+    if variable not in environment:
+        return None
+    raw = str(environment.get(variable) or "").strip()
+    try:
+        value = json.loads(raw) if raw.startswith("[") else [
+            item.strip() for item in raw.split(",") if item.strip()]
+    except (TypeError, ValueError):
+        value = None
+    valid = (isinstance(value, list) and bool(value)
+             and all(isinstance(item, str) and item.strip() for item in value))
+    return Observation(
+        status="supported" if valid else "contradictory",
+        source=f"host-receipt:environment:{variable}", confidence="high",
+        reason=(f"{capability.replace('_', ' ')} reported by host"
+                if valid else f"{variable} is malformed"), value=value)
+
+
+def dispatch_snapshot_from_environment(
+        ws: str, *, host: str,
+        environment: Mapping[str, str] | None = None) -> HostCapabilitySnapshot:
+    """Build the dispatch subset from explicit adapter-owned receipts."""
+    env = environment if environment is not None else os.environ
+    rows = observations_from_environment(env)
+    for variable, capability in (
+            ("TASKPLANE_SUPPORTED_MODEL_ALIASES", "supported_model_aliases"),
+            ("TASKPLANE_SUPPORTED_EFFORT_VALUES", "supported_effort_values")):
+        row = _list_observation(env, variable, capability)
+        if row is not None:
+            rows[capability] = row
+    return probe_snapshot(
+        ws, host=host, install_context=str(
+            env.get("TASKPLANE_INSTALL_CONTEXT") or "personal"),
+        native_installed=None, bridge_configured=None, observations=rows,
+        host_version=env.get("TASKPLANE_HOST_VERSION"),
+        session_id=env.get("CODEX_THREAD_ID") or env.get("CLAUDE_SESSION_ID"),
+        now=str(env.get("TASKPLANE_HOST_RECEIPT_AT") or ""))
+
+
 def _unknown(name: str, now: str) -> Observation:
     return Observation(
         status="unknown", source="no-host-receipt", confidence="low",
@@ -373,4 +413,145 @@ def onboarding_projection(snapshot: HostCapabilitySnapshot) -> dict[str, Any]:
         },
         "ready": ready,
         "next_action": action,
+    }
+
+
+_DISPATCH_MODES = frozenset(("default", "warn", "strict"))
+
+
+def _supported_values(snapshot: HostCapabilitySnapshot, name: str) -> tuple[
+        set[str] | None, str]:
+    """Return an exact host-owned allowlist, never a model-authored guess."""
+    row = snapshot.capabilities.get(name)
+    if row is None:
+        return None, f"{name} evidence is absent"
+    value = _json_value(row.value)
+    if row.status != "supported":
+        return None, f"{name} is {row.status} ({row.source})"
+    if not isinstance(value, list) or not value or not all(
+            isinstance(item, str) and item.strip() for item in value):
+        subject = ("model alias" if name == "supported_model_aliases"
+                   else "effort value" if name == "supported_effort_values"
+                   else name.replace("_", " "))
+        return None, f"{subject} evidence is corrupt"
+    return {item.strip() for item in value}, ""
+
+
+def _provider_for_model(model: str) -> str | None:
+    value = model.strip().lower()
+    if (value.startswith("claude-") or "sonnet" in value
+            or "opus" in value or "haiku" in value):
+        return "claude"
+    if (value.startswith("gpt-") or value.startswith("o3")
+            or value.startswith("o4") or "codex" in value):
+        return "codex"
+    return None
+
+
+def resolve_dispatch_route(
+        snapshot: HostCapabilitySnapshot, *, tier: str,
+        requested_model: str | None, requested_effort: str | None,
+        mode: str = "default",
+        observed: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve a tier into host-safe child arguments and an auditable state.
+
+    A planned exact route is not marked verified until an enforcement-boundary
+    receipt reports the same values. Unknown, unsupported, contradictory, or
+    malformed capabilities therefore become an explicit inherit fallback (or
+    a pre-dispatch block in strict mode), never unsupported tool arguments.
+    """
+    selected_mode = mode if mode in _DISPATCH_MODES else "default"
+    host_name = "claude" if snapshot.host.startswith("claude") else snapshot.host
+    planned_model = (str(requested_model).strip()
+                     if requested_model not in (None, "", "inherit") else None)
+    planned_effort = (str(requested_effort).strip()
+                      if requested_effort not in (None, "", "inherit") else None)
+    reasons: list[str] = []
+    effective_model: str | None = None
+    effective_effort: str | None = None
+
+    model_control = snapshot.capabilities.get("model_selection")
+    model_aliases, alias_reason = _supported_values(
+        snapshot, "supported_model_aliases")
+    if planned_model is not None:
+        provider = _provider_for_model(planned_model)
+        if provider is not None and provider != host_name:
+            reasons.append(
+                f"model {planned_model!r} is a foreign provider id for {snapshot.host}")
+        elif model_control is None or model_control.status != "supported":
+            status = model_control.status if model_control else "unknown"
+            reasons.append(f"model selection is {status}")
+        elif model_aliases is None:
+            reasons.append(alias_reason)
+        elif planned_model not in model_aliases:
+            reasons.append(f"model {planned_model!r} is not in the host alias receipt")
+        else:
+            effective_model = planned_model
+
+    effort_control = snapshot.capabilities.get("effort_selection")
+    effort_values, effort_reason = _supported_values(
+        snapshot, "supported_effort_values")
+    if planned_effort is not None:
+        if effort_control is None or effort_control.status != "supported":
+            status = effort_control.status if effort_control else "unknown"
+            reasons.append(f"reasoning effort selection is {status}")
+        elif effort_values is None:
+            reasons.append(effort_reason)
+        elif planned_effort not in effort_values:
+            reasons.append(
+                f"reasoning effort {planned_effort!r} is not in the host receipt")
+        else:
+            effective_effort = planned_effort
+
+    explicit_unhonored = (
+        planned_model is not None and effective_model is None
+        or planned_effort is not None and effective_effort is None)
+    blocked = selected_mode == "strict" and explicit_unhonored
+    if blocked:
+        effective_model = effective_effort = None
+        resolution = "blocked"
+    elif explicit_unhonored:
+        resolution = "unsupported_fallback"
+    elif planned_model is None and planned_effort is None:
+        resolution = "inherit"
+    else:
+        resolution = "exact"
+
+    passed_arguments: dict[str, str] = {}
+    if not blocked and effective_model is not None:
+        passed_arguments["model"] = effective_model
+    if not blocked and effective_effort is not None:
+        passed_arguments["reasoning_effort"] = effective_effort
+
+    receipt = observed if isinstance(observed, Mapping) else {}
+    observed_model = receipt.get("model")
+    observed_effort = receipt.get("reasoning_effort")
+    exact_verified = bool(
+        resolution == "exact" and receipt.get("host_observed") is True
+        and observed_model == effective_model
+        and observed_effort == effective_effort)
+    sources = sorted({row.source for name, row in snapshot.capabilities.items()
+                      if name in {"model_selection", "supported_model_aliases",
+                                  "effort_selection", "supported_effort_values"}})
+    return {
+        "schema": "taskplane.dispatch-route/v1",
+        "host": snapshot.host,
+        "host_capability_fingerprint": snapshot.fingerprint,
+        "capability_source": sources,
+        "tier": tier,
+        "mode": selected_mode,
+        "planned_model": planned_model,
+        "planned_effort": planned_effort,
+        "effective_model": effective_model,
+        "effective_effort": effective_effort,
+        "observed_model": observed_model,
+        "observed_effort": observed_effort,
+        "resolution": resolution,
+        "block_before_dispatch": blocked,
+        "exact_route_verified": exact_verified,
+        "passed_arguments": passed_arguments,
+        "reason": "; ".join(reasons) if reasons else (
+            "host receipt matches the exact planned route" if exact_verified
+            else "exact route planned; host receipt is still required"
+            if resolution == "exact" else "session model and effort inherited"),
     }

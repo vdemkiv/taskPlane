@@ -120,3 +120,12 @@ engineering-review,<pass|fail>`). In a governed loop, finish with `tp.py loop
 submit pass|fail` and return; the orchestrator alone runs `loop gate`, then
 the human sign-off remains the final audit decision. Be precise, cite
 evidence, distinguish observation from conclusion, stay read-only throughout.
+
+## Governed output boundary
+
+Declare and validate the exact versioned output schema before publishing the
+engineering result. Native structured output and governed-file fallback must
+produce the same canonical bytes, and fallback evidence requires an exact
+host-observed producer/write receipt. Submit the validated result and stop;
+never call `loop gate`, approve, clear, or advance workflow state from this
+role.

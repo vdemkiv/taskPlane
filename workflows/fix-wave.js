@@ -28,7 +28,10 @@ export const meta = {
 // agent: receipts[{task, outcome, note}] (byte-identical to
 // execute-wave.js's pin: one shape, zero drift).
 const RECEIPT_SCHEMA = {
+  '$schema': 'https://json-schema.org/draft/2020-12/schema',
+  '$id': 'taskplane.fix-receipt/v1',
   type: 'object',
+  additionalProperties: false,
   required: ['task', 'outcome', 'note'],
   properties: {
     task: { type: 'string' },
@@ -43,12 +46,15 @@ export default async function fixWave({ args, agent, parallel, phase }) {
   // One governed fix agent per failed-task verdict brief, fanned out
   // with a barrier — fixes stay inside their own task scopes, so they
   // are independent by plan construction.
-  const runs = verdicts.map((v) => () =>
-    agent(v.prompt, {
+  const runs = verdicts.map((v) => () => {
+    const output_contract = v.output_contract || {};
+    return agent(v.prompt, {
       label: 'fix:' + v.id,
       phase: 'Fix',
-      schema: RECEIPT_SCHEMA,
-    }));
+      schema: output_contract.output_schema || RECEIPT_SCHEMA,
+      outputContract: output_contract,
+    });
+  });
   const results = await parallel(runs);
 
   phase('Collect');

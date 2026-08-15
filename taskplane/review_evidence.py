@@ -12,7 +12,7 @@ import json
 import os
 import re
 import tempfile
-from typing import Iterable
+from typing import Any, Iterable
 
 import taskplane_lite as tp
 
@@ -267,8 +267,9 @@ def _envelope_section_reference(envelope_ref: dict, section: str,
     }
 
 
-def read_envelope_section(store: ArtifactStore, envelope_ref: dict,
-                          section_ref: dict):
+def read_envelope_section(store: ArtifactStore,
+                          envelope_ref: dict[str, Any],
+                          section_ref: dict[str, Any]) -> Any:
     """Resolve and verify a section reference without re-deriving facts."""
     if not isinstance(section_ref, dict) or section_ref.get("schema") != \
             "taskplane.envelope-section-reference/v1":

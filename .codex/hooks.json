@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \".taskplane/codex-hook.py\" screen",
-            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" screen",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" screen",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" screen",
             "timeout": 15
           }
         ]
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \".taskplane/codex-hook.py\" screen-dispatch",
-            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" screen-dispatch",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" screen-dispatch",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" screen-dispatch",
             "timeout": 10
           }
         ]
@@ -28,8 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \".taskplane/codex-hook.py\" screen-render",
-            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" screen-render",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" screen-render",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" screen-render",
             "timeout": 10
           }
         ]
@@ -41,8 +41,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \".taskplane/codex-hook.py\" context",
-            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" context",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" context",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" context",
             "timeout": 10
           }
         ]
@@ -54,8 +54,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \".taskplane/codex-hook.py\" subagent-start",
-            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" subagent-start",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" subagent-start",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" subagent-start",
             "additionalContextLimit": 600,
             "timeout": 10
           }
@@ -68,8 +68,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \".taskplane/codex-hook.py\" subagent-stop",
-            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" subagent-stop",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" subagent-stop",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" subagent-stop",
             "timeout": 10
           }
         ]
@@ -80,8 +80,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \".taskplane/codex-hook.py\" session-verify",
-            "commandWindows": "py -3 \".taskplane\\codex-hook.py\" session-verify",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" session-verify",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" session-verify",
             "timeout": 10
           }
         ]

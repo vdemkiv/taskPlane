@@ -49,6 +49,37 @@ class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
 
 
+def result_schema_for_slot(required_references: list[dict] | None = None) -> dict:
+    """Return the single strict lens-result schema used by every transport."""
+    import evaluation_output
+
+    return evaluation_output.lens_slot_output_schema(required_references)
+
+
+def review_slot_resume_identity(*, lease: dict, result_schema: dict,
+                                producer_contract: dict,
+                                result_path: str) -> str:
+    """Bind workflow reuse to every semantic ReviewKernel slot identity."""
+    import evaluation_output
+
+    material = {
+        "target_fingerprint": lease.get("target_fingerprint"),
+        "context_fingerprint": lease.get("context_fingerprint"),
+        "view_fingerprint": lease.get("view_fingerprint"),
+        "lease_fingerprint": lease.get("lease_fingerprint"),
+        "slot_id": lease.get("slot_id"),
+        "canonical_revision": lease.get("canonical_revision"),
+        "result_schema_sha256": hashlib.sha256(
+            evaluation_output.canonical_bytes(result_schema)).hexdigest(),
+        "producer_contract": {
+            key: producer_contract.get(key) for key in
+            ("task", "task_slot", "read_only", "write_allow")},
+        "result_path": str(result_path),
+    }
+    return hashlib.sha256(
+        evaluation_output.canonical_bytes(material)).hexdigest()
+
+
 def _portable_ref(ref: dict | None) -> dict | None:
     """Host-neutral artifact reference used at every agent boundary."""
     if not ref:
@@ -358,35 +389,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "task_slot": f"review-{lease_ref['fingerprint'][:20]}",
             "read_only": True, "write_allow": [result_path],
         }
-        result_schema = {
-            "schema": RESULT_SCHEMA,
-            "authored_by": RESULT_AUTHOR,
-            "required": ["schema", "lease_fingerprint", "slot_id",
-                         "lens_ids", "target_fingerprint",
-                         "context_fingerprint", "view_fingerprint",
-                         "canonical_revision", "authored_by",
-                         "lens_results", "findings"],
-            "lens_result": {
-                "type": "object",
-                "required": ["lens", "verdict", "blockers"],
-                "verdict": ["pass", "fail"],
-                "blockers": {"type": "integer", "minimum": 0}},
-            "findings": {"type": "array", "items": "finding"},
-            "finding": {"type": "object",
-                        "required": ["lens", "kind", "severity", "class", "file",
-                                     "line", "title", "scenario", "fix"]},
-            "finding_kinds": {
-                "defect": "requires claim.trigger/outcome/repro",
-                "violation": "requires resolvable declares identity",
-                "note": "recorded outside the findings surface"},
-            "codex_completion_receipt": {
-                "required_lines": ["taskplane-result-path:<result_path>",
-                                   "taskplane-result-sha256:<sha256>"]},
-        }
-        if required_references:
-            result_schema["required"].append("references_applied")
-            result_schema["references_applied"] = {
-                "type": "array", "exact": required_references}
+        result_schema = result_schema_for_slot(required_references)
+        resume_identity = review_slot_resume_identity(
+            lease=store.read(lease_ref), result_schema=result_schema,
+            producer_contract=producer_contract, result_path=result_path)
         brief = {
             "schema": "taskplane.lens-brief/v2", "slot_id": slot_id,
             "lens_ids": lens_ids, "target_fingerprint":
@@ -395,6 +401,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "view": _portable_ref(view_ref), "lease": _portable_ref(lease_ref),
             "canonical_revision": revision, "result_path": result_path,
             "authored_by": RESULT_AUTHOR, "result_schema": result_schema,
+            "resume_identity": resume_identity, "max_attempts": 2,
             "producer_contract": producer_contract,
             # Compatibility alias, deliberately identical to the canonical
             # producer contract.  Two different task_slot values in one

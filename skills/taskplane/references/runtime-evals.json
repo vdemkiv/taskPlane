@@ -32,6 +32,20 @@
       "max_corrections": 1
     },
     {
+      "id": "schema-output-before-submit",
+      "steps": ["evaluate", "em"],
+      "checkpoint": "before_submit",
+      "class": "recoverable",
+      "rule": "Declare, validate, and host-observe the exact versioned output before submission.",
+      "required_facts": [
+        "output_schema_declared",
+        "output_schema_validated",
+        "output_producer_observed"
+      ],
+      "correction": "Return to the existing output contract. Validate native structured output or the exact governed file and its host-observed producer/write receipt; do not admit prose or synthesize provenance.",
+      "max_corrections": 1
+    },
+    {
       "id": "worker-submit-orchestrator-gate",
       "steps": ["execute", "evaluate", "fix", "em"],
       "checkpoint": "brief",

@@ -342,12 +342,24 @@ class TestOnboarding(unittest.TestCase):
         self.assertIn("no project folder is connected yet", p.stdout)
         self.assertIn("set up taskplane", p.stdout)
 
-    def test_ready_when_all_present(self):
+    def test_workspace_ready_does_not_fake_host_hook_readiness(self):
         ws = _repo(prefix="tp-ob-ready-")
         os.makedirs(os.path.join(ws, "knowledge", "context"))
-        r = self._report(ws)
-        self.assertTrue(r["ready"])
-        self.assertEqual(r["next_action"], "ready")
+        receipts = {
+            "CODEX_HOME": tempfile.mkdtemp(prefix="tp-codex-home-"),
+            "TASKPLANE_NATIVE_HOOKS_LOADED": "unknown",
+            "TASKPLANE_BRIDGE_HOOKS_LOADED": "unknown",
+            "TASKPLANE_REPOSITORY_TRUST": "unknown",
+        }
+        with mock.patch.dict(os.environ, receipts, clear=False):
+            r = self._report(ws)
+        self.assertTrue(r["looks_like_project"])
+        self.assertTrue(r["is_git"])
+        self.assertTrue(r["has_commit"])
+        self.assertTrue(r["has_context"])
+        self.assertFalse(r["ready"])
+        self.assertFalse(r["host_capabilities"]["ready"])
+        self.assertNotEqual(r["next_action"], "ready")
 
     def test_render_onboarding_has_buttons_and_escapes(self):
         r = {"workspace": "/x", "looks_like_project": False, "is_git": False,
