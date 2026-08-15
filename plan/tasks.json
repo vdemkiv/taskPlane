@@ -36,6 +36,7 @@
         "taskplane/runtime_eval.py",
         "taskplane/evidence.py",
         "evals/scenarios/tp-go.json",
+        "evals/scenarios/tp-engineering.json",
         "taskplane/tests/test_eval_observability.py",
         "taskplane/tests/test_spend_provider_usage.py",
         "taskplane/tests/test_eval_scenario.py",
