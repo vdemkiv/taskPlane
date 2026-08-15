@@ -2,28 +2,33 @@
   "tasks": [
     {
       "id": "t1-capability-foundation",
-      "title": "Establish one source-attributed host capability authority",
+      "title": "Establish the capability and bounded review foundation",
       "scope": [
         "taskplane/host_capabilities.py",
         "taskplane/tp.py",
-        "taskplane/tests/test_host_capabilities.py"
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_host_capabilities.py",
+        "taskplane/tests/test_review_evidence.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_capabilities.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_capabilities.py taskplane/tests/test_review_evidence.py",
       "req": "R-0006",
       "deps": [],
       "type": "architecture",
       "contracts": [
         "contract:host-hook-lifecycle",
-        "contract:host-dispatch-routing"
+        "contract:host-dispatch-routing",
+        "contract:review-kernel-slot"
       ],
       "new_modules": [
         "taskplane/tp.py",
-        "taskplane/host_capabilities.py"
+        "taskplane/host_capabilities.py",
+        "taskplane/review_evidence.py"
       ],
       "design_edges": [
         "taskplane/host_capabilities.py->contract:host-hook-lifecycle:provides",
         "taskplane/tp.py->contract:host-hook-lifecycle:consumes",
-        "taskplane/host_capabilities.py->contract:host-dispatch-routing:provides"
+        "taskplane/host_capabilities.py->contract:host-dispatch-routing:provides",
+        "taskplane/review_evidence.py->contract:review-kernel-slot:provides"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -124,7 +129,6 @@
       ],
       "new_modules": [
         "taskplane/review.py",
-        "taskplane/review_evidence.py",
         "taskplane/eval_drivers.py",
         "taskplane/loop.py",
         "scripts/eval_skills.py",
@@ -134,7 +138,6 @@
         "skills/taskplane/references/runtime-evals.json"
       ],
       "design_edges": [
-        "taskplane/review_evidence.py->contract:review-kernel-slot:provides",
         "taskplane/review.py->contract:review-kernel-slot:collects",
         "workflows/review-wave.js->contract:review-kernel-slot:consumes",
         "workflows/evaluate-wave.js->contract:review-kernel-slot:consumes",

@@ -8,6 +8,12 @@ validation, dispatch receipts, and telemetry converge on the five approved
 contracts. Workers never gain gate, approval, state-advance, or contract-clear
 authority.
 
+This is a recovery replan after t1 capability implementation was committed and
+its 10 focused tests passed. Evaluation then exposed one ordering blocker: the
+ReviewKernel scoped view exceeds 16,384 bytes. No feature scope is added. The
+bounded review-evidence correction is folded into t1 so its foundation is
+complete before later transport adoption and evaluation resume.
+
 ## Bounded impact and graph policy
 
 The one required impact derivation used all 24 approved modules in one
@@ -29,16 +35,18 @@ task scopes and own their approved edges into existing named contract nodes.
 Collectively the tasks cover all 24 proposed modules through exact,
 non-overlapping `new_modules` ownership, all 38 proposed edges, all five exact
 contract ids, the depth policy, and all 14 verbatim acceptance criteria. Module
-ownership is t1=2, t2=6, t3=9, t4=5, and t5=2. Edge ownership is exclusive:
-t1 owns 3, t2 owns 8, t3 owns 18, t4 owns 6, and t5 owns 3.
+ownership is t1=3, t2=6, t3=8, t4=5, and t5=2. Edge ownership is exclusive:
+t1 owns 4, t2 owns 8, t3 owns 17, t4 owns 6, and t5 owns 3.
 
 ## Ordered repair batch
 
-1. **t1 — capability foundation (riskiest authority decision first).** Add the
-   immutable, source-attributed capability snapshot and make onboarding project
-   install, trust, policy, load, and effective-path state independently. The
-   focused capability matrix must fail closed on unknown, contradictory, stale,
-   or corrupt authority and must never mutate managed settings.
+1. **t1 — capability and bounded review foundation (recovery).** Preserve the
+   committed immutable, source-attributed capability snapshot and truthful
+   onboarding work whose 10 focused tests already passed. Before evaluation
+   resumes, bound the ReviewKernel scoped view below 16,384 bytes in
+   `review_evidence.py`. The task's one focused command covers both capability
+   and review-evidence files; it must retain fail-closed capability behavior and
+   the canonical immutable envelope rather than weakening evidence.
 2. **t2 — canonical output and lifecycle.** Put native and bridge hook entry
    points behind the same exactly-once claim/replay boundary, add the canonical
    output validator, bind active slots to immutable submission expectations,
@@ -66,8 +74,10 @@ t1 owns 3, t2 owns 8, t3 owns 18, t4 owns 6, and t5 owns 3.
 
 The already-completed baseline is not repeated: it recorded 7 failed
 assertions in three clusters, 2774 passed, 2 skipped, and 861 subtests. Build
-work is one coherent serialized repair batch. Each task runs only its named
-focused test command; the failing scenario/evidence clusters run once in t4.
+work is one coherent serialized repair batch. The audited recovery keeps the
+already-implemented t1 capability work and adds only its bounded review-evidence
+prerequisite. Each task runs only its named focused test command; the failing
+scenario/evidence clusters run once in t4.
 Only t5 runs `python3 -m pytest taskplane/tests -q`, after all implementation
 and documentation changes are complete. No executor should run the full suite
 as an edit-by-edit loop.
