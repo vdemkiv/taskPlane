@@ -39,9 +39,11 @@
         "taskplane/tests/test_eval_observability.py",
         "taskplane/tests/test_spend_provider_usage.py",
         "taskplane/tests/test_eval_scenario.py",
-        "taskplane/tests/test_evidence_bundle.py"
+        "taskplane/tests/test_evidence_bundle.py",
+        "taskplane/tests/test_onboarding_docs.py",
+        "taskplane/tests/test_selfreview_fixes.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_capabilities.py taskplane/tests/test_review_evidence.py taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_stop_submission_enforcement.py taskplane/tests/test_workflow_review_kernel_parity.py taskplane/tests/test_evaluation_output_contract.py taskplane/tests/test_dispatch_capabilities.py taskplane/tests/test_dispatch_parity.py taskplane/tests/test_eval_observability.py taskplane/tests/test_spend_provider_usage.py taskplane/tests/test_eval_scenario.py taskplane/tests/test_evidence_bundle.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_capabilities.py taskplane/tests/test_review_evidence.py taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_stop_submission_enforcement.py taskplane/tests/test_workflow_review_kernel_parity.py taskplane/tests/test_evaluation_output_contract.py taskplane/tests/test_dispatch_capabilities.py taskplane/tests/test_dispatch_parity.py taskplane/tests/test_eval_observability.py taskplane/tests/test_spend_provider_usage.py taskplane/tests/test_eval_scenario.py taskplane/tests/test_evidence_bundle.py taskplane/tests/test_onboarding_docs.py taskplane/tests/test_selfreview_fixes.py",
       "req": "R-0006",
       "deps": [],
       "type": "integration",

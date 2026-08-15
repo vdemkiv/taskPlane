@@ -44,8 +44,11 @@ all 14 verbatim acceptance criteria.
    effective portable model/effort routing, evaluation observability, provider
    token reconciliation, and the three pinned CI clusters. The implementation
    must produce real host-observed producer receipts; it may not fabricate or
-   bypass provenance. One declared targeted command covers the complete runtime
-   protocol after focused red/green work.
+   bypass provenance. The declared targeted command also owns the two existing
+   onboarding assertion files named by the recorded baseline; receipt-based
+   readiness remains authoritative and stale tests are corrected rather than
+   weakening it. One command covers the complete runtime protocol after focused
+   red/green work.
 2. **t2 — truthful guidance and final validation.** Update only the five
    approved host-facing references after behavior is fixed, then run
    `python3 -m pytest taskplane/tests -q` exactly once. Cross-version/platform,
