@@ -1,49 +1,14 @@
 {
   "tasks": [
     {
-      "id": "t1-capability-foundation",
-      "title": "Establish the capability and bounded review foundation",
+      "id": "t1-integrated-host-capability-repair",
+      "title": "Repair host capability, provenance, evaluation, routing, telemetry, and pinned CI behavior as one batch",
       "scope": [
         "taskplane/host_capabilities.py",
         "taskplane/tp.py",
         "taskplane/review_evidence.py",
         "taskplane/tests/test_host_capabilities.py",
-        "taskplane/tests/test_review_evidence.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_capabilities.py taskplane/tests/test_review_evidence.py",
-      "req": "R-0006",
-      "deps": [],
-      "type": "architecture",
-      "contracts": [
-        "contract:host-hook-lifecycle",
-        "contract:host-dispatch-routing",
-        "contract:review-kernel-slot"
-      ],
-      "new_modules": [
-        "taskplane/tp.py",
-        "taskplane/host_capabilities.py",
-        "taskplane/review_evidence.py"
-      ],
-      "design_edges": [
-        "taskplane/host_capabilities.py->contract:host-hook-lifecycle:provides",
-        "taskplane/tp.py->contract:host-hook-lifecycle:consumes",
-        "taskplane/host_capabilities.py->contract:host-dispatch-routing:provides",
-        "taskplane/review_evidence.py->contract:review-kernel-slot:provides"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "For personal or managed and trusted or untrusted host fixtures, onboarding separately reports install, trust, managed-policy, loaded-session, and effective-path state; no file-presence false green, trust bypass instruction, or managed-setting overwrite is allowed."
-      ]
-    },
-    {
-      "id": "t2-canonical-output-lifecycle",
-      "title": "Make hook execution and governed submission output canonical and fail closed",
-      "scope": [
+        "taskplane/tests/test_review_evidence.py",
         "hooks/hooks.json",
         ".codex/hooks.json",
         "taskplane/taskplane_lite.py",
@@ -51,55 +16,8 @@
         "workflows/execute-wave.js",
         "workflows/fix-wave.js",
         "taskplane/tests/test_codex_hook_selection.py",
-        "taskplane/tests/test_stop_submission_enforcement.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_stop_submission_enforcement.py",
-      "req": "R-0006",
-      "deps": [
-        "t1-capability-foundation"
-      ],
-      "type": "architecture",
-      "contracts": [
-        "contract:host-hook-lifecycle",
-        "contract:evaluation-output",
-        "contract:host-dispatch-routing"
-      ],
-      "new_modules": [
-        "hooks/hooks.json",
-        ".codex/hooks.json",
-        "taskplane/taskplane_lite.py",
-        "taskplane/evaluation_output.py",
-        "workflows/execute-wave.js",
-        "workflows/fix-wave.js"
-      ],
-      "design_edges": [
-        "hooks/hooks.json->contract:host-hook-lifecycle:provides",
-        ".codex/hooks.json->contract:host-hook-lifecycle:provides-fallback",
-        "taskplane/taskplane_lite.py->contract:host-hook-lifecycle:enforces",
-        "taskplane/evaluation_output.py->contract:evaluation-output:provides",
-        "workflows/execute-wave.js->contract:evaluation-output:consumes",
-        "workflows/fix-wave.js->contract:evaluation-output:consumes",
-        "taskplane/taskplane_lite.py->contract:host-dispatch-routing:provides",
-        "taskplane/tests->contract:host-hook-lifecycle:validates"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "For native-only, bridge-only, both-present, neither-present, reinstall, resume, and repeated-onboarding Codex fixtures, each taskPlane hook event produces exactly one trace row or side effect, configuration is idempotent, and unrelated hooks remain unchanged.",
-        "A submission-required contract with missing, wrong-slot, wrong-workspace, corrupt, or absent submission blocks Stop or SubagentStop with contract, slot, missing artifact, and safe recovery details while leaving the contract active and loop state unchanged.",
-        "Valid submitted work, sibling slots, canonical review results, and submission records remain byte-identical through repeated Stop and SubagentStop; stop handling never gates or clears them, and standalone or no-submission-required contracts retain their documented lifecycle."
-      ]
-    },
-    {
-      "id": "t3-transport-adoption",
-      "title": "Converge ReviewKernel, evaluator, workflow, and dispatch transports",
-      "scope": [
+        "taskplane/tests/test_stop_submission_enforcement.py",
         "taskplane/review.py",
-        "taskplane/review_evidence.py",
         "taskplane/eval_drivers.py",
         "taskplane/loop.py",
         "scripts/eval_skills.py",
@@ -112,22 +30,38 @@
         "taskplane/tests/test_workflow_review_kernel_parity.py",
         "taskplane/tests/test_evaluation_output_contract.py",
         "taskplane/tests/test_dispatch_capabilities.py",
-        "taskplane/tests/test_review_evidence.py",
-        "taskplane/tests/test_dispatch_parity.py"
+        "taskplane/tests/test_dispatch_parity.py",
+        "taskplane/spend.py",
+        "scripts/eval_record.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/evidence.py",
+        "evals/scenarios/tp-go.json",
+        "taskplane/tests/test_eval_observability.py",
+        "taskplane/tests/test_spend_provider_usage.py",
+        "taskplane/tests/test_eval_scenario.py",
+        "taskplane/tests/test_evidence_bundle.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_workflow_review_kernel_parity.py taskplane/tests/test_evaluation_output_contract.py taskplane/tests/test_dispatch_capabilities.py taskplane/tests/test_review_evidence.py taskplane/tests/test_dispatch_parity.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_capabilities.py taskplane/tests/test_review_evidence.py taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_stop_submission_enforcement.py taskplane/tests/test_workflow_review_kernel_parity.py taskplane/tests/test_evaluation_output_contract.py taskplane/tests/test_dispatch_capabilities.py taskplane/tests/test_dispatch_parity.py taskplane/tests/test_eval_observability.py taskplane/tests/test_spend_provider_usage.py taskplane/tests/test_eval_scenario.py taskplane/tests/test_evidence_bundle.py",
       "req": "R-0006",
-      "deps": [
-        "t2-canonical-output-lifecycle"
-      ],
+      "deps": [],
       "type": "integration",
       "contracts": [
+        "contract:host-hook-lifecycle",
+        "contract:host-dispatch-routing",
         "contract:review-kernel-slot",
         "contract:evaluation-output",
-        "contract:host-dispatch-routing",
         "contract:evaluation-telemetry"
       ],
       "new_modules": [
+        "taskplane/tp.py",
+        "taskplane/host_capabilities.py",
+        "taskplane/review_evidence.py",
+        "hooks/hooks.json",
+        ".codex/hooks.json",
+        "taskplane/taskplane_lite.py",
+        "taskplane/evaluation_output.py",
+        "workflows/execute-wave.js",
+        "workflows/fix-wave.js",
         "taskplane/review.py",
         "taskplane/eval_drivers.py",
         "taskplane/loop.py",
@@ -135,9 +69,26 @@
         "workflows/review-wave.js",
         "workflows/evaluate-wave.js",
         "agents",
-        "skills/taskplane/references/runtime-evals.json"
+        "skills/taskplane/references/runtime-evals.json",
+        "taskplane/runtime_eval.py",
+        "taskplane/evidence.py",
+        "taskplane/spend.py",
+        "scripts/eval_record.py",
+        "evals/scenarios/tp-go.json"
       ],
       "design_edges": [
+        "taskplane/host_capabilities.py->contract:host-hook-lifecycle:provides",
+        "taskplane/tp.py->contract:host-hook-lifecycle:consumes",
+        "taskplane/host_capabilities.py->contract:host-dispatch-routing:provides",
+        "taskplane/review_evidence.py->contract:review-kernel-slot:provides",
+        "hooks/hooks.json->contract:host-hook-lifecycle:provides",
+        ".codex/hooks.json->contract:host-hook-lifecycle:provides-fallback",
+        "taskplane/taskplane_lite.py->contract:host-hook-lifecycle:enforces",
+        "taskplane/evaluation_output.py->contract:evaluation-output:provides",
+        "workflows/execute-wave.js->contract:evaluation-output:consumes",
+        "workflows/fix-wave.js->contract:evaluation-output:consumes",
+        "taskplane/taskplane_lite.py->contract:host-dispatch-routing:provides",
+        "taskplane/tests->contract:host-hook-lifecycle:validates",
         "taskplane/review.py->contract:review-kernel-slot:collects",
         "workflows/review-wave.js->contract:review-kernel-slot:consumes",
         "workflows/evaluate-wave.js->contract:review-kernel-slot:consumes",
@@ -154,54 +105,7 @@
         "skills/taskplane/references/runtime-evals.json->contract:evaluation-output:documents",
         "taskplane/tests->contract:review-kernel-slot:validates",
         "taskplane/tests->contract:evaluation-output:validates",
-        "taskplane/tests->contract:host-dispatch-routing:validates"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "The same frozen review and evaluate payload through Claude workflow and Task or Codex transport yields byte-identical canonical ReviewKernel artifacts and equivalent collection; wrong, missing, duplicate, copied, stale, or unobserved slot evidence fails identically.",
-        "Workflow resume reuses a result only when target, context, view, lease, schema, slot, producer, and canonical revision match; mismatch receives a bounded retry or named failure and no workflow agent can gate, approve, or advance state.",
-        "Every live skill, loop evaluator, and leased reviewer declares and validates one versioned output schema before record, collection, or gate; native structured output is used when supported and an exact governed host-observed JSON file is validated otherwise, while prose or schema-invalid output cannot pass.",
-        "Supported, unsupported, unknown, contradictory, and corrupt capability fixtures select native schema or governed file fallback deterministically, record source and reason, preserve write scope and evidence requirements, and never convert unavailable evidence to pass or zero.",
-        "Claude Task and workflow plus Codex native dispatch fixtures prove cheap, standard, and deep selections reach the actual child invocation and host receipt whenever supported, including model aliases and supported effort values.",
-        "Cross-provider ids, unsupported effort, old or corrupt capability, strict, warn, and default fixtures send no foreign or unsupported argument; fallback is explicit, and strict mode blocks before work when a required explicit route cannot be honored."
-      ]
-    },
-    {
-      "id": "t4-telemetry-and-pinned-repairs",
-      "title": "Normalize evaluation telemetry and repair the three pinned failure clusters",
-      "scope": [
-        "taskplane/spend.py",
-        "scripts/eval_record.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/evidence.py",
-        "evals/scenarios/tp-go.json",
-        "taskplane/tests/test_eval_observability.py",
-        "taskplane/tests/test_spend_provider_usage.py",
-        "taskplane/tests/test_eval_scenario.py",
-        "taskplane/tests/test_evidence_bundle.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_eval_observability.py taskplane/tests/test_spend_provider_usage.py taskplane/tests/test_eval_scenario.py::TestEveryEvaluatedSkillHasAScenario taskplane/tests/test_evidence_bundle.py::TestTheEngineNeverJudges::test_the_refusal_names_the_unproven_criteria",
-      "req": "R-0006",
-      "deps": [
-        "t3-transport-adoption"
-      ],
-      "type": "observability",
-      "contracts": [
-        "contract:evaluation-telemetry"
-      ],
-      "new_modules": [
-        "taskplane/runtime_eval.py",
-        "taskplane/evidence.py",
-        "taskplane/spend.py",
-        "scripts/eval_record.py",
-        "evals/scenarios/tp-go.json"
-      ],
-      "design_edges": [
+        "taskplane/tests->contract:host-dispatch-routing:validates",
         "taskplane/spend.py->contract:evaluation-telemetry:provides",
         "scripts/eval_record.py->contract:evaluation-telemetry:consumes",
         "taskplane/runtime_eval.py->contract:evaluation-telemetry:consumes",
@@ -216,14 +120,24 @@
         "requirement_depth": 1
       },
       "criteria": [
+        "For personal or managed and trusted or untrusted host fixtures, onboarding separately reports install, trust, managed-policy, loaded-session, and effective-path state; no file-presence false green, trust bypass instruction, or managed-setting overwrite is allowed.",
+        "For native-only, bridge-only, both-present, neither-present, reinstall, resume, and repeated-onboarding Codex fixtures, each taskPlane hook event produces exactly one trace row or side effect, configuration is idempotent, and unrelated hooks remain unchanged.",
+        "A submission-required contract with missing, wrong-slot, wrong-workspace, corrupt, or absent submission blocks Stop or SubagentStop with contract, slot, missing artifact, and safe recovery details while leaving the contract active and loop state unchanged.",
+        "Valid submitted work, sibling slots, canonical review results, and submission records remain byte-identical through repeated Stop and SubagentStop; stop handling never gates or clears them, and standalone or no-submission-required contracts retain their documented lifecycle.",
+        "The same frozen review and evaluate payload through Claude workflow and Task or Codex transport yields byte-identical canonical ReviewKernel artifacts and equivalent collection; wrong, missing, duplicate, copied, stale, or unobserved slot evidence fails identically.",
+        "Workflow resume reuses a result only when target, context, view, lease, schema, slot, producer, and canonical revision match; mismatch receives a bounded retry or named failure and no workflow agent can gate, approve, or advance state.",
+        "Every live skill, loop evaluator, and leased reviewer declares and validates one versioned output schema before record, collection, or gate; native structured output is used when supported and an exact governed host-observed JSON file is validated otherwise, while prose or schema-invalid output cannot pass.",
+        "Supported, unsupported, unknown, contradictory, and corrupt capability fixtures select native schema or governed file fallback deterministically, record source and reason, preserve write scope and evidence requirements, and never convert unavailable evidence to pass or zero.",
+        "Claude Task and workflow plus Codex native dispatch fixtures prove cheap, standard, and deep selections reach the actual child invocation and host receipt whenever supported, including model aliases and supported effort values.",
+        "Cross-provider ids, unsupported effort, old or corrupt capability, strict, warn, and default fixtures send no foreign or unsupported argument; fallback is explicit, and strict mode blocks before work when a required explicit route cannot be honored.",
         "Evaluation records validate a versioned lifecycle schema containing host capability source, transport, schema fallback, task or slot or lease, planned and observed routing, attempts, duration, terminal and validation status, telemetry availability, and bounded redacted diagnostics.",
         "Claude and Codex usage goldens, nested usage, duplicate messages, torn JSONL, absent fields, and corrupt values reconcile uncached input, cached input, cache creation, output, raw total, and effective tokens exactly without double counting; missing telemetry is unavailable with reason.",
         "The three failures from CI run 31858859934 pass: the tp-go flow fingerprint is current while mutation tests still detect staleness, and an unjudged engine evidence bundle still names unproven acceptance criteria even when runtime guidance also fires without advancing state."
       ]
     },
     {
-      "id": "t5-docs-and-final-ci-equivalent",
-      "title": "Publish truthful host guidance and run the final unchanged suite once",
+      "id": "t2-docs-and-final-ci-equivalent",
+      "title": "Publish truthful host guidance and run the unchanged full suite once",
       "scope": [
         "docs/onboarding.md",
         "docs/configuration.md",
@@ -234,7 +148,7 @@
       "tests": "python3 -m pytest taskplane/tests -q",
       "req": "R-0006",
       "deps": [
-        "t4-telemetry-and-pinned-repairs"
+        "t1-integrated-host-capability-repair"
       ],
       "type": "documentation",
       "contracts": [
