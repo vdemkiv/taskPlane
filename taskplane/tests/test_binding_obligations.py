@@ -227,13 +227,15 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         env = dict(os.environ)
         scan = subprocess.run(
             [sys.executable, TP, "graph", "--workspace", self.ws, "scan"],
-            capture_output=True, text=True, env=env)
+            capture_output=True, text=True, env=env,
+            encoding="utf-8", errors="replace")
         self.assertEqual(scan.returncode, 0, scan.stderr)
         out = os.path.join(self.ws, "graph-view.html")
         render = subprocess.run(
             [sys.executable, TP, "graph", "--workspace", self.ws, "html",
              "--files", "a.py", "--out", out],
-            capture_output=True, text=True, env=env)
+            capture_output=True, text=True, env=env,
+            encoding="utf-8", errors="replace")
         self.assertEqual(render.returncode, 0, render.stderr)
         issued = {row["id"]: row for row in obligations.read(self.ws)
                   if row.get("event") == "issued"}

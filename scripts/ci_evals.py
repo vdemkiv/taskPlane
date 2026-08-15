@@ -466,7 +466,6 @@ BASELINE_DIRNAME = os.path.join("evals", "baselines")
 RUNS_DIRNAME = os.path.join("evals", "runs")
 RUNS_V2_DIRNAME = os.path.join("evals", "runs-v2")
 BASELINE_SCHEMA = "taskplane.eval-baseline/v1"
-WAIVER_SCHEMA = "taskplane.eval-waiver/v1"
 AGENTS_DIRNAME = "agents"
 
 # The marker `taskplane_lite.role_marker()` stamps on every dispatched brief.
@@ -531,8 +530,6 @@ BLOCKING_TRANSITIONS = {
 #
 # Neither is grandfathered. There is no waiver in the tree yet, which makes
 # strict free today and impossible later.
-WAIVER_BOUND_FIELDS = ("inputs_fingerprint", "expires")
-
 # `YYYY-MM-DD`, UTC, expiring at the END of the named day. One spelling, so a
 # waiver log stays greppable and a date is never ambiguous by timezone.
 WAIVER_DATE_FORMAT = "%Y-%m-%d"

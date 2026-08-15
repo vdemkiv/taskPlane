@@ -108,7 +108,7 @@ class TestAFailedRenderIsReported(_Ws):
         out: dict = {}
         views.refresh_views(self.ws, out)
         self.assertNotIn("error", out["dashboard"])
-        self.assertIn("refreshed for this transition",
+        self.assertIn("refreshed for this internal transition",
                       out["dashboard"]["render"])
         self.assertTrue(os.path.isfile(
             os.path.join(tp.tp_dir(self.ws), "dashboard.html")))

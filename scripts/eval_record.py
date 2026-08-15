@@ -81,7 +81,6 @@ import eval_scenario                   # noqa: E402
 import lens as lens_router             # noqa: E402
 import loop as loop_mod                # noqa: E402
 import obligations                     # noqa: E402
-import review                          # noqa: E402
 import spend                           # noqa: E402
 import target as target_mod            # noqa: E402
 import taskplane_lite as tp            # noqa: E402

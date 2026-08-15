@@ -18,6 +18,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
 import loop  # noqa: E402
+import requirements as reqs  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
 
@@ -181,7 +182,12 @@ class TestH4PmGateFailClosed(_Env):
     def test_pm_gate_advances_with_requirement_id(self):
         ws = _repo()
         os.remove(os.path.join(ws, "specs", "spec.md"))
-        loop.init(ws, "g", requirement_id="R-0001")
+        rid = reqs.record_requirement(
+            ws, "ready requirement", functional=["deliver the behavior"],
+            acceptance=["behavior is verified"],
+            nfr={"security": "no new trust boundary",
+                 "architecture": "keep the existing boundary"})["id"]
+        loop.init(ws, "g", requirement_id=rid)
         out = loop.gate(ws, "pass")
         self.assertNotIn("error", out)
 

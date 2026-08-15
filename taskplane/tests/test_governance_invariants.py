@@ -100,7 +100,7 @@ class TestGovernanceInvariants(unittest.TestCase):
         out = loop.gate(ws, "pass")
         self.assertEqual(out["step"], "signoff")
         out = loop.approve(ws, by="human")
-        self.assertEqual(out["step"], "done")
+        self.assertEqual(out["step"], "retro")
 
     def test_unknown_mutation_capability_is_denied(self):
         contract = tp.build_contract("t", scope=["src/**"],

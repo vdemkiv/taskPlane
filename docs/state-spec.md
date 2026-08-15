@@ -127,6 +127,11 @@ it persists:
   `max_fix_cycles`, `checkpoints`, `step`, `current_task`; an A/B build
   additionally carries `ab` and, once the human decides, the recorded
   `selection`.
+- **Retro seal** (`retro`): after human sign-off the non-terminal `retro`
+  step remains open until `loop retro` stores one completed report containing
+  forecast/scope/routing/finding evidence and the refreshed graph fingerprint.
+  The stored report makes retries idempotent; only this seal advances to
+  `done` (an aborted run remains `failed` after learning is recorded).
 - **Tasks** (`tasks`): each with id, scope, tests, deps, status,
   fix-cycle count, and — in a parallel wave — the claimed worktree
   `workspace` path.

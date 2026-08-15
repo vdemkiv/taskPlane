@@ -27,6 +27,16 @@ EXPECTED_GATES = {
 
 
 class TestApprovedSkillFlows(unittest.TestCase):
+    def test_delivery_flows_finish_with_retro_after_signoff(self):
+        for skill in ("tp-go", "tp-build"):
+            with open(os.path.join(ROOT, "skills", skill, "flow.json"),
+                      encoding="utf-8") as stream:
+                flow = json.load(stream)
+            ids = {row["id"] for row in flow["nodes"]}
+            edges = {tuple(row) for row in flow["edges"]}
+            self.assertIn("retro", ids, skill)
+            self.assertIn(("signoff", "retro"), edges, skill)
+
     def test_all_ten_graphs_are_valid_and_documented(self):
         found = []
         for skill in SKILLS:

@@ -334,13 +334,6 @@ def _fingerprint(members: list) -> str:
                           ).hexdigest()
 
 
-def _module_fingerprint(files_hashes: list, fhash: str) -> str:
-    material = {"files": sorted(files_hashes), "floors": fhash}
-    return hashlib.sha256(json.dumps(material, sort_keys=True,
-                                     separators=(",", ":")).encode()
-                          ).hexdigest()
-
-
 # ------------------------------------------------------------- module deriva
 
 def _symbol_clusters(text: str, rel: str, floors: dict):

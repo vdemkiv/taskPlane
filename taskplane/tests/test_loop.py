@@ -220,7 +220,10 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(loop.load(ws)["step"], "em")
         loop.next_action(ws); pass_em(ws)                       # em → signoff
         self.assertEqual(loop.load(ws)["step"], "signoff")
-        loop.approve(ws)                                       # → done
+        approved = loop.approve(ws)                            # → retro
+        self.assertEqual(loop.load(ws)["step"], "retro")
+        self.assertIn("loop retro", approved["instruction"])
+        loop.retro(ws)                                         # → done
         self.assertEqual(loop.load(ws)["step"], "done")
 
     def test_fail_autofix_then_escalate(self):

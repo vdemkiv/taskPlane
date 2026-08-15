@@ -13,7 +13,8 @@
     {"id": "selection", "label": "A/B selection if used", "kind": "gate"},
     {"id": "evaluate", "label": "Evaluate", "kind": "parallel"},
     {"id": "review", "label": "Engineering review", "kind": "parallel"},
-    {"id": "signoff", "label": "feature sign-off", "kind": "gate"}
+    {"id": "signoff", "label": "feature sign-off", "kind": "gate"},
+    {"id": "retro", "label": "retro + graph true-up", "kind": "stage"}
   ],
-  "edges": [["idea", "product"], ["product", "design"], ["design", "design_approval"], ["design_approval", "plan"], ["plan", "plan_approval"], ["plan_approval", "variants"], ["variants", "selection"], ["selection", "evaluate"], ["evaluate", "review"], ["review", "signoff"]]
+  "edges": [["idea", "product"], ["product", "design"], ["design", "design_approval"], ["design_approval", "plan"], ["plan", "plan_approval"], ["plan_approval", "variants"], ["variants", "selection"], ["selection", "evaluate"], ["evaluate", "review"], ["review", "signoff"], ["signoff", "retro"]]
 }

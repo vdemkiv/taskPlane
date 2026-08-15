@@ -79,6 +79,7 @@ import json
 import os
 
 import derivation
+import eval_drivers
 import eval_scenario as es
 
 SCHEMA = "taskplane.eval-rubric/v1"
@@ -108,11 +109,6 @@ PASS, FAIL, NO_EVIDENCE, NA = VERDICTS
 # Re-exported so a caller scores against ONE vocabulary. A second list here
 # would be free to disagree with the manifest schema.
 RECORDS = es.RECORDS
-
-# What a record can be. `empty` and `absent` are reported separately because
-# they are different failures — one recorder wrote nothing, the other never
-# ran — even though they score the same.
-STATUSES = ("present", "absent", "empty", "unreadable")
 
 NEGATIVE_DIRNAME = os.path.join("evals", "negative")
 
@@ -944,6 +940,25 @@ def absolute_compliance(rec, scenario=None) -> dict:
            for _, row in events):
         failures.append("self_or_unattributed_approval")
 
+    # Retro is conditional in model evaluations: scenarios intentionally stop
+    # at their first human gate, so an early run owes no fabricated sign-off.
+    # Once an attributed EM sign-off IS present, however, completion is not
+    # compliant until a later engine Retro carries the graph true-up receipt.
+    ordered_events = [row for _, row in events]
+    signoff_at = next((index for index, row in enumerate(ordered_events)
+                       if row.get("event") == "loop_approve"
+                       and row.get("gate") == "em_signoff"), None)
+    if signoff_at is not None:
+        retros = [(index, row) for index, row in enumerate(ordered_events)
+                  if row.get("event") == "loop_retro"]
+        later = [(index, row) for index, row in retros if index > signoff_at]
+        if not later:
+            failures.append("retro_missing_after_signoff")
+        elif not later[0][1].get("graph_fingerprint"):
+            failures.append("retro_graph_receipt_missing")
+        if any(index < signoff_at for index, _ in retros):
+            failures.append("retro_before_signoff")
+
     derivations = (rec.get("rows") or {}).get("derivations")
     if "no_rederive" in required and derivations is None:
         failures.append("derivation_evidence_missing")
@@ -1019,9 +1034,7 @@ def validate_run_v2(run) -> list[str]:
     driver = run.get("driver")
     if not isinstance(driver, dict):
         errors.append("driver")
-    elif driver.get("status") not in (
-            "success", "failed", "capability_unavailable", "timeout",
-            "cancelled"):
+    elif driver.get("status") not in eval_drivers.STATUSES:
         errors.append("driver.status")
     if not isinstance(run.get("hook_proof"), dict) or \
             not isinstance(run["hook_proof"].get("proved"), bool):

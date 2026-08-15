@@ -85,9 +85,9 @@ jobs:
       # leaving discovery (closed by a pinned FLOOR on the collected count)
       # and new pytest-only files accumulating (closed by a pinned MANIFEST
       # of the files discovery legitimately collects nothing from). The
-      # recorded decision (R-0011 row 1) was floor + manifest, convert
-      # NOTHING. The script only counts collection — it never re-runs the
-      # tests — and both pins ratchet one way: FLOOR up, manifest down.
+      # recorded decision (R-0011 row 1) was floor + explicit manifest. The
+      # script only counts collection — it never re-runs the tests. FLOOR
+      # ratchets up; any manifest addition/conversion is reviewed explicitly.
       - name: Discover-leg floor + pytest-only manifest (no silent erosion)
         run: python3 scripts/ci_unittest_floor.py
 

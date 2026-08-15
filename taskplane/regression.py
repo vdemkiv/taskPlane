@@ -41,12 +41,6 @@ ENFORCEMENT_PATHS = (
     ".github/workflows/ci.yml",      # the documented invocation
 )
 
-# Names whose change most needs a covering behavioral test.
-ENFORCEMENT_SYMBOLS = (
-    "screen_command", "screen_tool", "dod_check", "dor_check",
-    "build_contract", "load_active", "budget_status", "gate",
-)
-
 _SKIP_DIRS = {
     ".git", ".hg", ".svn", ".mypy_cache", ".pytest_cache", ".tox",
     ".venv", "venv", "node_modules", "__pycache__", "dist", "build",

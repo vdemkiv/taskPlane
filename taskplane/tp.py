@@ -745,7 +745,7 @@ def cmd_screen_render(a) -> int:
             if k in ("title", "name") and not title:
                 title = v
             if len(v) > len(body):
-                body, key = v, k
+                body = v
         ws = _workspace(event.get("cwd"))
         obligations.observe(
             ws,
@@ -1106,8 +1106,6 @@ def cmd_contracts(a) -> int:
                      "read_only": bool(c.get("read_only")),
                      "age_seconds": int(age) if age is not None else None,
                      "task": str(c.get("task") or "")[:120]})
-    legacy = tp.active_contract_path(ws, None) if tp.task_slot() is None \
-        else os.path.join(tp.tp_dir(ws), "active_contract.json")
     print(json.dumps({
         "slots": rows, "count": len(rows),
         "legacy_slot_present": os.path.exists(
@@ -3471,7 +3469,7 @@ def cmd_review(a) -> int:
     # 3. graph + impact — impact-first is not optional, and it costs nothing
     #    here that it would not cost as its own call.
     files = rec.get("changed_files") or []
-    g, imp, blast = {}, {}, ""
+    g, imp = {}, {}
     try:
         import depgraph as dg
         g = dg.load(ws)
@@ -3485,7 +3483,6 @@ def cmd_review(a) -> int:
             g = dg.scan(ws)
         imp = dg.impact(ws, files) if files else {}
         out["impact"] = imp
-        blast = dg.render_context(imp) if imp.get("touched") else ""
         step("graph", True, modules=len(g.get("modules") or {}),
              edges=len(g.get("edges") or []),
              impacted=imp.get("total_impacted", 0))
@@ -3493,7 +3490,7 @@ def cmd_review(a) -> int:
         # Never pass a stale/partially loaded graph into routing.  The empty
         # graph makes the quality gate return impact_incomplete with zero
         # dispatch, while the canonical diff/file facts remain available.
-        g, imp, blast = {}, {}, ""
+        g, imp = {}, {}
         step("graph", False, reason=e.__class__.__name__)
 
     # 4. contract — read-only, owing the review's artifacts.

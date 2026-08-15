@@ -327,12 +327,6 @@ def _codex_tool_commands(payload: dict) -> list[str]:
     return commands
 
 
-def _codex_tool_command(payload: dict) -> str | None:
-    """Compatibility helper for callers that need only the first command."""
-    commands = _codex_tool_commands(payload)
-    return commands[0] if commands else None
-
-
 def codex_session_derivations(codex_home: str | None,
                               workspace: str) -> list[dict]:
     """Derivation rows from native Codex tool calls, never command text.

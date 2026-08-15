@@ -651,6 +651,9 @@ class TestLoopSerialSkipAndSelection(unittest.TestCase):
         with open(os.path.join(d, "trace.jsonl"), "a", encoding="utf-8") as f:
             f.write('{"event":"loop_init","ts":1}\n')
             f.write("{truncated partial line\n")   # must not crash retro
+        state = loop.load(ws)
+        state["step"] = "done"       # legacy completed loop, eligible once
+        loop.save(ws, state)
         out = loop.retro(ws)
         self.assertNotIn("error", out)
 

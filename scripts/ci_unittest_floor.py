@@ -25,15 +25,15 @@ slice can shrink two different ways without anyone noticing:
      converted or added to the manifest deliberately.
 
 The recorded design decision (R-0011 row 1) is FLOOR + MANIFEST, convert
-NOTHING: the ten pytest-only files below use pytest fixtures/parametrize
+NOTHING: the pytest-only files below use pytest fixtures/parametrize
 idiomatically and rewriting them would be churn on green code for a
 counting convenience.
 
 RATCHET DIRECTION
 -----------------
-FLOOR only rises. PYTEST_ONLY_MANIFEST only shrinks. Both directions are
-pinned a second time in taskplane/tests/test_ci_floor.py so loosening the
-guard fails the suite, not just review.
+FLOOR only rises. PYTEST_ONLY_MANIFEST is an explicit equality snapshot:
+adding a pytest-only module requires a deliberate update here and in the
+self-test, while converting one requires its removal from both.
 
 This script COUNTS COLLECTION; it does not run the tests — the ci.yml
 `unittest discover` step still does that, unchanged. Discovery is done in a
@@ -68,15 +68,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # NOT what is pinned here). Re-derive after adding tests with:
 #     python3 scripts/ci_unittest_floor.py --json
 # and raise this to the reported `count`.
-FLOOR = 1149
+FLOOR = 2508
 
 # Every test_*.py that defines ZERO unittest.TestCase subclasses. This is an
-# EQUALITY check, not a floor: convert one and you must remove it here, so
-# the list can only shrink.
+# EQUALITY check, not a floor: every pytest-only file must be named, and every
+# named file must still be pytest-only. Changes are deliberate and reviewed.
 PYTEST_ONLY_MANIFEST = (
     "test_dispatch_parity.py",
     "test_regression_dod.py",
     "test_regression_gate.py",
+    "test_review_convergence.py",
     "test_review_discipline.py",
     "test_review_wave.py",
     "test_stage_waves.py",
@@ -228,7 +229,7 @@ def main(argv=None) -> int:
         problems.append(
             f"stale PYTEST_ONLY_MANIFEST entry/entries: {gone} — these now "
             "define unittest.TestCase subclasses (or no longer exist). "
-            "Remove them from the manifest; it may only shrink.")
+            "Remove the stale entries from the explicit manifest.")
 
     ok = not problems
     if args.json:

@@ -991,7 +991,7 @@ def _walk_pass_em(ws, state):
 def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     """R-0004 adversarial walk: with the org kill-switch DOWN
     (TASKPLANE_WORKFLOWS=0) the FULL journey — init→pm→design→plan→
-    execute→evaluate→em→signoff — reaches every gate via the dispatch
+    execute→evaluate→em→signoff→retro — reaches every gate via the dispatch
     rail alone, and no CLI dispatch surface ever prints a workflow key.
     Zero workflow coupling on the mandatory path."""
     import depgraph
@@ -1064,7 +1064,8 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     nxt("em")
     assert _walk_pass_em(ws, loop.load(ws))["step"] == "signoff"  # em gate
     assert nxt("signoff")["paused"]                            # human gate
-    assert loop.approve(ws, by="human — walk")["step"] == "done"
+    assert loop.approve(ws, by="human — walk")["step"] == "retro"
+    assert loop.retro(ws)["graph_true_up"]["content_fingerprint"]
     assert loop.load(ws)["step"] == "done"
     # every stage_dispatch_path choice on this walk was the task rail,
     # forced by the kill-switch

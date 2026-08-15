@@ -232,7 +232,8 @@ alongside the verdict, not only the code. Note what's mocked vs live.
 
 Submit verdicts with reproducible notes, escalation options for the human
 (`loop resolve`), the sign-off recommendation at the final gate,
-`$TP loop retro` at done (forecast accuracy + lessons → KB), recorded
+`$TP loop retro` at the post-sign-off `retro` stage (forecast accuracy,
+selective-routing/finding evidence, graph true-up, lessons → KB, then `done`), recorded
 decisions. tp-engineering never edits code — a build gap goes back
 through the loop (`loop submit fail` with a reproducible note; the
 orchestrator gates it). Deep persona spec:

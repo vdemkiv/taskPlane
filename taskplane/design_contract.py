@@ -14,7 +14,6 @@ import os
 
 import depgraph
 import kb
-import lens as lens_router
 import requirements as reqs
 import taskplane_lite as tp
 
@@ -787,4 +786,3 @@ def design_review_notices(meta: dict) -> list:
                 f"{str(row.get('evidence') or '').strip()} "
                 f"(declared by {who})")
     return notices
-

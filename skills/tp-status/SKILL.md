@@ -42,8 +42,9 @@ This flow introduces no new gate and mutates no state.
    the top of the loop tab: gate buttons (approve / sign-off / resolve,
    wired to `sendPrompt`) when a decision is the human's, an explicit
    "no action needed from you — <role> is on <step> · next human gate: X"
-   strip when agents are working, and a retro button at done. Their click
-   IS the proceed — no command to remember.
+   strip when agents are working. After sign-off, `retro` is an automatic
+   non-human stage (lessons + graph true-up); `done` means that seal already
+   exists, so the dashboard never asks the user to run it again.
 3. Two v2.5 surfaces to get right — relay them where they actually are,
    never invent them where they are not:
    - **Component surfaces (know which board shows what):** the dashboard's

@@ -238,7 +238,6 @@ _SHELL_KEYWORDS = frozenset({
     "if", "then", "else", "elif", "fi", "while", "until", "do", "done",
     "for", "case", "esac", "select", "function", "time", "!",
 })
-_GROUPING = "({"
 _SHELL_VALUE_FLAGS = frozenset({"-o", "+o", "--rcfile", "--init-file"})
 
 
@@ -884,10 +883,6 @@ def _targets_dash_o(a):
     return out
 
 
-def _targets_touch(a):
-    return [t for t in a if not t.startswith("-")]
-
-
 def _tar_extracts(args) -> bool:
     """True when tar will EXTRACT.
 
@@ -909,7 +904,7 @@ def _tar_extracts(args) -> bool:
 
 _WRITE_PROGRAMS = {
     "curl": _targets_dash_o, "wget": _targets_dash_o,
-    "touch": _targets_touch, "mkdir": _targets_touch,
+    "touch": _targets_tee, "mkdir": _targets_tee,
     "tee": _targets_tee, "cp": _targets_t_dir, "mv": _targets_t_dir,
     "install": _targets_t_dir, "rsync": _targets_last_arg,
     "ln": _targets_last_arg, "truncate": _targets_last_arg,
@@ -918,13 +913,6 @@ _WRITE_PROGRAMS = {
     "mknod": _targets_tee, "chmod": _targets_skip_first,
     "chown": _targets_skip_first,
 }
-
-
-def _token_subseq(needle, haystack) -> bool:
-    if not needle:
-        return False
-    it = iter(haystack)
-    return all(tok in it for tok in needle)
 
 
 # Writing here discards; it can never mutate a repository. Deliberately

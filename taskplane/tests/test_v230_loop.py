@@ -530,7 +530,7 @@ class TestAttestationWarning(unittest.TestCase):
         ev = [e for e in read_trace(ws)
               if e["event"] == "loop_approve_unattributed"]
         self.assertEqual(ev[0]["gate"], "signoff")
-        self.assertEqual(out["step"], "done")
+        self.assertEqual(out["step"], "retro")
 
 
 class TestDesignRebaselineTrace(unittest.TestCase):
@@ -743,8 +743,11 @@ class TestDesignWiringHooks(unittest.TestCase):
         loop.init(ws, "free-text goal", checkpoints=[])   # → pm
         os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
         open(os.path.join(ws, "specs", "spec.md"), "w", encoding="utf-8").write("# spec\n")
-        rid = reqs.record_requirement(ws, "Gate attach",
-                                      acceptance=["done"])["id"]
+        rid = reqs.record_requirement(
+            ws, "Gate attach", functional=["attach before evaluation"],
+            acceptance=["done"],
+            nfr={"security": "no new trust boundary",
+                 "architecture": "retain the existing loop boundary"})["id"]
         out = loop.gate(ws, "pass", rid=rid)
         self.assertNotIn("blockers", out)
         after = loop.load(ws)
@@ -866,7 +869,7 @@ class TestDesignWiringHooks(unittest.TestCase):
             out = loop.approve(ws, by="Dana")
         finally:
             loop._signoff_dod = orig
-        self.assertEqual(out["step"], "done")
+        self.assertEqual(out["step"], "retro")
         self.assertTrue(any("accepted design drift" in n
                             for n in out["notices"]))
 

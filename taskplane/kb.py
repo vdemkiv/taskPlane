@@ -463,7 +463,8 @@ def current_state(ws: str):
     (only headings/placeholder parentheticals — no real content lines)."""
     p = os.path.join(kb_dir(ws), "context", "current-state.md")
     try:
-        text = open(p, encoding="utf-8").read()
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
     except OSError:
         return None
     filled = False

@@ -6,7 +6,7 @@
     "skills/tp-build/SKILL.md",
     "skills/tp-build/flow.json"
   ],
-  "inputs_fingerprint": "364277dead4c1ef125c2059402ee6bd6a184e8e8f6d846b4311bd9901e233863",
+  "inputs_fingerprint": "11c2eca305d058640c27061b1c4840975b592a08de8d438fef5247b2d3cf20c9",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp req new",

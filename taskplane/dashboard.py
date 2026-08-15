@@ -301,7 +301,7 @@ def _render_pipeline(state, step) -> str:
     order = [s[0] for s in main]
     cur_i = order.index(step) if step in order else -1
     pipe_html = []
-    for i, (sid, label, gate) in enumerate(main):
+    for i, (_sid, label, gate) in enumerate(main):
         cls = "done" if (cur_i >= 0 and i < cur_i) else \
               ("cur" if i == cur_i else "todo")
         if gate:
@@ -376,6 +376,7 @@ def render(ws: str, out: str | None = None) -> str:
         awaiting = {"design_approval": "Review the design, then approve.",
                     "plan_approval": "Review the plan, then approve.",
                     "signoff": "Review the EM report, then sign off.",
+                    "retro": "Finalizing lessons and the dependency graph.",
                     "done": "Loop complete.", "escalated": "Resolve to continue."}
         agent_cards.append(
             f'<div class="agent idle"><div class="ah"><b>no active contract'
@@ -965,7 +966,7 @@ def _compact_card(f, open_=True):
     f = _alias(f)
     # '_adv' is set by the caller that saw the whole findings set
     # (render_findings_paged); absent = not a machinery duplicate.
-    _, _, slabel, dot, accent, _ = _row_sev_info(f, bool(f.get("_adv")))
+    _, _, slabel, dot, _accent, _ = _row_sev_info(f, bool(f.get("_adv")))
     loc = ""
     if f.get("file"):
         ln = f":{f['line']}" if f.get("line") not in (None, "") else ""
@@ -1307,7 +1308,8 @@ def _catalog():
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "lenses", "catalog.json")
     try:
-        c = json.load(open(p, encoding="utf-8"))
+        with open(p, encoding="utf-8") as f:
+            c = json.load(f)
         return c["lenses"] if isinstance(c, dict) else c
     except (OSError, ValueError):
         return []
@@ -2098,7 +2100,8 @@ def _harness_agents(ws):
         p = os.path.join(tp.tp_dir(w), "meter.json")
         if os.path.exists(p):
             try:
-                m = json.load(open(p, encoding="utf-8")).get(tid, {})
+                with open(p, encoding="utf-8") as f:
+                    m = json.load(f).get(tid, {})
             except (ValueError, OSError):
                 m = {}
         sc = (c.get("coding") or {}).get("scope_paths") or \
@@ -2135,7 +2138,9 @@ def _meter_totals(ws):
         if not os.path.exists(p):
             continue
         try:
-            for e in json.load(open(p, encoding="utf-8")).values():
+            with open(p, encoding="utf-8") as f:
+                entries = json.load(f).values()
+            for e in entries:
                 tot["actions"] += e.get("actions", 0)
                 tot["denies"] += e.get("denies", 0)
         except (ValueError, OSError):
@@ -3552,12 +3557,14 @@ def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used,
             "ti-arrows-split", "your gate — A/B selection: pick what ships",
             f"{len(variants)} variants built &amp; evaluated · they never "
             "merge, you choose", vb)
+    elif step == "retro":
+        gatebar = gate_box(
+            "ti-refresh", "finalizing — retro + graph true-up",
+            "no action needed from you · the loop remains open until the "
+            "engine seals its lessons and graph", "")
     elif step == "done":
-        b = (f'<button style="{prim}" onclick="tpFire(this,\'run the retro\','
-             f'\'retro queued\')"><i class="ti ti-flag" aria-hidden="true">'
-             f'</i> run the retro</button>')
         gatebar = gate_box("ti-circle-check", "loop complete — nothing "
-                           "pending", "retro closes it out", b)
+                           "pending", "retro and graph true-up recorded", "")
     elif step == "failed":
         b = (f'<button style="{sec}" onclick="tpFire(this,\'start a new loop '
              f'for this goal\')">start over</button>')

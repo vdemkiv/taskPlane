@@ -40,6 +40,8 @@ class DesignWorkflowTest(unittest.TestCase):
         self.req = reqs.record_requirement(
             self.ws, "add design flow",
             functional=["users can design before build"],
+            nfr={"security": "no new trust boundary",
+                 "architecture": "keep design in the governed loop"},
             acceptance=["design is approved before planning",
                         "the proposed graph stays separate"],
             contracts=[{"relation": "provides",

@@ -70,6 +70,33 @@ class TestAbsoluteWorkflow(unittest.TestCase):
         rows = GOOD + [{"ts": 7.5, "event": "loop_approve_unattributed"}]
         self.assertIn("self_or_unattributed_approval", er.absolute_compliance(run(rows))["failures"])
 
+    def test_signoff_requires_a_later_retro_with_graph_receipt(self):
+        signed = GOOD + [{"ts": 9, "event": "loop_approve",
+                          "gate": "em_signoff", "final": "retro"}]
+        missing = er.absolute_compliance(run(signed))["failures"]
+        self.assertIn("retro_missing_after_signoff", missing)
+
+        no_graph = signed + [{"ts": 10, "event": "loop_retro"}]
+        failures = er.absolute_compliance(run(no_graph))["failures"]
+        self.assertIn("retro_graph_receipt_missing", failures)
+
+        complete = signed + [{"ts": 10, "event": "loop_retro",
+                              "graph_fingerprint": "graph-fp"}]
+        failures = er.absolute_compliance(run(complete))["failures"]
+        self.assertNotIn("retro_missing_after_signoff", failures)
+        self.assertNotIn("retro_graph_receipt_missing", failures)
+
+    def test_a_retro_before_signoff_does_not_satisfy_completion(self):
+        rows = GOOD + [
+            {"ts": 8.5, "event": "loop_retro",
+             "graph_fingerprint": "graph-fp"},
+            {"ts": 9, "event": "loop_approve", "gate": "em_signoff",
+             "final": "retro"},
+        ]
+        failures = er.absolute_compliance(run(rows))["failures"]
+        self.assertIn("retro_before_signoff", failures)
+        self.assertIn("retro_missing_after_signoff", failures)
+
     def test_advisory_response_is_not_graded_as_an_incomplete_delivery(self):
         scenario = {
             "schema": es.SCHEMA, "skill": "advisory", "terminal": "response",
@@ -149,6 +176,7 @@ class TestAbsoluteWorkflow(unittest.TestCase):
             {"ts": 1, "event": "contract_activated"},
             {"ts": 2, "event": "requirement_recorded", "id": "R-0001"},
             {"ts": 3, "event": "workspace_write", "path": "specs/spec.md"},
+            {"ts": 4, "event": "human_gate_wait", "step": "product_approval"},
         ])
         result = er.evaluate_run_v2(scenario, rec)
         self.assertTrue(result["eligible"], result)

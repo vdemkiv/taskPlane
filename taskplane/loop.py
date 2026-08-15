@@ -14,7 +14,7 @@ State machine (per docs/loop-design.md, answers locked 2026-07-11):
   evaluate: pass → next task, or → em when all tasks pass
             fail → fix (if fix_cycles < max) else escalated (human)
   fix     → evaluate
-  em      → signoff (human) → done
+  em      → signoff (human) → retro/graph true-up → done
   escalated → (human) retry | skip | abort
 
 Human gates: design approval (when requested), plan approval, and EM sign-off.
@@ -33,6 +33,7 @@ import time
 import depgraph
 import kb
 import lens as lens_router
+import retro as retro_engine
 import requirements as reqs
 import taskplane_lite as tp
 import yield_meter
@@ -115,7 +116,8 @@ PIPELINE = [
     ("design_approval", "Approve design"),
     ("plan", "Plan"), ("plan_approval", "Approve"),
     ("execute", "Execute"), ("evaluate", "Evaluate"), ("fix", "Fix"),
-    ("em", "EM"), ("signoff", "Sign-off"), ("done", "Done"),
+    ("em", "EM"), ("signoff", "Sign-off"),
+    ("retro", "Retro + graph true-up"), ("done", "Done"),
 ]
 # The A/B selection gate is spliced in before 'em', but only for an A/B loop
 # that hasn't selected yet — one place owns that rule (display_pipeline).
@@ -679,6 +681,16 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                     "blockers": attach_errors}
         state = load(ws)
     step = state["step"]
+
+    if step == "retro":
+        return {
+            "step": "retro", "paused": False, "action": "loop_retro",
+            "instruction": (
+                "Run `tp loop retro` once. It seals the run's learning, "
+                "refreshes the dependency graph, and moves the loop to done; "
+                "no human approval is required."),
+            "status": status(ws),
+        }
 
     if step in HUMAN_STEPS:
         awaiting = {
@@ -1520,7 +1532,6 @@ def normalize_severity(value) -> str:
 # 26-lens sweep (which always yields ~100 observations) from reading as "100
 # blockers": only a regression, or a NEW high defect in the change's own diff,
 # blocks — pre-existing debt and taste are surfaced but never block the change.
-FINDING_CLASSES = ("regression", "pre-existing", "observation")
 _CLASS_MAP = {
     "regression": "regression", "regressed": "regression",
     "pre-existing": "pre-existing", "preexisting": "pre-existing",
@@ -2627,8 +2638,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             return {"error": "Definition of Done failed — sign-off cannot "
                              "complete until the evidence is repaired",
                     "step": "signoff", "dod": dod}
-        state["step"] = "done"
-        tp.trace(ws, "loop_approve", gate="em_signoff", final="done", by=by)
+        state["step"] = "retro"
+        tp.trace(ws, "loop_approve", gate="em_signoff", final="retro", by=by)
         # v2.3.0 wiring: the sign-off payload carries the review's design
         # notices (accepted drift, declared edge realizations) when present.
         findings, _errs = _read_json(
@@ -2670,6 +2681,10 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         out["warning"] = attestation_warning
     if gate_notices:
         out["notices"] = gate_notices
+    if state["step"] == "retro":
+        out["instruction"] = (
+            "Human sign-off is recorded. Run `tp loop retro` once to record "
+            "the lessons, true up the dependency graph, and close the loop.")
     return out
 
 
@@ -2851,95 +2866,9 @@ def resolve(ws: str, decision: str) -> dict:
 
 
 def retro(ws: str) -> dict:
-    """Post-track learning: mine the trace + state for what the NEXT track
-    should know — forecast accuracy (refinement score vs actual fix cycles),
-    hook denials (scope friction), lens routing stats — and record the
-    lessons to the knowledge base so they're retrieved, not re-learned."""
-    state = load(ws) or {}
-    events = []
-    # D-0014: the retro mines a WHOLE track's history, and a long track
-    # rotates. Reading only the active file silently drops everything before
-    # the last rotation — forecast accuracy and denial counts computed from
-    # the tail, presented as the track's totals.
-    for trace_path in tp.trace_paths(ws):
-        with open(trace_path, encoding="utf-8") as f:
-            for ln in f:
-                if not ln.strip():
-                    continue
-                try:
-                    events.append(json.loads(ln))
-                except ValueError:
-                    continue   # a truncated/partial worker line — skip, don't
-                               # crash the whole retro on one bad record
-
-    denies = [e for e in events if e["event"] == "hook_deny"]
-    gates = [e for e in events if e["event"] == "refinement_gate"]
-    waves = [e for e in events if e["event"] == "loop_wave"]
-    tasks = state.get("tasks") or []
-
-    # forecast accuracy: refinement predicted ~gaps/2 fix cycles per task
-    accuracy = []
-    for g in gates:
-        t = next((x for x in tasks if x["id"] == g.get("task")), None)
-        if t is None:
-            continue
-        actual = t.get("fix_cycles", 0)
-        accuracy.append({
-            "task": g["task"], "refinement_score": g.get("score"),
-            "actual_fix_cycles": actual,
-            "forecast_held": (actual == 0) == (g.get("score", 1) >= 0.6),
-        })
-
-    lessons = []
-    if denies:
-        lessons.append(
-            f"{len(denies)} hook denial(s) — scopes were tighter than the "
-            "work wanted; check whether task scopes were too narrow or the "
-            "work drifted: "
-            + "; ".join(sorted({d.get('reason', '')[:60] for d in denies}))[:300])
-    weak = [a for a in accuracy if not a["forecast_held"]]
-    if weak:
-        lessons.append(
-            "refinement forecast missed on: "
-            + ", ".join(a["task"] for a in weak)
-            + " — revisit the NFR axes routed for those scopes.")
-    hi_fix = [t["id"] for t in tasks if t.get("fix_cycles", 0) >= 2]
-    if hi_fix:
-        lessons.append("high fix-cycle tasks (requirements were the cheap "
-                       "place to catch this): " + ", ".join(hi_fix))
-    if not lessons:
-        lessons.append("clean run — no scope friction, forecasts held.")
-
-    report = {
-        "goal": state.get("goal"),
-        "tasks": [{"id": t["id"], "status": t.get("status"),
-                   "fix_cycles": t.get("fix_cycles", 0)} for t in tasks],
-        "hook_denials": len(denies),
-        "parallel_waves": len(waves),
-        "forecast_accuracy": accuracy,
-        "lessons": lessons,
-    }
-    scope = sorted({g for t in tasks for g in t.get("scope", [])})
-    kb.record_decision(
-        ws, f"Retrospective: {state.get('goal', 'track')[:56]}",
-        context=f"{len(tasks)} task(s), {len(denies)} hook denial(s), "
-                f"{len(waves)} wave(s)",
-        decision=" | ".join(lessons)[:400],
-        tags=["retrospective"], context_files=scope,
-        links={"loop": "retro"})
-    tp.trace(ws, "loop_retro", lessons=len(lessons),
-             denials=len(denies))
-    # human-readable summary for the shared artifacts snapshot (v2.0.0)
-    with contextlib.suppress(Exception):
-        lines = [f"# Retro — {state.get('goal', 'track')}", ""]
-        for k, v in report.items():
-            if isinstance(v, (str, int, float)):
-                lines.append(f"- **{k}**: {v}")
-        for l in (report.get("lessons") or []):
-            lines.append(f"- lesson: {l if isinstance(l, str) else json.dumps(l)}")
-        with open(os.path.join(tp.tp_dir(ws), "retro.md"), "w", encoding="utf-8", newline="") as f:
-            f.write("\n".join(lines) + "\n")
-    return report
+    return retro_engine.run(
+        ws, load_state=load, mutate_state=mutate,
+        loop_path=_loop_path(ws), normalize_severity=normalize_severity)
 
 
 def _load_tasks(ws: str, state: dict) -> None:

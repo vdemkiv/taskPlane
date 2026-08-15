@@ -13,7 +13,8 @@ sign, and when the design space is wide, build it twice and choose.**
 `flow.json` is the approved feature graph: **idea → complete requirement →
 conditional Design → Design approval → graph-aware Plan → Plan approval → one
 build or A/B variants → selection when used → Evaluate → Engineering review →
-feature sign-off**. Every gate in that graph is a real human stop.
+feature sign-off → Retro + graph true-up**. Every gate in that graph is a real
+human stop; Retro is an automatic engine stage after the final approval.
 
 Separation of duties applies from the first refinement step. The orchestrator
 never performs Product, Design, Plan, Build, Evaluate, or Engineering work
@@ -115,9 +116,10 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    an evaluation compare, a side-by-side RENDER of both (live screenshots
    beat mocks), and a human SELECTION gate that replaces the merge. Refine
    the winner (often a hybrid: one variant's engine, the other's face).
-8. **Finish like every loop:** retro, debt recorded, graph trued-up and
-   committed with the KB — the next feature starts smarter, and its
-   contracts inherit an accurate map of who owns what.
+8. **Finish like every loop:** run the one-shot Retro after sign-off; it
+   records lessons and trues up the graph before `done`. Record chosen debt
+   and commit the KB — the next feature starts smarter, and its contracts
+   inherit an accurate map of who owns what.
 
 Human gates are non-negotiable: Design approval when used, plan approval,
 (selection if A/B), final sign-off with the feature rendered — never a diff

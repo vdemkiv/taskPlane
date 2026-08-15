@@ -27,6 +27,9 @@ the smallest matching specialist flow**. The Review branch is never complete
 when the report is generated: engineering review must deliver its canonical
 workflow/graph/findings dashboard and stop at the explicit **human approve /
 request changes** gate. Only the human decision closes Review/sign-off.
+When the facade routes a delivery loop, its specialist `tp-go`/`tp-build`
+flow continues after approval through engine-owned Retro; standalone Review
+ends with its own attributed sign-off and persisted synthesis.
 
 ## Route the request
 
