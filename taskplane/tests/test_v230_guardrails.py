@@ -48,6 +48,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import taskplane_lite as tpl  # noqa: E402
 import requirements as reqs  # noqa: E402
+import tp as cli  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TPPY = os.path.join(ROOT, "taskplane", "tp.py")
@@ -960,9 +961,8 @@ class TestHookWiring(unittest.TestCase):
             w = h.get("commandWindows", "")
             self.assertIn("if defined PLUGIN_ROOT", w)
             self.assertIn("CLAUDE_PLUGIN_ROOT", w)
-            command = h["command"]
-            if command.endswith(" screen") or command.endswith(
-                    " screen-dispatch") or command.endswith(" context"):
+            action = cli._codex_hook_action(h["command"])
+            if action in {"screen", "screen-dispatch", "context"}:
                 self.assertIn("exit /b 2", w,
                               "enforcement/context roots fail closed")
             else:
