@@ -1,0 +1,376 @@
+"""Source-attributed host capabilities for taskPlane's host adapters.
+
+Configuration proves installation or configuration only.  Runtime choices
+that protect governance require a separate host-observed receipt for loading,
+trust, and managed-policy permission.  Unknown or contradictory evidence is
+kept explicit so callers can fall back or fail closed without guessing.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, Mapping
+
+
+SCHEMA = "taskplane.host-capabilities/v1"
+STATUSES = frozenset(("supported", "unsupported", "unknown",
+                      "contradictory"))
+CONFIDENCES = frozenset(("high", "medium", "low"))
+MAX_REASON_BYTES = 512
+
+
+def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:
+    raw = str(value or "").encode("utf-8", errors="replace")[:limit]
+    while raw:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return ""
+
+
+def _immutable_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return tuple(_immutable_value(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((str(k), _immutable_value(v))
+                            for k, v in value.items()))
+    return value
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, tuple):
+        if all(isinstance(item, tuple) and len(item) == 2 for item in value):
+            return {str(k): _json_value(v) for k, v in value}
+        return [_json_value(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One bounded fact and the authority that supplied it."""
+
+    status: str
+    source: str
+    confidence: str = "medium"
+    reason: str = ""
+    observed_at: str = ""
+    value: Any = None
+
+    def __post_init__(self) -> None:
+        status = self.status if self.status in STATUSES else "contradictory"
+        confidence = (self.confidence if self.confidence in CONFIDENCES
+                      else "low")
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "source", _bounded(self.source, 128)
+                           or "unknown")
+        object.__setattr__(self, "confidence", confidence)
+        object.__setattr__(self, "reason", _bounded(self.reason))
+        object.__setattr__(self, "observed_at",
+                           _bounded(self.observed_at, 64))
+        object.__setattr__(self, "value", _immutable_value(self.value))
+
+    def to_dict(self) -> dict[str, Any]:
+        row = {
+            "status": self.status,
+            "source": self.source,
+            "confidence": self.confidence,
+            "observed_at": self.observed_at,
+            "reason": self.reason,
+        }
+        if self.value is not None:
+            row["value"] = _json_value(self.value)
+        return row
+
+
+@dataclass(frozen=True)
+class HostCapabilitySnapshot:
+    """Immutable capability authority for one host session and workspace."""
+
+    host: str
+    host_version: str | None
+    workspace_fingerprint: str
+    session_fingerprint: str | None
+    observed_at: str
+    capabilities: Mapping[str, Observation]
+    effective_path: str
+    fingerprint: str
+    schema: str = SCHEMA
+
+    def capability(self, name: str) -> Observation:
+        return self.capabilities[name]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "host": self.host,
+            "host_version": self.host_version,
+            "workspace_fingerprint": self.workspace_fingerprint,
+            "session_fingerprint": self.session_fingerprint,
+            "observed_at": self.observed_at,
+            "effective_path": self.effective_path,
+            "fingerprint": self.fingerprint,
+            "capabilities": {
+                name: row.to_dict()
+                for name, row in sorted(self.capabilities.items())
+            },
+        }
+
+
+_ENV_OBSERVATIONS = {
+    "TASKPLANE_NATIVE_HOOKS_LOADED": "native_plugin_hooks_loaded",
+    "TASKPLANE_BRIDGE_HOOKS_LOADED": "repository_bridge_loaded",
+    "TASKPLANE_REPOSITORY_TRUST": "repository_trust",
+    "TASKPLANE_MANAGED_HOOK_POLICY": "managed_policy_permission",
+    "TASKPLANE_WORKFLOWS_AVAILABLE": "workflow_availability",
+    "TASKPLANE_NATIVE_STRUCTURED_OUTPUT": "native_structured_output",
+    "TASKPLANE_MODEL_SELECTION": "model_selection",
+    "TASKPLANE_EFFORT_SELECTION": "effort_selection",
+    "TASKPLANE_STABLE_HOOK_EVENT_ID": "stable_event_identity",
+}
+
+_STATUS_ALIASES = {
+    "1": "supported", "true": "supported", "yes": "supported",
+    "supported": "supported", "allowed": "supported",
+    "trusted": "supported", "loaded": "supported",
+    "0": "unsupported", "false": "unsupported", "no": "unsupported",
+    "unsupported": "unsupported", "denied": "unsupported",
+    "untrusted": "unsupported", "not_loaded": "unsupported",
+    "unknown": "unknown", "contradictory": "contradictory",
+}
+
+
+def observations_from_environment(
+        environment: Mapping[str, str] | None = None) -> dict[str, Observation]:
+    """Decode explicit host receipts without inferring them from files.
+
+    The adapter that launches taskPlane owns these variables.  Missing values
+    remain unknown; invalid values are contradictory rather than truthy.
+    """
+    env = environment if environment is not None else os.environ
+    result: dict[str, Observation] = {}
+    shared_reason = env.get("TASKPLANE_HOST_RECEIPT_REASON", "")
+    for variable, capability in _ENV_OBSERVATIONS.items():
+        if variable not in env:
+            continue
+        raw = str(env.get(variable, "")).strip().lower()
+        status = _STATUS_ALIASES.get(raw, "contradictory")
+        reason = shared_reason or (
+            f"{variable} reported {raw!r}" if raw else
+            f"{variable} was empty")
+        result[capability] = Observation(
+            status=status, source=f"host-receipt:environment:{variable}",
+            confidence="high", reason=reason)
+    return result
+
+
+def _unknown(name: str, now: str) -> Observation:
+    return Observation(
+        status="unknown", source="no-host-receipt", confidence="low",
+        reason=f"no host-observed {name.replace('_', ' ')} receipt",
+        observed_at=now)
+
+
+def _configured(value: bool | None, source: str, subject: str,
+                now: str) -> Observation:
+    if value is None:
+        return _unknown(subject, now)
+    return Observation(
+        status="supported" if value else "unsupported", source=source,
+        confidence="high",
+        reason=f"{subject} is {'present' if value else 'absent'}",
+        observed_at=now)
+
+
+def _with_time(row: Observation, now: str) -> Observation:
+    return Observation(status=row.status, source=row.source,
+                       confidence=row.confidence, reason=row.reason,
+                       observed_at=row.observed_at or now, value=row.value)
+
+
+def _contradict_loaded(row: Observation, installed: Observation,
+                       name: str, now: str) -> Observation:
+    if row.status == "supported" and installed.status == "unsupported":
+        return Observation(
+            status="contradictory", source=row.source,
+            confidence="high", observed_at=row.observed_at or now,
+            reason=f"{name} is reported loaded but is not installed/configured")
+    return row
+
+
+def probe_snapshot(
+        ws: str, *, host: str, install_context: str,
+        native_installed: bool | None, bridge_configured: bool | None,
+        observations: Mapping[str, Observation] | None = None,
+        host_version: str | None = None, session_id: str | None = None,
+        now: str = "") -> HostCapabilitySnapshot:
+    """Build one snapshot from local configuration plus explicit receipts."""
+    observed_at = _bounded(now, 64)
+    supplied = dict(observations or {})
+    rows: dict[str, Observation] = {
+        "native_plugin_hooks_installed": _configured(
+            native_installed, "local-config:plugin-hooks-manifest",
+            "native plugin hook manifest", observed_at),
+        "repository_bridge_configured": _configured(
+            bridge_configured, "local-config:workspace-hook-bridge",
+            "repository hook bridge configuration", observed_at),
+    }
+    names = (
+        "native_plugin_hooks_loaded", "repository_bridge_loaded",
+        "repository_trust", "managed_policy_permission",
+        "workflow_availability", "native_structured_output",
+        "model_selection", "supported_model_aliases", "effort_selection",
+        "supported_effort_values", "stable_event_identity",
+    )
+    for name in names:
+        row = supplied.get(name)
+        rows[name] = _with_time(row, observed_at) if isinstance(
+            row, Observation) else _unknown(name, observed_at)
+
+    # A personal install has no organization-managed hook restriction.  This
+    # says only that managed policy is not the blocker; it says nothing about
+    # repository trust or whether a configured hook loaded.
+    if (install_context == "personal"
+            and rows["managed_policy_permission"].status == "unknown"):
+        rows["managed_policy_permission"] = Observation(
+            status="supported", source="install-context:personal",
+            confidence="medium", observed_at=observed_at,
+            reason="personal install has no detected organization hook policy")
+
+    rows["native_plugin_hooks_loaded"] = _contradict_loaded(
+        rows["native_plugin_hooks_loaded"],
+        rows["native_plugin_hooks_installed"], "native plugin hooks",
+        observed_at)
+    rows["repository_bridge_loaded"] = _contradict_loaded(
+        rows["repository_bridge_loaded"],
+        rows["repository_bridge_configured"], "repository bridge",
+        observed_at)
+
+    policy = rows["managed_policy_permission"].status
+    native = (rows["native_plugin_hooks_installed"].status == "supported"
+              and rows["native_plugin_hooks_loaded"].status == "supported"
+              and policy == "supported")
+    bridge = (rows["repository_bridge_configured"].status == "supported"
+              and rows["repository_bridge_loaded"].status == "supported"
+              and rows["repository_trust"].status == "supported"
+              and policy == "supported")
+    if native and bridge:
+        # Exactly-once claiming lands in the next slice.  Until a stable event
+        # identity is proved, two loaded paths are a transition, not ready.
+        effective_path = (
+            "native_effective"
+            if rows["stable_event_identity"].status == "supported"
+            else "transitioning")
+    elif native:
+        effective_path = "native_effective"
+    elif bridge:
+        effective_path = "bridge_effective"
+    elif any(row.status == "contradictory" for row in rows.values()):
+        effective_path = "blocked"
+    elif policy == "unsupported":
+        effective_path = "blocked"
+    elif (rows["repository_bridge_configured"].status == "supported"
+          and rows["repository_trust"].status == "unsupported"):
+        effective_path = "blocked"
+    elif (rows["native_plugin_hooks_installed"].status == "supported"
+          or rows["repository_bridge_configured"].status == "supported"):
+        effective_path = "transitioning"
+    else:
+        effective_path = "blocked"
+
+    workspace_fp = hashlib.sha256(os.path.normcase(os.path.abspath(
+        ws)).encode("utf-8", errors="replace")).hexdigest()
+    session_fp = (hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+                  if session_id else None)
+    payload = {
+        "schema": SCHEMA, "host": _bounded(host, 32) or "unknown",
+        "host_version": _bounded(host_version, 64) or None,
+        "workspace_fingerprint": workspace_fp,
+        "session_fingerprint": session_fp,
+        "observed_at": observed_at,
+        "effective_path": effective_path,
+        "capabilities": {name: row.to_dict()
+                         for name, row in sorted(rows.items())},
+    }
+    fingerprint = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return HostCapabilitySnapshot(
+        host=payload["host"], host_version=payload["host_version"],
+        workspace_fingerprint=workspace_fp,
+        session_fingerprint=session_fp, observed_at=observed_at,
+        capabilities=MappingProxyType(dict(rows)),
+        effective_path=effective_path, fingerprint=fingerprint)
+
+
+def _combined_status(rows: list[Observation]) -> str:
+    statuses = {row.status for row in rows}
+    if "contradictory" in statuses:
+        return "contradictory"
+    if "supported" in statuses:
+        return "supported"
+    if statuses == {"unsupported"}:
+        return "unsupported"
+    return "unknown"
+
+
+def onboarding_projection(snapshot: HostCapabilitySnapshot) -> dict[str, Any]:
+    """Project the five independent onboarding facts and one safe action."""
+    caps = snapshot.capabilities
+    installed = [caps["native_plugin_hooks_installed"],
+                 caps["repository_bridge_configured"]]
+    loaded = [caps["native_plugin_hooks_loaded"],
+              caps["repository_bridge_loaded"]]
+    path = snapshot.effective_path
+    ready = path in ("native_effective", "bridge_effective")
+    policy = caps["managed_policy_permission"]
+    trust = caps["repository_trust"]
+    if policy.status in ("unsupported", "contradictory"):
+        action = "contact_administrator"
+        reason = "organization hook policy needs administrator action"
+    elif (caps["repository_bridge_configured"].status == "supported"
+          and trust.status in ("unsupported", "contradictory")):
+        action = "review_repository_trust"
+        reason = "repository trust does not permit the configured bridge"
+    elif path == "transitioning":
+        action = "start_new_session"
+        reason = "configuration exists but this session has no effective-path receipt"
+    elif path == "blocked":
+        action = "install_or_enable_hooks"
+        reason = "no policy-permitted loaded hook path is proved"
+    else:
+        action = "ready"
+        reason = f"{path} is observed for this session"
+    effective_status = ("supported" if ready else
+                        "contradictory" if any(
+                            row.status == "contradictory" for row in caps.values())
+                        else "unsupported" if path == "blocked" else "unknown")
+    return {
+        "schema": snapshot.schema,
+        "fingerprint": snapshot.fingerprint,
+        "install": {
+            "status": _combined_status(installed),
+            "native": installed[0].to_dict(),
+            "bridge": installed[1].to_dict(),
+        },
+        "trust": trust.to_dict(),
+        "managed_policy": policy.to_dict(),
+        "loaded_session": {
+            "status": _combined_status(loaded),
+            "native": loaded[0].to_dict(),
+            "bridge": loaded[1].to_dict(),
+        },
+        "effective_path": {
+            "status": effective_status,
+            "value": path,
+            "source": "derived:host-capability-snapshot",
+            "confidence": "high" if ready else "low",
+            "observed_at": snapshot.observed_at,
+            "reason": reason,
+        },
+        "ready": ready,
+        "next_action": action,
+    }

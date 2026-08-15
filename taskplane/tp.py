@@ -33,6 +33,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import taskplane_lite as tp  # noqa: E402
+import host_capabilities as host_caps  # noqa: E402
 
 
 # Shared help text for the universal --workspace plumbing flag. It is
@@ -200,7 +201,12 @@ _CODEX_HOOK_MARKER = ".taskplane/codex-hook.py"
 
 
 def _codex_hooks_report(ws: str) -> dict:
-    """Mechanical readiness of the repo-local Codex hook bridge."""
+    """Mechanical configuration state of the repo-local Codex hook bridge.
+
+    A matching file and runner prove configuration, not that the current host
+    session loaded either.  `_onboard_report` obtains runtime truth from the
+    separate HostCapabilitySnapshot authority.
+    """
     config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
     try:
@@ -225,6 +231,26 @@ def _codex_hooks_report(ws: str) -> dict:
                  "Run `tp onboard --install-codex-hooks --json`, then start "
                  "a new Codex task so repo-local lifecycle hooks load."),
     }
+
+
+def _host_capability_snapshot(ws: str, install_context: str | None = None):
+    """One capability snapshot for all onboarding host-path decisions."""
+    context = install_context or _install_context()
+    bridge = _codex_hooks_report(ws)
+    plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    native_manifest = os.path.join(plugin_root, "hooks", "hooks.json")
+    host = ("codex" if (os.environ.get("CODEX_HOME")
+                        or os.environ.get("CODEX_THREAD_ID")) else "claude")
+    version = (os.environ.get("CODEX_VERSION") if host == "codex" else
+               os.environ.get("CLAUDE_CODE_VERSION"))
+    session_id = (os.environ.get("CODEX_THREAD_ID")
+                  or os.environ.get("CLAUDE_SESSION_ID"))
+    return host_caps.probe_snapshot(
+        ws, host=host, host_version=version, session_id=session_id,
+        install_context=context, native_installed=os.path.isfile(
+            native_manifest), bridge_configured=bool(bridge.get("ok")),
+        observations=host_caps.observations_from_environment(os.environ),
+        now=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
 
 
 def _codex_runner_engine(runner_body: str) -> str | None:
@@ -277,6 +303,23 @@ def _install_codex_hooks(ws: str) -> dict:
     ignored runner holds the machine-local plugin path and is refreshed by
     onboarding after every plugin update.
     """
+    # Managed policy is an authority boundary, not a setup inconvenience.
+    # Refuse before opening the workspace config and never edit a managed
+    # settings file.  Unknown remains non-destructive here: the user can
+    # inspect onboarding and obtain an administrator/session receipt first.
+    observations = host_caps.observations_from_environment(os.environ)
+    policy = observations.get("managed_policy_permission")
+    install_context = _install_context()
+    if ((policy and policy.status in ("unsupported", "contradictory"))
+            or (install_context == "org-managed" and policy is None)):
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "organization hook policy requires administrator action",
+            "hint": "Ask an administrator to allow taskPlane hooks; managed "
+                    "settings were not changed.",
+        }
+
     config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
     prior = tp.load_json(config_path, default={"hooks": {}},
                          what="Codex hook configuration")
@@ -382,22 +425,58 @@ def _onboard_report(ws: str) -> dict:
                  "I run it for you once a folder + repo are in place."},
     ]
     codex_hooks = _codex_hooks_report(ws) if is_codex else None
+    host_capabilities = None
     if codex_hooks is not None:
-        checks.append({
-            "id": "codex_hooks", "label": "Codex governance hooks",
-            "ok": codex_hooks["ok"],
-            "detail": codex_hooks["status"],
-            "hint": codex_hooks.get("hint"),
-        })
-    ready = all(c["ok"] for c in checks)
+        snapshot = _host_capability_snapshot(ws)
+        host_capabilities = host_caps.onboarding_projection(snapshot)
+        checks.extend((
+            {
+                "id": "hook_install", "label": "Hook installation",
+                "ok": host_capabilities["install"]["status"] == "supported",
+                "detail": host_capabilities["install"]["status"],
+                "hint": "Install taskPlane hooks before starting governed work.",
+            },
+            {
+                "id": "repository_trust", "label": "Repository trust",
+                "ok": host_capabilities["trust"]["status"] == "supported",
+                "detail": host_capabilities["trust"]["status"],
+                "hint": "Review the repository trust decision in Codex when "
+                        "the workspace bridge is required.",
+            },
+            {
+                "id": "managed_policy", "label": "Managed hook policy",
+                "ok": (host_capabilities["managed_policy"]["status"]
+                       == "supported"),
+                "detail": host_capabilities["managed_policy"]["status"],
+                "hint": "An organization-managed restriction requires "
+                        "administrator action; taskPlane will not change it.",
+            },
+            {
+                "id": "loaded_session", "label": "Hooks loaded this session",
+                "ok": (host_capabilities["loaded_session"]["status"]
+                       == "supported"),
+                "detail": host_capabilities["loaded_session"]["status"],
+                "hint": "Start a new Codex task after installation or policy "
+                        "changes so the host can provide a load receipt.",
+            },
+            {
+                "id": "effective_hook_path", "label": "Effective hook path",
+                "ok": host_capabilities["ready"],
+                "detail": host_capabilities["effective_path"]["value"],
+                "hint": host_capabilities["effective_path"]["reason"],
+            },
+        ))
+    base_ready = looks_like_project and inside_git and has_commit and has_context
+    ready = base_ready and (host_capabilities is None
+                            or bool(host_capabilities["ready"]))
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
         nxt = "init_git"
     elif not has_context:
         nxt = "tp_init"
-    elif codex_hooks is not None and not codex_hooks["ok"]:
-        nxt = "install_codex_hooks"
+    elif host_capabilities is not None and not host_capabilities["ready"]:
+        nxt = host_capabilities["next_action"]
     else:
         nxt = "ready"
     artifacts = None
@@ -413,6 +492,7 @@ def _onboard_report(ws: str) -> dict:
     _ictx = _install_context()
     return {"workspace": ws, "host": host, "artifacts": artifacts,
             "codex_hooks": codex_hooks,
+            "host_capabilities": host_capabilities,
             # R-0005 install truth: the account-type install/update paths,
             # matched to the detected context (org-managed / personal) or
             # the honest by-account-type triage when undetectable — never
