@@ -6,10 +6,8 @@ Pins:
     the script is deterministic (no Date.now/Math.random/dynamic import)
     and honest to the Dynamic Workflows primitives (agent/parallel/phase/
     args) — static checks only, CI has no JS runtime;
-  * FINDINGS_SCHEMA pins exactly the contract:findings-v2 field list from
-    the frozen shipped-contract snapshot
-    (fixtures/briefs/shipped_contracts.json — design/contract.json turns
-    over every design cycle; checked programmatically, not hand-copied);
+  * the workflow consumes the canonical ReviewKernel slot manifest and each
+    brief's leased schema/resume/result identity without remapping findings;
   * workflow_available(): conservative, env-based — Codex ALWAYS
     unavailable, TASKPLANE_WORKFLOWS=1 opt-in, =0 kill-switch, default
     unset with no marker = unavailable;
@@ -53,12 +51,6 @@ def _meta_block(src: str) -> str:
     return m.group(1)
 
 
-def _schema_block(src: str) -> str:
-    m = re.search(r"const\s+FINDINGS_SCHEMA\s*=\s*\{(.*?)\n\};", src, re.S)
-    assert m, "review-wave.js must declare `const FINDINGS_SCHEMA = {...};`"
-    return m.group(1)
-
-
 # ------------------------------------------------------------ workflow file
 
 
@@ -89,36 +81,18 @@ class TestWorkflowFile:
         assert "parallel(" in src
         assert "agent(" in src
         assert "phase('Lenses')" in src and "phase('Merge')" in src
-        assert "args.deep" in src and "args.sweep" in src
-        assert "args.routing_decision" in src
-        assert "'lens:' + b.id" in src           # per-brief label
-        assert "schema: FINDINGS_SCHEMA" in src  # retry-on-mismatch pin
+        assert "args.slots" in src
+        assert "'lens:' + b.slot_id" in src
+        for field in ("b.result_schema", "b.resume_identity",
+                      "b.result_path", "b.lease"):
+            assert field in src
 
-    def test_findings_schema_matches_contract_findings_v2(self):
-        """The JS schema field list is derived programmatically from the
-        frozen shipped-contract snapshot, not hand-copied — drift in
-        either direction fails here.
-
-        Contract-turnover rule: design/contract.json describes the NEXT
-        design cycle and is REPLACED at every new design gate, so shipped
-        field lists derive from the stable snapshot captured from the
-        contract that shipped this schema
-        (git show 6a3d581:design/contract.json, `contracts` table)."""
-        snap = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "fixtures", "briefs", "shipped_contracts.json")
-        with open(snap, encoding="utf-8") as f:
-            contracts = json.load(f)["contracts"]
-        spec = next(c for c in contracts if c["id"] == "contract:findings-v2")
-        m = re.search(r"findings\[\{([^}]+)\}\]", spec["description"])
-        assert m, "contract:findings-v2 must pin the findings field list"
-        fields = [x.strip() for x in m.group(1).split(",")]
-        assert fields  # severity, class, file, line, title, scenario, fix
-        schema = _schema_block(_js())
-        for field in fields:
-            assert re.search(rf"\b{re.escape(field)}\b", schema), \
-                f"FINDINGS_SCHEMA missing contract:findings-v2 field {field!r}"
-        # the lens id itself is part of the contract shape
-        assert re.search(r"\blens\b", schema)
+    def test_slot_contract_is_passed_to_the_agent_unchanged(self):
+        src = _js()
+        assert "schema: b.result_schema" in src
+        assert "resumeKey: b.resume_identity" in src
+        assert "resultPath: b.result_path" in src
+        assert "lease: b.lease" in src
 
     def test_lens_prompts_instruct_every_schema_field(self):
         """EM blocker (v3 Phase 1): FINDINGS_SCHEMA requires `class` per
@@ -143,10 +117,11 @@ class TestWorkflowFile:
         assert "regression|pre-existing|observation" in \
             briefs["sweep"]["prompt"]
 
-    def test_returns_per_lens_and_routing_decision(self):
+    def test_returns_transport_receipts_only(self):
         src = _js()
-        assert "per_lens" in src
-        assert "routing_decision: args.routing_decision" in src
+        assert "receipts:" in src
+        assert "per_lens" not in src
+        assert "routing_decision" not in src
 
 
 # ------------------------------------------------- capability detection

@@ -77,13 +77,23 @@ def _routed(brief) -> list:
 
 
 def _write_verdict(ws, task_id, criteria, lens_rows):
+    state = loop.load(ws)
+    task = state["tasks"][state["current_task"]]
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
     with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"task": task_id, "verdict": "pass",
+        json.dump({"schema": "taskplane.evaluator-output/v1",
+                   "task": task_id,
+                   "requirement": task.get("req") or
+                                  state.get("requirement_id") or "",
+                   "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": lens_rows, "failures": []}, f)
+                   "lenses": lens_rows,
+                   "graph": {"dispositions": [],
+                             "requirements_checked": [],
+                             "contracts_checked": []},
+                   "failures": []}, f)
 
 
 def _write_kernel_results(ws, *, dropped=None):

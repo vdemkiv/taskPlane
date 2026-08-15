@@ -1,8 +1,8 @@
 {
   "tasks": [
     {
-      "id": "t1-integrated-host-capability-repair",
-      "title": "Repair host capability, provenance, evaluation, routing, telemetry, and pinned CI behavior as one batch",
+      "id": "t1-host-capability-ci-repair",
+      "title": "Close host capability CI regressions as one repair batch",
       "scope": [
         "taskplane/host_capabilities.py",
         "taskplane/tp.py",
@@ -43,8 +43,27 @@
         "taskplane/tests/test_evidence_bundle.py",
         "taskplane/tests/test_onboarding_docs.py",
         "taskplane/tests/test_selfreview_fixes.py"
+        ,"taskplane/loop_status.py"
+        ,"scripts/ci_unittest_floor.py"
+        ,"scripts/ci_loop_cost.py"
+        ,"docs/onboarding.md"
+        ,"docs/configuration.md"
+        ,"docs/model-evaluation.md"
+        ,"docs/routing-and-flows.md"
+        ,"docs/cli-reference.md"
+        ,"taskplane/tests/test_audit_extraction.py"
+        ,"taskplane/tests/test_audit_sweep.py"
+        ,"taskplane/tests/test_ci_floor.py"
+        ,"taskplane/tests/test_evaluate_routing.py"
+        ,"taskplane/tests/test_loop.py"
+        ,"taskplane/tests/test_loop_cost_ratchet.py"
+        ,"taskplane/tests/test_review_wave.py"
+        ,"taskplane/tests/test_runtime_eval_guidance.py"
+        ,"taskplane/tests/test_stage_waves.py"
+        ,"taskplane/tests/test_v230_docs.py"
+        ,"taskplane/tests/fixtures/briefs/**"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_capabilities.py taskplane/tests/test_review_evidence.py taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_stop_submission_enforcement.py taskplane/tests/test_workflow_review_kernel_parity.py taskplane/tests/test_evaluation_output_contract.py taskplane/tests/test_dispatch_capabilities.py taskplane/tests/test_dispatch_parity.py taskplane/tests/test_eval_observability.py taskplane/tests/test_spend_provider_usage.py taskplane/tests/test_eval_scenario.py taskplane/tests/test_evidence_bundle.py taskplane/tests/test_onboarding_docs.py taskplane/tests/test_selfreview_fixes.py",
+      "tests": "python3 -m pytest taskplane/tests -q",
       "req": "R-0006",
       "deps": [],
       "type": "integration",
@@ -114,7 +133,10 @@
         "taskplane/runtime_eval.py->contract:evaluation-telemetry:consumes",
         "taskplane/evidence.py->contract:evaluation-telemetry:consumes",
         "evals/scenarios/tp-go.json->contract:evaluation-telemetry:validates",
-        "taskplane/tests->contract:evaluation-telemetry:validates"
+        "taskplane/tests->contract:evaluation-telemetry:validates",
+        "docs->contract:host-hook-lifecycle:documents",
+        "docs->contract:host-dispatch-routing:documents",
+        "docs->contract:evaluation-telemetry:documents"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -135,46 +157,8 @@
         "Cross-provider ids, unsupported effort, old or corrupt capability, strict, warn, and default fixtures send no foreign or unsupported argument; fallback is explicit, and strict mode blocks before work when a required explicit route cannot be honored.",
         "Evaluation records validate a versioned lifecycle schema containing host capability source, transport, schema fallback, task or slot or lease, planned and observed routing, attempts, duration, terminal and validation status, telemetry availability, and bounded redacted diagnostics.",
         "Claude and Codex usage goldens, nested usage, duplicate messages, torn JSONL, absent fields, and corrupt values reconcile uncached input, cached input, cache creation, output, raw total, and effective tokens exactly without double counting; missing telemetry is unavailable with reason.",
-        "The three failures from CI run 31858859934 pass: the tp-go flow fingerprint is current while mutation tests still detect staleness, and an unjudged engine evidence bundle still names unproven acceptance criteria even when runtime guidance also fires without advancing state."
-      ]
-    },
-    {
-      "id": "t2-docs-and-final-ci-equivalent",
-      "title": "Publish truthful host guidance and run the unchanged full suite once",
-      "scope": [
-        "docs/onboarding.md",
-        "docs/configuration.md",
-        "docs/model-evaluation.md",
-        "docs/routing-and-flows.md",
-        "docs/cli-reference.md"
-      ],
-      "tests": "python3 -m pytest taskplane/tests -q",
-      "req": "R-0006",
-      "deps": [
-        "t1-integrated-host-capability-repair"
-      ],
-      "type": "documentation",
-      "contracts": [
-        "contract:host-hook-lifecycle",
-        "contract:host-dispatch-routing",
-        "contract:evaluation-telemetry"
-      ],
-      "new_modules": [
-        "docs",
-        "taskplane/tests"
-      ],
-      "design_edges": [
-        "docs->contract:host-hook-lifecycle:documents",
-        "docs->contract:host-dispatch-routing:documents",
-        "docs->contract:evaluation-telemetry:documents"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
+        "The three failures from CI run 31858859934 pass: the tp-go flow fingerprint is current while mutation tests still detect staleness, and an unjudged engine evidence bundle still names unproven acceptance criteria even when runtime guidance also fires without advancing state.",
+        "The loop cost ratchet requires exactly three governed gates; both fewer and more gates fail because a missing gate is incomplete workflow execution, not a cost improvement.",
         "The complete suite passes on Python 3.10, 3.11, and 3.12, macOS, and Windows, and existing green hooks, package or manifest, docs, release-history, and dispatch-parity jobs stay green with no removed, skipped, xfailed, loosened, or de-gated test."
       ]
     }

@@ -39,6 +39,8 @@ SCRIPT = os.path.join(ROOT, "scripts", "ci_unittest_floor.py")
 _RATCHET_FLOOR = 2508
 _RATCHET_MANIFEST = frozenset({
     "test_dispatch_parity.py",
+    "test_evaluation_output_contract.py",
+    "test_host_capabilities.py",
     "test_regression_dod.py",
     "test_regression_gate.py",
     "test_review_convergence.py",
@@ -49,6 +51,7 @@ _RATCHET_MANIFEST = frozenset({
     "test_v231_cli.py",
     "test_v231_dispatch.py",
     "test_v231_guardrails.py",
+    "test_workflow_review_kernel_parity.py",
 })
 
 

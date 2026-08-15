@@ -36,20 +36,15 @@ test_review_wave.py style):
   * ZERO gate verbs (gate/approve/signoff/resolve) anywhere in each file —
     human gates stay at conversation level by construction; the workflow
     is transport, the orchestrator gates OUTSIDE the run;
-  * agent() outputs are schema-pinned per contract:wave-workflow —
-    execute/fix to receipts[{task, outcome, note}], evaluate to the
-    contract:findings-v2 shape — field lists read PROGRAMMATICALLY from
-    the frozen shipped-contract snapshot
-    (fixtures/briefs/shipped_contracts.json — design/contract.json turns
-    over every design cycle) in both directions (drift fails here);
+  * agent() outputs use each brief's canonical versioned output contract;
+    evaluate carries the evaluator schema/resume identity and returns only
+    transport receipts, while execute/fix retain their strict receipt pins;
   * parallel dispatch shape: one agent() thunk per brief fanned out via
     parallel() (tasks in one wave are independent by plan construction);
   * args consumption: execute/evaluate consume args.briefs, fix consumes
     args.verdicts (the evaluator's repro notes ride in those briefs);
     prompts are passed to agent() VERBATIM (no template interpolation);
-  * no drift among the three files: execute and fix share a byte-identical
-    receipt schema block, evaluate's findings schema block is byte-identical
-    to review-wave.js's Phase 1 FINDINGS_SCHEMA.
+  * no workflow translates canonical result artifacts or advances gates.
 """
 import contextlib
 import importlib.util
@@ -233,35 +228,19 @@ class TestSchemaPins:
             assert m, f"{stage}.js RECEIPT_SCHEMA must pin required fields"
             required = re.findall(r"'([^']+)'", m.group(1))
             assert sorted(required) == sorted(fields), stage
-            assert "schema: RECEIPT_SCHEMA" in src, stage
+            assert "output_contract.output_schema || RECEIPT_SCHEMA" in src, stage
 
-    def test_evaluate_pins_the_findings_v2_contract(self):
-        fields = _findings_fields()
+    def test_evaluate_consumes_the_canonical_evaluator_contract(self):
         src = _js("evaluate-wave")
-        schema = _schema_block(src, "FINDINGS_SCHEMA", "evaluate-wave")
-        for field in fields:
-            assert re.search(rf"\b{re.escape(field)}\b", schema), \
-                f"evaluate-wave.js FINDINGS_SCHEMA missing field {field!r}"
-        # the lens id itself is part of the contract shape
-        assert re.search(r"\blens\b", schema)
-        assert "schema: FINDINGS_SCHEMA" in src
+        for token in ("output_contract.output_schema", "resume_identity",
+                      "max_attempts", "taskplane.evaluator-output/v1"):
+            assert token in src
+        assert "typeof output_schema !== 'object'" in src
 
-    def test_no_schema_drift_among_the_three_files(self):
-        """execute and fix share ONE receipt shape byte-for-byte, and
-        evaluate's findings block is byte-identical to review-wave.js's
-        Phase 1 FINDINGS_SCHEMA — three files, zero drift."""
-        exec_schema = _schema_block(_js("execute-wave"), "RECEIPT_SCHEMA",
-                                    "execute-wave")
-        fix_schema = _schema_block(_js("fix-wave"), "RECEIPT_SCHEMA",
-                                   "fix-wave")
-        assert exec_schema == fix_schema
-        with open(os.path.join(WF_DIR, "review-wave.js"), encoding="utf-8") as f:
-            review_src = f.read()
-        review_schema = _schema_block(review_src, "FINDINGS_SCHEMA",
-                                      "review-wave")
-        eval_schema = _schema_block(_js("evaluate-wave"), "FINDINGS_SCHEMA",
-                                    "evaluate-wave")
-        assert eval_schema == review_schema
+    def test_every_stage_returns_transport_receipts_only(self):
+        for stage in STAGES:
+            src = _js(stage)
+            assert re.search(r"return\s+\{\s*receipts:", src), stage
 
 
 # ------------------------------------------- dispatch shape + args
@@ -314,7 +293,7 @@ class TestDispatchShape:
     def test_return_keys_per_stage(self):
         assert "receipts:" in _js("execute-wave")
         assert "receipts:" in _js("fix-wave")
-        assert "verdicts:" in _js("evaluate-wave")
+        assert "receipts:" in _js("evaluate-wave")
 
 
 # =====================================================================
@@ -430,8 +409,37 @@ class TestStageTaskPathByteIdentity:
         not even the review-wave sweep's cheap-tier host delta here)."""
         for stage in stage_fixture.STAGES:
             c = rails["caps"][stage]
-            assert c["codex"] == c["bare"], stage
-            assert "dispatch_path" not in json.loads(c["codex"]), stage
+            codex = json.loads(c["codex"])
+            bare = json.loads(c["bare"])
+            # Capability receipts are host observations and deliberately
+            # differ.  Remove only that routing metadata for the canonical
+            # cross-host artifact comparison; retain it in both real
+            # payloads for dispatch audit and strict enforcement.
+            def canonical(payload):
+                payload = json.loads(json.dumps(payload))
+
+                def strip(value):
+                    if isinstance(value, dict):
+                        return {k: strip(v) for k, v in value.items()
+                                if k not in ("dispatch_route",
+                                             "dispatch_blocked")}
+                    if isinstance(value, list):
+                        return [strip(v) for v in value]
+                    return value
+                return strip(payload)
+
+            assert canonical(codex) == canonical(bare), stage
+            def contains_key(value, key):
+                if isinstance(value, dict):
+                    return key in value or any(
+                        contains_key(child, key) for child in value.values())
+                if isinstance(value, list):
+                    return any(contains_key(child, key) for child in value)
+                return False
+
+            assert contains_key(codex, "dispatch_route") == \
+                contains_key(bare, "dispatch_route"), stage
+            assert "dispatch_path" not in codex, stage
 
     def test_chosen_path_is_traced_on_both_rails(self, rails):
         evs = _trace_events(rails["ws"], "stage_dispatch_path")
@@ -924,7 +932,11 @@ def _walk_pass_eval(ws):
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"task": task["id"], "verdict": "pass",
+        json.dump({"schema": "taskplane.evaluator-output/v1",
+                   "task": task["id"],
+                   "requirement": task.get("req") or
+                                  state.get("requirement_id") or "",
+                   "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],

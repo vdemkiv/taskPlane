@@ -75,6 +75,8 @@ FLOOR = 2508
 # named file must still be pytest-only. Changes are deliberate and reviewed.
 PYTEST_ONLY_MANIFEST = (
     "test_dispatch_parity.py",
+    "test_evaluation_output_contract.py",
+    "test_host_capabilities.py",
     "test_regression_dod.py",
     "test_regression_gate.py",
     "test_review_convergence.py",
@@ -85,6 +87,7 @@ PYTEST_ONLY_MANIFEST = (
     "test_v231_cli.py",
     "test_v231_dispatch.py",
     "test_v231_guardrails.py",
+    "test_workflow_review_kernel_parity.py",
 )
 
 TESTS_REL = os.path.join("taskplane", "tests")

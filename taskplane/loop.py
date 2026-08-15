@@ -36,6 +36,7 @@ import evaluation_output
 import host_capabilities
 import kb
 import lens as lens_router
+import loop_status
 import loop_recovery
 import retro as retro_engine
 import requirements as reqs
@@ -3080,202 +3081,16 @@ def resolve(ws: str, decision: str) -> dict:
         locked.clear()
         locked.update(state)
     return {"step": state["step"], "status": status(ws)}
-
-
 def replan(ws: str, by: str, reason: str) -> dict:
     return loop_recovery.replan(ws, by=by, reason=reason, load_state=load, mutate_state=mutate, clear_contract=tp.clear, trace=tp.trace, record_decision=kb.record_decision)
-
-
 def retro(ws: str) -> dict:
-    return retro_engine.run(
-        ws, load_state=load, mutate_state=mutate,
+    return retro_engine.run(ws, load_state=load, mutate_state=mutate,
         loop_path=_loop_path(ws), normalize_severity=normalize_severity)
-
-
-def _load_tasks(ws: str, state: dict) -> None:
-    path = os.path.join(ws, "plan", "tasks.json")
-    if not os.path.exists(path):
-        state["tasks"] = []
-        return
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    tasks = data.get("tasks", data) if isinstance(data, dict) else data
-    for t in tasks:
-        t.setdefault("status", "pending")
-        t.setdefault("fix_cycles", 0)
-    state["tasks"] = tasks
-    # A/B mode: the plan says so, or tasks carry variant markers. Variants
-    # are scope-identical ALTERNATIVES — they never merge; the merge step
-    # is replaced by a human SELECTION gate after all variants evaluate.
-    ab = bool(
-        (isinstance(data, dict) and data.get("mode") == "ab-selection")
-        or any(t.get("variant") for t in tasks))
-    state["ab"] = ab
-    # A fresh set of variant tasks begins a NEW selection round — drop any
-    # stale selection flag so a hybrid re-entry (graft plan that is itself
-    # A/B) pauses at the selection gate again instead of skipping it. The
-    # prior choice is already recorded in the KB; the flag is round-scoped.
-    if ab:
-        state.pop("selection", None)
-    # A/B without --parallel would build both variants over ONE workspace,
-    # each clobbering the other — the selection gate would then choose
-    # between code that no longer coexists. Force parallel so variants land
-    # in isolated worktrees.
-    if ab and not state.get("parallel"):
-        state["parallel"] = True
-        tp.trace(ws, "ab_forced_parallel",
-                 note="A/B variants require isolated worktrees")
-
-
-def status(ws: str) -> dict:
-    state = load(ws)
-    if state is None:
-        return {"loop": "none"}
-    tasks = state.get("tasks") or []
-    out = {
-        "step": state["step"],
-        "goal": state["goal"],
-        "tasks": [{"id": t["id"], "status": t.get("status"),
-                   "fix_cycles": t.get("fix_cycles", 0),
-                   **({"evaluation": t["evaluation"]}
-                      if t.get("evaluation") else {}),
-                   **({"variant": t["variant"]} if t.get("variant") else {})}
-                  for t in tasks],
-        "current_task": state.get("current_task"),
-        "max_fix_cycles": state["max_fix_cycles"],
-        "checkpoints": state["checkpoints"],
-    }
-    if state.get("ab"):
-        out["ab"] = True
-    if state.get("design_required"):
-        out["design"] = {
-            "only": bool(state.get("design_only")),
-            "approved": bool(state.get("design_fingerprint")),
-            "fingerprint": state.get("design_fingerprint")
-        }
-    if state.get("selection"):
-        out["selection"] = state["selection"]
-    return out
-
-
-def user_summary(ws: str, host: str | None = None) -> dict:
-    """Human control-plane read model over the existing durable artifacts.
-
-    It intentionally does not replace loop.json, findings, graph, or trace.
-    Skills use this compact view so users see progress and decisions while the
-    full harness remains available to agents.
-    """
-    state = load(ws)
-    if state is None:
-        return {"state": "not_started", "action_required": False,
-                "headline": "No active taskplane run.",
-                "next": "Tell taskplane what to build or review."}
-    tasks = state.get("tasks") or []
-    settled = sum(1 for t in tasks if t.get("status") in SETTLED)
-    step = state.get("step")
-    decisions = {
-        "design_approval": "Review and approve the proposed Design Contract.",
-        "plan_approval": "Review and approve the implementation plan.",
-        "selection": "Choose the A/B variant or request a hybrid.",
-        "signoff": "Review the engineering evidence and sign off.",
-        "escalated": "Choose retry, skip/defer, or abort.",
-    }
-    action = decisions.get(step)
-    current = _current_task(state)
-    # v2.3.0 (H): budget exhaustion is a HUMAN gate the loop step does not
-    # encode — without this, the plain-text surface (primary on Codex/Tag)
-    # says "no action required" while the run is blocked waiting on the
-    # human to grant more actions. Same detection the rich widget uses:
-    # active contract's budget.max_actions vs the live meter.
-    budget = None
-    budget_blocked = False
-    try:
-        _contract = tp.load_active(ws)
-    except Exception:
-        _contract = None
-    if _contract and (_contract.get("budget") or {}).get("max_actions"):
-        _b_max = int(_contract["budget"]["max_actions"])
-        _tid = _contract.get("task_id", "_")
-        try:
-            with open(os.path.join(tp.tp_dir(ws), "meter.json"), encoding="utf-8") as _f:
-                _b_used = int((json.load(_f).get(_tid) or {})
-                              .get("actions", 0))
-        except (OSError, ValueError, TypeError):
-            _b_used = 0
-        budget = {"used": _b_used, "max": _b_max,
-                  "exhausted": _b_used >= _b_max}
-        if budget["exhausted"] and step not in TERMINAL_STEPS and not action:
-            action = ("Grant more actions (tp budget --grant N) or clear "
-                      "the contract")
-            budget_blocked = True
-    graph = depgraph.summary(ws)
-    # M10 (v2.2.1): host is injectable — ambient env detection is only the
-    # default, so the control-plane surface is testable deterministically.
-    host = host or ("codex" if os.environ.get("CODEX_HOME")
-                    or os.environ.get("CODEX_THREAD_ID") else
-                    "claude-tag" if tp.store_env() == "repo" else "claude")
-    assurance = ("state-and-evidence enforced; tool interception is cooperative"
-                 if host == "claude-tag" else
-                 "state, evidence, and tool boundaries mechanically enforced")
-    if step == "done":
-        headline = f"Complete — {settled}/{len(tasks)} task(s) settled."
-    elif budget_blocked:
-        headline = ("Blocked — action budget exhausted "
-                    f"({budget['used']}/{budget['max']}).")
-    elif action:
-        headline = f"Decision required — {action}"
-    else:
-        label = current.get("id") if current else step
-        headline = (f"In progress — {settled}/{len(tasks)} task(s) settled; "
-                    f"current: {label} ({step}).")
-    return {
-        **({"budget": budget} if budget else {}),
-        "state": step,
-        "goal": state.get("goal"),
-        "progress": {"settled": settled, "total": len(tasks)},
-        "current_task": current and {"id": current.get("id"),
-                                     "status": current.get("status")},
-        "action_required": bool(action),
-        "decision": action,
-        "headline": headline,
-        "host": host,
-        "assurance": assurance,
-        "graph": graph,
-        "submission_pending_validation": bool(
-            state.get("_submission") or any(t.get("_submission") for t in tasks)),
-    }
-
-
-# --- Dashboard v2 (R-0001): rendering is part of the flow — every gate()/
-# next_action() refreshes the fragment on disk and points at it.
-# ---- presentation seam (D-0011) ---------------------------------------------
-# Rendering the dashboard and publishing the gate snapshot now live in
-# `views.py`. They are NOT the engine's job: an engine that renders its own
-# view cannot be tested or replaced without dragging a renderer along, and
-# this module's own comment had been recording that as debt since v2.3.0.
-# What remains here is the seam — a state transition, then a view refresh —
-# and `views` imports `loop` nowhere, so the old cycle is gone rather than
-# smuggled into function bodies.
-
-
-def _publish_artifacts(ws: str) -> "str | None":
-    import views
-    return views._publish_artifacts(ws)
-
-
-def _with_dashboard(fn):
-    def wrapped(ws, *a, **k):
-        out = fn(ws, *a, **k)
-        if isinstance(out, dict) and "error" not in out:
-            import views
-            views.refresh_views(ws, out)
-        return out
-    wrapped.__name__ = fn.__name__
-    wrapped.__doc__ = fn.__doc__
-    wrapped.__wrapped__ = fn
-    return wrapped
-
-
+_load_tasks = loop_status.load_tasks
+status = loop_status.status
+user_summary = loop_status.user_summary
+_publish_artifacts = loop_status.publish_artifacts
+_with_dashboard = loop_status.with_dashboard
 gate = _with_dashboard(gate)
 submit = _with_dashboard(submit)
 next_action = _with_dashboard(next_action)

@@ -249,6 +249,8 @@ def measure() -> dict:
         _author_leased_evaluation_results(ws)
 
         bundle = loop.evidence(ws)
+        bundle["schema"] = "taskplane.evaluator-output/v1"
+        bundle["requirement"] = ""
         for row in bundle.get("criteria") or []:
             row["status"] = "met"
             row["evidence"] = "covered by the task's tests"
@@ -347,10 +349,15 @@ def main() -> int:
     failures = []
     for key, pin in sorted(PINS.items()):
         value = got.get(key)
-        flag = "ok" if value is not None and value <= pin else "OVER"
+        # A missing gate is incomplete governance, not a cost saving.  Other
+        # metrics remain ceilings; the gate count is a protocol equality.
+        valid = (value == pin if key == "gates"
+                 else value is not None and value <= pin)
+        flag = "ok" if valid else ("MISMATCH" if key == "gates" else "OVER")
         print(f"{key:<20} {value}  (pin {pin})  {flag}")
-        if value is None or value > pin:
-            failures.append(f"{key}: {value} exceeds the pinned {pin}")
+        if not valid:
+            relation = "must equal" if key == "gates" else "exceeds"
+            failures.append(f"{key}: {value} {relation} the pinned {pin}")
     print(f"{'suite_citations':<20} {got.get('suite_citations')}  "
           "(informational — executions avoided by citing identical content)")
     print(f"{'review_mean_deep':<20} {got.get('review_mean_deep')}  "
@@ -376,7 +383,8 @@ def main() -> int:
               "scripts/ci_loop_cost.py and say why in the commit — so the "
               "cost is a decision on the record rather than drift.")
         return 1
-    print("ok: per-task cost holds at or under every pin")
+    print("ok: per-task cost holds at or under every ceiling and gates "
+          "equals its protocol pin")
     return 0
 
 

@@ -46,6 +46,9 @@ class TestRuntimeEvalControls(unittest.TestCase):
             "shared_review_context": True,
             "selective_lens_mapping": True,
             "lens_results_collected": True,
+            "output_schema_declared": True,
+            "output_schema_validated": True,
+            "output_producer_observed": True,
         }
 
         result = runtime_eval.assess("evaluate", facts,
@@ -100,7 +103,7 @@ class TestRuntimeEvalLoopWiring(unittest.TestCase):
             "selective_lens_mapping": False,
             "lens_results_collected": False,
         }
-        complete = {key: True for key in missing}
+        complete = {key: True for key in runtime_eval.REVIEW_FACTS}
 
         with mock.patch("runtime_eval.review_facts", return_value=missing):
             first = loop.guide(self.ws)
@@ -123,7 +126,7 @@ class TestRuntimeEvalLoopWiring(unittest.TestCase):
             "selective_lens_mapping": False,
             "lens_results_collected": False,
         }
-        complete = {key: True for key in missing}
+        complete = {key: True for key in runtime_eval.REVIEW_FACTS}
 
         with mock.patch("runtime_eval.review_facts", return_value=missing):
             corrected = loop.submit(self.ws, "pass")

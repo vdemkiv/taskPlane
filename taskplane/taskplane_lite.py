@@ -2541,8 +2541,8 @@ def plan_ordering_refusal(ws: str, tasks, where: str, by=None):
 # to be identical in the producing and validating processes, so it must not
 # depend on which modules a given process happened to import first.
 VALIDATOR_SURFACE = ("audit", "decompose", "depgraph", "design_contract",
-                     "lens", "lens_signals", "loop", "requirements",
-                     "runtime_eval", "taskplane_lite")
+                     "lens", "lens_signals", "loop", "loop_status",
+                     "requirements", "runtime_eval", "taskplane_lite")
 
 ENGINE_SKEW_REMEDY = (
     "merge the task branch into the primary (git merge {branch}) so ONE "

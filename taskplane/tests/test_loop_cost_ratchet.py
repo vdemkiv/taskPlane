@@ -102,6 +102,13 @@ class TestTheRatchetActuallyBites(unittest.TestCase):
         with mock.patch.object(ci_loop_cost, "measure", return_value={}):
             self.assertEqual(ci_loop_cost.main(), 1)
 
+    def test_it_fails_when_a_required_gate_is_missing(self):
+        incomplete = dict(ci_loop_cost.PINS)
+        incomplete["gates"] -= 1
+        with mock.patch.object(ci_loop_cost, "measure",
+                               return_value=incomplete):
+            self.assertEqual(ci_loop_cost.main(), 1)
+
     def test_it_passes_at_exactly_the_pin(self):
         at_pin = dict(ci_loop_cost.PINS)
         at_pin["suite_citations"] = 1

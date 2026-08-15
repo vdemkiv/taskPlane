@@ -66,7 +66,11 @@ def write_verdict(ws):
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"task": task["id"], "verdict": "pass",
+        json.dump({"schema": "taskplane.evaluator-output/v1",
+                   "task": task["id"],
+                   "requirement": task.get("req") or
+                                  state.get("requirement_id") or "",
+                   "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified by test"}
                                 for c in criteria],
@@ -1026,7 +1030,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
     engine fingerprint into .eval/verdict.json itself.
     """
 
-    SURFACE = {"loop", "taskplane_lite", "audit", "lens", "lens_signals",
+    SURFACE = {"loop", "loop_status", "taskplane_lite", "audit", "lens", "lens_signals",
                "design_contract", "depgraph", "decompose", "requirements",
                "runtime_eval"}
 

@@ -7,7 +7,7 @@ execution, ReviewKernel collection, evaluator output, submission validation,
 dispatch receipts, and telemetry converge on the five approved contracts.
 Workers never gain gate, approval, state-advance, or contract-clear authority.
 
-## Why the implementation is one batch
+## Why the repair is one batch
 
 The original five-task sequence was mechanically valid but operationally
 self-blocking: the first task had to pass independent ReviewKernel evaluation
@@ -19,9 +19,9 @@ routing, telemetry, and their pinned CI repairs therefore creates artificial
 gates across one runtime protocol.
 
 The recovery preserves every approved module, edge, contract, impact bound,
-and acceptance criterion. It changes only execution order: all runtime protocol
-work is completed and evaluated as one coherent repair batch; documentation
-and one final unchanged full-suite run follow once.
+and acceptance criterion. It changes only execution order: completed runtime
+work, the six failure clusters from GitHub Actions run `31891142855`, truthful
+documentation, and final validation are closed as one coherent repair batch.
 
 ## Bounded impact and graph policy
 
@@ -30,40 +30,35 @@ nodes, no unknown modules, and affected requirements R-0001, R-0005, and
 R-0006, with R-0002 as a dependent requirement. Its reported truncation is the
 approved one-hop requirement boundary, not permission to expand history.
 
-Both tasks retain the same graph policy: three local hops, `contract-only`
+The task retains the same graph policy: three local hops, `contract-only`
 boundaries, one contract hop, and one requirement hop. Collectively they own
 all 24 proposed modules, all 38 design edges, all five exact contract ids, and
 all 14 verbatim acceptance criteria.
 
-## Two-stage delivery
+## Delivery
 
-1. **t1 — integrated host-capability repair.** Preserve the committed truthful
+1. **t1 — host-capability CI repair.** Preserve the committed truthful
    capability snapshot and bounded reference-first requirement envelope, then
-   complete exactly-once Codex hook selection, Claude workflow ReviewKernel
-   parity, schema-validated evaluator output, fail-closed Stop enforcement,
-   effective portable model/effort routing, evaluation observability, provider
-   token reconciliation, and the three pinned CI clusters. The implementation
-   must produce real host-observed producer receipts; it may not fabricate or
-   bypass provenance. The declared targeted command also owns the two existing
-   onboarding assertion files named by the recorded baseline; receipt-based
-   readiness remains authoritative and stale tests are corrected rather than
-   weakening it. The tp-engineering scenario fingerprint is refreshed because
-   its declared agent-role source gains the required output-schema boundary.
-   One command covers the complete runtime protocol after focused red/green
-   work.
-2. **t2 — truthful guidance and final validation.** Update only the five
-   approved host-facing references after behavior is fixed, then run
-   `python3 -m pytest taskplane/tests -q` exactly once. Cross-version/platform,
+   close the CI failures without weakening the new capability contracts:
+   extract loop status/evaluation presentation instead of raising the LOC
+   ceiling; make legacy fixtures author canonical evaluator evidence; align
+   workflow tests with leased receipt-only transport; keep host-specific route
+   receipts outside canonical cross-host artifact comparisons; register the
+   three intentional pytest-only files; and document the 16 capability
+   variables. The cost ratchet must require exactly three gates—fewer gates
+   are incomplete execution, not an efficiency win. Run the exact failed
+   selectors once after the batch, then
+   `python3 -m pytest taskplane/tests -q` once. Cross-version/platform,
    packaging, manifest, release-history, docs, hook, and dispatch-parity floors
    remain intact and may not be skipped, xfailed, loosened, or de-gated.
 
 ## Validation budget
 
-The existing baseline is not repeated: 7 failures, 2774 passes, 2 skips, and
-861 subtests. During t1, each failure cluster receives targeted red/green
-checks, followed by its one declared combined targeted command. No repository-
-wide test loop is allowed. T2 performs static documentation checks and the one
-final full-suite run after all runtime and documentation changes are complete.
+The existing CI baseline is not repeated locally before repair: 28 failures,
+2831 passes, and 9 skips. The six failure clusters are repaired together, then
+the exact failed-selector set runs once. The repository-wide suite runs once
+after source, fixture, workflow, manifest, and documentation changes are
+complete; GitHub Actions is the cross-version/platform confirmation.
 
 ## Risks, rollout, and rollback
 

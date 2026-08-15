@@ -282,6 +282,33 @@ def review_facts(ws: str, step: str) -> dict:
             state.get("routing_decision") and state.get("routing"))
         facts["lens_results_collected"] = bool(
             state.get("status") == "complete" and state.get("revision"))
+        if step == "em":
+            # Final engineering review uses the strict leased lens-output
+            # schema rather than the evaluator verdict schema. A complete
+            # canonical revision can exist only after every leased file was
+            # schema-validated and matched to its host-observed producer/write
+            # receipt.
+            import evaluation_output
+
+            slots = state.get("slots") or []
+            # An empty routed set owes no model output, but the kernel still
+            # declares the one authoritative schema for any slot that would
+            # be summoned. ``all([])`` is therefore the correct contract
+            # result, not a missing-schema failure.
+            declared = True
+            for slot in slots:
+                try:
+                    brief = store.read(slot["brief"])
+                    schema = brief.get("result_schema") or {}
+                    declared = declared and schema.get("$id") == \
+                        evaluation_output.LENS_SLOT_OUTPUT_SCHEMA_ID
+                except Exception:
+                    declared = False
+            facts["output_schema_declared"] = declared
+            facts["output_schema_validated"] = bool(
+                declared and facts["lens_results_collected"])
+            facts["output_producer_observed"] = bool(
+                facts["lens_results_collected"])
         if step == "evaluate":
             verdict_path = os.path.join(ws, ".eval", "verdict.json")
             try:

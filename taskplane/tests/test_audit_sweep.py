@@ -26,6 +26,8 @@ import audit  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
 import depgraph  # noqa: E402
+import review  # noqa: E402
+import review_evidence  # noqa: E402
 from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
 
 
@@ -64,13 +66,50 @@ def pass_eval(ws):
         task_type=task.get("type"), breadth="routed")
     criteria = loop._criteria_for(ws, state, task)
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
+    kernel = review._load_state(act_ws)
+    store = review_evidence.ArtifactStore(act_ws)
+    for index, slot in enumerate(kernel["slots"]):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        row = {**lease, "schema": "taskplane.lens-slot-output/v2",
+               "authored_by": "lens-slot", "findings": [],
+               "lens_results": [
+                   {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                   for lens_id in lease["lens_ids"]]}
+        content = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        event = {"session_id": "audit-eval-session",
+                 "agent_id": f"audit-eval-child-{index}",
+                 "tool_name": "Write",
+                 "tool_input": {"file_path": slot["result_path"],
+                                "content": content}}
+        producer = brief["producer_contract"]
+        contract = {"task": producer["task"], "read_only": True,
+                    "write_allow": producer["write_allow"]}
+        review.register_slot_producer(
+            act_ws, event=event, contract=contract,
+            task_slot=producer["task_slot"])
+        review.record_slot_write_observation(
+            act_ws, event=event, contract=contract,
+            task_slot=producer["task_slot"])
+        path = os.path.join(act_ws, slot["result_path"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(content)
+    review.collect_review(act_ws, publish=False, run_id=kernel["run_id"])
+    collected = review._load_state(act_ws)
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"task": task["id"], "verdict": "pass",
+        json.dump({"schema": "taskplane.evaluator-output/v1",
+                   "task": task["id"],
+                   "requirement": task.get("req") or
+                                  state.get("requirement_id") or "",
+                   "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": [{"lens": x["id"], "verdict": "pass",
-                               "blockers": 0} for x in routed["lenses"]],
+                   "lenses": collected["lens_results"],
+                   "graph": {"dispositions": [],
+                             "requirements_checked": [],
+                             "contracts_checked": []},
                    "failures": []}, f)
     return submit_gate(ws, "pass")
 

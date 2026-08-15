@@ -56,6 +56,34 @@ restart every already-green cluster.
 | `TASKPLANE_INLINE_MAX` | `24000` (characters) | Above this size, `tp findings` stops handing back a renderable HTML blob and hands back a **path** — `RENDER-BY-REFERENCE: <file>` — for the driver to DELIVER (SendUserFile / the host's artifact channel) rather than retype through a widget tool. It exists because the v2.9.0 render obligation, which made showing an artifact enforceable, also made the cheapest compliance path the most expensive one: on one measured review the driver pasted back ~52k characters of HTML that taskplane had already written to disk, and inline dashboards came to 450k effective tokens — the largest single addressable slice, caused by the enforcement rather than by the work. A delivered file is the SAME bytes, so `tp ack <id> --delivered <path>` corroborates exactly as a widget render does; the fingerprint is what the ledger compares either way. `0` disables reference mode entirely (always inline). | No — it changes the CHANNEL an artifact arrives on, never whether one is owed. The obligation still blocks completion until the artifact is shown, and a delivered substitute is still recorded as a mismatch. |
 | `TASKPLANE_RUNNABILITY` | *(unset — probe on)* | `off`/`0`/`false`/`no` skips the build/test **runnability probe** that `tp lens dispatch` runs before composing briefs. The probe answers one question about the CHECKOUT — would `go test ./...`, local TypeScript `tsc --noEmit`, `npm test`, or `pytest` get off the ground here — using a bounded, cheap subcommand (`go list ./...`, local `tsc --version`, `node --version`, `import pytest`, or `cargo metadata --offline`), never the suite itself, and states the verdict in every dispatched brief plus the wave board. It exists because on `aws/karpenter-provider-aws#9464` six lens agents were dispatched in parallel and all six independently spent actions discovering that `go test` could not run in that sandbox: one environment fact, paid for six times. The answer is cached in `.taskplane/runnability.json`, keyed by the manifests, local dependency/compiler presence, and `PATH` that resolve the toolchain, so a whole wave shares one probe while installing the missing toolchain mid-review re-probes. | No — it is information, never a gate: no screener, contract, or gate consults it (pinned by `test_runnability_probe.py::TestItIsInformationNotEnforcement`). Setting it `off` only makes agents rediscover the fact themselves. |
 
+## Host capability receipts (set by adapters, not guessed)
+
+These values are runtime observations supplied by the Claude or Codex host
+adapter. File presence proves configuration only; it never proves that a hook
+loaded, a repository is trusted, or a native dispatch argument is supported.
+Missing values remain `unknown`, and malformed or contradictory values fail
+toward the governed fallback. Users normally inspect these through
+`tp onboard --json` rather than setting them manually.
+
+| Variable | Accepted value / format | Observation |
+| --- | --- | --- |
+| `TASKPLANE_NATIVE_HOOKS_LOADED` | `supported`/`unsupported`/`unknown`/`contradictory` (boolean aliases accepted) | Native plugin hooks loaded in this host session. |
+| `TASKPLANE_BRIDGE_HOOKS_LOADED` | same status vocabulary | Repository hook bridge loaded in this host session. |
+| `TASKPLANE_REPOSITORY_TRUST` | same status vocabulary | Host-observed repository trust. |
+| `TASKPLANE_MANAGED_HOOK_POLICY` | same status vocabulary | Organization policy permits taskPlane hooks. |
+| `TASKPLANE_WORKFLOWS_AVAILABLE` | same status vocabulary | Claude Dynamic Workflow transport availability. |
+| `TASKPLANE_NATIVE_STRUCTURED_OUTPUT` | same status vocabulary | Native versioned structured-output support. |
+| `TASKPLANE_MODEL_SELECTION` | same status vocabulary | Native child-model selection support. |
+| `TASKPLANE_EFFORT_SELECTION` | same status vocabulary | Native reasoning-effort selection support. |
+| `TASKPLANE_STABLE_HOOK_EVENT_ID` | same status vocabulary | Stable host event identity for exactly-once hook handling. |
+| `TASKPLANE_SUPPORTED_MODEL_ALIASES` | JSON string array or comma-separated names | Exact model aliases the host accepts. |
+| `TASKPLANE_SUPPORTED_EFFORT_VALUES` | JSON string array or comma-separated names | Exact reasoning-effort values the host accepts. |
+| `TASKPLANE_INSTALL_CONTEXT` | `personal` or adapter-defined managed context | Whether managed hook policy is applicable. |
+| `TASKPLANE_HOST_VERSION` | bounded version string | Host version attached to the capability snapshot. |
+| `TASKPLANE_HOST_RECEIPT_AT` | bounded timestamp string | Observation time supplied by the host. |
+| `TASKPLANE_HOST_RECEIPT_REASON` | bounded diagnostic string | Shared explanation for environment-supplied observations. |
+| `TASKPLANE_HOOK_PATH` | absolute hook source path | Host-observed hook executable used for lifecycle verification. |
+
 ## Model tiers (cost routing)
 
 | Variable | Default | Effect | Enforcement-relevant |
