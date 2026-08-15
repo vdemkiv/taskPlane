@@ -9,6 +9,9 @@ Current workflow contract: **v2.16**. Review, Evaluate, and final Engineering
 all consume the same **canonical review context**; transport may differ by
 host, but the workflow and evidence contract do not.
 
+On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
+workspace launcher exists; it resolves the newest valid installed taskplane
+engine on every call. Otherwise set
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Drive the whole loop;
 pause ONLY at the human gates. Follow each step's returned `instruction`.
 

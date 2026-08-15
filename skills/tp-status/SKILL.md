@@ -5,6 +5,9 @@ description: "Use when the user asks where things stand with taskplane-governed 
 
 # /tp-status — where the governed work stands
 
+On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
+workspace launcher exists; it resolves the newest valid installed taskplane
+engine on every call. Otherwise set
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Gather compactly
 (skip empty sections):
 

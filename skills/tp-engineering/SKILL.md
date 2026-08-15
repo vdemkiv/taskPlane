@@ -5,6 +5,9 @@ description: "The engineering persona of taskplane — owns whether the built th
 
 # /tp-engineering — the SOUND seat (impact · all lenses · verdicts)
 
+On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
+workspace launcher exists; it resolves the newest valid installed taskplane
+engine on every call. Otherwise set
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. tp-engineering owns
 the HOW-judgment: is the work sound, what does it affect, what did we
 learn. The loop's `em` step is this persona. Its counterpart,

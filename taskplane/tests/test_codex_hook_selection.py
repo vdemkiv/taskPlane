@@ -6,6 +6,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
@@ -36,11 +38,53 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all("TASKPLANE_HOOK_PATH=native" in command
                             for command in commands))
 
+    def test_native_manifest_prefers_version_independent_workspace_runner(self):
+        commands = self._commands("hooks/hooks.json")
+        self.assertTrue(all('.taskplane/codex-hook.py' in command
+                            for command in commands))
+        self.assertTrue(all('[ -f ".taskplane/codex-hook.py" ]' in command
+                            for command in commands))
+
+    def test_cached_native_hook_runs_bridge_when_old_plugin_root_is_gone(self):
+        manifest = json.loads((ROOT / "hooks" / "hooks.json").read_text(
+            encoding="utf-8"))
+        command = manifest["hooks"]["Stop"][0]["hooks"][0]["command"]
+        with tempfile.TemporaryDirectory(prefix="tp-native-bridge-") as ws:
+            Path(ws, ".taskplane").mkdir()
+            marker = Path(ws, "called.json")
+            Path(ws, ".taskplane", "codex-hook.py").write_text(
+                "import json, os, sys\n"
+                "with open(os.environ['TP_MARKER'], 'w', encoding='utf-8') as f:\n"
+                "    json.dump({'argv': sys.argv[1:], "
+                "'path': os.environ.get('TASKPLANE_HOOK_PATH')}, f)\n",
+                encoding="utf-8")
+            result = subprocess.run(
+                command, cwd=ws, shell=True, text=True, capture_output=True,
+                env={**os.environ, "PLUGIN_ROOT": os.path.join(ws, "removed"),
+                     "TP_MARKER": str(marker)}, encoding="utf-8",
+                errors="replace")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            called = json.loads(marker.read_text(encoding="utf-8"))
+            self.assertEqual(called, {
+                "argv": ["session-verify"], "path": "native"})
+
     def test_repository_manifest_names_bridge_fallback(self):
         commands = self._commands(".codex/hooks.json")
         self.assertTrue(commands)
         self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in command
                             for command in commands))
+
+    def test_primary_skills_prefer_workspace_launcher_for_version_refreshes(self):
+        skills = (
+            "taskplane", "tp-go", "tp-build", "tp-design", "tp-engineering",
+            "tp-product", "tp-status", "tp-northstar", "tp-help",
+        )
+        for skill in skills:
+            body = (ROOT / "skills" / skill / "SKILL.md").read_text(
+                encoding="utf-8")
+            self.assertIn(".taskplane/codex-hook.py", body, skill)
+            self.assertIn("newest valid installed", " ".join(body.split()),
+                          skill)
 
     def test_onboarding_preserves_bridge_identity_on_both_shells(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-") as ws:
@@ -69,6 +113,17 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all('TASKPLANE_HOOK_PATH=bridge' in
                             hook.get("commandWindows", "")
                             for hook in hooks))
+        native = json.loads((ROOT / "hooks" / "hooks.json").read_text(
+            encoding="utf-8"))
+        native_hooks = [
+            hook
+            for rows in native["hooks"].values()
+            for row in rows
+            for hook in row.get("hooks") or []
+        ]
+        self.assertTrue(all('if exist ".taskplane\\codex-hook.py"' in
+                            hook.get("commandWindows", "")
+                            for hook in native_hooks))
 
 
 class TestHookEventClaims(unittest.TestCase):

@@ -47,13 +47,76 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
         runner = os.path.join(ws, ".taskplane", "codex-hook.py")
         self.assertTrue(os.path.isfile(runner))
         with open(runner, encoding="utf-8") as handle:
-            self.assertEqual(cli._codex_runner_engine(handle.read()),
-                             os.path.abspath(cli.__file__))
+            family = cli._codex_runner_family(handle.read())
+        self.assertEqual(family, cli._plugin_family_for_engine(
+            os.path.abspath(cli.__file__)))
+        self.assertEqual(cli._resolve_taskplane_engine(family),
+                         os.path.abspath(cli.__file__))
 
-    def test_runner_engine_parser_handles_escaped_windows_paths(self):
-        engine = r"C:\plugin\taskplane\tp.py"
+    def test_runner_family_parser_handles_escaped_windows_paths(self):
+        family = r"C:\plugin\taskplane"
         self.assertEqual(
-            cli._codex_runner_engine(f"ENGINE = {engine!r}\n"), engine)
+            cli._codex_runner_family(
+                f"PLUGIN_FAMILY = {family!r}\n"), family)
+
+    def test_generated_runner_survives_removal_of_previous_version(self):
+        with tempfile.TemporaryDirectory(prefix="tp-plugin-family-") as family, \
+                tempfile.TemporaryDirectory(prefix="tp-runner-") as ws:
+            marker = os.path.join(ws, "called.json")
+            for version in ("2.16.2", "2.16.3", "2.16.10"):
+                root = os.path.join(family, version)
+                os.makedirs(os.path.join(root, ".codex-plugin"))
+                os.makedirs(os.path.join(root, "taskplane"))
+                with open(os.path.join(root, ".codex-plugin", "plugin.json"),
+                          "w", encoding="utf-8") as handle:
+                    json.dump({"name": "taskplane", "version": version}, handle)
+                with open(os.path.join(root, "taskplane", "tp.py"), "w",
+                          encoding="utf-8") as handle:
+                    handle.write(
+                        "import json, os, sys\n"
+                        "with open(os.environ['TP_MARKER'], 'w', encoding='utf-8') as f:\n"
+                        "    json.dump({'engine': __file__, 'argv': sys.argv[1:]}, f)\n")
+            runner = os.path.join(ws, "codex-hook.py")
+            with open(runner, "w", encoding="utf-8") as handle:
+                handle.write(cli._codex_runner_body(family))
+            old_root = os.path.join(family, "2.16.2")
+            for root, dirs, files in os.walk(old_root, topdown=False):
+                for name in files:
+                    os.unlink(os.path.join(root, name))
+                for name in dirs:
+                    os.rmdir(os.path.join(root, name))
+            os.rmdir(old_root)
+
+            result = subprocess.run(
+                [sys.executable, runner, "session-verify"],
+                env={**os.environ, "TP_MARKER": marker}, text=True,
+                capture_output=True, encoding="utf-8", errors="replace")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(marker, encoding="utf-8") as handle:
+                called = json.load(handle)
+            self.assertIn(os.path.join("2.16.10", "taskplane", "tp.py"),
+                          called["engine"])
+            self.assertEqual(called["argv"], ["session-verify"])
+
+    def test_resolver_rejects_manifest_and_symlink_escape(self):
+        with tempfile.TemporaryDirectory(prefix="tp-plugin-family-") as family, \
+                tempfile.TemporaryDirectory(prefix="tp-outside-") as outside:
+            for version, name in (("2.16.3", "other"),
+                                  ("2.16.4", "taskplane")):
+                root = os.path.join(family, version)
+                os.makedirs(os.path.join(root, ".codex-plugin"))
+                os.makedirs(os.path.join(root, "taskplane"))
+                with open(os.path.join(root, ".codex-plugin", "plugin.json"),
+                          "w", encoding="utf-8") as handle:
+                    json.dump({"name": name, "version": version}, handle)
+            outside_engine = os.path.join(outside, "tp.py")
+            with open(outside_engine, "w", encoding="utf-8") as handle:
+                handle.write("raise SystemExit(99)\n")
+            os.symlink(outside_engine, os.path.join(
+                family, "2.16.4", "taskplane", "tp.py"))
+
+            self.assertIsNone(cli._resolve_taskplane_engine(family))
 
 
 def _repo():

@@ -18,7 +18,10 @@ evidence, blockers, and decisions that materially need their judgment. This is
 a user-interface simplification only. Never remove, shorten, or self-waive an
 internal gate to make the interaction look simpler.
 
-Set `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
+On Codex, prefer the stable workspace launcher when it exists:
+`TP='python3 .taskplane/codex-hook.py'`. It resolves the newest valid installed
+taskplane engine on every call. During first setup, or on another host, use
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
 ## Approved flow contract
 
@@ -56,8 +59,10 @@ On a fresh repository, run `$TP onboard --json` before governed work. Resolve
 only the missing prerequisite it names. Do not dump setup mechanics unless the
 user asks; say what is missing and help complete it.
 On Codex, if `next_action` is `install_codex_hooks`, run
-`$TP onboard --install-codex-hooks --json` within the repository and ask the
-user to start a new Codex task. Do not dispatch governed workers until the
+`$TP onboard --install-codex-hooks --json` within the repository. Ask the user
+to start a new Codex task only when this workspace has never loaded its hooks;
+an existing stable launcher follows later plugin versions without a restart.
+Do not dispatch governed workers until the
 `codex_hooks` check is ready: marketplace skills do not themselves establish
 the repo-local lifecycle/write receipts required by taskplane provenance.
 

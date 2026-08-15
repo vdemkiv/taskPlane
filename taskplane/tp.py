@@ -203,6 +203,8 @@ def _install_paths_lines(ctx: str) -> list[str]:
 _CODEX_HOOK_CONFIG = os.path.join(".codex", "hooks.json")
 _CODEX_HOOK_RUNNER = os.path.join(".taskplane", "codex-hook.py")
 _CODEX_HOOK_MARKER = ".taskplane/codex-hook.py"
+_PLUGIN_MANIFEST = os.path.join(".codex-plugin", "plugin.json")
+_PLUGIN_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
 def _codex_hooks_report(ws: str) -> dict:
@@ -220,21 +222,28 @@ def _codex_hooks_report(ws: str) -> dict:
         encoded = json.dumps(config, sort_keys=True) if isinstance(config, dict) else ""
         with open(runner_path, encoding="utf-8") as handle:
             runner_body = handle.read()
-        current_engine = os.path.abspath(__file__)
     except Exception as exc:
         return {"ok": False, "status": "missing", "path": config_path,
                 "reason": str(exc)}
     configured = _CODEX_HOOK_MARKER in encoded
-    installed_engine = _codex_runner_engine(runner_body)
-    runner = bool(installed_engine and os.path.normcase(
-        os.path.abspath(installed_engine)) == os.path.normcase(current_engine))
+    family = _codex_runner_family(runner_body)
+    if family:
+        installed_engine = _resolve_taskplane_engine(family)
+    else:
+        legacy = _codex_runner_engine(runner_body)
+        current = os.path.normcase(os.path.abspath(__file__))
+        installed_engine = (legacy if legacy and os.path.normcase(
+            os.path.abspath(legacy)) == current else None)
+    runner = bool(installed_engine and os.path.isfile(installed_engine))
     return {
         "ok": bool(configured and runner),
         "status": "ready" if configured and runner else "stale",
         "config": config_path, "runner": runner_path,
+        "resolved_engine": installed_engine,
         "hint": (None if configured and runner else
-                 "Run `tp onboard --install-codex-hooks --json`, then start "
-                 "a new Codex task so repo-local lifecycle hooks load."),
+                 "Run `tp onboard --install-codex-hooks --json`. A new "
+                 "Codex task is needed only when workspace hooks have not "
+                 "been loaded before; version refreshes use the stable runner."),
     }
 
 
@@ -259,12 +268,9 @@ def _host_capability_snapshot(ws: str, install_context: str | None = None):
 
 
 def _codex_runner_engine(runner_body: str) -> str | None:
-    """Read the generated ENGINE literal without comparing escaped source.
+    """Read a legacy generated ENGINE literal.
 
-    Windows ``repr`` doubles backslashes in the runner source.  Comparing the
-    unescaped absolute path to those source bytes therefore reported every
-    correctly installed bridge as stale.  Parse only the one generated
-    literal and compare path values instead.
+    Kept only so onboarding can identify and replace pre-v2.16.4 bridges.
     """
     match = re.search(r"^ENGINE = (.+)$", str(runner_body or ""), re.MULTILINE)
     if not match:
@@ -274,6 +280,119 @@ def _codex_runner_engine(runner_body: str) -> str | None:
     except (SyntaxError, ValueError):
         return None
     return value if isinstance(value, str) and value else None
+
+
+def _codex_runner_family(runner_body: str) -> str | None:
+    """Read the stable plugin-family literal from a generated runner."""
+    match = re.search(r"^PLUGIN_FAMILY = (.+)$",
+                      str(runner_body or ""), re.MULTILINE)
+    if not match:
+        return None
+    try:
+        value = ast.literal_eval(match.group(1))
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _valid_plugin_root(root: str, family: str) -> tuple[tuple[int, int, int],
+                                                        str] | None:
+    """Validate one contained taskplane installation candidate."""
+    family_real = os.path.realpath(family)
+    root_real = os.path.realpath(root)
+    try:
+        if os.path.commonpath((family_real, root_real)) != family_real:
+            return None
+    except ValueError:
+        return None
+    manifest = os.path.join(root_real, _PLUGIN_MANIFEST)
+    engine = os.path.realpath(os.path.join(root_real, "taskplane", "tp.py"))
+    try:
+        if os.path.commonpath((family_real, engine)) != family_real:
+            return None
+        with open(manifest, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    match = _PLUGIN_SEMVER_RE.fullmatch(str(version or ""))
+    if (not isinstance(data, dict) or not match
+            or data.get("name") != "taskplane"
+            or not os.path.isfile(engine)):
+        return None
+    # Installed cache children are named by version. The family itself is
+    # also accepted so a source checkout remains a valid development runner.
+    if (root_real != family_real
+            and os.path.basename(root_real) != str(version)):
+        return None
+    return tuple(int(part) for part in match.groups()), engine
+
+
+def _resolve_taskplane_engine(family: str | None) -> str | None:
+    """Resolve the newest valid engine inside one installation family."""
+    if not isinstance(family, str) or not family:
+        return None
+    family_real = os.path.realpath(os.path.expanduser(family))
+    roots = [family_real]
+    try:
+        roots.extend(os.path.join(family_real, name)
+                     for name in os.listdir(family_real))
+    except OSError:
+        return None
+    candidates = [row for root in roots
+                  if (row := _valid_plugin_root(root, family_real))]
+    return max(candidates, default=(None, None), key=lambda row: row[0])[1]
+
+
+def _plugin_family_for_engine(engine: str) -> str:
+    """Return the stable cache family, or the source root in development."""
+    plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(engine)))
+    candidate = _valid_plugin_root(plugin_root, plugin_root)
+    if candidate:
+        version = ".".join(str(part) for part in candidate[0])
+        if os.path.basename(plugin_root) == version:
+            return os.path.dirname(plugin_root)
+    return plugin_root
+
+
+def _codex_runner_body(family: str) -> str:
+    """Render a standalone bridge that survives removal of old versions."""
+    return f'''# Generated locally by taskplane onboarding; .taskplane is ignored.
+import json, os, re, runpy, sys
+PLUGIN_FAMILY = {os.path.abspath(family)!r}
+family = os.path.realpath(os.path.expanduser(PLUGIN_FAMILY))
+version_re = re.compile(r"^(\\d+)\\.(\\d+)\\.(\\d+)$")
+candidates = []
+try:
+    roots = [family] + [os.path.join(family, name) for name in os.listdir(family)]
+except OSError:
+    roots = []
+for root in roots:
+    real_root = os.path.realpath(root)
+    manifest = os.path.join(real_root, ".codex-plugin", "plugin.json")
+    engine = os.path.realpath(os.path.join(real_root, "taskplane", "tp.py"))
+    try:
+        if os.path.commonpath((family, real_root)) != family:
+            continue
+        if os.path.commonpath((family, engine)) != family:
+            continue
+        with open(manifest, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        continue
+    version = data.get("version") if isinstance(data, dict) else None
+    match = version_re.fullmatch(str(version or ""))
+    if not isinstance(data, dict) or not match or data.get("name") != "taskplane" or not os.path.isfile(engine):
+        continue
+    if real_root != family and os.path.basename(real_root) != str(version):
+        continue
+    candidates.append((tuple(int(part) for part in match.groups()), engine))
+if not candidates:
+    raise SystemExit("taskplane Codex hook bridge found no valid installed engine")
+ENGINE = max(candidates, key=lambda row: row[0])[1]
+sys.argv = [ENGINE, *sys.argv[1:]]
+runpy.run_path(ENGINE, run_name="__main__")
+'''
 
 
 def _codex_hook_action(command: str) -> str:
@@ -307,8 +426,8 @@ def _install_codex_hooks(ws: str) -> dict:
 
     Marketplace plugins provide skills/apps, while Codex lifecycle hooks load
     from workspace configuration. The committed config stays portable; the
-    ignored runner holds the machine-local plugin path and is refreshed by
-    onboarding after every plugin update.
+    ignored runner holds a stable installation-family path and resolves the
+    newest valid engine on every invocation.
     """
     # Managed policy is an authority boundary, not a setup inconvenience.
     # Refuse before opening the workspace config and never edit a managed
@@ -341,15 +460,8 @@ def _install_codex_hooks(ws: str) -> dict:
 
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
     os.makedirs(os.path.dirname(runner_path), exist_ok=True)
-    engine = os.path.abspath(__file__)
-    body = ("# Generated locally by taskplane onboarding; .taskplane is ignored.\n"
-            "import os, runpy, sys\n"
-            f"ENGINE = {engine!r}\n"
-            "if not os.path.isfile(ENGINE):\n"
-            "    raise SystemExit('taskplane Codex hook bridge is stale; run "
-            "tp onboard --install-codex-hooks --json')\n"
-            "sys.argv = [ENGINE, *sys.argv[1:]]\n"
-            "runpy.run_path(ENGINE, run_name='__main__')\n")
+    family = _plugin_family_for_engine(os.path.abspath(__file__))
+    body = _codex_runner_body(family)
     tmp = runner_path + f".tmp.{os.getpid()}"
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as handle:

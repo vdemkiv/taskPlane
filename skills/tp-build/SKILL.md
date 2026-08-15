@@ -5,6 +5,9 @@ description: "The new-feature flow of taskplane — use when the goal is to BUIL
 
 # /tp-build — new features, refined first, seen always
 
+On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
+workspace launcher exists; it resolves the newest valid installed taskplane
+engine on every call. Otherwise set
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Building new is where
 agents waste the most — vague specs, invisible progress, one unexamined
 design. tp-build inverts that: **refine before you plan, see before you

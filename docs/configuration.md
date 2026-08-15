@@ -112,7 +112,7 @@ the loop. `tp onboard --json` reports the resolved `model_tiers` and
 | --- | --- | --- |
 | `CODEX_HOME`, `CODEX_THREAD_ID` | Codex | Presence marks the host as Codex: model tiers inherit by default, reasoning tiers map to low/medium/high, native subagent task dispatch applies, and `workflow_available()` always answers no for Claude Dynamic Workflows. |
 | `CLAUDE_CODE_WORKFLOWS` | Claude Code | Truthy presence marks a Dynamic Workflow runtime; consulted by `workflow_available()` only when `TASKPLANE_WORKFLOWS` is unset. |
-| `PLUGIN_ROOT`, `CLAUDE_PLUGIN_ROOT` | the host's plugin runtime | Where the installed plugin lives; hooks, skills, and agent briefs locate `taskplane/tp.py` via `${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`. |
+| `PLUGIN_ROOT`, `CLAUDE_PLUGIN_ROOT` | the host's plugin runtime | First-run plugin location supplied by the host. On Codex, cached native hooks prefer `.taskplane/codex-hook.py`; that stable launcher validates the installation family and resolves its newest semantic version on every call. Direct `${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py` execution remains the first-setup/other-host fallback. |
 
 ## Seeing what's in effect
 

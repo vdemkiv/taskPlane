@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.16.4** | **Codex hook execution now survives plugin version replacement.** Cached native hooks prefer the stable repository launcher, which validates one marketplace installation family and resolves its newest semantic version on every call instead of embedding a disposable cache path. Primary skills use the same launcher. One task boundary is still needed to migrate from an older hook command or load changed skill/MCP definitions; later hook-engine updates no longer require restarting Codex. |
 | **v2.16.3** | **Release and Codex onboarding regressions are closed.** The README release window is rotated to its pinned three rows in the release commit itself. Missing or unsafe language-reference files and sections now stop routing with a structured `mapper_unavailable` result instead of escaping as a Python traceback, preserving the existing fail-closed policy. Repository hook onboarding preserves `TASKPLANE_HOOK_PATH=bridge` in every generated POSIX and Windows command, so native and bridge installations remain distinguishable and exactly-once hook handling works after onboarding. |
 | **v2.16.2** | **Host-capability CI and workflow contracts are synchronized.** The three-gate cost ratchet now treats fewer gates as incomplete rather than cheaper, all host-capability environment receipts are documented, and canonical ReviewKernel workflow/evaluation fixtures follow the leased evidence contract without weakening production behavior. Cross-host parity keeps host-specific dispatch receipts outside canonical payload comparisons, the pytest-only inventory includes the new capability tests, and loop status moved into its own module so the existing maintainability ceiling remains enforced. |
-| **v2.16.1** | **Model-evaluation outages no longer masquerade as product defects.** EVALUATE now distinguishes verified product failure from bounded host/model unavailability. An unavailable evaluation can advance only with green bound tests, zero not-met criteria, and zero completed-lens blockers; it remains visible through engineering and human sign-off without consuming another FIX cycle. A mistaken product-fail gate is refused, and the session retrospective records the proportional-testing and retry-budget rules that prevent another no-value repair loop. |
 
 ## Install
 
@@ -225,9 +225,12 @@ codex
 
 On first repository setup, taskplane installs a portable repo-local
 `.codex/hooks.json` and an ignored machine-local bridge, then asks you to start
-one more task so Codex loads the lifecycle hooks. Keep Codex's sandbox and
-approval controls enabled — taskplane's scope contract is an additional
-guardrail, not a replacement.
+one more task so Codex loads the lifecycle hooks. After that first load, the
+bridge resolves the newest valid installed taskplane engine on every call, so
+plugin version updates do not require a Codex restart for hook execution.
+Codex still loads newly changed skill or MCP definitions at a task boundary.
+Keep Codex's sandbox and approval controls enabled — taskplane's scope contract
+is an additional guardrail, not a replacement.
 
 Requires `git` in your workspace (the gates need a commit snapshot) and Python 3
 (standard library only; `python3` on macOS/Linux or the `py` launcher on
