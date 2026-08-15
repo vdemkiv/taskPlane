@@ -5,7 +5,7 @@ description: "The internal delivery driver behind the taskplane facade — goal-
 
 # /tp-go — goal in, governed delivery out
 
-Current workflow contract: **v2.15**. Review, Evaluate, and final Engineering
+Current workflow contract: **v2.16**. Review, Evaluate, and final Engineering
 all consume the same **canonical review context**; transport may differ by
 host, but the workflow and evidence contract do not.
 

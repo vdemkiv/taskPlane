@@ -9,7 +9,7 @@ behind that simple request it checks whether the work is ready, keeps every
 agent inside an approved scope, and requires current implementation, test, and
 review evidence before anything can be called done.
 
-![taskplane governed delivery in action — a real safe-order-cancellation project: graph-aware Definition of Ready blocks an undeclared audit module → a human approves the corrected dependency-aware plan → the execution contract blocks a Codex edit outside scope → worker evidence cannot self-advance → an independent evaluator checks acceptance criteria, routed lenses, dependents, and the distributed contract → the full engineering review runs → final human sign-off](docs/assets/taskplane-cowork-flow.gif)
+![taskplane 2.16 flow guide — an infographic overview plus the ten approved skill-flow contracts, each paired with the problem it solves, its evidence-backed outcome, human gates, and the combined benefits of taskplane](docs/assets/taskplane-cowork-flow.gif)
 
 taskplane is not another prompt collection, review bot, or project tracker. It
 is the governed execution and assurance layer between your intent and
@@ -40,6 +40,25 @@ build, engineering, status, and orchestration skills. You do not need to choose 
 persona, remember loop commands, select review lenses, or set dependency
 depth. taskplane reports a concise text summary after each material
 transition and shows the richer dashboard when the host supports it.
+
+### Ten flows, one control plane
+
+| Flow | Problem it solves | Evidence-backed outcome |
+| --- | --- | --- |
+| `taskplane` | Users should not have to learn personas, graph depth, lens routing, or loop commands. | One goal routes to Design, Build, Review, or Status while the strict harness stays internal. |
+| `tp-product` | Ambiguous ideas become code before acceptance, dependencies, and product risks are settled. | A complete requirement, Product DoR, review, and explicit sign-off trigger Build only when ready. |
+| `tp-design` | Architecture and contract choices otherwise emerge implicitly during implementation. | Alternatives, graph overlay, trade-offs, rollout, and validation are sealed in an approved Design Contract. |
+| `tp-build` | The first implementation wins while readiness, alternatives, and downstream impact stay implicit. | Product, Design, Plan, optional A/B selection, Evaluate, Review, sign-off, and Retro stay connected. |
+| `tp-go` | Agents drift scope, skip graph work, or report partial execution as done. | Scoped workers submit evidence; independent gates advance stages; humans retain approval and sign-off. |
+| `tp-engineering` | Broad reviews reread the same repository and still miss dependencies outside the diff. | One diff and graph blast radius route only applicable lenses into one canonical review and human decision. |
+| `tp-status` | Long runs hide the active stage, dependency risk, open gate, and next owner. | Mission control joins workflow, requirements, debt, and graph state with one explicit action banner. |
+| `tp-northstar` | A locally sound idea can still consume time without serving product direction. | An advisory check exposes leverage, reversibility, opportunity cost, coherence, and the sharpest tension. |
+| `tp-help` | Setup mechanics and a large skill catalog delay the first governed result. | Readiness checks and a short mental model lead to one concrete next action. |
+| `tp-tag` | Team-chat decisions lose context, ownership, evidence, and durable state. | The conversation drives a repository-persisted loop with attributed approvals, dashboards, and resumable memory. |
+
+Together these flows reduce user complexity without reducing agent discipline:
+one dependency graph, one canonical review context, selective lenses, enforced
+contracts, independent evidence, and explicit human gates from idea to retro.
 
 This simplicity does **not** reduce agent work. A worker may only submit a
 result; it cannot advance its own stage. The orchestrator independently runs
@@ -114,7 +133,6 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 | **v2.16.0** | **Retro is crash-safe and the validation boundary is leaner.** Retro now reserves a stable identity before side effects, resumes without duplicating knowledge or trace records, and closes only after its evidence receipt exists. CI fixtures match the approved Product DoR and human-gate workflows, Windows/subprocess boundaries are explicit, and the cost harness still performs one suite execution. Runtime cleanup removes redundant review work, closes file handles, and consolidates stale internal helpers without changing the approved v2.15 flow contracts. |
 | **v2.15.0** | **Every user-facing skill now has an explicit, human-approved flow contract, and repeated reviews can converge.** Ten portable `flow.json` graphs pin each skill's stages, graph use, agent work, and real human gates; the mission-control dashboard renders workflow execution and the dependency graph in taskplane's established report style. Product now owns a mechanical Product DoR plus explicit approval/change sign-off before Build. Engineering classifies filed rows structurally: reproducible defects and violations of named repository declarations remain findings, while taste and review commentary become durable non-gating notes. Settled findings—including `not-a-defect`—are carried into future lens briefs by bounded artifact reference and require materially new recurrence evidence before they can return. A frozen two-pass scenario pins zero new admissible findings on an unchanged settled review. The evaluation adapter records every nested Codex command, flow fingerprints cover the approved graph, and targeted Linux/macOS/Windows CI repairs keep cross-host paths, setup writes, language-reference receipts, stage goldens, and the cost harness aligned. |
 | **v2.14.2** | **Language-specific references now travel through routing and canonical review context.** Routing resolves Go, Python, and TypeScript references from the canonical changed-file set, carries the applicable reference by path in both legacy and selective Review briefs, and exposes language-correct priming in serial Execute/Fix action payloads instead of assuming Python. Go Design receives a dedicated package-boundary and concurrency reference, Go 1.26 is the adopted baseline while 1.27 remains draft, and the Python/TypeScript gates correct their previously inert PCRE and typed-lint checks. Windows CI is now a required, focused host-boundary check rather than a second 27-minute full-suite copy. |
-| **v2.14.1** | **Codex marketplace installs now establish the enforcement boundary they depend on.** Codex plugins supply taskplane's skills, while onboarding installs a portable repo-local `.codex/hooks.json` plus an ignored machine-local bridge to the installed engine; readiness stays false until that bridge is current, and plugin upgrades are detected as stale instead of silently using an old hook runtime. Review routing now reads one bounded canonical diff with nearby hunk context—not unrelated whole-file content—so security retains enclosing authorization signals while selective routing avoids false-positive lens fan-out. Routing input is capped at 200 files and 64 KiB per file, and large shared review envelopes deduplicate repeated file/symbol/impact data before scoped views are sealed. |
 
 ## Install
 
@@ -187,28 +205,29 @@ The direct GitHub marketplace path works as-is. **Claude Desktop or claude.ai
 
 ### Codex (OpenAI)
 
-**Codex CLI:** add the GitHub marketplace, install taskplane, and open the plugin
-browser to verify it is enabled:
+**Recommended — published plugin directory:** in the ChatGPT desktop app,
+select **Codex**, open **Plugins**, search for **taskplane**, choose **+** to
+install it, then start a new Codex task in your repository. In Codex CLI, run
+`codex`, open `/plugins`, install/enable **taskplane** from the marketplace tab,
+and start a new CLI session. Newly installed skills load in new tasks/sessions.
+
+Plugins are supported in ChatGPT desktop Codex and Codex CLI, not the Codex IDE
+extension. See [Codex plugins](https://developers.openai.com/codex/plugins).
+
+**GitHub source — development or catalog fallback:**
 
 ```bash
 codex plugin marketplace add vdemkiv/taskPlane
 codex plugin add taskplane
 codex
-# inside Codex: /plugins
+# inside Codex: /plugins, verify taskplane is enabled, then start a new session
 ```
 
-**Codex in the ChatGPT desktop app:** select **Codex**, open **Plugins**, choose
-the `taskplane-marketplace` source after adding it, and install **taskplane**.
-Open the repository as a local environment and start a new task.
-
-Codex loads newly installed skills in a new task/session. On first setup,
-taskPlane installs a portable repo-local `.codex/hooks.json` and an ignored
-machine-local bridge, then asks you to start one more task so Codex loads the
-lifecycle hooks. Keep Codex's own sandbox and approval controls enabled — taskplane's
-scope contract is an additional guardrail, not a replacement. Plugins are supported
-in Codex CLI and the Codex desktop app. Install the published plugin from the
-catalog, or use this GitHub marketplace source for local development. See
-[Codex plugins](https://developers.openai.com/codex/plugins).
+On first repository setup, taskplane installs a portable repo-local
+`.codex/hooks.json` and an ignored machine-local bridge, then asks you to start
+one more task so Codex loads the lifecycle hooks. Keep Codex's sandbox and
+approval controls enabled — taskplane's scope contract is an additional
+guardrail, not a replacement.
 
 Requires `git` in your workspace (the gates need a commit snapshot) and Python 3
 (standard library only; `python3` on macOS/Linux or the `py` launcher on
@@ -240,13 +259,15 @@ Open your project repository (it needs a git commit), then say **"set up taskpla
 ### Quickstart: Codex
 
 ```bash
-codex plugin marketplace add vdemkiv/taskPlane
-codex plugin add taskplane
-codex   # start a NEW task; taskPlane onboarding installs repo-local hooks
+codex
+# inside Codex: /plugins → find taskplane → install and enable
+# then start a NEW CLI session
 ```
 
 `cd` to your project repository first (desktop: open it as a local environment),
-then in the new task say **"set up taskplane"**.
+then in the new task say **"set up taskplane"**. Use the GitHub source commands
+in the Install section only for local development or when the published catalog
+is unavailable.
 
 ## Onboarding — the short version
 
@@ -260,9 +281,12 @@ project, fill `current-state.md` first: it grounds every design review in as-bui
 reality, and reinventing an existing component is a blocker-class finding.
 Onboarding then asks one question — keep taskplane knowledge private/local
 (`personal`, `~/.taskplane`) or shared in-repo (`team`/`enterprise`,
-`.taskplane-kb/`) — and reports the resolved model-tier map. Full detail — Codex
-onboarding, sharing modes (`tp share`), model tiers and cost routing, and context
-storage: [docs/onboarding.md](docs/onboarding.md).
+`.taskplane-kb/`) — and reports the resolved model-tier map. Claude Code users
+reload plugins after installation; Chat/Cowork and Codex users start a new
+conversation/task so the host loads the plugin. Codex then performs one extra
+repo-local hook readiness check and may request one more new task. Full Claude
+and Codex onboarding, sharing modes (`tp share`), model tiers, cost routing, and
+context storage: [docs/onboarding.md](docs/onboarding.md).
 
 ## Honest about what the guardrails are
 

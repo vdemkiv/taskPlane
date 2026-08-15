@@ -285,7 +285,13 @@ def package_files(manifest: dict) -> list[Path]:
     # Ship the public documentation as a complete set. Skills and the stdlib
     # runtime cite docs/* directly; a package that validates only repository
     # existence can still strand an installed user with dead pointers.
-    add_tree(files, ROOT / "docs", lambda path: path.suffix == ".md")
+    add_tree(
+        files,
+        ROOT / "docs",
+        lambda path: path.suffix == ".md" or
+        path.relative_to(ROOT / "docs").as_posix() ==
+        "assets/taskplane-cowork-flow.gif",
+    )
     add_tree(files, ROOT / "taskplane", lambda path: path.parent == ROOT / "taskplane" and path.suffix == ".py")
     add_tree(files, ROOT / "lenses", lambda path: path.suffix == ".md" or path.name == "catalog.json")
 
@@ -364,6 +370,10 @@ def validate_archive(path: Path) -> tuple[int, int]:
         for required in ("README.md", "CHANGELOG.md"):
             require(f"{ARCHIVE_ROOT}/{required}" in names,
                     f"ZIP is missing {required}")
+        require(
+            f"{ARCHIVE_ROOT}/docs/assets/taskplane-cowork-flow.gif" in names,
+            "ZIP is missing the README flow-guide GIF",
+        )
         doc_ref = re.compile(r"(?<![A-Za-z0-9_./-])(docs/[A-Za-z0-9_./-]+\.md)")
         referenced_docs: set[str] = set()
         source_prefixes = (f"{ARCHIVE_ROOT}/skills/",

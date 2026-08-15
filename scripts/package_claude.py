@@ -77,6 +77,7 @@ MUST_CONTAIN = (
     "taskplane/lens_signals.py",
     "lenses/catalog.json",
     "skills/taskplane/SKILL.md",
+    "docs/assets/taskplane-cowork-flow.gif",
 )
 
 
@@ -109,7 +110,10 @@ def package_files() -> list:
     add_tree(files, ROOT / "skills", lambda p: True)
     add_tree(files, ROOT / "agents", lambda p: p.suffix == ".md")
     add_tree(files, ROOT / "discipline", lambda p: p.suffix == ".md")
-    add_tree(files, ROOT / "docs", lambda p: p.suffix == ".md")
+    add_tree(files, ROOT / "docs",
+             lambda p: p.suffix == ".md" or
+             p.relative_to(ROOT / "docs").as_posix() ==
+             "assets/taskplane-cowork-flow.gif")
     add_tree(files, ROOT / "workflows", lambda p: p.suffix == ".js")
     add_tree(files, ROOT / "taskplane",
              lambda p: p.parent == ROOT / "taskplane" and p.suffix == ".py")

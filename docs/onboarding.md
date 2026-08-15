@@ -1,9 +1,9 @@
 # Onboarding (`tp onboard`) — the full setup
 
 This is the complete onboarding reference: what `tp onboard` checks before it
-hands you to a governed run, the Codex-specific onboarding path, the knowledge
-storage / sharing-mode choice, and the two setup decisions (model tiers and
-context storage) that decide how efficiently the whole system runs. The
+hands you to a governed run, the Claude and Codex host-specific paths, the
+knowledge storage / sharing-mode choice, and the two setup decisions (model
+tiers and context storage) that decide how efficiently the whole system runs. The
 README's [Onboarding summary](../README.md) covers the short version.
 
 ## The three green checks
@@ -33,9 +33,40 @@ checks are green:
    decisions too (`tp decision new "<title>" --modules <globs>`) so they
    govern future work automatically.
 
+## Claude onboarding
+
+1. Install taskplane through the path allowed by your account. Personal users
+   can add the GitHub marketplace; Team/Enterprise members install from their
+   organization's catalog or an allowed file upload. The README's
+   [Install section](../README.md#install) has the exact decision tree.
+2. In Claude Code, run `/reload-plugins` after installation. In Claude Chat or
+   Cowork, start a new conversation if the newly installed skills are not yet
+   visible.
+3. Open the target repository in Claude Code, or attach its folder in Cowork.
+   Prompt **"set up taskplane"** or **"use taskplane for …"**.
+4. If the folder is not a committed Git repository, approve initialization or
+   make the first commit yourself. The commit is the diff and
+   Definition-of-Done baseline.
+5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
+   is **shared in the repository** (`team`/`enterprise`). This is storage and
+   collaboration policy, not a model choice.
+6. Let taskplane initialize the context documents. On an existing project,
+   fill `current-state.md` first so Product and Design reason from the as-built
+   system rather than inventing a parallel one.
+7. State the goal. taskplane stops for explicit Design approval when used,
+   plan approval, and final sign-off; Claude never self-approves those gates.
+
+Claude Code loads taskplane's bundled hook after plugin reload. Chat/Cowork
+still uses the same engine-owned state, graph, evidence, and human gates, while
+tool interception remains limited to what that host exposes. Keep Claude's own
+permissions and sandbox controls enabled.
+
 ## Codex onboarding
 
-1. Install and enable taskplane, then start a **new** Codex task/session.
+1. Install and enable **taskplane** from the published plugin directory: in the
+   desktop app use **Codex → Plugins**; in Codex CLI use `/plugins`. Then start
+   a **new** Codex task/session. The GitHub marketplace commands in the README
+   remain the development/catalog fallback.
 2. Make the target repository the working folder. In Codex CLI, `cd` to the
    repository before running `codex`; in the desktop app, open or create a
    local environment for that repository.
@@ -70,6 +101,15 @@ may start Goal mode with `/goal`; it changes neither permissions nor gates.
 When inline HTML widgets are unavailable, Codex still relays the plain-text
 `HEADLINE:` and provides `.taskplane/dashboard.html` as the local dashboard
 artifact. The governance state and human gates do not depend on widget support.
+
+## Host setup at a glance
+
+| Host | Activate the plugin | Repository step | Reload boundary |
+| --- | --- | --- | --- |
+| Claude Code | GitHub or managed marketplace | Open the repo | `/reload-plugins` |
+| Claude Chat / Cowork | Personal or organization plugin catalog | Attach the folder in Cowork when local files are required | New conversation if needed |
+| ChatGPT desktop Codex | Published Plugins directory | Open a local environment for the repo | New task; setup may request one more task after hooks install |
+| Codex CLI | `/plugins` marketplace tab | Run `codex` from the repo | New CLI session; setup may request one more session after hooks install |
 
 ## Knowledge storage and sharing mode
 

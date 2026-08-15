@@ -37,7 +37,10 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.15 — approved skill flows and convergent review.** The ten
+**What's new in v2.16 — crash-safe Retro, lean validation, approved skill flows,
+and convergent review.** Retro now reserves a stable identity before side effects,
+resumes without duplicating knowledge or trace records, and closes only after its
+evidence receipt exists. The ten
 user-facing skills now carry human-approved flow graphs, Product has an explicit
 DoR and approval boundary, and Engineering admits only reproducible defects or
 violations of named repository declarations. Settled findings stay settled unless
