@@ -108,7 +108,8 @@ stale evidence or unexplained implementation drift is a failure, not a note.
 5. **Write `.eval/verdict.json`**:
 
    ```json
-   {"task": "<id>", "requirement": "<R-id|null>",
+   {"schema": "taskplane.evaluator-output/v1",
+    "task": "<id>", "requirement": "<R-id-or-empty-string>",
     "verdict": "pass|fail",
     "criteria": [{"criterion": "...", "status": "met|not-met|cannot-verify",
                   "evidence": "..."}],

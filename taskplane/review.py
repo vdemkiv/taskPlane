@@ -904,6 +904,34 @@ def _codex_effort_satisfies(expected: str | None,
     return observed == expected
 
 
+def _codex_agent_path(paths: list[str], thread_id: str) -> str:
+    """Resolve a Codex thread id to its host-authored agent path."""
+    for path in sorted(paths, reverse=True):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    if len(line) > 2 * 1024 * 1024:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    if event.get("type") != "session_meta":
+                        continue
+                    payload = event.get("payload") or {}
+                    if str(payload.get("id") or "") != thread_id:
+                        break
+                    source = payload.get("source") or {}
+                    spawn = (((source.get("subagent") or {})
+                              .get("thread_spawn"))
+                             if isinstance(source, dict) else None) or {}
+                    return str(payload.get("agent_path") or
+                               spawn.get("agent_path") or "")
+        except OSError:
+            continue
+    return ""
+
+
 def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
                            raw_result: bytes) -> dict | None:
     """Recover host provenance from Codex's native, read-only task store.
@@ -943,6 +971,7 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
     for directory, _dirs, names in os.walk(sessions):
         paths.extend(os.path.join(directory, name) for name in names
                      if name.startswith("rollout-") and name.endswith(".jsonl"))
+    collector_agent_path = _codex_agent_path(paths, parent_thread)
     observed = None
     for path in sorted(paths, reverse=True)[:512]:
         spawn = None
@@ -984,6 +1013,12 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
                         elif event.get("type") == "event_msg" and \
                                 payload.get("type") == "task_started":
                             turn["started"] = ordinal
+                        elif payload.get("type") == "agent_message":
+                            turn.setdefault("delegations", []).append({
+                                "ordinal": ordinal,
+                                "delegator": str(payload.get("author") or ""),
+                                "recipient": str(payload.get("recipient") or ""),
+                            })
                         elif payload.get("type") in {
                                 "custom_tool_call", "function_call"}:
                             call_id = str(payload.get("call_id") or
@@ -1022,11 +1057,13 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
                                 "ordinal": ordinal, "message": message}
         except OSError:
             continue
-        if not spawn or spawn.get("parent_thread_id") != parent_thread:
+        if not spawn:
             continue
+        direct_parent = spawn.get("parent_thread_id") == parent_thread
+        spawn_agent_path = str(spawn.get("agent_path") or "")
         path_line = "taskplane-result-path:" + expected_path
         digest_line = "taskplane-result-sha256:" + expected_digest
-        fresh = os.path.basename(str(spawn.get("agent_path") or "")) == task_name
+        fresh = direct_parent and os.path.basename(spawn_agent_path) == task_name
         if fresh:
             if role.get("model") not in (None, model) or \
                     role.get("reasoning_effort") not in (None, effort):
@@ -1045,7 +1082,15 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
             complete = turn.get("complete") or {}
             message = str(complete.get("message") or "")
             lines = {part.strip() for part in message.splitlines()}
-            if turn.get("started") is None or delivered is None or \
+            delegated = direct_parent
+            if not delegated and delivered is not None:
+                delegated = any(
+                    bool(collector_agent_path)
+                    and row.get("delegator") == collector_agent_path
+                    and row.get("recipient") == spawn_agent_path
+                    and int(row.get("ordinal", -1)) <= int(delivered)
+                    for row in turn.get("delegations") or [])
+            if not delegated or turn.get("started") is None or delivered is None or \
                     not (turn["started"] <= delivered <
                          int(complete.get("ordinal", -1))) or \
                     path_line not in lines or digest_line not in lines:

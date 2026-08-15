@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import evaluation_output as output  # noqa: E402
 import review  # noqa: E402
+import tp as cli  # noqa: E402
 
 
 class _BriefStore:
@@ -23,13 +24,14 @@ class _BriefStore:
 
 
 def _reused_codex_receipt(tmp_path, monkeypatch, *, observed_effort="xhigh",
-                          include_brief_output=True):
+                          include_brief_output=True, nested=False):
     workspace = str(tmp_path / "repo")
     codex_home = tmp_path / "codex"
     session_dir = codex_home / "sessions" / "2026" / "08" / "15"
     session_dir.mkdir(parents=True)
     os.makedirs(workspace)
-    parent = "root-thread"
+    parent = "evaluator-child" if nested else "root-thread"
+    original_parent = "root-thread"
     turn_id = "reused-turn"
     task_name = "tp_lens_backend_deadbeef"
     role_marker = "taskplane-role:tp-lens"
@@ -64,8 +66,13 @@ def _reused_codex_receipt(tmp_path, monkeypatch, *, observed_effort="xhigh",
     events = [
         {"type": "session_meta", "payload": {
             "id": "existing-child", "source": {"subagent": {
-                "thread_spawn": {"parent_thread_id": parent,
+                "thread_spawn": {"parent_thread_id": original_parent,
                                  "agent_path": "/root/original-task"}}}}},
+        *([{"type": "response_item", "payload": {
+            "type": "agent_message", "author": "/root/evaluator",
+            "recipient": "/root/original-task",
+            "internal_chat_message_metadata_passthrough": {
+                "turn_id": turn_id}}}] if nested else []),
         {"type": "event_msg", "payload": {
             "type": "task_started", "turn_id": turn_id}},
         {"type": "turn_context", "payload": {
@@ -89,6 +96,15 @@ def _reused_codex_receipt(tmp_path, monkeypatch, *, observed_effort="xhigh",
     rollout = session_dir / "rollout-reused.jsonl"
     rollout.write_text("".join(json.dumps(row) + "\n" for row in events),
                        encoding="utf-8")
+    if nested:
+        evaluator = session_dir / "rollout-evaluator.jsonl"
+        evaluator.write_text(json.dumps({
+            "type": "session_meta", "payload": {
+                "id": parent, "agent_path": "/root/evaluator",
+                "source": {"subagent": {"thread_spawn": {
+                    "parent_thread_id": original_parent,
+                    "agent_path": "/root/evaluator"}}}}}) + "\n",
+            encoding="utf-8")
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("CODEX_THREAD_ID", parent)
     return review._codex_session_receipt(
@@ -166,15 +182,42 @@ def test_evaluate_workflow_uses_declared_evaluator_contract_and_receipts_only():
                   "max_attempts", "receipts"):
         assert token in source
     assert "verdicts:" not in source
+    assert "typeof output_schema !== 'object'" in source
+    assert "evaluate brief lacks the canonical evaluator schema" in source
+
+
+def test_evaluate_stage_brief_carries_the_complete_canonical_contract(tmp_path):
+    contract = output.create_evaluator_contract(
+        workspace=str(tmp_path), task="t1", capability_snapshot={
+            "capabilities": {"native_structured_output": {
+                "status": "unknown", "source": "test"}}})
+    payload = {
+        "step": "evaluate", "instruction": "evaluate", "task": {"id": "t1"},
+        "output_contract": contract,
+        "output_schema": contract["output_schema"],
+        "resume_identity": output.resume_identity(contract),
+        "max_attempts": contract["max_attempts"],
+    }
+    stage, workflow, problem = cli._stage_wave_run(payload)
+    assert stage == "evaluate" and problem is None
+    brief = workflow["args"]["briefs"][0]
+    assert brief["output_schema"] == output.evaluator_output_schema()
+    assert brief["output_contract"]["output_schema"] == brief["output_schema"]
+    assert brief["resume_identity"] == output.resume_identity(contract)
 
 
 def test_all_stage_workflows_declare_strict_versioned_output_schemas():
     for name in ("execute-wave.js", "evaluate-wave.js", "fix-wave.js"):
         source = _source(name)
-        assert "'$schema': 'https://json-schema.org/draft/2020-12/schema'" \
-            in source
-        assert "'$id': 'taskplane." in source
-        assert "additionalProperties: false" in source
+        if name == "evaluate-wave.js":
+            assert "output_contract.output_schema" in source
+            assert "taskplane.evaluator-output/v1" in source
+            assert "output_schema.additionalProperties !== false" in source
+        else:
+            assert "'$schema': 'https://json-schema.org/draft/2020-12/schema'" \
+                in source
+            assert "'$id': 'taskplane." in source
+            assert "additionalProperties: false" in source
         assert "output_contract" in source
         for forbidden in ("loop.gate", "loop.approve", "loop.advance"):
             assert forbidden not in source
@@ -212,3 +255,11 @@ def test_reused_codex_child_final_claim_without_brief_delivery_is_rejected(
         tmp_path, monkeypatch):
     assert _reused_codex_receipt(
         tmp_path, monkeypatch, include_brief_output=False) is None
+
+
+def test_nested_reused_codex_child_binds_the_host_recorded_delegator(
+        tmp_path, monkeypatch):
+    receipt = _reused_codex_receipt(
+        tmp_path, monkeypatch, nested=True)
+    assert receipt["host_event"] == "CodexTaskFollowupComplete"
+    assert receipt["producer_session"] == "evaluator-child"

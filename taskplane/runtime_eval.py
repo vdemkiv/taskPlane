@@ -292,7 +292,7 @@ def review_facts(ws: str, step: str) -> dict:
 
                 facts["output_schema_declared"] = (
                     isinstance(verdict, dict) and
-                    verdict.get("output_schema") ==
+                    verdict.get("schema") ==
                     evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID)
                 graph = verdict.get("graph") if isinstance(
                     verdict.get("graph"), dict) else {}

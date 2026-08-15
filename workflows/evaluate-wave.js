@@ -23,13 +23,6 @@ export const meta = {
   phases: [{ title: 'Evaluate' }, { title: 'Collect' }],
 };
 
-const EVALUATOR_SCHEMA = {
-  '$schema': 'https://json-schema.org/draft/2020-12/schema',
-  '$id': 'taskplane.evaluator-output/v1',
-  type: 'object',
-  additionalProperties: false,
-};
-
 export default async function evaluateWave({ args, agent, parallel, phase }) {
   phase('Evaluate');
   const briefs = args.briefs || [];
@@ -37,8 +30,12 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
   // with a barrier — evaluations are independent by construction.
   const runs = briefs.map((b) => () => {
     const output_contract = b.output_contract || {};
-    const output_schema = b.output_schema || output_contract.output_schema ||
-      EVALUATOR_SCHEMA;
+    const output_schema = b.output_schema || output_contract.output_schema;
+    if (!output_schema || typeof output_schema !== 'object' ||
+        output_schema['$id'] !== 'taskplane.evaluator-output/v1' ||
+        output_schema.additionalProperties !== false) {
+      throw new Error('evaluate brief lacks the canonical evaluator schema');
+    }
     const resume_identity = b.resume_identity;
     const max_attempts = b.max_attempts || output_contract.max_attempts || 2;
     return agent(b.prompt, {

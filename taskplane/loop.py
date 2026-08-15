@@ -31,6 +31,7 @@ import os
 import time
 
 import depgraph
+import evaluation_output
 import host_capabilities
 import kb
 import lens as lens_router
@@ -836,7 +837,26 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 if fresh is not None:
                     state = fresh
 
+    capability_vars = {
+        "TASKPLANE_MODEL_SELECTION", "TASKPLANE_EFFORT_SELECTION",
+        "TASKPLANE_SUPPORTED_MODEL_ALIASES",
+        "TASKPLANE_SUPPORTED_EFFORT_VALUES",
+        "TASKPLANE_NATIVE_STRUCTURED_OUTPUT",
+    }
+    capability_snapshot = (
+        host_capabilities.dispatch_snapshot_from_environment(
+            ws, host=tp.host(), environment=os.environ)
+        if step == "evaluate" or any(name in os.environ
+                                     for name in capability_vars) else None)
+
     contract = _step_contract(step, state)
+    evaluator_contract = None
+    if step == "evaluate":
+        evaluator_contract = evaluation_output.create_evaluator_contract(
+            workspace=act_ws, task=str(_current_task(state)["id"]),
+            slot=tp.task_slot(), capability_snapshot=capability_snapshot)
+        contract = dict(contract)
+        contract["output_contract"] = evaluator_contract
     contract = _bind_worker_submission(
         act_ws, state, step, contract, _current_task(state))
     snapshot = tp.git_head(act_ws)
@@ -1047,15 +1067,6 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                          for x in routing.get("lenses") or []],
                  kernel_status=review_kernel.get("status"))
 
-    capability_vars = {
-        "TASKPLANE_MODEL_SELECTION", "TASKPLANE_EFFORT_SELECTION",
-        "TASKPLANE_SUPPORTED_MODEL_ALIASES",
-        "TASKPLANE_SUPPORTED_EFFORT_VALUES",
-    }
-    capability_snapshot = (
-        host_capabilities.dispatch_snapshot_from_environment(
-            ws, host=tp.host(), environment=os.environ)
-        if any(name in os.environ for name in capability_vars) else None)
     dispatch = tp.dispatch_fields(
         "step", STEP_ROLE[step], (task or {}).get("id") or step,
         tp.step_tier(step, task), capability_snapshot=capability_snapshot,
@@ -1095,6 +1106,13 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                       "activate it")
     return {**dispatch,
         **({"model_note": model_note} if model_note else {}),
+        **({
+            "output_contract": evaluator_contract,
+            "output_schema": evaluator_contract["output_schema"],
+            "resume_identity": evaluation_output.resume_identity(
+                evaluator_contract),
+            "max_attempts": evaluator_contract["max_attempts"],
+        } if evaluator_contract else {}),
         "step": step,
         "codex_dispatch": ("Use Codex's native subagent task orchestration with "
                            "this exact task_name, role instructions, standalone "

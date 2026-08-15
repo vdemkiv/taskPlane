@@ -2236,6 +2236,11 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         brief = {"id": tid,
                  "worktree": tp.to_posix(_wt) if _wt else _wt,
                  "prompt": _stage_agent_prompt(tid, instruction, payload)}
+        if step == "evaluate":
+            for field in ("output_contract", "output_schema",
+                          "resume_identity", "max_attempts"):
+                if field in payload:
+                    brief[field] = payload[field]
         key = "verdicts" if step == "fix" else "briefs"
         return (step, {"name": STAGE_WAVE_NAMES[step],
                        "args": {key: [brief]}}, None)

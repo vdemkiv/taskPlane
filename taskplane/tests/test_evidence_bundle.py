@@ -24,6 +24,7 @@ import loop  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
+import evaluation_output  # noqa: E402
 
 
 TASK = {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
@@ -119,6 +120,16 @@ class _AtEvaluate(unittest.TestCase):
 
 
 class TestTheEngineNeverJudges(_AtEvaluate):
+    def test_bundle_declares_the_complete_evaluator_contract(self):
+        bundle = self.bundle()
+        self.assertEqual(bundle["output_schema"],
+                         evaluation_output.evaluator_output_schema())
+        self.assertEqual(bundle["output_contract"]["output_schema"],
+                         bundle["output_schema"])
+        self.assertEqual(bundle["output_schema_id"],
+                         evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID)
+        self.assertEqual(bundle["max_attempts"], 2)
+
     def test_every_criterion_slot_comes_back_empty(self):
         b = self.bundle()
         self.assertTrue(b["criteria"], "the obligation must be stated")
@@ -191,7 +202,8 @@ class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
     def test_a_filled_bundle_does_pass_the_gate(self):
         """The complement: once an agent actually discharges the obligation
         the bundle stated, nothing else is in the way."""
-        b = self.bundle()
+        bundle = self.bundle()
+        b = bundle["verdict_template"]
         for row in b["criteria"]:
             row["status"] = "met"
             row["evidence"] = "covered by the task's tests"
@@ -202,10 +214,10 @@ class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
             for row in b["graph"]["dispositions"]:
                 row["status"] = "tested"
                 row["evidence"] = "covered by declared task tests"
-            b["graph"]["requirements_checked"] = \
-                b["graph"].pop("requirements_to_check")
-            b["graph"]["contracts_checked"] = \
-                b["graph"].pop("contracts_to_verify")
+            b["graph"]["requirements_checked"] = list(
+                (bundle.get("graph") or {}).get("requirements_to_check") or [])
+            b["graph"]["contracts_checked"] = list(
+                (bundle.get("graph") or {}).get("contracts_to_verify") or [])
         b["verdict"] = "pass"
         author_leased_results(self.ws)
         os.makedirs(os.path.join(self.ws, ".eval"), exist_ok=True)

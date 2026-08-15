@@ -31,9 +31,30 @@ import os
 
 import taskplane_lite as tp
 import depgraph
+import evaluation_output
+import host_capabilities
 
 
 EVIDENCE_JUDGMENT_KEYS = ("status", "verdict", "evidence", "blockers")
+
+
+def _verdict_template(out: dict) -> dict:
+    """Project rich engine context into the strict evaluator output shape."""
+    graph = out.get("graph") if isinstance(out.get("graph"), dict) else {}
+    return {
+        "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "task": str(out.get("task") or ""),
+        "requirement": str(out.get("req") or ""),
+        "verdict": "",
+        "criteria": list(out.get("criteria") or []),
+        "lenses": list(out.get("lenses") or []),
+        "graph": {
+            "dispositions": list(graph.get("dispositions") or []),
+            "requirements_checked": [],
+            "contracts_checked": [],
+        },
+        "failures": [],
+    }
 
 
 def _canonical_kernel_obligations(ws: str, expected_stage: str) -> dict:
@@ -109,7 +130,26 @@ def evidence(ws: str, task_id: "str | None" = None,
         return {"error": "no current task"}
 
     base = state.get("baseline") or "HEAD"
-    out: dict = {"output_schema": "taskplane.evaluator-output/v1",
+    slot = tp.task_slot()
+    active_path = tp.active_contract_path(ws, slot)
+    # A native child may inherit a task slot before that slot is projected
+    # into its checkout. Derive the byte-identical output contract in that
+    # one missing-file case; a present but corrupt contract still raises.
+    active = (tp.load_active(ws) or {}) if os.path.exists(active_path) else {}
+    output_contract = active.get("output_contract")
+    if not isinstance(output_contract, dict) or \
+            output_contract.get("task") != str(task.get("id")):
+        output_contract = evaluation_output.create_evaluator_contract(
+            workspace=ws, task=str(task.get("id")), slot=slot,
+            capability_snapshot=
+            host_capabilities.dispatch_snapshot_from_environment(
+                ws, host=tp.host(), environment=os.environ))
+    out: dict = {"output_schema": output_contract["output_schema"],
+                 "output_schema_id": output_contract["output_schema_id"],
+                 "output_contract": output_contract,
+                 "resume_identity": evaluation_output.resume_identity(
+                     output_contract),
+                 "max_attempts": output_contract["max_attempts"],
                  "task": task.get("id"),
                  "req": task.get("req") or state.get("requirement_id"),
                  "baseline": base,
@@ -252,6 +292,7 @@ def evidence(ws: str, task_id: "str | None" = None,
                    "set verdict to 'pass' only if every one holds, then "
                    "submit. An unfilled slot is refused at the gate.")
 
+    out["verdict_template"] = _verdict_template(out)
     if write:
         path = os.path.join(ws, ".eval", "verdict.json")
         if os.path.exists(path):
@@ -261,7 +302,7 @@ def evidence(ws: str, task_id: "str | None" = None,
                                  "authored judgment")
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            tp.atomic_write_json(path, out)
+            tp.atomic_write_json(path, out["verdict_template"])
             out["written"] = True
     tp.trace(ws, "evidence_bundle", task=task.get("id"),
              suite_cited=bool((out.get("suite") or {}).get("cited")),

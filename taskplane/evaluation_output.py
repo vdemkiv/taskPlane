@@ -226,6 +226,19 @@ def create_output_contract(*, workspace: str, task: str, stage: str,
     }
 
 
+def create_evaluator_contract(*, workspace: str, task: str,
+                              capability_snapshot: object,
+                              slot: str | None = None) -> dict:
+    """Build the one live evaluator contract used by every host rail."""
+    return create_output_contract(
+        workspace=workspace, task=task, stage="evaluate",
+        slot=slot or task, producer="tp-evaluator",
+        result_path=".eval/verdict.json",
+        write_allow=[".eval/verdict.json"],
+        output_schema=evaluator_output_schema(),
+        capability_snapshot=capability_snapshot)
+
+
 def resume_identity(contract: dict) -> str:
     fields = {key: contract.get(key) for key in (
         "task", "stage", "slot", "lease", "producer",
