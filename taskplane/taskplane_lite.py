@@ -2246,6 +2246,7 @@ def dod_check(contract: dict, workspace: str,
                     "them or widen the task's scope via the human gate")
 
     tc = dod.get("test_command")
+    declared_suite_passed = False
     suite_launch_failed = False
     if tc:
         # A3 (R-0007): strip the wave slot from the CHILD env only — a gate
@@ -2259,6 +2260,7 @@ def dod_check(contract: dict, workspace: str,
         # or it runs. Every hit is traced, so the evidence stays auditable.
         hit = suite_cache_lookup(workspace, tc, env)
         if hit is not None:
+            declared_suite_passed = int(hit.get("returncode")) == 0
             if suite_evidence is not None:
                 suite_evidence.update({
                     "schema": "taskplane.suite-evidence/v1",
@@ -2319,6 +2321,7 @@ def dod_check(contract: dict, workspace: str,
                         "duration_s": round(_elapsed, 3),
                         "source": "execute-gate",
                     })
+                declared_suite_passed = proc.returncode == 0
                 if proc.returncode != 0:
                     errors.append(
                         f"tests_pass: '{tc}' exited {proc.returncode}: "
@@ -2340,8 +2343,20 @@ def dod_check(contract: dict, workspace: str,
                     workspace, changed).get("impacted") or None
             except Exception:
                 graph_impacted = None      # sparse/absent graph → import-map only
+            # The approved task suite is the task-level behavioral proof. If
+            # it is green for these exact bytes, running a second current +
+            # detached-baseline pytest radius in the same gate duplicates
+            # work and can widen a focused task into a repository-wide run.
+            # Keep Tier 2's cheap coverage-gap check, but defer Tier 1 to the
+            # plan's final CI-equivalent task. A missing/failed suite still
+            # gets the full differential regression check.
+            regression_snapshot = (None if declared_suite_passed
+                                   else snapshot_ref)
+            if declared_suite_passed:
+                trace(workspace, "regression_gate_coverage_only",
+                      command=str(tc), reason="declared_suite_passed")
             errors.extend(_rg.dod_errors(
-                workspace, snapshot_ref, changed, graph_impacted,
+                workspace, regression_snapshot, changed, graph_impacted,
                 test_command=tc))
         except Exception as e:
             # The gate must never crash the DoD it guards — degrade visibly.

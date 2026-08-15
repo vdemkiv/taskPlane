@@ -424,6 +424,27 @@ class TestTheSuiteIsCitedNotRerun(_AtEvaluate):
         self.assertEqual(b["suite"]["returncode"], 0)
         self.assertIsNotNone(b["suite"].get("seconds_saved"))
 
+    def test_green_declared_suite_does_not_launch_a_second_regression_suite(self):
+        """A task gate pays once: green suite + cheap coverage guard only."""
+        contract = tp.build_contract(
+            "EXECUTE: t1", scope=TASK["scope"], test_command=TASK["tests"],
+            plan_minted=True, regression_gate=True)
+        regression = mock.Mock()
+        regression.dod_errors.return_value = []
+        hit = {
+            "key": "same-content", "command": TASK["tests"],
+            "returncode": 0, "tail": "green", "duration_s": 1.0,
+            "produced_in": self.ws,
+        }
+        with mock.patch.object(tp, "suite_cache_lookup", return_value=hit), \
+                mock.patch.dict(sys.modules, {"regression": regression}):
+            errors = tp.dod_check(
+                contract, self.ws, tp.snapshot_ref(self.ws),
+                regression_files=["src/todo/a.py"], suite_evidence={})
+
+        self.assertEqual(errors, [])
+        self.assertIsNone(regression.dod_errors.call_args.args[1])
+
     def test_the_kill_switch_forces_the_bundle_to_execute(self):
         with mock.patch.dict(os.environ,
                              {"TASKPLANE_NO_SUITE_CACHE": "1"}, clear=False):
