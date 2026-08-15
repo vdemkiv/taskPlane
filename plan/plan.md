@@ -1,52 +1,105 @@
-# Bounded repair plan — R-0005 graph-governance closure
+# R-0006 plan — capability-bound host parity
 
-This is a send-back repair for the final engineering gate. It preserves the
-completed 2.7 implementation and its existing evidence; it does not reopen the
-four historical delivery tasks or rerun their broad suites.
+This plan realizes approved Design Contract fingerprint
+`3e7ceb20fe28d9194c7c2ca1bfca334a34236de6b337d24a5d0c596f9872b7d2`
+without changing its authority boundaries. Host-specific transports may vary,
+but hook execution, ReviewKernel collection, evaluator output, submission
+validation, dispatch receipts, and telemetry converge on the five approved
+contracts. Workers never gain gate, approval, state-advance, or contract-clear
+authority.
 
-## One implementation task
+## Bounded impact and graph policy
 
-1. Separate an intentional `contract-only` or requirement-depth policy stop
-   from genuine unexplored traversal. Keep the stop visible in
-   `policy_blocked`, while graph quality fails closed only for stale data,
-   unknown nodes, unresolved edges, incomplete scanners, or real depth
-   truncation.
-2. Make dashboard/report rendering observational. A render may display a
-   cached sign-off verdict, but it must never invoke `_signoff_dod`, discover a
-   regression radius, or execute tests.
-3. Keep selector-scoped validation selector-scoped. The regression gate may
-   still run its static coverage-gap guard, but it must not widen an approved
-   `file.py::test_name` contract into whole current/baseline test files.
-4. Store requirement acceptance and graph impact once in the immutable review
-   envelope. Scoped views preserve the facts and their envelope reference,
-   but do not duplicate those large lists under nested records.
-5. Verify and record the approved design's exact as-built edges in the graph.
-   Contract edges receive explicit file/test/probe evidence in the final EM
-   record; no edge is declared merely to satisfy the gate.
-6. Run one canonical selective Review from one shared diff and impact envelope,
-   collect the routed results, and generate the final EM report from that
-   revision. The report dispositions all 26 lenses and uses the same graph,
-   findings, and revision identity as the dashboard and gate.
+The one required impact derivation used all 24 approved modules in one
+comma-separated `--files` value. It returned 21 impacted nodes, no unknown
+modules, and affected requirements R-0001, R-0005, and R-0006, with R-0002 as
+a dependent requirement. The result reported `truncated=true` but
+`depth_truncated=false`; the named stops are the approved one-hop requirement
+boundary, not an implicit request to inspect or change dependent requirements.
+
+Every task therefore copies the engine policy unchanged: three local hops,
+`contract-only` boundaries, one contract hop, and one requirement hop. The
+bounded result returned `unknown=[]`; nevertheless, this repository's
+stage-wave convention uses `new_modules` as exact approved graph-module
+ownership, so the 24 proposed ids are distributed once across their matching
+tasks. This does not declare 24 new files: it binds execution ownership to the
+approved design graph. The two genuinely new designed files remain explicit
+task scopes and own their approved edges into existing named contract nodes.
+
+Collectively the tasks cover all 24 proposed modules through exact,
+non-overlapping `new_modules` ownership, all 38 proposed edges, all five exact
+contract ids, the depth policy, and all 14 verbatim acceptance criteria. Module
+ownership is t1=2, t2=6, t3=9, t4=5, and t5=2. Edge ownership is exclusive:
+t1 owns 3, t2 owns 8, t3 owns 18, t4 owns 6, and t5 owns 3.
+
+## Ordered repair batch
+
+1. **t1 — capability foundation (riskiest authority decision first).** Add the
+   immutable, source-attributed capability snapshot and make onboarding project
+   install, trust, policy, load, and effective-path state independently. The
+   focused capability matrix must fail closed on unknown, contradictory, stale,
+   or corrupt authority and must never mutate managed settings.
+2. **t2 — canonical output and lifecycle.** Put native and bridge hook entry
+   points behind the same exactly-once claim/replay boundary, add the canonical
+   output validator, bind active slots to immutable submission expectations,
+   and make Stop/SubagentStop observational and submission-aware. Execute/Fix
+   workflows adopt the schema receipt without gaining lifecycle authority.
+3. **t3 — transport adoption.** Move Claude review/evaluate workflows, bounded
+   evaluator adapters, loop dispatch, live-skill dispatch, roles, and runtime
+   guidance onto the same ReviewKernel/output/routing contracts. Resume identity
+   remains target/context/view/lease/schema/slot/producer/revision; a mismatch
+   gets at most one fresh attempt and never reaches a sink.
+4. **t4 — telemetry and pinned failures.** Normalize provider usage without
+   cache double counting, persist only bounded redacted lifecycle facts, refresh
+   only the current tp-go fingerprint, and compose runtime guidance with the
+   engine's unproven-criterion refusal. Its single targeted command covers the
+   observability/provider matrices and the three known failure clusters,
+   including stale-scenario mutation behavior.
+5. **t5 — truthful guidance and final validation.** Update the five approved
+   host-facing references only after behavior is fixed, then run the unchanged
+   full test suite once. The Python 3.10/3.11/3.12, macOS, Windows, packaging,
+   manifest, release-history, docs, hook, and dispatch-parity floors remain CI
+   responsibilities and may not be removed, skipped, xfailed, loosened, or
+   de-gated.
 
 ## Validation budget
 
-The implementation task has exactly five focused regression selectors: one
-for graph-policy semantics, one for bounded contract traversal, and one proving
-dashboard rendering cannot execute DoD, plus one proving selector-scoped
-validation cannot widen into whole-file Tier-1 execution, and one proving the
-review envelope stores repeated requirement/impact facts once. Graph
-realization and documentation are static checks. The final review reuses
-already-passed task evidence and does not rerun T1–T4, the full repository
-suite, the corpus, or detached baselines.
+The already-completed baseline is not repeated: it recorded 7 failed
+assertions in three clusters, 2774 passed, 2 skipped, and 861 subtests. Build
+work is one coherent serialized repair batch. Each task runs only its named
+focused test command; the failing scenario/evidence clusters run once in t4.
+Only t5 runs `python3 -m pytest taskplane/tests -q`, after all implementation
+and documentation changes are complete. No executor should run the full suite
+as an edit-by-edit loop.
 
-## Graph policy and risks
+Acceptance ownership is complete and non-overlapping:
 
-Traversal remains six local hops, one contract hop, one requirement hop, with
-`contract-only` distributed boundaries. The change does not weaken uncertainty
-handling: genuine incomplete traversal still dispatches zero lenses. The main
-risk is incorrectly classifying a real depth cutoff as a policy stop; the
-focused tests require separate `depth_truncated` and `policy_blocked` evidence
-so the two states cannot collapse again.
+- t1: truthful personal/managed trust, policy, load, and effective-path state;
+- t2: exactly-once/idempotent hooks plus fail-closed, non-mutating submission
+  stop enforcement;
+- t3: ReviewKernel parity and resume, strict evaluation output fallback, and
+  effective host model/effort routing;
+- t4: bounded lifecycle records, provider-correct tokens, and the pinned CI
+  repairs;
+- t5: the unchanged cross-version/platform CI and governance floors.
 
-No version, release, marketplace, packaging, archive cleanup, or unrelated
-refactoring is in scope.
+## Risks, rollout, and rollback
+
+The principal risks are false capability authority, duplicate hook races,
+stale workflow resume, foreign or unsupported dispatch arguments, destructive
+leak recovery, provider token double counting, and regression-floor erosion.
+The focused matrices precede transport adoption and strict enforcement so each
+failure direction is proved before the next dependency starts.
+
+Rollout remains additive: readers/validators and shadow records first;
+exactly-once selection and truthful onboarding second; workflow/evaluator and
+submission-aware enforcement third; strict explicit routing, pinned repairs,
+docs, and the final unchanged matrix last. Existing ReviewKernel v2 identities
+finish unchanged or are explicitly cancelled and restarted.
+
+Rollback may change only transport selection. It may not accept prose or
+unvalidated JSON, duplicate side effects, unsupported explicit routing,
+unproved submissions, translated in-flight leases/revisions, fabricated token
+zeros, or worker-owned clear/gate/approval. A bridge fallback is valid only when
+trusted, policy-permitted, loaded, and still protected by exactly-once claims;
+otherwise the affected governance operation fails closed.

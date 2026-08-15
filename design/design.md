@@ -1,165 +1,139 @@
-# R-0005 Design — Evidence-efficient, graph-complete governed review
+# R-0006 Design — Capability-bound host parity
 
 Status: proposed
 
-Requirement: R-0005
+Requirement: R-0006
 
-Baseline graph: `bdf441f3d32db17cb57af6e649b549f2273fb4c05b71f23720f9c9fe51dbd633`
+Baseline graph: `b2e530770c71c400f23caeb7da95ed3638662d5bc42c83b6e6e8f50c75934d3c`
 
-Scanned head: `a2139b1ed93cad6e550712506d780b543d7c4b1b`
-Supersedes: R-0004 design binding (the R-0004 compliance kernel remains an invariant)
+Scanned head: `92d05fddb745cd02eafe6f910c3a3df886060b16`
 
 ## Decision
 
-Extend the R-0004 deterministic compliance kernel with a **quality-gated evidence pipeline**. A review has one canonical target, one canonical derivation, one content-addressed full envelope, one routing decision over all 26 lenses, and one monotonic findings revision. It dispatches only the exact deep set plus at most one light-sweep slot. It never substitutes breadth for uncertainty: if the graph plus one bounded caller expansion cannot establish the impact radius, the run stops as `impact_incomplete` with zero lens dispatch.
+Keep the accepted host-neutral ReviewKernel and bounded host adapters, and put a single versioned `HostCapabilitySnapshot` in front of every host-dependent choice. The snapshot is derived only from host/version probes, plugin and repository configuration, trust state, managed policy, and host-observed receipts. It is never inferred from a model response or from file presence alone.
 
-The host-neutral kernel remains authoritative. Claude and Codex adapters only start bounded native processes and translate transport. They consume byte-identical manifest, routing, view, provenance, and counter records. Normal Review, Evaluate, and final EM use the same kernel. The full catalog remains available only for explicit human `--all` or isolated evaluator calibration and is recorded as such.
+That snapshot drives four deterministic decisions:
 
-This preserves the useful R-0004 instrumentation, absolute workflow assertions, immutable context binding, graph freshness/disposition, orchestrator gate, host authentication boundary, secret-scrubbed model shells, timeouts, process-tree cancellation, and comparable-run policy.
+1. choose one effective Codex hook path per lifecycle event;
+2. choose native structured output or the same governed-file validation fallback;
+3. resolve abstract model tiers and effort only to values the current host accepts; and
+4. label telemetry as observed, unsupported, unknown, or unavailable.
 
-## Measured baseline and target
+All transports then converge on existing authorities: ReviewKernel leases and `taskplane.lens-slot-output/v2` for leased reviewers, loop submission records for stage workers, and orchestrator/human gates for state transitions. A workflow, Task dispatch, or native Codex task is only a transport. None may merge findings, infer a submission from prose, clear a contract, gate, approve, or advance loop state.
 
-The optimization baseline is the measured 3.77M-token session: taskPlane 2.36M (63%), lens agents 754k, 52 CLI calls 601k, dashboards 548k, findings/docs 414k, and permanent taskPlane instructions 42k. The comparable frozen PR-9464 replay target is at most 1.18M taskPlane-attributed effective tokens, at most 12 top-level taskPlane CLI invocations, and zero duplicated dashboard HTML. These are not estimates to optimize around silently; the evaluator records them with a comparison key and rejects incomparable token claims.
+## Grounding and inherited decisions
 
-The comparison key is exact: scenario id, frozen fixture/target id, before and after SHAs, taskPlane version, host, model, reasoning setting, token-telemetry method, and run mode. A mismatch or absent host telemetry yields `not_comparable`; structural efficiency and absolute workflow compliance still gate.
+The as-built inventory document is present but empty. This design therefore cites and verifies repository sources directly instead of inventing a greenfield state:
+
+- `hooks/hooks.json` packages all lifecycle hooks, while `.codex/hooks.json` currently repeats those events through `.taskplane/codex-hook.py`.
+- `taskplane/tp.py::_codex_hooks_report` currently treats matching files as ready and `_install_codex_hooks` installs the bridge without native-plugin, trust, managed-policy, or loaded-session facts.
+- `workflows/review-wave.js` and `workflows/evaluate-wave.js` currently pin a legacy findings schema and return merged values instead of the full leased slot contract.
+- `taskplane/eval_drivers.py` provides bounded Claude/Codex transports but declares no native-output schema or validated-file fallback.
+- `taskplane/tp.py::cmd_subagent_stop` only traces completion; `cmd_session_verify` checks obligations, not exact worker submissions.
+- `taskplane/taskplane_lite.py` has per-task contract slots and dispatch expectation queues, but model defaults and effort values are resolved before host capability validation; requested values are not equivalent to an effective host receipt.
+- `taskplane/spend.py` applies single-sourced weights, but treats every provider's `input_tokens` as uncached and can add cached input a second time when provider totals already include it.
+
+Accepted decision 0005 remains governing: one host-neutral compliance kernel, one immutable envelope and scoped views, exact leased slots, canonical collection and revisions, bounded adapters, and comparable tokens only when telemetry is honest. Accepted decision 0006 approved that implementation boundary. R-0006 extends those decisions; it does not replace ReviewKernel or create a second findings authority.
+
+The referenced CI run at the pinned head has exactly three failing tests across macOS and Python 3.10/3.11/3.12: the two `tp-go` scenario fingerprint assertions expect `4dbea5…b93b` but record `c8dcc3…8f0`, and `test_the_refusal_names_the_unproven_criteria` is masked by runtime guidance before the refusal names the unproven acceptance criterion. Windows, Codex native hooks, dispatch parity, manifests/packages, docs truth, and release history pass and are regression floors.
 
 ## Alternatives considered
 
-| Alternative | Graph correctness | Read/token cost | Determinism | Decision |
-|---|---:|---:|---:|---|
-| Extend the R-0004 kernel with graph-quality gating, one bounded caller expansion, envelope/views, selective routing, and canonical revisions | High; uncertainty blocks | Low and measurable | High | **Selected** |
-| Build a complete repository-wide language-server call graph before every review | Potentially high | High startup/index cost; weak polyglot portability | Medium | Rejected for normal runs; may be an explicit calibration tool |
-| Let each lens retrieve diff/graph/requirements on demand | Inconsistent snapshots and hidden re-derivation | Repeats model reads and CLI work | Low | Rejected |
-| Keep module-only routing and hand every lens the full shared envelope | Misses sparse-graph callers | Storage dedupes bytes but not model reads | Medium | Rejected; reproduces PR-9464 risk |
-| Score transcripts with a model judge and infer completion | Cannot enforce ordering/provenance | Adds judge cost | Low | Retained only as secondary qualitative evidence, never compliance |
+| Alternative | Gains | Costs | Decision |
+|---|---|---|---|
+| One capability snapshot plus canonical hook, output, receipt, and telemetry contracts | One authority; deterministic fallback; portable routing; shared negative cases; ReviewKernel remains unchanged | Adds two small cross-cutting modules and requires migration fixtures | **Selected** |
+| Patch each Claude workflow, Codex bridge, native task adapter, and recorder independently | Small local diffs; few new types | Preserves parallel authorities, duplicated schemas, incompatible retry rules, and false-green capability claims | Revisit only if the product deliberately drops cross-host equivalence |
+| Require native hooks, native structured output, and exact model controls everywhere; remove all fallbacks | Smallest steady-state surface and strongest host receipts | Excludes older, unknown, managed, or restricted hosts that R-0006 explicitly supports | Revisit when every supported host version guarantees those capabilities and managed deployments expose them |
 
-## Canonical records and contracts
+## Canonical records and authority
 
-All records use canonical JSON (UTF-8, sorted keys, normalized paths, no insignificant whitespace) and SHA-256 fingerprints.
+### `HostCapabilitySnapshot` — `taskplane.host-capabilities/v1`
 
-### `TargetRecord`
+`taskplane/host_capabilities.py` produces one immutable snapshot per host session and workspace. Each capability row contains `status` (`supported`, `unsupported`, `unknown`, or `contradictory`), `source`, `confidence`, `observed_at`, and a bounded reason. The snapshot covers host and version, native plugin hook installation/loading, repository bridge configuration/loading, repository trust, managed-policy permission, workflow availability, native structured output, model selection, supported model aliases, effort selection, and supported effort values.
 
-Pins repository identity, target ref, base/head SHAs, dirty-state digest, host-independent scenario id, graph fingerprint, and `scanned_head`. `target_fingerprint` is immutable for the review.
+Detection reads bounded local configuration and host receipts only; it performs no network access and never edits managed settings. Corrupt or contradictory evidence stays explicit and selects the safer path. Snapshots are passed by fingerprint to hook selection, dispatch, evaluation, and telemetry rather than re-probed independently.
 
-### `GraphQualityRecord`
+### Exactly-once hook lifecycle — `contract:host-hook-lifecycle`
 
-Produced before routing from the pinned target and graph. It records:
+Native plugin hooks are preferred only when they are installed, allowed, and observed loaded in the current session. The repository bridge is a named fallback only when it is configured, trusted, policy-permitted, and observed loaded. Unknown trust, policy, or load state is not ready.
 
-- scanner support and coverage for every changed source file;
-- stale and truncated flags, graph fingerprint, and scanned head;
-- unresolved repository-internal edges and boundary-only external edges;
-- module-confidence evidence, not just a score;
-- changed symbols and caller-coverage status;
-- expansion state: `not_needed`, `completed`, `truncated`, `timed_out`, `unsupported`, or `failed`.
+Onboarding owns an idempotent migration state machine:
 
-Module impact is sufficient without expansion only when every changed source file is covered, the graph is fresh and untruncated, no changed-symbol-relevant internal edge is unresolved, and the evidence-backed module confidence is at least 0.90. Otherwise the kernel performs **exactly one** caller-expansion pass over the canonical snapshot: at most 128 changed symbols, six caller hops, 512 repository-internal caller edges, and 10 seconds. Language adapters implement one common protocol and return callers, contracts, terminals, unresolved edges, truncation, and coverage; production code contains no repository-specific symbol names.
+- `native_effective`: remove only taskPlane-owned bridge rows from future workspace configuration; preserve unrelated rows byte-for-byte.
+- `bridge_effective`: retain/repair only taskPlane-owned bridge rows and name why native is unavailable.
+- `transitioning`: keep the currently observed effective path, state the pending fresh-session action, and do not claim the next path is loaded yet.
+- `blocked`: configure neither bypass nor override; name repository trust, administrator, or fresh-session recovery.
 
-After the pass, confidence is sufficient only if each changed symbol is traced to a declared repository entry point, contract boundary, or proven terminal within the bounds, with no truncation, timeout, stale graph, unsupported changed source, or unresolved relevant internal edge. Otherwise the run records `impact_incomplete`, emits a compact diagnostic manifest, and dispatches zero lenses. There is no fallback to all lenses and no claim of a small radius.
+For a legacy session where both paths are already loaded, both entry points pass the same bounded host event identity into a shared idempotency boundary. A per-workspace exclusive claim keyed by `{host session, lifecycle event, turn/tool or child identity, task slot, workspace fingerprint}` executes the action once and replays the same safe hook response to a duplicate. The journal stores only the digest, status, timestamps, and response class, is capped at 512 live entries with a 24-hour expiry, and never stores tool arguments or prompts. If a stable event identity cannot be established, the both-loaded state is not declared ready; onboarding requires a fresh session.
 
-### `RoutingInput` and `RoutingDecision`
+### Leased workflow parity — `contract:review-kernel-slot`
 
-One `RoutingInput` is assembled from the exact diff bytes, complete graph impact (dependents, expanded caller paths, boundary contracts, affected/dependent requirements, graph quality and fingerprints), requirement text and acceptance criteria, contract changes, task/change type, runnability, and component evidence. It is created before routing and included in the full envelope.
+`review-wave.js` consumes ReviewKernel-generated slot briefs, not a parallel `FINDINGS_SCHEMA`. Each brief carries the immutable envelope, scoped view, routing decision, lease, producer contract, exact result path, `taskplane.lens-slot-output/v2`, and canonical base revision. The workflow passes the declared schema to the host when supported, activates the exact producer slot, and requires the child to write the leased result path. `SubagentStart` binds host child identity; the write hook records the exact slot write before the existing collector accepts it.
 
-The signal engine maps every catalog lens to `deep`, `light`, or `n/a`, with evidence and reason. Architecture and security are minimum floors: applicable uncertainty can promote them, and routing/budget/narrow component evidence cannot demote them below their required floor. `solution-design` follows its normal evidence; approved-design conformance is an orchestrator review obligation, not an artificial reason to execute that lens.
+The workflow returns only slot receipts. `taskplane/review.py` remains the sole collector and revision authority. `evaluate-wave.js` similarly consumes the evaluator brief and its embedded ReviewKernel citation; the outer evaluator output uses the canonical evaluator schema below, while its leased review results still enter through ReviewKernel.
 
-The complete 26-lens disposition is persisted and bound to the context fingerprint. Dispatch-set equality is exact:
+Resume keys bind `{target, context, view, lease, schema, slot, producer, canonical revision}`. A journal/cache hit is reusable only after re-reading the canonical result and host-observed write receipt. Any mismatch invalidates the cache and permits at most one fresh retry; a second failure is terminal and named. Workflow agents have no gate, approval, loop-advance, or contract-release API.
 
-`expanded(dispatched_slots) == deep_lens_ids union light_lens_ids`
+### Evaluator output — `contract:evaluation-output`
 
-Every deep lens gets one individual slot/view. All light lenses share at most one bounded sweep slot/view. An `n/a` lens gets no brief, no view, and no result slot. Normal Review, Evaluate, and final EM never set `breadth=all`; the full catalog is only explicit human `--all` or isolated evaluator calibration with `routing_mode` recorded distinctly. Total mapper failure is `mapper_unavailable` and dispatches zero. A component-cache failure may use module-signal routing only when the graph-quality record proves that mapping trustworthy.
+`taskplane/evaluation_output.py` defines strict versioned schemas and one `EvaluationOutputContract` per dispatch. The contract names schema id and digest, exact governed result path, task/stage/slot/lease identity, transport selection, write-observation requirement, maximum bytes, and attempt bound.
 
-### `EvidenceEnvelope` and `LensView`
+- Native path: when `structured_output=supported`, the adapter passes the exact schema through the host's supported option and validates the returned canonical JSON again before use.
+- Fallback path: unsupported, unknown, contradictory, or corrupt capability selects `validated_file`; the brief names one exact repository-relative path already present in `write_allow`, the ordinary host write hook records the producer and digest, and the same validator reads that file.
 
-Exactly one content-addressed `EvidenceEnvelope` is written per target/context key, before lens fan-out, using exclusive creation and atomic rename. It contains target, immutable diff, graph quality, complete impact, runnability, requirements/acceptance, contracts, task type, component evidence, routing input/decision, and all constituent digests. `context_fingerprint` is the envelope digest.
+The common evaluator schema is `taskplane.evaluator-output/v1`; leased lenses retain `taskplane.lens-slot-output/v2`. Schemas reject incompatible extra fields, malformed JSON, wrong versions, missing required fields, path escape, oversized output, and unobserved writes. Free-form stdout is diagnostic only and can never become a record, canonical revision, submission, or gate input. Validation allows at most two total attempts and never widens write scope.
 
-Shared storage does **not** eliminate model-read cost. The view builder therefore creates a deterministic `LensView` for each deep slot and one for the light-sweep slot. A view includes only evidence relevant to that lens set: selected diff hunks with stable offsets, directly relevant impact nodes and caller paths, applicable requirements/contracts, runnability, routing reasons, and provenance fields. Required architecture/security-floor evidence and affected requirements/contracts cannot be filtered out. The full envelope remains verifiably accessible by fingerprinted path and indexed byte ranges on demand, but is never pasted into every prompt. A lens may read more from that immutable envelope; it may not run git diff, derive graph impact, or replace canonical facts.
+### Submission-aware Stop and SubagentStop
 
-`contract:shared-review-context-v2` defines the envelope/view schema, byte identity, filter determinism, indexed access, and no-rederivation rule. `contract:lens-brief-v2` binds slot, lens ids, target/context/view fingerprints, canonical revision base, output path, result schema, and deadline.
+Worker activation copies an immutable `submission_contract` into the exact active slot: `required`, workspace fingerprint, task, stage, slot, expected artifact or loop submission locator, and validation rule. Review slots point to the leased result plus producer-write receipt; execute/evaluate/fix slots point to the engine-owned loop submission and its evidence fingerprint.
 
-### Slot-authored results and canonical revision
+One read-only `submission_status` function validates the exact contract identity and is called by Stop, SubagentStop, orphan checks, and the orchestrator gate. Missing, corrupt, wrong-workspace, wrong-slot, wrong-stage, stale, or unobserved evidence blocks Stop with the contract, slot, missing artifact, and one safe retry or orchestrator/human recovery action. A final message and an otherwise plausible result file do not count.
 
-`ReviewStart` allocates an unguessable dispatch lease and exclusive result path for every deep slot and the optional sweep slot. Hooks bind the active agent contract to that slot. A result row includes producer host/session, lease id, slot id, lens id, target/context/view fingerprints, base revision, content digest, and hook-observed write provenance. Sweep rows bind both the sweep slot and their individual lens id. The collector rejects missing results, duplicate lenses, reconstructed orchestrator output, copied or wrong-slot output, reused leases, fingerprint mismatch, and unexpected lenses. This is enforceable provenance, not a claim that model prose is cryptographically authored.
+Lifecycle handling is observational only: it may append a redacted check event, but it never calls `clear`, `loop gate`, `loop approve`, collector publication, or state mutation. Submission-required contracts are excluded from PID/TTL auto-release whether their submission is missing or valid; only the orchestrator/human releases them after the applicable gate. Sibling slots are never inspected as substitutes and are never changed. Standalone and `submission_required=false` contracts keep their existing orphan lifecycle.
 
-Under a repository lock, `ReviewCollect` validates all expected slots, computes the canonical findings body and `findings_fingerprint`, and appends revision `n+1` with the prior revision link. The report and dashboard are projections from that same immutable findings record. Findings, report, dashboard, and gate must cite exactly `{target_fingerprint, context_fingerprint, findings_fingerprint, revision}`. The current-revision pointer advances only after every projection is written and fingerprinted. Stale, skipped, non-monotonic, or contradictory projections block the orchestrator gate.
+### Portable model and effort routing — `contract:host-dispatch-routing`
 
-`contract:findings-provenance-v1` governs slot provenance and revision identity. `contract:review-efficiency-v1` governs counters, artifact emission, CLI limits, and comparison policy.
+Abstract tiers remain `cheap`, `standard`, and `deep`. `resolve_dispatch_route(snapshot, tier, configured_model, configured_effort, mode)` returns planned tier, resolved model/effort or inherit, capability evidence, `exact`, `inherit`, or `unsupported_fallback`, and a reason. Host-scoped aliases and supported effort values come from the snapshot; a generic or foreign provider id is never passed merely because it appeared in configuration.
 
-## Coarse operations and output discipline
+Task, workflow, and native Codex adapters receive only supported non-null values. Their child-start/session receipt records host-observed effective model and effort separately from the plan. Strict mode blocks before the child starts when an explicit route is required but cannot be honored. Warn/default mode may inherit, but records that exact-route verification is false. The accepted `model: inherit` agent frontmatter remains portable.
 
-Two coarse APIs replace chatty orchestration:
+### Evaluation lifecycle and token accounting — `contract:evaluation-telemetry`
 
-1. `tp review start` validates target/graph, performs the at-most-once expansion, derives diff/impact/runnability/requirements/contracts once, routes, writes the envelope/views/briefs, allocates leases, and returns a compact start manifest.
-2. `tp review collect` validates slot results, closes leases, appends the canonical findings revision, renders report/dashboard once, evaluates readiness, and returns a compact collection manifest.
+Every attempt emits `taskplane.evaluation-lifecycle/v1` events sharing a stable run id and containing host/version, capability source/fingerprint, dispatch and schema transport, fallback reason, task/stage/slot/lease, planned and observed route, attempt number, start/end/duration, terminal status, validation result, token availability, and a diagnostic code plus at most 512 redacted bytes. No event or record copies prompts, full transcripts, command arguments, credentials, secrets, or unnecessary absolute user paths. Raw model stdout/stderr is not frozen as a transcript artifact; only digest, byte count, bounded redacted diagnostic, and validated canonical output reference remain.
 
-Internal read-only control substeps are one observation bundle and count once at the top-level CLI boundary. This does not weaken governed work accounting: model-issued work actions, writes outside leased result paths, contract activation, denials, and host tool calls keep their existing budget and hook enforcement. A no-retry standalone review is designed for six taskPlane CLI calls or fewer and must never exceed 12; the counter counts every host-observed top-level `tp.py`/taskPlane CLI process, including subagent processes.
+`taskplane/spend.py` normalizes provider usage into `taskplane.token-usage/v2`: uncached input, cached read/input, cache creation/write, output, provider raw total, effective total, availability, reason, and dedup count. Claude-style totals add disjoint categories. Codex/OpenAI-style `input_tokens` is treated as inclusive when provider semantics say so, so uncached input is `input - cached` and cached input is never added twice to raw total. Effective weights remain single-sourced in `WEIGHTS`. Negative, nonnumeric, irreconcilable, provider-unknown, or identity-ambiguous duplicate usage is `unavailable`, never zero. Duplicate rows are deduplicated only by a stable provider event/message id and usage digest.
 
-Normal stdout is canonical JSON no larger than 16 KiB and contains status, fingerprints, counters, and artifact references. Full diff, impact, briefs, findings, and HTML are never emitted on stdout. Each large artifact is written once by content/revision key. Hosts with artifact transport receive an attachment reference; other hosts receive a canonical repository-relative path and digest. Any preview is at most 2 KiB and is not the artifact body. Dashboard/graph HTML render caches are keyed by input fingerprints, so one revision produces one file and zero duplicate HTML emission.
+## Quality bounds
 
-Structural counters are: top-level CLI count, emitted bytes, repeated-derivation bytes, dispatched-agent count, prompt-view bytes, artifact-render bytes, duplicate-artifact bytes/count, envelope/view counts, diff/impact derivation counts, and caller-expansion count. Effective tokens are recorded only when the host exposes supported telemetry; otherwise they are unavailable rather than estimated.
+- One effective hook action and one side effect/trace row per stable lifecycle event; duplicate replay waits at most 2 seconds inside the existing 10/15-second host hook timeout.
+- Capability probing performs no network access and reads at most 256 KiB per local source; hook idempotency state is at most 512 live entries and 24 hours.
+- Evaluator output is at most 1 MiB, diagnostics at most 512 bytes, and validation at most two attempts.
+- Telemetry persists zero prompt, full-transcript, command-argument, secret, or credential bytes.
+- This is a local CLI/plugin, not an online service: availability, throughput, RPO, and RTO targets are not applicable. Recovery is deterministic restart/resume from immutable files; no stored product data is migrated.
 
-## PR-9464 frozen correctness oracle
+## Module ownership and build sequence
 
-The evaluator fixture contains frozen repository inputs and an expected graph/routing/finding oracle; it is not imported by production routing. The sparse Go module graph must be augmented from changed symbols so both provisioning and NodeClass-validation callers are present, including:
+1. **Capability foundation — host/platform owner.** Add `taskplane/host_capabilities.py`, capability fixtures, and truthful onboarding projection before changing any dispatch path.
+2. **Canonical output and lifecycle — evaluation/governance owner.** Add `taskplane/evaluation_output.py`; bind active contracts to submission expectations; add read-only Stop/SubagentStop validation and exact-once hook claims.
+3. **Transport adoption — ReviewKernel/evaluation owner.** Migrate Claude workflows, bounded adapters, loop dispatch, recorder, and token normalization to the two canonical modules. ReviewKernel result and revision schemas stay authoritative.
+4. **Compatibility and proof — QA/docs owner.** Migrate only taskPlane-owned bridge rows, refresh the `tp-go` scenario fingerprint, compose runtime-guidance and unproven-criterion diagnostics, run the focused matrices, then the complete Python/macOS/Windows matrix and generated-doc checks.
 
-`EnsureAll → ensureLaunchTemplate → createLaunchTemplate → Bottlerocket.Script → MarshalTOML`
+Required fixtures include native-only, bridge-only, both, neither, managed/trust states, old/unknown/corrupt capabilities, Claude workflow and Task, Codex native task, schema native/file fallback, resume mismatch, lifecycle stop, routing strict/warn/default, provider usage arithmetic, and the three pinned CI failures.
 
-The oracle requires the caller path that shows malformed non-boolean TOML errors escaping the userdata serialization path into the validation controller’s presumed-unreachable error branch, creating reconcile-loop risk. Routing must select the evidence-relevant backend and code-quality lenses while retaining architecture and security floors; the canonical findings must include the known Blocker with no lower severity. Fixture mutations prove that removing the validation caller makes impact incomplete or fails the oracle, and that production contains none of these symbol names.
+## Failure, rollout, and rollback
 
-## Proposed modules and graph edges
+Roll out additively. First ship readers/validators and shadow capability/route/telemetry records while current paths remain effective. Next enable exactly-once claims and truthful hook selection, then switch workflow/evaluator outputs to canonical validation, then enable submission-aware stop blocks and exact-route strict enforcement. Advance each phase only after its negative fixtures and the unchanged green CI floors pass.
 
-- `taskplane/graph_quality.py` — deterministic graph-quality record and bounded language-adapter caller expansion.
-- `taskplane/review_evidence.py` — canonical envelope, scoped views, leases, slot provenance, revision ledger, compact manifests, and counters.
-- `taskplane/review.py` — coarse start/collect orchestration only; delegates deterministic mechanics.
-- `taskplane/lens_signals.py` and `taskplane/lens.py` — consume the single routing input, emit 26 dispositions, exact deep/light dispatch, floors, and mapper failure.
-- `taskplane/depgraph.py`, `taskplane/decompose.py`, `taskplane/runnability.py`, `taskplane/target.py` — pure producers called once before routing.
-- `taskplane/views.py` and `taskplane/dashboard.py` — render fingerprinted projections once and return references.
-- `taskplane/yield_meter.py` — distinguish observation bundles from governed work without hiding either.
-- `taskplane/eval_drivers.py`, `taskplane/eval_scenario.py`, `taskplane/eval_rubric.py`, `scripts/eval_record.py`, `scripts/ci_evals.py` — native bounded Claude/Codex runs, canonical run schema, absolute gates, and comparable metrics.
-- `evals/frozen-pr-9464/` — immutable fixture, mutations, routing oracle, blocker oracle, and comparison key.
-- `skills/tp-engineering`, `skills/tp-go`, `skills/tp-build`, `agents`, and routing/help documentation — describe the same selective kernel, coarse commands, and artifact references.
+Existing active ReviewKernel v2 runs must finish with v2 or be cancelled and restarted; never translate a lease or revision. Legacy evaluator outputs remain readable for historical records but cannot satisfy a new gate. Repository hook migration changes only rows containing the taskPlane marker and preserves all unrelated bytes/rows. A current session stays on its observed path until restart rather than claiming a future configuration is loaded.
 
-Contract-only boundaries are: host adapters → canonical run manifest; derivation producers → evidence builder; graph quality → routing; routing → dispatch planner; slot agents → result schema; collector → findings ledger; projections/gate → revision identity. No internal implementation object crosses a host or agent boundary.
+Rollback never means accepting prose, unvalidated JSON, duplicate hook side effects, or an unsupported explicit route. Native preference may fall back only to a trusted, policy-permitted, loaded bridge with the exactly-once boundary still active; otherwise hooks fail closed. Model routing may fall back to recorded inherit in non-strict mode. In-flight output, submission, and ReviewKernel identities remain on their original schema until completion or explicit cancellation. Append-only lifecycle/usage records are preserved.
 
-## Security, failure, and cancellation
+## Known debt
 
-- Resolve all artifact paths relative to a pinned repository root; reject absolute, escaping, symlink, junction/reparse, hard-link alias, and post-validation replacement targets. Use exclusive files, restrictive permissions, atomic rename, canonical digests, and read-back verification.
-- The trusted host uses existing CLI authentication to start Claude/Codex. Model-launched shells inherit no secrets and receive only an include-listed environment. Codex keeps saved CLI auth while using a scrubbed model shell; an isolated `CODEX_HOME` is not required unless auth is explicitly seeded.
-- Host adapters use process groups/job objects, bounded stdout/stderr, absolute deadlines, graceful stop followed by process-tree kill, and cleanup of active leases. Timeout, cancellation, capability-unavailable, auth failure, and mapper unavailable are named canonical states.
-- Claude CLI absence is `capability_unavailable`, not missing implementation. Codex and Claude driver records differ only in transport metadata.
-- Graph expansion timeout/truncation/unsupported language and total mapper failure stop before dispatch. A missing/wrong slot blocks collection. An interrupted projection leaves the current-revision pointer unchanged and is safely rerunnable by content key.
-- Full-envelope access is read-only and auditable. Scoped views reduce exposure and model reads but do not relax a lens’s ability to inspect the referenced full evidence.
+The repository bridge remains as compatibility debt for hosts without observed native plugin hooks. Pay it down only after every supported Codex version and managed deployment reports native hook installation, policy permission, and loaded-session receipts for two consecutive supported releases. Proposed debt record, not executed during Design:
 
-## Observability
+`tp req debt "Retire the Codex repository hook bridge" --req R-0006 --reason "Compatibility fallback for hosts without observed native plugin hooks" --follow-up "Remove after two supported releases have universal native hook load receipts and migration telemetry shows no bridge users" --files ".codex/hooks.json,taskplane/tp.py,docs/onboarding.md"`
 
-Every run emits a compact event sequence with target/context/revision identity, graph-quality reasons, expansion bounds/coverage, routing mode and 26 dispositions, expected/dispatched/collected slot sets, artifact references/digests, provenance failures, structural counters, driver state, timeout/cancellation state, and comparison status. No event contains full source hunks, findings prose, HTML, credentials, or raw host environment.
+## Visualization
 
-## Rollout and rollback
-
-1. Land canonical records, graph-quality assessment, fixture, and counters behind `review_kernel_v2=shadow`; compare routing and artifacts without dispatch changes.
-2. Enable scoped views and exact selective dispatch for frozen evaluator scenarios; keep R-0004 corpus mandatory.
-3. Enable standalone Review, then Evaluate, then final EM for Claude and Codex after byte-parity and PR-9464 gates pass.
-4. Make v2 default; retain one release of read-only v1 artifact decoding for audit, not v1 dispatch fallback.
-
-Rollback disables v2 before `review start` and returns to the last released R-0004 kernel. An in-flight v2 review is either collected by v2 or cancelled; it is never silently converted. R-0005 schema additions are additive/content-addressed, and rollback does not rewrite the revision ledger. If v1 cannot meet an active correctness or efficiency floor, reviews fail closed instead of widening to all lenses.
-
-## Graph DoR
-
-- Baseline graph fingerprint and scanned head equal the emitted action binding.
-- Every changed implementation module is represented; new graph-quality/evidence/driver/fixture modules and contract-only edges are declared.
-- The R-0004 acceptance bundle and all 16 exact R-0005 criteria have executable validation mappings.
-- PR-9464 fixture licensing/provenance and frozen SHAs are recorded; its changed symbols are fixture data only.
-- Claude/Codex executables may be capability-unavailable, but both adapter contracts and offline transcript fixtures exist.
-- No open design question remains.
-
-## Design DoD
-
-- Graph quality is assessed before routing; the one-pass caller expansion and `impact_incomplete` zero-dispatch outcomes are deterministic and tested.
-- One immutable envelope, deterministic scoped views, exact 26-lens dispatch, floor preservation, no-rederivation, and slot provenance are mechanically enforced.
-- One revision identity binds findings/report/dashboard/gate monotonically.
-- Coarse operations, compact output, artifact references, budgets, counters, comparison policy, and no duplicate HTML are executable gates.
-- Frozen PR-9464 replay retains the Blocker and meets the comparable 1.18M/12-call/zero-duplicate target.
-- The named unchanged R-0004 suite plus focused R-0005 and complete regression suites pass on Claude and Codex or record explicit capability-unavailable where execution is externally impossible.
-
-## Solution-design lens
-
-The design is proportional because it extends the existing compliance kernel and reuse points instead of replacing the CLI or lens system. Correctness uncertainty fails closed; the only expensive derivation is bounded and conditional. The main operational cost is content-addressed artifact lifecycle and language-adapter maintenance, offset by eliminating repeated derivation, over-dispatch, repeated full-context reads, and duplicate rendering. The decision remains reversible at the pre-start feature flag; artifact schemas are additive and auditable. No unresolved question prevents Build.
+`design/visual.html` is required because the selected design has three independent host-capability branches that must converge on one validation and authority path, plus a lifecycle block that deliberately does not clear state. The data-flow view makes those authority and fallback boundaries reviewable in one screen.
