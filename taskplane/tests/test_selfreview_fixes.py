@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import taskplane_lite as tl  # noqa: E402
@@ -14,6 +15,7 @@ import depgraph  # noqa: E402
 import dashboard  # noqa: E402
 import lens  # noqa: E402
 import requirements as reqs  # noqa: E402
+import runtime_eval  # noqa: E402
 
 
 def _git(ws, *a):
@@ -43,7 +45,9 @@ def _pass_eval(ws):
                    "lenses": [{"lens": x["id"], "verdict": "pass",
                                "blockers": 0} for x in routed["lenses"]],
                    "failures": []}, f)
-    loop.submit(ws, "pass")
+    facts = {key: True for key in runtime_eval.REVIEW_FACTS}
+    with mock.patch("runtime_eval.review_facts", return_value=facts):
+        loop.submit(ws, "pass")
     return loop.gate(ws, "pass")
 
 
@@ -527,6 +531,33 @@ class TestContractSchemaUnified(unittest.TestCase):
                                cwd=ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn("KeyError", r.stderr)
+
+    def test_status_includes_project_loop_without_active_contract(self):
+        ws = _repo()
+        loop.init(ws, "status journey")
+        r = subprocess.run([sys.executable, _TP_PY, "status"], cwd=ws,
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertIsNone(out["active_contract"])
+        self.assertEqual(out["loop"]["step"], "pm")
+
+    def test_req_new_reports_the_real_external_store_path(self):
+        ws = _repo()
+        r = subprocess.run(
+            [sys.executable, _TP_PY, "req", "new", "real pointer",
+             "--functional", "works", "--acceptance", "observable"],
+            cwd=ws, capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertTrue(os.path.isabs(out["file"]))
+        self.assertTrue(os.path.isfile(out["file"]))
+        self.assertFalse(out["file"].startswith(ws + os.sep))
+        self.assertEqual(out["store_file"],
+                         "requirements/R-0001-real-pointer.md")
+        self.assertIn("req amend R-0001", out["next"])
 
     def test_nfr_without_equals_errors_cleanly(self):
         ws = _repo()

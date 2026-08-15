@@ -14,11 +14,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
 import loop  # noqa: E402
 import requirements as reqs  # noqa: E402
+import runtime_eval  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
 
@@ -81,7 +83,9 @@ class TestH1SubmitTaskAttribution(_Env):
         ws = _repo()
         loop.init(ws, "g")
         _to_step(ws, "evaluate")
-        out = loop.submit(ws, "pass", task_id="t1")
+        facts = {key: True for key in runtime_eval.REVIEW_FACTS}
+        with mock.patch("runtime_eval.review_facts", return_value=facts):
+            out = loop.submit(ws, "pass", task_id="t1")
         self.assertNotIn("error", out)
 
 

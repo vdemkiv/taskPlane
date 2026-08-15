@@ -84,14 +84,19 @@ def write_verdict(ws):
 
 
 def pass_eval(ws):
+    write_kernel_results(ws)
     write_verdict(ws)
     return submit_gate(ws, "pass")
 
 
 def write_kernel_results(ws):
     """Author canonical leased results through the observed hook protocol."""
-    state = review._load_state(ws)
-    store = review_evidence.ArtifactStore(ws)
+    loop_state = loop.load(ws)
+    task = loop_state["tasks"][loop_state["current_task"]]
+    review_ws = (task.get("workspace") if loop_state.get("parallel") and
+                 loop_state.get("step") == "evaluate" else None) or ws
+    state = review._load_state(review_ws)
+    store = review_evidence.ArtifactStore(review_ws)
     for index, slot in enumerate(state["slots"]):
         lease = store.read(slot["lease"])
         brief = store.read(slot["brief"])
@@ -120,16 +125,17 @@ def write_kernel_results(ws):
             "write_allow": [slot["result_path"]],
         }
         review.register_slot_producer(
-            ws, event=event, contract=contract,
+            review_ws, event=event, contract=contract,
             task_slot=brief["producer_contract"]["task_slot"])
         review.record_slot_write_observation(
-            ws, event=event, contract=contract,
+            review_ws, event=event, contract=contract,
             task_slot=brief["producer_contract"]["task_slot"])
-        path = os.path.join(ws, slot["result_path"])
+        path = os.path.join(review_ws, slot["result_path"])
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as stream:
             stream.write(content)
-    return review.collect_review(ws, publish=False, run_id=state["run_id"])
+    return review.collect_review(review_ws, publish=False,
+                                 run_id=state["run_id"])
 
 
 def pass_em(ws):
@@ -198,6 +204,46 @@ class TestLoop(unittest.TestCase):
         r = loop.gate(ws, "pass")
         self.assertNotIn("error", r)
         self.assertEqual(loop.load(ws)["step"], "plan_approval")
+
+    def test_plan_gate_rejects_ambiguous_test_lists_before_approval(self):
+        bad_values = (["tests/test_cart.py"],
+                      ["python3 -m pytest tests/ -q"])
+        for tests in bad_values:
+            with self.subTest(tests=tests):
+                ws = git_ws(tempfile.mkdtemp(), [dict(TASK, tests=tests)])
+                loop.init(ws, "g", spec_path="specs/spec.md")
+                loop.next_action(ws)
+                out = loop.gate(ws, "pass")
+                self.assertIn("error", out)
+                self.assertIn("one command string", str(out))
+                self.assertIn("python3 -m pytest", str(out))
+                self.assertEqual(loop.load(ws)["step"], "plan")
+
+    def test_replan_preserves_history_and_requires_fresh_approval(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md", checkpoints=[])
+        loop.next_action(ws)
+        self.assertEqual(loop.gate(ws, "pass")["step"], "execute")
+
+        refused = loop.replan(ws, by="", reason="invalid test command")
+        self.assertIn("--by", refused["error"])
+        self.assertEqual(loop.load(ws)["step"], "execute")
+
+        out = loop.replan(ws, by="user", reason="invalid test command")
+        self.assertEqual(out["step"], "plan")
+        state = loop.load(ws)
+        self.assertIsNone(state["tasks"])
+        self.assertIn("plan", state["checkpoints"])
+        self.assertEqual(state["replan_history"][-1]["from_step"],
+                         "execute")
+        self.assertEqual(state["replan_history"][-1]["tasks"][0]["id"],
+                         "t1")
+
+        # The corrected plan is reloaded and cannot bypass fresh human
+        # approval even though the original loop had no plan checkpoint.
+        loop.next_action(ws)
+        self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
+        self.assertEqual(loop.approve(ws, by="user")["step"], "execute")
 
     def test_plan_checkpoint_then_execute(self):
         ws = git_ws(self.tmp, [TASK])
@@ -981,7 +1027,8 @@ class TestEngineSkewRefusal(unittest.TestCase):
     """
 
     SURFACE = {"loop", "taskplane_lite", "audit", "lens", "lens_signals",
-               "design_contract", "depgraph", "decompose", "requirements"}
+               "design_contract", "depgraph", "decompose", "requirements",
+               "runtime_eval"}
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -1001,6 +1048,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         loop.claim(ws, "t1", agent_ws)
         submit_gate(ws, "pass", task_id="t1")       # built
         loop.next_action(ws)                        # → evaluate
+        write_kernel_results(ws)
         write_verdict(ws)
         return ws
 

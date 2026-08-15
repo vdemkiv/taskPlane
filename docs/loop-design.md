@@ -140,11 +140,18 @@ Per run, the loop needs (some from you, some the PM can derive):
 
 - **The goal / spec** — one or more sentences, or a `specs/spec.md`.
 - **Acceptance criteria** — testable statements (PM drafts if you don't).
-- **Per-task scope + test command** — the planner proposes; you can override.
+- **Per-task scope + test command** — `tests` is one command string (for
+  example `"python3 -m pytest tests/ -q"`), never a list of files or command
+  strings. The Plan DoR rejects an ambiguous shape before approval.
 - **`max_fix_cycles`** — how many FIX→EVALUATE rounds before escalating.
 - **Human checkpoints** — Design approval when used, plan approval, and final
   sign-off (plus selection/escalation when applicable).
 - **Autonomy on FAIL** — auto-fix then escalate, vs stop on first FAIL.
+
+If an approved task configuration is later found invalid, use `tp loop
+replan --by "<human>" --reason "<defect>"`. taskPlane archives the frozen
+tasks in loop history, returns to Plan, and requires the replacement plan to
+pass DoR and receive fresh human approval. Never edit loop state directly.
 
 ## v0.1 scope vs later
 

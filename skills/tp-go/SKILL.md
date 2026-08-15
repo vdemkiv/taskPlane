@@ -130,7 +130,8 @@ explicit approval in conversation. Never run the loop silently.
    overlay with bounded contract-level boundaries, runs the mandatory
    solution-design lens, and stops for human approval. It never changes code
    or the as-built graph. Plan writes plan/tasks.json
-   (each task: id, scope, tests, req, deps, contracts, `new_modules` when
+   (each task: id, scope, tests as one command string (never a list), req,
+   deps, contracts, `new_modules` when
    applicable, and typed `impact_policy`), execute builds TDD-first
    (`discipline/tdd.md`) honoring the primed lenses, evaluate proves
    criteria + runs routed lenses and dispositions graph impact — its briefs
@@ -161,6 +162,10 @@ explicit approval in conversation. Never run the loop silently.
    report and WAIT. `$TP loop approve` only on their explicit yes.
    Escalations: present options, `$TP loop resolve retry|skip|abort` on
    their choice.
+   If an approved task configuration itself is invalid, do not edit loop
+   state: obtain the human's decision and run `$TP loop replan --by
+   "<human>" --reason "<defect>"`. The frozen tasks stay in history and the
+   corrected plan must pass Plan DoR plus fresh human approval.
    **Visual sign-off (UI changes):** if the change touched a UI (any task
    with `type: ui`, or a diff under a client/component/screen path), don't
    sign off on a diff alone — RENDER THE FIXED SCREEN. Boot the real app

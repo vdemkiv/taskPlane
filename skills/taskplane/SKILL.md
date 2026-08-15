@@ -79,7 +79,7 @@ loop. In one line each: workers write their evidence, run
 wave) and stop; only the orchestrator calls the matching `$TP loop gate`;
 the engine — never worker prose — decides whether DoR/DoD evidence is
 sufficient; human checkpoints (Design
-Contract approval, plan approval, A/B selection, escalation, final
+Contract approval, plan approval, A/B selection, escalation/replan, final
 sign-off) stop for an explicit human yes; and no worker clears its contract
 after a submission, weakens tests, silently widens scope, or treats an
 incomplete action list as completion.

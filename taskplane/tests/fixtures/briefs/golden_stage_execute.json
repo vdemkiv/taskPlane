@@ -14,6 +14,36 @@
   "held": [],
   "instruction": "Dispatch ONE governed subagent per wave entry, concurrently. Per task: (1) `git worktree add <worktree> -b tp/<task>` from the approved baseline; (2) `tp.py loop claim <task> --agent-workspace <worktree>` \u2014 activates THAT task's contract in THAT worktree, so the hook confines the agent mechanically; (3) the subagent builds inside its worktree (TDD, primed lenses, acceptance criteria); (4) it COMMITS its work in the worktree (`git add -A && git commit`) and runs `tp.py loop submit pass|fail --task <id>`. The orchestrator alone runs the matching `loop gate`. When the wave empties, `loop next` evaluates each built task; on evaluate PASS merge its branch (`git merge tp/<task>`) and remove the worktree. EXCEPTION \u2014 entries with merge_on_pass=false are A/B variants: do NOT merge them; when all variants pass, the loop pauses at the SELECTION gate and the human picks what ships.",
   "parallel": true,
+  "runtime_evals": {
+    "baseline_policy": "telemetry-only",
+    "checkpoint": "Every `tp loop submit pass` automatically runs this checkpoint. `tp loop guide` may run it earlier. Apply its one bounded correction when present; repeated unresolved drift is blocking.",
+    "controls": [
+      {
+        "checkpoint": "brief",
+        "class": "mechanical",
+        "enforcement": "engine",
+        "id": "contract-and-dor-before-work",
+        "rule": "Activate the exact stage contract and satisfy its Definition of Ready before doing stage work."
+      },
+      {
+        "checkpoint": "brief",
+        "class": "mechanical",
+        "enforcement": "engine",
+        "id": "worker-submit-orchestrator-gate",
+        "rule": "Workers submit evidence and stop. Only the orchestrator evaluates and advances a gate."
+      },
+      {
+        "checkpoint": "gate",
+        "class": "mechanical",
+        "enforcement": "engine",
+        "id": "dod-before-completion",
+        "rule": "Definition of Done and required evidence must pass before the orchestrator advances the stage."
+      }
+    ],
+    "controls_fingerprint": "<SHA>",
+    "mode": "guide-and-recover",
+    "schema": "taskplane.runtime-guidance/v1"
+  },
   "step": "execute",
   "wave": [
     {
@@ -172,6 +202,36 @@
       "role": "tp-executor",
       "role_instructions": "<PLUGIN>/agents/tp-executor.md",
       "role_marker": "taskplane-role:tp-executor",
+      "runtime_evals": {
+        "baseline_policy": "telemetry-only",
+        "checkpoint": "Every `tp loop submit pass` automatically runs this checkpoint. `tp loop guide` may run it earlier. Apply its one bounded correction when present; repeated unresolved drift is blocking.",
+        "controls": [
+          {
+            "checkpoint": "brief",
+            "class": "mechanical",
+            "enforcement": "engine",
+            "id": "contract-and-dor-before-work",
+            "rule": "Activate the exact stage contract and satisfy its Definition of Ready before doing stage work."
+          },
+          {
+            "checkpoint": "brief",
+            "class": "mechanical",
+            "enforcement": "engine",
+            "id": "worker-submit-orchestrator-gate",
+            "rule": "Workers submit evidence and stop. Only the orchestrator evaluates and advances a gate."
+          },
+          {
+            "checkpoint": "gate",
+            "class": "mechanical",
+            "enforcement": "engine",
+            "id": "dod-before-completion",
+            "rule": "Definition of Done and required evidence must pass before the orchestrator advances the stage."
+          }
+        ],
+        "controls_fingerprint": "<SHA>",
+        "mode": "guide-and-recover",
+        "schema": "taskplane.runtime-guidance/v1"
+      },
       "task": {
         "deps": [],
         "id": "t1",
@@ -340,6 +400,36 @@
       "role": "tp-executor",
       "role_instructions": "<PLUGIN>/agents/tp-executor.md",
       "role_marker": "taskplane-role:tp-executor",
+      "runtime_evals": {
+        "baseline_policy": "telemetry-only",
+        "checkpoint": "Every `tp loop submit pass` automatically runs this checkpoint. `tp loop guide` may run it earlier. Apply its one bounded correction when present; repeated unresolved drift is blocking.",
+        "controls": [
+          {
+            "checkpoint": "brief",
+            "class": "mechanical",
+            "enforcement": "engine",
+            "id": "contract-and-dor-before-work",
+            "rule": "Activate the exact stage contract and satisfy its Definition of Ready before doing stage work."
+          },
+          {
+            "checkpoint": "brief",
+            "class": "mechanical",
+            "enforcement": "engine",
+            "id": "worker-submit-orchestrator-gate",
+            "rule": "Workers submit evidence and stop. Only the orchestrator evaluates and advances a gate."
+          },
+          {
+            "checkpoint": "gate",
+            "class": "mechanical",
+            "enforcement": "engine",
+            "id": "dod-before-completion",
+            "rule": "Definition of Done and required evidence must pass before the orchestrator advances the stage."
+          }
+        ],
+        "controls_fingerprint": "<SHA>",
+        "mode": "guide-and-recover",
+        "schema": "taskplane.runtime-guidance/v1"
+      },
       "task": {
         "deps": [],
         "id": "t2",

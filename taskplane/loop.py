@@ -33,8 +33,10 @@ import time
 import depgraph
 import kb
 import lens as lens_router
+import loop_recovery
 import retro as retro_engine
 import requirements as reqs
+import runtime_eval
 import taskplane_lite as tp
 import yield_meter
 
@@ -527,6 +529,7 @@ def wave(ws: str) -> dict:
                                     "acceptance": rec["acceptance"]},
             "design": _design_context(ws, state),
             "knowledge": kb.render_context(recalled),
+            "runtime_evals": runtime_eval.guidance("execute"),
         })
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
              held=[h["task"] for h in held])
@@ -568,6 +571,7 @@ def wave(ws: str) -> dict:
     return {
         "step": "execute", "parallel": True,
         "wave": entries, "held": held,
+        "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": (
             "Dispatch ONE governed subagent per wave entry, concurrently. "
             "Per task: (1) `git worktree add <worktree> -b tp/<task>` from "
@@ -586,6 +590,7 @@ def wave(ws: str) -> dict:
             "the SELECTION gate and the human picks what ships."),
     } if entries else {
         "step": "execute", "parallel": True, "wave": [], "held": held,
+        "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": "no dispatchable tasks — evaluate built tasks via "
                        "`loop next`, or resolve held dependencies.",
     }
@@ -685,6 +690,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     if step == "retro":
         return {
             "step": "retro", "paused": False, "action": "loop_retro",
+            "runtime_evals": runtime_eval.guidance("retro"),
             "instruction": (
                 "Run `tp loop retro` once. It seals the run's learning, "
                 "refreshes the dependency graph, and moves the loop to done; "
@@ -742,6 +748,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             notices = _dc.design_approval_notices(ws)
             if notices:
                 out["notices"] = notices
+        out["runtime_evals"] = runtime_eval.guidance(step)
         return out
 
     # Parallel mode: EXECUTE is a wave (dispatch handled by `wave`/`claim`);
@@ -1071,6 +1078,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         "language_references": ((routing.get("context") or {}).get(
             "language_references") if routing else None),
         "review_kernel": review_kernel,
+        "runtime_evals": runtime_eval.guidance(step),
         "audit": audit_info,
         "impact": imp and {**imp, "context": depgraph.render_context(imp)},
         "design": _design_context(ws, state),
@@ -1104,6 +1112,9 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     }
 
 
+guide = runtime_eval.guide_loop
+
+
 def _instruction(step: str, state: dict) -> str:
     t = _current_task(state)
     return {
@@ -1128,7 +1139,8 @@ def _instruction(step: str, state: dict) -> str:
         "plan": "Run the tp-planner role: derive impact once with `tp graph "
                 "impact --files \"comma,separated,paths\" --json`; write "
                 "plan/tasks.json (machine) "
-                "and plan/plan.md (human) — tasks with scope, tests, "
+                "and plan/plan.md (human) — tasks with scope, tests (ONE "
+                "command string, never a list), "
                 "criteria, dependencies, contracts, design_edges, and impact "
                 "policy. Copy only `requirement.contracts[].id` into task "
                 "contracts; the relation is metadata, not part of the id. When "
@@ -1239,8 +1251,8 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
         prefix = f"task {task.get('id', '?')}: "
         if not task.get("scope"):
             errors.append(prefix + "scope is missing")
-        if not str(task.get("tests") or "").strip():
-            errors.append(prefix + "test command is missing")
+        errors.extend(prefix + problem for problem in
+                      tp.plan_test_command_errors(task.get("tests")))
         if not _criteria_for(ws, state, task):
             errors.append(prefix + "acceptance criteria are missing")
         rid = task.get("req") or state.get("requirement_id")
@@ -1841,6 +1853,26 @@ def submit(ws: str, outcome: str, note: str = "",
         tws = (task or {}).get("workspace")
         act_ws = tws if tws and os.path.isdir(tws) else ws
 
+    runtime_guidance = None
+    if outcome == "pass":
+        runtime_guidance = runtime_eval.guide_loop(ws, task_id=task_id)
+        if runtime_guidance.get("error"):
+            return {"error": "runtime eval checkpoint failed: "
+                             + runtime_guidance["error"],
+                    "submitted": False, "transitioned": False,
+                    "runtime_eval": runtime_guidance}
+        if runtime_guidance.get("status") != "on_path":
+            status = runtime_guidance.get("status")
+            return {
+                "error": ("runtime eval detected recoverable execution drift; "
+                          "apply the supplied correction before pass submission"
+                          if status == "correct" else
+                          "runtime eval blocked repeated unresolved execution "
+                          "drift; submit fail or return to the orchestrator"),
+                "submitted": False, "transitioned": False,
+                "runtime_eval": runtime_guidance,
+            }
+
     snapshot = tp.snapshot_ref(act_ws)
     evidence_paths = ({"evaluate": [".eval/verdict.json"],
                        "em": [".em-review/findings.json",
@@ -1900,6 +1932,8 @@ def submit(ws: str, outcome: str, note: str = "",
     tp.trace(ws, "loop_submit", step=step, task=submission.get("task"),
              outcome=outcome, fingerprint=submission["fingerprint"][:12])
     return {"submitted": True, "transitioned": False,
+            **({"runtime_eval": runtime_guidance}
+               if runtime_guidance is not None else {}),
             "submission": submission,
             "next": "orchestrator: run loop gate with the submitted outcome"}
 
@@ -2060,7 +2094,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": "pm Definition of Done failed — no requirement "
                              "was authored. Write a non-empty specs/spec.md "
                              "(or record a requirement with `tp req new` and "
-                             "attach its R-id), then gate again.",
+                             "attach its R-id with `tp loop gate pass --req "
+                             "R-XXXX`), then gate again.",
                     "step": "pm",
                     "dod": {"passed": False,
                             "errors": [f"{spec_rel} missing or empty and no "
@@ -2863,6 +2898,10 @@ def resolve(ws: str, decision: str) -> dict:
         locked.clear()
         locked.update(state)
     return {"step": state["step"], "status": status(ws)}
+
+
+def replan(ws: str, by: str, reason: str) -> dict:
+    return loop_recovery.replan(ws, by=by, reason=reason, load_state=load, mutate_state=mutate, clear_contract=tp.clear, trace=tp.trace, record_decision=kb.record_decision)
 
 
 def retro(ws: str) -> dict:

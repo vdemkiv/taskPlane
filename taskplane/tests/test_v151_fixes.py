@@ -63,6 +63,17 @@ class TestB1RuntimeOwned(_Ws):
                          "shared-store bookkeeping must never count as a "
                          "task diff")
 
+    def test_python_caches_do_not_expand_the_governed_diff(self):
+        head = tp.git_head(self.ws)
+        before = tp.tree_fingerprint(self.ws)
+        cache = os.path.join(self.ws, "src", "__pycache__")
+        os.makedirs(cache)
+        with open(os.path.join(cache, "a.cpython-313.pyc"), "wb") as f:
+            f.write(b"generated")
+        self.assertEqual(tp.changed_files(self.ws, head), [])
+        self.assertEqual(tp.is_dirty(self.ws), [])
+        self.assertEqual(tp.tree_fingerprint(self.ws), before)
+
 
 class TestB2PrivateInTag(_Ws):
     def test_set_private_refuses_under_repo_env(self):

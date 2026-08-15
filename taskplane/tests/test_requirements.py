@@ -54,6 +54,9 @@ class TestRequirementRecords(unittest.TestCase):
         self.assertTrue(os.path.exists(
             os.path.join(req.kb_dir(self.ws), e["file"])))
         self.assertEqual(len(req.list_requirements(self.ws)), 1)
+        self.assertEqual(req.requirement_file(self.ws, e), os.path.realpath(
+            os.path.join(req.kb_dir(self.ws), e["file"])))
+        self.assertTrue(os.path.isabs(req.requirement_file(self.ws, e)))
 
     def test_ids_increment(self):
         req.record_requirement(self.ws, "a")
@@ -171,6 +174,18 @@ class TestRefinementScorer(unittest.TestCase):
         self.assertFalse(low["blocking"])          # advisory
         hi = req.gate(r, high_cost=True)
         self.assertTrue(hi["blocking"])            # hard block for risky work
+
+    def test_score_and_product_signoff_use_the_same_readiness_bar(self):
+        r = req.record_requirement(
+            self.ws, "complete behavior", functional=["works"],
+            acceptance=["observable result"], nfr={})
+        scored = req.gate(r)
+        dor = req.product_dor(r)
+        self.assertFalse(dor["passed"])
+        self.assertFalse(scored["product_dor_passed"])
+        self.assertEqual(scored["product_dor_errors"], dor["errors"])
+        self.assertLess(scored["score"], 1.0)
+        self.assertNotIn("proceed", scored["recommendation"].lower())
 
 
 class TestTaskModeAndDebt(unittest.TestCase):

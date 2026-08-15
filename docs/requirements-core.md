@@ -9,7 +9,9 @@ requests identically.
 
 ## 1. Requirements are a first-class KB record (not just decisions)
 
-Alongside `decisions/`, the KB gets `requirements/` — the durable spine:
+Alongside `decisions/`, the external per-project KB gets `requirements/` —
+the durable spine. `tp req new` reports the absolute file path; it is not a
+repository-relative `requirements/` pointer:
 
 ```
 knowledge/requirements/R-0007-export-user-data.md

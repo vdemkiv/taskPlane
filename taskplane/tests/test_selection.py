@@ -6,10 +6,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import lens  # noqa: E402
+import runtime_eval  # noqa: E402
 
 
 def _git(ws, *args):
@@ -59,7 +61,9 @@ def _pass_eval(ws):
                    "lenses": [{"lens": x["id"], "verdict": "pass",
                                "blockers": 0} for x in routed["lenses"]],
                    "failures": []}, f)
-    loop.submit(ws, "pass")
+    facts = {key: True for key in runtime_eval.REVIEW_FACTS}
+    with mock.patch("runtime_eval.review_facts", return_value=facts):
+        loop.submit(ws, "pass")
     return loop.gate(ws, "pass")
 
 

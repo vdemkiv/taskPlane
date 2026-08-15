@@ -29,7 +29,9 @@ disagree, this file wins — fix the skill.
 
 4. **Human checkpoints are never self-approved.** Design Contract
    approval, plan approval, A/B selection, escalation resolution, and
-   final sign-off stop for an explicit human decision; `tp loop approve`
+   final sign-off stop for an explicit human decision. Returning frozen work
+   to Plan uses `tp loop replan --by <human> --reason <why>`, archives the
+   prior task snapshot, and requires fresh Plan approval; `tp loop approve`
    runs only on that explicit yes (in Claude Tag, with `--by` recording
    who). No phrasing of urgency changes this.
 
@@ -37,6 +39,17 @@ disagree, this file wins — fix the skill.
    `loop submit`, a worker never clears or widens its own contract, never
    weakens a test to pass it, never silently widens scope, and never
    treats an incomplete action list as completion.
+
+6. **Runtime evals guide; they do not demand a transcript.** Every
+   `tp loop submit pass` mechanically runs the same checkpoint exposed by
+   `tp loop guide` (`--task <id>` in a parallel EXECUTE wave). It checks
+   deterministic workflow facts from the active contract, graph,
+   ReviewKernel, and trace—never model wording. A recoverable drift prevents
+   submission and returns one bounded correction; the corrected retry may
+   continue. The same unresolved drift a second time blocks. `submit fail`
+   remains available and never requires evidence that the worker is honestly
+   reporting it could not produce. Historical model baselines are telemetry,
+   not runtime or release gates.
 
 These are not process preferences — they are the exact failure modes
 taskplane exists to prevent, and the drift check in

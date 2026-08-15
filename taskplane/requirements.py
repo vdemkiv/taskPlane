@@ -102,6 +102,21 @@ def kb_dir(ws: str) -> str:
     return tp.kb_root(ws)
 
 
+def requirement_file(ws: str, entry: dict) -> str:
+    """Absolute readable requirement path inside the external KB store."""
+    root = os.path.realpath(kb_dir(ws))
+    rel = str((entry or {}).get("file") or "")
+    path = os.path.realpath(os.path.join(root, rel))
+    try:
+        confined = os.path.commonpath([root, path]) == root
+    except ValueError:
+        confined = False
+    if not rel or not confined:
+        raise ProductSignoffError(
+            f"requirement file is outside the project knowledge store: {rel}")
+    return path
+
+
 def _index_path(ws: str) -> str:
     return os.path.join(kb_dir(ws), "index.json")
 
@@ -152,7 +167,7 @@ def _write_requirement_file(ws: str, entry: dict) -> None:
     def bullets(items):
         return "\n".join(f"- {x}" for x in items) or "—"
 
-    path = os.path.join(kb_dir(ws), entry["file"])
+    path = requirement_file(ws, entry)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with tp.file_lock(path):
         # A slower earlier writer must not overwrite a newer amend/sign-off
@@ -308,7 +323,7 @@ def amend_requirement(ws: str, rid: str, *, functional=None, nfr=None,
 
 
 def product_dor(req: dict | None, *, changed_files=None,
-                task_type: str = "implementation") -> dict:
+                task_type: str = "implementation", catalog=None) -> dict:
     """Mechanical Product Definition of Ready used by every product gate.
 
     Product DoR blocks unresolved functional questions, missing acceptance,
@@ -323,7 +338,7 @@ def product_dor(req: dict | None, *, changed_files=None,
         req,
         changed_files=(changed_files if changed_files is not None
                        else req.get("context_files") or []),
-        task_type=task_type)
+        task_type=task_type, catalog=catalog)
     gaps = [
         gap for gap in refinement.get("gaps") or []
         if gap.get("axis") == "functional"
@@ -590,19 +605,33 @@ def gate(req: dict, *, threshold: float = 0.6, high_cost: bool = False,
     """Advisory refinement gate for the plan step (open decision #1, locked:
     advisory with a loud forecast; a HARD block only for high-cost/irreversible
     work). Returns the score plus a recommendation and whether it blocks."""
-    s = score_refinement(req, changed_files=changed_files,
-                          task_type=task_type, catalog=catalog)
+    dor = product_dor(req, changed_files=changed_files,
+                      task_type=task_type or "implementation",
+                      catalog=catalog)
+    refinement = dor.get("refinement") or {}
+    applicable = sorted(
+        set(refinement.get("applicable_nfr") or [])
+        | set(PRODUCT_REQUIRED_NFR_LENSES))
+    # The score and the sign-off now use one set of readiness axes. The score
+    # remains advisory for reversible work, but can no longer say “proceed”
+    # while the Product DoR refuses the same requirement one command later.
+    s = score_axes(req, applicable)
     below = s["score"] < threshold
-    blocking = bool(below and high_cost)
-    if not below:
+    blocking = bool(high_cost and (below or not dor["passed"]))
+    if blocking:
+        rec = ("BLOCK: high-cost/irreversible work is not Product-ready — "
+               + "; ".join(dor["errors"]))
+    elif not dor["passed"]:
+        rec = ("refine before Product sign-off — "
+               + "; ".join(dor["errors"]))
+    elif not below:
         rec = "proceed — sufficiently refined"
-    elif blocking:
-        rec = ("BLOCK: high-cost/irreversible work below the refinement "
-               "threshold — refine before building")
     else:
         rec = ("refine now recommended (advisory) — " + s["forecast"])
     return {**s, "threshold": threshold, "below_threshold": below,
-            "blocking": blocking, "recommendation": rec}
+            "blocking": blocking, "recommendation": rec,
+            "product_dor_passed": bool(dor["passed"]),
+            "product_dor_errors": list(dor["errors"])}
 
 
 # --------------------------------------------------------------- task mode

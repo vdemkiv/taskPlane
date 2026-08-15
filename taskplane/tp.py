@@ -1583,6 +1583,15 @@ def cmd_screen(a) -> int:
 
 # --------------------------------------------------------------- status
 
+def _loop_status_snapshot(ws: str) -> dict:
+    try:
+        import loop as loopmod
+        return loopmod.status(ws)
+    except Exception as exc:
+        return {"loop": "unavailable",
+                "error": f"{exc.__class__.__name__}: {exc}"}
+
+
 def cmd_status(a) -> int:
     ws = _workspace(a.workspace)
     c = tp.load_active(ws)
@@ -1610,12 +1619,18 @@ def cmd_status(a) -> int:
                               "reset it",
                 }, indent=2))
                 return 1
-        print("taskplane: no active contract in this workspace "
-              "(run `tp.py new …`).")
+        loop_status = _loop_status_snapshot(ws)
+        print(json.dumps({
+            "active_contract": None,
+            "loop": loop_status,
+            "headline": ("no active contract; project loop status is shown "
+                         "below"),
+        }, indent=2))
         return 0
     coding = c.get("coding") or {}
     budget = c.get("budget") or {}
     print(json.dumps({
+        "active_contract": "active",
         "task_id": c.get("task_id"), "task": c.get("task"),
         "read_only": bool(c.get("read_only")),
         "write_allow": c.get("write_allow") or [],
@@ -1628,6 +1643,7 @@ def cmd_status(a) -> int:
                                           "no dollar ceiling set)"),
         "budget_note": budget.get("note"),
         "dod": coding.get("dod") or {},
+        "loop": _loop_status_snapshot(ws),
     }, indent=2))
     return 0
 
@@ -1784,9 +1800,13 @@ def cmd_loop(a) -> int:
         out = loopmod.select(ws, a.choice, note=a.note or "")
     elif action == "resolve":
         out = loopmod.resolve(ws, a.decision)
+    elif action == "replan":
+        out = loopmod.replan(ws, by=a.by, reason=a.reason)
     elif action == "evidence":
         out = loopmod.evidence(ws, task_id=getattr(a, "task", None),
                                write=getattr(a, "write", False))
+    elif action == "guide":
+        out = loopmod.guide(ws, task_id=getattr(a, "task", None))
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
@@ -2575,7 +2595,10 @@ def cmd_req(a) -> int:
         print(json.dumps({"recorded": e["id"], "status": e["status"],
                           "depends": deps or None,
                           "contracts": contracts or None,
-                          "file": e["file"]}, indent=2))
+                          "file": req.requirement_file(ws, e),
+                          "store_file": e["file"],
+                          "next": f"tp req amend {e['id']} <fields>"},
+                         indent=2))
     elif a.req_action == "amend":
         try:
             nfr = (dict(kv.split("=", 1) for kv in (a.nfr or []))
@@ -2597,7 +2620,8 @@ def cmd_req(a) -> int:
             print(f"taskplane: {exc}", file=sys.stderr)
             return 1
         print(json.dumps({"amended": e["id"], "status": e["status"],
-                          "file": e["file"]}, indent=2))
+                          "file": req.requirement_file(ws, e),
+                          "store_file": e["file"]}, indent=2))
     elif a.req_action == "score":
         r = req.get_requirement(ws, a.id)
         if r is None:
@@ -4500,7 +4524,8 @@ def main(argv=None) -> int:
     cl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cl.set_defaults(fn=cmd_clear)
 
-    st = sub.add_parser("status", help="show the active contract")
+    st = sub.add_parser("status", help="show project loop status and the "
+                        "active contract")
     st.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     st.set_defaults(fn=cmd_status)
 
@@ -4593,6 +4618,13 @@ def main(argv=None) -> int:
                     help="pass a BLOCKED refinement gate anyway")
     lr = lsub.add_parser("resolve", help="resolve a blocked loop: retry, skip, defer or abort")
     lr.add_argument("decision", choices=["retry", "skip", "defer", "abort"])
+    lrp = lsub.add_parser(
+        "replan", help="human: archive frozen tasks and return to Plan for "
+        "a corrected plan plus fresh approval")
+    lrp.add_argument("--by", required=True,
+                     help="human approving the return to Plan")
+    lrp.add_argument("--reason", required=True,
+                     help="configuration defect or changed decision")
     le = lsub.add_parser("evidence", help="assemble every mechanically-derivable "
                          "fact the evaluate gate will check (suite result, diff, "
                          "criteria, routed lenses, graph obligations) with the "
@@ -4601,6 +4633,10 @@ def main(argv=None) -> int:
     le.add_argument("--write", action="store_true",
                     help="also drop the skeleton at .eval/verdict.json when no "
                          "verdict is already there (never overwrites)")
+    lguide = lsub.add_parser(
+        "guide", help="before pass submission, check deterministic workflow "
+        "facts and return one bounded drift correction")
+    lguide.add_argument("--task", help="task id (parallel execute waves)")
     lsub.add_parser("status", help="show the loop's stage, tasks and gates")
     lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "

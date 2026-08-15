@@ -1714,6 +1714,30 @@ def run_suite_command(workspace: str, command, *, env=None,
                 timeout=timeout, env=env)
 
 
+def plan_test_command_errors(command) -> list[str]:
+    """Validate the unambiguous plan-level DoD command shape.
+
+    ``run_suite_command`` deliberately supports argv lists for internal API
+    callers, but ``plan/tasks.json`` used the same field for a command and
+    looked like it accepted a list of test files/commands. Those three shapes
+    cannot be distinguished reliably. Plans therefore have one canonical
+    representation: a non-empty command string. Reject ambiguity while the
+    plan is still editable, before human approval freezes it into loop state.
+    """
+    if not isinstance(command, str):
+        return [
+            'tests must be one command string, not a list/argv value; use '
+            'e.g. "python3 -m pytest tests/ -q"'
+        ]
+    if not command.strip():
+        return ["test command is missing"]
+    try:
+        shlex.split(command)
+    except ValueError as exc:
+        return [f"tests command has invalid quoting: {exc}"]
+    return []
+
+
 # ------------------------------------------------- suite result cache (P1)
 #
 # THE PERFORMANCE REGRESSION THIS CLOSES (measured, month-1 → phase 3): the
@@ -1870,7 +1894,8 @@ def tree_fingerprint(workspace: str) -> "str | None":
         budget = SUITE_CACHE_MAX_UNTRACKED_BYTES
         for rel in sorted(p for p in others.stdout.splitlines()
                           if p.strip() and not p.startswith(
-                              SUITE_CACHE_VOLATILE)):
+                              SUITE_CACHE_VOLATILE)
+                          and not _generated_diff_path(p)):
             full = os.path.join(workspace, rel)
             try:
                 if os.path.islink(full) or not os.path.isfile(full):
@@ -2008,13 +2033,26 @@ RUNTIME_OWNED = (".taskplane/", ".taskplane_output.json", "knowledge/",
                  # in a serial journey.
                  "specs/", "docs/", "context/", "requirements/", ".gitignore")
 
+_GENERATED_DIFF_DIRS = frozenset({
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+})
+
+
+def _generated_diff_path(path: str) -> bool:
+    """Universal interpreter/test caches are evidence noise, not product."""
+    rel = str(path or "").replace("\\", "/")
+    parts = [part for part in rel.split("/") if part]
+    return (any(part in _GENERATED_DIFF_DIRS for part in parts)
+            or rel.endswith((".pyc", ".pyo")))
+
 
 def changed_files(workspace: str, snapshot_ref: str) -> list:
     diff = _run(["git", "diff", "--name-only", snapshot_ref], cwd=workspace)
     untracked = _run(["git", "ls-files", "--others", "--exclude-standard"],
                      cwd=workspace)
     files = [f for f in (diff.stdout + untracked.stdout).splitlines()
-             if f and not f.startswith(RUNTIME_OWNED)]
+             if f and not f.startswith(RUNTIME_OWNED)
+             and not _generated_diff_path(f)]
     return sorted(set(files))
 
 
@@ -2100,7 +2138,8 @@ def is_dirty(workspace: str) -> list:
     for ln in r.stdout.splitlines():
         if not ln.strip():
             continue
-        if _porcelain_path(ln).startswith(RUNTIME_OWNED):
+        path = _porcelain_path(ln)
+        if path.startswith(RUNTIME_OWNED) or _generated_diff_path(path):
             continue
         out.append(ln)
     return out
@@ -2207,6 +2246,7 @@ def dod_check(contract: dict, workspace: str,
                     "them or widen the task's scope via the human gate")
 
     tc = dod.get("test_command")
+    suite_launch_failed = False
     if tc:
         # A3 (R-0007): strip the wave slot from the CHILD env only — a gate
         # run under TASKPLANE_TASK=<slot> must not leak the slot into the
@@ -2249,30 +2289,46 @@ def dod_check(contract: dict, workspace: str,
                               "re-execute)")
         else:
             _t0 = _time.time()
-            proc = run_suite_command(workspace, tc, env=env)
-            _elapsed = _time.time() - _t0
-            tail = " | ".join((proc.stdout + proc.stderr).strip().splitlines()[-5:])
-            suite_cache_store(workspace, tc, env, returncode=proc.returncode,
-                              tail=tail, duration_s=_elapsed)
-            trace(workspace, "suite_run", command=str(tc),
-                  returncode=proc.returncode, seconds=round(_elapsed, 2))
-            if suite_evidence is not None:
-                suite_evidence.update({
-                    "schema": "taskplane.suite-evidence/v1",
-                    "command": str(tc), "key": suite_key,
-                    "returncode": int(proc.returncode), "tail": tail,
-                    "duration_s": round(_elapsed, 3),
-                    "source": "execute-gate",
-                })
-            if proc.returncode != 0:
-                errors.append(f"tests_pass: '{tc}' exited {proc.returncode}: "
-                              + tail)
+            try:
+                proc = run_suite_command(workspace, tc, env=env)
+            except (OSError, subprocess.SubprocessError,
+                    TypeError, ValueError) as exc:
+                suite_launch_failed = True
+                errors.append(
+                    f"tests_pass: could not start {tc!r} "
+                    f"({exc.__class__.__name__}: {exc}). The declared test "
+                    "command is invalid or unavailable; correct it through "
+                    "the governed `tp loop replan --by <human> --reason "
+                    "<why>` path. The gate did not advance.")
+                trace(workspace, "suite_run_failed_to_start", command=str(tc),
+                      error=f"{exc.__class__.__name__}: {exc}")
+            else:
+                _elapsed = _time.time() - _t0
+                tail = " | ".join(
+                    (proc.stdout + proc.stderr).strip().splitlines()[-5:])
+                suite_cache_store(
+                    workspace, tc, env, returncode=proc.returncode,
+                    tail=tail, duration_s=_elapsed)
+                trace(workspace, "suite_run", command=str(tc),
+                      returncode=proc.returncode, seconds=round(_elapsed, 2))
+                if suite_evidence is not None:
+                    suite_evidence.update({
+                        "schema": "taskplane.suite-evidence/v1",
+                        "command": str(tc), "key": suite_key,
+                        "returncode": int(proc.returncode), "tail": tail,
+                        "duration_s": round(_elapsed, 3),
+                        "source": "execute-gate",
+                    })
+                if proc.returncode != 0:
+                    errors.append(
+                        f"tests_pass: '{tc}' exited {proc.returncode}: "
+                        + tail)
 
     # Graph-scoped regression gate (v2.3.1) — selected by the contract.
     # ADDITIVE: it only adds blockers, never removes an existing DoD check.
     # General-purpose callers can opt in; every governed coding and sign-off
     # contract created by the loop enables it mechanically.
-    if dod.get("regression_gate") and snapshot_ref:
+    if dod.get("regression_gate") and snapshot_ref and not suite_launch_failed:
         try:
             import regression as _rg
             changed = (list(regression_files) if regression_files is not None
@@ -2464,13 +2520,14 @@ def plan_ordering_refusal(ws: str, tasks, where: str, by=None):
 #   depgraph        — graph DoD: impact, product_impact, requirement nodes
 #   decompose       — module realization behind the graph DoD's node set
 #   requirements    — the acceptance criteria the walk demands evidence for
+#   runtime_eval    — deterministic pre-submit drift correction/blocking
 #
 # A FIXED list, not runtime introspection of sys.modules: the fingerprint has
 # to be identical in the producing and validating processes, so it must not
 # depend on which modules a given process happened to import first.
 VALIDATOR_SURFACE = ("audit", "decompose", "depgraph", "design_contract",
                      "lens", "lens_signals", "loop", "requirements",
-                     "taskplane_lite")
+                     "runtime_eval", "taskplane_lite")
 
 ENGINE_SKEW_REMEDY = (
     "merge the task branch into the primary (git merge {branch}) so ONE "

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
@@ -76,6 +77,32 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertIn("Definition of Done failed", out["error"])
         self.assertEqual(loop.load(ws)["step"], "execute")
         self.assertIsNotNone(tp.load_active(ws))
+
+    def test_suite_launch_error_is_a_structured_dod_blocker(self):
+        ws = _repo()
+        state = _state(ws, "execute")
+        contract = tp.build_contract(
+            "EXECUTE: t1", scope=state["tasks"][0]["scope"],
+            test_command="python3 -m pytest tests -q")
+        with mock.patch.object(
+                tp, "run_suite_command",
+                side_effect=PermissionError(13, "permission denied")):
+            errors = tp.dod_check(contract, ws, state["baseline"])
+        self.assertTrue(any("tests_pass: could not start" in e
+                            for e in errors), errors)
+        self.assertTrue(any("loop replan" in e for e in errors), errors)
+
+    def test_approved_legacy_test_list_fails_closed_and_can_replan(self):
+        ws = _repo()
+        _state(ws, "execute", tests=["src/a.py"])
+        loop.next_action(ws)
+        out = loop.gate(ws, "pass")
+        self.assertIn("Definition of Done failed", out["error"])
+        self.assertIn("could not start", str(out["dod"]))
+        self.assertNotIn("Traceback", str(out))
+        recovered = loop.replan(
+            ws, by="user", reason="legacy tests list is ambiguous")
+        self.assertEqual(recovered["step"], "plan")
 
     def test_evaluate_requires_complete_evidence(self):
         ws = _repo()

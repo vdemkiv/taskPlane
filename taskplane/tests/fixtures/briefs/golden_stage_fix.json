@@ -256,6 +256,36 @@
   "role": "tp-fixer",
   "role_instructions": "<PLUGIN>/agents/tp-fixer.md",
   "role_marker": "taskplane-role:tp-fixer",
+  "runtime_evals": {
+    "baseline_policy": "telemetry-only",
+    "checkpoint": "Every `tp loop submit pass` automatically runs this checkpoint. `tp loop guide` may run it earlier. Apply its one bounded correction when present; repeated unresolved drift is blocking.",
+    "controls": [
+      {
+        "checkpoint": "brief",
+        "class": "mechanical",
+        "enforcement": "engine",
+        "id": "contract-and-dor-before-work",
+        "rule": "Activate the exact stage contract and satisfy its Definition of Ready before doing stage work."
+      },
+      {
+        "checkpoint": "brief",
+        "class": "mechanical",
+        "enforcement": "engine",
+        "id": "worker-submit-orchestrator-gate",
+        "rule": "Workers submit evidence and stop. Only the orchestrator evaluates and advances a gate."
+      },
+      {
+        "checkpoint": "gate",
+        "class": "mechanical",
+        "enforcement": "engine",
+        "id": "dod-before-completion",
+        "rule": "Definition of Done and required evidence must pass before the orchestrator advances the stage."
+      }
+    ],
+    "controls_fingerprint": "<SHA>",
+    "mode": "guide-and-recover",
+    "schema": "taskplane.runtime-guidance/v1"
+  },
   "step": "fix",
   "task": {
     "blast": {

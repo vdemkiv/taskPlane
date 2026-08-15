@@ -114,7 +114,8 @@ task done while the gate fails.
 
 ### Inspecting state
 
-`python3 "$PLUGIN/taskplane/tp.py" status` prints the active contract. The
+`python3 "$PLUGIN/taskplane/tp.py" status` prints project loop state together
+with the active contract. The
 decision trail (activations, blocks, DoD results) is appended to
 `.taskplane/trace.jsonl` in the workspace — cite it as the audit record.
 

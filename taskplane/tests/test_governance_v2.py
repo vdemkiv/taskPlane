@@ -10,12 +10,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
 import loop  # noqa: E402
 import requirements  # noqa: E402
+import runtime_eval  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
+
+
+COMPLETE_REVIEW_FACTS = {key: True for key in runtime_eval.REVIEW_FACTS}
 
 
 def _git(ws, *args):
@@ -93,7 +98,9 @@ class TestGovernanceV2(unittest.TestCase):
         os.makedirs(evidence_dir, exist_ok=True)
         with open(os.path.join(evidence_dir, "verdict.json"), "w", encoding="utf-8") as f:
             json.dump({"task": "t1", "verdict": "pass"}, f)
-        loop.submit(self.ws, "pass")
+        with mock.patch("runtime_eval.review_facts",
+                        return_value=COMPLETE_REVIEW_FACTS):
+            loop.submit(self.ws, "pass")
         depgraph.record_edge(self.ws, "core", "contract:late-change",
                              kind="provides", confidence="high")
         stale = loop.gate(self.ws, "pass")
@@ -120,7 +127,9 @@ class TestGovernanceV2(unittest.TestCase):
         verdict = os.path.join(evidence_dir, "verdict.json")
         with open(verdict, "w", encoding="utf-8") as f:
             json.dump({"task": "t1", "verdict": "pass"}, f)
-        loop.submit(self.ws, "pass")
+        with mock.patch("runtime_eval.review_facts",
+                        return_value=COMPLETE_REVIEW_FACTS):
+            loop.submit(self.ws, "pass")
         with open(verdict, "w", encoding="utf-8") as f:
             json.dump({"task": "t1", "verdict": "fail"}, f)
         stale = loop.gate(self.ws, "pass")

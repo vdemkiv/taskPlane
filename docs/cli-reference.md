@@ -61,8 +61,10 @@ not repeated in the tables.
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
 | `tp.py loop evidence` | assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill |
 | `tp.py loop gate` | orchestrator-only: judge the evidence and advance the loop |
+| `tp.py loop guide` | before pass submission, check deterministic workflow facts and return one bounded drift correction |
 | `tp.py loop init` | start an Evaluate-Loop for a goal |
 | `tp.py loop next` | print the next stage brief for the active loop |
+| `tp.py loop replan` | human: archive frozen tasks and return to Plan for a corrected plan plus fresh approval |
 | `tp.py loop resolve` | resolve a blocked loop: retry, skip, defer or abort |
 | `tp.py loop retro` | print the loop retrospective |
 | `tp.py loop select` | A/B selection gate: pick the variant that ships (or 'hybrid') |
@@ -95,7 +97,7 @@ not repeated in the tables.
 | `tp.py share push` | publish private decisions to the shared store |
 | `tp.py share set` | set the default visibility of new decisions |
 | `tp.py share status` | show what is private and what is shared |
-| `tp.py status` | show the active contract |
+| `tp.py status` | show project loop status and the active contract |
 | `tp.py subagent-start` | SubagentStart lifecycle trace, bounded contract context, and leased review-child identity binding (stdin event) |
 | `tp.py subagent-stop` | SubagentStop lifecycle trace (stdin event; advisory, never a completion gate) |
 | `tp.py summary` | simple human view: progress and decisions, while agents keep the detailed harness |
@@ -537,6 +539,14 @@ Positional arguments:
 | `--req` | REQ | attach requirement R-id to the loop before DoR evaluation (design anchor) |
 | `--task` | TASK | task id (parallel execute waves) |
 
+## `tp.py loop guide`
+
+before pass submission, check deterministic workflow facts and return one bounded drift correction
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--task` | TASK | task id (parallel execute waves) |
+
 ## `tp.py loop init`
 
 start an Evaluate-Loop for a goal
@@ -564,6 +574,15 @@ print the next stage brief for the active loop
 | --- | --- | --- |
 | `--emit` | one of: workflow, task, auto | stage dispatch surface (R-0004): 'workflow' wraps an evaluate/fix stage payload as ONE ready-to-run stage-wave workflow invocation, 'task' prints today's payload byte-identically (the mandatory fallback and the only Codex path), 'auto' consults workflow_available() (default) |
 | `--req` | REQ | attach requirement R-id to the loop before DoR evaluation (design anchor) |
+
+## `tp.py loop replan`
+
+human: archive frozen tasks and return to Plan for a corrected plan plus fresh approval
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | human approving the return to Plan |
+| `--reason` | REASON (required) | configuration defect or changed decision |
 
 ## `tp.py loop resolve`
 
@@ -892,7 +911,7 @@ show what is private and what is shared
 
 ## `tp.py status`
 
-show the active contract
+show project loop status and the active contract
 
 | Flag | Value | What it does |
 | --- | --- | --- |

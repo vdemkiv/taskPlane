@@ -19,7 +19,8 @@ This flow introduces no new gate and mutates no state.
 - `$TP loop status` — step, per-task status + fix cycles, checkpoints
 - `$TP track list` — all tracks + which is active
 - `$TP req list` — requirements incl. open debt items
-- `$TP status` — the active contract, if any (who's governed right now)
+- `$TP status` — project loop state plus the active contract, if any (what is
+  happening and who's governed right now)
 
 **Present it as the dashboard, not a wall of JSON.**
 
