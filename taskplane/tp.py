@@ -4872,7 +4872,7 @@ def main(argv=None) -> int:
     lc.add_argument("--agent-workspace", required=True,
                     help="the worker's worktree — its contract activates there")
     lg = lsub.add_parser("gate", help="orchestrator-only: judge the evidence and advance the loop")
-    lg.add_argument("outcome", choices=["pass", "fail"])
+    lg.add_argument("outcome", choices=["pass", "fail", "unavailable"])
     lg.add_argument("--note", default="",
                     help="one-line note recorded with the gate decision")
     lg.add_argument("--task", help="task id (parallel execute waves)")
@@ -4880,7 +4880,7 @@ def main(argv=None) -> int:
                     "before DoR evaluation (design anchor)")
     lsu = lsub.add_parser("submit", help="worker submits evidence without "
                             "transitioning state; the orchestrator gates")
-    lsu.add_argument("outcome", choices=["pass", "fail"])
+    lsu.add_argument("outcome", choices=["pass", "fail", "unavailable"])
     lsu.add_argument("--note", default="",
                      help="one-line evidence note recorded with the "
                           "submission")

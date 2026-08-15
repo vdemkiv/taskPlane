@@ -7,7 +7,9 @@ disagree, this file wins — fix the skill.
 
 1. **Workers submit and stop.** The design, execute, fix, evaluate, and
    engineering workers perform their contracted role, write their required
-   evidence, run `tp loop submit pass|fail` (with `--task <id>` only in a
+   evidence, run `tp loop submit pass|fail` (or evaluator-only
+   `tp loop submit unavailable` for a structured host/model outage with
+   green bound tests and no product/lens defect; with `--task <id>` only in a
    parallel EXECUTE wave — outside one the engine rejects any `--task`
    that is not the current task — after committing in their worktree),
    and STOP. A submission records an engine-computed source and

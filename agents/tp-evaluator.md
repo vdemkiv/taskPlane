@@ -111,6 +111,9 @@ stale evidence or unexplained implementation drift is a failure, not a note.
    {"schema": "taskplane.evaluator-output/v1",
     "task": "<id>", "requirement": "<R-id-or-empty-string>",
     "verdict": "pass|fail",
+    "evaluation": {"status": "complete|unavailable",
+                   "reason_code": "none|host_unavailable|agent_timeout|transport_unavailable|producer_receipt_unavailable|orchestration_unavailable",
+                   "detail": "bounded factual description"},
     "criteria": [{"criterion": "...", "status": "met|not-met|cannot-verify",
                   "evidence": "..."}],
     "lenses": [{"lens": "...", "verdict": "pass|fail", "blockers": 0}],
@@ -125,7 +128,11 @@ stale evidence or unexplained implementation drift is a failure, not a note.
 6. **Submit honestly**: `loop submit pass` only when tests pass, every
    criterion is met, graph impacts are dispositioned, affected requirements
    and contracts are checked, and no lens reports a standing blocker.
-   Otherwise `loop submit fail`. Stop and return to the orchestrator; never
+   If one bounded model/host attempt is unavailable while the bound mechanical
+   suite is green and no product criterion or completed lens reports a defect,
+   set `evaluation.status` to `unavailable` and run
+   `loop submit unavailable`. This records a visible warning and MUST NOT open
+   a product FIX cycle. Otherwise `loop submit fail`. Stop and return to the orchestrator; never
    call `loop gate` or accept your own evidence.
 
 ## Boundaries

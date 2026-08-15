@@ -75,7 +75,8 @@ The submit/gate/human-checkpoint invariants are stated once, canonically,
 in `references/harness-rules.md` (this skill's own reference dir, so every
 distribution that ships `skills/` ships it) — read it before driving a
 loop. In one line each: workers write their evidence, run
-`$TP loop submit pass|fail` (with `--task <id>` only in a parallel EXECUTE
+`$TP loop submit pass|fail` (or evaluator-only `unavailable` for a proven
+host/model outage; with `--task <id>` only in a parallel EXECUTE
 wave) and stop; only the orchestrator calls the matching `$TP loop gate`;
 the engine — never worker prose — decides whether DoR/DoD evidence is
 sufficient; human checkpoints (Design

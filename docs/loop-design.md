@@ -91,7 +91,7 @@ workspace fingerprint before the orchestrator gate.
 | RETRO | engine-owned, no worker | derived state only | `.taskplane/retro.md`, graph + KB | human sign-off recorded (or aborted run) | one idempotent report records forecast/scope/routing/finding lessons, refreshes and fingerprints the graph, then transitions to `done` |
 | PLAN | loop-planner | read-only + allow `plan/**` | `plan/**` | spec + criteria exist | every criterion → task; scope/tests/deps/contracts/new modules/impact policy pass graph DoR |
 | EXECUTE | loop-executor | build (per-task scope) | the task's `scope_paths` | deps done; scope+tests+graph policy set | task test passes; diff in scope; fingerprinted submission. Realized graph truth is checked at EVALUATE and finalized before EM. |
-| EVALUATE | loop-evaluator | read-only + allow `.eval/**` | `.eval/**` | impl commits exist | PASS/FAIL + evidence per criterion, impacted node, affected requirement, and contract |
+| EVALUATE | loop-evaluator | read-only + allow `.eval/**` | `.eval/**` | impl commits exist | PASS/FAIL + evidence per criterion, impacted node, affected requirement, and contract. One bounded host/model `unavailable` result advances with a visible warning and never consumes a product FIX cycle; any actual product/lens failure still enters FIX. |
 | FIX | loop-fixer | build (same task scope) | the task's `scope_paths` | a reproducible FAIL | failure fixed + regression + re-verified |
 | EM | engineering-manager | read-only review | `.em-review/**` | all tasks PASS + final graph true-up | full lens/graph evidence on the current fingerprint; approved Design module/edge/contract conformance with a zero-drift list when applicable (any recorded drift blocks; human-accepted deviations require explicit `accepted_drift` entries, surfaced at the gate); then human sign-off |
 
@@ -193,7 +193,8 @@ Each was settled as the **Recommendation** noted below and is what shipped.
   `loop claim <id> --agent-workspace <worktree>` activates *that task's
   contract in that worktree* — the PreToolUse hook enforces each agent
   individually. The harness is per agent, not per fleet.
-- Workers commit and report `loop submit pass|fail --task <id>`; the
+- Workers commit and report `loop submit pass|fail --task <id>`; EVALUATE may
+  instead submit `unavailable` for a proven host/model outage; the
   orchestrator alone runs the matching gate. Built tasks are then
   evaluated (read-only, in their worktree, routed lenses) one by one; on
   evaluate PASS the driver merges `tp/<id>` and removes the worktree.

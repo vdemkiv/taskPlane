@@ -12,6 +12,7 @@ State machine (per docs/loop-design.md, answers locked 2026-07-11):
   plan    → plan_approval (human) → execute
   execute → evaluate
   evaluate: pass → next task, or → em when all tasks pass
+            unavailable → next task/em with a visible warning, never fix
             fail → fix (if fix_cycles < max) else escalated (human)
   fix     → evaluate
   em      → signoff (human) → retro/graph true-up → done
@@ -1229,7 +1230,11 @@ def _instruction(step: str, state: dict) -> str:
                     "graph impact + affected requirements; reject stale Design "
                     "evidence. Fill the empty slots in .eval/verdict.json "
                     "(submitted unchanged, it is refused). Then `loop submit "
-                    "pass|fail`; only the orchestrator calls `loop gate`.",
+                    "pass|fail`; if one bounded model/host attempt is unavailable "
+                    "but bound tests are green and no product/lens defect exists, "
+                    "record structured evaluation unavailability and `loop submit "
+                    "unavailable` instead — it warns without opening FIX. Only "
+                    "the orchestrator calls `loop gate`.",
         "fix": f"Run the tp-fixer on task {t and t['id']}: repair the "
                "listed failures + add a regression test. Then `loop submit "
                "pass`; only the orchestrator calls `loop gate`.",
@@ -1588,6 +1593,56 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     return errors
 
 
+def _evaluation_unavailable_errors(ws: str, state: dict,
+                                   task: dict) -> tuple[list, dict]:
+    """Admit a pure model/host outage without inventing a product defect."""
+    path = os.path.join(ws, ".eval", "verdict.json")
+    verdict, errors = _read_json(path)
+    if errors:
+        return errors, {}
+    try:
+        evaluation_output.validate_evaluator_value(verdict)
+    except evaluation_output.OutputValidationError as exc:
+        errors.append(f"evaluation output is invalid ({exc.code}): {exc}")
+        return errors, verdict
+    availability = verdict.get("evaluation") or {}
+    if availability.get("status") != "unavailable":
+        errors.append("evaluation does not declare structured unavailability")
+    if availability.get("reason_code") in (None, "", "none"):
+        errors.append("evaluation unavailability has no host reason code")
+    if verdict.get("task") != task.get("id"):
+        errors.append("evaluation evidence is for task "
+                      f"{verdict.get('task')!r}, expected {task.get('id')!r}")
+    if verdict.get("verdict") != "fail":
+        errors.append("unavailable evaluation must retain verdict 'fail'")
+    not_met = [row.get("criterion") for row in verdict.get("criteria") or []
+               if isinstance(row, dict) and row.get("status") == "not-met"]
+    if not_met:
+        errors.append("product acceptance is not met: " + ", ".join(
+            str(item) for item in not_met))
+    blocking_lenses = [row.get("lens") for row in verdict.get("lenses") or []
+                       if isinstance(row, dict) and
+                       (row.get("verdict") == "fail" or
+                        int(row.get("blockers") or 0) > 0)]
+    if blocking_lenses:
+        errors.append("product/lens failures cannot be classified as host "
+                      "unavailability: " + ", ".join(
+                          str(item) for item in blocking_lenses))
+    if not (verdict.get("failures") or []):
+        errors.append("evaluation unavailability has no bounded failure record")
+    suite = ((state.get("_suite_evidence") or {}).get(str(task.get("id")))
+             or {})
+    if task.get("tests") and not (
+            suite.get("schema") == "taskplane.suite-evidence/v1" and
+            suite.get("returncode") == 0):
+        errors.append("evaluation unavailability requires green mechanical "
+                      "suite evidence from the execute/fix gate")
+    if state.get("_build_failed") or task.get("_build_failed"):
+        errors.append("a failed build is a product failure, not evaluation "
+                      "unavailability")
+    return errors, verdict
+
+
 # One canonical severity vocabulary (v2.3.0). Producers disagree — the lens
 # brief says high|med|low, the lens catalog's verdict schema says
 # blocker|major|minor|question|praise, free-form reviews say critical —
@@ -1900,8 +1955,11 @@ def submit(ws: str, outcome: str, note: str = "",
                          "run `loop next` to see the current role and "
                          "instruction; submissions happen at execute/fix/"
                          "evaluate/em"}
-    if outcome not in ("pass", "fail"):
-        return {"error": "submission outcome must be pass or fail"}
+    if outcome not in ("pass", "fail", "unavailable"):
+        return {"error": "submission outcome must be pass, fail, or unavailable"}
+    if outcome == "unavailable" and step != "evaluate":
+        return {"error": "unavailable is only valid for model evaluation; "
+                         "product execution/fix/review still submit pass or fail"}
 
     task = _current_task(state)
     act_ws = ws
@@ -2084,7 +2142,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                       state.get("_submission"))
         if not submission:
             return {"error": "worker evidence was not submitted — the worker "
-                             "must run `loop submit pass|fail`; only the "
+                             "must run `loop submit pass|fail|unavailable`; only the "
                              "orchestrator may evaluate `loop gate`",
                     "step": step}
         if submission.get("step") != step or submission.get("outcome") != outcome:
@@ -2267,6 +2325,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         tws = (task or {}).get("workspace")
         act_ws = tws if tws and os.path.isdir(tws) else ws
 
+    unavailable_verdict = None
+
     # A reported PASS is a request to evaluate the gate. Evidence, not the
     # agent's assertion, determines whether the state machine advances.
     if outcome == "pass" and step in ("execute", "fix"):
@@ -2291,6 +2351,26 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": "evaluation evidence failed — step did not "
                              "advance", "step": step,
                     "dod": {"passed": False, "errors": evidence_errors}}
+    if outcome == "unavailable" and step == "evaluate":
+        if (skew := tp.engine_skew_refusal(ws, state.get("_submission"))):
+            return skew
+        unavailable_errors, unavailable_verdict = \
+            _evaluation_unavailable_errors(act_ws, state, task)
+        if unavailable_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step,
+                     reason="invalid_evaluation_unavailability",
+                     errors=unavailable_errors)
+            return {"error": "evaluation unavailability was not proven — "
+                             "step did not advance", "step": step,
+                    "dod": {"passed": False,
+                            "errors": unavailable_errors}}
+    if outcome == "fail" and step == "evaluate":
+        unavailable_errors, _ = _evaluation_unavailable_errors(
+            act_ws, state, task)
+        if not unavailable_errors:
+            return {"error": "evaluation infrastructure is unavailable, not "
+                             "a product defect — gate unavailable; no FIX "
+                             "cycle was opened", "step": step}
     if outcome == "pass" and step == "em":
         review_errors = _engineering_review_errors(ws, state)
         if review_errors:
@@ -2385,8 +2465,22 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             t = _current_task(state)
             build_failed = state.pop("_build_failed", False) or \
                 t.pop("_build_failed", False)
-            if outcome == "pass" and not build_failed:
+            if outcome in ("pass", "unavailable") and not build_failed:
                 t["status"] = "passed"
+                if outcome == "unavailable":
+                    availability = dict(
+                        (unavailable_verdict or {}).get("evaluation") or {})
+                    warning = {
+                        "task": t.get("id"),
+                        "status": "unavailable",
+                        "reason_code": availability.get("reason_code"),
+                        "detail": str(availability.get("detail") or "")[:500],
+                    }
+                    t["evaluation"] = warning
+                    warnings = state.setdefault("evaluation_warnings", [])
+                    warnings[:] = [row for row in warnings
+                                   if row.get("task") != t.get("id")]
+                    warnings.append(warning)
                 # After the LAST task: A/B loops pause at the human SELECTION
                 # gate (variants never merge — one gets picked) — but only
                 # ONCE; a post-selection fix cycle goes back to the review.
@@ -2444,8 +2538,13 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # the commit window; a refused gate above leaves it governed for retry.
     tp.clear(act_ws)
     yield_meter.gate_snapshot(ws, step, outcome)   # records, never gates
-    tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note)
-    return {"step": state["step"], "status": status(ws)}
+    tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note,
+             **({"reason": ((unavailable_verdict or {}).get("evaluation")
+                             or {}).get("reason_code")}
+                if outcome == "unavailable" else {}))
+    return {"step": state["step"], "status": status(ws),
+            **({"warning": (state.get("evaluation_warnings") or [])[-1]}
+               if outcome == "unavailable" else {})}
 
 
 def _signoff_dod(ws: str, state: dict) -> dict:
@@ -3038,6 +3137,8 @@ def status(ws: str) -> dict:
         "goal": state["goal"],
         "tasks": [{"id": t["id"], "status": t.get("status"),
                    "fix_cycles": t.get("fix_cycles", 0),
+                   **({"evaluation": t["evaluation"]}
+                      if t.get("evaluation") else {}),
                    **({"variant": t["variant"]} if t.get("variant") else {})}
                   for t in tasks],
         "current_task": state.get("current_task"),

@@ -44,6 +44,15 @@ def _object(properties: dict, required: list[str]) -> dict:
 
 def evaluator_output_schema() -> dict:
     string = {"type": "string"}
+    evaluation = _object({
+        "status": {"enum": ["complete", "unavailable"]},
+        "reason_code": {"enum": [
+            "none", "host_unavailable", "agent_timeout",
+            "transport_unavailable", "producer_receipt_unavailable",
+            "orchestration_unavailable",
+        ]},
+        "detail": string,
+    }, ["status", "reason_code", "detail"])
     criterion = _object({
         "criterion": string,
         "status": {"enum": ["met", "not-met", "cannot-verify"]},
@@ -68,6 +77,9 @@ def evaluator_output_schema() -> dict:
             "schema": {"const": EVALUATOR_OUTPUT_SCHEMA_ID},
             "task": string, "requirement": {"type": "string"},
             "verdict": {"enum": ["pass", "fail"]},
+            # Optional for byte compatibility with completed v1 records. It
+            # is mandatory at the loop boundary for ``unavailable``.
+            "evaluation": evaluation,
             "criteria": {"type": "array", "items": criterion},
             "lenses": {"type": "array", "items": lens},
             "graph": graph,
@@ -77,6 +89,12 @@ def evaluator_output_schema() -> dict:
         }, ["schema", "task", "requirement", "verdict", "criteria",
             "lenses", "graph", "failures"]),
     }
+
+
+def validate_evaluator_value(value: dict) -> dict:
+    """Validate an already-decoded evaluator result against the authority."""
+    _validate(value, evaluator_output_schema())
+    return value
 
 
 def lens_slot_output_schema(references: list[dict] | None = None) -> dict:

@@ -32,6 +32,28 @@
   },
   "design": null,
   "design_graph": null,
+  "dispatch_blocked": false,
+  "dispatch_route": {
+    "block_before_dispatch": false,
+    "capability_source": [
+      "no-host-receipt"
+    ],
+    "effective_effort": null,
+    "effective_model": null,
+    "exact_route_verified": false,
+    "host": "claude",
+    "host_capability_fingerprint": "<SHA>",
+    "mode": "default",
+    "observed_effort": null,
+    "observed_model": null,
+    "passed_arguments": {},
+    "planned_effort": "medium",
+    "planned_model": null,
+    "reason": "reasoning effort selection is unknown",
+    "resolution": "unsupported_fallback",
+    "schema": "taskplane.dispatch-route/v1",
+    "tier": "standard"
+  },
   "dor": {
     "blockers": [],
     "ready": true,
@@ -80,7 +102,7 @@
     "truncated": false,
     "unknown": []
   },
-  "instruction": "Run the tp-evaluator (read-only) on task t1: START with `tp loop evidence --write` \u2014 one call returns the suite result, the diff, and the exact criteria, routed-lens and graph obligations this gate demands, judgment slots empty; do NOT rebuild those by hand. Then do what the engine cannot: prove each criterion against real behavior, apply each ROUTED lens (prompt at lenses/<id>.md) \u2014 inline ones yourself, one governed read-only subagent per subagent-mode lens \u2014 and disposition graph impact + affected requirements; reject stale Design evidence. Fill the empty slots in .eval/verdict.json (submitted unchanged, it is refused). Then `loop submit pass|fail`; only the orchestrator calls `loop gate`.",
+  "instruction": "Run the tp-evaluator (read-only) on task t1: START with `tp loop evidence --write` \u2014 one call returns the suite result, the diff, and the exact criteria, routed-lens and graph obligations this gate demands, judgment slots empty; do NOT rebuild those by hand. Then do what the engine cannot: prove each criterion against real behavior, apply each ROUTED lens (prompt at lenses/<id>.md) \u2014 inline ones yourself, one governed read-only subagent per subagent-mode lens \u2014 and disposition graph impact + affected requirements; reject stale Design evidence. Fill the empty slots in .eval/verdict.json (submitted unchanged, it is refused). Then `loop submit pass|fail`; if one bounded model/host attempt is unavailable but bound tests are green and no product/lens defect exists, record structured evaluation unavailability and `loop submit unavailable` instead \u2014 it warns without opening FIX. Only the orchestrator calls `loop gate`.",
   "knowledge": {
     "context": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
     "current_state": null,
@@ -107,10 +129,410 @@
   },
   "language_references": null,
   "lenses": [],
+  "max_attempts": 2,
   "model": null,
   "model_tier": "standard",
-  "reasoning_effort": "medium",
+  "output_contract": {
+    "canonical_revision": null,
+    "capability": {
+      "reason": "native structured output is unknown",
+      "source": "no-host-receipt",
+      "status": "unknown"
+    },
+    "fallback_reason": "native structured output is unknown",
+    "lease": null,
+    "max_attempts": 2,
+    "max_bytes": 1048576,
+    "output_schema": {
+      "$id": "taskplane.evaluator-output/v1",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "criteria": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "criterion": {
+                "type": "string"
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "met",
+                  "not-met",
+                  "cannot-verify"
+                ]
+              }
+            },
+            "required": [
+              "criterion",
+              "status",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "evaluation": {
+          "additionalProperties": false,
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "reason_code": {
+              "enum": [
+                "none",
+                "host_unavailable",
+                "agent_timeout",
+                "transport_unavailable",
+                "producer_receipt_unavailable",
+                "orchestration_unavailable"
+              ]
+            },
+            "status": {
+              "enum": [
+                "complete",
+                "unavailable"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "reason_code",
+            "detail"
+          ],
+          "type": "object"
+        },
+        "failures": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "repro": {
+                "type": "string"
+              },
+              "what": {
+                "type": "string"
+              },
+              "where": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "what",
+              "repro",
+              "where"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "graph": {
+          "additionalProperties": false,
+          "properties": {
+            "contracts_checked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "dispositions": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "type": "string"
+                  },
+                  "node": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "node",
+                  "status",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "requirements_checked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "dispositions",
+            "requirements_checked",
+            "contracts_checked"
+          ],
+          "type": "object"
+        },
+        "lenses": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lens": {
+                "type": "string"
+              },
+              "verdict": {
+                "enum": [
+                  "pass",
+                  "fail"
+                ]
+              }
+            },
+            "required": [
+              "lens",
+              "verdict",
+              "blockers"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "requirement": {
+          "type": "string"
+        },
+        "schema": {
+          "const": "taskplane.evaluator-output/v1"
+        },
+        "task": {
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "task",
+        "requirement",
+        "verdict",
+        "criteria",
+        "lenses",
+        "graph",
+        "failures"
+      ],
+      "type": "object"
+    },
+    "output_schema_id": "taskplane.evaluator-output/v1",
+    "output_schema_sha256": "1fea99f8c8ff4769bb5ee3b54794006a324c916b0fb4befbe7dc53c9f4f9fbc0",
+    "producer": "tp-evaluator",
+    "result_path": ".eval/verdict.json",
+    "schema": "taskplane.evaluation-output-contract/v1",
+    "schema_transport": "validated_file",
+    "slot": "t1",
+    "stage": "evaluate",
+    "task": "t1",
+    "transport": "validated_file",
+    "write_allow": [
+      ".eval/verdict.json"
+    ],
+    "write_observation_required": true
+  },
+  "output_schema": {
+    "$id": "taskplane.evaluator-output/v1",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "criteria": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "criterion": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "met",
+                "not-met",
+                "cannot-verify"
+              ]
+            }
+          },
+          "required": [
+            "criterion",
+            "status",
+            "evidence"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "evaluation": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "none",
+              "host_unavailable",
+              "agent_timeout",
+              "transport_unavailable",
+              "producer_receipt_unavailable",
+              "orchestration_unavailable"
+            ]
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason_code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "failures": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "repro": {
+              "type": "string"
+            },
+            "what": {
+              "type": "string"
+            },
+            "where": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "what",
+            "repro",
+            "where"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "graph": {
+        "additionalProperties": false,
+        "properties": {
+          "contracts_checked": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dispositions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "evidence": {
+                  "type": "string"
+                },
+                "node": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "node",
+                "status",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "requirements_checked": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "dispositions",
+          "requirements_checked",
+          "contracts_checked"
+        ],
+        "type": "object"
+      },
+      "lenses": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "blockers": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "lens": {
+              "type": "string"
+            },
+            "verdict": {
+              "enum": [
+                "pass",
+                "fail"
+              ]
+            }
+          },
+          "required": [
+            "lens",
+            "verdict",
+            "blockers"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "requirement": {
+        "type": "string"
+      },
+      "schema": {
+        "const": "taskplane.evaluator-output/v1"
+      },
+      "task": {
+        "type": "string"
+      },
+      "verdict": {
+        "enum": [
+          "pass",
+          "fail"
+        ]
+      }
+    },
+    "required": [
+      "schema",
+      "task",
+      "requirement",
+      "verdict",
+      "criteria",
+      "lenses",
+      "graph",
+      "failures"
+    ],
+    "type": "object"
+  },
+  "reasoning_effort": null,
   "requirement": null,
+  "resume_identity": "9e05c6799e95e745ddc95e3e9b48c8cab32ff5feede995e17273c89c29404c0e",
   "review_kernel": {
     "agents": [],
     "briefs": [],
@@ -186,6 +608,19 @@
           "lens_results_collected"
         ],
         "rule": "Seal one immutable diff, impact, requirement, and acceptance context before lens dispatch; collect every leased result into one canonical revision."
+      },
+      {
+        "checkpoint": "before_submit",
+        "class": "recoverable",
+        "correction": "Return to the existing output contract. Validate native structured output or the exact governed file and its host-observed producer/write receipt; do not admit prose or synthesize provenance.",
+        "id": "schema-output-before-submit",
+        "max_corrections": 1,
+        "required_facts": [
+          "output_schema_declared",
+          "output_schema_validated",
+          "output_producer_observed"
+        ],
+        "rule": "Declare, validate, and host-observe the exact versioned output before submission."
       },
       {
         "checkpoint": "brief",

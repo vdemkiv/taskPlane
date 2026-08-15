@@ -227,6 +227,67 @@ class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
         self.assertNotIn("error", result)
 
 
+class TestUnavailableModelEvaluationDoesNotOpenAProductFix(_AtEvaluate):
+    """Host/model availability is not an implementation defect."""
+
+    def _write_unavailable(self, *, not_met=False):
+        verdict = self.bundle()["verdict_template"]
+        verdict["evaluation"] = {
+            "status": "unavailable",
+            "reason_code": "agent_timeout",
+            "detail": "one bounded native model attempt did not complete",
+        }
+        verdict["verdict"] = "fail"
+        for index, row in enumerate(verdict["criteria"]):
+            row["status"] = "not-met" if not_met and index == 0 else "met"
+            row["evidence"] = "mechanical evidence remains available"
+        verdict["lenses"] = []
+        verdict["failures"] = [{
+            "what": "native model evaluation was unavailable",
+            "repro": "one bounded dispatch attempt",
+            "where": "host:model-evaluation",
+        }]
+        path = os.path.join(self.ws, ".eval", "verdict.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream)
+
+    def test_unavailable_advances_with_warning_without_a_fix_cycle(self):
+        self._write_unavailable()
+        result = submit_gate(self.ws, "unavailable")
+        self.assertNotIn("error", result)
+        state = loop.load(self.ws)
+        self.assertEqual(state["step"], "em")
+        self.assertEqual(state["tasks"][0]["status"], "passed")
+        self.assertEqual(state["tasks"][0]["fix_cycles"], 0)
+        self.assertEqual(state["tasks"][0]["evaluation"]["status"],
+                         "unavailable")
+
+    def test_product_failure_cannot_be_disguised_as_unavailable(self):
+        self._write_unavailable(not_met=True)
+        result = submit_gate(self.ws, "unavailable")
+        self.assertIn("error", result)
+        self.assertEqual(loop.load(self.ws)["step"], "evaluate")
+        self.assertEqual(loop.load(self.ws)["tasks"][0]["fix_cycles"], 0)
+
+    def test_fail_submission_is_refused_for_pure_host_unavailability(self):
+        self._write_unavailable()
+        submitted = loop.submit(self.ws, "fail")
+        self.assertNotIn("error", submitted)
+        result = loop.gate(self.ws, "fail")
+        self.assertIn("gate unavailable", result["error"])
+        self.assertEqual(loop.load(self.ws)["step"], "evaluate")
+        self.assertEqual(loop.load(self.ws)["tasks"][0]["fix_cycles"], 0)
+
+    def test_unavailable_requires_green_mechanical_suite_evidence(self):
+        self._write_unavailable()
+        with loop.mutate(self.ws) as state:
+            state.get("_suite_evidence", {}).pop("t1", None)
+        result = submit_gate(self.ws, "unavailable")
+        self.assertIn("green mechanical suite", json.dumps(result))
+        self.assertEqual(loop.load(self.ws)["step"], "evaluate")
+
+
 class TestWriteIsNonDestructive(_AtEvaluate):
     def test_an_existing_verdict_is_never_overwritten(self):
         path = os.path.join(self.ws, ".eval", "verdict.json")
