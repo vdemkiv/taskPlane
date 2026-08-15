@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 
@@ -11,6 +12,87 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import evaluation_output as output  # noqa: E402
 import review  # noqa: E402
+
+
+class _BriefStore:
+    def __init__(self, brief):
+        self.brief = brief
+
+    def read(self, _ref):
+        return self.brief
+
+
+def _reused_codex_receipt(tmp_path, monkeypatch, *, observed_effort="xhigh",
+                          include_brief_output=True):
+    workspace = str(tmp_path / "repo")
+    codex_home = tmp_path / "codex"
+    session_dir = codex_home / "sessions" / "2026" / "08" / "15"
+    session_dir.mkdir(parents=True)
+    os.makedirs(workspace)
+    parent = "root-thread"
+    turn_id = "reused-turn"
+    task_name = "tp_lens_backend_deadbeef"
+    role_marker = "taskplane-role:tp-lens"
+    result_path = ".eval/kernel-v2/results/lease-a.json"
+    brief_path = ".taskplane/review-artifacts-v2/lens-brief/brief-a.json"
+    raw = b'{"schema":"taskplane.lens-slot-output/v2"}'
+    digest = hashlib.sha256(raw).hexdigest()
+    producer = {
+        "task": "review lens slot deep.backend lease lease-a",
+        "task_slot": "review-lease-a", "read_only": True,
+        "write_allow": [result_path],
+    }
+    brief = {
+        "role": {"task_name": task_name, "role_marker": role_marker,
+                 "reasoning_effort": "high", "model": None},
+        "producer_contract": producer,
+    }
+    slot = {
+        "run_id": "run-a", "brief": {"relative_path": brief_path},
+        "result_path": result_path, "producer_contract": producer,
+    }
+    lease = {"lease_fingerprint": "lease-a", "slot_id": "deep.backend"}
+    tool_output = ""
+    if include_brief_output:
+        tool_output = json.dumps({
+            "role": brief["role"], "producer_contract": producer,
+            "lease_fingerprint": "lease-a", "result_path": result_path,
+        }, sort_keys=True)
+    final = ("review complete\n"
+             f"taskplane-result-path:{result_path}\n"
+             f"taskplane-result-sha256:{digest}")
+    events = [
+        {"type": "session_meta", "payload": {
+            "id": "existing-child", "source": {"subagent": {
+                "thread_spawn": {"parent_thread_id": parent,
+                                 "agent_path": "/root/original-task"}}}}},
+        {"type": "event_msg", "payload": {
+            "type": "task_started", "turn_id": turn_id}},
+        {"type": "turn_context", "payload": {
+            "turn_id": turn_id, "model": "gpt-test",
+            "reasoning_effort": observed_effort}},
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "call_id": "read-brief",
+            "name": "exec", "input": json.dumps({
+                "cmd": f"sed -n 1,240p {brief_path}"}),
+            "internal_chat_message_metadata_passthrough": {
+                "turn_id": turn_id}}},
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "read-brief",
+            "output": tool_output,
+            "internal_chat_message_metadata_passthrough": {
+                "turn_id": turn_id}}},
+        {"type": "event_msg", "payload": {
+            "type": "task_complete", "turn_id": turn_id,
+            "last_agent_message": final}},
+    ]
+    rollout = session_dir / "rollout-reused.jsonl"
+    rollout.write_text("".join(json.dumps(row) + "\n" for row in events),
+                       encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CODEX_THREAD_ID", parent)
+    return review._codex_session_receipt(
+        workspace, _BriefStore(brief), slot, lease, raw)
 
 
 def _source(name: str) -> str:
@@ -116,3 +198,17 @@ def test_runtime_guidance_requires_declared_validated_observed_output():
         "output_schema_declared", "output_schema_validated",
         "output_producer_observed"]
     assert output_control["max_corrections"] == 1
+
+
+def test_reused_codex_child_receipt_is_bound_to_its_exact_governed_turn(
+        tmp_path, monkeypatch):
+    receipt = _reused_codex_receipt(tmp_path, monkeypatch)
+    assert receipt["host_event"] == "CodexTaskFollowupComplete"
+    assert receipt["tool"] == "native-session-reuse-receipt"
+    assert receipt["producer_child_id"] == "existing-child"
+
+
+def test_reused_codex_child_final_claim_without_brief_delivery_is_rejected(
+        tmp_path, monkeypatch):
+    assert _reused_codex_receipt(
+        tmp_path, monkeypatch, include_brief_output=False) is None

@@ -887,6 +887,23 @@ def record_slot_write_observation(ws: str, *, event: dict, contract: dict,
     return receipt
 
 
+def _codex_event_turn(payload: dict) -> str:
+    meta = payload.get("internal_chat_message_metadata_passthrough") or {}
+    return str(payload.get("turn_id") or meta.get("turn_id") or "")
+
+
+def _codex_effort_satisfies(expected: str | None,
+                            observed: str | None) -> bool:
+    if expected is None:
+        return True
+    if not observed:
+        return False
+    efforts = tuple(getattr(tp, "REASONING_EFFORTS", ()))
+    if expected in efforts and observed in efforts:
+        return efforts.index(observed) >= efforts.index(expected)
+    return observed == expected
+
+
 def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
                            raw_result: bytes) -> dict | None:
     """Recover host provenance from Codex's native, read-only task store.
@@ -897,6 +914,11 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
     gives collection an equivalent byte-bound receipt when a hook transport is
     unavailable.  Parent thread + hashed task name + model/effort + result
     bytes are all matched; a prose claim or merely existing child is not.
+
+    Codex may reuse a bounded child thread when its native agent pool is full.
+    That path is accepted only when one host-recorded child turn reads the
+    exact immutable brief and then completes with the exact result digest.
+    The original fresh-spawn task-name binding remains the preferred path.
     """
     if tp.host() != "codex":
         return None
@@ -910,6 +932,10 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
         return None
     expected_path = tp.norm(slot["result_path"])
     expected_digest = hashlib.sha256(raw_result).hexdigest()
+    expected = slot["producer_contract"]
+    brief_ref = slot.get("brief") or {}
+    brief_path = (brief_ref.get("relative_path")
+                  if isinstance(brief_ref, dict) else str(brief_ref))
     home = os.path.realpath(os.environ.get("CODEX_HOME") or
                             os.path.join(os.path.expanduser("~"), ".codex"))
     sessions = os.path.join(home, "sessions")
@@ -924,9 +950,11 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
         model = None
         effort = None
         final_messages = []
+        turns = {}
+        calls = {}
         try:
             with open(path, encoding="utf-8", errors="replace") as stream:
-                for line in stream:
+                for ordinal, line in enumerate(stream):
                     if len(line) > 2 * 1024 * 1024:
                         continue
                     try:
@@ -934,6 +962,7 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
                     except (TypeError, ValueError):
                         continue
                     payload = event.get("payload") or {}
+                    turn_id = _codex_event_turn(payload)
                     if event.get("type") == "session_meta" and spawn is None:
                         source = payload.get("source") or {}
                         candidate = (((source.get("subagent") or {})
@@ -946,29 +975,92 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
                         model = payload.get("model")
                         effort = (payload.get("effort") or
                                   payload.get("reasoning_effort"))
-                    elif event.get("type") == "event_msg" and \
+                    if turn_id:
+                        turn = turns.setdefault(turn_id, {})
+                        if event.get("type") == "turn_context":
+                            turn["model"] = payload.get("model")
+                            turn["effort"] = (payload.get("effort") or
+                                              payload.get("reasoning_effort"))
+                        elif event.get("type") == "event_msg" and \
+                                payload.get("type") == "task_started":
+                            turn["started"] = ordinal
+                        elif payload.get("type") in {
+                                "custom_tool_call", "function_call"}:
+                            call_id = str(payload.get("call_id") or
+                                          payload.get("id") or "")
+                            calls[call_id] = {
+                                "turn_id": turn_id, "ordinal": ordinal,
+                                "input": str(payload.get("input") or
+                                             payload.get("arguments") or ""),
+                            }
+                        elif payload.get("type") in {
+                                "custom_tool_call_output",
+                                "function_call_output"}:
+                            call_id = str(payload.get("call_id") or "")
+                            call = calls.get(call_id) or {}
+                            call_turn = turns.setdefault(
+                                str(call.get("turn_id") or turn_id), {})
+                            output = payload.get("output")
+                            output_text = (output if isinstance(output, str)
+                                           else json.dumps(output,
+                                                           sort_keys=True))
+                            required_output = (
+                                task_name, str(role.get("role_marker") or ""),
+                                expected_path, expected["task_slot"],
+                                lease["lease_fingerprint"])
+                            if brief_path and brief_path in str(
+                                    call.get("input") or "") and all(
+                                    token and token in output_text
+                                    for token in required_output):
+                                call_turn["brief_delivered"] = ordinal
+                    if event.get("type") == "event_msg" and \
                             payload.get("type") == "task_complete":
-                        final_messages.append(str(
-                            payload.get("last_agent_message") or ""))
+                        message = str(payload.get("last_agent_message") or "")
+                        final_messages.append(message)
+                        if turn_id:
+                            turns.setdefault(turn_id, {})["complete"] = {
+                                "ordinal": ordinal, "message": message}
         except OSError:
             continue
-        if not spawn or spawn.get("parent_thread_id") != parent_thread or \
-                os.path.basename(str(spawn.get("agent_path") or "")) != task_name:
-            continue
-        if role.get("model") not in (None, model) or \
-                role.get("reasoning_effort") not in (None, effort):
+        if not spawn or spawn.get("parent_thread_id") != parent_thread:
             continue
         path_line = "taskplane-result-path:" + expected_path
         digest_line = "taskplane-result-sha256:" + expected_digest
-        if not any(path_line in {part.strip() for part in message.splitlines()}
-                   and digest_line in {part.strip() for part in message.splitlines()}
-                   for message in final_messages):
-            continue
-        observed = {"child_id": child_id, "model": model, "effort": effort}
-        break
+        fresh = os.path.basename(str(spawn.get("agent_path") or "")) == task_name
+        if fresh:
+            if role.get("model") not in (None, model) or \
+                    role.get("reasoning_effort") not in (None, effort):
+                continue
+            if not any(
+                    path_line in {part.strip() for part in message.splitlines()}
+                    and digest_line in {
+                        part.strip() for part in message.splitlines()}
+                    for message in final_messages):
+                continue
+            observed = {"child_id": child_id, "model": model,
+                        "effort": effort, "reused": False}
+            break
+        for turn in turns.values():
+            delivered = turn.get("brief_delivered")
+            complete = turn.get("complete") or {}
+            message = str(complete.get("message") or "")
+            lines = {part.strip() for part in message.splitlines()}
+            if turn.get("started") is None or delivered is None or \
+                    not (turn["started"] <= delivered <
+                         int(complete.get("ordinal", -1))) or \
+                    path_line not in lines or digest_line not in lines:
+                continue
+            if role.get("model") not in (None, turn.get("model")) or not \
+                    _codex_effort_satisfies(
+                        role.get("reasoning_effort"), turn.get("effort")):
+                continue
+            observed = {"child_id": child_id, "model": turn.get("model"),
+                        "effort": turn.get("effort"), "reused": True}
+            break
+        if observed:
+            break
     if not observed or not observed["child_id"]:
         return None
-    expected = slot["producer_contract"]
     assignment = {
         "schema": "taskplane.slot-producer-assignment/v1",
         "run_id": slot.get("run_id"),
@@ -998,8 +1090,10 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
             "producer_host", "producer_child_id")},
         "producer_assignment_fingerprint": assignment_fingerprint,
         "result_sha256": expected_digest, "result_bytes": len(raw_result),
-        "host_event": "CodexTaskComplete",
-        "tool": "native-session-result-receipt",
+        "host_event": ("CodexTaskFollowupComplete" if observed["reused"]
+                       else "CodexTaskComplete"),
+        "tool": ("native-session-reuse-receipt" if observed["reused"]
+                 else "native-session-result-receipt"),
     }
     receipt_path = _receipt_path(ws, lease["lease_fingerprint"])
     prior_receipt = tp.load_json(
