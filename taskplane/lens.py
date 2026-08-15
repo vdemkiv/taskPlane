@@ -467,6 +467,7 @@ def route(changed_files, task_type: str | None = None,
                                workspace=workspace,
                                requirement_text=requirement_text,
                                content_by_file=content_by_file)
+            routed = _attach_language_context(routed, files, task_type)
         except Exception as exc:
             # R-0005: uncertainty is not recoverable with breadth. A broken
             # mapper has no valid 26-lens decision, so normal delivery must
@@ -492,14 +493,35 @@ def route(changed_files, task_type: str | None = None,
             return refused
         _record_breadth(workspace, requested=breadth, effective="routed",
                         engine_ran=True, stage=stage, routing=routed)
-        return _attach_language_context(routed, files, task_type)
+        return routed
     legacy = _route_legacy(files, task_type, artifact_type, cat,
                            only, skip, breadth, hub_dependents)
+    try:
+        legacy = _attach_language_context(legacy, files, task_type)
+    except (OSError, ValueError) as exc:
+        import sys
+        print(f"taskplane: language reference unavailable ({exc}) — "
+              "mapper_unavailable; dispatching zero lenses. Repair the "
+              "bundled reference and retry.", file=sys.stderr)
+        if workspace:
+            try:
+                tp.trace(workspace, "lens_engine_failed",
+                         error=str(exc), stage=stage)
+            except Exception:
+                pass
+        refused = {"lenses": [], "context": {
+            "status": "mapper_unavailable", "breadth": breadth,
+            "stage": stage, "lens_engine_failed": str(exc),
+            "changed_files": len(files)}}
+        _record_breadth(workspace, requested=breadth, effective=breadth,
+                        engine_ran=False, stage=stage, routing=refused,
+                        reason=f"mapper_unavailable: {exc}")
+        return refused
     _record_breadth(workspace, requested=breadth, effective=breadth,
                     engine_ran=False, stage=stage, routing=legacy,
                     reason=_engine_off_reason(cat, breadth, stage,
                                               use_signals))
-    return _attach_language_context(legacy, files, task_type)
+    return legacy
 
 
 # ------------------------------------------------- recorded routing breadth

@@ -294,9 +294,11 @@ def _codex_hook_rows() -> dict:
             for hook in row.get("hooks") or []:
                 action = _codex_hook_action(hook.get("command"))
                 hook["command"] = (
-                    f'python3 "{_CODEX_HOOK_MARKER}" {action}')
+                    f'TASKPLANE_HOOK_PATH=bridge python3 '
+                    f'"{_CODEX_HOOK_MARKER}" {action}')
                 hook["commandWindows"] = (
-                    f'py -3 ".taskplane\\codex-hook.py" {action}')
+                    f'set "TASKPLANE_HOOK_PATH=bridge" & py -3 '
+                    f'".taskplane\\codex-hook.py" {action}')
     return generated
 
 

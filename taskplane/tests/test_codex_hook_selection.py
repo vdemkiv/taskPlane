@@ -42,6 +42,34 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in command
                             for command in commands))
 
+    def test_onboarding_preserves_bridge_identity_on_both_shells(self):
+        with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-") as ws:
+            Path(ws, ".codex").mkdir()
+            Path(ws, ".codex", "hooks.json").write_text(
+                '{"hooks": {}}\n', encoding="utf-8")
+            with mock.patch.dict(
+                    os.environ,
+                    {"CODEX_HOME": "/tmp/codex",
+                     "TASKPLANE_MANAGED_HOOK_POLICY": "supported"},
+                    clear=True), \
+                    mock.patch.object(cli, "_install_context",
+                                      return_value="personal"):
+                cli._install_codex_hooks(ws)
+            data = json.loads(Path(ws, ".codex", "hooks.json").read_text(
+                encoding="utf-8"))
+        hooks = [
+            hook
+            for rows in data["hooks"].values()
+            for row in rows
+            for hook in row.get("hooks") or []
+        ]
+        self.assertTrue(hooks)
+        self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in
+                            hook.get("command", "") for hook in hooks))
+        self.assertTrue(all('TASKPLANE_HOOK_PATH=bridge' in
+                            hook.get("commandWindows", "")
+                            for hook in hooks))
+
 
 class TestHookEventClaims(unittest.TestCase):
     def setUp(self):

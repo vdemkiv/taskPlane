@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
@@ -51,6 +52,24 @@ class TestLanguageReferenceDelivery(unittest.TestCase):
                         refs[0]["content_sha256"],
                         hashlib.sha256(stream.read()).hexdigest())
         self.assertEqual(lens.language_references(["README.md"]), [])
+
+    def test_missing_reference_fails_closed_without_a_traceback(self):
+        missing = {"path": "lenses/references/does-not-exist.md"}
+        references = lens._LANGUAGE_REFERENCES["go"]["references"]
+        with mock.patch.dict(references, {"code-quality": missing}), \
+                self.subTest(route="legacy"):
+            routing = lens.route(["src/a.go"], only=["code-quality"])
+        self.assertEqual(routing["lenses"], [])
+        self.assertEqual(routing["context"]["status"], "mapper_unavailable")
+        self.assertIn("does-not-exist.md",
+                      routing["context"]["lens_engine_failed"])
+
+        with mock.patch.dict(references, {"code-quality": missing}), \
+                self.subTest(route="v2"):
+            routing = lens.route(["src/a.go"], stage="build",
+                                 only=["code-quality"])
+        self.assertEqual(routing["lenses"], [])
+        self.assertEqual(routing["context"]["status"], "mapper_unavailable")
 
     def test_generic_go_scope_primes_go_instead_of_python(self):
         with tempfile.TemporaryDirectory() as ws:
