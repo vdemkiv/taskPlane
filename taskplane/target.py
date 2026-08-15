@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 
@@ -193,9 +194,13 @@ def pin(root: str, base: str | None = None, target: dict | None = None) -> dict:
                           f"exist"}
     _, origin = git(root, "remote", "get-url", "origin")
     _, branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    shallow_rc, shallow_value = git(
+        root, "rev-parse", "--is-shallow-repository")
+    shallow = (shallow_value == "true" if shallow_rc == 0 and
+               shallow_value in {"true", "false"} else None)
     rec = {"ok": True, "root": os.path.abspath(root),
            "origin": origin or None, "head": head, "branch": branch or None,
-           "dirty": _dirty(root)}
+           "dirty": _dirty(root), "shallow": shallow}
     if target:
         rec["target"] = target
     if base:
@@ -213,14 +218,152 @@ def pin(root: str, base: str | None = None, target: dict | None = None) -> dict:
 
 
 def fingerprint(rec: dict) -> str:
-    """One comparable value for (origin, base, head). Deliberately NOT
+    """One comparable value for the checkout and its diff history. NOT
     including dirty state: a reviewer may create `.em-review/**` under its
     contract without invalidating the binding, and the dirty list is
-    recorded separately for anyone who wants to judge it."""
+    recorded separately for anyone who wants to judge it.
+
+    Merge-base and shallow state are identity, not diagnostics. Deepening a
+    checkout can make a previously impossible PR diff valid without moving
+    HEAD or the base tip; keeping the old three-field key would let that
+    failed review state masquerade as current after the repair."""
     h = hashlib.sha256()
-    for k in ("origin", "base", "head"):
-        h.update(f"{k}={rec.get(k) or ''}\n".encode("utf-8"))
+    for k in ("origin", "base", "head", "merge_base", "shallow"):
+        encoded = json.dumps(rec.get(k), sort_keys=True,
+                             separators=(",", ":"))
+        h.update(f"{k}={encoded}\n".encode("utf-8"))
     return h.hexdigest()[:16]
+
+
+def review_cache_identity(rec: dict, graph: dict) -> dict:
+    """The complete identity for reusable PR-review setup evidence."""
+    row = rec if isinstance(rec, dict) else {}
+    meta = (graph or {}).get("meta") if isinstance(graph, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
+    graph_revision = str(meta.get("content_fingerprint") or "")
+    material = {
+        "schema": "taskplane.review-cache-identity/v1",
+        "head": str(row.get("head") or ""),
+        "base": str(row.get("base") or ""),
+        "merge_base": str(row.get("merge_base") or ""),
+        "shallow": row.get("shallow"),
+        "graph_revision": graph_revision,
+    }
+    material["fingerprint"] = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8")).hexdigest()
+    return material
+
+
+def _remote_identity(value: str | None) -> tuple[str, str, str] | None:
+    """Parse comparable hosted-git remotes; local paths stay unclassified."""
+    text = str(value or "").strip()
+    patterns = (
+        r"^(?:https?|ssh)://(?:[^@/]+@)?(?P<host>[\w.-]+)/"
+        r"(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?/?$",
+        r"^(?:[^@/:]+@)?(?P<host>[\w.-]+):(?P<owner>[\w.-]+)/"
+        r"(?P<repo>[\w.-]+?)(?:\.git)?$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, text)
+        if match:
+            values = match.groupdict()
+            return tuple(str(values[key]).lower()
+                         for key in ("host", "owner", "repo"))
+    return None
+
+
+def _review_recovery(rec: dict, *, checkout: bool = False) -> str:
+    target = rec.get("target") if isinstance(rec, dict) else {}
+    target = target if isinstance(target, dict) else {}
+    spec = str(target.get("spec") or "").strip()
+    base = str(rec.get("base_ref") or "").strip()
+    if target.get("kind") == "pr" and spec:
+        command = f"tp review start {shlex.quote(spec)}"
+        if base:
+            command += f" --base {shlex.quote(base)}"
+        return command + " --fetch"
+    if checkout and spec:
+        command = f"git checkout {shlex.quote(spec)} && tp review start " \
+            f"{shlex.quote(spec)}"
+        if base:
+            command += f" --base {shlex.quote(base)}"
+        return command
+    command = "tp review start"
+    if spec:
+        command += f" {shlex.quote(spec)}"
+    if base:
+        command += f" --base {shlex.quote(base)}"
+    return command
+
+
+def review_preflight(root: str, rec: dict | None,
+                     remote: str = "origin") -> dict:
+    """Validate PR/ref setup before graph work or kernel state can exist."""
+    row = rec if isinstance(rec, dict) else {}
+    if not row.get("ok"):
+        return {"ok": False, "status": "wrong_repository",
+                "reason": str(row.get("reason") or
+                              "review target is not a valid checkout"),
+                "recovery": _review_recovery(row)}
+    target = row.get("target") if isinstance(row.get("target"), dict) else {}
+    target_kind = target.get("kind")
+
+    if target_kind == "pr" and all(target.get(key)
+                                    for key in ("host", "owner", "repo")):
+        actual = _remote_identity(row.get("origin"))
+        expected = tuple(str(target[key]).lower()
+                         for key in ("host", "owner", "repo"))
+        if actual is not None and actual != expected:
+            return {
+                "ok": False, "status": "wrong_repository",
+                "reason": (f"origin is {actual[0]}/{actual[1]}/{actual[2]}, "
+                           f"but the pull request belongs to "
+                           f"{expected[0]}/{expected[1]}/{expected[2]}"),
+                "recovery": _review_recovery(row),
+            }
+
+    if row.get("base_ref") and (not row.get("base") or
+                                 not row.get("merge_base")):
+        shallow = " in this shallow checkout" if row.get("shallow") else ""
+        return {
+            "ok": False, "status": "merge_base_missing",
+            "reason": (f"no merge base exists for {row.get('base_ref')} "
+                       f"and HEAD{shallow}; the canonical PR diff cannot be "
+                       "derived"),
+            "recovery": _review_recovery(row),
+        }
+
+    expected_sha = None
+    if target_kind == "pr":
+        resolved = resolve_pr_head(root, target, remote=remote)
+        if resolved.get("ok"):
+            expected_sha = resolved.get("sha")
+    elif target_kind == "ref" and target.get("spec"):
+        rc, value = git(root, "rev-parse", str(target["spec"]))
+        if rc == 0 and re.fullmatch(r"[0-9a-f]{7,40}", value or ""):
+            expected_sha = value
+    if expected_sha and not _sha_match(row.get("head"), expected_sha):
+        return {
+            "ok": False, "status": "target_not_checked_out",
+            "reason": (f"the requested review target is {expected_sha[:12]}, "
+                       f"but this workspace is at "
+                       f"{str(row.get('head') or '')[:12] or '(none)'}"),
+            "recovery": _review_recovery(row, checkout=target_kind == "ref"),
+        }
+
+    if row.get("base_ref") and not (row.get("changed_files") or []):
+        return {
+            "ok": False, "status": "empty_diff",
+            "reason": ("the canonical merge-base-to-HEAD diff is empty; "
+                       "there is no reviewed change to route"),
+            "recovery": _review_recovery(row, checkout=target_kind == "ref"),
+        }
+    return {
+        "ok": True, "status": "ready", "reason": None, "recovery": None,
+        "identity": {key: row.get(key) for key in
+                     ("head", "base", "merge_base", "shallow")},
+    }
 
 
 # -------------------------------------------------------------- acquisition
@@ -264,6 +407,25 @@ def acquire(root: str, spec, *, base: str | None = None,
         base = default.rsplit("/", 1)[-1] if default else "main"
         base = f"{remote}/{base}"
     rec = pin(root, base=base, target=t)
+    # A shallow clone can resolve both tips while still lacking their merge
+    # base.  `--fetch` is the promised one-command recovery, so give the base
+    # history one bounded deepen before the preflight reports the remaining
+    # defect. Repeating the same explicit command can deepen another bounded
+    # slice; taskplane never silently unshallows the whole repository.
+    if rec.get("ok") and rec.get("shallow") and rec.get("base") and \
+            not rec.get("merge_base"):
+        base_fetch = str(base)
+        for prefix in (f"refs/remotes/{remote}/", f"{remote}/"):
+            if base_fetch.startswith(prefix):
+                base_fetch = base_fetch[len(prefix):]
+                break
+        rc, out = git(root, "fetch", "--deepen=256", remote, base_fetch,
+                      timeout=600)
+        steps.append({
+            "cmd": f"git fetch --deepen=256 {remote} {base_fetch}",
+            "rc": rc, "out": out[-400:]})
+        if rc == 0:
+            rec = pin(root, base=base, target=t)
     rec["steps"] = steps
     rec["acquired"] = True
     return rec

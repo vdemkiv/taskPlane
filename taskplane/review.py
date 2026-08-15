@@ -187,6 +187,13 @@ def _run_id(stage: str, target_fingerprint: str,
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
+def _target_run_fingerprint(target: dict) -> str:
+    """Prefer the full checkout/history/graph cache identity when present."""
+    cache = target.get("review_cache") if isinstance(target, dict) else {}
+    cache = cache if isinstance(cache, dict) else {}
+    return str(cache.get("fingerprint") or target.get("fingerprint") or "")
+
+
 def bounded_caller_expander(graph: dict) -> Callable:
     """Bind every review surface to one frozen symbol graph adapter."""
     import depgraph
@@ -527,11 +534,13 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "effective_tokens": None,
     }
     if quality.get("status") != "complete":
-        run_id = _run_id(stage, str(target.get("fingerprint") or ""),
+        refusal_status = ("graph_evidence_sparse" if stage == "review"
+                          else "impact_incomplete")
+        run_id = _run_id(stage, _target_run_fingerprint(target),
                          quality["fingerprint"], 0)
         manifest = _manifest({
             "schema": "taskplane.review-start-manifest/v2",
-            "status": "impact_incomplete", "stage": stage,
+            "status": refusal_status, "stage": stage,
             "run_id": run_id,
             "target_fingerprint": target.get("fingerprint"),
             "graph_quality": _portable_ref(quality_ref),
@@ -539,7 +548,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
             "agents": [], "counters": counters,
         })
         _save_state(ws, {"schema": "taskplane.review-run-state/v2",
-                         "run_id": run_id, "status": "impact_incomplete",
+                         "run_id": run_id, "status": refusal_status,
                          "stage": stage, "target": target,
                          "quality": quality_ref, "manifest": manifest})
         return manifest
@@ -555,7 +564,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         catalog = lensmod.load_catalog()
         decision = _routing_decision(routing, catalog)
     except Exception as exc:
-        run_id = _run_id(stage, str(target.get("fingerprint") or ""),
+        run_id = _run_id(stage, _target_run_fingerprint(target),
                          quality["fingerprint"], 0)
         manifest = _manifest({
             "schema": "taskplane.review-start-manifest/v2",
@@ -614,7 +623,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     revision = (internal_slots[0]["lease"] and
                 store.read(internal_slots[0]["lease"])["canonical_revision"]
                 if internal_slots else evidence.next_revision(store))
-    run_id = _run_id(stage, str(target.get("fingerprint") or ""),
+    run_id = _run_id(stage, _target_run_fingerprint(target),
                      envelope_ref["fingerprint"], revision)
     for slot in internal_slots:
         slot["run_id"] = run_id

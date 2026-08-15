@@ -2575,7 +2575,8 @@ def render_review_workflow(*, status: str, slots=None,
     """
     slots = list(slots or [])
     complete = status == "complete"
-    impact_blocked = status == "impact_incomplete" or not graph_complete
+    impact_blocked = status in {"impact_incomplete", "graph_evidence_sparse"} \
+        or not graph_complete
     done = sum(1 for row in slots if row.get("status") == "done")
     total = len(slots)
     rows = [

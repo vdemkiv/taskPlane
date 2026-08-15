@@ -3860,22 +3860,19 @@ def cmd_review(a) -> int:
         out["next"] = rec.get("reason")
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
-    # IS THIS THE TREE THE REVIEW CLAIMS TO BE ABOUT? (D1)
-    #
-    # Checked BEFORE any work. A field run against
-    # aws/karpenter-provider-aws#9464 reviewed an 83-file working tree as a
-    # 4-file pull request and came back fully governed — contract activated,
-    # target pinned and fingerprinted, obligations discharged,
-    # `steps.target ok: true` throughout — with seven deep lenses citing
-    # evidence from files the pull request never touches. The binding proved
-    # the findings came from the pinned tree; nothing proved the pinned tree
-    # was the pull request. Refusing later would still have spent the
-    # contract, the graph scan and the entire lens wave on the wrong tree.
-    _wrong = tgt.wrong_tree(ws, rec)
-    if _wrong:
-        step("target", False, reason=_wrong)
-        out["ok"] = False
-        out["next"] = _wrong
+    # SETUP MUST BE TRUE BEFORE GRAPH QUALITY CAN SAY ANYTHING.  A wrong
+    # repository, missing merge base, or un-checked-out target is not sparse
+    # graph evidence.  Refuse before saving a target, scanning a graph,
+    # activating a contract, or minting a kernel/cache entry.
+    preflight = tgt.review_preflight(ws, rec)
+    out["preflight"] = preflight
+    if not preflight["ok"]:
+        step("target", False, status=preflight["status"],
+             reason=preflight["reason"], recovery=preflight["recovery"])
+        out.update({"ok": False, "status": preflight["status"],
+                    "reason": preflight["reason"],
+                    "recovery": preflight["recovery"],
+                    "next": preflight["recovery"]})
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
     tgt.save(ws, rec)
@@ -3906,10 +3903,13 @@ def cmd_review(a) -> int:
              impacted=imp.get("total_impacted", 0))
     except Exception as e:
         # Never pass a stale/partially loaded graph into routing.  The empty
-        # graph makes the quality gate return impact_incomplete with zero
-        # dispatch, while the canonical diff/file facts remain available.
+        # graph becomes graph_evidence_sparse with zero dispatch, while the
+        # canonical target/diff facts remain available.
         g, imp = {}, {}
         step("graph", False, reason=e.__class__.__name__)
+    rec["review_cache"] = tgt.review_cache_identity(rec, g)
+    preflight["cache_identity"] = rec["review_cache"]
+    tgt.save(ws, rec)
 
     # 4. contract — read-only, owing the review's artifacts.
     c = tp.build_contract(
@@ -3923,7 +3923,8 @@ def cmd_review(a) -> int:
         c["budget"]["max_tokens"] = int(a.max_tokens)
     c["target"] = {k: rec.get(k) for k in
                    ("origin", "head", "base", "base_ref", "branch",
-                    "fingerprint", "target")}
+                    "merge_base", "shallow", "fingerprint", "target",
+                    "review_cache")}
     tp.activate(ws, c, snapshot=tp.git_head(ws))
     out["contract"] = {"task_id": c["task_id"], "read_only": True,
                        "write_allow": c.get("write_allow"),
@@ -3963,6 +3964,7 @@ def cmd_review(a) -> int:
                                 "read_only": True}
         manifest["tools"] = {"git": bool(t["git"]["present"]),
                              "gh": bool(t["gh"]["present"])}
+        manifest["preflight"] = preflight
         visuals, owed = _review_visuals(ws, manifest, final=False)
         manifest["visuals"] = visuals
         manifest["obligations"] = owed

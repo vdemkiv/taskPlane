@@ -169,7 +169,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         graph = {**self.graph,
                  "meta": {**self.graph["meta"], "truncated": True}}
         out = self._start(graph=graph)
-        self.assertEqual(out["status"], "impact_incomplete")
+        self.assertEqual(out["status"], "graph_evidence_sparse")
         self.assertEqual(out["slots"], [])
         self.assertEqual(out["agents"], [])
 
@@ -249,7 +249,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             caller_expander=lambda **_: {
                 "complete": True, "callers": [], "contracts": [],
                 "unresolved": []})
-        self.assertEqual(out["status"], "impact_incomplete")
+        self.assertEqual(out["status"], "graph_evidence_sparse")
         quality = review_evidence.ArtifactStore(self.ws).read(
             review._load_state(self.ws)["quality"])
         self.assertEqual(
@@ -261,7 +261,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         """A module aggregate cannot prove which callers a body edit reaches."""
         out = self._start(
             diff={"files": ["src/service.py"], "changed_symbols": []})
-        self.assertEqual(out["status"], "impact_incomplete")
+        self.assertEqual(out["status"], "graph_evidence_sparse")
         self.assertEqual(out["slots"], [])
         quality = review_evidence.ArtifactStore(self.ws).read(
             review._load_state(self.ws, out["run_id"])["quality"])

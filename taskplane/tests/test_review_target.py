@@ -160,6 +160,30 @@ class TestPinningTheCheckout(_Repo):
                              "base": "1" * 40, "head": "2" * 40})
         self.assertNotEqual(a, b)
 
+    def test_history_shape_is_part_of_the_target_fingerprint(self):
+        base = {"origin": "git@github.com:a/b.git", "base": "1" * 40,
+                "head": "2" * 40}
+        shallow = tgt.fingerprint({**base, "merge_base": None,
+                                   "shallow": True})
+        complete = tgt.fingerprint({**base, "merge_base": "3" * 40,
+                                    "shallow": False})
+        self.assertNotEqual(shallow, complete)
+        unknown = tgt.fingerprint({**base, "merge_base": "3" * 40,
+                                   "shallow": None})
+        self.assertNotEqual(complete, unknown)
+
+    def test_review_cache_identity_includes_the_graph_revision(self):
+        rec = tgt.pin(self.ws, base=self.base)
+        first = tgt.review_cache_identity(
+            rec, {"meta": {"content_fingerprint": "graph-a"}})
+        second = tgt.review_cache_identity(
+            rec, {"meta": {"content_fingerprint": "graph-b"}})
+        self.assertNotEqual(first["fingerprint"], second["fingerprint"])
+        self.assertEqual(first["head"], rec["head"])
+        self.assertEqual(first["base"], rec["base"])
+        self.assertEqual(first["merge_base"], rec["merge_base"])
+        self.assertIn("shallow", first)
+
 
 class TestTheCompletionGate(_Repo):
     """The conversion: recording the target is not requested, it is the
@@ -312,6 +336,38 @@ class TestAcquisition(_Repo):
         self.assertEqual(rec["branch"], "tp-pr-42")
         self.assertIn("c.txt", rec["changed_files"])
         self.assertEqual(rec["target"]["number"], 42)
+
+    def test_fetch_deepens_a_shallow_base_once_before_preflight(self):
+        calls = []
+        records = [
+            {"ok": True, "head": "h" * 40, "base": "b" * 40,
+             "base_ref": "origin/main", "merge_base": None,
+             "shallow": True, "changed_files": [], "fingerprint": "old"},
+            {"ok": True, "head": "h" * 40, "base": "b" * 40,
+             "base_ref": "origin/main", "merge_base": "m" * 40,
+             "shallow": True, "changed_files": ["a.txt"],
+             "fingerprint": "new"},
+        ]
+        real_git, real_pin = tgt.git, tgt.pin
+
+        def fake_git(_root, *args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("rev-parse", "--git-dir"):
+                return 0, ".git"
+            if args[0] in {"fetch", "checkout"}:
+                return 0, ""
+            return 1, ""
+
+        def fake_pin(*_args, **_kwargs):
+            return records.pop(0)
+
+        tgt.git, tgt.pin = fake_git, fake_pin
+        self.addCleanup(setattr, tgt, "git", real_git)
+        self.addCleanup(setattr, tgt, "pin", real_pin)
+        rec = tgt.acquire(self.ws, "o/r#42", base="origin/main")
+        self.assertTrue(rec["ok"])
+        self.assertEqual(rec["merge_base"], "m" * 40)
+        self.assertIn(("fetch", "--deepen=256", "origin", "main"), calls)
 
 
 class TestToolReadiness(unittest.TestCase):

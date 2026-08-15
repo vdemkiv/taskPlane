@@ -249,6 +249,9 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         self.assertEqual(rc, 1, out)
         d = json.loads(out)
         self.assertFalse(d["ok"])
+        self.assertEqual(d["status"], "target_not_checked_out")
+        self.assertIn("tp review start", d["recovery"])
+        self.assertIn("--fetch", d["recovery"])
         step = [s for s in d["steps"] if s["step"] == "target"][0]
         self.assertFalse(step["ok"])
         self.assertIn(self.pr_head[:12], step["reason"])
@@ -262,6 +265,31 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         self.assertFalse((tp.load_active(self.ws) or {}).get("task_id"))
         self.assertNotIn("dispatch", d)
 
+    def test_a_ref_target_that_is_not_checked_out_is_refused_too(self):
+        _git(self.ws, "fetch", "-q", "origin",
+             "refs/pull/42/head:tp-pr-42")
+        rc, out, _err = _run(
+            "review", "start", "tp-pr-42", "--base", "HEAD~1",
+            "--workspace", self.ws)
+        self.assertEqual(rc, 1, out)
+        d = json.loads(out)
+        self.assertEqual(d["status"], "target_not_checked_out")
+        self.assertIn("git checkout tp-pr-42", d["recovery"])
+
+    def test_a_setup_refusal_creates_no_kernel_cache_and_retry_is_fresh(self):
+        rc, out, _err = _run("review", "start", SPEC, "--base", "HEAD~1",
+                             "--workspace", self.ws)
+        self.assertEqual(rc, 1, out)
+        self.assertFalse(os.path.exists(os.path.join(
+            self.ws, ".em-review", "kernel-v2")))
+        _git(self.ws, "fetch", "-q", "origin",
+             "refs/pull/42/head:tp-pr-42")
+        _git(self.ws, "checkout", "-q", "tp-pr-42")
+        rc, out, _err = _run("review", "start", SPEC, "--base", "HEAD~1",
+                             "--workspace", self.ws)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.loads(out)["status"], "ready")
+
     def test_the_pull_requests_head_opens_the_review_normally(self):
         _git(self.ws, "fetch", "-q", "origin", "refs/pull/42/head:tp-pr-42")
         _git(self.ws, "checkout", "-q", "tp-pr-42")
@@ -271,6 +299,36 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         d = json.loads(out)
         self.assertEqual(d["status"], "ready")
         self.assertTrue(d["target_fingerprint"])
+        self.assertEqual(d["preflight"]["identity"]["head"], self.pr_head)
+        self.assertEqual(d["preflight"]["identity"]["merge_base"],
+                         d["preflight"]["cache_identity"]["merge_base"])
+        self.assertTrue(
+            d["preflight"]["cache_identity"]["graph_revision"])
+
+
+class TestReviewPreflightDiagnostics(_PRRepo):
+    def test_a_parseable_mismatched_origin_is_wrong_repository(self):
+        _git(self.ws, "remote", "set-url", "origin",
+             "https://github.com/elsewhere/not-backstage.git")
+        rec = tgt.pin(
+            self.ws, base="HEAD~1",
+            target=tgt.parse("https://github.com/backstage/backstage/pull/42"))
+        out = tgt.review_preflight(self.ws, rec)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "wrong_repository")
+        self.assertIn("elsewhere/not-backstage", out["reason"])
+        self.assertIn("backstage/backstage", out["reason"])
+
+    def test_a_missing_merge_base_is_not_graph_insufficiency(self):
+        rec = self._pinned()
+        rec.update({"base_ref": "origin/main", "base": "b" * 40,
+                    "merge_base": None, "shallow": True,
+                    "changed_files": []})
+        out = tgt.review_preflight(self.ws, rec)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "merge_base_missing")
+        self.assertNotIn("graph", out["reason"].lower())
+        self.assertIn("--fetch", out["recovery"])
 
 
 # --------------------------------------------------------------------------

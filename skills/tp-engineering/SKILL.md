@@ -32,9 +32,19 @@ decision. It returns compact artifact references plus the exact briefs; it
 does not print or duplicate the artifact bodies. Do not walk the older
 target/graph/impact/route/dispatch commands during a normal review.
 
+The opening performs a target preflight before it writes target state, scans a
+graph, activates a contract, or creates a ReviewKernel run. Treat
+`wrong_repository`, `merge_base_missing`, `target_not_checked_out`, and
+`empty_diff` as setup refusals and run the exact `recovery` command returned in
+the payload. Do not translate any of them into graph insufficiency, and do not
+reuse artifacts from before the checkout/history correction. The successful
+manifest names HEAD, base, merge base, shallow state, and the graph-bound cache
+identity so the wave board proves which PR state it reviewed.
+
 Graph quality is a gate before routing. Sparse module evidence gets one bounded
 changed-symbol caller expansion. If coverage is still insufficient, stop as
-`impact_incomplete` with zero lens dispatch. Never recover by running all 26.
+`graph_evidence_sparse` with zero lens dispatch. (`impact_incomplete` remains
+the internal Evaluate/EM status.) Never recover by running all 26.
 
 **DELIVER LARGE ARTIFACTS, DO NOT RETYPE THEM.** When output carries an
 artifact reference or `RENDER-BY-REFERENCE: <path>`, deliver that file through
