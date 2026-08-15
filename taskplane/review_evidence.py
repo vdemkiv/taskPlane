@@ -18,6 +18,7 @@ import taskplane_lite as tp
 
 
 MAX_SCOPED_VIEW_BYTES = 16 * 1024
+MAX_INLINE_REQUIREMENTS_BYTES = 4 * 1024
 _KIND = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _SLOT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 
@@ -252,6 +253,59 @@ def _load_complete_envelope(store: ArtifactStore, envelope_ref: dict) -> dict:
     return envelope
 
 
+def _envelope_section_reference(envelope_ref: dict, section: str,
+                                value) -> dict:
+    """Bind a compact JSON pointer to exact immutable envelope content."""
+    return {
+        "schema": "taskplane.envelope-section-reference/v1",
+        "envelope_fingerprint": envelope_ref.get("fingerprint"),
+        "envelope_digest": envelope_ref.get("digest"),
+        "section": f"/{section}",
+        "content_fingerprint": content_fingerprint(value),
+        "bytes": len(canonical_bytes(value)),
+        "transport": "envelope-reference",
+    }
+
+
+def read_envelope_section(store: ArtifactStore, envelope_ref: dict,
+                          section_ref: dict):
+    """Resolve and verify a section reference without re-deriving facts."""
+    if not isinstance(section_ref, dict) or section_ref.get("schema") != \
+            "taskplane.envelope-section-reference/v1":
+        raise ProvenanceError("invalid envelope section reference")
+    if (section_ref.get("envelope_fingerprint")
+            != envelope_ref.get("fingerprint")
+            or section_ref.get("envelope_digest") != envelope_ref.get("digest")):
+        raise ProvenanceError("section reference belongs to another envelope")
+    pointer = str(section_ref.get("section") or "")
+    if not re.fullmatch(r"/[a-z][a-z0-9_]*", pointer):
+        raise ProvenanceError("invalid envelope section pointer")
+    envelope = _load_complete_envelope(store, envelope_ref)
+    name = pointer[1:]
+    if name not in envelope:
+        raise ProvenanceError("envelope section is missing")
+    value = envelope[name]
+    if (content_fingerprint(value) != section_ref.get("content_fingerprint")
+            or len(canonical_bytes(value)) != section_ref.get("bytes")):
+        raise ProvenanceError("envelope section provenance mismatch")
+    return value
+
+
+def _requirements_view(envelope_ref: dict, requirements: dict) -> dict:
+    """Keep small requirements inline; reference large canonical records."""
+    if len(canonical_bytes(requirements)) <= MAX_INLINE_REQUIREMENTS_BYTES:
+        return copy.deepcopy(requirements)
+    requirement = requirements.get("requirement") or {}
+    identity = {key: copy.deepcopy(requirement[key])
+                for key in ("id", "title", "status") if key in requirement}
+    return {
+        "reference": _envelope_section_reference(
+            envelope_ref, "requirements", requirements),
+        "requirement": identity,
+        "acceptance_count": len(requirements.get("acceptance") or []),
+    }
+
+
 def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
                        slot_id: str, lens_ids, relevant_files=None,
                        evidence=None) -> dict:
@@ -297,7 +351,8 @@ def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
         "impact": copy.deepcopy(envelope.get("impact") or {}),
         "graph_quality": copy.deepcopy(envelope.get("graph_quality") or {}),
         "runnability": copy.deepcopy(envelope.get("runnability") or {}),
-        "requirements": copy.deepcopy(envelope.get("requirements") or {}),
+        "requirements": _requirements_view(
+            envelope_ref, envelope.get("requirements") or {}),
         "contracts": copy.deepcopy(envelope.get("contracts") or []),
         "change": copy.deepcopy(envelope.get("change") or {}),
         "evidence": copy.deepcopy(evidence or {}),

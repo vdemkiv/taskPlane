@@ -140,6 +140,109 @@ class TestImmutableEnvelope(unittest.TestCase):
         self.assertLess(
             len(evidence.canonical_bytes(view)), evidence.MAX_SCOPED_VIEW_BYTES)
 
+    def test_r0006_scale_view_references_canonical_requirements(self):
+        """The current 14-criterion host-parity requirement exceeds the view.
+
+        The envelope remains complete; each lens gets its identity and a
+        digest-bound JSON pointer instead of another full requirements copy.
+        """
+        acceptance = [
+            (f"Host parity criterion {index}: native and fallback transports "
+             "must preserve exact target, context, lease, schema, producer, "
+             "revision, lifecycle, routing, telemetry and validation evidence "
+             "across supported, unsupported, unknown, contradictory and corrupt "
+             "capability fixtures without converting unavailable proof to pass.")
+            for index in range(14)
+        ]
+        values = dict(self.kw)
+        changed_symbols = [f"host_capability_symbol_{index:02d}"
+                           for index in range(35)]
+        diff_ref = self.store.put(
+            "diff", {"patch": "canonical R-0006 diff",
+                     "changed_symbols": changed_symbols})
+        impacted = [{"kind": "uses", f"module": f"component-{index:02d}",
+                     "via": "taskplane"} for index in range(27)]
+        route_ref = self.store.put(
+            "routing-decision", {"schema": "taskplane.routing-decision/v2",
+                                 "dispositions": {"architecture": {
+                                     "verdict": "deep", "evidence": [
+                                         "host capability boundary changed"]}}})
+        routing_input_ref = self.store.put(
+            "routing-input", {"schema": "taskplane.routing-input/v2",
+                              "requirement": {"id": "R-0006"}})
+        settled_ref = self.store.put(
+            "settled-findings", {"schema": "taskplane.settled-findings/v1",
+                                 "count": 0, "rows": []})
+        values.update({
+            "requirement": {
+                "id": "R-0006",
+                "title": "Make host capabilities truthful across Claude and Codex",
+                "functional": [text + " Functional ownership is explicit."
+                               for text in acceptance[:7]],
+                "nfr": {f"quality-{index}": text
+                        for index, text in enumerate(acceptance[7:])},
+                "context_files": [f"taskplane/component-{index:02d}.py"
+                                  for index in range(30)],
+                "contracts": [f"contract:host-{index}" for index in range(5)],
+            },
+            "acceptance": acceptance,
+            "contracts": [f"contract:host-{index}" for index in range(5)],
+            "diff": {"files": ["taskplane/host_capabilities.py",
+                                "taskplane/tp.py"],
+                     "changed_symbols": changed_symbols,
+                     "artifact": diff_ref},
+            "impact": {"touched": ["taskplane", "taskplane/tests"],
+                       "impacted": {"1": impacted},
+                       "total_impacted": len(impacted), "unknown": [],
+                       "depth_limit": 3, "truncated": True},
+            "graph_quality": {"schema": "taskplane.graph-quality/v1",
+                              "status": "complete", "sufficient": True,
+                              "module_confidence": "high",
+                              "scanner_coverage": [
+                                  {"language": language, "coverage": "complete",
+                                   "files": 200, "relevant": relevant}
+                                  for language, relevant in (
+                                      ("artifacts", False), ("excluded", False),
+                                      ("python", True))],
+                              "expansion": {"attempted": False,
+                                            "status": "not_needed",
+                                            "bounds": {"max_edges": 512,
+                                                       "max_hops": 6,
+                                                       "max_symbols": 128,
+                                                       "timeout_seconds": 10}},
+                              "changed_symbol_caller_coverage": {
+                                  "status": "complete", "requested": 35,
+                                  "resolved": 35, "unresolved": []}},
+            "change": {"type": "architecture", "stage": "build",
+                       "routing_decision": route_ref,
+                       "routing_input": routing_input_ref,
+                       "settled_findings": settled_ref},
+        })
+
+        envelope_ref = evidence.create_envelope(self.store, **values)
+        envelope = self.store.read(envelope_ref)
+        self.assertGreater(
+            len(evidence.canonical_bytes(envelope["requirements"])), 8192)
+        view_ref = evidence.create_scoped_view(
+            self.store, envelope_ref, slot_id="deep.architecture",
+            lens_ids=["architecture"])
+        view = self.store.read(view_ref)
+
+        req = view["requirements"]
+        self.assertEqual(req["requirement"]["id"], "R-0006")
+        self.assertEqual(req["acceptance_count"], 14)
+        self.assertEqual(req["reference"]["section"], "/requirements")
+        self.assertEqual(req["reference"]["content_fingerprint"],
+                         evidence.content_fingerprint(
+                             envelope["requirements"]))
+        self.assertEqual(
+            evidence.read_envelope_section(
+                self.store, envelope_ref, req["reference"]),
+            envelope["requirements"])
+        self.assertEqual(envelope["requirements"]["acceptance"], acceptance)
+        self.assertLess(
+            len(evidence.canonical_bytes(view)), evidence.MAX_SCOPED_VIEW_BYTES)
+
 
 class TestCanonicalInputs(unittest.TestCase):
     def test_target_identity_is_one_projection_shape(self):
