@@ -21,11 +21,13 @@ the same lens, the same read-only harness; they just stop restating a
 document that is already on disk next to them.
 """
 import hashlib
+import glob
 import json
 import os
 import re
 import shlex
 import tempfile
+from dataclasses import dataclass
 from typing import Callable, Iterable
 
 import storage as runtime_storage
@@ -71,10 +73,29 @@ _REVIEW_EXECUTION_CHOICES = (
 )
 _REVIEW_USER_ACTION_RECEIPT_SCHEMA = \
     "taskplane.review-user-action-receipt/v1"
+_REVIEW_HOST_ACTION_AUTHORITY = object()
+_REVIEW_DETAIL_BYTES = 512
+_REVIEW_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|"
+    r"CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*)\s*[:=]\s*[^\s,;]+")
+_REVIEW_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
+
+
+@dataclass(frozen=True)
+class _HostObservedReviewAction:
+    """Unserializable authority token created only from a host transcript."""
+
+    source: str
+    receipt_id: str
+    run_id: str
+    action_id: str
+    response: str
+    actor: str
+    authority: object
 
 
 def _review_execution_action_id(run_id: str | None, action: str) -> str:
@@ -82,11 +103,110 @@ def _review_execution_action_id(run_id: str | None, action: str) -> str:
     return hashlib.sha256(material).hexdigest()[:20]
 
 
+def _review_action_prompt(run_id: str | None, action_id: str,
+                          response: str) -> str:
+    return ("taskplane review action " + str(run_id or "").strip() + " " +
+            action_id + " " + response)
+
+
+def _bounded_review_detail(value: object) -> str:
+    text = _REVIEW_SECRET_ASSIGNMENT.sub("<redacted>", str(value or ""))
+    text = _REVIEW_BEARER.sub("Bearer <redacted>", text)
+    raw = text.encode("utf-8", errors="replace")[:_REVIEW_DETAIL_BYTES]
+    while raw:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return ""
+
+
+def _codex_review_action_receipt(*, run_id: str, action_id: str,
+                                 response: str,
+                                 receipt_ref: str | None = None
+                                 ) -> _HostObservedReviewAction:
+    """Resolve an exact human action from Codex's host-owned rollout.
+
+    The CLI accepts at most a message/turn reference.  It never accepts the
+    receipt body: authority comes from the host transcript outside the review
+    checkout, bound to the exact run, action and response.
+    """
+    thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if not thread_id:
+        raise ReviewKernelError(
+            "review action requires a host-observed user receipt")
+    codex_home = os.path.abspath(os.environ.get("CODEX_HOME") or
+                                 os.path.expanduser("~/.codex"))
+    paths = glob.glob(os.path.join(
+        codex_home, "sessions", "**", f"*-{thread_id}.jsonl"),
+        recursive=True)
+    if len(paths) != 1:
+        raise ReviewKernelError(
+            "review action host transcript is missing or ambiguous")
+    expected = _review_action_prompt(run_id, action_id, response)
+    path = paths[0]
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as stream:
+            start = max(0, size - 8 * 1024 * 1024)
+            stream.seek(start)
+            if start:
+                stream.readline()
+            lines = stream.readlines()
+    except OSError as exc:
+        raise ReviewKernelError(
+            "review action host transcript is unavailable") from exc
+    wanted_ref = str(receipt_ref or "").strip()
+    if wanted_ref in {"", "latest"}:
+        wanted_ref = ""
+    for raw in reversed(lines):
+        if len(raw) > 2 * 1024 * 1024:
+            continue
+        try:
+            record = json.loads(raw.decode("utf-8", errors="replace"))
+        except (TypeError, ValueError):
+            continue
+        payload = record.get("payload") or {}
+        if record.get("type") != "response_item" or \
+                payload.get("type") != "message" or \
+                payload.get("role") != "user":
+            continue
+        texts = [str(row.get("text") or "").strip()
+                 for row in payload.get("content") or []
+                 if isinstance(row, dict) and row.get("type") == "input_text"]
+        if expected not in texts:
+            continue
+        meta = payload.get("internal_chat_message_metadata_passthrough") or {}
+        message_id = str(payload.get("id") or "").strip()
+        turn_id = str(meta.get("turn_id") or payload.get("turn_id") or "").strip()
+        if wanted_ref and wanted_ref not in {message_id, turn_id}:
+            continue
+        receipt_id = message_id or turn_id
+        if not receipt_id:
+            continue
+        return _HostObservedReviewAction(
+            source="codex-session:user-message", receipt_id=receipt_id,
+            run_id=run_id, action_id=action_id, response=response,
+            actor="human", authority=_REVIEW_HOST_ACTION_AUTHORITY)
+    raise ReviewKernelError(
+        "review action requires an exact host-observed user receipt")
+
+
 def _validated_review_user_action_receipt(
-        receipt: dict | None, *, run_id: str | None, action_id: str,
+        receipt: object | None, *, run_id: str | None, action_id: str,
         response: str) -> dict:
     """Validate one host-observed user/action receipt at its exact boundary."""
-    row = dict(receipt or {})
+    if not isinstance(receipt, _HostObservedReviewAction) or \
+            receipt.authority is not _REVIEW_HOST_ACTION_AUTHORITY:
+        raise ReviewKernelError(
+            "review action requires an exact host-observed user receipt")
+    row = {
+        "schema": _REVIEW_USER_ACTION_RECEIPT_SCHEMA,
+        "host_observed": True,
+        "source": receipt.source, "receipt_id": receipt.receipt_id,
+        "run_id": receipt.run_id, "action_id": receipt.action_id,
+        "response": receipt.response, "actor": receipt.actor,
+    }
     required = {
         "schema": _REVIEW_USER_ACTION_RECEIPT_SCHEMA,
         "host_observed": True,
@@ -107,7 +227,7 @@ def _validated_review_user_action_receipt(
 def review_execution_preflight(*, selection: str | None = None,
                                decided_by: str | None = None,
                                run_id: str | None = None,
-                               approval_receipt: dict | None = None) -> dict:
+                               approval_receipt: object | None = None) -> dict:
     """Return the review's single structured runtime/render choice.
 
     This record is deliberately declarative. Selecting dynamic work does not
@@ -117,6 +237,9 @@ def review_execution_preflight(*, selection: str | None = None,
     selection = str(selection or "").strip().lower()
     choices = [dict(row) for row in _REVIEW_EXECUTION_CHOICES]
     action_id = _review_execution_action_id(run_id, "review-execution-mode")
+    for choice in choices:
+        choice["prompt"] = _review_action_prompt(
+            run_id, action_id, choice["response"])
     if not selection:
         return {
             "schema": "taskplane.review-execution-preflight/v1",
@@ -170,7 +293,7 @@ def review_execution_preflight(*, selection: str | None = None,
 
 def record_review_execution_evidence(preflight: dict, *, kind: str,
                                      status: str, detail: str = "",
-                                     approval_receipt: dict | None = None) -> dict:
+                                     approval_receipt: object | None = None) -> dict:
     """Record bounded runtime/render evidence without performing the action."""
     if kind not in {"dynamic_validation", "functionality_render"}:
         raise ReviewKernelError("unknown review execution evidence kind")
@@ -195,7 +318,7 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
     if prior.get("status") not in {"selected", status}:
         raise ReviewKernelError("review execution was not selected by the human")
     current[kind] = {
-        "status": status, "detail": str(detail or ""),
+        "status": status, "detail": _bounded_review_detail(detail),
         "action_id": prior["action_id"], "approval_receipt": receipt,
     }
     current["side_effects_started"] = any(
@@ -1060,7 +1183,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
 
 
 def configure_review_execution(ws: str, *, selection: str,
-                               approval_receipt: dict | None = None,
+                               approval_receipt: object | None = None,
                                by: str | None = None,
                                run_id: str | None = None) -> dict:
     """Persist the human's optional dynamic/render choice for one review."""
@@ -1072,7 +1195,7 @@ def configure_review_execution(ws: str, *, selection: str,
     prior = state.get("review_execution") or review_execution_preflight(
         run_id=state.get("run_id"))
     if prior.get("status") == "configured":
-        supplied_id = (approval_receipt or {}).get("receipt_id")
+        supplied_id = getattr(approval_receipt, "receipt_id", None)
         same = prior.get("selection") == selection and \
             (prior.get("approval_receipt") or {}).get("receipt_id") == supplied_id
         if same:
@@ -1096,9 +1219,12 @@ def configure_review_execution(ws: str, *, selection: str,
 
 def record_review_execution(ws: str, *, kind: str, status: str,
                             detail: str = "", run_id: str | None = None,
-                            approval_receipt: dict | None = None) -> dict:
+                            approval_receipt: object | None = None) -> dict:
     """Persist evidence after the separately approved host action finishes."""
     state = _load_state(ws, run_id)
+    if state.get("status") != "ready":
+        raise ReviewKernelError(
+            "review execution evidence requires an active uncollected review")
     record = record_review_execution_evidence(
         state.get("review_execution") or review_execution_preflight(
             run_id=state.get("run_id")),
@@ -1114,6 +1240,21 @@ def record_review_execution(ws: str, *, kind: str, status: str,
              receipt_id=(record.get(kind) or {}).get(
                  "approval_receipt", {}).get("receipt_id"))
     return record
+
+
+def _assert_review_execution_complete(execution: dict) -> None:
+    """Block collection until every human-selected side effect is terminal."""
+    if execution and execution.get("status") != "configured":
+        raise ReviewKernelError(
+            "review execution choice is pending human selection")
+    labels = {
+        "dynamic_validation": "dynamic validation",
+        "functionality_render": "functionality render",
+    }
+    for kind, label in labels.items():
+        if (execution.get(kind) or {}).get("status") == "selected":
+            raise ReviewKernelError(
+                f"selected {label} evidence is still pending")
 
 
 def _receipt_path(ws: str, lease_fingerprint: str) -> str:
@@ -1322,6 +1463,56 @@ def leased_result_workspace(ws: str, paths: Iterable[str]) -> str | None:
         if locator and str(locator.get("run_id")) == parts[0] and owns(checkout):
             return checkout
     return None
+
+
+def leased_result_authority(ws: str, paths: Iterable[str]) -> dict | None:
+    """Resolve one sealed result path to its exact active producer contract.
+
+    Native Codex write events do not always inherit ``TASKPLANE_TASK``.  A
+    union contract is not producer authority: use the immutable lease to find
+    the exact slot, then load only that slot's active contract.
+    """
+    owner = leased_result_workspace(ws, paths)
+    if not owner:
+        return None
+    candidates = {
+        os.path.realpath(path if os.path.isabs(path)
+                         else os.path.join(owner, path))
+        for path in paths if str(path or "").strip()
+    }
+    matches = []
+    for run_id in sorted(_load_index(owner)["runs"]):
+        state = tp.load_json(_state_path(owner, run_id), default=None,
+                             what="review kernel run state")
+        if not isinstance(state, dict) or state.get("status") not in {
+                "ready", "prepared"}:
+            continue
+        for slot in state.get("slots") or []:
+            result_path = str(slot.get("result_path") or "")
+            wanted = os.path.realpath(
+                result_path if os.path.isabs(result_path)
+                else os.path.join(owner, result_path))
+            if wanted in candidates:
+                matches.append((state, slot))
+    if len(matches) != 1:
+        raise ReviewKernelError("leased result path is not uniquely assigned")
+    state, slot = matches[0]
+    expected = slot["producer_contract"]
+    task_slot = str(expected.get("task_slot") or "")
+    contract = tp.load_json(
+        tp.active_contract_path(owner, task_slot),
+        what="leased result producer contract")
+    if not isinstance(contract, dict) or not contract.get("read_only") or \
+            contract.get("task") != expected.get("task") or \
+            list(contract.get("write_allow") or []) != \
+            list(expected.get("write_allow") or []):
+        raise ReviewKernelError(
+            "leased result write lacks its exact producer contract")
+    return {
+        "workspace": owner, "run_id": state["run_id"],
+        "slot_id": slot["slot_id"], "task_slot": task_slot,
+        "contract": contract,
+    }
 
 
 def record_slot_write_observation(ws: str, *, event: dict, contract: dict,
@@ -2250,9 +2441,7 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         state = _load_state(ws, selected["run_id"])
         store = evidence.ArtifactStore(ws)
         execution = state.get("review_execution") or {}
-        if execution and execution.get("status") != "configured":
-            raise ReviewKernelError(
-                "review execution choice is pending human selection")
+        _assert_review_execution_complete(execution)
         if state.get("status") == "complete":
             _release_slot_contracts(ws, state)
             if evidence._read_current(store) != evidence.revision_identity(

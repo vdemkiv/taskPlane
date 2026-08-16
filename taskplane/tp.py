@@ -1688,16 +1688,28 @@ def _screen(a) -> int:
         for path in _write_paths
         for marker in ("/kernel-v2/results/", "/lenses/results/"))
     _review_ws = None
-    if _review_candidate and tp.task_slot():
+    _review_authority = None
+    _review_lookup_error = None
+    if _review_candidate:
         try:
             import review as _review
-            _review_ws = _review.leased_result_workspace(ws, _write_paths)
-        except Exception:
-            _review_ws = None
-        if _review_ws:
+            _review_authority = _review.leased_result_authority(
+                ws, _write_paths)
+        except Exception as exc:
+            _review_lookup_error = exc
+        if _review_authority:
+            _review_ws = _review_authority["workspace"]
             ws = _review_ws
 
-    contract = tp.load_active(ws)
+    if _review_lookup_error is not None:
+        print(json.dumps({
+            "decision": "block",
+            "reason": "taskplane: leased review result lookup failed "
+                      f"closed ({_review_lookup_error})"}))
+        return 0
+
+    contract = (_review_authority["contract"] if _review_authority
+                else tp.load_active(ws))
     if contract is None:
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
         # "contract file present but unreadable/corrupt" (tamper or breakage
@@ -1878,24 +1890,20 @@ def _screen(a) -> int:
         # `authored_by` string.  The always-on write hook records the observed
         # host session and exact active producer contract before the write is
         # allowed; collect later requires this separate receipt.
-        if _review_candidate and not _review_ws:
-            try:
-                import review as _review
-                _review_ws = _review.leased_result_workspace(ws, _write_paths)
-            except Exception as exc:
-                _meter_bump(ws, tid, "denies")
-                tp.trace(ws, "slot_provenance_deny", tool=tool_name,
-                         error=type(exc).__name__)
-                print(json.dumps({
-                    "decision": "block",
-                    "reason": "taskplane: leased review result lookup "
-                              f"failed closed ({exc})"}))
-                return 0
-        if _review_ws:
+        if _review_candidate and not _review_authority:
+            _meter_bump(ws, tid, "denies")
+            tp.trace(ws, "slot_provenance_deny", tool=tool_name,
+                     error="UnleasedResultPath")
+            print(json.dumps({
+                "decision": "block",
+                "reason": "taskplane: leased review result lookup failed "
+                          "closed (write is not an active leased result path)"}))
+            return 0
+        if _review_authority:
             try:
                 _review.record_slot_write_observation(
                     _review_ws, event=event, contract=contract,
-                    task_slot=tp.task_slot())
+                    task_slot=_review_authority["task_slot"])
             except Exception as exc:
                 _meter_bump(ws, tid, "denies")
                 tp.trace(ws, "slot_provenance_deny", tool=tool_name,
@@ -3980,9 +3988,19 @@ def cmd_review(a) -> int:
     if getattr(a, "review_action", None) == "option":
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
+            state = rv._load_state(ws, a.run_id)
+            pending = state.get("review_execution") or \
+                rv.review_execution_preflight(run_id=state.get("run_id"))
+            action_id = str((pending.get("action") or {}).get("id") or
+                            rv._review_execution_action_id(
+                                state.get("run_id"), "review-execution-mode"))
+            receipt = rv._codex_review_action_receipt(
+                run_id=state["run_id"], action_id=action_id,
+                response=a.selection,
+                receipt_ref=getattr(a, "receipt", None))
             result = rv.configure_review_execution(
                 ws, selection=a.selection, by=getattr(a, "by", None),
-                approval_receipt=json.loads(a.receipt), run_id=a.run_id)
+                approval_receipt=receipt, run_id=a.run_id)
             visuals, owed = _review_visuals(ws, result, final=False)
             result = rv._manifest({**result, "visuals": visuals,
                                    "obligations": owed})
@@ -4001,10 +4019,18 @@ def cmd_review(a) -> int:
     if getattr(a, "review_action", None) == "evidence":
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
+            state = rv._load_state(ws, a.run_id)
+            execution = state.get("review_execution") or {}
+            action_id = str((execution.get(a.kind) or {}).get(
+                "action_id") or "")
+            receipt = rv._codex_review_action_receipt(
+                run_id=state["run_id"], action_id=action_id,
+                response=a.status,
+                receipt_ref=getattr(a, "receipt", None))
             result = rv.record_review_execution(
                 ws, kind=a.kind, status=a.status, detail=a.detail or "",
                 run_id=a.run_id,
-                approval_receipt=json.loads(a.receipt))
+                approval_receipt=receipt)
         except Exception as exc:
             print(json.dumps({"schema": "taskplane.review-execution-preflight/v1",
                               "status": "evidence_failed",
@@ -5924,8 +5950,9 @@ def main(argv=None) -> int:
     rvo = rvsub.add_parser(
         "option", help="record the human's optional dynamic review/render choice")
     rvo.add_argument("selection", choices=("static", "dynamic", "dynamic-render"))
-    rvo.add_argument("--receipt", required=True,
-                     help="host-observed user-action receipt JSON")
+    rvo.add_argument("--receipt", default=None,
+                     help="optional host message/turn reference; receipt "
+                          "content is resolved from the host transcript")
     rvo.add_argument("--by", default=None,
                      help="deprecated display attribution; receipt actor is authoritative")
     rvo.add_argument("--run-id", required=True, help="active review run")
@@ -5936,8 +5963,9 @@ def main(argv=None) -> int:
     rve.add_argument("kind", choices=("dynamic_validation", "functionality_render"))
     rve.add_argument("status", choices=("unavailable", "executed"))
     rve.add_argument("--detail", default="", help="bounded evidence summary")
-    rve.add_argument("--receipt", required=True,
-                     help="host-observed action-result receipt JSON")
+    rve.add_argument("--receipt", default=None,
+                     help="optional host message/turn reference; receipt "
+                          "content is resolved from the host transcript")
     rve.add_argument("--run-id", required=True, help="active review run")
     rve.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rve.set_defaults(fn=cmd_review)

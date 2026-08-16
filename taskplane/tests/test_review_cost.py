@@ -65,12 +65,22 @@ class _WS(unittest.TestCase):
         self._commit("change")
         self._home = os.environ.get("TASKPLANE_HOME")
         os.environ["TASKPLANE_HOME"] = os.path.join(self.d, "store")
+        self._codex_home = os.environ.get("CODEX_HOME")
+        self._codex_thread = os.environ.get("CODEX_THREAD_ID")
 
     def tearDown(self):
         if self._home is None:
             os.environ.pop("TASKPLANE_HOME", None)
         else:
             os.environ["TASKPLANE_HOME"] = self._home
+        if self._codex_home is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = self._codex_home
+        if self._codex_thread is None:
+            os.environ.pop("CODEX_THREAD_ID", None)
+        else:
+            os.environ["CODEX_THREAD_ID"] = self._codex_thread
         os.environ.pop("TASKPLANE_INLINE_MAX", None)
         shutil.rmtree(self.d, ignore_errors=True)
 
@@ -84,6 +94,26 @@ class _WS(unittest.TestCase):
         subprocess.run(["git", "add", "-A"], cwd=self.ws, capture_output=True)
         subprocess.run(["git", "commit", "-qm", msg], cwd=self.ws,
                        capture_output=True)
+
+    def _observe_user_action(self, prompt, *, message_id):
+        thread_id = "review-cost-thread"
+        codex_home = os.path.join(self.d, "codex")
+        session_dir = os.path.join(codex_home, "sessions", "2026", "08", "16")
+        os.makedirs(session_dir, exist_ok=True)
+        path = os.path.join(session_dir, f"rollout-test-{thread_id}.jsonl")
+        row = {
+            "type": "response_item",
+            "payload": {
+                "type": "message", "id": message_id, "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "review-cost-turn"},
+            },
+        }
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(row) + "\n")
+        os.environ["CODEX_HOME"] = codex_home
+        os.environ["CODEX_THREAD_ID"] = thread_id
 
 
 # ------------------------------------------------- 1. render by reference
@@ -249,17 +279,12 @@ class OneCallOpening(_WS):
 
     def test_it_returns_the_briefs_ready_to_dispatch(self):
         _, d, _ = self._start()
-        action_id = d["review_execution"]["action"]["id"]
-        receipt = json.dumps({
-            "schema": "taskplane.review-user-action-receipt/v1",
-            "host_observed": True,
-            "source": "codex-session:user-message",
-            "receipt_id": "review-cost-static-choice",
-            "run_id": d["run_id"], "action_id": action_id,
-            "response": "static", "actor": "human",
-        }, sort_keys=True, separators=(",", ":"))
+        prompt = d["review_execution"]["action"]["choices"][0]["prompt"]
+        self._observe_user_action(
+            prompt, message_id="review-cost-static-choice")
         rc, out, _ = _run(
-            "review", "option", "static", "--receipt", receipt,
+            "review", "option", "static", "--receipt",
+            "review-cost-static-choice",
             "--run-id", d["run_id"], "--workspace", self.ws)
         self.assertEqual(rc, 0, out)
         ready = json.loads(out)
