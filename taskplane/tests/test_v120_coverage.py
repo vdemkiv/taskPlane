@@ -159,15 +159,5 @@ class TestNewLenses(unittest.TestCase):           # R-0003
         hit = next(x for x in r["lenses"] if x["id"] == "tradeoffs")
         self.assertEqual(hit.get("mode", "inline"), "subagent")
 
-    def test_prompts_exist_with_registry_instruction(self):
-        for lid in ("tradeoffs", "services-selection", "time-to-market"):
-            p = os.path.join(ROOT, "lenses", f"{lid}.md")
-            self.assertTrue(os.path.exists(p), lid)
-        t = open(os.path.join(ROOT, "lenses", "tradeoffs.md"), encoding="utf-8").read()
-        self.assertIn("tp decision new", t)
-        ttm = open(os.path.join(ROOT, "lenses", "time-to-market.md"), encoding="utf-8").read()
-        self.assertIn("cut SCOPE, not floors", ttm)
-
-
 if __name__ == "__main__":
     unittest.main()

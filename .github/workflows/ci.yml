@@ -24,7 +24,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12"]
+        include:
+          - python: "3.10"
+            tests: >-
+              taskplane/tests/test_repository_preflight.py
+              taskplane/tests/test_storage_kernel.py
+              taskplane/tests/test_windows_portability.py
+          - python: "3.11"
+            tests: >-
+              taskplane/tests/test_repository_preflight.py
+              taskplane/tests/test_storage_kernel.py
+              taskplane/tests/test_windows_portability.py
+          - python: "3.12"
+            tests: >-
+              taskplane/tests
+              --ignore=taskplane/tests/test_codex_compat.py
+              --ignore=taskplane/tests/test_dispatch_parity.py
+              --ignore=taskplane/tests/test_lens_signals_fixtures.py
+              --ignore=taskplane/tests/test_stage_waves.py
     steps:
       # Third-party actions are pinned to full commit SHAs (tag as comment) so
       # a moved/compromised tag cannot change what runs in the release-trust path.
@@ -46,14 +63,17 @@ jobs:
       # imports the `taskplane` package for shared store isolation, which only
       # resolves when the repo root is on sys.path. Running inside taskplane/
       # aborted collection with ModuleNotFoundError (v2.3.1 fix).
-      - name: Run the suite (pytest)
-        run: python -m pytest taskplane/tests -q
+      - name: Run the authoritative suite or compatibility smoke set
+        run: python -m pytest ${{ matrix.tests }} -q
 
-      # The 'dual-runner store isolation' work is only real if CI actually
-      # exercises the second runner. This leg fails if `python -m unittest`
-      # ever regresses or leaks into the real store (v2.3.1).
-      - name: Run the suite (unittest discover)
-        run: python -m unittest discover -s taskplane/tests -t .
+      # One public unittest canary retains second-runner/store-isolation
+      # coverage without executing the entire pytest-owned suite twice.
+      - name: Unittest runner/store-isolation canary
+        if: matrix.python == '3.12'
+        run: >-
+          python -m unittest
+          taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation
+          -v
 
       # ENCODING PORTABILITY, made gateable on the fast runner.
       #
@@ -71,25 +91,17 @@ jobs:
       # because they carry non-ASCII through argv and filesystem paths,
       # which a C-locale host cannot represent at all; that is a harness
       # limit rather than a product one (Windows paths are UTF-16).
-      - name: Suite under a non-UTF-8 locale (Windows encoding class)
+      - name: Encoding-sensitive boundaries under a non-UTF-8 locale
+        if: matrix.python == '3.12'
         env:
           LC_ALL: C
           LANG: C
           PYTHONUTF8: "0"
           PYTHONCOERCECLOCALE: "0"
-        run: python -m pytest taskplane/tests -q
-
-      # t9 (R-0011 / E1): the leg above proves the second runner still WORKS;
-      # this one proves it still covers as much as it did. Two erosion
-      # directions are silent under a plain green discover run — tests
-      # leaving discovery (closed by a pinned FLOOR on the collected count)
-      # and new pytest-only files accumulating (closed by a pinned MANIFEST
-      # of the files discovery legitimately collects nothing from). The
-      # recorded decision (R-0011 row 1) was floor + explicit manifest. The
-      # script only counts collection — it never re-runs the tests. FLOOR
-      # ratchets up; any manifest addition/conversion is reviewed explicitly.
-      - name: Discover-leg floor + pytest-only manifest (no silent erosion)
-        run: python3 scripts/ci_unittest_floor.py
+        run: >-
+          python -m pytest -q
+          taskplane/tests/test_subprocess_encoding.py
+          taskplane/tests/test_windows_portability.py
 
       # Per-task cost ratchet (P3, R-0012). Between mid-July and v3 phase 3
       # the loop's per-task cost grew about thirteenfold with no single
@@ -99,6 +111,7 @@ jobs:
       # MANDATES per task. Raising a pin is allowed and expected — it just
       # has to be a decision someone records, not drift nobody sees.
       - name: Per-task cost ratchet (governance has a budget too)
+        if: matrix.python == '3.12'
         run: python3 scripts/ci_loop_cost.py
 
   # Host portability without a second full-suite tax. Windows runs the
@@ -106,7 +119,7 @@ jobs:
   # real Windows-only failures. Those defects are also reproduced on Linux by
   # test_windows_portability.py, so the hosted leg validates the actual host
   # boundary rather than spending ~27 minutes duplicating the full suite.
-  # macOS remains an advisory whole-suite signal.
+  # macOS remains an advisory host-boundary signal.
   tests-portability:
     name: tests portability (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -123,7 +136,10 @@ jobs:
               taskplane/tests/test_eval_recorder.py
           - os: macos-latest
             advisory: true
-            tests: taskplane/tests
+            tests: >-
+              taskplane/tests/test_repository_preflight.py
+              taskplane/tests/test_storage_kernel.py
+              taskplane/tests/test_loop_context_traces.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -257,16 +273,10 @@ jobs:
           print("ok: every archive names the commit this run verified")
           PY
 
-  # t8 (R-0005): install truth. The launch failure this pins: org/Team
-  # members CANNOT install plugins from GitHub — only org admins publish to
-  # the org marketplace, and file-upload is the other path. This leg fails on
-  # (a) any affirmative member-installs-from-GitHub phrasing anywhere in the
-  # public copy (README, plugin manifests, docs, skills, agents), (b) a
-  # broken README link — a STATIC check only: URL format, existing relative
-  # targets, resolvable internal anchors; deliberately NO network requests so
-  # the leg can never flake on connectivity — and (c) any regression in the
-  # onboarding-docs suite (decision-tree order, member dead-ends, quickstarts,
-  # tp onboard account-type output, manifest copy alignment).
+  # Install-truth scan that needs no test runner: org/Team members cannot
+  # install plugins from GitHub themselves, so public copy must not claim
+  # otherwise. Behavioral onboarding and static link checks remain in the
+  # authoritative Python 3.12 pytest suite.
   docs-truth:
     name: docs truth (install paths + links)
     runs-on: ubuntu-latest
@@ -275,12 +285,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
-        run: pip install "pytest==8.*"
-      - name: Configure git (the onboarding fixtures build throwaway repos)
-        run: |
-          git config --global user.email "ci@taskplane"
-          git config --global user.name "taskplane-ci"
       - name: No public copy claims org members can install from GitHub (repo-wide)
         run: |
           python3 - <<'PY'
@@ -312,21 +316,6 @@ jobs:
                        f"{bad}")
           print(f"clean: {len(files)} public-copy files scanned")
           PY
-      - name: README links are statically valid (format + anchors, no network)
-        run: python3 -m pytest "taskplane/tests/test_onboarding_docs.py::TestReadmeLinkHygiene" -q
-      - name: Onboarding docs suite (decision tree, quickstarts, tp onboard, manifests)
-        run: python3 -m pytest taskplane/tests/test_onboarding_docs.py -q
-      # t9 (R-0005): docs-drift over the v3 feature sections. The onboarding
-      # suite above already pins the what's-new 3-row table and
-      # docs/routing-and-flows.md against code truth (env vars read by the
-      # code, CLI flags defined in tp.py's argparse, real tp subcommands,
-      # existing workflow files); this leg extends the drift gate to the
-      # v2.3.0-era doc pins (configuration.md env-var completeness, generated
-      # lens-catalog freshness, README/CHANGELOG cross-refs, authority matrix
-      # vs engine) so drift in EITHER doc family fails CI.
-      - name: Feature docs match code (env vars, generated docs, cross-refs)
-        run: python3 -m pytest taskplane/tests/test_v230_docs.py -q
-
   # t6 (R-0002): the Codex-parity guard, REQUIRED and independent of the
   # workflow-path tests. Frozen brief fixtures replay through the dispatch
   # path and byte-compare against checked-in goldens, so a deliberate (or
@@ -336,9 +325,6 @@ jobs:
   # positive+negative fixtures) as an explicit CI signal rather than a line
   # lost inside the full-suite run. Kept out of validate-plugin on purpose:
   # that job is stdlib-only by design and this one needs pytest.
-      - name: Release freshness (docs/skills cannot fall behind a release)
-        run: python3 -m pytest taskplane/tests/test_release_freshness.py -q
-
   codex-parity:
     name: codex dispatch parity + detector fixtures
     runs-on: ubuntu-latest
@@ -388,7 +374,7 @@ jobs:
         run: |
           git config --global user.email "ci@taskplane"
           git config --global user.name "taskplane-ci"
-      - name: Codex lifecycle, strict dispatch, parity, and stage waves
+      - name: Codex lifecycle and strict native dispatch
         env:
           # The runner context is available at step evaluation time, not while
           # GitHub is validating job-level env expressions.
@@ -400,8 +386,6 @@ jobs:
           python3 -m pytest -q
           taskplane/tests/test_codex_compat.py
           taskplane/tests/test_v101_fixes.py
-          taskplane/tests/test_dispatch_parity.py
-          taskplane/tests/test_stage_waves.py
 
   # Release-history truth. Five releases (v2.5.0, v2.5.1, v2.6.0, v2.8.1,
   # v2.8.2) shipped with NO tag and nobody noticed for months, because

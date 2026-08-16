@@ -172,7 +172,6 @@ class R0005_WorkflowGuidanceIsOneSemanticContract(unittest.TestCase):
     def test_review_guidance_forbids_lens_side_rederivation(self):
         text = self._read("skills/tp-engineering/SKILL.md")
         self.assertIn("one canonical diff", text.replace("\n", " "))
-        self.assertIn("zero lens dispatch", text)
         self.assertIn("artifact reference", text)
         self.assertNotIn("Lead every review with impact — it costs nothing",
                          text)

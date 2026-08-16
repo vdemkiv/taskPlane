@@ -161,8 +161,9 @@ def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
             "note": "recorded outside the findings surface",
         },
         "codex_completion_receipt": {
-            "required_lines": ["taskplane-result-path:<result_path>",
+            "advisory_lines": ["taskplane-result-path:<result_path>",
                                "taskplane-result-sha256:<sha256>"],
+            "authority": "the sealed, validated lease artifact",
         },
     })
     if references:

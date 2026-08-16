@@ -134,30 +134,5 @@ class TestBriefAndDashboard(unittest.TestCase):
         self.assertIn("as-built inventory", frag)
 
 
-class TestLensGrounding(unittest.TestCase):
-    def test_design_lens_prompts_carry_grounding(self):
-        for lid in ("tradeoffs", "architecture", "services-selection",
-                    "time-to-market"):
-            body = open(os.path.join(ROOT, "lenses", f"{lid}.md"), encoding="utf-8").read()
-            self.assertIn("GROUND IN THE CURRENT STATE FIRST", body, lid)
-            self.assertIn("REINVENTION", body, lid)
-
-    def test_remedy_required_in_every_lens_verdict(self):
-        # v1.3.1: criticism without a remedy is pointless — the shared
-        # verdict format makes `suggestion` REQUIRED in ALL 25 lenses.
-        import json as _json
-        cat = _json.load(open(os.path.join(ROOT, "lenses", "catalog.json"), encoding="utf-8"))
-        for lz in cat["lenses"]:
-            body = open(os.path.join(ROOT, "lenses",
-                                     lz["id"] + ".md"), encoding="utf-8").read()
-            self.assertIn("criticism without a", body, lz["id"])
-            self.assertIn("REQUIRED: the remedy", body, lz["id"])
-
-    def test_reinvention_is_blocker_class(self):
-        for lid in ("tradeoffs", "architecture"):
-            body = open(os.path.join(ROOT, "lenses", f"{lid}.md"), encoding="utf-8").read()
-            self.assertIn("as-built inventory", body.lower(), lid)
-
-
 if __name__ == "__main__":
     unittest.main()

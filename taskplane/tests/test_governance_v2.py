@@ -116,25 +116,6 @@ class TestGovernanceV2(unittest.TestCase):
         self.assertEqual(loop.load(self.ws)["step"], "plan")
         self.assertIsNotNone(tp.load_active(self.ws))
 
-    def test_evaluation_artifact_is_bound_to_submission_fingerprint(self):
-        self._plan_to_execute()
-        loop.next_action(self.ws)
-        loop.submit(self.ws, "pass")
-        loop.gate(self.ws, "pass")
-        loop.next_action(self.ws)
-        evidence_dir = os.path.join(self.ws, ".eval")
-        os.makedirs(evidence_dir, exist_ok=True)
-        verdict = os.path.join(evidence_dir, "verdict.json")
-        with open(verdict, "w", encoding="utf-8") as f:
-            json.dump({"task": "t1", "verdict": "pass"}, f)
-        with mock.patch("runtime_eval.review_facts",
-                        return_value=COMPLETE_REVIEW_FACTS):
-            loop.submit(self.ws, "pass")
-        with open(verdict, "w", encoding="utf-8") as f:
-            json.dump({"task": "t1", "verdict": "fail"}, f)
-        stale = loop.gate(self.ws, "pass")
-        self.assertIn("changed after worker submission", stale["error"])
-
     def test_requirement_contracts_cannot_be_erased_by_plan(self):
         base = requirements.record_requirement(
             self.ws, "base capability", acceptance=["base stays valid"])

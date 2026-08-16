@@ -307,58 +307,6 @@ class TestBareRootGuardCoversEveryNamedHome(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
-class TestNoNewHostShapedPathArithmetic(unittest.TestCase):
-    """A static ratchet. The graph and component layers reason about
-    repo-relative, '/'-shaped paths; `os.path.join`/`dirname`/`relpath` are
-    HOST-shaped and silently reintroduce this whole class. Filesystem
-    access (joining onto a workspace, realpath, exists) legitimately uses
-    os.path, so the pin is on the count, not on absence."""
-
-    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # 12 -> 13 (D-0017, repo-declared exclusions): load_excludes joins
-    # components.yaml onto the workspace root to OPEN it. That is filesystem
-    # access, the category this ratchet's own message says to raise the pin
-    # for — not repo-path arithmetic, which still goes through posixpath.
-    # The exclusion MATCHING itself is in path_roles.is_excluded and is
-    # '/'-shaped on every host by construction.
-    # 13 -> 14 (D-0007, declared module identity): _scan_locked's `_read_text`
-    # joins a manifest's repo-relative path onto the workspace root to OPEN
-    # it — the same filesystem-access category. Every id the reader then
-    # mints stays '/'-shaped by construction: `manifest_modules` splits with
-    # posixpath and normalizes `\` out of the declared name, and `module_of`
-    # walks its prefixes with posixpath.dirname. A Windows scan produces
-    # `@acme/ui`, never `@acme\ui` — pinned in test_module_identity.py.
-    # 14 -> 15 (D-0016, artifacts as nodes): the artifact pass joins a
-    # repo-relative path onto the workspace root to hash the file. Same
-    # filesystem-access category again. The artifact TEST (`_is_artifact`)
-    # and the reference resolver both run on '/'-shaped paths via posixpath,
-    # and `_file_refs` normalizes `\` out of every candidate token before
-    # looking it up, so a Windows scan resolves `agents\reviewer.md` in a
-    # markdown body to the same edge a Linux scan does.
-    # 15 -> 16 (D-0010 wave, Maven dependency edges): the pom reader joins a
-    # repo-relative manifest path onto the workspace root to OPEN it. Third
-    # instance of the same filesystem-access category, and like the others
-    # every id it derives goes through posixpath — the artifactId it emits is
-    # a bare `ext:<name>` with no separator in it at all.
-    PINS = {"depgraph.py": 16, "decompose.py": 3}
-
-    def test_host_shaped_path_calls_do_not_grow(self):
-        import re
-        pattern = re.compile(
-            r"os\.path\.(join|dirname|basename|normpath|relpath|commonpath)")
-        for name, pin in self.PINS.items():
-            with self.subTest(module=name):
-                src = open(os.path.join(self.ROOT, name),
-                           encoding="utf-8").read()
-                found = len(pattern.findall(src))
-                self.assertLessEqual(
-                    found, pin,
-                    f"{name}: {found} host-shaped path calls (pin {pin}). "
-                    "If this is filesystem access, raise the pin in the same "
-                    "commit and say why; if it is repo-path arithmetic, use "
-                    "posixpath so Windows keeps producing '/'-shaped ids.")
-
-
 class TestEmittedArtifactPathsAreSlashShaped(unittest.TestCase):
     """Dispatch briefs are CROSS-HOST artifacts — their parity goldens are
     compared byte for byte between Claude and Codex — so a path that

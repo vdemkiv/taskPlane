@@ -976,9 +976,9 @@ class TestPlanOrderingGate(unittest.TestCase):
                 ".github/workflows/ci.yml",
                 "taskplane/tests/test_release_freshness.py"]},
             {"id": "t9", "deps": ["t4", "t6", "t8"], "scope": [
-                "taskplane/loop.py", "scripts/ci_unittest_floor.py",
+                "taskplane/loop.py",
                 ".github/workflows/ci.yml", "taskplane/tests/conftest.py",
-                "taskplane/tests/test_ci_floor.py",
+                "taskplane/tests/test_runner_isolation.py",
                 "taskplane/tests/test_*.py"]},
             {"id": "t10", "deps": ["t2", "t5", "t8", "t9"], "scope": [
                 "taskplane/tp.py", "taskplane/tests/test_stage_waves.py",

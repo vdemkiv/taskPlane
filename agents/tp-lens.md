@@ -106,18 +106,19 @@ checkout (`tp new` refuses bare roots).
    result** — it means your lens is clean; say so, don't invent findings.
 4. Every finding cites `file:line` and a scenario someone could reproduce.
    No speculation dressed as a defect.
-5. On Codex, after the exact result file is written, compute its SHA-256 and
-   finish with these two standalone lines using the brief's exact relative
-   path and the digest of the bytes actually written:
+5. On Codex, after the exact result file is written, you may finish with
+   these two standalone lines using the brief's exact relative path and the
+   digest of the bytes actually written:
 
    ```text
    taskplane-result-path:<result_path>
    taskplane-result-sha256:<64 lowercase hex characters>
    ```
 
-   This is a host-observed completion receipt when Codex's repository hook
-   transport is unavailable. It does not replace the Write action and it
-   cannot bless changed bytes. Do not inspect taskplane's implementation,
+   This is useful host telemetry when Codex's repository hook transport is
+   available. It does not replace the Write action and it cannot bless
+   changed bytes. Collection trusts the sealed, schema-valid leased artifact;
+   a missing host receipt does not discard it. Do not inspect taskplane's implementation,
    CLI source, help, or KB to reverse-engineer the result protocol: the
    immutable brief, scoped view, envelope reference, and this role contract
    are the complete input. If they are insufficient, stop with that named
@@ -128,6 +129,7 @@ report. The review that dispatched you merges your findings with the other
 lenses' into the findings dashboard for the human's gate.
 
 The immutable brief declares the exact versioned output schema. Validate the
-result against it before writing; a governed-file result is admissible only
-with the exact host-observed producer/write receipt. Submit that result and
-stop; never call `loop gate`, approve, clear, or advance workflow state.
+result against it before writing. The sealed lease, path, schema, identities,
+and finding/verdict consistency are authoritative; host-observed provenance
+is added when available and a contradictory receipt still fails. Submit that result
+and stop; never call `loop gate`, approve, clear, or advance workflow state.

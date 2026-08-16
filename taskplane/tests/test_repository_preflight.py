@@ -52,13 +52,15 @@ def _review_checkout(path):
     subprocess.run(["git", "commit", "-qm", "base"], cwd=path,
                    check=True)
     base = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=path, text=True,
+        encoding="utf-8", errors="replace").strip()
     with open(os.path.join(path, "a.py"), "w", encoding="utf-8") as handle:
         handle.write("def value():\n    return 2\n")
     subprocess.run(["git", "commit", "-qam", "head"], cwd=path,
                    check=True)
     head = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=path, text=True,
+        encoding="utf-8", errors="replace").strip()
     return base, head
 
 
@@ -333,7 +335,7 @@ class TestLocalRepositoryPreflight(unittest.TestCase):
         self.assertEqual(resumed["status"], "ready")
         self.assertEqual(subprocess.check_output(
             ["git", "rev-list", "--count", "HEAD"], cwd=target,
-            text=True).strip(), "1")
+            text=True, encoding="utf-8", errors="replace").strip(), "1")
 
 
 class TestReviewCliPreflightBoundary(unittest.TestCase):

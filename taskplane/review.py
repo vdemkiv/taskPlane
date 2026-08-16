@@ -1445,9 +1445,80 @@ def blocking_findings_by_lens(findings: Iterable[dict]) -> dict[str, int]:
     return counts
 
 
-def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
+def _host_receipt_trust(ws: str, slot: dict, lease: dict,
+                        raw_result: bytes) -> dict:
+    """Validate a receipt when present; never require one to trust a lease.
+
+    The immutable lease and exact result path are the authority boundary.
+    Host lifecycle receipts add useful attribution, but hook timing and host
+    session formats must not discard a schema-valid result that is already
+    bound to that lease.  A present receipt remains strict: contradiction or
+    byte drift is evidence of tampering and still fails collection.
+    """
+    import review_evidence as evidence
+
+    receipt = tp.load_json(_receipt_path(ws, lease["lease_fingerprint"]),
+                           default=None, what="slot write observation")
+    if receipt is None:
+        return {"trust": "leased-artifact",
+                "host_provenance": {"status": "unavailable"}}
+    expected_receipt = {
+        "run_id": slot.get("run_id"),
+        "lease_fingerprint": lease["lease_fingerprint"],
+        "slot_id": lease["slot_id"], "result_path": slot["result_path"],
+        "contract_task": slot["producer_contract"]["task"],
+        "contract_task_slot": slot["producer_contract"]["task_slot"],
+    }
+    if not isinstance(receipt, dict) or receipt.get("schema") != \
+            "taskplane.slot-write-observation/v3" or any(
+                receipt.get(key) != value
+                for key, value in expected_receipt.items()):
+        raise evidence.ProvenanceError(
+            "slot result has a contradictory host producer receipt")
+    if not str(receipt.get("producer_session") or ""):
+        raise evidence.ProvenanceError("slot result producer session is missing")
+    if receipt.get("producer_host") not in {"claude", "codex"}:
+        raise evidence.ProvenanceError("slot result producer host is missing")
+    if not str(receipt.get("producer_child_id") or "") or not str(
+            receipt.get("producer_assignment_fingerprint") or ""):
+        raise evidence.ProvenanceError("slot result producer child is missing")
+    if receipt.get("result_sha256") != hashlib.sha256(raw_result).hexdigest() \
+            or receipt.get("result_bytes") != len(raw_result):
+        raise evidence.ProvenanceError(
+            "slot result does not match exact observed bytes")
+    assignment = tp.load_json(
+        _producer_assignment_path(ws, lease["lease_fingerprint"]),
+        default=None, what="slot producer assignment")
+    if not isinstance(assignment, dict):
+        raise evidence.ProvenanceError(
+            "slot result producer assignment is missing")
+    assignment_fingerprint = hashlib.sha256(json.dumps(
+        assignment, sort_keys=True, separators=(",", ":"))
+        .encode("utf-8")).hexdigest()
+    if assignment_fingerprint != receipt["producer_assignment_fingerprint"] or \
+            any(receipt.get(key) != assignment.get(key) for key in (
+                "run_id", "lease_fingerprint", "slot_id", "result_path",
+                "contract_task", "contract_task_slot", "producer_host",
+                "producer_session", "producer_child_id")):
+        raise evidence.ProvenanceError(
+            "slot result receipt does not match its dispatched child")
+    return {
+        "trust": "host-observed",
+        "host_provenance": {
+            "status": "observed", "host": receipt["producer_host"],
+            "event": receipt.get("host_event"),
+        },
+    }
+
+
+def _read_slot_output(ws: str, store,
+                      slot: dict) -> tuple[dict, list[dict], dict]:
     import review_evidence as evidence
     path = os.path.join(ws, slot["result_path"])
+    if os.path.islink(path) or not tp.writable_target(
+            path, [slot["result_path"]], ws):
+        raise evidence.ProvenanceError(
+            "slot result path is outside its sealed write allowance")
     try:
         with open(path, "rb") as stream:
             raw_result = stream.read()
@@ -1505,57 +1576,27 @@ def _read_slot_output(ws: str, store, slot: dict) -> tuple[dict, list[dict]]:
                 summary["verdict"] != expected_verdict:
             raise evidence.ProvenanceError(
                 "blocking finding contradicts lens verdict summary: " + lens_id)
-    receipt = tp.load_json(_receipt_path(ws, lease["lease_fingerprint"]),
-                           default=None, what="slot write observation")
-    if not isinstance(receipt, dict):
-        receipt = _codex_session_receipt(ws, store, slot, lease, raw_result)
-    expected_receipt = {
-        "run_id": slot.get("run_id"),
-        "lease_fingerprint": lease["lease_fingerprint"],
-        "slot_id": lease["slot_id"], "result_path": slot["result_path"],
-        "contract_task": slot["producer_contract"]["task"],
-        "contract_task_slot": slot["producer_contract"]["task_slot"],
-    }
-    if not isinstance(receipt, dict) or receipt.get("schema") != \
-            "taskplane.slot-write-observation/v3" or any(
-                receipt.get(key) != value for key, value in expected_receipt.items()):
-        raise evidence.ProvenanceError(
-            "slot result has no matching hook-observed or Codex-session "
-            "producer receipt")
-    if not str(receipt.get("producer_session") or ""):
-        raise evidence.ProvenanceError("slot result producer session is missing")
-    if receipt.get("producer_host") not in {"claude", "codex"}:
-        raise evidence.ProvenanceError("slot result producer host is missing")
-    if not str(receipt.get("producer_child_id") or "") or not str(
-            receipt.get("producer_assignment_fingerprint") or ""):
-        raise evidence.ProvenanceError("slot result producer child is missing")
-    if receipt.get("result_sha256") != hashlib.sha256(raw_result).hexdigest() \
-            or receipt.get("result_bytes") != len(raw_result):
-        raise evidence.ProvenanceError(
-            "slot result does not match exact observed bytes")
-    assignment = tp.load_json(
-        _producer_assignment_path(ws, lease["lease_fingerprint"]),
-        default=None, what="slot producer assignment")
-    if not isinstance(assignment, dict):
-        raise evidence.ProvenanceError(
-            "slot result producer assignment is missing")
-    assignment_fingerprint = hashlib.sha256(json.dumps(
-        assignment, sort_keys=True, separators=(",", ":"))
-        .encode("utf-8")).hexdigest()
-    if assignment_fingerprint != receipt["producer_assignment_fingerprint"] or \
-            any(receipt.get(key) != assignment.get(key) for key in (
-                "run_id", "lease_fingerprint", "slot_id", "result_path",
-                "contract_task", "contract_task_slot", "producer_host",
-                "producer_session", "producer_child_id")):
-        raise evidence.ProvenanceError(
-            "slot result receipt does not match its dispatched child")
+    trust = _host_receipt_trust(ws, slot, lease, raw_result)
     ref = evidence.write_slot_result(
         store, slot["lease"], authored_slot=row["slot_id"],
         lens_ids=row["lens_ids"], findings=findings,
         notes=notes,
         authored_by=row["authored_by"],
         references_applied=expected_references)
-    return ref, [by_lens[lid] for lid in sorted(by_lens)]
+    validation_ref = store.put("slot-validation", {
+        "schema": "taskplane.slot-result-validation/v1",
+        "run_id": slot.get("run_id"),
+        "lease_fingerprint": lease["lease_fingerprint"],
+        "slot_id": lease["slot_id"], "result_path": slot["result_path"],
+        "result_sha256": hashlib.sha256(raw_result).hexdigest(),
+        "result_bytes": len(raw_result),
+        "result_fingerprint": ref["fingerprint"],
+        "checks": ["sealed-path", "lease-identity", "canonical-schema",
+                   "lens-coverage", "finding-verdict-consistency"],
+        **trust,
+    })
+    return (ref, [by_lens[lid] for lid in sorted(by_lens)],
+            validation_ref)
 
 
 def _revision_record(store, envelope_ref: dict, collected: dict) -> tuple[dict, dict | None]:
@@ -1838,11 +1879,12 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         if list(result_refs or []):
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
-        refs, lens_results = [], []
+        refs, lens_results, result_validations = [], [], []
         for slot in state.get("slots") or []:
-            ref, rows = _read_slot_output(ws, store, slot)
+            ref, rows, validation_ref = _read_slot_output(ws, store, slot)
             refs.append(ref)
             lens_results.extend(rows)
+            result_validations.append(validation_ref)
         leases = [row["lease"] for row in state.get("slots") or []]
         if leases:
             collected = evidence.collect_slot_results(store, leases, refs)
@@ -1868,8 +1910,11 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             pass
         decision = store.read(state["routing_decision"])["dispositions"]
         identity = evidence.revision_identity(revision)
+        portable_validations = [
+            _portable_ref(ref) for ref in result_validations]
         body = {"meta": {**identity, "lens_coverage": decision,
-                         "target": identity["target_fingerprint"]},
+                         "target": identity["target_fingerprint"],
+                         "result_validations": portable_validations},
                 "findings": revision["findings"]}
         lines = ["# Engineering review", "",
                  f"Canonical revision: {identity['canonical_revision']}",
@@ -1888,6 +1933,7 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             "schema": "taskplane.review-collect-manifest/v2",
             "status": "complete", "run_id": state["run_id"], **identity,
             "findings": _portable_ref(revision["artifact"]),
+            "result_validations": portable_validations,
             "report": None, "projections": [],
             "published": None, "counters": counters,
         })
@@ -1895,6 +1941,7 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             state, status="prepared", revision=revision,
             projections=[], manifest=manifest,
             counters=manifest["counters"], lens_results=lens_results,
+            result_validations=result_validations,
             prior_identity=prior, publication_body=body,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.

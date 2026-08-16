@@ -163,7 +163,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                         "user.email=t@example.com", "commit", "-q",
                         "--allow-empty", "-m", "base"], cwd=ws, check=True)
         base = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ws, text=True).strip()
+            ["git", "rev-parse", "HEAD"], cwd=ws, text=True,
+            encoding="utf-8", errors="replace").strip()
         os.makedirs(os.path.join(ws, ".codex"))
         with open(os.path.join(ws, ".codex", "hooks.json"), "w",
                   encoding="utf-8") as handle:
@@ -335,8 +336,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(
             quality["changed_symbol_caller_coverage"]["ratio"], 1.0)
 
-    def test_managed_pr_flow_records_receipts_and_collects_from_parent(self):
-        """The marketplace PR journey works across the hybrid run store."""
+    def test_managed_pr_flow_collects_leased_artifacts_from_parent(self):
+        """The marketplace PR journey does not depend on host receipt timing."""
         home = tempfile.mkdtemp(prefix="tp-managed-review-home-")
         checkout = tempfile.mkdtemp(prefix="tp-managed-review-checkout-")
         parent = tempfile.mkdtemp(prefix="tp-managed-review-parent-")
@@ -354,7 +355,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "base"], cwd=checkout,
                        check=True)
         head = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+            ["git", "rev-parse", "HEAD"], cwd=checkout, text=True,
+            encoding="utf-8", errors="replace").strip()
         identity = storage.resolve_repository_identity(checkout)
         repository_run_id = "managed-pr-review"
         layout = storage.resolve_layout(
@@ -413,7 +415,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                              oracle["expected"]["lens_dispositions"])
             state = review._load_state(checkout, opened["run_id"])
             artifact_store = review_evidence.ArtifactStore(checkout)
-            for index, slot in enumerate(state["slots"]):
+            for slot in state["slots"]:
                 lease = artifact_store.read(slot["lease"])
                 brief = artifact_store.read(slot["brief"])
                 result = {
@@ -429,55 +431,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                         brief["language_references"])
                 content = json.dumps(
                     result, sort_keys=True, separators=(",", ":"))
-                event = {
-                    "turn_id": f"managed-session-{index}",
-                    "agent_id": f"managed-child-{index}",
-                    "tool_name": "Write",
-                    "tool_input": {"file_path": slot["result_path"],
-                                   "content": content},
-                }
-                contract = {
-                    "task": brief["producer_contract"]["task"],
-                    "read_only": True,
-                    "write_allow": [slot["result_path"]],
-                }
                 self.assertEqual(
                     review.leased_result_workspace(
                         parent, [slot["result_path"]]), checkout)
-                if index == 0:
-                    # Exercise the real Codex lifecycle + PreToolUse entry
-                    # points for one slot. The remaining slots use the same
-                    # kernel APIs directly to keep this integration bounded.
-                    governed = tp.build_contract(
-                        contract["task"], read_only=True,
-                        write_allow=contract["write_allow"])
-                    governed["task"] = contract["task"]
-                    task_slot = brief["producer_contract"]["task_slot"]
-                    environment = {**os.environ,
-                                   "TASKPLANE_HOME": home,
-                                   "TASKPLANE_TASK": task_slot}
-                    with mock.patch.dict(os.environ, environment, clear=True):
-                        tp.activate(checkout, governed, snapshot=head)
-                    child = subprocess.run(
-                        [sys.executable, cli.__file__, "subagent-start"],
-                        input=json.dumps({**event, "cwd": checkout}),
-                        capture_output=True, text=True, env=environment,
-                        encoding="utf-8", errors="replace", check=False)
-                    self.assertEqual(child.returncode, 0, child.stderr)
-                    screened = subprocess.run(
-                        [sys.executable, cli.__file__, "screen"],
-                        input=json.dumps({**event, "cwd": checkout}),
-                        capture_output=True, text=True, env=environment,
-                        encoding="utf-8", errors="replace", check=False)
-                    self.assertEqual(screened.returncode, 0, screened.stderr)
-                    self.assertNotIn('"decision": "block"', screened.stdout)
-                else:
-                    review.register_slot_producer(
-                        checkout, event=event, contract=contract,
-                        task_slot=brief["producer_contract"]["task_slot"])
-                    review.record_slot_write_observation(
-                        checkout, event=event, contract=contract,
-                        task_slot=brief["producer_contract"]["task_slot"])
                 os.makedirs(os.path.dirname(slot["result_path"]),
                             exist_ok=True)
                 with open(slot["result_path"], "w",
@@ -498,6 +454,21 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             self.assertEqual(collected["status"],
                              oracle["expected"]["collected_status"])
             self.assertEqual(collected["canonical_revision"], 1)
+            self.assertEqual(len(collected["result_validations"]),
+                             len(state["slots"]))
+            validations = [artifact_store.read(ref)
+                           for ref in collected["result_validations"]]
+            self.assertEqual({row["trust"] for row in validations},
+                             {"leased-artifact"})
+            output = __import__("io").StringIO()
+            with __import__("contextlib").redirect_stdout(output):
+                rc = cli.main([
+                    "review", "signoff", "approve", "--by",
+                    "human reviewer", "--run-id", opened["run_id"],
+                    "--workspace", parent])
+            self.assertEqual(rc, 0, output.getvalue())
+            signed = json.loads(output.getvalue())
+            self.assertEqual(signed["signoff"]["decision"], "approve")
 
     def test_brief_is_sufficient_to_author_canonical_slot_output(self):
         self._start()
@@ -514,9 +485,12 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                          {"type": "array", "items": "finding"})
         self.assertIn("lens", schema["finding"]["required"])
         self.assertEqual(
-            schema["codex_completion_receipt"]["required_lines"],
+            schema["codex_completion_receipt"]["advisory_lines"],
             ["taskplane-result-path:<result_path>",
              "taskplane-result-sha256:<sha256>"])
+        self.assertEqual(
+            schema["codex_completion_receipt"]["authority"],
+            "the sealed, validated lease artifact")
         self.assertIn("producer_contract", brief)
 
     def test_language_reference_ack_is_exact_and_canonical(self):
@@ -590,6 +564,13 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                     stream.write(json.dumps(event) + "\n")
         with mock.patch.dict(os.environ, {
                 "CODEX_HOME": codex_home, "CODEX_THREAD_ID": parent}):
+            for slot in state["slots"]:
+                lease = store.read(slot["lease"])
+                with open(os.path.join(self.ws, slot["result_path"]),
+                          "rb") as stream:
+                    raw = stream.read()
+                self.assertIsNotNone(review._codex_session_receipt(
+                    self.ws, store, slot, lease, raw))
             out = review.collect_review(self.ws, publish=False)
         self.assertEqual(out["status"], "complete")
         for slot in state["slots"]:
@@ -599,7 +580,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             self.assertEqual(receipt["host_event"], "CodexTaskComplete")
             self.assertEqual(receipt["tool"], "native-session-result-receipt")
 
-    def test_self_asserted_authorship_without_hook_receipt_is_rejected(self):
+    def test_valid_leased_artifacts_collect_without_hook_receipts(self):
         self._start()
         state = review._load_state(self.ws)
         store = review_evidence.ArtifactStore(self.ws)
@@ -618,9 +599,12 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as stream:
                 json.dump(row, stream)
-        with self.assertRaisesRegex(review_evidence.ProvenanceError,
-                                    "hook-observed"):
-            review.collect_review(self.ws, publish=False)
+        collected = review.collect_review(self.ws, publish=False)
+        self.assertEqual(collected["status"], "complete")
+        validations = [store.read(ref)
+                       for ref in collected["result_validations"]]
+        self.assertEqual({row["trust"] for row in validations},
+                         {"leased-artifact"})
 
     def test_receipt_binds_exact_result_bytes_not_only_the_write_path(self):
         """A PreToolUse receipt for blocker bytes cannot bless a later pass."""

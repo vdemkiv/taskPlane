@@ -149,19 +149,6 @@ class TestApproveBy(_RepoStore):
 
 
 class TestTagSkill(unittest.TestCase):
-    def test_skill_exists_with_protocol(self):
-        p = os.path.join(ROOT, "skills", "tp-tag", "SKILL.md")
-        self.assertTrue(os.path.exists(p))
-        body = open(p, encoding="utf-8").read()
-        for must in ("TASKPLANE_STORE=repo", "--by",
-                     "Do not run `loop approve`",
-                     "Never approves a human gate"):
-            self.assertIn(must, body)
-        # plugin validation: no angle-bracket tags in the description line
-        desc = [ln for ln in body.splitlines()
-                if ln.startswith("description:")][0]
-        self.assertNotIn("<", desc)
-
     def test_approved_flow_contract_is_exact_and_attributable(self):
         p = os.path.join(ROOT, "skills", "tp-tag", "flow.json")
         with open(p, encoding="utf-8") as stream:

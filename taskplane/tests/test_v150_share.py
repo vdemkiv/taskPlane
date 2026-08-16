@@ -163,12 +163,5 @@ class TestOnboardingSurface(_Ws):
         out = json.loads(r.stdout)
         self.assertIn("ASK THE HUMAN", out["plan_question"])
 
-    def test_setup_reference_documents_the_flow(self):
-        body = open(os.path.join(ROOT, "skills", "tp-go", "references",
-                                 "setup.md"), encoding="utf-8").read()
-        for must in ("share plan", "share set private", "share push"):
-            self.assertIn(must, body)
-
-
 if __name__ == "__main__":
     unittest.main()

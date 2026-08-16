@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
+import graph_quality  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
@@ -345,7 +346,21 @@ class TestDegradationIsLoud(_AtEvaluate):
                   encoding="utf-8") as stream:
             stream.write("x=2\n")
         submit_gate(ws, "pass")
-        action = loop.next_action(ws)
+        real_assess = graph_quality.assess
+
+        def low_confidence(*args, **kwargs):
+            record = real_assess(*args, **kwargs)
+            record["status"] = "impact_incomplete"
+            record["module_confidence"] = "low"
+            record["reasons"] = ["fixture forces incomplete graph evidence"]
+            coverage = record["changed_symbol_caller_coverage"]
+            coverage["status"] = "incomplete"
+            coverage["ratio"] = None
+            return record
+
+        with mock.patch.object(graph_quality, "assess",
+                               side_effect=low_confidence):
+            action = loop.next_action(ws)
         self.assertEqual(action["review_kernel"]["status"],
                          "impact_incomplete")
         with mock.patch.object(loop.lens_router, "route_git_diff",

@@ -36,7 +36,7 @@ export default async function reviewWave({ args, agent, parallel, phase }) {
   const results = await parallel(lensRuns);
 
   phase('Merge');
-  // Canonical collection consumes the leased result files and host receipts;
-  // the workflow returns transport receipts only and never remaps findings.
+  // Canonical collection consumes the sealed, validated result files. Host
+  // receipts are attribution telemetry; the workflow never remaps findings.
   return { receipts: results.filter(Boolean) };
 }

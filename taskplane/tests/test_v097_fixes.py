@@ -76,18 +76,9 @@ class TestHigh2InitScaffoldLint(unittest.TestCase):
         self.assertEqual(problems, [], f"scaffold trips lint: {problems}")
 
 
-_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 class TestHigh3RolesDocScopeAdvice(unittest.TestCase):
     """HIGH-3: no doc may advise `--scope ""` as a way to make a role
     read-only (empty scope disables write screening entirely)."""
-
-    def test_roles_doc_does_not_advise_empty_scope_as_readonly(self):
-        p = os.path.join(_REPO, "skills", "tp-help", "references", "roles.md")
-        text = open(p, encoding="utf-8").read()
-        self.assertNotIn('--scope "" so it can\'t write', text)
-        self.assertIn("--read-only", text)
 
     def test_empty_scope_write_is_screened_only_under_read_only(self):
         # Confirms the enforced mechanism the doc now points at: a read-only

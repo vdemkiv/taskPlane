@@ -44,7 +44,6 @@
         "taskplane/tests/test_onboarding_docs.py",
         "taskplane/tests/test_selfreview_fixes.py"
         ,"taskplane/loop_status.py"
-        ,"scripts/ci_unittest_floor.py"
         ,"scripts/ci_loop_cost.py"
         ,"docs/onboarding.md"
         ,"docs/configuration.md"
@@ -53,7 +52,7 @@
         ,"docs/cli-reference.md"
         ,"taskplane/tests/test_audit_extraction.py"
         ,"taskplane/tests/test_audit_sweep.py"
-        ,"taskplane/tests/test_ci_floor.py"
+        ,"taskplane/tests/test_runner_isolation.py"
         ,"taskplane/tests/test_evaluate_routing.py"
         ,"taskplane/tests/test_loop.py"
         ,"taskplane/tests/test_loop_cost_ratchet.py"

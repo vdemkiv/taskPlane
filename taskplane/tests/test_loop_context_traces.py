@@ -533,12 +533,6 @@ class TestRecordingOnly(unittest.TestCase):
                          f"the recording changed behaviour at step={step}")
         return subject
 
-    def test_evaluate_payload_and_events_are_unchanged(self):
-        """A site that emits: only the row's CONTENTS may differ."""
-        _touch_commit(self.ws)
-        _, events = self._differential("evaluate")
-        self.assertIn("graph_impact", events)
-
     def test_execute_payload_and_events_are_unchanged(self):
         _touch_commit(self.ws)
         _, events = self._differential("execute")

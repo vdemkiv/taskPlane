@@ -11,10 +11,13 @@ cd taskPlane
 git config user.email you@example.com && git config user.name you   # gates need commit identity
 pip install "pytest==8.*"          # the only dev dependency; the plugin itself is stdlib-only
 python -m pytest taskplane/tests -q                    # run from the repo ROOT (conftest imports the taskplane package)
-python -m unittest discover -s taskplane/tests -t .    # the second runner CI also gates
+python -m unittest taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation -v
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same suite on Python 3.10–3.12.
+CI (`.github/workflows/ci.yml`) runs the authoritative suite on Python 3.12,
+focused compatibility boundaries on Python 3.10/3.11, and one `unittest`
+store-isolation canary. Pytest owns the test suite; CI does not execute it a
+second time through partial `unittest discover` collection.
 
 ## Ground rules
 
