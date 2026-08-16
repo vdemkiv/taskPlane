@@ -313,6 +313,27 @@ def _requirements_view(envelope_ref: dict, requirements: dict) -> dict:
     }
 
 
+def _impact_view(envelope_ref: dict, impact: dict) -> dict:
+    """Keep the blast radius complete without copying it into every slot."""
+    if len(canonical_bytes(impact)) <= MAX_INLINE_REQUIREMENTS_BYTES:
+        return copy.deepcopy(impact)
+    touched = _strings(impact.get("touched"))
+    summary = {
+        "reference": _envelope_section_reference(
+            envelope_ref, "impact", impact),
+        "total_impacted": int(impact.get("total_impacted") or 0),
+        "touched_count": len(touched),
+        "unknown_count": len(impact.get("unknown") or []),
+        "depth_limit": impact.get("depth_limit"),
+        "truncated": bool(impact.get("truncated")),
+    }
+    if len(canonical_bytes(touched)) <= 2048:
+        summary["touched"] = touched
+    else:
+        summary["touched_by_reference"] = True
+    return summary
+
+
 def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
                        slot_id: str, lens_ids, relevant_files=None,
                        evidence=None) -> dict:
@@ -358,7 +379,8 @@ def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
         "target": copy.deepcopy(envelope["target"]),
         "target_fingerprint": envelope["target_fingerprint"],
         "diff": diff_view,
-        "impact": copy.deepcopy(envelope.get("impact") or {}),
+        "impact": _impact_view(
+            envelope_ref, envelope.get("impact") or {}),
         "graph_quality": copy.deepcopy(envelope.get("graph_quality") or {}),
         "runnability": copy.deepcopy(envelope.get("runnability") or {}),
         "requirements": _requirements_view(

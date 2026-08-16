@@ -35,6 +35,65 @@ def _bridge(ws: str) -> None:
 
 
 class TestCapabilitySnapshot:
+    def test_runtime_hook_receipt_proves_the_loaded_session_without_repo_cwd(self):
+        home = tempfile.mkdtemp(prefix="tp-host-receipt-")
+        parent = tempfile.mkdtemp(prefix="tp-parent-workspace-")
+        hc.record_runtime_hook_receipt(
+            home, hook_path="native", observed_at=100.0,
+            event={"session_id": "session-1", "tool_use_id": "call-1",
+                   "hook_event_name": "PreToolUse", "cwd": parent})
+
+        observed = hc.runtime_hook_observations(
+            home, session_id="session-1", now=101.0)
+
+        assert observed["native_plugin_hooks_loaded"].status == "supported"
+        assert observed["managed_policy_permission"].status == "supported"
+        assert "repository_trust" not in observed
+
+    def test_runtime_hook_receipt_persists_for_session_and_cannot_cross_it(self):
+        home = tempfile.mkdtemp(prefix="tp-host-receipt-")
+        hc.record_runtime_hook_receipt(
+            home, hook_path="native", observed_at=100.0,
+            event={"session_id": "session-1", "tool_use_id": "call-1",
+                   "hook_event_name": "PreToolUse"})
+
+        assert hc.runtime_hook_observations(
+            home, session_id="another-session", now=101.0) == {}
+        assert hc.runtime_hook_observations(
+            home, session_id="session-1", now=10_000.0)[
+                "native_plugin_hooks_loaded"].status == "supported"
+
+    def test_native_and_bridge_same_event_prove_exactly_once_identity(self):
+        home = tempfile.mkdtemp(prefix="tp-host-receipt-")
+        event = {"session_id": "session-1", "tool_use_id": "call-1",
+                 "hook_event_name": "PreToolUse"}
+        hc.record_runtime_hook_receipt(
+            home, hook_path="native", observed_at=100.0, event=event)
+        hc.record_runtime_hook_receipt(
+            home, hook_path="bridge", observed_at=100.5, event=event)
+
+        observed = hc.runtime_hook_observations(
+            home, session_id="session-1", now=101.0)
+
+        assert observed["stable_event_identity"].status == "supported"
+        assert observed["repository_trust"].status == "supported"
+
+    def test_bridge_receipt_is_scoped_to_its_repository(self):
+        home = tempfile.mkdtemp(prefix="tp-host-receipt-")
+        parent = tempfile.mkdtemp(prefix="tp-parent-")
+        child = tempfile.mkdtemp(prefix="tp-child-")
+        hc.record_runtime_hook_receipt(
+            home, hook_path="bridge", observed_at=100.0,
+            event={"session_id": "session-1", "tool_use_id": "call-1",
+                   "hook_event_name": "PreToolUse", "cwd": parent})
+
+        assert hc.runtime_hook_observations(
+            home, session_id="session-1", workspace=child,
+            now=101.0) == {}
+        assert hc.runtime_hook_observations(
+            home, session_id="session-1", workspace=parent,
+            now=101.0)["repository_bridge_loaded"].status == "supported"
+
     def test_file_presence_never_claims_loaded_or_effective(self):
         ws = _repo()
         _bridge(ws)
@@ -137,6 +196,35 @@ class TestCapabilitySnapshot:
 
 
 class TestOnboardingProjection:
+    def test_loaded_native_hook_governs_a_different_managed_checkout(self):
+        checkout = _repo()
+        _bridge(checkout)
+        home = tempfile.mkdtemp(prefix="tp-host-receipt-")
+        hc.record_runtime_hook_receipt(
+            home, hook_path="native",
+            event={"session_id": "session-1", "tool_use_id": "call-1",
+                   "hook_event_name": "PreToolUse",
+                   "cwd": tempfile.mkdtemp(prefix="tp-parent-")})
+        env = {"CODEX_HOME": "/tmp/codex",
+               "CODEX_THREAD_ID": "session-1"}
+
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(cli.tp, "store_home", return_value=home), \
+                mock.patch.object(cli, "_install_context",
+                                  return_value="personal"):
+            report = cli._onboard_report(checkout)
+
+        caps = report["host_capabilities"]
+        assert caps["effective_path"]["value"] == "native_effective"
+        assert caps["ready"] is True
+        trust = next(row for row in report["checks"]
+                     if row["id"] == "repository_trust")
+        assert trust["ok"] is True
+        assert trust["detail"] == "not required for native hooks"
+        workspace = next(row for row in report["checks"]
+                         if row["id"] == "workspace")
+        assert "continue in the current Codex task" in workspace["hint"]
+
     def test_codex_report_exposes_five_independent_host_states(self):
         ws = _repo()
         _bridge(ws)

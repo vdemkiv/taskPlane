@@ -153,6 +153,31 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             "src/service.py":
                 "password = old\nvalue = 2\nunchanged context\n"})
 
+    def test_generated_codex_bridge_is_not_part_of_the_review_diff(self):
+        ws = tempfile.mkdtemp(prefix="tp-review-diff-")
+        subprocess = __import__("subprocess")
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "-c", "user.name=T", "-c",
+                        "user.email=t@example.com", "commit", "-q",
+                        "--allow-empty", "-m", "base"], cwd=ws, check=True)
+        base = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ws, text=True).strip()
+        os.makedirs(os.path.join(ws, ".codex"))
+        with open(os.path.join(ws, ".codex", "hooks.json"), "w",
+                  encoding="utf-8") as handle:
+            json.dump({"hooks": {"Stop": [{"hooks": [{
+                "command": "python3 .taskplane/codex-hook.py session-verify"
+            }]}]}}, handle)
+        with open(os.path.join(ws, "actual.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("value = 1\n")
+
+        rc, patch = review.canonical_diff_patch(ws, base)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("actual.py", patch)
+        self.assertNotIn(".codex/hooks.json", patch)
+
     def test_changed_hunk_context_is_bounded_before_lens_routing(self):
         oversized = "x" * (review.MAX_ROUTING_FILE_BYTES + 100)
         patch = ("diff --git a/src/auth.py b/src/auth.py\n"
@@ -176,6 +201,38 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             review._load_state(self.ws, out["run_id"])["quality"])
         self.assertEqual(quality["review_fallback"]["mode"],
                          "immutable_diff")
+
+    def test_legacy_sparse_run_cannot_block_the_current_diff_fallback(self):
+        legacy_run = "0" * 32
+        state_path = review._state_path(self.ws, legacy_run)
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        tp.atomic_write_json(state_path, {
+            "schema": "taskplane.review-run-state/v2",
+            "run_id": legacy_run, "status": "impact_incomplete",
+            "stage": "review", "target": self.target,
+        }, sort_keys=True)
+        tp.atomic_write_json(review._index_path(self.ws), {
+            "schema": "taskplane.review-run-index/v2",
+            "latest": legacy_run,
+            "runs": {legacy_run: {
+                "state": os.path.relpath(state_path, self.ws),
+                "status": "impact_incomplete", "stage": "review",
+                "target_fingerprint": self.target["fingerprint"],
+            }},
+        }, sort_keys=True)
+
+        with self.assertRaisesRegex(review.ReviewKernelError,
+                                    "no matching review kernel run"):
+            review._load_state(self.ws)
+
+        current = self._start(
+            graph={**self.graph,
+                   "meta": {**self.graph["meta"], "truncated": True}})
+
+        self.assertEqual(current["status"], "ready")
+        self.assertNotEqual(current["run_id"], legacy_run)
+        self.assertEqual(review._load_state(self.ws)["run_id"],
+                         current["run_id"])
 
     def test_start_collects_informational_runnability_when_omitted(self):
         out = review.start_review(

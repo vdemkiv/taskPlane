@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
+import time
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -21,6 +23,8 @@ STATUSES = frozenset(("supported", "unsupported", "unknown",
                       "contradictory"))
 CONFIDENCES = frozenset(("high", "medium", "low"))
 MAX_REASON_BYTES = 512
+RUNTIME_RECEIPT_SCHEMA = "taskplane.host-hook-receipt/v1"
+RUNTIME_RECEIPT_MAX_AGE_SECONDS = 300.0
 
 
 def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:
@@ -166,6 +170,155 @@ def observations_from_environment(
             status=status, source=f"host-receipt:environment:{variable}",
             confidence="high", reason=reason)
     return result
+
+
+def _receipt_dir(home: str) -> str:
+    return os.path.join(os.path.abspath(home), "host-receipts")
+
+
+def _receipt_path(home: str, hook_path: str) -> str:
+    return os.path.join(_receipt_dir(home), f"{hook_path}.json")
+
+
+def _fingerprint_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None
+
+
+def record_runtime_hook_receipt(
+        home: str, *, hook_path: str, event: Mapping[str, Any],
+        observed_at: float | None = None) -> dict[str, Any]:
+    """Persist proof that a configured hook actually executed.
+
+    Hook execution is the runtime receipt onboarding needs. It is global to
+    the Codex task, not to the repository currently being reviewed: the hook
+    receives the tool/event cwd and can govern a prepared checkout without
+    forcing the user to open another task there. Only fingerprints and
+    bounded event metadata are retained; no prompt or tool input is stored.
+    """
+    path_name = str(hook_path or "").strip().lower()
+    if path_name not in {"native", "bridge"}:
+        raise ValueError("hook_path must be native or bridge")
+    if not isinstance(event, Mapping):
+        raise TypeError("hook event must be a mapping")
+    session = (event.get("session_id") or event.get("thread_id")
+               or event.get("conversation_id") or
+               os.environ.get("CODEX_THREAD_ID") or
+               os.environ.get("CLAUDE_SESSION_ID"))
+    event_values = [str(event.get(key) or "") for key in (
+        "session_id", "thread_id", "turn_id", "tool_use_id",
+        "hook_event_name", "tool_name", "agent_id")]
+    event_identity = "\0".join(event_values)
+    cwd = event.get("cwd") if isinstance(event.get("cwd"), str) else ""
+    receipt = {
+        "schema": RUNTIME_RECEIPT_SCHEMA,
+        "hook_path": path_name,
+        "observed_at": float(observed_at if observed_at is not None
+                             else time.time()),
+        "session_fingerprint": _fingerprint_text(session),
+        "event_fingerprint": (_fingerprint_text(event_identity)
+                              if any(event_values) else None),
+        "workspace_fingerprint": _fingerprint_text(
+            os.path.normcase(os.path.realpath(cwd))) if cwd else None,
+        "event_name": _bounded(event.get("hook_event_name"), 64),
+    }
+    directory = _receipt_dir(home)
+    os.makedirs(directory, exist_ok=True)
+    target = _receipt_path(home, path_name)
+    # A session-bound receipt remains valid for that task. Avoid an fsync on
+    # every tool call once this hook path has proved it executed.
+    if receipt["session_fingerprint"]:
+        try:
+            with open(target, encoding="utf-8") as handle:
+                prior = json.load(handle)
+            if isinstance(prior, dict) and prior.get("schema") == \
+                    RUNTIME_RECEIPT_SCHEMA and prior.get("hook_path") == \
+                    path_name and prior.get("session_fingerprint") == \
+                    receipt["session_fingerprint"]:
+                return prior
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    temporary = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="", delete=False,
+                dir=directory, prefix=f".{path_name}-receipt-",
+                suffix=".tmp") as handle:
+            temporary = handle.name
+            json.dump(receipt, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return receipt
+
+
+def runtime_hook_observations(
+        home: str, *, session_id: str | None = None,
+        workspace: str | None = None,
+        now: float | None = None) -> dict[str, Observation]:
+    """Return fresh, session-compatible observations from hook execution."""
+    current = float(now if now is not None else time.time())
+    expected_session = _fingerprint_text(session_id)
+    expected_workspace = (_fingerprint_text(
+        os.path.normcase(os.path.realpath(workspace))) if workspace else None)
+    receipts: dict[str, dict[str, Any]] = {}
+    for hook_path in ("native", "bridge"):
+        try:
+            with open(_receipt_path(home, hook_path), encoding="utf-8") as f:
+                row = json.load(f)
+            if not isinstance(row, dict) or row.get("schema") != \
+                    RUNTIME_RECEIPT_SCHEMA or row.get("hook_path") != hook_path:
+                continue
+            age = current - float(row.get("observed_at"))
+            if age < -30.0:
+                continue
+            observed_session = row.get("session_fingerprint")
+            if expected_session and observed_session and \
+                    observed_session != expected_session:
+                continue
+            if hook_path == "bridge" and expected_workspace and \
+                    row.get("workspace_fingerprint") != expected_workspace:
+                continue
+            # A session identity is the durable boundary. Time expiry is only
+            # needed for hosts that do not expose one.
+            if not observed_session and age > RUNTIME_RECEIPT_MAX_AGE_SECONDS:
+                continue
+            receipts[hook_path] = row
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+    observations: dict[str, Observation] = {}
+    for hook_path, capability in (
+            ("native", "native_plugin_hooks_loaded"),
+            ("bridge", "repository_bridge_loaded")):
+        if hook_path in receipts:
+            observations[capability] = Observation(
+                status="supported", source=f"runtime-hook:{hook_path}",
+                confidence="high", reason=(
+                    f"{hook_path} hook executed in this active host task"))
+    if receipts:
+        observations["managed_policy_permission"] = Observation(
+            status="supported", source="runtime-hook:execution",
+            confidence="high",
+            reason="host policy permitted the hook command to execute")
+    if "bridge" in receipts:
+        observations["repository_trust"] = Observation(
+            status="supported", source="runtime-hook:bridge",
+            confidence="high",
+            reason="repository bridge executed for the active host task")
+    if len(receipts) == 2:
+        native_event = receipts["native"].get("event_fingerprint")
+        bridge_event = receipts["bridge"].get("event_fingerprint")
+        if native_event and native_event == bridge_event:
+            observations["stable_event_identity"] = Observation(
+                status="supported", source="runtime-hook:exactly-once-claim",
+                confidence="high",
+                reason="native and bridge observed the same hook event")
+    return observations
 
 
 def _list_observation(environment: Mapping[str, str], variable: str,

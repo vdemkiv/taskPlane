@@ -243,6 +243,40 @@ class TestImmutableEnvelope(unittest.TestCase):
         self.assertLess(
             len(evidence.canonical_bytes(view)), evidence.MAX_SCOPED_VIEW_BYTES)
 
+    def test_large_realistic_impact_is_one_verified_envelope_reference(self):
+        values = dict(self.kw)
+        impacted = [{
+            "module": f"packages/plugin-{index:03d}",
+            "via": f"packages/core/src/api-{index:03d}.ts",
+            "kind": "imports",
+            "distance": 1 + index % 3,
+        } for index in range(320)]
+        impact = {
+            "touched": ["packages/ui"],
+            "impacted": {"1": impacted[:120], "2": impacted[120:240],
+                         "3": impacted[240:]},
+            "total_impacted": len(impacted), "unknown": [],
+            "depth_limit": 3, "truncated": False,
+        }
+        values.update({"impact": impact,
+                       "graph_quality": {"status": "complete",
+                                         "fingerprint": "gq-large-impact"}})
+
+        envelope_ref = evidence.create_envelope(self.store, **values)
+        view_ref = evidence.create_scoped_view(
+            self.store, envelope_ref, slot_id="deep.architecture",
+            lens_ids=["architecture"])
+        view = self.store.read(view_ref)
+
+        self.assertEqual(view["impact"]["reference"]["section"], "/impact")
+        self.assertEqual(view["impact"]["total_impacted"], len(impacted))
+        self.assertEqual(
+            evidence.read_envelope_section(
+                self.store, envelope_ref, view["impact"]["reference"]),
+            impact)
+        self.assertLess(
+            len(evidence.canonical_bytes(view)), evidence.MAX_SCOPED_VIEW_BYTES)
+
 
 class TestCanonicalInputs(unittest.TestCase):
     def test_target_identity_is_one_projection_shape(self):

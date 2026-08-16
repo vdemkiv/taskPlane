@@ -125,6 +125,23 @@ class TestHookPathManifests(unittest.TestCase):
                             hook.get("commandWindows", "")
                             for hook in native_hooks))
 
+    def test_generated_workspace_hook_config_is_git_local_only(self):
+        with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-git-") as ws:
+            subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+            with mock.patch.dict(
+                    os.environ,
+                    {"CODEX_HOME": "/tmp/codex",
+                     "TASKPLANE_MANAGED_HOOK_POLICY": "supported"},
+                    clear=True), \
+                    mock.patch.object(cli, "_install_context",
+                                      return_value="personal"):
+                cli._install_codex_hooks(ws)
+
+            ignored = subprocess.run(
+                ["git", "check-ignore", "-q", ".codex/hooks.json"],
+                cwd=ws)
+            self.assertEqual(ignored.returncode, 0)
+
 
 class TestHookEventClaims(unittest.TestCase):
     def setUp(self):

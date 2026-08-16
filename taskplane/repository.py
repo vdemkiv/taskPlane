@@ -70,6 +70,37 @@ class RepositoryManager:
                 f"{argv[0]} exited {result.returncode}")
         return output
 
+    def _materialize_review_diff(self, checkout: str, merge_base: str,
+                                 head: str) -> None:
+        """Hydrate every blob the immutable review patch will require.
+
+        Existing mirrors may be partial clones even when the checkout is not
+        marked shallow. Name-only diff succeeds without blobs, so it cannot
+        prove the later review is offline-capable. Rendering the binary patch
+        to DEVNULL forces Git's promisor remote to resolve the exact content
+        while repository preflight can still turn auth/network failures into
+        a structured user action.
+        """
+        argv = ["git", "diff", "--no-ext-diff", "--no-textconv",
+                "--binary", merge_base, head, "--"]
+        try:
+            result = subprocess.run(
+                argv, cwd=checkout, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                errors="replace", timeout=600, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise RepositoryAcquisitionError(
+                "network", "review diff hydration timed out after 600s") \
+                from exc
+        except OSError as exc:
+            raise RepositoryAcquisitionError(
+                "checkout", f"could not execute git diff: {exc}") from exc
+        if result.returncode:
+            output = str(result.stderr or "").strip()
+            raise RepositoryAcquisitionError(
+                _classify_failure(output), output[-1200:] or
+                f"git diff hydration exited {result.returncode}")
+
     @staticmethod
     def _remote_url(identity: storage.RepositoryIdentity) -> str:
         if identity.kind != "hosted" or not identity.host or \
@@ -172,11 +203,13 @@ class RepositoryManager:
                 else:
                     self._run(["git", "--git-dir", layout.mirror_path,
                                "worktree", "add", "--detach", checkout, head])
+                self._materialize_review_diff(checkout, merge_base, head)
+                changed = self._run([
+                    "git", "diff", "--name-only", merge_base, "HEAD"],
+                    cwd=checkout)
         except tp.StateError as exc:
             raise RepositoryAcquisitionError(
                 "checkout", f"managed repository is busy: {exc}") from None
-        changed = self._run([
-            "git", "diff", "--name-only", merge_base, "HEAD"], cwd=checkout)
         return AcquisitionResult(
             checkout=os.path.realpath(checkout), base_ref=base_ref, base=base,
             head=head, merge_base=merge_base,

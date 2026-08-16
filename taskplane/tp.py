@@ -260,11 +260,16 @@ def _host_capability_snapshot(ws: str, install_context: str | None = None):
                os.environ.get("CLAUDE_CODE_VERSION"))
     session_id = (os.environ.get("CODEX_THREAD_ID")
                   or os.environ.get("CLAUDE_SESSION_ID"))
+    observations = host_caps.runtime_hook_observations(
+        tp.store_home(), session_id=session_id, workspace=ws)
+    # Explicit adapter-owned environment receipts take precedence over the
+    # short-lived runtime receipt when both exist.
+    observations.update(host_caps.observations_from_environment(os.environ))
     return host_caps.probe_snapshot(
         ws, host=host, host_version=version, session_id=session_id,
         install_context=context, native_installed=os.path.isfile(
             native_manifest), bridge_configured=bool(bridge.get("ok")),
-        observations=host_caps.observations_from_environment(os.environ),
+        observations=observations,
         now=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
 
 
@@ -422,6 +427,55 @@ def _codex_hook_rows() -> dict:
     return generated
 
 
+def _taskplane_only_codex_config(value: dict) -> bool:
+    """True only for an untracked config composed entirely by Taskplane."""
+    if not isinstance(value, dict) or set(value) != {"hooks"} or not \
+            isinstance(value.get("hooks"), dict):
+        return False
+    commands = [str(hook.get("command") or "")
+                for rows in value["hooks"].values()
+                for row in rows for hook in row.get("hooks") or []]
+    return bool(commands) and all(
+        _CODEX_HOOK_MARKER in command for command in commands)
+
+
+def _exclude_generated_codex_config(ws: str, value: dict) -> None:
+    """Keep Taskplane's local bridge out of the repository's review diff."""
+    if not _taskplane_only_codex_config(value):
+        return
+    tracked = tp._run(
+        ["git", "ls-files", "--error-unmatch", "--", _CODEX_HOOK_CONFIG],
+        cwd=ws)
+    if tracked.returncode == 0:
+        return
+    location = tp._run(
+        ["git", "rev-parse", "--git-path", "info/exclude"], cwd=ws)
+    if location.returncode:
+        return
+    path = location.stdout.strip()
+    if not os.path.isabs(path):
+        path = os.path.join(ws, path)
+    pattern = "/.codex/hooks.json"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    if pattern in lines:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = path + f".tmp.{os.getpid()}"
+    try:
+        with open(temporary, "w", encoding="utf-8", newline="") as handle:
+            if lines:
+                handle.write("\n".join(lines) + "\n")
+            handle.write(pattern + "\n")
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def _install_codex_hooks(ws: str) -> dict:
     """Install the portable workspace config and ignored local engine bridge.
 
@@ -458,6 +512,7 @@ def _install_codex_hooks(ws: str) -> dict:
                     if _CODEX_HOOK_MARKER not in json.dumps(row)]
         hooks[event] = existing + rows
     tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
+    _exclude_generated_codex_config(ws, prior)
 
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
     os.makedirs(os.path.dirname(runner_path), exist_ok=True)
@@ -549,6 +604,12 @@ def _onboard_report(ws: str) -> dict:
     if codex_hooks is not None:
         snapshot = _host_capability_snapshot(ws)
         host_capabilities = host_caps.onboarding_projection(snapshot)
+        native_effective = (host_capabilities["effective_path"]["value"]
+                            == "native_effective")
+        if native_effective:
+            checks[0]["hint"] = (
+                "The loaded native Taskplane hook governs this checkout; "
+                "continue in the current Codex task.")
         checks.extend((
             {
                 "id": "hook_install", "label": "Hook installation",
@@ -558,8 +619,11 @@ def _onboard_report(ws: str) -> dict:
             },
             {
                 "id": "repository_trust", "label": "Repository trust",
-                "ok": host_capabilities["trust"]["status"] == "supported",
-                "detail": host_capabilities["trust"]["status"],
+                "ok": (native_effective or
+                       host_capabilities["trust"]["status"] == "supported"),
+                "detail": ("not required for native hooks" if
+                           native_effective else
+                           host_capabilities["trust"]["status"]),
                 "hint": "Review the repository trust decision in Codex when "
                         "the workspace bridge is required.",
             },
@@ -576,8 +640,12 @@ def _onboard_report(ws: str) -> dict:
                 "ok": (host_capabilities["loaded_session"]["status"]
                        == "supported"),
                 "detail": host_capabilities["loaded_session"]["status"],
-                "hint": "Start a new Codex task after installation or policy "
-                        "changes so the host can provide a load receipt.",
+                "hint": ("This Codex task already has an observed hook "
+                         "receipt; no restart is required." if
+                         host_capabilities["loaded_session"]["status"] ==
+                         "supported" else
+                         "Start one new Codex task only after the initial "
+                         "hook installation or a host policy change."),
             },
             {
                 "id": "effective_hook_path", "label": "Effective hook path",
@@ -3433,6 +3501,13 @@ def _run_hook_command(a) -> int:
     workspace = _workspace(
         event_cwd if isinstance(event_cwd, str) and event_cwd
         else getattr(a, "workspace", None))
+    try:
+        host_caps.record_runtime_hook_receipt(
+            tp.store_home(), hook_path=hook_path, event=event)
+    except Exception:
+        # Runtime receipt is onboarding evidence, never a reason to break the
+        # enforcement hook that is already executing.
+        pass
     claim = tp.claim_hook_event(
         workspace, a.cmd, event, hook_path=hook_path)
     if not claim.get("execute"):

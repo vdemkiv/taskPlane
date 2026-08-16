@@ -44,6 +44,10 @@ KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
 RESULT_SCHEMA = "taskplane.lens-slot-output/v2"
 RESULT_AUTHOR = "lens-slot"
+# Review runs are cached by semantic policy as well as target/context. A
+# marketplace update that changes the graph fallback must never resurrect a
+# zero-dispatch run produced by the prior policy.
+KERNEL_POLICY_VERSION = "review-kernel/v3-immutable-diff-fallback"
 
 
 class ReviewKernelError(RuntimeError):
@@ -162,6 +166,8 @@ def _load_index(ws: str) -> dict:
 
 
 def _save_state(ws: str, state: dict) -> None:
+    state = dict(state)
+    state["kernel_policy"] = KERNEL_POLICY_VERSION
     run_id = str(state.get("run_id") or "")
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
         raise ReviewKernelError("review state has invalid run-id")
@@ -175,6 +181,7 @@ def _save_state(ws: str, state: dict) -> None:
             "state": os.path.relpath(_state_path(ws, run_id), ws).replace(
                 os.sep, "/"),
             "status": state.get("status"), "stage": state.get("stage"),
+            "kernel_policy": KERNEL_POLICY_VERSION,
             "target_fingerprint": (state.get("target") or {}).get(
                 "fingerprint"),
         }
@@ -186,13 +193,20 @@ def _load_state(ws: str, run_id: str | None = None) -> dict:
     index = _load_index(ws)
     if run_id is None:
         active = sorted(rid for rid, row in index["runs"].items()
-                        if (row or {}).get("status") in {
+                        if (row or {}).get("kernel_policy") ==
+                        KERNEL_POLICY_VERSION and
+                        (row or {}).get("status") in {
                             "ready", "prepared", "staged", "publishing",
                             "committed"})
         if len(active) > 1:
             raise ReviewKernelError(
                 "several review runs are active; provide an explicit run-id")
-        run_id = active[0] if active else index.get("latest")
+        latest = index.get("latest")
+        latest_row = index["runs"].get(latest) or {}
+        run_id = active[0] if active else (
+            latest if latest_row.get("kernel_policy") ==
+            KERNEL_POLICY_VERSION or latest_row.get("status") == "complete"
+            else None)
     if not run_id or run_id not in index["runs"]:
         raise ReviewKernelError("no matching review kernel run; run review start")
     state = tp.load_json(_state_path(ws, run_id), default=None,
@@ -204,7 +218,7 @@ def _load_state(ws: str, run_id: str | None = None) -> dict:
 
 def _run_id(stage: str, target_fingerprint: str,
             context_fingerprint: str, revision: int) -> str:
-    material = "\0".join((stage, target_fingerprint,
+    material = "\0".join((KERNEL_POLICY_VERSION, stage, target_fingerprint,
                            context_fingerprint, str(revision)))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
@@ -254,6 +268,21 @@ def canonical_diff_patch(ws: str, base: str,
         size = len(parts[0].encode("utf-8"))
         for rel in sorted(line for line in untracked.stdout.splitlines()
                           if line.strip()):
+            if rel == ".codex/hooks.json":
+                try:
+                    with open(os.path.join(ws, rel), encoding="utf-8") as f:
+                        hook_config = json.load(f)
+                    commands = [str(hook.get("command") or "")
+                                for rows in hook_config.get("hooks", {}).values()
+                                for row in rows
+                                for hook in row.get("hooks") or []]
+                    if set(hook_config) == {"hooks"} and commands and all(
+                            ".taskplane/codex-hook.py" in command
+                            for command in commands):
+                        continue
+                except (OSError, TypeError, ValueError,
+                        json.JSONDecodeError):
+                    pass
             addition = subprocess.run(
                 ["git", "diff", "--no-index", "--", "/dev/null", rel],
                 cwd=ws, capture_output=True, text=True, encoding="utf-8",
@@ -436,7 +465,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "contract": dict(producer_contract),
             "prompt": ("Read the scoped view by reference. Do not run git diff, "
                        "graph impact/scan, requirement lookup, or a runnability "
-                       "probe. Activate producer_contract under its exact "
+                       "probe. Resolve any taskplane.envelope-section-reference/v1 "
+                       "field through the cited immutable envelope and verify "
+                       "its fingerprint and byte count. Activate "
+                       "producer_contract under its exact "
                        "task_slot, then use the host Write tool to author the "
                        "declared result_schema at result_path. Copy every "
                        "identity field exactly; authored_by is lens-slot. "

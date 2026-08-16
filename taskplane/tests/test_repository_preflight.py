@@ -471,6 +471,40 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
 
 
 class TestManagedMirrorAcquisition(unittest.TestCase):
+    def test_review_diff_is_materialized_before_preflight_can_be_ready(self):
+        manager = repository.RepositoryManager(
+            home=tempfile.mkdtemp(prefix="tp-mirror-hydrate-"))
+        checkout = tempfile.mkdtemp(prefix="tp-partial-checkout-")
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="")
+
+        with mock.patch("repository.subprocess.run",
+                        return_value=completed) as run:
+            manager._materialize_review_diff(
+                checkout, "a" * 40, "b" * 40)
+
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:2], ["git", "diff"])
+        self.assertIn("--binary", argv)
+        self.assertEqual(argv[-3:], ["a" * 40, "b" * 40, "--"])
+        self.assertIs(run.call_args.kwargs["stdout"], subprocess.DEVNULL)
+
+    def test_review_diff_hydration_network_failure_is_actionable(self):
+        manager = repository.RepositoryManager(
+            home=tempfile.mkdtemp(prefix="tp-mirror-hydrate-"))
+        failed = subprocess.CompletedProcess(
+            args=[], returncode=128, stdout="",
+            stderr="fatal: Could not resolve host: github.com")
+
+        with mock.patch("repository.subprocess.run", return_value=failed):
+            with self.assertRaises(repository.RepositoryAcquisitionError) as error:
+                manager._materialize_review_diff(
+                    tempfile.mkdtemp(prefix="tp-partial-checkout-"),
+                    "a" * 40, "b" * 40)
+
+        self.assertEqual(error.exception.kind, "network")
+        self.assertIn("resolve host", error.exception.detail)
+
     def test_failed_clone_leaves_no_partial_canonical_mirror(self):
         home = tempfile.mkdtemp(prefix="tp-mirror-atomic-")
         manager = repository.RepositoryManager(home=home)
