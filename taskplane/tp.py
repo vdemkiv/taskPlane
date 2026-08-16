@@ -3982,6 +3982,13 @@ def cmd_review(a) -> int:
             ws = rv.resolve_review_workspace(ws, a.run_id)
             result = rv.configure_review_execution(
                 ws, selection=a.selection, by=a.by, run_id=a.run_id)
+            visuals, owed = _review_visuals(ws, result, final=False)
+            result = rv._manifest({**result, "visuals": visuals,
+                                   "obligations": owed})
+            kernel_state = rv._load_state(ws, result.get("run_id"))
+            rv._save_state(ws, dict(
+                kernel_state, manifest=result,
+                counters=result["counters"]))
         except Exception as exc:
             print(json.dumps({"schema": "taskplane.review-execution-preflight/v1",
                               "status": "configuration_failed",
@@ -4280,7 +4287,7 @@ def cmd_review(a) -> int:
             task_type="review", base=base,
             caller_expander=rv.bounded_caller_expander(g),
             routing_content=rv.changed_content_from_patch(patch))
-        if manifest.get("status") != "ready":
+        if manifest.get("status") not in {"ready", "needs_user"}:
             if repository_run:
                 import run_store as repository_run_store
                 store_record = repository_run_store.RunStore()
@@ -4317,7 +4324,7 @@ def cmd_review(a) -> int:
                          "contract": {"status": "active",
                                       "task_id": c["task_id"]},
                          "review": {"kernel_run_id": manifest.get("run_id"),
-                                    "status": "ready"}})
+                                    "status": manifest.get("status")}})
         manifest["contract"] = {"task_id": c["task_id"],
                                 "read_only": True, "status": "active"}
         if repository_run:
@@ -4348,7 +4355,7 @@ def cmd_review(a) -> int:
                          sort_keys=True, separators=(",", ":")))
         return 1
     print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
-    return 0 if manifest.get("status") == "ready" else 1
+    return 0 if manifest.get("status") == "ready" else 2
 
 
 def cmd_target(a) -> int:

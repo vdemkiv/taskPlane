@@ -443,7 +443,8 @@ def create_slot_lease(store: ArtifactStore, envelope_ref: dict, view_ref: dict,
 def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
                       authored_slot: str, lens_ids, findings,
                       authored_by: str = "lens-slot",
-                      references_applied=None, notes=None) -> dict:
+                      references_applied=None, notes=None,
+                      source: str | None = None) -> dict:
     lease = store.read(lease_ref)
     if lease.get("schema") != "taskplane.slot-lease/v1":
         raise ProvenanceError("result lease is invalid")
@@ -466,6 +467,11 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
         "authored_by": authored_by,
         "findings": copy.deepcopy(list(findings or [])),
     }
+    if source:
+        # This is supplied by ReviewKernel from the sealed lease, never by
+        # the lens payload.  It is therefore immutable producer provenance,
+        # not a self-asserted path from the model.
+        base["source"] = str(source)
     if notes:
         base["notes"] = copy.deepcopy(list(notes))
     if references_applied:

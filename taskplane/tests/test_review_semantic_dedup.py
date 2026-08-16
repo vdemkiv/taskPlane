@@ -1,11 +1,13 @@
 import os
 import sys
+import tempfile
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import review  # noqa: E402
+import review_evidence  # noqa: E402
 
 
 def _finding(lens, title, severity="low", line=94):
@@ -36,3 +38,34 @@ def test_semantic_dedup_does_not_merge_different_source_anchors():
     ])
     assert len(rows) == 2
 
+
+def test_revision_provenance_retains_engine_bound_result_source():
+    ws = tempfile.mkdtemp(prefix="tp-review-dedup-")
+    store = review_evidence.ArtifactStore(ws)
+    envelope_ref = store.put("envelope", {
+        "target_fingerprint": "target-1",
+        "context_fingerprint": "context-1",
+    })
+    revision, _ = review._revision_record(store, envelope_ref, {
+        "canonical_revision": 1,
+        "target_fingerprint": "target-1",
+        "context_fingerprint": "context-1",
+        "result_fingerprints": ["result-1"],
+        "results": [{
+            "slot_id": "lens-architecture",
+            "result_fingerprint": "result-1",
+            "canonical_revision": 1,
+            "source": ".taskplane/runs/run-1/lenses/results/architecture.json",
+            "findings": [_finding(
+                "architecture", "Margin-only changes are not observed")],
+        }],
+    })
+
+    assert revision["findings"][0]["provenance"] == [{
+        "lens": "architecture",
+        "slot_id": "lens-architecture",
+        "source": ".taskplane/runs/run-1/lenses/results/architecture.json",
+        "result_fingerprint": "result-1",
+        "canonical_revision": 1,
+        "severity": "low",
+    }]

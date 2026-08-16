@@ -342,7 +342,7 @@ def _load_state(ws: str, run_id: str | None = None) -> dict:
                         if (row or {}).get("kernel_policy") ==
                         KERNEL_POLICY_VERSION and
                         (row or {}).get("status") in {
-                            "ready", "prepared", "staged", "publishing",
+                            "needs_user", "ready", "prepared", "staged", "publishing",
                             "committed"})
         if len(active) > 1:
             raise ReviewKernelError(
@@ -950,10 +950,16 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                      envelope_ref["fingerprint"], revision)
     for slot in internal_slots:
         slot["run_id"] = run_id
+    # The execution/render choice belongs to a standalone human-requested
+    # review. Loop-internal EM review already has its own governed human
+    # gates and must not acquire a second, unrelated approval boundary.
     execution_preflight = (review_execution_preflight()
-                           if stage == "review" else None)
+                           if stage == "review" and task_type == "review"
+                           else None)
+    opening_status = "needs_user" if execution_preflight else "ready"
     manifest = _manifest({
-        "schema": "taskplane.review-start-manifest/v2", "status": "ready",
+        "schema": "taskplane.review-start-manifest/v2",
+        "status": opening_status,
         "stage": stage, "run_id": run_id, "routing_mode": "selective",
         "graph_degraded": graph_degraded,
         "target_fingerprint": target.get("fingerprint"),
@@ -964,14 +970,20 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "envelope": _portable_ref(envelope_ref), "routing_counts": counts,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
-        "slots": slots, "counters": counters,
+        # A pending human execution-mode choice is a real dispatch boundary.
+        # Keep the sealed leases in private run state, but expose no slot that
+        # a host could dispatch until configure_review_execution records the
+        # human's selection.
+        "slots": [] if execution_preflight else slots,
+        "counters": counters,
     })
     _save_state(ws, {
-        "schema": "taskplane.review-run-state/v2", "status": "ready",
+        "schema": "taskplane.review-run-state/v2", "status": opening_status,
         "run_id": run_id,
         "target": target, "stage": stage, "routing": routing,
         "routing_decision": decision_ref, "envelope": envelope_ref,
         "quality": quality_ref, "slots": internal_slots,
+        "dispatch_slots": slots,
         "manifest": manifest, "counters": counters,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
@@ -986,7 +998,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
              dispositions_complete=len(decision) == len(
                  catalog.get("lenses") or []),
              routing_counts=counts,
-             slots=[row["slot_id"] for row in slots])
+             slots=[] if execution_preflight else
+             [row["slot_id"] for row in slots],
+             dispatch_pending=bool(execution_preflight))
     return manifest
 
 
@@ -995,25 +1009,27 @@ def configure_review_execution(ws: str, *, selection: str, by: str,
     """Persist the human's optional dynamic/render choice for one review."""
     state = _load_state(ws, run_id)
     if state.get("stage") != "review" or state.get("status") not in {
-            "ready", "prepared", "staged", "publishing", "committed",
+            "needs_user", "ready", "prepared", "staged", "publishing", "committed",
             "complete"}:
         raise ReviewKernelError("review execution choice requires an active review")
     prior = state.get("review_execution") or review_execution_preflight()
     if prior.get("status") == "configured":
         same = prior.get("selection") == selection and prior.get("decided_by") == by
         if same:
-            return prior
+            return state.get("manifest") or prior
         raise ReviewKernelError("review execution choice is already recorded")
     configured = review_execution_preflight(
         selection=selection, decided_by=by)
     manifest = dict(state.get("manifest") or {})
+    manifest["status"] = "ready"
+    manifest["slots"] = list(state.get("dispatch_slots") or [])
     manifest["review_execution"] = configured
-    state = dict(state, review_execution=configured,
+    state = dict(state, status="ready", review_execution=configured,
                  manifest=_manifest(manifest))
     _save_state(ws, state)
     tp.trace(ws, "review_execution_selected", run_id=state["run_id"],
              selection=selection, by=by)
-    return configured
+    return state["manifest"]
 
 
 def record_review_execution(ws: str, *, kind: str, status: str,
@@ -1849,7 +1865,8 @@ def _read_slot_output(ws: str, store,
         lens_ids=row["lens_ids"], findings=findings,
         notes=notes,
         authored_by=row["authored_by"],
-        references_applied=expected_references)
+        references_applied=expected_references,
+        source=slot["result_path"])
     validation_ref = store.put("slot-validation", {
         "schema": "taskplane.slot-result-validation/v1",
         "run_id": slot.get("run_id"),
@@ -1884,6 +1901,7 @@ def _revision_record(store, envelope_ref: dict, collected: dict) -> tuple[dict, 
         for finding in result.get("findings") or []:
             attributed.append(dict(
                 finding, slot_id=result.get("slot_id"),
+                source=result.get("source"),
                 result_fingerprint=result.get("result_fingerprint"),
                 canonical_revision=result.get("canonical_revision")))
     material = {
@@ -2136,6 +2154,10 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
     with tp.file_lock(_collection_lock_path(ws)):
         state = _load_state(ws, selected["run_id"])
         store = evidence.ArtifactStore(ws)
+        execution = state.get("review_execution") or {}
+        if execution and execution.get("status") != "configured":
+            raise ReviewKernelError(
+                "review execution choice is pending human selection")
         if state.get("status") == "complete":
             _release_slot_contracts(ws, state)
             if evidence._read_current(store) != evidence.revision_identity(

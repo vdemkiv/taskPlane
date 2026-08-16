@@ -229,8 +229,10 @@ class OneCallOpening(_WS):
 
     def test_it_establishes_every_fact_a_review_opens_with(self):
         rc, d, _ = self._start()
-        self.assertEqual(rc, 0, d)
-        self.assertEqual(d["status"], "ready")
+        self.assertEqual(rc, 2, d)
+        self.assertEqual(d["status"], "needs_user")
+        self.assertEqual(d["slots"], [])
+        self.assertEqual(d["review_execution"]["status"], "needs_user")
         self.assertEqual(sum(d["routing_counts"].values()),
                          len(lens.load_catalog()["lenses"]))
         self.assertLessEqual(len(json.dumps(d).encode()), 16 * 1024)
@@ -247,10 +249,16 @@ class OneCallOpening(_WS):
 
     def test_it_returns_the_briefs_ready_to_dispatch(self):
         _, d, _ = self._start()
-        self.assertTrue(d["slots"])
+        rc, out, _ = _run(
+            "review", "option", "static", "--by", "human",
+            "--run-id", d["run_id"], "--workspace", self.ws)
+        self.assertEqual(rc, 0, out)
+        ready = json.loads(out)
+        self.assertEqual(ready["status"], "ready")
+        self.assertTrue(ready["slots"])
         self.assertLessEqual(sum(row["slot_id"] == "light-sweep"
-                                 for row in d["slots"]), 1)
-        self.assertNotIn("dispatch", d)
+                                 for row in ready["slots"]), 1)
+        self.assertNotIn("dispatch", ready)
 
     def test_it_activates_the_contract_and_pins_the_target(self):
         _, d, _ = self._start()
