@@ -165,13 +165,17 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             len(content["src/auth.py"].encode("utf-8")),
             review.MAX_ROUTING_FILE_BYTES)
 
-    def test_impact_uncertainty_dispatches_zero(self):
+    def test_impact_uncertainty_uses_diff_fallback_for_pr_review(self):
         graph = {**self.graph,
                  "meta": {**self.graph["meta"], "truncated": True}}
         out = self._start(graph=graph)
-        self.assertEqual(out["status"], "graph_evidence_sparse")
-        self.assertEqual(out["slots"], [])
-        self.assertEqual(out["agents"], [])
+        self.assertEqual(out["status"], "ready")
+        self.assertTrue(out["graph_degraded"])
+        self.assertTrue(out["slots"])
+        quality = review_evidence.ArtifactStore(self.ws).read(
+            review._load_state(self.ws, out["run_id"])["quality"])
+        self.assertEqual(quality["review_fallback"]["mode"],
+                         "immutable_diff")
 
     def test_start_collects_informational_runnability_when_omitted(self):
         out = review.start_review(
@@ -249,7 +253,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             caller_expander=lambda **_: {
                 "complete": True, "callers": [], "contracts": [],
                 "unresolved": []})
-        self.assertEqual(out["status"], "graph_evidence_sparse")
+        self.assertEqual(out["status"], "ready")
+        self.assertTrue(out["graph_degraded"])
         quality = review_evidence.ArtifactStore(self.ws).read(
             review._load_state(self.ws)["quality"])
         self.assertEqual(
@@ -257,12 +262,13 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertNotEqual(
             quality["changed_symbol_caller_coverage"]["ratio"], 1.0)
 
-    def test_body_only_change_fails_closed_even_with_high_module_confidence(self):
-        """A module aggregate cannot prove which callers a body edit reaches."""
+    def test_body_only_pr_review_uses_diff_without_claiming_graph_complete(self):
+        """A body edit remains reviewable without inventing caller evidence."""
         out = self._start(
             diff={"files": ["src/service.py"], "changed_symbols": []})
-        self.assertEqual(out["status"], "graph_evidence_sparse")
-        self.assertEqual(out["slots"], [])
+        self.assertEqual(out["status"], "ready")
+        self.assertTrue(out["slots"])
+        self.assertTrue(out["graph_degraded"])
         quality = review_evidence.ArtifactStore(self.ws).read(
             review._load_state(self.ws, out["run_id"])["quality"])
         self.assertEqual(

@@ -17,6 +17,7 @@ import uuid
 import depgraph
 import kb
 import taskplane_lite as tp
+import storage as runtime_storage
 
 
 def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
@@ -47,7 +48,7 @@ def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
 def _findings(ws: str, normalize_severity) -> tuple[list, dict, dict]:
     rows = []
     with contextlib.suppress(OSError, ValueError, TypeError):
-        with open(os.path.join(ws, ".em-review", "findings.json"),
+        with open(runtime_storage.review_public_path(ws, "findings.json"),
                   encoding="utf-8") as f:
             payload = json.load(f)
         rows = [row for row in payload.get("findings") or []

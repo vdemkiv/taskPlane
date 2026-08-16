@@ -440,7 +440,9 @@ def render(ws: str, out: str | None = None) -> str:
         .replace("__ROSTER__", roster) \
         .replace("__FEED__", feed_html) \
         .replace("__STATS__", stats)
-    out = out or os.path.join(tp.tp_dir(ws), "dashboard.html")
+    if out is None:
+        import storage as runtime_storage
+        out = runtime_storage.dashboard_path(ws)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
@@ -2575,15 +2577,17 @@ def render_review_workflow(*, status: str, slots=None,
     """
     slots = list(slots or [])
     complete = status == "complete"
-    impact_blocked = status in {"impact_incomplete", "graph_evidence_sparse"} \
-        or not graph_complete
-    done = sum(1 for row in slots if row.get("status") == "done")
     total = len(slots)
+    impact_degraded = not graph_complete
+    impact_blocked = status == "impact_incomplete" or (
+        status == "graph_evidence_sparse" and not total)
+    done = sum(1 for row in slots if row.get("status") == "done")
     rows = [
         ("target", "target pinned", True,
          "immutable head · base · fingerprint"),
         ("impact", "graph + blast radius", not impact_blocked,
          "blocked — graph evidence incomplete" if impact_blocked else
+         "immutable diff fallback · graph warning" if impact_degraded else
          "one bounded impact derivation"),
         ("route", "selective lens mapping",
          bool(total) or complete, "26 dispositions · deep/light/n-a"),

@@ -123,15 +123,16 @@ strategic review of a plan or PR.*
 
 ### Compose them → review, then fix
 
-> **tp-engineering: review this branch** → *(findings written to
-> `.em-review/findings.json` in your working copy)* → **tp-go: fix the
+> **tp-engineering: review this branch** → *(findings written to the
+> manifest's external run artifact root)* → **tp-go: fix the
 > blockers from the review**
 
 The review's findings become the fix loop's input: tp-go plans a scoped fix,
 you approve, a governed wave runs, it re-verifies, you sign off. The result
-is a surgical, provably in-scope diff. Honest mechanics: `.em-review/` is
-git-ignored scratch local to the checkout — it does not travel with the
-branch. The review protocol records its synthesis as a knowledge-base
+is a surgical, provably in-scope diff. Honest mechanics: source, run-private
+state, graph/evidence, and review artifacts use separate managed roots; only
+deliberately shared `.taskplane-kb/` knowledge travels with the branch. The
+review protocol records its synthesis as a knowledge-base
 decision, but blockers you intend to fix in a *later session* (or on an
 ephemeral host like Claude Tag, whose sandbox is discarded) should be
 recorded as tracked debt (`tp req debt`) before the session ends, so the fix
@@ -177,8 +178,8 @@ The whole reason it exists — legibility, focus, and a thread you don't lose:
   never committed or pushed with your code; on a Team/Enterprise plan it
   lives in-repo at `.taskplane-kb/` and is committed deliberately so the team
   shares one registry. Either way the `kb lint` gate check keeps prompt text
-  and pricing strategy out of it, and runtime telemetry (the `.taskplane/` trace) stays
-  local and git-ignored in both (`docs/state-spec.md`). `tp kb where` shows
+  and pricing strategy out of it, and managed runtime telemetry stays external
+  and run-scoped (`docs/state-spec.md`). `tp kb where` shows
   the path.
 
 ## Under the hood (optional)
@@ -186,13 +187,13 @@ The whole reason it exists — legibility, focus, and a thread you don't lose:
 The skills drive everything, but the CLI beneath is the power layer:
 
 ```bash
-# a read-only review contract, by hand (tp-engineering does this for you):
-python3 taskplane/tp.py new --read-only --write-allow ".em-review/**" \
-    --owes review \
-    --tools "Read,Grep,Glob,Bash,Write,Edit" "review of <target>"
-python3 taskplane/tp.py lens route --base main --all   # the full catalog for a diff
-python3 taskplane/tp.py graph impact --files src/db.js  # blast radius, zero tokens
-python3 taskplane/tp.py clear                            # release the contract
+# acquire/verify source before any graph, contract, or dispatch:
+python3 taskplane/tp.py repository prepare <path-url-ref-or-pr>
+# review start invokes the same precondition and opens one selective kernel:
+python3 taskplane/tp.py review start <path-url-ref-or-pr> --base main
+# if prepare needs a human action, ask in chat and resume that run:
+python3 taskplane/tp.py repository resume --run-id RUN --action-id ACTION \
+    --response approve --by "human"
 ```
 
 Pure `python3` standard library + `git`. No runtime dependencies.

@@ -70,7 +70,7 @@ This is the difference from a prompt-driven orchestrator: the loop is
                                        │  (same build contract; +regression test)              │
                                        └───────────────────────────────────────────────────────┘
            ▼  (all tasks PASS)
- ┌─ EM REVIEW ──────┐   contract: read-only review (write .em-review/** only)
+ ┌─ EM REVIEW ──────┐   contract: read-only review (exact run artifact writes)
  │  → matrix + read-  │   DoR: tasks done       DoD: (human) sign-off
  │    out (yours)     │
  └─────────┬─────────┘
@@ -93,7 +93,7 @@ workspace fingerprint before the orchestrator gate.
 | EXECUTE | loop-executor | build (per-task scope) | the task's `scope_paths` | deps done; scope+tests+graph policy set | task test passes; diff in scope; fingerprinted submission. Realized graph truth is checked at EVALUATE and finalized before EM. |
 | EVALUATE | loop-evaluator | read-only + allow `.eval/**` | `.eval/**` | impl commits exist | PASS/FAIL + evidence per criterion, impacted node, affected requirement, and contract. One bounded host/model `unavailable` result advances with a visible warning and never consumes a product FIX cycle; any actual product/lens failure still enters FIX. |
 | FIX | loop-fixer | build (same task scope) | the task's `scope_paths` | a reproducible FAIL | failure fixed + regression + re-verified |
-| EM | engineering-manager | read-only review | `.em-review/**` | all tasks PASS + final graph true-up | full lens/graph evidence on the current fingerprint; approved Design module/edge/contract conformance with a zero-drift list when applicable (any recorded drift blocks; human-accepted deviations require explicit `accepted_drift` entries, surfaced at the gate); then human sign-off |
+| EM | engineering-manager | read-only review | exact leased paths under the external run root | all tasks PASS + final graph true-up | full lens/graph evidence on the current fingerprint; approved Design module/edge/contract conformance with a zero-drift list when applicable (any recorded drift blocks; human-accepted deviations require explicit `accepted_drift` entries, surfaced at the gate); then human sign-off |
 
 ## Artifacts / handoff chain (what each step hands the next)
 
@@ -105,7 +105,7 @@ goal ─▶ specs/spec.md + handoff block (requirement deps + named contracts)
                                contracts, new_modules, impact_policy)
       ─▶ <task code changes>  (in scope, DoD-verified)
       ─▶ .eval/verdict.json   (per task: PASS/FAIL + evidence)
-      ─▶ .em-review/          (DoD matrix + engineering-quality read-out)
+      ─▶ run/artifacts/       (DoD matrix + engineering-quality read-out)
       ─▶ .taskplane/trace.jsonl   (every gate decision, the whole run)
 ```
 
@@ -188,8 +188,9 @@ Each was settled as the **Recommendation** noted below and is what shipped.
 - A wave = every pending task whose `deps` have PASSED and whose scope is
   pairwise-disjoint from the rest of the wave (overlapping scopes serialize
   into later waves — two agents never share writable files).
-- The driver dispatches ONE governed subagent per wave entry: worktree per
-  task (`git worktree add .tp-work/<id> -b tp/<id>`), then
+- The driver dispatches ONE governed subagent per wave entry using the exact
+  `worktree` path emitted by the engine (external managed checkout; legacy
+  workspaces use `.tp-work/<id>`), then
   `loop claim <id> --agent-workspace <worktree>` activates *that task's
   contract in that worktree* — the PreToolUse hook enforces each agent
   individually. The harness is per agent, not per fleet.

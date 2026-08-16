@@ -19,6 +19,12 @@ build or A/B variants → selection when used → Evaluate → Engineering revie
 feature sign-off → Retro + graph true-up**. Every gate in that graph is a real
 human stop; Retro is an automatic engine stage after the final approval.
 
+When the goal names a local path, repository URL, ref, or pull request, first
+run `$TP repository prepare <target>`. Continue Build in the returned managed
+checkout. If preparation needs authentication, a tool, or storage permission,
+ask the exact returned prompt in this conversation and resume the same run;
+never manually clone into an artifact directory or require a new host task.
+
 Separation of duties applies from the first refinement step. The orchestrator
 never performs Product, Design, Plan, Build, Evaluate, or Engineering work
 inline. Every role emitted by `loop next` is dispatched as a real host-native

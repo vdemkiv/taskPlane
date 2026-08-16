@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.16.6** | **Repository acquisition and taskPlane state now have one durable hybrid storage model.** GitHub repositories and pull requests are prepared automatically before governance begins, with source checkouts, knowledge, run state, graph caches, evidence, and generated artifacts kept in separate external roots. Recoverable authentication, tooling, network, and storage conditions return an in-chat action and resume the same run instead of failing or asking for an external terminal. Standalone PR review can continue from its immutable diff when graph enrichment is sparse, with a visible warning and architecture/security floors; Evaluate and final Engineering remain graph-strict. Managed parallel tasks receive isolated external worktrees and run roots. |
 | **v2.16.5** | **Pull-request review now proves it has the intended checkout before routing any lens.** Review preflight verifies the repository, base, merge-base, checked-out head, and non-empty diff before graph or ReviewKernel state is created; shallow clones receive one bounded deepen attempt and fail with an actionable status if evidence remains incomplete. Review cache identity now binds the target and graph revisions, so a new PR head or graph scan cannot reuse stale routing. The Windows hook guard also classifies conditional enforcement commands by their actual invoked action. |
 | **v2.16.4** | **Codex hook execution now survives plugin version replacement.** Cached native hooks prefer the stable repository launcher, which validates one marketplace installation family and resolves its newest semantic version on every call instead of embedding a disposable cache path. Primary skills use the same launcher. One task boundary is still needed to migrate from an older hook command or load changed skill/MCP definitions; later hook-engine updates no longer require restarting Codex. |
-| **v2.16.3** | **Release and Codex onboarding regressions are closed.** The README release window is rotated to its pinned three rows in the release commit itself. Missing or unsafe language-reference files and sections now stop routing with a structured `mapper_unavailable` result instead of escaping as a Python traceback, preserving the existing fail-closed policy. Repository hook onboarding preserves `TASKPLANE_HOOK_PATH=bridge` in every generated POSIX and Windows command, so native and bridge installations remain distinguishable and exactly-once hook handling works after onboarding. |
 
 ## Install
 
@@ -229,6 +229,10 @@ one more task so Codex loads the lifecycle hooks. After that first load, the
 bridge resolves the newest valid installed taskplane engine on every call, so
 plugin version updates do not require a Codex restart for hook execution.
 Codex still loads newly changed skill or MCP definitions at a task boundary.
+Repository URLs, refs, and pull requests do not require opening a new task:
+taskplane acquires them into a managed checkout, inherits the current host
+session, and prompts in the same chat when GitHub authentication, a tool, or
+storage authorization is needed.
 Keep Codex's sandbox and approval controls enabled — taskplane's scope contract
 is an additional guardrail, not a replacement.
 
@@ -272,6 +276,12 @@ then in the new task say **"set up taskplane"**. Use the GitHub source commands
 in the Install section only for local development or when the published catalog
 is unavailable.
 
+You can also start from a repository URL or pull request. Say what you want to
+build or review; taskplane runs its repository precondition automatically,
+keeps source under the managed checkout root (never under `.em-review`), and
+continues in this task. A recoverable auth/tool/storage requirement appears as
+one approval prompt rather than a failed review or terminal handoff.
+
 ## Onboarding — the short version
 
 Say **"set up taskplane"**, or just state a goal — `taskplane` routes it and runs
@@ -283,11 +293,15 @@ scans the dependency graph, and creates the knowledge base. On a brownfield
 project, fill `current-state.md` first: it grounds every design review in as-built
 reality, and reinventing an existing component is a blocker-class finding.
 Onboarding then asks one question — keep taskplane knowledge private/local
-(`personal`, `~/.taskplane`) or shared in-repo (`team`/`enterprise`,
-`.taskplane-kb/`) — and reports the resolved model-tier map. Claude Code users
+(`personal`, `~/.taskplane/projects/<repository-key>/knowledge`) or shared
+in-repo (`team`/`enterprise`, `.taskplane-kb/knowledge`) — and reports the
+resolved model-tier map. Source checkout, private run state, graph/evidence,
+and artifacts use separate roots under `~/.taskplane`; see
+[repository preconditions and hybrid storage](docs/storage-and-repositories.md).
+Claude Code users
 reload plugins after installation; Chat/Cowork and Codex users start a new
-conversation/task so the host loads the plugin. Codex then performs one extra
-repo-local hook readiness check and may request one more new task. Full Claude
+conversation/task only for the host's initial plugin/hook load. Managed
+checkouts and later plugin patch versions continue in the same task. Full Claude
 and Codex onboarding, sharing modes (`tp share`), model tiers, cost routing, and
 context storage: [docs/onboarding.md](docs/onboarding.md).
 

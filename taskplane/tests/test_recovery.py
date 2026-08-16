@@ -87,6 +87,13 @@ class TestTheWallHolds(unittest.TestCase):
                                   "content": "x"})
         self.assertEqual(d["decision"], "block")
 
+    def test_explicit_human_clear_can_recover_in_the_same_workspace(self):
+        ws, _ = _governed_ws(exhaust=True)
+        command = (f"python3 {TP} clear --approved-by user "
+                   f"--workspace {ws}")
+        self.assertIsNone(_screen(ws, "Bash", {"command": command})[
+            "decision"])
+
     def test_within_budget_agent_can_release_normally(self):
         """The finally-block path: `tp clear` is an ordinary allowed command
         while budget remains, so agents CAN release on success/error."""
@@ -119,6 +126,13 @@ class TestBudgetGrantHumanGate(unittest.TestCase):
         d = _screen(ws, "Bash",
                     {"command": f"python3 {TP} budget --grant 50"})
         self.assertEqual(d["decision"], "block")
+
+    def test_explicit_human_grant_is_reachable_without_changing_directory(self):
+        ws, _ = _governed_ws(exhaust=True)
+        command = (f"python3 {TP} budget --grant 50 --approved-by user "
+                   f"--workspace {ws}")
+        self.assertIsNone(_screen(ws, "Bash", {"command": command})[
+            "decision"])
 
     def test_grant_requires_positive(self):
         ws, _ = _governed_ws()

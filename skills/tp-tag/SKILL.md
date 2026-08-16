@@ -113,7 +113,11 @@ you absorb.
 
 A new conversation = a fresh sandbox. To resume governed work:
 
-1. Clone/checkout the working branch (it carries `.taskplane-kb/`).
+1. Run `tp.py repository prepare <target>` so the same repository precondition
+   acquires/verifies the working branch. If it returns `needs_user`, a real
+   person replies in the thread and `repository resume` continues the run.
+   The branch carries `.taskplane-kb/`; private runtime/artifacts stay outside
+   the checkout.
 2. `export TASKPLANE_STORE=repo`, then `tp.py loop status` — the loop is
    exactly where the last session parked it (usually at a human gate).
 3. Post a one-line recap of where things stand before continuing.

@@ -37,6 +37,12 @@ Design is read-only toward product code. The `tp-designer` role may write only `
 
 ## Start
 
+When Design is grounded in an existing repository, URL, ref, or PR, first run
+`python3 "$TP" repository prepare <target>` and use the verified checkout and
+run paths it returns. A recoverable `needs_user` action is a conversation-level
+approval: ask it here, then resume the same run. Do not perform an ad-hoc clone,
+store source under artifacts, or send the user to a new task/terminal.
+
 Separation of duties starts with requirement refinement, not only with the
 later design artifact. The orchestrator never authors Product or Design work.
 For every `loop next` Product/Design payload, immediately dispatch the exact

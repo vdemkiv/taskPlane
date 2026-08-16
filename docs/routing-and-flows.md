@@ -16,6 +16,23 @@ transport-only, and
 no gate is reachable only via workflows. Do not look here for a way to
 disable a guardrail — there isn't one, by design.
 
+## Repository precondition — before graph and routing
+
+Every flow that names a local path, repository URL, ref, or PR begins with
+`tp repository prepare`; `tp review start` invokes it internally. The kernel
+normalizes repository identity, acquires/reuses a managed mirror and worktree,
+verifies the intended head/base/merge-base/diff, and writes a durable run
+manifest before graph work. Missing auth, tools, or storage permission returns
+one `needs_user` action. The host asks that exact question and calls
+`repository resume` in the same conversation after explicit approval.
+
+Source checkout, run-private state, graph/evidence, lens outputs, and
+deliverables use distinct external roots. Only shared project knowledge may
+live in `.taskplane-kb/`. Contract activation happens after repository and
+graph/routing readiness, so a precondition or `impact_incomplete` refusal
+cannot leave a misleading active review contract. Full layout and migration:
+[`storage-and-repositories.md`](storage-and-repositories.md).
+
 ## Routing v2 — the diff picks the reviewers, with evidence
 
 Normal standalone Review, per-task Evaluate, and final engineering review all
@@ -27,10 +44,13 @@ bounded `light` sweep receive briefs. No lens receives permission to derive
 its own diff, graph impact, routing decision, or runnability result.
 
 Graph quality runs first. Sparse module evidence gets at most one bounded
-changed-symbol caller expansion. Stale, truncated, unresolved, or still
-insufficient coverage produces `impact_incomplete` and zero lens dispatch.
-Mapper failure likewise produces `mapper_unavailable` and zero lens dispatch.
-Neither condition recovers through `breadth=all`.
+changed-symbol caller expansion. In standalone PR Review, remaining graph
+uncertainty is recorded and routing continues from the immutable diff with
+architecture/security floors; the graph is enrichment, not a substitute for
+the PR bytes. In governed Evaluate/EM, insufficient impact remains
+`impact_incomplete` with zero lens dispatch. Mapper failure likewise produces
+`mapper_unavailable` and zero lens dispatch. Neither condition recovers through
+`breadth=all`.
 
 `tp lens route` selects lenses for a change. Since v2.4.0 the selection is
 a **signal engine** (`taskplane/lens_signals.py`), not a filename glob

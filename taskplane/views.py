@@ -108,10 +108,8 @@ def projection_identity_problem(projection: dict,
 # Doubles as a context cache. Fail-open: publishing never breaks the loop.
 #
 # D-0013. On a TEAM plan the active store is `<repo>/.taskplane-kb/` — in
-# the repo, meant to be committed. This function copied `.em-review/
-# findings.json`, `.em-review/report.md`, `retro.md` and the rendered
-# dashboard (which embeds review prose) into it on EVERY gate transition,
-# automatically. PRIVACY.md says the opposite in two places:
+# the repo, meant to be committed. This function used to copy model-authored
+# review prose into it on EVERY gate transition automatically.
 #
 #   "[.taskplane/, .em-review/] stay local to the checkout and git-ignored
 #    on BOTH plans ... Only knowledge is ever shared on a team plan"
@@ -160,7 +158,12 @@ def publish_report(ws: str, state: dict | None = None) -> "dict | None":
         slug = _re.sub(r"[^a-z0-9]+", "-",
                        str(state.get("goal") or "track").lower()
                        ).strip("-")[:60] or "track"
-        root = os.path.join(tp.store_root(ws), "artifacts", slug)
+        import storage as _runtime_storage
+        managed_root = _runtime_storage.managed_path(
+            ws, "artifacts", "snapshots", slug)
+        root = (managed_root if managed_root and
+                tp.get_mode(ws)["store"] != "repo" else
+                os.path.join(tp.store_root(ws), "artifacts", slug))
         os.makedirs(root, exist_ok=True)
         # D-0013: is this store INSIDE the repo (committed with the work)?
         in_repo = tp.get_mode(ws)["store"] == "repo"
@@ -176,12 +179,16 @@ def publish_report(ws: str, state: dict | None = None) -> "dict | None":
                 return
             _sh.copyfile(src, os.path.join(root, name))
 
-        _cp(os.path.join(tp.tp_dir(ws), "dashboard.html"))
+        _cp(_runtime_storage.dashboard_path(ws))
         _cp(os.path.join(tp.tp_dir(ws), "retro.md"))
         _cp(os.path.join(ws, "plan", "plan.md"))
         _cp(os.path.join(ws, "plan", "tasks.json"))
-        _cp(os.path.join(ws, ".em-review", "findings.json"))
-        _cp(os.path.join(ws, ".em-review", "report.md"))
+        _locator = _runtime_storage.load_workspace_locator(ws)
+        _review_root = (os.path.join(
+            _locator["paths"]["artifacts"], "public") if _locator
+            else os.path.join(ws, ".em-review"))
+        _cp(os.path.join(_review_root, "findings.json"))
+        _cp(os.path.join(_review_root, "report.md"))
         if withheld:
             tp.trace(ws, "artifacts_withheld", store="repo",
                      files=sorted(set(withheld)),
@@ -278,17 +285,21 @@ def refresh_views(ws: str, out: dict) -> dict:
         # Codex/Claude/file delivery all render the same bytes reliably.
         doc = _dash.standalone_document(
             [frag], title="taskplane — mission control")
-        p = os.path.join(tp.tp_dir(ws), "dashboard.html")
+        import storage as _runtime_storage
+        p = _runtime_storage.dashboard_path(ws)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
         tmp = f"{p}.tmp.{os.getpid()}"
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(doc)
         os.replace(tmp, p)
         step = _transition_step(out)
         human_gate = step in _HUMAN_DASHBOARD_STEPS
+        logical_path = (p if _runtime_storage.load_workspace_locator(ws)
+                        else ".taskplane/dashboard.html")
         out["dashboard"] = {
             # logical pointer, not a path: os.path.join made
             # this '\\' on Windows and the goldens disagreed
-            "path": ".taskplane/dashboard.html",
+            "path": logical_path,
             "render": (
                 "human gate — deliver this engine-authored file by reference "
                 "before asking for approval or rejection"
@@ -312,17 +323,20 @@ def refresh_views(ws: str, out: dict) -> dict:
                 # payload asks for delivery, but must not mint a new debt at
                 # every transition.
                 step="loop",
-                artifact=p, key=".taskplane/dashboard.html")
+                artifact=p, key=logical_path)
             if oid:
                 out["dashboard"]["obligation"] = oid
                 if human_gate:
                     out["dashboard"]["ack"] = (
                         f"after delivering it, run once: tp ack {oid} "
-                        f"--delivered .taskplane/dashboard.html")
+                        f"--delivered {logical_path}")
     except Exception as exc:
         detail = f"{exc.__class__.__name__}: {exc}"
+        with contextlib.suppress(Exception):
+            import storage as _runtime_storage
+            logical_path = _runtime_storage.dashboard_path(ws)
         out["dashboard"] = {
-            "path": ".taskplane/dashboard.html",
+            "path": locals().get("logical_path", ".taskplane/dashboard.html"),
             "error": detail,
             "render": "NOT refreshed — this transition's dashboard is STALE "
                       "or missing. Do not present it as current; say so and "
@@ -354,8 +368,8 @@ def refresh_views(ws: str, out: dict) -> dict:
             entry["withheld_reason"] = (
                 "model-authored review text is not auto-published into a "
                 "COMMITTED (in-repo) store — PRIVACY.md states publishing is "
-                "a deliberate human act. It stays in the checkout at "
-                ".em-review/ and .taskplane/. Set TASKPLANE_PUBLISH_REVIEW=1 "
+                "a deliberate human act. It stays in the private run store "
+                "(or legacy local review paths). Set TASKPLANE_PUBLISH_REVIEW=1 "
                 "to publish it deliberately.")
         out["artifacts"] = entry
     return out

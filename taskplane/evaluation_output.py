@@ -11,6 +11,8 @@ import json
 import os
 from copy import deepcopy
 
+import storage as runtime_storage
+
 
 EVALUATOR_OUTPUT_SCHEMA_ID = "taskplane.evaluator-output/v1"
 LENS_SLOT_OUTPUT_SCHEMA_ID = "taskplane.lens-slot-output/v2"
@@ -192,6 +194,12 @@ def select_schema_transport(snapshot) -> dict:
 
 
 def _safe_result_path(workspace: str, path: str) -> str:
+    if os.path.isabs(str(path or "")):
+        resolved = os.path.realpath(str(path))
+        if not runtime_storage.managed_path_allowed(workspace, resolved):
+            raise OutputContractError(
+                "result path escapes the governed run store")
+        return resolved
     raw = str(path or "").replace("\\", "/")
     normalized = os.path.normpath(raw).replace("\\", "/")
     if not raw or os.path.isabs(raw) or normalized == ".." or \
@@ -248,11 +256,11 @@ def create_evaluator_contract(*, workspace: str, task: str,
                               capability_snapshot: object,
                               slot: str | None = None) -> dict:
     """Build the one live evaluator contract used by every host rail."""
+    result_path = runtime_storage.evaluator_contract_path(workspace)
     return create_output_contract(
         workspace=workspace, task=task, stage="evaluate",
         slot=slot or task, producer="tp-evaluator",
-        result_path=".eval/verdict.json",
-        write_allow=[".eval/verdict.json"],
+        result_path=result_path, write_allow=[result_path],
         output_schema=evaluator_output_schema(),
         capability_snapshot=capability_snapshot)
 

@@ -8,6 +8,7 @@ entry point; its sections are being split into per-concern helpers as
 they change — new validation goes in a helper, not inline.
 """
 from __future__ import annotations
+import contextlib
 import hashlib
 import json
 import os
@@ -92,16 +93,21 @@ def _primary_workspace(ws: str) -> str | None:
     """The orchestrator workspace a wave agent worktree belongs to, or None.
 
     The requirement store is a LOOP-level resource keyed by workspace path.
-    A parallel wave evaluates task DoD inside `.tp-work/<task>` worktrees,
-    whose paths key a DIFFERENT (empty) store — so requirement_fingerprint
+    A parallel wave evaluates task DoD inside linked worktrees, whose paths
+    historically keyed a DIFFERENT (empty) store — so requirement_fingerprint
     read \0MISSING\0 there and the design approval looked tampered-with in
     every agent worktree (found live by the v3 Phase-1 dogfood loop).
 
-    Resolution uses the engine's OWN layout convention — wave worktrees are
-    always created at `<primary>/.tp-work/<task>` (see loop wave/claim) — not
-    git common-dir, which over-resolves when the primary workspace is itself
-    a linked worktree of some outer repo. Fails toward None (current
-    behavior: hash records \0MISSING\0, approval invalidates — closed)."""
+    Managed workers carry their primary checkout in the secure Git locator.
+    Legacy workers use `<primary>/.tp-work/<task>` rather than git common-dir,
+    which can over-resolve nested linked worktrees. Failure remains closed."""
+    with contextlib.suppress(Exception):
+        import storage as runtime_storage
+        locator = runtime_storage.load_workspace_locator(ws)
+        primary = os.path.realpath(str((locator or {}).get(
+            "primary_checkout") or ""))
+        if locator and primary != os.path.realpath(ws) and os.path.isdir(primary):
+            return primary
     marker = os.sep + ".tp-work" + os.sep
     p = os.path.abspath(ws)
     idx = p.find(marker)

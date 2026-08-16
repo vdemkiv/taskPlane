@@ -33,6 +33,7 @@ import os
 import re
 import time
 
+import storage as runtime_storage
 import taskplane_lite as tp
 
 GRAPH_FILE = "graph.json"
@@ -69,7 +70,10 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".taskplane", ".tp-work",
 
 
 def _path(ws: str) -> str:
-    # graph.json lives in the external per-project store, not the repo.
+    locator = runtime_storage.load_workspace_locator(ws)
+    if locator:
+        return os.path.join(locator["paths"]["graph"], GRAPH_FILE)
+    # Legacy/non-run graph lives in the external per-project knowledge store.
     return os.path.join(tp.kb_root(ws), GRAPH_FILE)
 
 
@@ -100,11 +104,71 @@ _GRAPH_CACHE: dict[str, tuple] = {}
 # Active batched mutations: abs graph path -> the in-flight graph dict.
 # See batch().
 _BATCH: dict[str, dict] = {}
+_SCANNER_CACHE_VERSION: str | None = None
 
 
 def _stat_sig(p: str):
     st = os.stat(p)
     return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def scanner_cache_version(*, decompose: bool = False) -> str:
+    """Content identity of this scanner plus its requested graph layer."""
+    global _SCANNER_CACHE_VERSION
+    if _SCANNER_CACHE_VERSION is None:
+        try:
+            with open(__file__, "rb") as handle:
+                _SCANNER_CACHE_VERSION = hashlib.sha256(
+                    handle.read()).hexdigest()[:16]
+        except OSError:
+            _SCANNER_CACHE_VERSION = "unavailable"
+    return f"{_SCANNER_CACHE_VERSION}-{'components' if decompose else 'modules'}"
+
+
+def _managed_cache_path(ws: str, *, decompose: bool) -> tuple[str, str] | None:
+    locator = runtime_storage.load_workspace_locator(ws)
+    if not locator:
+        return None
+    head = tp.git_head(ws)
+    if not head:
+        return None
+    path = os.path.join(
+        locator["home"], "cache", "graphs", locator["repository_key"],
+        head, f"{scanner_cache_version(decompose=decompose)}.json")
+    return path, head
+
+
+def _restore_managed_cache(ws: str, *, decompose: bool) -> dict | None:
+    located = _managed_cache_path(ws, decompose=decompose)
+    if not located or os.path.exists(_path(ws)):
+        return None
+    path, head = located
+    try:
+        value = tp.load_json(path, default=None,
+                             what="managed dependency graph cache")
+    except tp.StateError:
+        return None
+    if not isinstance(value, dict) or value.get("schema") != \
+            "taskplane.graph-cache/v1" or value.get("head") != head or \
+            value.get("scanner_version") != scanner_cache_version(
+                decompose=decompose) or not isinstance(value.get("graph"),
+                                                       dict):
+        return None
+    graph = value["graph"]
+    save(ws, graph)
+    return graph
+
+
+def _write_managed_cache(ws: str, graph: dict, *, decompose: bool) -> None:
+    located = _managed_cache_path(ws, decompose=decompose)
+    if not located:
+        return
+    path, head = located
+    tp.atomic_write_json(path, {
+        "schema": "taskplane.graph-cache/v1", "head": head,
+        "scanner_version": scanner_cache_version(decompose=decompose),
+        "graph": graph,
+    }, indent=1, sort_keys=True)
 
 
 def load(ws: str) -> dict:
@@ -822,8 +886,13 @@ def scan(ws: str, decompose: bool = False) -> dict:
     p = os.path.abspath(_path(ws))
     if p in _BATCH:                        # inside batch(): lock already held
         return _scan_locked(ws, into=_BATCH[p], decompose=decompose)
+    restored = _restore_managed_cache(ws, decompose=decompose)
+    if restored is not None:
+        return restored
     with tp.file_lock(p):
-        return _scan_locked(ws, decompose=decompose)
+        graph = _scan_locked(ws, decompose=decompose)
+    _write_managed_cache(ws, graph, decompose=decompose)
+    return graph
 
 
 def _scan_volatile_stripped(g: dict) -> str:
@@ -2321,7 +2390,9 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
             .replace("__DATA__", safe_data))
     if fragment:
         html = as_fragment(html)
-    out = out or os.path.join(ws, ".taskplane", "depgraph.html")
+    if out is None:
+        import storage as runtime_storage
+        out = runtime_storage.dependency_graph_visual_path(ws)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)

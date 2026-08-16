@@ -4,7 +4,8 @@
 > original draft that produced the lens/knowledge model; the ideas shipped,
 > but several concrete paths and layouts below are no longer what runs:
 >
-> - lens subagents write `.em-review/lens-<id>/**`, not `.review/<lens>/`
+> - lens subagents write only the exact leased `result_path` under the active
+>   run root; legacy per-lens checkout directories are not used
 >   (see `agents/tp-lens.md` and `docs/authority-matrix.md`);
 > - the knowledge base is NOT the in-repo `knowledge/` directory sketched
 >   here — the shipped store is plan-aware: external

@@ -41,6 +41,7 @@ import loop_recovery
 import retro as retro_engine
 import requirements as reqs
 import runtime_eval
+import storage as runtime_storage
 import taskplane_lite as tp
 import yield_meter
 
@@ -85,8 +86,7 @@ def state_dir(ws: str) -> str:
     the single exception, and this function owns it."""
     return _state_dir(ws)
 
-# Per-step contract recipes. Non-build steps are read-only with a write-allow
-# so they can only touch their own artifact dir; build steps get a real scope.
+# Non-build steps are read-only with artifact allowances; build/fix use plan scope.
 # pm and em are two deliberate personas (split in v0.8.0): tp-product owns
 # the requirement; tp-engineering owns the final all-lens review.
 STEP_ROLE = {
@@ -308,7 +308,7 @@ def init(ws: str, goal: str, spec_path: str | None = None,
 
 # --------------------------------------------------------------- contracts
 
-def _step_contract(step: str, state: dict) -> dict:
+def _step_contract(step: str, state: dict, ws: str | None = None) -> dict:
     task = _current_task(state)
     if step == "pm":
         return tp.build_contract(
@@ -334,11 +334,12 @@ def _step_contract(step: str, state: dict) -> dict:
     if step == "evaluate":
         return tp.build_contract(
             f"EVALUATE: {task['id']}", read_only=True,
-            write_allow=[".eval/**"],
+            write_allow=runtime_storage.worker_write_allow(ws, ".eval/**"),
             tools=["Read", "Grep", "Glob", "Bash", "Write"])
     if step == "em":
         return tp.build_contract(
-            "EM review", read_only=True, write_allow=[".em-review/**"],
+            "EM review", read_only=True,
+            write_allow=runtime_storage.worker_write_allow(ws, ".em-review/**"),
             tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit"])
     raise ValueError(f"no contract for step {step}")
 
@@ -507,9 +508,8 @@ def wave(ws: str) -> dict:
             continue
         clash = [c["id"] for c in ready
                  if _scopes_overlap(t.get("scope"), c.get("scope"))
-                 # A/B variants are alternatives in separate worktrees —
-                 # overlapping scope between DIFFERENT variants is the
-                 # point, not a conflict; they never merge.
+                 # Different A/B variants deliberately overlap in isolated
+                 # worktrees; they never merge before human selection.
                  and not (state.get("ab") and t.get("variant")
                           and c.get("variant")
                           and t.get("variant") != c.get("variant"))]
@@ -523,7 +523,7 @@ def wave(ws: str) -> dict:
     for t in ready:
         dispatch = tp.dispatch_fields(
             "step", "tp-executor", t["id"], tp.step_tier("execute", t))
-        task_ws = t.get("workspace") or os.path.join(ws, ".tp-work", t["id"])
+        task_ws = t.get("workspace") or runtime_storage.task_worktree_path(ws, t["id"])
         if not os.path.isdir(task_ws):
             task_ws = ws
         prime = lens_router.prime_scope(t.get("scope"),
@@ -538,7 +538,7 @@ def wave(ws: str) -> dict:
             "task": {"id": t["id"], "scope": t.get("scope"),
                      "tests": t.get("tests"), "deps": t.get("deps") or [],
                      "variant": t.get("variant")},
-            "worktree": f".tp-work/{t['id']}",
+            "worktree": runtime_storage.task_worktree_reference(ws, t["id"]),
             "merge_on_pass": not is_variant,
             "lenses": prime["lenses"],
             "language_references": (prime.get("context") or {}).get(
@@ -646,6 +646,8 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                "MultiEdit"])
     agent_ws = os.path.abspath(agent_ws)
+    locator_error = runtime_storage.worker_locator_error(ws, agent_ws, task_id)
+    if locator_error: return {"error": locator_error, "task": task_id}
     contract = _bind_worker_submission(
         agent_ws, state, "execute", contract, t)
     snapshot = tp.git_head(agent_ws)
@@ -658,8 +660,7 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
                          "claimed", "task": task_id,
                 "dor": {"ready": False, "blockers": blockers,
                         "warnings": warnings}}
-    # Two concurrent claimers: the claimability check is REPEATED under the
-    # shared lock on a fresh read, so both cannot win the same task.
+    # Repeat claimability under the lock so two claimers cannot both win.
     with mutate(ws) as state:
         if state is None:
             return {"error": "no active loop"}
@@ -738,7 +739,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             out["variants"] = [
                 {"id": t["id"], "variant": t.get("variant"),
                  "status": t.get("status"), "scope": t.get("scope"),
-                 "worktree": f".tp-work/{t['id']}"}
+                 "worktree": runtime_storage.task_worktree_reference(ws, t["id"])}
                 for t in (state.get("tasks") or []) if t.get("variant")]
             out["instruction"] = (
                 "Present BOTH variants for the human's pick: re-run each "
@@ -753,7 +754,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             # v2.3.0 wiring: accepted design drift and hand-declared edge
             # realizations are VISIBLE at sign-off, not dead-on-pass.
             findings, _errs = _read_json(
-                os.path.join(ws, ".em-review", "findings.json"))
+                runtime_storage.review_public_path(ws, "findings.json"))
             notices = _dc.design_review_notices(
                 (findings or {}).get("meta") or {})
             if notices:
@@ -851,7 +852,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         if step == "evaluate" or any(name in os.environ
                                      for name in capability_vars) else None)
 
-    contract = _step_contract(step, state)
+    contract = _step_contract(step, state, act_ws)
     evaluator_contract = None
     if step == "evaluate":
         evaluator_contract = evaluation_output.create_evaluator_contract(
@@ -1173,15 +1174,16 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             "depends": list(req_rec.get("depends_on") or []),
             "context_files": list(req_rec.get("context_files") or []),
             "context": reqs.render_context([req_rec])},
-        "instruction": _instruction(step, state),
+        "instruction": _instruction(step, state, act_ws),
     }
 
 
 guide = runtime_eval.guide_loop
 
 
-def _instruction(step: str, state: dict) -> str:
+def _instruction(step: str, state: dict, ws: str | None = None) -> str:
     t = _current_task(state)
+    evaluator_result, review_root = runtime_storage.instruction_artifact_paths(ws)
     return {
         "pm": "Run tp-product: author specs/spec.md, then call `req new` "
               "exactly once with complete functional, acceptance, "
@@ -1229,7 +1231,7 @@ def _instruction(step: str, state: dict) -> str:
                     "lenses/<id>.md) — inline ones yourself, one governed "
                     "read-only subagent per subagent-mode lens — and disposition "
                     "graph impact + affected requirements; reject stale Design "
-                    "evidence. Fill the empty slots in .eval/verdict.json "
+                    f"evidence. Fill the empty slots in {evaluator_result} "
                     "(submitted unchanged, it is refused). Then `loop submit "
                     "pass|fail`; if one bounded model/host attempt is unavailable "
                     "but bound tests are green and no product/lens defect exists, "
@@ -1244,7 +1246,8 @@ def _instruction(step: str, state: dict) -> str:
               "most one bounded tier=light sweep; tier=n/a is evidence, "
               "never a dispatch. Do not re-derive diff or impact per lens. "
               "Synthesize all verdicts + requirement-vs-implementation into "
-              ".em-review/report.md AND .em-review/findings.json (including "
+              f"{os.path.join(review_root, 'report.md')} AND "
+              f"{os.path.join(review_root, 'findings.json')} (including "
               "complete meta.lens_coverage, meta.impact, meta.design "
               "conformance when an approved design exists, tests, and gate "
               "verdict), record the verdict to the knowledge "
@@ -1444,7 +1447,7 @@ def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
 
 def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     """Validate evaluator evidence instead of trusting `gate pass`."""
-    path = os.path.join(ws, ".eval", "verdict.json")
+    path = runtime_storage.evaluation_path(ws)
     verdict, errors = _read_json(path)
     if errors:
         return errors
@@ -1597,7 +1600,7 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
 def _evaluation_unavailable_errors(ws: str, state: dict,
                                    task: dict) -> tuple[list, dict]:
     """Admit a pure model/host outage without inventing a product defect."""
-    path = os.path.join(ws, ".eval", "verdict.json")
+    path = runtime_storage.evaluation_path(ws)
     verdict, errors = _read_json(path)
     if errors:
         return errors, {}
@@ -1793,11 +1796,11 @@ def _coverage_disposition(v) -> str:
 
 def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     """Require full-catalog lens evidence before the EM gate can pass."""
-    path = os.path.join(ws, ".em-review", "findings.json")
+    path = runtime_storage.review_public_path(ws, "findings.json")
     findings, errors = _read_json(path)
     if errors:
         return errors
-    report_path = os.path.join(ws, ".em-review", "report.md")
+    report_path = runtime_storage.review_public_path(ws, "report.md")
     try:
         with open(report_path, encoding="utf-8") as report_file:
             report_text = report_file.read()
@@ -1904,7 +1907,8 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     if gate.get("verdict") not in ("pass", "recommend-pass"):
         errors.append("engineering review does not recommend sign-off — "
                       'set meta.gate.verdict to "pass" or "recommend-pass" '
-                      "in .em-review/findings.json")
+                      "in " + runtime_storage.review_public_path(
+                          ws, "findings.json"))
     rows = findings.get("findings") or []
     if not isinstance(rows, list):
         errors.append("engineering findings must be a list")
@@ -1998,7 +2002,7 @@ def submit(ws: str, outcome: str, note: str = "",
             evidence_errors = []
             if step == "evaluate":
                 verdict, read_errors = _read_json(
-                    os.path.join(act_ws, ".eval", "verdict.json"))
+                    runtime_storage.evaluation_path(act_ws))
                 evidence_errors = (read_errors or
                                    _acceptance_evidence_errors(
                                        act_ws, state, task, verdict))
@@ -2016,9 +2020,7 @@ def submit(ws: str, outcome: str, note: str = "",
             }
 
     snapshot = tp.snapshot_ref(act_ws)
-    evidence_paths = ({"evaluate": [".eval/verdict.json"],
-                       "em": [".em-review/findings.json",
-                              ".em-review/report.md"]}.get(step, []))
+    evidence_paths = runtime_storage.submission_evidence_paths(act_ws, step)
     graph_fingerprint = None
     if state.get("graph_governance") and \
             (step == "em" or step == "evaluate" and not state.get("parallel")):
@@ -2861,7 +2863,7 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         # v2.3.0 wiring: the sign-off payload carries the review's design
         # notices (accepted drift, declared edge realizations) when present.
         findings, _errs = _read_json(
-            os.path.join(ws, ".em-review", "findings.json"))
+            runtime_storage.review_public_path(ws, "findings.json"))
         gate_notices = _dc.design_review_notices(
             (findings or {}).get("meta") or {})
         scope = sorted({g for t in (state.get("tasks") or [])

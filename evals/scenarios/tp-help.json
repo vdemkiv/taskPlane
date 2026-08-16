@@ -3,7 +3,7 @@
   "skill": "tp-help",
   "title": "Read-only onboarding guidance that explains the next action without starting delivery",
   "source_files": ["skills/tp-help/SKILL.md", "skills/tp-help/flow.json"],
-  "inputs_fingerprint": "20da18d3c445ccf947c9a31d9d1f6a1a1ed818d032c3503b5dad5d8c4765f385",
+  "inputs_fingerprint": "a166a17100396cc33335fa21819c8acecce3f9cbef214007201dda0cc7bca655",
   "expects_derivations": [],
   "declared_surfaces": ["tp onboard"],
   "terminal": "response",

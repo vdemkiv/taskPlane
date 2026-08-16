@@ -28,6 +28,7 @@ import shlex
 import tempfile
 from typing import Callable, Iterable
 
+import storage as runtime_storage
 import taskplane_lite as tp
 
 # This value crosses host boundaries inside immutable briefs. Keep the
@@ -120,11 +121,32 @@ def _manifest(value: dict) -> dict:
 
 
 def _index_path(ws: str) -> str:
-    return os.path.join(ws, KERNEL_STATE)
+    return os.path.join(_kernel_root(ws), "active.json")
 
 
 def _state_path(ws: str, run_id: str) -> str:
-    return os.path.join(ws, KERNEL_RUNS, run_id, "state.json")
+    return os.path.join(_kernel_root(ws), "runs", run_id, "state.json")
+
+
+def _kernel_root(ws: str) -> str:
+    locator = runtime_storage.load_workspace_locator(ws)
+    if locator:
+        return os.path.join(locator["paths"]["state"], "review-kernel-v2")
+    return os.path.join(ws, ".em-review", "kernel-v2")
+
+
+def _public_root(ws: str) -> str:
+    return runtime_storage.review_public_root(ws)
+
+
+def _result_path(ws: str, stage: str, fingerprint: str) -> str:
+    locator = runtime_storage.load_workspace_locator(ws)
+    if locator:
+        return os.path.join(locator["paths"]["lenses"], "results",
+                            f"{fingerprint}.json")
+    return os.path.join(
+        ".eval" if stage == "build" else ".em-review", "kernel-v2",
+        "results", f"{fingerprint}.json").replace(os.sep, "/")
 
 
 def _load_index(ws: str) -> dict:
@@ -387,10 +409,8 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
         source = full_briefs.get(
             "light-sweep" if slot_id == "light-sweep" else lens_ids[0]) or {}
         required_references = list(source.get("language_references") or [])
-        result_path = os.path.join(
-            ".eval" if stage == "build" else ".em-review",
-            "kernel-v2", "results",
-            f"{lease_ref['fingerprint']}.json").replace(os.sep, "/")
+        result_path = _result_path(
+            store.workspace, stage, lease_ref["fingerprint"])
         producer_contract = {
             "task": f"review lens slot {slot_id} lease {lease_ref['fingerprint']}",
             "task_slot": f"review-{lease_ref['fingerprint'][:20]}",
@@ -517,6 +537,21 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
             list(quality.get("reasons") or []) + ["symbol_extraction_incomplete"]))
         quality.pop("fingerprint", None)
         quality["fingerprint"] = graph_quality.fingerprint(quality)
+    graph_degraded = quality.get("status") != "complete"
+    if graph_degraded and stage == "review":
+        # A pinned PR diff is sufficient to perform a useful code review.
+        # Graph evidence narrows and enriches the blast radius; it must not
+        # turn an otherwise reviewable PR into zero lens dispatch. Preserve
+        # the exact uncertainty for the report and route from the immutable
+        # changed-file/content input with architecture/security floors.
+        quality["review_fallback"] = {
+            "mode": "immutable_diff",
+            "reason": "graph enrichment incomplete",
+            "changed_files": files,
+            "guardrails": ["architecture_floor", "security_floor"],
+        }
+        quality.pop("fingerprint", None)
+        quality["fingerprint"] = graph_quality.fingerprint(quality)
     quality_ref = store.put("graph-quality", quality,
                             fingerprint=quality["fingerprint"])
     observation = yield_meter.observation_bundle(
@@ -533,9 +568,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "observation_actions": observation["actions"],
         "effective_tokens": None,
     }
-    if quality.get("status") != "complete":
-        refusal_status = ("graph_evidence_sparse" if stage == "review"
-                          else "impact_incomplete")
+    if graph_degraded and stage != "review":
+        refusal_status = "impact_incomplete"
         run_id = _run_id(stage, _target_run_fingerprint(target),
                          quality["fingerprint"], 0)
         manifest = _manifest({
@@ -630,6 +664,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     manifest = _manifest({
         "schema": "taskplane.review-start-manifest/v2", "status": "ready",
         "stage": stage, "run_id": run_id, "routing_mode": "selective",
+        "graph_degraded": graph_degraded,
         "target_fingerprint": target.get("fingerprint"),
         "context_fingerprint": envelope_ref["fingerprint"],
         "graph_quality": _portable_ref(quality_ref),
@@ -661,12 +696,12 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
 
 
 def _receipt_path(ws: str, lease_fingerprint: str) -> str:
-    return os.path.join(ws, ".em-review", "kernel-v2", "provenance",
+    return os.path.join(_kernel_root(ws), "provenance",
                         lease_fingerprint + ".json")
 
 
 def _producer_assignment_path(ws: str, lease_fingerprint: str) -> str:
-    return os.path.join(ws, ".em-review", "kernel-v2", "producers",
+    return os.path.join(_kernel_root(ws), "producers",
                         lease_fingerprint + ".json")
 
 
@@ -674,7 +709,7 @@ def _child_observation_path(ws: str, event: dict) -> str:
     identity = _hook_child_identity(event)
     digest = hashlib.sha256(json.dumps(
         identity, separators=(",", ":")).encode("utf-8")).hexdigest()
-    return os.path.join(ws, ".em-review", "kernel-v2", "children",
+    return os.path.join(_kernel_root(ws), "children",
                         digest + ".json")
 
 
@@ -746,8 +781,7 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
     }
     path = _producer_assignment_path(ws, lease["lease_fingerprint"])
     child_path = _child_observation_path(ws, event)
-    binding_lock = os.path.join(ws, ".em-review", "kernel-v2",
-                                "producer-binding.json")
+    binding_lock = os.path.join(_kernel_root(ws), "producer-binding.json")
     with tp.file_lock(binding_lock):
         child = tp.load_json(child_path, default=None,
                              what="hook child observation")
@@ -1413,8 +1447,7 @@ def _preflight_projections(store, revision: dict, refs: list[dict]) -> None:
 
 
 def _collection_lock_path(ws: str) -> str:
-    return os.path.join(ws, ".em-review", "kernel-v2",
-                        "revision-reservation.json")
+    return os.path.join(_kernel_root(ws), "revision-reservation.json")
 
 
 def _assert_collection_reservation(ws: str, run_id: str) -> None:
@@ -1450,7 +1483,7 @@ def _atomic_write_bytes(path: str, data: bytes) -> None:
 
 
 def _publication_transaction(ws: str, run_id: str) -> dict:
-    root = os.path.join(ws, ".em-review", "kernel-v2", "publications", run_id)
+    root = os.path.join(_kernel_root(ws), "publications", run_id)
     return {
         "root": root,
         "prior_findings": os.path.join(root, "prior-findings.json"),
@@ -1462,8 +1495,8 @@ def _snapshot_publication(ws: str, state: dict) -> dict:
     """Persist the exact prior aliases before any authoritative mutation."""
     transaction = _publication_transaction(ws, state["run_id"])
     os.makedirs(transaction["root"], exist_ok=True)
-    findings = os.path.join(ws, ".em-review", "findings.json")
-    report = os.path.join(ws, ".em-review", "report.md")
+    findings = os.path.join(_public_root(ws), "findings.json")
+    report = os.path.join(_public_root(ws), "report.md")
     prior = {}
     for name, source, backup in (
             ("findings", findings, transaction["prior_findings"]),
@@ -1503,8 +1536,8 @@ def _restore_publication(ws: str, state: dict, store, evidence) -> None:
     prior_files = transaction.get("prior") or {}
     paths = _publication_transaction(ws, state["run_id"])
     aliases = {
-        "findings": os.path.join(ws, ".em-review", "findings.json"),
-        "report": os.path.join(ws, ".em-review", "report.md"),
+        "findings": os.path.join(_public_root(ws), "findings.json"),
+        "report": os.path.join(_public_root(ws), "report.md"),
     }
     backups = {"findings": paths["prior_findings"],
                "report": paths["prior_report"]}
@@ -1580,8 +1613,8 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
     if state.get("status") == "staged":
         state = dict(state, status="publishing")
         _save_state(ws, state)
-        findings_path = os.path.join(ws, ".em-review", "findings.json")
-        report_path = os.path.join(ws, ".em-review", "report.md")
+        findings_path = os.path.join(_public_root(ws), "findings.json")
+        report_path = os.path.join(_public_root(ws), "report.md")
         try:
             evidence._advance_current(store, identity, expected_current=prior)
             state = dict(state, status="committed")

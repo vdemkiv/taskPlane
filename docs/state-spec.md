@@ -1,7 +1,7 @@
 # State specification — where taskplane's state lives, and why
 
-taskplane keeps three kinds of state, in three places. The rule that
-decides every case:
+taskplane separates source, durable knowledge, and private run data. The rule
+that decides every case:
 
 > **Knowledge = the knowledge store, and where it lives is PLAN-AWARE.**
 > Decisions, requirements, debt, the dependency graph, and context docs are
@@ -11,9 +11,11 @@ decides every case:
 > **Team/Enterprise** plan the store lives IN the repo at `.taskplane-kb/`
 > and is committed *deliberately* with the code, so the team shares one
 > registry and a fresh clone inherits it.
-> **Runtime = local to the checkout.** Live enforcement pointers, scratch
-> review artifacts, and raw event streams (`.taskplane/trace.jsonl`) — always
-> per-machine and git-ignored, on both plans.
+> **Runtime = external and run-scoped.** Managed mirrors/worktrees live under
+> `~/.taskplane/checkouts/`; live enforcement, graph/evidence, leases, raw
+> events, and artifacts live under `~/.taskplane/runs/<run-id>/`. The source
+> checkout is never a report/scratch directory. Legacy unmanaged workspaces
+> retain their git-ignored local runtime paths for compatibility.
 > **Never anywhere in the store: prompt data.** No instructions-to-models,
 > no role text, no rendered prompts. Enforced by `tp.py kb lint`.
 
@@ -47,10 +49,9 @@ first:
 
 ### The external store (personal plan / private mode)
 
-Root: `~/.taskplane/` (override with `$TASKPLANE_HOME`). Inside, one folder
-per project, keyed by the project's absolute path slugified the way Claude
-keys its own per-project state (`/Users/x/Documents/app` →
-`-Users-x-Documents-app`):
+Root: `~/.taskplane/` (override with `$TASKPLANE_HOME`). Managed repositories
+use a stable normalized repository key, so equivalent HTTPS/SSH origins and
+different checkout paths share identity without sharing run state:
 
 ```
 ~/.taskplane/projects/<key>/
@@ -69,6 +70,9 @@ keys its own per-project state (`/Users/x/Documents/app` →
           └─ tracks.json (+ tracks/<name>/loop.json)
 ```
 
+Repository records, managed mirrors/worktrees, run-private state, and graph
+cache are sibling roots described in `docs/storage-and-repositories.md`.
+
 ### The in-repo shared store (Team/Enterprise plan)
 
 On a team plan the same `knowledge/` tree lives in the repo under
@@ -86,19 +90,22 @@ shared knowledge (an anchored `/knowledge/` allow under `.taskplane-kb/`), so a
 plain `git add` picks up exactly the shared store and nothing else. Committing
 `.taskplane-kb/` is how the team shares the registry.
 
-## Local to the checkout — never committed (git-ignored)
+## Runtime paths — external for managed runs, local only for legacy workspaces
 
 | Path | Contents | Why local |
 | --- | --- | --- |
-| `.taskplane/` | ACTIVE contract(s), snapshot ref, `meter.json`, `trace.jsonl` (raw audit events) | live enforcement + telemetry are per-machine; a parallel worker needs its own under `.tp-work/`, and none of it must ever be committed |
+| `~/.taskplane/runs/<run-id>/state/control/` | active contracts, snapshot ref, meter and trace for a managed run | enforcement is run-scoped and cannot pollute or be spoofed by the source checkout |
+| `~/.taskplane/runs/<run-id>/{graph,evidence,lenses,artifacts}/` | graph, immutable evidence/views, leased results, reports/dashboards | private run products stay distinct from source and shared knowledge |
+| `.taskplane/` | legacy unmanaged-workspace contract/meter/trace | compatibility only; managed runs relocate this control state externally |
 | `.taskplane/active_contract.json` | the legacy SINGLE active contract (when no per-task slots are in use) | one governed process per workspace, the common case |
 | `.taskplane/active/<slot>.json` | PER-TASK contract slots (v2.3.1) | when several governed agents share one workspace (a parallel wave, a fanned-out lens review), each exports `TASKPLANE_TASK=<slot>` and gets its OWN contract file, so agents can't overwrite each other's governance. A process with `TASKPLANE_TASK` set is bound to exactly its slot (a missing/corrupt slot fails closed); with it unset, the process is governed by the **most-restrictive union** of every active slot plus the legacy file — never left ungoverned, never governed by one slot picked arbitrarily |
-| `.eval/`, `.em-review/`, `.security-review/` | raw review artifacts and scratch | verdict *decisions* go to the KB store; the raw reports don't |
-| `.tp-work/` | parallel workers' worktrees | vehicles, not cargo — work merges via `tp/<task>` branches |
+| `.eval/`, `.em-review/`, `.security-review/` | legacy raw review artifacts | compatibility only; new managed reviews use the run root and never place source here |
+| `~/.taskplane/checkouts/<repository-key>/worktrees/tasks/<run-id>/` | managed parallel workers' worktrees | source vehicles remain in the checkout registry; work merges via `tp/<task>` branches |
+| `.tp-work/` | legacy unmanaged parallel workers' worktrees | compatibility only |
 | `plan/`, `specs/`, `design/` | authored requirement, proposed-HOW Design Contract/visual, and implementation-plan sources | these MAY stay in the repo if you want them version-controlled; the loop treats them as its own evidence rather than product-code diff |
 
-`.taskplane/` self-ignores via its own `.gitignore`; `tp init` adds the
-rest to the repo-root `.gitignore` (idempotent). On a team plan the gitignore
+Legacy `.taskplane/` self-ignores via its own `.gitignore`; `tp init` adds the
+remaining compatibility paths to the repo-root `.gitignore` (idempotent). On a team plan the gitignore
 is **anchored** so `.taskplane-kb/knowledge/` stays committable while the
 runtime paths above remain ignored; on a personal plan the whole store is
 external and nothing taskplane-generated enters the repo.

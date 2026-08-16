@@ -7,10 +7,16 @@
    in, a git repo with a snapshot, and taskplane initialized. `$TP onboard`
    (no `--json`) prints the onboarding dashboard for a brand-new user with
    nothing attached; its `next_action` is one of `attach_folder` (help them
-   connect/open a folder or clone a URL; on Codex, open the repo as the task's
-   working folder and use a new task after plugin installation), `init_git` (offer to init + commit),
+   provide a local path/URL/PR and run `$TP repository prepare <target>`;
+   ask and resume any returned user action in the same conversation),
+   `init_git` (offer to init + commit),
    `tp_init` (step 1), or `ready`. Don't proceed to a governed run until
    `ready` — the gates need a real folder and a commit to diff against.
+
+   Repository preflight owns mirrors/worktrees under the external taskplane
+   home. Its run manifest owns private state, graph, evidence, lens outputs,
+   and deliverables. Never clone source into `.em-review` or another artifact
+   tree, and never require a new Codex task for a recoverable precondition.
 
 1. **Knowledge storage (ask FIRST).** Ask the user: *keep taskplane knowledge
    private/local, or share it with the team in the repository?* This is a

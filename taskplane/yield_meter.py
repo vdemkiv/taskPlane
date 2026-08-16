@@ -56,6 +56,7 @@ import re
 import time
 
 import taskplane_lite as tp
+import storage as runtime_storage
 
 LEDGER = "yield.jsonl"
 SETTLED_VERDICTS = frozenset({
@@ -345,7 +346,7 @@ def _artifact(ws: str, step: str):
     findings, routed = [], []
     if step not in _FINDINGS_STEPS:
         return findings, routed
-    doc = _load(os.path.join(ws, ".em-review", "findings.json"))
+    doc = _load(runtime_storage.review_public_path(ws, "findings.json"))
     if isinstance(doc, dict):
         raw = doc.get("findings")
         meta = doc.get("meta") or {}
@@ -366,7 +367,7 @@ def _verdict_counts(ws: str) -> list:
     """[(lens, blockers)] from `.eval/verdict.json`, the evaluate gate's own
     artifact. Blockers caught HERE are caught in the task — the cheap place
     — which is precisely the comparison the escape metric exists to make."""
-    doc = _load(os.path.join(ws, ".eval", "verdict.json"))
+    doc = _load(runtime_storage.evaluation_path(ws))
     rows = (doc or {}).get("lenses") if isinstance(doc, dict) else None
     out = []
     for row in rows or []:

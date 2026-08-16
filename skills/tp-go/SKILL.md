@@ -94,10 +94,14 @@ explicit approval in conversation. Never run the loop silently.
    If `ready` is false, don't dive in — show the onboarding dashboard
    (`$TP onboard` prints the fragment) inline via `mcp__visualize__show_widget`
    and help with the one missing piece its `next_action` names:
-   `attach_folder` → the user needs to connect/open a folder or give you a git
-   URL to clone. In Codex CLI, start from the repo directory; in the desktop
-   app, open/create a local environment for that repo and start a new task
-   after installation. Then re-check. `init_git` → offer to `git init && git add -A &&
+   `attach_folder` → ask for a local path, repository URL, ref, or PR and run
+   `$TP repository prepare <target>`. The engine acquires and verifies source
+   into its managed checkout root; do not manually clone into the conversation
+   workspace or an artifact directory. If it returns `needs_user`, ask the
+   exact returned prompt here, then resume the SAME run with `$TP repository
+   resume --run-id ... --action-id ... --response ... --by "<human>"`. Never
+   convert authentication, tool installation, or storage authorization into a
+   terminal handoff or a new-task instruction. `init_git` → offer to `git init && git add -A &&
    git commit` for them (gates need a snapshot); `tp_init` → run step 1.
    The buttons drive this via `sendPrompt`. Don't guess a workspace — a
    governed run needs a real folder + a git commit, and this is where a
@@ -109,6 +113,11 @@ explicit approval in conversation. Never run the loop silently.
    missing, run `$TP init` yourself (details: `references/setup.md`) and fill
    the three context docs from the conversation — only ask what you can't
    infer.
+   Managed source, private runtime state, graph/evidence, and review artifacts
+   are separate: source lives under the checkout root returned by repository
+   preflight; run-private data lives under its run root; only explicitly shared
+   knowledge lives in `.taskplane-kb/`. Consume paths from the run manifest,
+   never assume `.em-review` is the source or artifact root.
 2. **Initialize once:** when the user supplied an existing R-id, run
    `$TP loop init --req R-XXXX "<goal>"`. Otherwise run `$TP loop init
    "<goal>"`; the PM step owns the first requirement/spec. Never run a

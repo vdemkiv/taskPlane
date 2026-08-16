@@ -31,8 +31,8 @@ workspace — same contracts, budgets, and hook enforcement as any task.
    the same `req` and criteria, a `variant` field ("A"/"B"), and their own
    scope lists (overlap is expected and fine — they never meet). The plan
    gate detects this and arms the loop's A/B mode automatically.
-4. **Isolate and contract.** Per variant: `git worktree add
-   .tp-work/variant-X -b tp-ab/variant-X`, then activate a contract IN
+4. **Isolate and contract.** Per variant, use the exact worktree emitted by
+   the governed wave: `git worktree add <worktree> -b tp-ab/variant-X`, then activate a contract IN
    that workspace (`$TP new --workspace <worktree> --max-actions N
    --scope "<variant scope>" --tests "<cmd>"`). Copy the variant spec into
    the worktree (worktrees don't carry untracked files).

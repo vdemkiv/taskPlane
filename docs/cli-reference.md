@@ -76,6 +76,11 @@ not repeated in the tables.
 | `tp.py north-star` | on-demand strategic review: print the project's north star, or render a strategic note |
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
 | `tp.py ready` | Definition-of-Ready entry gate |
+| `tp.py repository` | automatic source precondition: resolve, authenticate, acquire, checkout, verify, and resume |
+| `tp.py repository migrate` | register clean legacy .em-review/scratch clones without moving or deleting anything |
+| `tp.py repository prepare` | prepare a local repository or remote pull request |
+| `tp.py repository resume` | apply an explicit user action and resume the same run |
+| `tp.py repository status` | print one canonical run manifest |
 | `tp.py req` | requirements: record, refine, mode, debt |
 | `tp.py req amend` | revise the same requirement after Product requests changes |
 | `tp.py req debt` | record technical debt taken on knowingly |
@@ -86,6 +91,7 @@ not repeated in the tables.
 | `tp.py req signoff` | record the human Product gate |
 | `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
 | `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
+| `tp.py review resume` | apply one explicit user decision and continue the same repository preflight and review |
 | `tp.py review signoff` | record the human decision for a collected standalone review |
 | `tp.py review start` | establish the facts and activate the read-only contract |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
@@ -137,6 +143,7 @@ record a cooperative spend estimate, or --grant N more actions (the budget appro
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--approved-by` | APPROVED_BY | human chat identity authorizing this budget grant |
 | `--grant` | N | raise the enforced action ceiling by N — for the human / ungoverned main session after approving more budget (a governed agent cannot grant itself) |
 | `--spent` | SPENT | cooperative $ estimate (advisory) |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
@@ -148,6 +155,7 @@ deactivate the workspace contract
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--all` | flag | release EVERY active slot, not just this process's — the way out when a wave leaked contracts |
+| `--approved-by` | APPROVED_BY | human chat identity authorizing recovery past an exhausted budget |
 | `--slot` | SLOT | release one named slot (see `tp contracts`) without setting TASKPLANE_TASK |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
@@ -691,6 +699,52 @@ Definition-of-Ready entry gate
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py repository`
+
+automatic source precondition: resolve, authenticate, acquire, checkout, verify, and resume
+
+## `tp.py repository migrate`
+
+register clean legacy .em-review/scratch clones without moving or deleting anything
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py repository prepare`
+
+prepare a local repository or remote pull request
+
+Positional arguments:
+
+- `spec` — PR URL, OWNER/REPO#N, ref, or local target
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--run-id` | RUN_ID | optional stable run id for idempotent retry |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py repository resume`
+
+apply an explicit user action and resume the same run
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--action-id` | ACTION_ID (required) | exact pending user-action id |
+| `--by` | BY (required) | human chat identity approving the action |
+| `--response` | one of: approve, retry, initialize, cancel (required) | the user's decision for the pending action |
+| `--run-id` | RUN_ID (required) | run-id from the needs_user response |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py repository status`
+
+print one canonical run manifest
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--run-id` | RUN_ID (required) | canonical repository/run manifest id |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py req`
 
 requirements: record, refine, mode, debt
@@ -812,6 +866,21 @@ validate leased lens results and publish one canonical findings revision
 | `--run-id` | RUN_ID | select one active review when several starts coexist |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py review resume`
+
+apply one explicit user decision and continue the same repository preflight and review
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--action-id` | ACTION_ID (required) | exact pending user-action id |
+| `--by` | BY (required) | the user's approving/cancelling chat identity |
+| `--goal` | GOAL | contract goal text after preflight resumes |
+| `--max-actions` | MAX_ACTIONS | action ceiling for the resumed review contract |
+| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the resumed review |
+| `--response` | one of: approve, retry, initialize, cancel (required) | the user's decision for the pending action |
+| `--run-id` | RUN_ID (required) | run-id from the needs_user preflight response |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py review signoff`
 
 record the human decision for a collected standalone review
@@ -842,6 +911,7 @@ Positional arguments:
 | `--goal` | GOAL | contract goal text (default: derived) |
 | `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
 | `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
+| `--run-id` | RUN_ID | resume or deterministically name the repository preflight run |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py screen`

@@ -7,9 +7,10 @@ initialized with `--parallel` and an approved plan whose tasks carry
 
 1. `$TP loop wave` — the engine picks the wave (deps passed + pairwise
    scope-disjoint) and explains every held task.
-2. Per entry, follow `discipline/worktrees.md`: `git worktree add
-   .tp-work/<id> -b tp/<id>`, then `$TP loop claim <id> --agent-workspace
-   .tp-work/<id>` — the task's contract activates in THAT worktree.
+2. Per entry, use its exact emitted `worktree`: `git worktree add
+   <worktree> -b tp/<id>`, then `$TP loop claim <id> --agent-workspace
+   <worktree>` — managed runs keep it in the external checkout registry;
+   legacy unmanaged runs may emit `.tp-work/<id>`.
 3. Dispatch ONE subagent per task, all concurrently (single message,
    multiple Task calls). Each builds inside its worktree only, then
    commits and runs `$TP loop submit pass|fail --task <id>`. The orchestrator

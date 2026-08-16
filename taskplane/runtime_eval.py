@@ -15,6 +15,8 @@ import re
 from functools import lru_cache
 from typing import Any
 
+import storage as runtime_storage
+
 
 SCHEMA = "taskplane.runtime-evals/v1"
 GUIDANCE_SCHEMA = "taskplane.runtime-guidance/v1"
@@ -310,7 +312,7 @@ def review_facts(ws: str, step: str) -> dict:
             facts["output_producer_observed"] = bool(
                 facts["lens_results_collected"])
         if step == "evaluate":
-            verdict_path = os.path.join(ws, ".eval", "verdict.json")
+            verdict_path = runtime_storage.evaluation_path(ws)
             try:
                 with open(verdict_path, "rb") as stream:
                     raw = stream.read(1024 * 1024 + 1)

@@ -52,13 +52,15 @@ violations of named repository declarations. Settled findings stay settled unles
 new evidence is named. The selective review kernel from v2.14 still governs Review,
 Evaluate, and final sign-off. taskplane establishes graph quality and the
 bounded blast radius before it maps all 26 lenses to deep, light, or n/a.
-Only the deep set plus at most one light sweep runs; insufficient impact
-evidence stops with zero dispatch. Every reviewer receives a scoped reference
+Only the deep set plus at most one light sweep runs. A standalone PR review can
+continue from its pinned diff with a visible degraded-graph warning; delivery
+Evaluate/EM gates still stop on insufficient impact. Every reviewer receives a scoped reference
 to one immutable diff/impact/requirements/DoR/DoD context and writes a leased,
 fingerprint-bound result. The dashboard renders the same dependency graph,
 workflow state, and human approval gates as the final report. Claude and Codex
 consume the same canonical artifacts; after updating the plugin, start a new
-task so the host loads its lifecycle hooks.
+task only when the host has never loaded taskplane's lifecycle hook. Managed
+repository acquisition and plugin patch updates resume in the current task.
 
 **In v2.13 — the review got a lot cheaper, and the budget
 finally counts what is scarce.** `tp review start` opens a review in one
@@ -73,15 +75,13 @@ can set `--max-tokens`: an action cost about 11k effective tokens on the
 review that motivated this, so a ceiling counted in tool calls was never
 something you could tune.
 
-**In v2.12 — a review can prove what it reviewed.**
-`tp target` acquires a pull request (`fetch`), pins what the checkout
-actually is — origin, head, base, dirty paths, one fingerprint — and the
-findings cite that fingerprint. Until the workspace is pinned, a read-only
-review cannot run `tp dod` or `tp loop submit`; doing the review is never
-blocked, only declaring it finished. `git` and `gh` are now declared
-dependencies and reported by `tp onboard`: a clone carries the code and
-none of the intent, since a PR's title, body, linked issues and discussion
-are not in the git objects at all.
+**Repository preconditions are automatic.** `tp repository prepare` resolves a
+local path, repository URL, ref, or PR into a verified managed checkout before
+any contract, graph, or lens dispatch. `review start` calls it automatically.
+Source, private runtime state, cached graphs, and report artifacts use distinct
+roots; `.taskplane-kb/` is reserved for deliberately shared knowledge. Missing
+GitHub auth, tools, or storage permission becomes one structured human prompt
+and `repository resume` continues the same run in the same task.
 
 **In v2.11 — the lens router you designed is now the one that
 runs.** taskplane has scored every lens against the actual diff since v2.4 —

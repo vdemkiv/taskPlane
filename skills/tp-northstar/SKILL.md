@@ -20,6 +20,12 @@ Leverage/Reversibility/Opportunity-cost/Coherence checks → sharpest tension �
 proceed/eyes-open/reconsider note**. It remains advisory and never becomes a
 delivery gate.
 
+When the target is a repository, local path, ref, or pull request, run
+`$TP repository prepare <target>` first and read only the verified managed
+checkout. Ask and resume any structured user action in the same conversation;
+never clone source into review artifacts or require a new task for
+authentication/storage recovery.
+
 No executive personas, no CFO, no cost/pricing — taskplane keeps pricing out of
 the product. This is honest strategic *lenses*, not a boardroom cosplay.
 

@@ -11,13 +11,16 @@ README's [Onboarding summary](../README.md) covers the short version.
 Say **taskplane help** for the tour, or just state a goal — `taskplane` routes
 it and runs onboarding for you on a fresh folder. `tp onboard` shows the
 onboarding dashboard and won't hand you to a governed run until three
-checks are green:
+checks are green for a local target. A repository URL or pull request first
+runs the automatic repository precondition, which creates a verified managed
+checkout and then applies these checks there:
 
 1. **A real folder to work in** — connect/open your project (an empty
    scratch dir or the session root is refused: a contract scoped there
    would govern everything).
 2. **A git commit to diff against** — the gates fail closed without a
-   snapshot; `git init && git add -A && git commit` if the repo is new.
+   snapshot. For a new local folder, taskplane asks permission to initialize
+   and commit it, then resumes the same run.
 3. **`tp init`** — scaffolds the four context docs
    (`product.md` / `tech-stack.md` / `workflow.md` / `current-state.md`),
    scans the dependency graph, and creates the external knowledge base.
@@ -42,11 +45,11 @@ checks are green:
 2. In Claude Code, run `/reload-plugins` after installation. In Claude Chat or
    Cowork, start a new conversation if the newly installed skills are not yet
    visible.
-3. Open the target repository in Claude Code, or attach its folder in Cowork.
-   Prompt **"set up taskplane"** or **"use taskplane for …"**.
-4. If the folder is not a committed Git repository, approve initialization or
-   make the first commit yourself. The commit is the diff and
-   Definition-of-Done baseline.
+3. Open/attach a local target, or name a repository URL or pull request in the
+   prompt. Prompt **"set up taskplane"** or **"use taskplane for …"**.
+4. If a prerequisite needs authentication, a tool, storage access, or local
+   initialization, answer taskplane's exact prompt. It resumes this run; it
+   does not send you to an external terminal or new conversation.
 5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
    is **shared in the repository** (`team`/`enterprise`). This is storage and
    collaboration policy, not a model choice.
@@ -67,17 +70,16 @@ permissions and sandbox controls enabled.
    desktop app use **Codex → Plugins**; in Codex CLI use `/plugins`. Then start
    a **new** Codex task/session. The GitHub marketplace commands in the README
    remain the development/catalog fallback.
-2. Make the target repository the working folder. In Codex CLI, `cd` to the
-   repository before running `codex`; in the desktop app, open or create a
-   local environment for that repository.
+2. For local code, make the repository the working folder. You may instead
+   name a repository URL or pull request; taskplane acquires and verifies a
+   managed checkout automatically inside the current environment.
 3. Prompt **"set up taskplane"** or **"use taskplane for …"**. The plugin runs
    `tp onboard --json` before governed work. On first use it installs the
    portable `.codex/hooks.json` workspace configuration plus an ignored local
-   `.taskplane/codex-hook.py` bridge, then asks you to start one more new task
-   so Codex loads the lifecycle hooks.
-4. If the folder is not a committed Git repository, approve initialization or
-   make the first commit yourself. taskplane needs the commit as its diff and
-   Definition-of-Done baseline.
+   `.taskplane/codex-hook.py` bridge. A new task is required only for this
+   one-time initial host hook load, never for checkout/auth/storage recovery.
+4. Answer any prerequisite prompt in chat. taskplane runs only its stored
+   bounded action after approval and resumes the same run.
 5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
    is **shared in the repository** (`team`/`enterprise`). This is a storage
    choice; it is not tied to the name of your ChatGPT or Codex subscription.
@@ -99,17 +101,18 @@ PreToolUse screen and evidence gates remain authoritative. For a long run you
 may start Goal mode with `/goal`; it changes neither permissions nor gates.
 
 When inline HTML widgets are unavailable, Codex still relays the plain-text
-`HEADLINE:` and provides `.taskplane/dashboard.html` as the local dashboard
-artifact. The governance state and human gates do not depend on widget support.
+`HEADLINE:` and provides the managed run's dashboard by reference (legacy
+unmanaged workspaces use `.taskplane/dashboard.html`). The governance state
+and human gates do not depend on widget support.
 
 ## Host setup at a glance
 
 | Host | Activate the plugin | Repository step | Reload boundary |
 | --- | --- | --- | --- |
-| Claude Code | GitHub or managed marketplace | Open the repo | `/reload-plugins` |
+| Claude Code | GitHub or managed marketplace | Open a local repo or name a repo/PR URL | `/reload-plugins` |
 | Claude Chat / Cowork | Personal or organization plugin catalog | Attach the folder in Cowork when local files are required | New conversation if needed |
-| ChatGPT desktop Codex | Published Plugins directory | Open a local environment for the repo | New task; setup may request one more task after hooks install |
-| Codex CLI | `/plugins` marketplace tab | Run `codex` from the repo | New CLI session; setup may request one more session after hooks install |
+| ChatGPT desktop Codex | Published Plugins directory | Open local code or name a repo/PR URL | One new task only for initial hook load |
+| Codex CLI | `/plugins` marketplace tab | Run from local code or name a repo/PR URL | One new session only for initial hook load |
 
 ## Knowledge storage and sharing mode
 

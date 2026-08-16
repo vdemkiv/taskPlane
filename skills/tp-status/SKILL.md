@@ -16,6 +16,11 @@ loop/task state, requirements/debt, and dependency graph reads; those converge
 into one mission-control dashboard and one truthful action/no-action banner.
 This flow introduces no new gate and mutates no state.
 
+When status concerns a managed repository/run, use `$TP repository status
+--run-id <id>` and the manifest's checkout/run/artifact paths rather than
+guessing from the current directory or `.em-review`. A `needs_user` repository
+action is a real pending human action and must be shown in the banner.
+
 - `$TP summary` — the user-facing headline, human decision, progress, graph,
   and enforcement assurance. Use this as the primary read model.
 - `$TP context` — the one-screen summary (track, loop, reqs, debt, graph, KB)

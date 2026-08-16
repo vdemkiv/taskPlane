@@ -67,6 +67,7 @@ def _git(cwd, *args):
 
 SLUG = "aws/karpenter-provider-aws"
 SPEC = f"{SLUG}#42"
+LOCAL_SPEC = "#42"
 
 
 class _PRRepo(unittest.TestCase):
@@ -244,7 +245,7 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
     every one of those is work spent on the wrong tree."""
 
     def test_it_refuses_and_names_the_tree_it_expected(self):
-        rc, out, _err = _run("review", "start", SPEC, "--base", "HEAD~1",
+        rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
         self.assertEqual(rc, 1, out)
         d = json.loads(out)
@@ -258,7 +259,7 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         self.assertIn(self.head[:12], step["reason"])
 
     def test_nothing_is_activated_and_no_later_step_runs(self):
-        _rc, out, _err = _run("review", "start", SPEC, "--base", "HEAD~1",
+        _rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                               "--workspace", self.ws)
         d = json.loads(out)
         self.assertEqual([s["step"] for s in d["steps"]], ["tools", "target"])
@@ -277,7 +278,7 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         self.assertIn("git checkout tp-pr-42", d["recovery"])
 
     def test_a_setup_refusal_creates_no_kernel_cache_and_retry_is_fresh(self):
-        rc, out, _err = _run("review", "start", SPEC, "--base", "HEAD~1",
+        rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
         self.assertEqual(rc, 1, out)
         self.assertFalse(os.path.exists(os.path.join(
@@ -285,7 +286,7 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         _git(self.ws, "fetch", "-q", "origin",
              "refs/pull/42/head:tp-pr-42")
         _git(self.ws, "checkout", "-q", "tp-pr-42")
-        rc, out, _err = _run("review", "start", SPEC, "--base", "HEAD~1",
+        rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
         self.assertEqual(rc, 0, out)
         self.assertEqual(json.loads(out)["status"], "ready")
@@ -293,7 +294,7 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
     def test_the_pull_requests_head_opens_the_review_normally(self):
         _git(self.ws, "fetch", "-q", "origin", "refs/pull/42/head:tp-pr-42")
         _git(self.ws, "checkout", "-q", "tp-pr-42")
-        rc, out, _err = _run("review", "start", SPEC, "--base", "HEAD~1",
+        rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
         self.assertEqual(rc, 0, out)
         d = json.loads(out)

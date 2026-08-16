@@ -58,10 +58,23 @@ ends with its own attributed sign-off and persisted synthesis.
 On a fresh repository, run `$TP onboard --json` before governed work. Resolve
 only the missing prerequisite it names. Do not dump setup mechanics unless the
 user asks; say what is missing and help complete it.
+When the goal names a local path, repository URL, ref, or pull request, source
+acquisition is an engine-owned precondition, not a manual setup task. Run
+`$TP repository prepare <target>` before the specialist flow (standalone
+`review start` invokes the same precondition itself). A `ready` response names
+the verified managed checkout and external run store. A `needs_user` response
+contains one structured action: ask its exact prompt in this conversation,
+wait for the user's decision, then call `$TP repository resume --run-id ...
+--action-id ... --response ... --by "<human>"`. Never clone into `.em-review`,
+put source inside an artifact directory, send the user to an external terminal,
+or ask them to open a new Codex task merely because checkout, authentication,
+or storage authorization needs recovery. The same host session continues after
+the approved action.
 On Codex, if `next_action` is `install_codex_hooks`, run
 `$TP onboard --install-codex-hooks --json` within the repository. Ask the user
-to start a new Codex task only when this workspace has never loaded its hooks;
-an existing stable launcher follows later plugin versions without a restart.
+to start a new Codex task only for the host's one-time initial hook load; an
+existing loaded hook and stable launcher govern managed checkouts and follow
+later plugin versions without a restart.
 Do not dispatch governed workers until the
 `codex_hooks` check is ready: marketplace skills do not themselves establish
 the repo-local lifecycle/write receipts required by taskplane provenance.

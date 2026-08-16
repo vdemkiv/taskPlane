@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -922,8 +923,9 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
             f"cannot continue. `tp ack <id>` is unmetered and still works; "
             f"closing commands (dod, findings, decision, req) draw on the "
             f"reserved closing actions. If more WORK is genuinely needed, a "
-            f"human must run, from OUTSIDE this workspace: "
-            f"`tp.py budget --grant N --workspace {ws}`")
+            f"human can approve in chat, then run: `tp.py budget --grant N "
+            f"--approved-by <human> --workspace {ws}`. No new task or "
+            f"outside-workspace workaround is required.")
     return True, (
         f"the same {len(owed)} obligation(s) have been open across "
         f"{count} checks. Render the artifact the engine produced — its own "
@@ -1332,11 +1334,25 @@ def _is_completion_command(command: str) -> bool:
 
 
 def _is_release_command(command: str) -> bool:
-    """A taskplane command that only READS governed state, or discharges an
-    obligation — never one that RELEASES governance. Releasing past an
-    exhausted budget would defeat the wall."""
+    """Unmetered control-plane commands, including explicit human recovery.
+
+    Mutating recovery is accepted only when the argv carries the human's
+    approval marker (or an exact persisted review action).  This prevents an
+    exhausted task from becoming an unrecoverable lock while keeping a bare
+    self-issued ``clear``/``budget --grant`` behind the wall.
+    """
     verb = tp.taskplane_verb(command)
-    return verb in _RELEASE_VERBS if verb else False
+    if verb in _RELEASE_VERBS:
+        return True
+    tokens = tp._shsplit(" ".join(str(command or "").split()))
+    if verb == "clear":
+        return "--approved-by" in tokens
+    if verb == "budget":
+        return "--grant" in tokens and "--approved-by" in tokens
+    if verb == "review":
+        return all(token in tokens for token in (
+            "resume", "--run-id", "--action-id", "--by"))
+    return False
 
 
 def _is_closing_command(command: str) -> bool:
@@ -1407,6 +1423,9 @@ def cmd_clear(a) -> int:
             freed.append("(legacy)")
         print(f"taskplane: cleared {len(freed)} contract(s): "
               + (", ".join(freed) or "none"))
+        if getattr(a, "approved_by", None):
+            tp.trace(ws, "contract_clear_human_approval",
+                     approved_by=a.approved_by, slots=freed)
         return 0
     slot = getattr(a, "slot", None)
     path = tp.active_contract_path(ws, slot) if slot \
@@ -1441,6 +1460,9 @@ def cmd_clear(a) -> int:
     print(f"taskplane: contract {c.get('task_id','')} cleared"
           + (f" (slot {slot})" if slot else "")
           + " — workspace is ungoverned again.")
+    if getattr(a, "approved_by", None):
+        tp.trace(ws, "contract_clear_human_approval",
+                 approved_by=a.approved_by, slots=[slot or "legacy"])
     return 0
 
 
@@ -1938,6 +1960,9 @@ def cmd_budget(a) -> int:
             .get("actions", 0)
         print(f"taskplane: budget granted — +{a.grant} actions, ceiling now "
               f"{new_max} ({used} used). Work may continue.")
+        if getattr(a, "approved_by", None):
+            tp.trace(ws, "budget_human_approval",
+                     approved_by=a.approved_by, extra_actions=a.grant)
         return 0
     if a.spent is None:
         print("taskplane: pass --spent USD (cooperative estimate) or "
@@ -2453,7 +2478,8 @@ def _lane_landed(ws: str, lid: str) -> bool:
     reads (v2.2.1), so `--resume` and the board can never disagree about who
     is done. A findings.json that is unreadable counts as NOT landed — a
     corrupt lane must be re-run, never silently accepted as complete."""
-    p = os.path.join(ws, ".em-review", f"lens-{lid}", "findings.json")
+    import storage as runtime_storage
+    p = runtime_storage.lane_findings_path(ws, lid)
     if not os.path.isfile(p):
         return False
     try:
@@ -2666,8 +2692,8 @@ def cmd_lens(a) -> int:
                 # --dashboard` after agents land and the wave shows DONE
                 # lanes with counts, so the human watches the fan-out
                 # instead of trusting the driver to narrate it.
-                p = os.path.join(ws, ".em-review", f"lens-{lid}",
-                                 "findings.json")
+                import storage as runtime_storage
+                p = runtime_storage.lane_findings_path(ws, lid)
                 if os.path.isfile(p):
                     try:
                         with open(p, encoding="utf-8") as f:
@@ -3639,8 +3665,9 @@ def _write_review_html(ws: str, name: str, fragments, *, title: str) -> dict:
     """Write one taskPlane-styled review artifact and return a compact ref."""
     import dashboard
     import hashlib
+    import review as review_runtime
 
-    path = os.path.join(ws, ".em-review", name)
+    path = os.path.join(review_runtime._public_root(ws), name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     body = dashboard.standalone_document(list(fragments), title=title)
     tmp = f"{path}.tmp.{os.getpid()}"
@@ -3648,8 +3675,12 @@ def _write_review_html(ws: str, name: str, fragments, *, title: str) -> dict:
         stream.write(body)
     os.replace(tmp, path)
     raw = body.encode("utf-8")
+    relative = os.path.relpath(path, ws)
+    display_path = (relative.replace(os.sep, "/")
+                    if relative != ".." and not relative.startswith(
+                        ".." + os.sep) else path)
     return {
-        "path": os.path.relpath(path, ws).replace(os.sep, "/"),
+        "path": display_path,
         "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
         "delivery": "deliver this engine-authored file by reference; do not "
                     "paste, redraw, or restyle its HTML",
@@ -3671,8 +3702,13 @@ def _bind_review_visual_obligation(ws: str, kind: str, artifact: str) -> dict:
         ws, kind, detail=detail, step="review", artifact=artifact,
         key=f"review:{kind}", session=(seeded or {}).get("session"),
         binding=True)
+    root = os.path.realpath(ws)
+    resolved = os.path.realpath(artifact)
+    display_path = (os.path.relpath(resolved, root).replace(os.sep, "/")
+                    if os.path.commonpath((root, resolved)) == root
+                    else resolved)
     return {"kind": kind, "id": oid,
-            "path": os.path.relpath(artifact, ws).replace(os.sep, "/")}
+            "path": display_path}
 
 
 def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list]:
@@ -3733,7 +3769,7 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
             title="taskplane — dependency graph and blast radius"),
     }
     if final:
-        findings_path = os.path.join(ws, ".em-review", "findings.json")
+        findings_path = os.path.join(rv._public_root(ws), "findings.json")
         try:
             with open(findings_path, encoding="utf-8") as stream:
                 projection = json.load(stream)
@@ -3834,6 +3870,84 @@ def cmd_review(a) -> int:
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
+    repository_run = None
+    repository_preflight = None
+    spec = getattr(a, "spec", None)
+    parsed = tgt.parse(spec) if spec else None
+    remote_repository = False
+    if spec and (not parsed or parsed.get("kind") != "pr"):
+        try:
+            import storage as repository_storage
+            repository_storage.identity_from_remote(spec)
+            remote_repository = True
+        except ValueError:
+            remote_repository = False
+    if getattr(a, "review_action", None) == "resume":
+        import preflight as repository_preflight_module
+
+        engine = repository_preflight_module.RepositoryPreflight()
+        try:
+            repository_preflight = engine.resume(
+                a.run_id, action_id=a.action_id, response=a.response,
+                approved_by=a.by)
+        except Exception as exc:
+            print(json.dumps({
+                "schema": "taskplane.preflight/v1", "status": "needs_user",
+                "run_id": a.run_id,
+                "reason": f"{exc.__class__.__name__}: {exc}"},
+                sort_keys=True, separators=(",", ":")))
+            return 2
+        if repository_preflight.get("status") != "ready":
+            print(json.dumps(repository_preflight, sort_keys=True,
+                             separators=(",", ":")))
+            return 0 if repository_preflight.get("status") == \
+                "cancelled" else 2
+        repository_run = repository_preflight["run_id"]
+        ws = os.path.realpath(repository_preflight["checkout"])
+        spec = str(((repository_preflight.get("target") or {}).get(
+            "target") or {}).get("spec") or "")
+        parsed = tgt.parse(spec)
+    elif (parsed and parsed.get("kind") == "pr" and all(
+            parsed.get(key) for key in ("host", "owner", "repo"))) or \
+            remote_repository:
+        import preflight as repository_preflight_module
+
+        host_record = {
+            "kind": tp.host(),
+            "session_id": (os.environ.get("CODEX_THREAD_ID") or
+                           os.environ.get("CLAUDE_SESSION_ID")),
+        }
+        try:
+            repository_preflight = \
+                repository_preflight_module.RepositoryPreflight().prepare(
+                    spec, workspace=ws, host=host_record,
+                    run_id=getattr(a, "run_id", None))
+        except Exception as exc:
+            detail = f"{exc.__class__.__name__}: {exc}"
+            action = None
+            if isinstance(exc, OSError):
+                material = f"storage\0{ws}\0{spec}".encode("utf-8")
+                action = {
+                    "schema": "taskplane.user-action/v1",
+                    "action_id": hashlib.sha256(material).hexdigest()[:20],
+                    "kind": "authorize_storage_root",
+                    "prompt": ("taskPlane needs access to its external "
+                               "repository/run storage. Approve access and "
+                               "retry this review; do not open a new task."),
+                    "detail": detail, "command_argv": [],
+                    "choices": ["retry", "cancel"],
+                }
+            print(json.dumps({
+                "schema": "taskplane.preflight/v1", "status": "needs_user",
+                "reason": detail, "action": action},
+                sort_keys=True, separators=(",", ":")))
+            return 2
+        if repository_preflight.get("status") != "ready":
+            print(json.dumps(repository_preflight, sort_keys=True,
+                             separators=(",", ":")))
+            return 2
+        repository_run = repository_preflight["run_id"]
+        ws = os.path.realpath(repository_preflight["checkout"])
     out = {"steps": []}
 
     def step(name, ok, **extra):
@@ -3848,9 +3962,9 @@ def cmd_review(a) -> int:
                                       else tgt.install_hint()))
 
     # 2. target — acquire and pin, so the findings can cite the tree.
-    spec = getattr(a, "spec", None)
-    parsed = tgt.parse(spec) if spec else None
-    if parsed and parsed["kind"] == "pr" and getattr(a, "fetch", False):
+    if repository_preflight is not None:
+        rec = dict(repository_preflight["target"])
+    elif parsed and parsed["kind"] == "pr" and getattr(a, "fetch", False):
         rec = tgt.acquire(ws, spec, base=getattr(a, "base", None))
     else:
         rec = tgt.pin(ws, base=getattr(a, "base", None), target=parsed)
@@ -3865,6 +3979,9 @@ def cmd_review(a) -> int:
     # graph evidence.  Refuse before saving a target, scanning a graph,
     # activating a contract, or minting a kernel/cache entry.
     preflight = tgt.review_preflight(ws, rec)
+    if repository_preflight is not None:
+        preflight["repository_run_id"] = repository_run
+        preflight["storage"] = "hybrid-external-run"
     out["preflight"] = preflight
     if not preflight["ok"]:
         step("target", False, status=preflight["status"],
@@ -3902,20 +4019,28 @@ def cmd_review(a) -> int:
              edges=len(g.get("edges") or []),
              impacted=imp.get("total_impacted", 0))
     except Exception as e:
-        # Never pass a stale/partially loaded graph into routing.  The empty
-        # graph becomes graph_evidence_sparse with zero dispatch, while the
-        # canonical target/diff facts remain available.
+        # Never pretend a stale/partially loaded graph is complete. The
+        # canonical pinned diff remains reviewable; ReviewKernel records the
+        # degraded graph and routes from diff/content with mandatory floors.
         g, imp = {}, {}
         step("graph", False, reason=e.__class__.__name__)
     rec["review_cache"] = tgt.review_cache_identity(rec, g)
     preflight["cache_identity"] = rec["review_cache"]
     tgt.save(ws, rec)
 
-    # 4. contract — read-only, owing the review's artifacts.
+    # 4. contract — prepare it now, activate only after the kernel is ready.
+    #    A mapper refusal must never strand the caller under an active
+    #    read-only contract; graph degradation proceeds from the pinned diff.
+    import storage as runtime_storage
+    locator = runtime_storage.load_workspace_locator(ws)
+    write_allow = [".em-review/**"]
+    if locator:
+        write_allow = [os.path.join(path, "**")
+                       for path in locator["paths"].values()]
     c = tp.build_contract(
         (" ".join(a.goal) if getattr(a, "goal", None)
          else f"engineering review: {spec or base}"),
-        read_only=True, write_allow=[".em-review/**"],
+        read_only=True, write_allow=write_allow,
         max_actions=(int(a.max_actions)
                      if getattr(a, "max_actions", None) is not None else None))
     c["budget"]["max_cost_usd"] = DEFAULT_MAX_COST_USD
@@ -3925,17 +4050,9 @@ def cmd_review(a) -> int:
                    ("origin", "head", "base", "base_ref", "branch",
                     "merge_base", "shallow", "fingerprint", "target",
                     "review_cache")}
-    tp.activate(ws, c, snapshot=tp.git_head(ws))
     out["contract"] = {"task_id": c["task_id"], "read_only": True,
-                       "write_allow": c.get("write_allow"),
+                       "status": "prepared", "write_allow": write_allow,
                        "budget": c.get("budget")}
-    step("contract", True, task_id=c["task_id"])
-    try:
-        import obligations as _ob
-        out["owes"] = _seed_owed(ws, "review", c["task_id"])
-        step("obligations", True, owed=len(out["owes"] or []))
-    except Exception as e:
-        step("obligations", False, reason=e.__class__.__name__)
 
     # 5. One normal-flow kernel call: quality before mapping, then exactly
     #    one immutable envelope and exact deep/light slots. Large bytes are
@@ -3960,8 +4077,48 @@ def cmd_review(a) -> int:
             task_type="review", base=base,
             caller_expander=rv.bounded_caller_expander(g),
             routing_content=rv.changed_content_from_patch(patch))
+        if manifest.get("status") != "ready":
+            if repository_run:
+                import run_store as repository_run_store
+                store_record = repository_run_store.RunStore()
+                current = store_record.load(repository_run)
+                store_record.commit(
+                    repository_run,
+                    expected_revision=int(current["revision"]),
+                    changes={"status": "review_blocked",
+                             "contract": {"status": "inactive",
+                                          "task_id": None},
+                             "review": {"kernel_run_id":
+                                        manifest.get("run_id"),
+                                        "status": manifest.get("status")}})
+            manifest["contract"] = {"status": "inactive",
+                                    "reason": manifest.get("status")}
+            manifest["preflight"] = preflight
+            print(json.dumps(rv._manifest(manifest), sort_keys=True,
+                             separators=(",", ":")))
+            return 1
+        tp.activate(ws, c, snapshot=tp.git_head(ws))
+        step("contract", True, task_id=c["task_id"])
+        try:
+            out["owes"] = _seed_owed(ws, "review", c["task_id"])
+            step("obligations", True, owed=len(out["owes"] or []))
+        except Exception as e:
+            step("obligations", False, reason=e.__class__.__name__)
+        if repository_run:
+            import run_store as repository_run_store
+            store_record = repository_run_store.RunStore()
+            current = store_record.load(repository_run)
+            store_record.commit(
+                repository_run, expected_revision=int(current["revision"]),
+                changes={"status": "governed",
+                         "contract": {"status": "active",
+                                      "task_id": c["task_id"]},
+                         "review": {"kernel_run_id": manifest.get("run_id"),
+                                    "status": "ready"}})
         manifest["contract"] = {"task_id": c["task_id"],
-                                "read_only": True}
+                                "read_only": True, "status": "active"}
+        if repository_run:
+            manifest["repository_run_id"] = repository_run
         manifest["tools"] = {"git": bool(t["git"]["present"]),
                              "gh": bool(t["gh"]["present"])}
         manifest["preflight"] = preflight
@@ -4063,6 +4220,55 @@ def cmd_target(a) -> int:
     return 0
 
 
+def cmd_repository(a) -> int:
+    """Prepare or resume one canonical repository precondition."""
+    import preflight as repository_preflight_module
+    import run_store as repository_run_store
+
+    action = str(getattr(a, "repository_action", None) or "status")
+    engine = repository_preflight_module.RepositoryPreflight()
+    if action == "migrate":
+        import storage_migration
+        value = storage_migration.migrate_legacy_checkouts(
+            _workspace(a.workspace))
+        print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        return 0 if not value.get("review_required") else 2
+    if action == "status":
+        try:
+            value = repository_run_store.RunStore().load(a.run_id)
+        except Exception as exc:
+            print(json.dumps({
+                "schema": "taskplane.preflight/v1", "status": "unavailable",
+                "run_id": a.run_id,
+                "reason": f"{exc.__class__.__name__}: {exc}"},
+                sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        return 0
+    if action == "resume":
+        try:
+            value = engine.resume(
+                a.run_id, action_id=a.action_id, response=a.response,
+                approved_by=a.by)
+        except Exception as exc:
+            print(json.dumps({
+                "schema": "taskplane.preflight/v1", "status": "needs_user",
+                "run_id": a.run_id,
+                "reason": f"{exc.__class__.__name__}: {exc}"},
+                sort_keys=True, separators=(",", ":")))
+            return 2
+    else:
+        ws = _workspace(a.workspace)
+        value = engine.prepare(
+            a.spec, workspace=ws,
+            host={"kind": tp.host(),
+                  "session_id": (os.environ.get("CODEX_THREAD_ID") or
+                                 os.environ.get("CLAUDE_SESSION_ID"))},
+            run_id=getattr(a, "run_id", None))
+    print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+    return 0 if value.get("status") in {"ready", "cancelled"} else 2
+
+
 def _print_target(rec, tgt) -> None:
     t = rec.get("target") or {}
     if t.get("kind") == "pr":
@@ -4128,8 +4334,10 @@ def cmd_findings(a) -> int:
     state, so this is how tp-engineering shows ALL findings at the review
     gate (the loop dashboard can't). Prints the inline widget fragment."""
     import dashboard
-    path = a.file or os.path.join(_workspace(a.workspace), ".em-review",
-                                  "findings.json")
+    import review as review_runtime
+    review_ws = _workspace(a.workspace)
+    review_root = review_runtime._public_root(review_ws)
+    path = a.file or os.path.join(review_root, "findings.json")
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -4181,8 +4389,7 @@ def cmd_findings(a) -> int:
             and not getattr(a, "html", False):
         _doc = dashboard.render_findings(findings, meta)
         if len(_doc) > _imax:
-            _p = a.out or os.path.join(_workspace(a.workspace), ".em-review",
-                                       "findings.html")
+            _p = a.out or os.path.join(review_root, "findings.html")
             try:
                 os.makedirs(os.path.dirname(_p), exist_ok=True)
                 with open(_p, "w", encoding="utf-8") as f:
@@ -4917,6 +5124,9 @@ def main(argv=None) -> int:
     cl.add_argument("--slot", metavar="SLOT",
                     help="release one named slot (see `tp contracts`) "
                          "without setting TASKPLANE_TASK")
+    cl.add_argument("--approved-by",
+                    help="human chat identity authorizing recovery past an "
+                         "exhausted budget")
     cl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cl.set_defaults(fn=cmd_clear)
 
@@ -4933,6 +5143,8 @@ def main(argv=None) -> int:
                    help="raise the enforced action ceiling by N — for the "
                         "human / ungoverned main session after approving "
                         "more budget (a governed agent cannot grant itself)")
+    b.add_argument("--approved-by",
+                   help="human chat identity authorizing this budget grant")
     b.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     b.set_defaults(fn=cmd_budget)
 
@@ -5430,7 +5642,32 @@ def main(argv=None) -> int:
     rvs.add_argument("--max-tokens", type=int, default=None, dest="max_tokens",
                      help="effective-token ceiling for the review contract")
     rvs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvs.add_argument("--run-id", default=None,
+                     help="resume or deterministically name the repository "
+                          "preflight run")
     rvs.set_defaults(fn=cmd_review)
+    rvr = rvsub.add_parser(
+        "resume", help="apply one explicit user decision and continue the "
+        "same repository preflight and review")
+    rvr.add_argument("--run-id", required=True,
+                     help="run-id from the needs_user preflight response")
+    rvr.add_argument("--action-id", required=True,
+                     help="exact pending user-action id")
+    rvr.add_argument("--response", required=True,
+                     choices=("approve", "retry", "initialize", "cancel"),
+                     help="the user's decision for the pending action")
+    rvr.add_argument("--by", required=True,
+                     help="the user's approving/cancelling chat identity")
+    rvr.add_argument("--goal", nargs="*", default=None,
+                     help="contract goal text after preflight resumes")
+    rvr.add_argument("--max-actions", type=int, default=None,
+                     dest="max_actions",
+                     help="action ceiling for the resumed review contract")
+    rvr.add_argument("--max-tokens", type=int, default=None,
+                     dest="max_tokens",
+                     help="effective-token ceiling for the resumed review")
+    rvr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvr.set_defaults(fn=cmd_review)
     rvc = rvsub.add_parser("collect", help="validate leased lens results and "
                            "publish one canonical findings revision")
     rvc.add_argument("--no-publish", action="store_true",
@@ -5482,6 +5719,41 @@ def main(argv=None) -> int:
     tgs.add_argument("--json", action="store_true", help="JSON report")
     tgs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     tg.set_defaults(fn=cmd_target)
+
+    rp = sub.add_parser(
+        "repository", help="automatic source precondition: resolve, "
+        "authenticate, acquire, checkout, verify, and resume")
+    rpsub = rp.add_subparsers(dest="repository_action", required=True)
+    rpp = rpsub.add_parser(
+        "prepare", help="prepare a local repository or remote pull request")
+    rpp.add_argument("spec", help="PR URL, OWNER/REPO#N, ref, or local target")
+    rpp.add_argument("--run-id", default=None,
+                     help="optional stable run id for idempotent retry")
+    rpp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rpp.set_defaults(fn=cmd_repository)
+    rpr = rpsub.add_parser(
+        "resume", help="apply an explicit user action and resume the same run")
+    rpr.add_argument("--run-id", required=True,
+                     help="run-id from the needs_user response")
+    rpr.add_argument("--action-id", required=True,
+                     help="exact pending user-action id")
+    rpr.add_argument("--response", required=True,
+                     choices=("approve", "retry", "initialize", "cancel"),
+                     help="the user's decision for the pending action")
+    rpr.add_argument("--by", required=True,
+                     help="human chat identity approving the action")
+    rpr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rpr.set_defaults(fn=cmd_repository)
+    rps = rpsub.add_parser("status", help="print one canonical run manifest")
+    rps.add_argument("--run-id", required=True,
+                     help="canonical repository/run manifest id")
+    rps.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rps.set_defaults(fn=cmd_repository)
+    rpm = rpsub.add_parser(
+        "migrate", help="register clean legacy .em-review/scratch clones "
+        "without moving or deleting anything")
+    rpm.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rpm.set_defaults(fn=cmd_repository)
 
     ak = sub.add_parser("ack", help="discharge an obligation the engine "
                         "issued (WS-F evals); --status lists what is open")

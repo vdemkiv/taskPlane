@@ -22,8 +22,8 @@ temp copy:
   * TestProseDoesNotMoveTheFingerprint — an appended paragraph, a reworded
     sentence and a re-wrapped paragraph must leave it BYTE-IDENTICAL.
   * TestFlowChangesMoveTheFingerprint — deleting the `graph impact` mandate,
-    deleting the `tp dod` gate, deleting `--owes`, and FLIPPING "Do NOT pass
-    `--all`" into "Pass `--all`" must each move it.
+    deleting the `tp dod` gate, deleting the `tp ack` obligation mechanism,
+    and FLIPPING "Do NOT pass `--all`" into "Pass `--all`" must each move it.
 
 The flip is the one a set-of-tokens extract would miss, and it is why the
 extract carries polarity per sentence rather than a bag of surfaces.
@@ -116,8 +116,8 @@ class TestProseDoesNotMoveTheFingerprint(_MutationCase):
     def test_rewording_a_sentence_around_a_mandate_leaves_it_identical(self):
         """The sentence changes; the surface it mandates does not."""
         got = self.mutate(lambda t: t.replace(
-            "Graph quality is a gate before routing.",
-            "Routing begins only after graph quality is established."))
+            "Graph quality is assessed before routing.",
+            "Routing begins only after graph quality is assessed."))
         self.assertEqual(self.baseline, got)
 
     def test_fixing_a_typo_leaves_it_identical(self):
@@ -174,10 +174,11 @@ class TestFlowChangesMoveTheFingerprint(_MutationCase):
             r"`[^`\n]*\bdod\b[^`\n]*`", "done", t))
         self.assertNotEqual(self.baseline, got)
 
-    def test_deleting_the_owes_obligation_flag_moves_the_fingerprint(self):
-        """`--owes` is what makes the render obligations BINDING. Dropping
-        the flag turns a mechanism back into an instruction."""
-        got = self.mutate(lambda t: t.replace("--owes", ""))
+    def test_deleting_the_ack_obligation_mechanism_moves_the_fingerprint(self):
+        """`tp ack` is how a rendered artifact obligation becomes durable.
+        Dropping the surface turns a mechanism back into an instruction."""
+        got = self.mutate(lambda t: re.sub(
+            r"`tp ack[^`]*`", "the acknowledgement", t))
         self.assertNotEqual(self.baseline, got)
 
     def test_flipping_a_prohibition_into_a_permission_moves_it(self):

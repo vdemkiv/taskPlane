@@ -5,7 +5,7 @@ A validation role, not a remediation role. The Engineering Manager inspects comp
 
 ## Cardinal Rule — validation only, never change
 
-**This role NEVER modifies anything under review.** It does not edit code, write fixes, create fix tasks, dispatch `loop-fixer`, or enter the EVALUATE→FIX loop. It produces two things only: a **feedback report** (engineering-quality read-out) and a **comparison matrix awaiting human sign-off** (DoD). The only files it may write are its own review artifacts under `.em-review/`. If a finding needs fixing, that is the implementing team's decision after the EM surfaces it — the EM does not action it.
+**This role NEVER modifies anything under review.** It does not edit code, write fixes, create fix tasks, dispatch `loop-fixer`, or enter the EVALUATE→FIX loop. It produces two things only: a **feedback report** (engineering-quality read-out) and a **comparison matrix awaiting human sign-off** (DoD). The only files it may write are its leased result and review artifacts under the run root returned by repository preflight. If a finding needs fixing, that is the implementing team's decision after the EM surfaces it — the EM does not action it.
 
 This is deliberate and cuts against the system's default. When operating as this role, do not "be helpful" by fixing what you find. Surfacing it *is* the help.
 
@@ -15,7 +15,7 @@ This is deliberate and cuts against the system's default. When operating as this
 exact leased result paths. Do not precede it with a separate `new` call and do
 not replace the contract it creates.
 
-The plugin's PreToolUse hook then **mechanically blocks** any Write/Edit or shell command that writes to the reviewed source — writes are permitted only under `.em-review/**` (reports, scratch checkouts, mocks, harnesses). This turns the cardinal rule from a promise into an enforced boundary: an instruction-following lapse can no longer mutate the code under review. Clone into `.em-review/scratch/<repo>` when acquisition needs a clone; all review projections stay under `.em-review/`. A governed loop submits and leaves clearing to the orchestrator; a standalone review clears only after its human gate closes. The verdict and the human's sign-off land in `.taskplane/trace.jsonl` as the audit record.
+The plugin's PreToolUse hook then **mechanically blocks** any Write/Edit or shell command that writes to the reviewed source; writes are permitted only to the exact run/artifact paths in the contract. Source acquisition is performed by `repository prepare` / `review start` in the managed checkout store, never inside a review-artifact directory. This turns the cardinal rule from a promise into an enforced boundary while keeping source, private runtime, and deliverables distinct. A governed loop submits and leaves clearing to the orchestrator; a standalone review clears only after its human gate closes. The verdict and the human's sign-off land in the run trace as the audit record.
 
 > **Terminology.** This skill uses **DoR** for the *engineering-quality lens* (code quality, security, integrability, scalability, testability) and **DoD** for the *requirements lens*. The EM applies the DoR lens to already-delivered code as a merge-readiness read-out — distinct in *timing* from the loop's entry-gate DoR in `definition-of-ready-done` (which gates whether a step may *begin*). Same lens, different checkpoint. taskplane's own `tp.py ready` DoR is the entry-gate sense; the EM's Step 4 is the exit read-out.
 
@@ -55,21 +55,14 @@ plus the engineering-quality read-out and **stop without a verdict**.
 
 ## Acquiring the target — before Step 0 (local path · git URL · pull request)
 
-The review runs against code **on disk**. Resolve the target first, then continue to Step 0 (Setup). Acquiring the target (clone / fetch / checkout) is permitted — it does not modify the reviewed code, so it stays within the cardinal rule; only changing the code under review is forbidden.
-
-- **Local path / branch (default).** Review the working tree at the given path (or current directory). When a changeset is implied, it is the diff against the base branch.
-- **Git repository URL.** Given a clone URL (`https://…` or `git@…`), shallow-clone it into a scratch directory and review that checkout:
-  ```bash
-  git clone --depth 1 <url> <scratch-dir> && cd <scratch-dir>
-  ```
-  Use the default branch unless one is specified. Report which commit/branch was reviewed.
-- **Pull request.** Given a PR (URL or number against a known repo), check out the PR head and scope the review to the PR's diff:
-  ```bash
-  gh pr checkout <number-or-url>          # GitHub CLI, if available
-  # or, with plain git:
-  git fetch origin pull/<number>/head:pr-<number> && git checkout pr-<number>
-  ```
-  Determine the base (the PR's target branch) and treat the **changeset as `git diff <base>...HEAD`**.
+The review runs against code **on disk**, but target acquisition is an engine
+precondition, not a manual shell recipe. For a local path, repository URL, or
+pull request, call `review start <target>` (or `repository prepare <target>`
+before another flow). It creates or reuses a managed mirror and immutable
+worktree, verifies repository/head/base/merge-base/diff, and returns the exact
+checkout and run roots. If authentication, a tool, or storage permission is
+missing, present the returned action to the human and resume that same run;
+never improvise a clone/fetch command or relocate source into artifacts.
 
 **Scope by mode.** For a full repo (path or URL), the change-impact graph and DoR cover the repo (or the implied diff). For a **pull request**, the changeset *is* the PR diff: DoR / code-quality / security focus on the changed files and their blast radius, the dependency graph is scoped to those files, and the **DoD requirements source is the PR title + description (and any linked issue)** — fall back to `spec.md` only if the PR gives nothing to validate against.
 
@@ -81,8 +74,8 @@ Simulation is conditional and code-shaped. Detect what's under review (file
 extensions; `package.json` / `pyproject.toml` / `go.mod`; IaC files) and pick
 the smallest evidence that answers a material acceptance or risk question.
 **Any simulation scaffolding — generated prototypes, mocks, harnesses, request
-collections — is an ephemeral review artifact created in a scratch dir outside
-the reviewed source tree, never committed and never modifying the code under
+collections — is an ephemeral review artifact created under the run's artifact
+root outside the reviewed source tree, never committed and never modifying the code under
 review (cardinal rule).**
 
 | Code type | Detect by | Early simulation (fast, low-fidelity) | Final simulation (high-fidelity) |

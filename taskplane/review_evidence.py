@@ -14,6 +14,7 @@ import re
 import tempfile
 from typing import Any, Iterable
 
+import storage as runtime_storage
 import taskplane_lite as tp
 
 
@@ -53,8 +54,13 @@ class ArtifactStore:
 
     def __init__(self, workspace: str, root: str | None = None):
         self.workspace = os.path.abspath(workspace)
-        self.root = os.path.abspath(root or os.path.join(
-            tp.tp_dir(self.workspace), "review-artifacts-v2"))
+        if root is None:
+            locator = runtime_storage.load_workspace_locator(self.workspace)
+            root = (os.path.join(locator["paths"]["artifacts"],
+                                 "review-artifacts-v2")
+                    if locator else os.path.join(
+                        tp.tp_dir(self.workspace), "review-artifacts-v2"))
+        self.root = os.path.abspath(root)
         os.makedirs(self.root, exist_ok=True)
         if os.path.islink(self.root):
             raise ArtifactIntegrityError("artifact store root is a symlink")
@@ -314,7 +320,10 @@ def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
     if not _SLOT.fullmatch(str(slot_id or "")):
         raise ProvenanceError("invalid slot id")
     envelope = _load_complete_envelope(store, envelope_ref)
-    if (envelope.get("graph_quality") or {}).get("status") == "impact_incomplete":
+    graph_quality = envelope.get("graph_quality") or {}
+    if graph_quality.get("status") == "impact_incomplete" and not (
+            graph_quality.get("review_fallback") or {}).get("mode") == \
+            "immutable_diff":
         raise ProvenanceError("impact_incomplete creates zero scoped views")
     diff = envelope.get("diff") or {}
     wanted = set(_strings(relevant_files))

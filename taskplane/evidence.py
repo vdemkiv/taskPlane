@@ -33,6 +33,7 @@ import taskplane_lite as tp
 import depgraph
 import evaluation_output
 import host_capabilities
+import storage as runtime_storage
 
 
 EVIDENCE_JUDGMENT_KEYS = ("status", "verdict", "evidence", "blockers")
@@ -294,10 +295,10 @@ def evidence(ws: str, task_id: "str | None" = None,
 
     out["verdict_template"] = _verdict_template(out)
     if write:
-        path = os.path.join(ws, ".eval", "verdict.json")
+        path = runtime_storage.evaluation_path(ws)
         if os.path.exists(path):
             out["written"] = False
-            out["write_note"] = (".eval/verdict.json already exists — left "
+            out["write_note"] = (f"{path} already exists — left "
                                  "untouched; the engine never overwrites an "
                                  "authored judgment")
         else:

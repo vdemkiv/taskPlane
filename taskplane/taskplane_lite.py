@@ -2077,22 +2077,38 @@ def workspace_fingerprint(workspace: str, snapshot_ref: str | None = None,
                 "snapshot and no git HEAD — commit first")
     h = hashlib.sha256()
     h.update(snapshot_ref.encode("utf-8"))
-    files = changed_files(workspace, snapshot_ref)
+    entries = [(rel, os.path.join(workspace, rel))
+               for rel in changed_files(workspace, snapshot_ref)]
     # Runtime-owned paths are deliberately excluded from source-scope DoD,
     # but evaluator/EM evidence must still be immutable between submit and
     # gate. Callers name those exact artifacts here; reject absolute/traversal
     # paths so the attestation never reads outside the governed workspace.
-    for rel in extra_paths or []:
-        rel = str(rel or "").replace("\\", "/").strip()
-        if (not rel or os.path.isabs(rel) or rel == ".."
-                or rel.startswith("../") or "/../" in rel):
+    for raw in extra_paths or []:
+        raw = str(raw or "").strip()
+        if os.path.isabs(raw):
+            import storage as runtime_storage
+            locator = runtime_storage.load_workspace_locator(workspace)
+            resolved = os.path.realpath(raw)
+            if not locator or not runtime_storage.managed_path_allowed(
+                    workspace, resolved):
+                continue
+            for area, root in sorted(locator["paths"].items()):
+                real_root = os.path.realpath(root)
+                if os.path.commonpath((real_root, resolved)) == real_root:
+                    suffix = os.path.relpath(resolved, real_root).replace(
+                        os.sep, "/")
+                    entries.append((f"@run/{area}/{suffix}", resolved))
+                    break
             continue
-        files.append(rel)
-    files = sorted(set(files))
-    for rel in files:
+        rel = raw.replace("\\", "/")
+        if (not rel or rel == ".." or rel.startswith("../")
+                or "/../" in rel):
+            continue
+        entries.append((rel, os.path.join(workspace, rel)))
+    entries = sorted(set(entries))
+    for rel, full in entries:
         h.update(b"\0path\0")
         h.update(rel.encode("utf-8", errors="surrogateescape"))
-        full = os.path.join(workspace, rel)
         try:
             st = os.lstat(full)
             h.update(f"\0mode:{st.st_mode:o}\0size:{st.st_size}\0".encode())
@@ -3128,9 +3144,9 @@ def budget_status(contract: dict, used_actions: int,
 
     Exhaustion is a HUMAN APPROVAL GATE: the block stands (the wall is
     intentional — a governed agent must not free itself), and the message
-    tells the agent to escalate. The HUMAN / the ungoverned main session
-    raises the ceiling with `tp.py budget --grant N` or ends the task with
-    `tp.py clear`."""
+    tells the agent to escalate. After an explicit chat decision the same
+    session can recover with ``--approved-by``; opening a new task or moving
+    outside the workspace is never part of the recovery protocol."""
     max_a = (contract.get("budget") or {}).get("max_actions")
     if max_a is None:
         # ONLY an absent ceiling is unmetered. 0 is a ZERO-action ceiling —
@@ -3154,18 +3170,17 @@ def budget_status(contract: dict, used_actions: int,
             f"<id>` each obligation, record the synthesis with `tp decision` "
             f"and any tracked debt with `tp req debt`, then close. If the "
             f"work itself is genuinely unfinished, ask the human for more "
-            f"actions — FROM A DIRECTORY OUTSIDE this workspace: "
-            f"`tp.py budget --grant N --workspace <ws>`. You cannot grant "
-            f"yourself budget.")
+            f"actions, then run `tp.py budget --grant N --approved-by "
+            f"<human> --workspace <ws>`. A bare grant remains blocked.")
     if used_actions >= int(max_a):
         return False, (f"ACTION BUDGET exhausted ({used_actions}/{max_a}) — "
                        "STOP and ask the human to approve more actions. The "
-                       "human raises the ceiling by running, FROM A "
-                       "DIRECTORY OUTSIDE this workspace (governance is keyed "
-                       "on cwd, so a grant issued from inside is itself "
-                       "blocked): `tp.py budget --grant N --workspace <ws>`, "
-                       "or ends the task with `tp.py clear --workspace <ws>`. "
-                       "You cannot grant yourself budget; do not retry.")
+                       "human raises the ceiling in this same task with "
+                       "`tp.py budget --grant N --approved-by <human> "
+                       "--workspace <ws>`, or approves release with `tp.py "
+                       "clear --approved-by <human> --workspace <ws>`. Bare "
+                       "grant/clear commands remain blocked; do not retry "
+                       "without the user's decision.")
     return True, f"{used_actions}/{max_a} actions used"
 
 
@@ -4049,10 +4064,13 @@ def step_tier(step: str, task: dict | None = None) -> str:
 
 
 def tp_dir(workspace: str) -> str:
-    # Per-checkout RUNTIME (contracts, trace, meter, snapshot). Stays local
-    # and git-ignored — parallel workers each need their own under .tp-work/,
-    # and it must never be committed. The KNOWLEDGE base, by contrast, lives
-    # in the external store below so it never rides along on `git add -A`.
+    # Managed hybrid checkouts keep their complete control plane in the
+    # canonical run root.  Unmanaged/local workspaces preserve the historic
+    # per-checkout runtime for compatibility and isolated worktree workers.
+    import storage as runtime_storage
+    locator = runtime_storage.load_workspace_locator(workspace)
+    if locator:
+        return os.path.join(locator["paths"]["state"], "control")
     return os.path.join(workspace, ".taskplane")
 
 
@@ -4283,6 +4301,14 @@ def project_key(workspace: str) -> str:
     store (KB, requirements, and loop.json — a gate in one corrupts the other).
     Appending an 8-char hash of the canonical path guarantees every
     distinct path gets its own store while keeping the slug human-readable."""
+    # A managed hybrid checkout carries one validated, ignored locator.  It
+    # binds every clone/worktree of the same hosted repository to the same
+    # durable project knowledge root while run state remains run-scoped.
+    # Local/unmanaged checkouts preserve the historical path identity.
+    import storage as runtime_storage
+    locator = runtime_storage.load_workspace_locator(workspace)
+    if locator:
+        return str(locator["repository_key"])
     ap = _workspace_identity(workspace)
     slug = _path_slug(workspace)
     return f"{slug}-{hashlib.sha1(ap.encode('utf-8')).hexdigest()[:8]}"
@@ -4373,7 +4399,10 @@ def external_store_root(workspace: str) -> str:
     """The classic PRIVATE external store (~/.taskplane/projects/<key>/),
     resolved unconditionally — mode config never redirects this. It is the
     private side of `tp share push` and the home of mode.json itself."""
-    root = os.path.join(store_home(), "projects", project_key(workspace))
+    import storage as runtime_storage
+    locator = runtime_storage.load_workspace_locator(workspace)
+    home = str(locator["home"]) if locator else store_home()
+    root = os.path.join(home, "projects", project_key(workspace))
     if not os.path.isdir(root):
         _adopt_alias_store(workspace, root)
         _adopt_legacy_store(workspace, root)

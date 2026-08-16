@@ -19,6 +19,12 @@ context → complete requirement → contracts/dependencies → Product DoR →
 product review → human approve/sign-off → governed Build handoff**. A scored
 requirement is ready for review, not automatically approved for implementation.
 
+If the product request cites a repository, local path, ref, or PR as evidence,
+run `$TP repository prepare <target>` before reading it. Use the returned
+managed checkout without modifying code. Ask and resume any structured
+`needs_user` action in this chat; do not turn auth or checkout setup into an
+external-terminal or new-task instruction.
+
 The commands and schema in this skill and its requirement reference are the
 executable contract. Do not spend the product budget on `$TP --help`,
 subcommand help, taskplane implementation/tests, repeated status/list calls,

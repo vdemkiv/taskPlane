@@ -20,31 +20,39 @@ light sweep → canonical collect → workflow/graph/findings dashboard → huma
 approve or request changes**. Collection is not completion; the final human
 decision is mandatory for loop and standalone reviews.
 
-All review runs read-only toward code under an enforced contract:
-`$TP new --read-only --write-allow ".em-review/**" --owes review
-"engineering review: <target>"`.
+All review runs are read-only toward code under the contract created by the
+ReviewKernel. Do not activate a separate contract before opening the review.
+For diagnostic or non-review source preparation use `$TP repository prepare
+<target>`; normal `$TP review start` invokes that same precondition itself.
 
-**OPEN THE REVIEW IN ONE CALL.** `$TP review start <pr-url|ref> --base <ref>
-[--fetch]` pins the target and derives one canonical review context. It contains
+**OPEN THE REVIEW IN ONE CALL.** `$TP review start <pr-url|ref> --base <ref>`
+invokes repository preflight, pins the verified target, and derives one
+canonical review context. It contains
 one canonical diff, graph-quality record and blast radius, runnability result,
 requirements/contracts, DoR/DoD evidence, and one complete 26-lens routing
 decision. It returns compact artifact references plus the exact briefs; it
 does not print or duplicate the artifact bodies. Do not walk the older
 target/graph/impact/route/dispatch commands during a normal review.
 
-The opening performs a target preflight before it writes target state, scans a
-graph, activates a contract, or creates a ReviewKernel run. Treat
+The opening performs repository acquisition, authentication, checkout and
+target verification before it scans a graph, activates a contract, or creates
+a dispatchable ReviewKernel run. Treat
 `wrong_repository`, `merge_base_missing`, `target_not_checked_out`, and
 `empty_diff` as setup refusals and run the exact `recovery` command returned in
 the payload. Do not translate any of them into graph insufficiency, and do not
 reuse artifacts from before the checkout/history correction. The successful
 manifest names HEAD, base, merge base, shallow state, and the graph-bound cache
 identity so the wave board proves which PR state it reviewed.
+When preflight returns `needs_user`, present its exact action in this chat and
+resume the same run with `review resume --run-id ... --action-id ...
+--response ... --by "<human>"`. Never tell the user to open a new task or an
+external terminal for GitHub authentication, missing tools, or storage access.
 
-Graph quality is a gate before routing. Sparse module evidence gets one bounded
-changed-symbol caller expansion. If coverage is still insufficient, stop as
-`graph_evidence_sparse` with zero lens dispatch. (`impact_incomplete` remains
-the internal Evaluate/EM status.) Never recover by running all 26.
+Graph quality is assessed before routing. Sparse module evidence gets one
+bounded changed-symbol caller expansion. If coverage is still insufficient,
+record an explicit degraded-graph warning and route from the immutable diff
+with the architecture/security floors. (`impact_incomplete` remains the
+internal Evaluate/EM gate status.) Never recover by running all 26.
 
 **DELIVER LARGE ARTIFACTS, DO NOT RETYPE THEM.** When output carries an
 artifact reference or `RENDER-BY-REFERENCE: <path>`, deliver that file through
@@ -53,14 +61,16 @@ Do not read it back and paste its bytes into a widget. Small fragments may
 still render inline.
 
 **Every lens consumes a scoped view of the same context.** The canonical review
-context is written once under `.em-review/`; every brief cites its context and
-view fingerprints. A lens must not run `git diff`, `graph impact`, routing, or
+context is written once under the run root named by the manifest; every brief
+cites its context and view fingerprints. A lens must not run `git diff`,
+`graph impact`, routing, or
 runnability discovery again. It judges only its view and writes only its leased
 result. This makes independence mean independent judgment, not duplicated
 retrieval.
 
-`review start` also checks the target tools, fetches when requested, activates
-the read-only contract, pins head/base/dirty state, and seeds the review
+`review start` also checks target tools, acquires remote source automatically,
+activates the read-only contract only after graph/routing readiness, pins
+head/base/dirty state, and seeds the review
 obligations. Use the lower-level target and contract commands only to diagnose
 a refused start; do not repeat successful opening work.
 
@@ -99,8 +109,8 @@ each carrying its own exact **read-only `producer_contract`**, leased
 `result_schema`, and one `result_path`. Dispatch one `tp-lens` agent per brief
 in one host-native parallel wave. Each agent activates that exact task slot,
 reads only the referenced scoped view, and writes only the declared result
-bytes to `result_path`; it must not create the removed
-`.em-review/lens-<id>/findings.json` layout. None can touch code (the harness
+bytes to `result_path`; it must not create the removed per-lens findings
+layout. None can touch code (the harness
 holds — read-only, metered). A 7-lens review runs in one wall-clock pass
 instead of seven.
 
@@ -160,8 +170,9 @@ feedback per `references/feedback-craft.md`.
 
 **Show ALL findings — the review needs its own dashboard.** Each lens writes
 only its leased slot result. `$TP review collect` validates those results and
-publishes `.em-review/findings.json`, report, and dashboard as one canonical
-artifact revision. Do not hand-merge or reconstruct them. The final projection
+publishes findings, report, and dashboard under the manifest's external
+artifact root as one canonical artifact revision. Do not hand-merge or
+reconstruct them. The final projection
 includes every severity, not only blockers; each finding carries
 `{severity, domain, file, line, title, scenario, fix, status, class}`.
 
@@ -252,9 +263,10 @@ through the loop (`loop submit fail` with a reproducible note; the
 orchestrator gates it). Deep persona spec:
 `agents/tp-engineering.md`.
 
-**Persist before you part.** `.em-review/` is git-ignored scratch local to
-the checkout — it does not travel with the branch or survive an ephemeral
-sandbox (Claude Tag). REQUIRED at the end of every standalone review:
+**Persist before you part.** Managed run artifacts are external to the source
+checkout and content-addressed by repository/run identity; only deliberately
+shared knowledge travels in `.taskplane-kb/`. REQUIRED at the end of every
+standalone review:
 record the review's synthesis as a knowledge-base decision
 (`$TP decision new "<review title>" --context … --decision "<verdict +
 headline numbers>" …`), and record every blocker/high finding the human
