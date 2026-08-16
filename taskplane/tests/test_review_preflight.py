@@ -23,6 +23,16 @@ def _host_receipt(*, action_id, response, actor="human", run_id="run-1"):
         authority=review._REVIEW_HOST_ACTION_AUTHORITY)
 
 
+def _host_execution_receipt(*, action_id, kind="dynamic_validation",
+                            run_id="run-1"):
+    return review._HostObservedReviewExecution(
+        source="codex-session:tool-result",
+        receipt_id=f"process-{action_id}-{kind}", run_id=run_id,
+        action_id=action_id, kind=kind, tool_name="exec",
+        result_sha256="a" * 64, result_bytes=42, exit_code=0,
+        authority=review._REVIEW_HOST_EXECUTION_AUTHORITY)
+
+
 def _forged_receipt(*, action_id, response, actor="human", run_id="run-1"):
     return {
         "schema": "taskplane.review-user-action-receipt/v1",
@@ -30,6 +40,57 @@ def _forged_receipt(*, action_id, response, actor="human", run_id="run-1"):
         "receipt_id": f"forged-{action_id}-{response}", "run_id": run_id,
         "action_id": action_id, "response": response, "actor": actor,
     }
+
+
+def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt):
+    action_receipt = f"{host}-approval"
+    process_receipt = f"{host}-process"
+    if host == "codex":
+        home = tmp_path / "codex"
+        thread_id = "codex-review-thread"
+        path = (home / "sessions" / "2026" / "08" / "16" /
+                f"rollout-test-{thread_id}.jsonl")
+        rows = [
+            {"type": "response_item", "payload": {
+                "type": "message", "id": action_receipt, "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "codex-approval-turn"}}},
+            {"type": "response_item", "payload": {
+                "type": "custom_tool_call", "call_id": process_receipt,
+                "name": "exec", "input": "npm test"}},
+            {"type": "response_item", "payload": {
+                "type": "custom_tool_call_output", "call_id": process_receipt,
+                "output": [{"type": "input_text",
+                            "text": "Script completed\nOutput:\n42 passed"}]}},
+        ]
+        monkeypatch.setenv("CODEX_HOME", str(home))
+        monkeypatch.setenv("CODEX_THREAD_ID", thread_id)
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    else:
+        home = tmp_path / "claude"
+        session_id = "claude-review-session"
+        path = home / "projects" / "fixture" / f"{session_id}.jsonl"
+        rows = [
+            {"type": "user", "uuid": action_receipt,
+             "sessionId": session_id,
+             "message": {"role": "user", "content": prompt}},
+            {"type": "assistant", "sessionId": session_id,
+             "message": {"role": "assistant", "content": [{
+                 "type": "tool_use", "id": process_receipt, "name": "Bash",
+                 "input": {"command": "npm test"}}]}},
+            {"type": "user", "sessionId": session_id,
+             "message": {"role": "user", "content": [{
+                 "type": "tool_result", "tool_use_id": process_receipt,
+                 "content": "42 passed", "is_error": False}]}},
+        ]
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+        monkeypatch.setenv("CLAUDE_SESSION_ID", session_id)
+        monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows),
+                    encoding="utf-8")
+    return action_receipt, process_receipt
 
 
 def _start_review_without_execution_choice():
@@ -97,9 +158,8 @@ def test_review_preflight_records_declined_unavailable_and_executed_evidence():
     executed = review.record_review_execution_evidence(
         selected, kind="dynamic_validation", status="executed",
         detail="npm test: 42 passed",
-        approval_receipt=_host_receipt(
-            action_id=selected["dynamic_validation"]["action_id"],
-            response="executed"))
+        approval_receipt=_host_execution_receipt(
+            action_id=selected["dynamic_validation"]["action_id"]))
     assert executed["dynamic_validation"]["status"] == "executed"
     assert executed["dynamic_validation"]["detail"] == "npm test: 42 passed"
     assert executed["functionality_render"]["status"] == "selected"
@@ -178,14 +238,52 @@ def test_execution_detail_is_bounded_and_redacts_sensitive_assignments():
     recorded = review.record_review_execution_evidence(
         selected, kind="dynamic_validation", status="executed",
         detail="API_TOKEN=super-secret-value " + ("x" * 1000),
-        approval_receipt=_host_receipt(
-            action_id=selected["dynamic_validation"]["action_id"],
-            response="executed"))
+        approval_receipt=_host_execution_receipt(
+            action_id=selected["dynamic_validation"]["action_id"]))
 
     detail = recorded["dynamic_validation"]["detail"]
     assert "super-secret-value" not in detail
     assert "<redacted>" in detail
     assert len(detail.encode("utf-8")) <= 512
+
+
+@pytest.mark.parametrize("host", ["codex", "claude"])
+def test_review_action_and_execution_receipts_are_host_neutral(
+        host, tmp_path, monkeypatch):
+    run_id = "run-cross-host"
+    action_id = review._review_execution_action_id(
+        run_id, "review-execution-mode")
+    prompt = review._review_action_prompt(run_id, action_id, "dynamic")
+    action_ref, process_ref = _write_host_transcript(
+        tmp_path, monkeypatch, host, prompt=prompt)
+
+    action = review._host_review_action_receipt(
+        run_id=run_id, action_id=action_id, response="dynamic",
+        receipt_ref=action_ref)
+    execution = review._host_review_execution_receipt(
+        run_id=run_id, action_id="dynamic-action",
+        kind="dynamic_validation", after_receipt_id=action.receipt_id,
+        receipt_ref=process_ref)
+
+    assert action.source == f"{host}-session:user-message"
+    assert execution.source == f"{host}-session:tool-result"
+    assert execution.kind == "dynamic_validation"
+    assert execution.result_sha256
+
+
+def test_user_consent_cannot_claim_dynamic_execution():
+    pending = review.review_execution_preflight(run_id="run-1")
+    selected = review.review_execution_preflight(
+        selection="dynamic", run_id="run-1",
+        approval_receipt=_host_receipt(
+            action_id=pending["action"]["id"], response="dynamic"))
+
+    with pytest.raises(review.ReviewKernelError, match="process/result"):
+        review.record_review_execution_evidence(
+            selected, kind="dynamic_validation", status="executed",
+            approval_receipt=_host_receipt(
+                action_id=selected["dynamic_validation"]["action_id"],
+                response="executed"))
 
 
 def test_host_screen_resolves_exact_leased_contract_without_task_slot(

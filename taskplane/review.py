@@ -73,7 +73,10 @@ _REVIEW_EXECUTION_CHOICES = (
 )
 _REVIEW_USER_ACTION_RECEIPT_SCHEMA = \
     "taskplane.review-user-action-receipt/v1"
+_REVIEW_EXECUTION_RECEIPT_SCHEMA = \
+    "taskplane.review-execution-receipt/v1"
 _REVIEW_HOST_ACTION_AUTHORITY = object()
+_REVIEW_HOST_EXECUTION_AUTHORITY = object()
 _REVIEW_DETAIL_BYTES = 512
 _REVIEW_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|"
@@ -95,6 +98,22 @@ class _HostObservedReviewAction:
     action_id: str
     response: str
     actor: str
+    authority: object
+
+
+@dataclass(frozen=True)
+class _HostObservedReviewExecution:
+    """Host-observed tool result, distinct from human consent."""
+
+    source: str
+    receipt_id: str
+    run_id: str
+    action_id: str
+    kind: str
+    tool_name: str
+    result_sha256: str
+    result_bytes: int
+    exit_code: int
     authority: object
 
 
@@ -121,30 +140,34 @@ def _bounded_review_detail(value: object) -> str:
     return ""
 
 
-def _codex_review_action_receipt(*, run_id: str, action_id: str,
-                                 response: str,
-                                 receipt_ref: str | None = None
-                                 ) -> _HostObservedReviewAction:
-    """Resolve an exact human action from Codex's host-owned rollout.
-
-    The CLI accepts at most a message/turn reference.  It never accepts the
-    receipt body: authority comes from the host transcript outside the review
-    checkout, bound to the exact run, action and response.
-    """
+def _host_review_transcript() -> tuple[str, str]:
+    """Return the active supported host and its host-owned transcript."""
     thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
-    if not thread_id:
-        raise ReviewKernelError(
-            "review action requires a host-observed user receipt")
-    codex_home = os.path.abspath(os.environ.get("CODEX_HOME") or
-                                 os.path.expanduser("~/.codex"))
-    paths = glob.glob(os.path.join(
-        codex_home, "sessions", "**", f"*-{thread_id}.jsonl"),
-        recursive=True)
+    if thread_id:
+        home = os.path.abspath(os.environ.get("CODEX_HOME") or
+                               os.path.expanduser("~/.codex"))
+        paths = glob.glob(os.path.join(
+            home, "sessions", "**", f"*-{thread_id}.jsonl"),
+            recursive=True)
+        host = "codex"
+    else:
+        session_id = str(os.environ.get("CLAUDE_SESSION_ID") or "").strip()
+        if not session_id:
+            raise ReviewKernelError(
+                "review action requires a supported host-observed receipt")
+        home = os.path.abspath(os.environ.get("CLAUDE_CONFIG_DIR") or
+                               os.path.expanduser("~/.claude"))
+        paths = glob.glob(os.path.join(
+            home, "projects", "**", f"{session_id}.jsonl"),
+            recursive=True)
+        host = "claude"
     if len(paths) != 1:
         raise ReviewKernelError(
             "review action host transcript is missing or ambiguous")
-    expected = _review_action_prompt(run_id, action_id, response)
-    path = paths[0]
+    return host, paths[0]
+
+
+def _host_review_records(path: str) -> list[dict]:
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as stream:
@@ -156,40 +179,173 @@ def _codex_review_action_receipt(*, run_id: str, action_id: str,
     except OSError as exc:
         raise ReviewKernelError(
             "review action host transcript is unavailable") from exc
-    wanted_ref = str(receipt_ref or "").strip()
-    if wanted_ref in {"", "latest"}:
-        wanted_ref = ""
-    for raw in reversed(lines):
+    records = []
+    for raw in lines:
         if len(raw) > 2 * 1024 * 1024:
             continue
         try:
-            record = json.loads(raw.decode("utf-8", errors="replace"))
+            row = json.loads(raw.decode("utf-8", errors="replace"))
         except (TypeError, ValueError):
             continue
+        if isinstance(row, dict):
+            records.append(row)
+    return records
+
+
+def _host_user_message(host: str, record: dict
+                       ) -> tuple[str, str, list[str]] | None:
+    if host == "codex":
         payload = record.get("payload") or {}
         if record.get("type") != "response_item" or \
                 payload.get("type") != "message" or \
                 payload.get("role") != "user":
-            continue
+            return None
         texts = [str(row.get("text") or "").strip()
                  for row in payload.get("content") or []
                  if isinstance(row, dict) and row.get("type") == "input_text"]
+        meta = payload.get("internal_chat_message_metadata_passthrough") or {}
+        return (str(payload.get("id") or "").strip(),
+                str(meta.get("turn_id") or payload.get("turn_id") or "").strip(),
+                texts)
+    message = record.get("message") or {}
+    if record.get("type") != "user" or message.get("role") != "user":
+        return None
+    content = message.get("content")
+    if isinstance(content, str):
+        texts = [content.strip()]
+    else:
+        texts = [str(row.get("text") or "").strip()
+                 for row in content or [] if isinstance(row, dict)
+                 and row.get("type") in {"text", "input_text"}]
+    return (str(record.get("uuid") or message.get("id") or "").strip(),
+            str(record.get("sessionId") or "").strip(), texts)
+
+
+def _host_review_action_receipt(*, run_id: str, action_id: str,
+                                response: str,
+                                receipt_ref: str | None = None
+                                ) -> _HostObservedReviewAction:
+    """Resolve exact human consent through the active host adapter."""
+    host, path = _host_review_transcript()
+    records = _host_review_records(path)
+    expected = _review_action_prompt(run_id, action_id, response)
+    wanted_ref = str(receipt_ref or "").strip()
+    if wanted_ref in {"", "latest"}:
+        wanted_ref = ""
+    for record in reversed(records):
+        observed = _host_user_message(host, record)
+        if not observed:
+            continue
+        message_id, turn_id, texts = observed
         if expected not in texts:
             continue
-        meta = payload.get("internal_chat_message_metadata_passthrough") or {}
-        message_id = str(payload.get("id") or "").strip()
-        turn_id = str(meta.get("turn_id") or payload.get("turn_id") or "").strip()
         if wanted_ref and wanted_ref not in {message_id, turn_id}:
             continue
         receipt_id = message_id or turn_id
         if not receipt_id:
             continue
         return _HostObservedReviewAction(
-            source="codex-session:user-message", receipt_id=receipt_id,
+            source=f"{host}-session:user-message", receipt_id=receipt_id,
             run_id=run_id, action_id=action_id, response=response,
             actor="human", authority=_REVIEW_HOST_ACTION_AUTHORITY)
     raise ReviewKernelError(
         "review action requires an exact host-observed user receipt")
+
+
+def _tool_result_bytes(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _host_tool_results(host: str, records: list[dict]) -> list[dict]:
+    calls: dict[str, dict] = {}
+    results = []
+    for index, record in enumerate(records):
+        if host == "codex":
+            payload = record.get("payload") or {}
+            if record.get("type") != "response_item":
+                continue
+            if payload.get("type") in {"custom_tool_call", "function_call"}:
+                call_id = str(payload.get("call_id") or payload.get("id") or "")
+                if call_id:
+                    calls[call_id] = {"index": index,
+                                      "name": str(payload.get("name") or "")}
+            elif payload.get("type") in {
+                    "custom_tool_call_output", "function_call_output"}:
+                call_id = str(payload.get("call_id") or "")
+                call = calls.get(call_id)
+                raw = payload.get("output")
+                text = json.dumps(raw, ensure_ascii=False)
+                if call and raw is not None and \
+                        "Script failed" not in text and \
+                        not bool(payload.get("is_error")):
+                    results.append({**call, "result_index": index,
+                                    "receipt_id": call_id, "result": raw})
+            continue
+        message = record.get("message") or {}
+        content = message.get("content") or []
+        if not isinstance(content, list):
+            continue
+        for row in content:
+            if not isinstance(row, dict):
+                continue
+            if row.get("type") == "tool_use":
+                call_id = str(row.get("id") or "")
+                if call_id:
+                    calls[call_id] = {"index": index,
+                                      "name": str(row.get("name") or "")}
+            elif row.get("type") == "tool_result":
+                call_id = str(row.get("tool_use_id") or "")
+                call = calls.get(call_id)
+                raw = row.get("content")
+                if call and raw is not None and not bool(row.get("is_error")):
+                    results.append({**call, "result_index": index,
+                                    "receipt_id": call_id, "result": raw})
+    return results
+
+
+def _host_review_execution_receipt(
+        *, run_id: str, action_id: str, kind: str,
+        after_receipt_id: str, receipt_ref: str | None = None
+        ) -> _HostObservedReviewExecution:
+    """Resolve successful host tool/result evidence after human consent."""
+    if kind not in {"dynamic_validation", "functionality_render"}:
+        raise ReviewKernelError("unknown review execution evidence kind")
+    host, path = _host_review_transcript()
+    records = _host_review_records(path)
+    after_index = -1
+    for index, record in enumerate(records):
+        observed = _host_user_message(host, record)
+        if observed and after_receipt_id in observed[:2]:
+            after_index = index
+    if after_index < 0:
+        raise ReviewKernelError(
+            "review execution has no matching host-observed consent")
+    wanted_ref = str(receipt_ref or "").strip()
+    if wanted_ref in {"", "latest"}:
+        wanted_ref = ""
+    allowed = ({"exec", "exec_command", "bash", "shell"}
+               if kind == "dynamic_validation" else
+               {"visualize", "browser", "screenshot", "imagegen"})
+    for result in reversed(_host_tool_results(host, records)):
+        tool_name = str(result.get("name") or "").lower()
+        if result["index"] <= after_index or \
+                not any(token in tool_name for token in allowed):
+            continue
+        if wanted_ref and wanted_ref != result["receipt_id"]:
+            continue
+        raw = _tool_result_bytes(result["result"])
+        if not raw:
+            continue
+        return _HostObservedReviewExecution(
+            source=f"{host}-session:tool-result",
+            receipt_id=result["receipt_id"], run_id=run_id,
+            action_id=action_id, kind=kind, tool_name=result["name"],
+            result_sha256=hashlib.sha256(raw).hexdigest(),
+            result_bytes=len(raw), exit_code=0,
+            authority=_REVIEW_HOST_EXECUTION_AUTHORITY)
+    raise ReviewKernelError(
+        "review execution requires matching host-observed process/result evidence")
 
 
 def _validated_review_user_action_receipt(
@@ -222,6 +378,34 @@ def _validated_review_user_action_receipt(
     return {key: row[key] for key in (
         "schema", "host_observed", "source", "receipt_id", "run_id",
         "action_id", "response", "actor")}
+
+
+def _validated_review_execution_receipt(
+        receipt: object | None, *, run_id: str | None, action_id: str,
+        kind: str) -> dict:
+    """Validate host process/result proof; human consent is never enough."""
+    if not isinstance(receipt, _HostObservedReviewExecution) or \
+            receipt.authority is not _REVIEW_HOST_EXECUTION_AUTHORITY:
+        raise ReviewKernelError(
+            "review execution requires exact host-observed process/result evidence")
+    row = {
+        "schema": _REVIEW_EXECUTION_RECEIPT_SCHEMA,
+        "host_observed": True, "source": receipt.source,
+        "receipt_id": receipt.receipt_id, "run_id": receipt.run_id,
+        "action_id": receipt.action_id, "kind": receipt.kind,
+        "tool_name": receipt.tool_name,
+        "result_sha256": receipt.result_sha256,
+        "result_bytes": receipt.result_bytes, "exit_code": receipt.exit_code,
+    }
+    if row["run_id"] != str(run_id or "").strip() or \
+            row["action_id"] != action_id or row["kind"] != kind or \
+            row["exit_code"] != 0 or int(row["result_bytes"] or 0) <= 0 or \
+            not re.fullmatch(r"[0-9a-f]{64}", row["result_sha256"] or "") or \
+            any(not str(row.get(key) or "").strip()
+                for key in ("source", "receipt_id", "tool_name")):
+        raise ReviewKernelError(
+            "review execution requires exact host-observed process/result evidence")
+    return row
 
 
 def review_execution_preflight(*, selection: str | None = None,
@@ -303,7 +487,11 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
     if current.get("schema") != "taskplane.review-execution-preflight/v1":
         raise ReviewKernelError("review execution preflight is invalid")
     prior = current.get(kind) or {}
-    if status in {"executed", "unavailable"}:
+    if status == "executed":
+        receipt = _validated_review_execution_receipt(
+            approval_receipt, run_id=current.get("run_id"),
+            action_id=str(prior.get("action_id") or ""), kind=kind)
+    elif status == "unavailable":
         receipt = _validated_review_user_action_receipt(
             approval_receipt, run_id=current.get("run_id"),
             action_id=str(prior.get("action_id") or ""), response=status)
@@ -319,7 +507,7 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
         raise ReviewKernelError("review execution was not selected by the human")
     current[kind] = {
         "status": status, "detail": _bounded_review_detail(detail),
-        "action_id": prior["action_id"], "approval_receipt": receipt,
+        "action_id": prior["action_id"], "evidence_receipt": receipt,
     }
     current["side_effects_started"] = any(
         (current.get(name) or {}).get("status") == "executed"
@@ -1238,7 +1426,7 @@ def record_review_execution(ws: str, *, kind: str, status: str,
     tp.trace(ws, "review_execution_evidence", run_id=state["run_id"],
              kind=kind, status=status,
              receipt_id=(record.get(kind) or {}).get(
-                 "approval_receipt", {}).get("receipt_id"))
+                 "evidence_receipt", {}).get("receipt_id"))
     return record
 
 

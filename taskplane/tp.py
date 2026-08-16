@@ -3994,7 +3994,7 @@ def cmd_review(a) -> int:
             action_id = str((pending.get("action") or {}).get("id") or
                             rv._review_execution_action_id(
                                 state.get("run_id"), "review-execution-mode"))
-            receipt = rv._codex_review_action_receipt(
+            receipt = rv._host_review_action_receipt(
                 run_id=state["run_id"], action_id=action_id,
                 response=a.selection,
                 receipt_ref=getattr(a, "receipt", None))
@@ -4023,10 +4023,18 @@ def cmd_review(a) -> int:
             execution = state.get("review_execution") or {}
             action_id = str((execution.get(a.kind) or {}).get(
                 "action_id") or "")
-            receipt = rv._codex_review_action_receipt(
-                run_id=state["run_id"], action_id=action_id,
-                response=a.status,
-                receipt_ref=getattr(a, "receipt", None))
+            if a.status == "executed":
+                receipt = rv._host_review_execution_receipt(
+                    run_id=state["run_id"], action_id=action_id,
+                    kind=a.kind,
+                    after_receipt_id=str((execution.get(
+                        "approval_receipt") or {}).get("receipt_id") or ""),
+                    receipt_ref=getattr(a, "receipt", None))
+            else:
+                receipt = rv._host_review_action_receipt(
+                    run_id=state["run_id"], action_id=action_id,
+                    response=a.status,
+                    receipt_ref=getattr(a, "receipt", None))
             result = rv.record_review_execution(
                 ws, kind=a.kind, status=a.status, detail=a.detail or "",
                 run_id=a.run_id,
