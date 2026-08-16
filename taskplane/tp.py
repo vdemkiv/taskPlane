@@ -3981,7 +3981,8 @@ def cmd_review(a) -> int:
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
             result = rv.configure_review_execution(
-                ws, selection=a.selection, by=a.by, run_id=a.run_id)
+                ws, selection=a.selection, by=getattr(a, "by", None),
+                approval_receipt=json.loads(a.receipt), run_id=a.run_id)
             visuals, owed = _review_visuals(ws, result, final=False)
             result = rv._manifest({**result, "visuals": visuals,
                                    "obligations": owed})
@@ -4002,7 +4003,8 @@ def cmd_review(a) -> int:
             ws = rv.resolve_review_workspace(ws, a.run_id)
             result = rv.record_review_execution(
                 ws, kind=a.kind, status=a.status, detail=a.detail or "",
-                run_id=a.run_id)
+                run_id=a.run_id,
+                approval_receipt=json.loads(a.receipt))
         except Exception as exc:
             print(json.dumps({"schema": "taskplane.review-execution-preflight/v1",
                               "status": "evidence_failed",
@@ -5922,15 +5924,20 @@ def main(argv=None) -> int:
     rvo = rvsub.add_parser(
         "option", help="record the human's optional dynamic review/render choice")
     rvo.add_argument("selection", choices=("static", "dynamic", "dynamic-render"))
-    rvo.add_argument("--by", required=True, help="human identity making the choice")
+    rvo.add_argument("--receipt", required=True,
+                     help="host-observed user-action receipt JSON")
+    rvo.add_argument("--by", default=None,
+                     help="deprecated display attribution; receipt actor is authoritative")
     rvo.add_argument("--run-id", required=True, help="active review run")
     rvo.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvo.set_defaults(fn=cmd_review)
     rve = rvsub.add_parser(
         "evidence", help="record approved dynamic validation or render evidence")
     rve.add_argument("kind", choices=("dynamic_validation", "functionality_render"))
-    rve.add_argument("status", choices=("selected", "declined", "unavailable", "executed"))
+    rve.add_argument("status", choices=("unavailable", "executed"))
     rve.add_argument("--detail", default="", help="bounded evidence summary")
+    rve.add_argument("--receipt", required=True,
+                     help="host-observed action-result receipt JSON")
     rve.add_argument("--run-id", required=True, help="active review run")
     rve.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rve.set_defaults(fn=cmd_review)

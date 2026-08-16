@@ -886,7 +886,12 @@ def _author_kernel_results(ws):
         row = {**lease, "schema": "taskplane.lens-slot-output/v2",
                "authored_by": "lens-slot", "findings": [],
                "lens_results": [{"lens": lens_id, "verdict": "pass",
-                                  "blockers": 0}
+                                  "blockers": 0,
+                                  "checked_evidence": [{
+                                      "file": "taskplane/review.py",
+                                      "line": 1,
+                                      "claim": "review kernel contract checked",
+                                  }]}
                                 for lens_id in lease["lens_ids"]]}
         if brief.get("language_references"):
             row["references_applied"] = list(brief["language_references"])

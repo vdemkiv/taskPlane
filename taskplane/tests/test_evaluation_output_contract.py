@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import evaluation_output as output  # noqa: E402
 import eval_drivers  # noqa: E402
+import review  # noqa: E402
+import review_evidence  # noqa: E402
 from host_capabilities import (  # noqa: E402
     Observation,
     probe_snapshot,
@@ -192,3 +194,24 @@ def test_native_driver_validates_before_admitting_output(tmp_path):
     assert result["status"] == "success"
     assert result["output_validation"]["status"] == "valid"
     assert result["validated_output"] == _value()
+
+
+def test_pass_lens_requires_nonempty_source_anchored_checked_evidence():
+    schema = output.lens_slot_output_schema()
+    lens_schema = schema["properties"]["lens_results"]["items"]
+    conditional = lens_schema["allOf"][0]
+    assert conditional["if"]["properties"]["verdict"] == {"const": "pass"}
+    assert "checked_evidence" in conditional["then"]["required"]
+    assert conditional["then"]["properties"]["checked_evidence"][
+        "minItems"] == 1
+
+    for checked in (None, []):
+        verdict = {"lens": "architecture", "verdict": "pass",
+                   "blockers": 0}
+        if checked is not None:
+            verdict["checked_evidence"] = checked
+        with pytest.raises(review_evidence.ProvenanceError,
+                           match="pass verdict requires"):
+            review._validated_checked_evidence(
+                verdict, lens_id="architecture", slot_id="deep.architecture",
+                canonical_revision=1)

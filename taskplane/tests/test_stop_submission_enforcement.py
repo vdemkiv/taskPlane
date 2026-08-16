@@ -253,5 +253,19 @@ class TestArtifactSubmission(SubmissionStopFixture):
         self.assertEqual(status["status"], "unobserved")
 
 
+class TestStableHookLauncherRecognition(unittest.TestCase):
+    def test_repo_hook_launcher_preserves_control_plane_verbs(self):
+        self.assertEqual(
+            tp.taskplane_verb(
+                "python3 .taskplane/codex-hook.py clear --approved-by user"),
+            "clear")
+        self.assertEqual(
+            tp.taskplane_verb(
+                "python3 .taskplane/codex-hook.py loop gate fail"),
+            "loop")
+        self.assertIsNone(tp.taskplane_verb(
+            "python3 tools/codex-hook.py clear --approved-by user"))
+
+
 if __name__ == "__main__":
     unittest.main()

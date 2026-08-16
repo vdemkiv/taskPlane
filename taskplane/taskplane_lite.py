@@ -1013,6 +1013,10 @@ def taskplane_verb(command: str) -> "str | None":
         base = posixpath.basename(t.replace("\\", "/"))
         if base in ("tp", "tp.py"):
             return toks[i + 1] if i + 1 < len(toks) else ""
+        normalized = t.replace("\\", "/")
+        if normalized == ".taskplane/codex-hook.py" or normalized.endswith(
+                "/.taskplane/codex-hook.py"):
+            return toks[i + 1] if i + 1 < len(toks) else ""
         if base in _TP_LAUNCHERS or t.startswith("-"):
             i += 1                      # an interpreter or its flag
             continue

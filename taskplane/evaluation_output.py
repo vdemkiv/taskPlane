@@ -111,6 +111,16 @@ def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
         "blockers": {"type": "integer", "minimum": 0},
         "checked_evidence": {"type": "array", "items": checked_evidence},
     }, ["lens", "verdict", "blockers"])
+    lens_result["allOf"] = [{
+        "if": {"properties": {"verdict": {"const": "pass"}}},
+        "then": {
+            "required": ["checked_evidence"],
+            "properties": {"checked_evidence": {
+                "type": "array", "minItems": 1,
+                "items": checked_evidence,
+            }},
+        },
+    }]
     finding = _object({
         "lens": string, "kind": {"enum": ["defect", "violation", "note"]},
         "severity": string, "class": string, "file": string,

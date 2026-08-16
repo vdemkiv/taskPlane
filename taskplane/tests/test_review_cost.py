@@ -249,8 +249,17 @@ class OneCallOpening(_WS):
 
     def test_it_returns_the_briefs_ready_to_dispatch(self):
         _, d, _ = self._start()
+        action_id = d["review_execution"]["action"]["id"]
+        receipt = json.dumps({
+            "schema": "taskplane.review-user-action-receipt/v1",
+            "host_observed": True,
+            "source": "codex-session:user-message",
+            "receipt_id": "review-cost-static-choice",
+            "run_id": d["run_id"], "action_id": action_id,
+            "response": "static", "actor": "human",
+        }, sort_keys=True, separators=(",", ":"))
         rc, out, _ = _run(
-            "review", "option", "static", "--by", "human",
+            "review", "option", "static", "--receipt", receipt,
             "--run-id", d["run_id"], "--workspace", self.ws)
         self.assertEqual(rc, 0, out)
         ready = json.loads(out)

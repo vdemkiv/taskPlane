@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -11,6 +12,7 @@ import review_evidence as evidence  # noqa: E402
 import evidence as evaluation_evidence  # noqa: E402
 import lens  # noqa: E402
 import review  # noqa: E402
+import defect_claim  # noqa: E402
 import runnability  # noqa: E402
 import runtime_eval  # noqa: E402
 import target  # noqa: E402
@@ -67,6 +69,34 @@ class TestBoundReviewKernelIdentity(unittest.TestCase):
         self.assertTrue(facts["graph_before_route"])
         self.assertTrue(facts["shared_review_context"])
         self.assertTrue(facts["selective_lens_mapping"])
+
+
+class TestCanonicalViolationNormalization(unittest.TestCase):
+    def test_graph_requirement_identity_remains_a_blocking_violation(self):
+        finding = {
+            "lens": "architecture", "kind": "violation",
+            "severity": "blocker", "class": "regression",
+            "file": "taskplane/review.py", "line": 142,
+            "title": "static review can be overwritten",
+            "scenario": "select static and record executed render evidence",
+            "fix": "preserve the exact approved review execution mode",
+            "declares": "req:R-0006",
+        }
+        seen = []
+
+        def resolves(_workspace, identity):
+            seen.append(identity)
+            return identity == "R-0006"
+
+        with mock.patch.object(defect_claim, "declaration_resolves",
+                               side_effect=resolves):
+            findings, notes = review._adjudicate_findings(
+                "/tmp/review-normalization", None, {}, [finding])
+
+        self.assertEqual(seen, ["R-0006"])
+        self.assertEqual(notes, [])
+        self.assertEqual(
+            review.blocking_findings_by_lens(findings), {"architecture": 1})
 
 
 class TestImmutableEnvelope(unittest.TestCase):

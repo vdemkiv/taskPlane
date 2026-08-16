@@ -69,14 +69,45 @@ _REVIEW_EXECUTION_CHOICES = (
         "description": "Run approved checks and render the changed functionality inline.",
     },
 )
+_REVIEW_USER_ACTION_RECEIPT_SCHEMA = \
+    "taskplane.review-user-action-receipt/v1"
 
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
 
 
+def _review_execution_action_id(run_id: str | None, action: str) -> str:
+    material = f"{str(run_id or 'unbound').strip()}:{action}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:20]
+
+
+def _validated_review_user_action_receipt(
+        receipt: dict | None, *, run_id: str | None, action_id: str,
+        response: str) -> dict:
+    """Validate one host-observed user/action receipt at its exact boundary."""
+    row = dict(receipt or {})
+    required = {
+        "schema": _REVIEW_USER_ACTION_RECEIPT_SCHEMA,
+        "host_observed": True,
+        "run_id": str(run_id or "").strip(),
+        "action_id": action_id,
+        "response": response,
+    }
+    if any(row.get(key) != value for key, value in required.items()) or any(
+            not str(row.get(key) or "").strip()
+            for key in ("source", "receipt_id", "actor")):
+        raise ReviewKernelError(
+            "review action requires an exact host-observed user receipt")
+    return {key: row[key] for key in (
+        "schema", "host_observed", "source", "receipt_id", "run_id",
+        "action_id", "response", "actor")}
+
+
 def review_execution_preflight(*, selection: str | None = None,
-                               decided_by: str | None = None) -> dict:
+                               decided_by: str | None = None,
+                               run_id: str | None = None,
+                               approval_receipt: dict | None = None) -> dict:
     """Return the review's single structured runtime/render choice.
 
     This record is deliberately declarative. Selecting dynamic work does not
@@ -85,15 +116,17 @@ def review_execution_preflight(*, selection: str | None = None,
     """
     selection = str(selection or "").strip().lower()
     choices = [dict(row) for row in _REVIEW_EXECUTION_CHOICES]
+    action_id = _review_execution_action_id(run_id, "review-execution-mode")
     if not selection:
         return {
             "schema": "taskplane.review-execution-preflight/v1",
+            "run_id": str(run_id or "").strip(),
             "status": "needs_user", "static_only": True,
             "side_effects_started": False,
             "dynamic_validation": {"status": "pending", "detail": ""},
             "functionality_render": {"status": "pending", "detail": ""},
             "action": {
-                "id": "review-execution-mode",
+                "id": action_id,
                 "prompt": ("Choose static review, dynamic validation, or "
                            "dynamic validation with an inline functionality render."),
                 "choices": choices,
@@ -103,23 +136,30 @@ def review_execution_preflight(*, selection: str | None = None,
     if selection not in allowed:
         raise ReviewKernelError(
             "review execution selection must be static|dynamic|dynamic-render")
-    actor = str(decided_by or "").strip()
-    if not actor:
-        raise ReviewKernelError("review execution selection requires a human identity")
+    receipt = _validated_review_user_action_receipt(
+        approval_receipt, run_id=run_id, action_id=action_id,
+        response=selection)
+    actor = receipt["actor"]
     dynamic = selection in {"dynamic", "dynamic-render"}
     render = selection == "dynamic-render"
     return {
         "schema": "taskplane.review-execution-preflight/v1",
+        "run_id": str(run_id or "").strip(),
         "status": "configured", "selection": selection,
-        "decided_by": actor, "static_only": not dynamic,
+        "decided_by": actor, "approval_receipt": receipt,
+        "static_only": not dynamic,
         "side_effects_started": False,
         "dynamic_validation": {
             "status": "selected" if dynamic else "declined",
+            "action_id": _review_execution_action_id(
+                run_id, "dynamic_validation"),
             "detail": "awaiting approved runtime evidence" if dynamic
             else "human chose static review",
         },
         "functionality_render": {
             "status": "selected" if render else "declined",
+            "action_id": _review_execution_action_id(
+                run_id, "functionality_render"),
             "detail": "awaiting approved browser evidence" if render
             else "human did not select inline rendering",
         },
@@ -129,7 +169,8 @@ def review_execution_preflight(*, selection: str | None = None,
 
 
 def record_review_execution_evidence(preflight: dict, *, kind: str,
-                                     status: str, detail: str = "") -> dict:
+                                     status: str, detail: str = "",
+                                     approval_receipt: dict | None = None) -> dict:
     """Record bounded runtime/render evidence without performing the action."""
     if kind not in {"dynamic_validation", "functionality_render"}:
         raise ReviewKernelError("unknown review execution evidence kind")
@@ -139,10 +180,24 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
     if current.get("schema") != "taskplane.review-execution-preflight/v1":
         raise ReviewKernelError("review execution preflight is invalid")
     prior = current.get(kind) or {}
-    if status == "executed" and prior.get("status") not in {
-            "selected", "executed"}:
+    if status in {"executed", "unavailable"}:
+        receipt = _validated_review_user_action_receipt(
+            approval_receipt, run_id=current.get("run_id"),
+            action_id=str(prior.get("action_id") or ""), response=status)
+    else:
+        receipt = None
+    if prior.get("status") == "declined":
+        raise ReviewKernelError(
+            "review execution action was declined by the human")
+    if status in {"selected", "declined"}:
+        raise ReviewKernelError(
+            "review execution evidence cannot replace the human choice")
+    if prior.get("status") not in {"selected", status}:
         raise ReviewKernelError("review execution was not selected by the human")
-    current[kind] = {"status": status, "detail": str(detail or "")}
+    current[kind] = {
+        "status": status, "detail": str(detail or ""),
+        "action_id": prior["action_id"], "approval_receipt": receipt,
+    }
     current["side_effects_started"] = any(
         (current.get(name) or {}).get("status") == "executed"
         for name in ("dynamic_validation", "functionality_render"))
@@ -953,7 +1008,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     # The execution/render choice belongs to a standalone human-requested
     # review. Loop-internal EM review already has its own governed human
     # gates and must not acquire a second, unrelated approval boundary.
-    execution_preflight = (review_execution_preflight()
+    execution_preflight = (review_execution_preflight(run_id=run_id)
                            if stage == "review" and task_type == "review"
                            else None)
     opening_status = "needs_user" if execution_preflight else "ready"
@@ -1004,7 +1059,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     return manifest
 
 
-def configure_review_execution(ws: str, *, selection: str, by: str,
+def configure_review_execution(ws: str, *, selection: str,
+                               approval_receipt: dict | None = None,
+                               by: str | None = None,
                                run_id: str | None = None) -> dict:
     """Persist the human's optional dynamic/render choice for one review."""
     state = _load_state(ws, run_id)
@@ -1012,14 +1069,18 @@ def configure_review_execution(ws: str, *, selection: str, by: str,
             "needs_user", "ready", "prepared", "staged", "publishing", "committed",
             "complete"}:
         raise ReviewKernelError("review execution choice requires an active review")
-    prior = state.get("review_execution") or review_execution_preflight()
+    prior = state.get("review_execution") or review_execution_preflight(
+        run_id=state.get("run_id"))
     if prior.get("status") == "configured":
-        same = prior.get("selection") == selection and prior.get("decided_by") == by
+        supplied_id = (approval_receipt or {}).get("receipt_id")
+        same = prior.get("selection") == selection and \
+            (prior.get("approval_receipt") or {}).get("receipt_id") == supplied_id
         if same:
             return state.get("manifest") or prior
         raise ReviewKernelError("review execution choice is already recorded")
     configured = review_execution_preflight(
-        selection=selection, decided_by=by)
+        selection=selection, decided_by=by, run_id=state.get("run_id"),
+        approval_receipt=approval_receipt)
     manifest = dict(state.get("manifest") or {})
     manifest["status"] = "ready"
     manifest["slots"] = list(state.get("dispatch_slots") or [])
@@ -1028,24 +1089,30 @@ def configure_review_execution(ws: str, *, selection: str, by: str,
                  manifest=_manifest(manifest))
     _save_state(ws, state)
     tp.trace(ws, "review_execution_selected", run_id=state["run_id"],
-             selection=selection, by=by)
+             selection=selection, by=configured["decided_by"],
+             receipt_id=configured["approval_receipt"]["receipt_id"])
     return state["manifest"]
 
 
 def record_review_execution(ws: str, *, kind: str, status: str,
-                            detail: str = "", run_id: str | None = None) -> dict:
+                            detail: str = "", run_id: str | None = None,
+                            approval_receipt: dict | None = None) -> dict:
     """Persist evidence after the separately approved host action finishes."""
     state = _load_state(ws, run_id)
     record = record_review_execution_evidence(
-        state.get("review_execution") or review_execution_preflight(),
-        kind=kind, status=status, detail=detail)
+        state.get("review_execution") or review_execution_preflight(
+            run_id=state.get("run_id")),
+        kind=kind, status=status, detail=detail,
+        approval_receipt=approval_receipt)
     manifest = dict(state.get("manifest") or {})
     manifest["review_execution"] = record
     state = dict(state, review_execution=record,
                  manifest=_manifest(manifest))
     _save_state(ws, state)
     tp.trace(ws, "review_execution_evidence", run_id=state["run_id"],
-             kind=kind, status=status)
+             kind=kind, status=status,
+             receipt_id=(record.get(kind) or {}).get(
+                 "approval_receipt", {}).get("receipt_id"))
     return record
 
 
@@ -1670,9 +1737,20 @@ def _adjudicate_findings(ws: str, store, brief: dict,
     settled_by_fp = {str(item.get("fp")): item
                      for item in (settled.get("rows") or [])
                      if isinstance(item, dict) and item.get("fp")}
+
+    def resolves(identity):
+        value = str(identity or "").strip()
+        # Product-graph nodes use ``req:R-NNNN`` while the requirement
+        # registry resolves ``R-NNNN``.  They are the same declaration,
+        # not two producer vocabularies with different gate outcomes.
+        if re.fullmatch(r"req:R-\d{4,}", value):
+            value = value.split(":", 1)[1]
+        return defect_claim.declaration_resolves(ws, value)
+
     admissible, notes = [], []
     for finding in findings:
-        result = defect_claim.admissibility(finding, workspace=ws)
+        result = defect_claim.admissibility(
+            finding, workspace=ws, resolver=resolves)
         finding = dict(finding, kind=result["kind"])
         fp = yield_meter.fingerprint(finding)
         if fp in settled_by_fp and not str(finding.get("recurrence") or "").strip():
@@ -1703,6 +1781,42 @@ def blocking_findings_by_lens(findings: Iterable[dict]) -> dict[str, int]:
         if lens_id:
             counts[lens_id] = counts.get(lens_id, 0) + 1
     return counts
+
+
+def _validated_checked_evidence(verdict: dict, *, lens_id: str, slot_id: str,
+                                canonical_revision: int) -> list[dict]:
+    """Normalize checked evidence; a pass must prove what it inspected."""
+    import review_evidence as evidence
+
+    checked = verdict.get("checked_evidence")
+    if verdict.get("verdict") == "pass" and (
+            not isinstance(checked, list) or not checked):
+        raise evidence.ProvenanceError(
+            "slot result pass verdict requires checked evidence: " + lens_id)
+    if checked is None:
+        checked = []
+    if not isinstance(checked, list):
+        raise evidence.ProvenanceError(
+            "slot result checked evidence must be a list")
+    normalized = []
+    for check in checked:
+        if not isinstance(check, dict) or \
+                not isinstance(check.get("file"), str) or \
+                not check.get("file", "").strip() or \
+                isinstance(check.get("line"), bool) or \
+                not isinstance(check.get("line"), int) or \
+                check["line"] < 1 or \
+                not isinstance(check.get("claim"), str) or \
+                not check.get("claim", "").strip():
+            raise evidence.ProvenanceError(
+                "slot result checked evidence is not source-anchored")
+        normalized.append({
+            "lens": lens_id, "file": check["file"],
+            "line": check["line"], "claim": check["claim"],
+            "slot_id": slot_id,
+            "canonical_revision": canonical_revision,
+        })
+    return normalized
 
 
 def _host_receipt_trust(ws: str, slot: dict, lease: dict,
@@ -1817,28 +1931,9 @@ def _read_slot_output(ws: str, store,
                 isinstance(blockers, bool) or not isinstance(blockers, int) or \
                 blockers < 0:
             raise evidence.ProvenanceError("slot result lens verdict is invalid")
-        checked = verdict.get("checked_evidence") or []
-        if not isinstance(checked, list):
-            raise evidence.ProvenanceError(
-                "slot result checked evidence must be a list")
-        normalized_checks = []
-        for check in checked:
-            if not isinstance(check, dict) or \
-                    not isinstance(check.get("file"), str) or \
-                    not check.get("file", "").strip() or \
-                    isinstance(check.get("line"), bool) or \
-                    not isinstance(check.get("line"), int) or \
-                    check["line"] < 1 or \
-                    not isinstance(check.get("claim"), str) or \
-                    not check.get("claim", "").strip():
-                raise evidence.ProvenanceError(
-                    "slot result checked evidence is not source-anchored")
-            normalized_checks.append({
-                "lens": lens_id, "file": check["file"],
-                "line": check["line"], "claim": check["claim"],
-                "slot_id": lease["slot_id"],
-                "canonical_revision": lease["canonical_revision"],
-            })
+        normalized_checks = _validated_checked_evidence(
+            verdict, lens_id=lens_id, slot_id=lease["slot_id"],
+            canonical_revision=lease["canonical_revision"])
         by_lens[lens_id] = {"lens": lens_id,
                             "verdict": verdict["verdict"],
                             "blockers": blockers,
