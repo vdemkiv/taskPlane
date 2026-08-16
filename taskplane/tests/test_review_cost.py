@@ -67,6 +67,7 @@ class _WS(unittest.TestCase):
         os.environ["TASKPLANE_HOME"] = os.path.join(self.d, "store")
         self._codex_home = os.environ.get("CODEX_HOME")
         self._codex_thread = os.environ.get("CODEX_THREAD_ID")
+        self._canonical_host_root = rv._canonical_host_root
 
     def tearDown(self):
         if self._home is None:
@@ -81,6 +82,7 @@ class _WS(unittest.TestCase):
             os.environ.pop("CODEX_THREAD_ID", None)
         else:
             os.environ["CODEX_THREAD_ID"] = self._codex_thread
+        rv._canonical_host_root = self._canonical_host_root
         os.environ.pop("TASKPLANE_INLINE_MAX", None)
         shutil.rmtree(self.d, ignore_errors=True)
 
@@ -114,6 +116,9 @@ class _WS(unittest.TestCase):
             stream.write(json.dumps(row) + "\n")
         os.environ["CODEX_HOME"] = codex_home
         os.environ["CODEX_THREAD_ID"] = thread_id
+        # The fixture substitutes the host-owned root directly. Production
+        # deliberately ignores caller-controlled CODEX_HOME for authority.
+        rv._canonical_host_root = lambda host: codex_home
 
 
 # ------------------------------------------------- 1. render by reference

@@ -30,6 +30,11 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
+try:  # pwd is unavailable on Windows.
+    import pwd
+except ImportError:  # pragma: no cover - Windows host
+    pwd = None
+
 import storage as runtime_storage
 import taskplane_lite as tp
 
@@ -82,6 +87,14 @@ _REVIEW_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|"
     r"CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*)\s*[:=]\s*[^\s,;]+")
 _REVIEW_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_REVIEW_API_KEY = re.compile(
+    r"(?i)(?:\bapi[ _-]?key\s+|\b(?:sk|pk|ghp|glpat)-)[^\s,;]+")
+_REVIEW_SECRET_ARGUMENT = re.compile(
+    r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key))(?:=|\s+)\S+")
+_REVIEW_USER_PATH = re.compile(
+    r"(?i)(?:/[Uu]sers|/home)/[^\s,;]+|[A-Z]:\\Users\\[^\s,;]+")
+_REVIEW_PRIVATE_TEXT = re.compile(
+    r"(?i)\b(prompt|transcript)\s*:\s*.*?(?=(?:\s+\b(?:prompt|transcript)\s*:)|$)")
 
 
 class ReviewKernelError(RuntimeError):
@@ -131,6 +144,10 @@ def _review_action_prompt(run_id: str | None, action_id: str,
 def _bounded_review_detail(value: object) -> str:
     text = _REVIEW_SECRET_ASSIGNMENT.sub("<redacted>", str(value or ""))
     text = _REVIEW_BEARER.sub("Bearer <redacted>", text)
+    text = _REVIEW_API_KEY.sub("<redacted>", text)
+    text = _REVIEW_SECRET_ARGUMENT.sub(r"\1 <redacted>", text)
+    text = _REVIEW_USER_PATH.sub("<redacted-path>", text)
+    text = _REVIEW_PRIVATE_TEXT.sub(r"\1: <redacted>", text)
     raw = text.encode("utf-8", errors="replace")[:_REVIEW_DETAIL_BYTES]
     while raw:
         try:
@@ -140,12 +157,23 @@ def _bounded_review_detail(value: object) -> str:
     return ""
 
 
+def _canonical_host_root(host: str) -> str:
+    """Return the host-owned root; caller-overridable roots are not authority."""
+    try:
+        if pwd is None:
+            raise AttributeError
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except (AttributeError, KeyError):  # pragma: no cover - Windows host
+        home = os.path.expanduser("~")
+    return os.path.realpath(os.path.join(
+        home, ".codex" if host == "codex" else ".claude"))
+
+
 def _host_review_transcript() -> tuple[str, str]:
     """Return the active supported host and its host-owned transcript."""
     thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
     if thread_id:
-        home = os.path.abspath(os.environ.get("CODEX_HOME") or
-                               os.path.expanduser("~/.codex"))
+        home = _canonical_host_root("codex")
         paths = glob.glob(os.path.join(
             home, "sessions", "**", f"*-{thread_id}.jsonl"),
             recursive=True)
@@ -155,8 +183,7 @@ def _host_review_transcript() -> tuple[str, str]:
         if not session_id:
             raise ReviewKernelError(
                 "review action requires a supported host-observed receipt")
-        home = os.path.abspath(os.environ.get("CLAUDE_CONFIG_DIR") or
-                               os.path.expanduser("~/.claude"))
+        home = _canonical_host_root("claude")
         paths = glob.glob(os.path.join(
             home, "projects", "**", f"{session_id}.jsonl"),
             recursive=True)
@@ -257,6 +284,36 @@ def _tool_result_bytes(value: object) -> bytes:
                       ensure_ascii=False).encode("utf-8")
 
 
+def _tool_call_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+def _tool_result_exit_code(value: object) -> int | None:
+    """Extract a real process result; unknown is never rewritten to success."""
+    if isinstance(value, dict):
+        code = value.get("exit_code", value.get("exitCode"))
+        if isinstance(code, int) and not isinstance(code, bool):
+            return code
+        for key in ("structuredContent", "result", "output", "content"):
+            if key in value:
+                nested = _tool_result_exit_code(value[key])
+                if nested is not None:
+                    return nested
+    elif isinstance(value, list):
+        for row in value:
+            nested = _tool_result_exit_code(row)
+            if nested is not None:
+                return nested
+    elif isinstance(value, str):
+        if "Script failed" in value:
+            return 1
+        if "Script completed" in value:
+            return 0
+    return None
+
+
 def _host_tool_results(host: str, records: list[dict]) -> list[dict]:
     calls: dict[str, dict] = {}
     results = []
@@ -268,8 +325,11 @@ def _host_tool_results(host: str, records: list[dict]) -> list[dict]:
             if payload.get("type") in {"custom_tool_call", "function_call"}:
                 call_id = str(payload.get("call_id") or payload.get("id") or "")
                 if call_id:
-                    calls[call_id] = {"index": index,
-                                      "name": str(payload.get("name") or "")}
+                    calls[call_id] = {
+                        "index": index,
+                        "name": str(payload.get("name") or ""),
+                        "input": payload.get("input", payload.get("arguments")),
+                    }
             elif payload.get("type") in {
                     "custom_tool_call_output", "function_call_output"}:
                 call_id = str(payload.get("call_id") or "")
@@ -280,7 +340,8 @@ def _host_tool_results(host: str, records: list[dict]) -> list[dict]:
                         "Script failed" not in text and \
                         not bool(payload.get("is_error")):
                     results.append({**call, "result_index": index,
-                                    "receipt_id": call_id, "result": raw})
+                                    "receipt_id": call_id, "result": raw,
+                                    "exit_code": _tool_result_exit_code(raw)})
             continue
         message = record.get("message") or {}
         content = message.get("content") or []
@@ -292,15 +353,18 @@ def _host_tool_results(host: str, records: list[dict]) -> list[dict]:
             if row.get("type") == "tool_use":
                 call_id = str(row.get("id") or "")
                 if call_id:
-                    calls[call_id] = {"index": index,
-                                      "name": str(row.get("name") or "")}
+                    calls[call_id] = {
+                        "index": index, "name": str(row.get("name") or ""),
+                        "input": row.get("input"),
+                    }
             elif row.get("type") == "tool_result":
                 call_id = str(row.get("tool_use_id") or "")
                 call = calls.get(call_id)
                 raw = row.get("content")
                 if call and raw is not None and not bool(row.get("is_error")):
                     results.append({**call, "result_index": index,
-                                    "receipt_id": call_id, "result": raw})
+                                    "receipt_id": call_id, "result": raw,
+                                    "exit_code": _tool_result_exit_code(raw)})
     return results
 
 
@@ -329,20 +393,23 @@ def _host_review_execution_receipt(
                {"visualize", "browser", "screenshot", "imagegen"})
     for result in reversed(_host_tool_results(host, records)):
         tool_name = str(result.get("name") or "").lower()
+        call_text = _tool_call_text(result.get("input"))
         if result["index"] <= after_index or \
-                not any(token in tool_name for token in allowed):
+                not any(token in tool_name for token in allowed) or \
+                action_id not in call_text:
             continue
         if wanted_ref and wanted_ref != result["receipt_id"]:
             continue
         raw = _tool_result_bytes(result["result"])
-        if not raw:
+        exit_code = result.get("exit_code")
+        if not raw or exit_code is None or exit_code != 0:
             continue
         return _HostObservedReviewExecution(
             source=f"{host}-session:tool-result",
             receipt_id=result["receipt_id"], run_id=run_id,
             action_id=action_id, kind=kind, tool_name=result["name"],
             result_sha256=hashlib.sha256(raw).hexdigest(),
-            result_bytes=len(raw), exit_code=0,
+            result_bytes=len(raw), exit_code=exit_code,
             authority=_REVIEW_HOST_EXECUTION_AUTHORITY)
     raise ReviewKernelError(
         "review execution requires matching host-observed process/result evidence")
@@ -460,6 +527,10 @@ def review_execution_preflight(*, selection: str | None = None,
             "status": "selected" if dynamic else "declined",
             "action_id": _review_execution_action_id(
                 run_id, "dynamic_validation"),
+            "execution_binding": ("TASKPLANE_REVIEW_ACTION_ID=" +
+                                  _review_execution_action_id(
+                                      run_id, "dynamic_validation"))
+            if dynamic else "",
             "detail": "awaiting approved runtime evidence" if dynamic
             else "human chose static review",
         },
@@ -467,6 +538,8 @@ def review_execution_preflight(*, selection: str | None = None,
             "status": "selected" if render else "declined",
             "action_id": _review_execution_action_id(
                 run_id, "functionality_render"),
+            "execution_binding": _review_execution_action_id(
+                run_id, "functionality_render") if render else "",
             "detail": "awaiting approved browser evidence" if render
             else "human did not select inline rendering",
         },
