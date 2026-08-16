@@ -45,6 +45,24 @@ class TestGraphQualityRecord(unittest.TestCase):
         self.assertEqual(record["impact"]["policy_blocked"][0]["reason"],
                          "requirement-depth")
 
+    def test_explicit_local_depth_is_a_visible_policy_limit_not_degradation(self):
+        record = quality.assess(
+            graph(), target_head="abc1234", changed_files=["src/a.py"],
+            changed_symbols=[],
+            impact={
+                "touched": ["src/a"], "unknown": [], "truncated": True,
+                "depth_truncated": True,
+                "policy": {"local_depth": 3, "contract_depth": 1,
+                           "requirement_depth": 1,
+                           "boundary_mode": "contract-only"},
+                "policy_blocked": [],
+            })
+
+        self.assertEqual(record["status"], "complete")
+        self.assertTrue(record["policy_limited"])
+        self.assertFalse(record["truncated"])
+        self.assertEqual(record["module_confidence"], "high")
+
     def test_python_coverage_shape_emitted_by_scanner_is_supported(self):
         produced = graph(scanners={})
         record = quality.assess(

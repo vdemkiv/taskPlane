@@ -1858,14 +1858,28 @@ def _screen(a) -> int:
         # host session and exact active producer contract before the write is
         # allowed; collect later requires this separate receipt.
         _write_paths = tp.write_paths(tool_name, tool_input)
-        _review_result_write = any(
-            "/kernel-v2/results/" in "/" + str(path).replace("\\", "/")
-            for path in _write_paths)
-        if _review_result_write:
+        _review_candidate = any(
+            marker in "/" + str(path).replace("\\", "/")
+            for path in _write_paths
+            for marker in ("/kernel-v2/results/", "/lenses/results/"))
+        _review_ws = None
+        if _review_candidate:
             try:
                 import review as _review
+                _review_ws = _review.leased_result_workspace(ws, _write_paths)
+            except Exception as exc:
+                _meter_bump(ws, tid, "denies")
+                tp.trace(ws, "slot_provenance_deny", tool=tool_name,
+                         error=type(exc).__name__)
+                print(json.dumps({
+                    "decision": "block",
+                    "reason": "taskplane: leased review result lookup "
+                              f"failed closed ({exc})"}))
+                return 0
+        if _review_ws:
+            try:
                 _review.record_slot_write_observation(
-                    ws, event=event, contract=contract,
+                    _review_ws, event=event, contract=contract,
                     task_slot=tp.task_slot())
             except Exception as exc:
                 _meter_bump(ws, tid, "denies")
@@ -3918,6 +3932,8 @@ def cmd_review(a) -> int:
     ws = _workspace(a.workspace)
     if getattr(a, "review_action", None) == "collect":
         try:
+            ws = rv.resolve_review_workspace(
+                ws, getattr(a, "run_id", None))
             result = rv.collect_review(
                 ws, publish=not bool(getattr(a, "no_publish", False)),
                 run_id=getattr(a, "run_id", None))
@@ -3934,6 +3950,8 @@ def cmd_review(a) -> int:
         return 0
     if getattr(a, "review_action", None) == "signoff":
         try:
+            ws = rv.resolve_review_workspace(
+                ws, getattr(a, "run_id", None))
             result = rv.signoff_review(
                 ws, decision=a.decision, by=a.by, note=a.note or "",
                 run_id=getattr(a, "run_id", None))
@@ -4069,7 +4087,13 @@ def cmd_review(a) -> int:
         return 1
     tgt.save(ws, rec)
     out["target"] = rec
-    base = rec.get("base_ref") or getattr(a, "base", None) or "HEAD"
+    # The canonical PR patch starts at the pinned merge-base, not the moving
+    # tip of the base branch.  Repository preflight already resolved and
+    # hydrated this exact range; using base_ref here can pull unrelated
+    # upstream commits into the review whenever the branch advanced after
+    # the PR diverged, inflating symbols and graph impact.
+    base = rec.get("merge_base") or rec.get("base_ref") or \
+        getattr(a, "base", None) or "HEAD"
     step("target", True, head=rec["head"][:12], base=(rec.get("base") or "")[:12],
          fingerprint=rec["fingerprint"], changed=len(rec.get("changed_files") or []))
 

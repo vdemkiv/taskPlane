@@ -408,7 +408,8 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
         checkout = os.path.join(home, "checkouts", "p", "worktrees", "pr")
         base, head = _review_checkout(checkout)
         acquired = repository.AcquisitionResult(
-            checkout=checkout, base_ref=base, base=base, head=head,
+            checkout=checkout, base_ref="refs/remotes/origin/main",
+            base="f" * 40, head=head,
             merge_base=base, changed_files=("a.py",), metadata={})
         engine = preflight.RepositoryPreflight(
             home=home, tools_provider=lambda: _tools(),
@@ -429,7 +430,12 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
                     return_value=prepared), \
                     mock.patch("target.resolve_pr_head",
                                return_value={"ok": False}), \
-                    mock.patch("review.start_review", return_value=ready), \
+                    mock.patch.object(
+                        cli, "tp_target_diff",
+                        return_value=(0, "diff --git a/a.py b/a.py\n")) \
+                    as target_diff, \
+                    mock.patch("review.start_review", return_value=ready) \
+                    as start_review, \
                     mock.patch("review._load_state", return_value={}), \
                     mock.patch("review._save_state"), \
                     mock.patch.object(cli, "_review_visuals",
@@ -441,6 +447,8 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
             self.assertEqual(rc, 0)
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["contract"]["status"], "active")
+            target_diff.assert_called_once_with(checkout, base)
+            self.assertEqual(start_review.call_args.kwargs["base"], base)
             manifest = run_store.RunStore(home=home).load("review-ready")
             self.assertEqual(manifest["status"], "governed")
             self.assertEqual(manifest["review"]["status"], "ready")

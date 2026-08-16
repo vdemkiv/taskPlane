@@ -216,6 +216,67 @@ def _load_state(ws: str, run_id: str | None = None) -> dict:
     return state
 
 
+def resolve_review_workspace(ws: str, run_id: str | None) -> str:
+    """Resolve an explicit kernel run to its canonical managed checkout.
+
+    A Codex task may be opened from the plugin/project workspace while the
+    reviewed repository lives in taskPlane's managed checkout.  The kernel
+    run id is globally unique inside ``TASKPLANE_HOME``; use it to recover
+    the checkout instead of making the model remember a second workspace
+    flag.  Every candidate is verified through both the run manifest and the
+    checkout locator before it is trusted.
+    """
+    root = os.path.realpath(os.path.abspath(ws))
+    if not run_id or not re.fullmatch(r"[0-9a-f]{32}", str(run_id)):
+        return root
+    try:
+        _load_state(root, str(run_id))
+        return root
+    except ReviewKernelError as exc:
+        original_problem = exc
+    runs_root = os.path.join(runtime_storage.taskplane_home(), "runs")
+    matches = set()
+    try:
+        entries = list(os.scandir(runs_root))
+    except FileNotFoundError:
+        raise original_problem
+    except OSError as exc:
+        raise ReviewKernelError(
+            f"managed review store is unavailable: {exc}") from exc
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        candidate = os.path.join(
+            entry.path, "state", "review-kernel-v2", "runs",
+            str(run_id), "state.json")
+        if not os.path.isfile(candidate):
+            continue
+        manifest = tp.load_json(
+            os.path.join(entry.path, "manifest.json"), default=None,
+            what="managed review run manifest")
+        checkout = str(((manifest or {}).get("repository") or {}).get(
+            "checkout") or "")
+        if not checkout:
+            continue
+        checkout = os.path.realpath(checkout)
+        try:
+            locator = runtime_storage.load_workspace_locator(checkout)
+        except runtime_storage.StorageIdentityError:
+            continue
+        if not locator or str(locator.get("run_id")) != entry.name:
+            continue
+        if os.path.realpath(_state_path(checkout, str(run_id))) != \
+                os.path.realpath(candidate):
+            continue
+        matches.add(checkout)
+    if len(matches) == 1:
+        return matches.pop()
+    if len(matches) > 1:
+        raise ReviewKernelError(
+            "review run maps to several managed checkouts")
+    raise original_problem
+
+
 def _run_id(stage: str, target_fingerprint: str,
             context_fingerprint: str, revision: int) -> str:
     material = "\0".join((KERNEL_POLICY_VERSION, stage, target_fingerprint,
@@ -559,7 +620,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
             "target_fingerprint": target.get("fingerprint"),
             "target_head": target.get("head")},
     )
-    if source_change and not symbols:
+    if source_change and not symbols and \
+            quality.get("module_confidence") != "high":
         coverage = quality["changed_symbol_caller_coverage"]
         coverage["ratio"] = None
         coverage["status"] = "incomplete"
@@ -866,6 +928,73 @@ def _result_bytes_from_write_event(tool_name: str, tool_input: dict,
         return ("\n".join(content) + "\n").encode("utf-8")
     raise ReviewKernelError(
         "leased result must use Write or an exact add-file apply_patch")
+
+
+def leased_result_workspace(ws: str, paths: Iterable[str]) -> str | None:
+    """Return the workspace owning an exact leased result write, if any.
+
+    This deliberately consults the sealed slot paths instead of recognizing
+    a directory-name convention.  It therefore works for legacy in-repo
+    results and hybrid managed ``runs/<id>/lenses/results`` storage without
+    granting authority to any other file under either directory.
+    """
+    root = os.path.realpath(os.path.abspath(ws))
+    candidates = {
+        os.path.realpath(path if os.path.isabs(path)
+                         else os.path.join(root, path))
+        for path in paths if str(path or "").strip()
+    }
+    if not candidates:
+        return None
+
+    def owns(checkout: str) -> bool:
+        index = _load_index(checkout)
+        for run_id in sorted(index["runs"]):
+            state = tp.load_json(
+                _state_path(checkout, run_id), default=None,
+                what="review kernel run state")
+            if not isinstance(state, dict) or state.get("status") not in {
+                    "ready", "prepared"}:
+                continue
+            for slot in state.get("slots") or []:
+                wanted = os.path.realpath(
+                    slot["result_path"] if os.path.isabs(slot["result_path"])
+                    else os.path.join(checkout, slot["result_path"]))
+                if wanted in candidates:
+                    return True
+        return False
+
+    if owns(root):
+        return root
+    # When the lifecycle event is rooted in the parent Codex task, an
+    # absolute managed result path still names its repository run. Resolve
+    # only that bounded run directory and validate its checkout locator.
+    home = runtime_storage.taskplane_home()
+    run_root = os.path.join(home, "runs")
+    for path in sorted(candidates):
+        try:
+            relative = os.path.relpath(path, run_root)
+        except ValueError:
+            continue
+        parts = relative.split(os.sep)
+        if len(parts) < 4 or parts[0] in {".", ".."} or \
+                parts[1:3] != ["lenses", "results"]:
+            continue
+        manifest = tp.load_json(
+            os.path.join(run_root, parts[0], "manifest.json"), default=None,
+            what="managed review run manifest")
+        checkout = str(((manifest or {}).get("repository") or {}).get(
+            "checkout") or "")
+        if not checkout:
+            continue
+        checkout = os.path.realpath(checkout)
+        try:
+            locator = runtime_storage.load_workspace_locator(checkout)
+        except runtime_storage.StorageIdentityError:
+            continue
+        if locator and str(locator.get("run_id")) == parts[0] and owns(checkout):
+            return checkout
+    return None
 
 
 def record_slot_write_observation(ws: str, *, event: dict, contract: dict,

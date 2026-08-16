@@ -168,14 +168,26 @@ def assess(graph: dict, *, target_head: str, changed_files,
     scanner_rows = _scanner_rows(graph, changed_files)
     unresolved_edges = _unresolved_edges(graph)
     policy_limited = bool(impact.get("policy_blocked"))
-    raw_depth_truncated = impact.get("depth_truncated")
+    explicit_depth_truncated = impact.get("depth_truncated")
+    raw_depth_truncated = explicit_depth_truncated
     if raw_depth_truncated is None:
         # Backward-compatible interpretation for stored v1 impacts: when the
         # only named reason is a policy stop, the radius is complete under
         # that policy.  New impacts always carry depth_truncated explicitly.
         raw_depth_truncated = (bool(impact.get("truncated"))
                                and not policy_limited)
-    truncated = bool(meta.get("truncated") or raw_depth_truncated)
+    # Reaching an explicitly configured local-depth boundary is a complete
+    # traversal under that declared policy, just like a contract-depth stop.
+    # It must stay visible as policy-limited, but it is not evidence that the
+    # scanner or traversal failed.  Old impacts without the explicit field
+    # retain the conservative interpretation above.
+    depth_policy_limited = bool(
+        explicit_depth_truncated is True and
+        isinstance(impact.get("policy"), dict) and
+        impact["policy"].get("local_depth") is not None)
+    policy_limited = policy_limited or depth_policy_limited
+    truncated = bool(meta.get("truncated") or
+                     (raw_depth_truncated and not depth_policy_limited))
     confidence = _module_confidence(graph, impact, scanner_rows,
                                     unresolved_edges, stale, truncated)
     relevant_partial = any(row["relevant"] and

@@ -1,0 +1,19 @@
+{
+  "schema": "taskplane.managed-pr-review-oracle/v1",
+  "purpose": "Exercise the actual Codex PR-review failure chain across managed checkout and external run storage without prescribing model prose.",
+  "checkpoints": [
+    "the pinned merge-base, not the moving base ref, owns the canonical diff",
+    "a complete scanner graph stopped at the declared local-depth policy is not degraded",
+    "a body-only change with high-confidence module evidence does not invent missing symbol evidence",
+    "absolute write authority remains confined to validated managed run roots",
+    "every managed lens result is matched to its exact sealed lease and host-observed producer receipt",
+    "an explicit ReviewKernel run id resolves its managed checkout from a parent Codex workspace",
+    "one canonical collection consumes every leased result without redispatch"
+  ],
+  "expected": {
+    "status": "ready",
+    "graph_degraded": false,
+    "lens_dispositions": 26,
+    "collected_status": "complete"
+  }
+}

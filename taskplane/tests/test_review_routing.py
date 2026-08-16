@@ -15,6 +15,8 @@ import loop  # noqa: E402
 import depgraph  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
+import run_store  # noqa: E402
+import storage  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
 
@@ -319,19 +321,183 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertNotEqual(
             quality["changed_symbol_caller_coverage"]["ratio"], 1.0)
 
-    def test_body_only_pr_review_uses_diff_without_claiming_graph_complete(self):
-        """A body edit remains reviewable without inventing caller evidence."""
+    def test_body_only_pr_with_complete_module_graph_is_not_degraded(self):
+        """A strong module graph does not need synthetic symbol evidence."""
         out = self._start(
             diff={"files": ["src/service.py"], "changed_symbols": []})
         self.assertEqual(out["status"], "ready")
         self.assertTrue(out["slots"])
-        self.assertTrue(out["graph_degraded"])
+        self.assertFalse(out["graph_degraded"])
         quality = review_evidence.ArtifactStore(self.ws).read(
             review._load_state(self.ws, out["run_id"])["quality"])
         self.assertEqual(
-            quality["changed_symbol_caller_coverage"]["status"], "incomplete")
-        self.assertIsNone(
-            quality["changed_symbol_caller_coverage"]["ratio"])
+            quality["changed_symbol_caller_coverage"]["status"], "complete")
+        self.assertEqual(
+            quality["changed_symbol_caller_coverage"]["ratio"], 1.0)
+
+    def test_managed_pr_flow_records_receipts_and_collects_from_parent(self):
+        """The marketplace PR journey works across the hybrid run store."""
+        home = tempfile.mkdtemp(prefix="tp-managed-review-home-")
+        checkout = tempfile.mkdtemp(prefix="tp-managed-review-checkout-")
+        parent = tempfile.mkdtemp(prefix="tp-managed-review-parent-")
+        subprocess = __import__("subprocess")
+        subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"],
+                       cwd=checkout, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=checkout,
+                       check=True)
+        source = os.path.join(checkout, "PluginHeader.tsx")
+        with open(source, "w", encoding="utf-8") as stream:
+            stream.write("export const PluginHeader = () => null;\n")
+        subprocess.run(["git", "add", "PluginHeader.tsx"], cwd=checkout,
+                       check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=checkout,
+                       check=True)
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+        identity = storage.resolve_repository_identity(checkout)
+        repository_run_id = "managed-pr-review"
+        layout = storage.resolve_layout(
+            identity, home=home, run_id=repository_run_id)
+        run_store.RunStore(home=home).create(
+            identity, run_id=repository_run_id, checkout=checkout,
+            host={"kind": "codex"},
+            target={"kind": "pr", "head": head})
+        storage.write_workspace_locator(
+            checkout, identity=identity, layout=layout,
+            run_id=repository_run_id)
+        unrelated_external = os.path.join(home, "outside", "result.json")
+        self.assertFalse(tp.writable_target(
+            unrelated_external, [unrelated_external], checkout),
+            "absolute write authority must stay inside validated run roots")
+        graph = {
+            "files": {"PluginHeader.tsx": {"hash": "a"}},
+            "modules": {"ui": {"files": ["PluginHeader.tsx"]}},
+            "edges": [],
+            "meta": {"scanned_head": head,
+                     "content_fingerprint": "managed-graph",
+                     "scanners": {"typescript": {
+                         "coverage": "complete", "covered_files": 1,
+                         "total_files": 1}}},
+        }
+        impact = {
+            "touched": ["ui"], "impacted": {}, "unknown": [],
+            "total_impacted": 1, "truncated": True,
+            "depth_truncated": True,
+            "policy": {"local_depth": 3, "contract_depth": 1,
+                       "requirement_depth": 1,
+                       "boundary_mode": "contract-only"},
+            "policy_blocked": [],
+        }
+        target = {"fingerprint": "managed-target", "head": head,
+                  "merge_base": "b" * 40}
+        diff = {"files": ["PluginHeader.tsx"], "changed_symbols": [],
+                "patch_artifact": {"fingerprint": "managed-diff"}}
+        oracle_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "evals", "managed-pr-review", "oracle.json")
+        with open(oracle_path, encoding="utf-8") as stream:
+            oracle = json.load(stream)
+
+        with mock.patch.dict(os.environ, {"TASKPLANE_HOME": home}):
+            opened = review.start_review(
+                checkout, target=target, graph=graph, impact=impact,
+                diff=diff, runnability={"summary": "available"},
+                requirement={"id": "R-managed", "text": "review PR"},
+                acceptance=["collect exact leased results"],
+                contracts=["contract:ui"])
+            self.assertEqual(opened["status"], oracle["expected"]["status"])
+            self.assertEqual(opened["graph_degraded"],
+                             oracle["expected"]["graph_degraded"])
+            self.assertEqual(sum(opened["routing_counts"].values()),
+                             oracle["expected"]["lens_dispositions"])
+            state = review._load_state(checkout, opened["run_id"])
+            artifact_store = review_evidence.ArtifactStore(checkout)
+            for index, slot in enumerate(state["slots"]):
+                lease = artifact_store.read(slot["lease"])
+                brief = artifact_store.read(slot["brief"])
+                result = {
+                    **lease, "schema": "taskplane.lens-slot-output/v2",
+                    "authored_by": "lens-slot",
+                    "lens_results": [{"lens": lens_id, "verdict": "pass",
+                                      "blockers": 0}
+                                     for lens_id in lease["lens_ids"]],
+                    "findings": [],
+                }
+                if brief.get("language_references"):
+                    result["references_applied"] = list(
+                        brief["language_references"])
+                content = json.dumps(
+                    result, sort_keys=True, separators=(",", ":"))
+                event = {
+                    "turn_id": f"managed-session-{index}",
+                    "agent_id": f"managed-child-{index}",
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": slot["result_path"],
+                                   "content": content},
+                }
+                contract = {
+                    "task": brief["producer_contract"]["task"],
+                    "read_only": True,
+                    "write_allow": [slot["result_path"]],
+                }
+                self.assertEqual(
+                    review.leased_result_workspace(
+                        parent, [slot["result_path"]]), checkout)
+                if index == 0:
+                    # Exercise the real Codex lifecycle + PreToolUse entry
+                    # points for one slot. The remaining slots use the same
+                    # kernel APIs directly to keep this integration bounded.
+                    governed = tp.build_contract(
+                        contract["task"], read_only=True,
+                        write_allow=contract["write_allow"])
+                    governed["task"] = contract["task"]
+                    task_slot = brief["producer_contract"]["task_slot"]
+                    environment = {**os.environ,
+                                   "TASKPLANE_HOME": home,
+                                   "TASKPLANE_TASK": task_slot}
+                    with mock.patch.dict(os.environ, environment, clear=True):
+                        tp.activate(checkout, governed, snapshot=head)
+                    child = subprocess.run(
+                        [sys.executable, cli.__file__, "subagent-start"],
+                        input=json.dumps({**event, "cwd": checkout}),
+                        capture_output=True, text=True, env=environment,
+                        encoding="utf-8", errors="replace", check=False)
+                    self.assertEqual(child.returncode, 0, child.stderr)
+                    screened = subprocess.run(
+                        [sys.executable, cli.__file__, "screen"],
+                        input=json.dumps({**event, "cwd": checkout}),
+                        capture_output=True, text=True, env=environment,
+                        encoding="utf-8", errors="replace", check=False)
+                    self.assertEqual(screened.returncode, 0, screened.stderr)
+                    self.assertNotIn('"decision": "block"', screened.stdout)
+                else:
+                    review.register_slot_producer(
+                        checkout, event=event, contract=contract,
+                        task_slot=brief["producer_contract"]["task_slot"])
+                    review.record_slot_write_observation(
+                        checkout, event=event, contract=contract,
+                        task_slot=brief["producer_contract"]["task_slot"])
+                os.makedirs(os.path.dirname(slot["result_path"]),
+                            exist_ok=True)
+                with open(slot["result_path"], "w",
+                          encoding="utf-8") as stream:
+                    stream.write(content)
+            resolved = review.resolve_review_workspace(
+                parent, opened["run_id"])
+            self.assertEqual(resolved, os.path.realpath(checkout))
+            output = __import__("io").StringIO()
+            with mock.patch.object(cli, "_review_visuals",
+                                   return_value=({}, [])), \
+                    __import__("contextlib").redirect_stdout(output):
+                rc = cli.main([
+                    "review", "collect", "--run-id", opened["run_id"],
+                    "--workspace", parent, "--no-publish"])
+            self.assertEqual(rc, 0, output.getvalue())
+            collected = json.loads(output.getvalue())
+            self.assertEqual(collected["status"],
+                             oracle["expected"]["collected_status"])
+            self.assertEqual(collected["canonical_revision"], 1)
 
     def test_brief_is_sufficient_to_author_canonical_slot_output(self):
         self._start()

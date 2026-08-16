@@ -711,6 +711,69 @@ def writable(path: str, globs) -> bool:
     return path in scope_stems(globs)
 
 
+def writable_target(path: str, globs, workspace: str | None) -> bool:
+    """Match one host path against relative or absolute write authority.
+
+    ``norm`` intentionally marks every path outside the checkout as an
+    escape. Hybrid storage deliberately grants a small set of such paths,
+    so comparing that sentinel with an absolute allowlist could never work.
+    Resolve absolute entries independently and require real-path containment
+    inside their fixed stem; symlink escapes and unrelated external paths
+    therefore remain denied.
+    """
+    relative_allow = [str(item) for item in (globs or [])
+                      if not os.path.isabs(str(item))]
+    normalized = norm(path, workspace)
+    if normalized and not normalized.startswith("ESCAPES:") and \
+            writable(normalized, relative_allow):
+        return True
+    if not workspace:
+        return False
+    raw = str(path or "").strip()
+    if not raw:
+        return False
+    target = to_posix(os.path.realpath(
+        raw if os.path.isabs(raw) else os.path.join(workspace, raw)))
+    if normalized.startswith("ESCAPES:"):
+        # Absolute authority is reserved for taskPlane's validated hybrid
+        # run roots. A user-authored contract cannot turn this helper into a
+        # general write escape by naming /etc, another checkout, or a secret.
+        try:
+            import storage as _runtime_storage
+            if not _runtime_storage.managed_path_allowed(workspace, target):
+                return False
+        except Exception:
+            return False
+    for item in (globs or []):
+        pattern = str(item or "")
+        if not os.path.isabs(pattern):
+            continue
+        wildcard = min(
+            (index for index in (pattern.find("*"), pattern.find("?"),
+                                 pattern.find("[")) if index >= 0),
+            default=len(pattern))
+        raw_stem = pattern[:wildcard].rstrip("/\\")
+        if not raw_stem:
+            continue
+        stem = to_posix(os.path.realpath(raw_stem))
+        if not (_same_path(target, stem) or
+                _startswith_path(target, stem.rstrip("/") + "/")):
+            continue
+        if wildcard == len(pattern):
+            if _same_path(target, stem):
+                return True
+            continue
+        suffix = pattern[wildcard:].replace("\\", "/").lstrip("/")
+        if _same_path(target, stem):
+            if suffix in {"*", "**", "**/*"}:
+                return True
+            continue
+        rel = target[len(stem.rstrip("/")) + 1:]
+        if writable(rel, [suffix]):
+            return True
+    return False
+
+
 def scope_stems(globs) -> set:
     """Each glob's fixed prefix, as path SEGMENTS. Empty stems are dropped:
     a leading `**/…` has no fixed prefix and must not be read as "matches
@@ -1529,8 +1592,7 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                 return False, (f"read-only review contract: '{tool_name}' "
                                "did not expose a screenable write target")
             bad = next((raw for raw in paths
-                        if not (norm(raw, workspace)
-                                and writable(norm(raw, workspace), allow))),
+                        if not writable_target(raw, allow, workspace)),
                        None)
             if bad is not None:
                 return False, (f"read-only review contract: '{tool_name}' may "
@@ -1540,15 +1602,18 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
         if tool_name in COMMAND_TOOLS:
             targets, opaque = _analyze(command_text(tool_name, tool_input))
             leased_paths = [path for path in allow
-                            if "/kernel-v2/results/" in
-                            "/" + str(path).replace("\\", "/")]
+                            if any(marker in
+                                   "/" + str(path).replace("\\", "/")
+                                   for marker in (
+                                       "/kernel-v2/results/",
+                                       "/lenses/results/"))]
             for t in targets:
-                p = norm(t, workspace)
-                if p and leased_paths and writable(p, leased_paths):
+                if leased_paths and writable_target(
+                        t, leased_paths, workspace):
                     return False, ("leased review result must use the host "
                                    "Write tool; Bash cannot establish result "
                                    "provenance")
-                if not (p and writable(p, allow)):
+                if not writable_target(t, allow, workspace):
                     return False, ("read-only review contract: command writes "
                                    f"'{t}' outside {allow or '(nothing)'} — "
                                    "the reviewed source is protected")
@@ -1571,6 +1636,14 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                            "target")
         for raw in paths:
             p = norm(raw, workspace)
+            if contract.get("read_only") and p.startswith("ESCAPES:") and \
+                    writable_target(raw, contract.get("write_allow") or [],
+                                    workspace):
+                # The read-only branch already proved this is a canonical
+                # managed-run artifact. Build-scope rules describe source
+                # paths inside the checkout and must not reclassify that
+                # deliberately external artifact as an escape.
+                continue
             v = scope_violation(p, coding)
             if v:
                 return False, v
