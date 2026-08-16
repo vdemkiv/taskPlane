@@ -1653,6 +1653,108 @@ def _canonical_revision_badge(meta):
         f'{_esc(context_fp)} · findings {_esc(findings_fp)}</div>')
 
 
+def _diagnostic_fingerprints(meta):
+    rows = meta.get("diagnostic_fingerprints")
+    if not isinstance(rows, dict) or not rows:
+        return ""
+    required = ("engine", "routing_policy", "graph", "routing_decision")
+    if any(not str(rows.get(key) or "").strip() for key in required):
+        raise ValueError("complete review diagnostic fingerprints are required")
+    values = "".join(
+        f'<div><span style="{_MICRO}">{_esc(key.replace("_", " "))}</span> '
+        f'<code style="font-family:var(--font-mono);font-size:10.5px;'
+        f'color:var(--text-secondary)">{_esc(rows[key])}</code></div>'
+        for key in required)
+    return ('<details class="tp-sec" id="tp-review-fingerprints">'
+            f'<summary style="cursor:pointer;{_MICRO}">REVIEW IDENTITY</summary>'
+            f'<div style="margin-top:8px;display:grid;gap:5px">{values}</div>'
+            '</details>')
+
+
+def _review_execution_panel(meta):
+    record = meta.get("review_execution")
+    if not isinstance(record, dict):
+        return ""
+    dynamic = record.get("dynamic_validation") or {}
+    render = record.get("functionality_render") or {}
+    static = bool(record.get("static_only"))
+    label = "STATIC-ONLY" if static else "DYNAMIC REVIEW"
+    rows = "".join(
+        f'<div style="padding:5px 0;border-top:1px solid var(--border)">'
+        f'<span style="{_MICRO}">{_esc(name)}</span> '
+        f'<b style="font-size:12px;font-weight:500">{_esc(row.get("status", "pending"))}</b>'
+        + (f'<div style="font-size:11.5px;color:var(--text-secondary)">'
+           f'{_esc(row.get("detail"))}</div>' if row.get("detail") else "")
+        + '</div>'
+        for name, row in (("dynamic validation", dynamic),
+                          ("functionality render", render)))
+    actions = ""
+    action = record.get("action") or {}
+    if record.get("status") == "needs_user" and action.get("choices"):
+        actions = ('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
+                   + "".join(
+                       f'<button type="button" onclick="tpSend(this,&#39;'
+                       f'{_jsattr("Select review mode " + str(choice.get("response") or ""))}'
+                       f'&#39;)" style="border:1px solid var(--border-strong);'
+                       f'background:none;border-radius:6px;padding:7px 11px;'
+                       f'cursor:pointer;color:var(--text-primary)">'
+                       f'{_esc(choice.get("label") or choice.get("response"))}</button>'
+                       for choice in action.get("choices") or []) + '</div>')
+    return (
+        '<section class="tp-sec" id="tp-review-execution">'
+        '<p class="tp-kicker">review evidence</p>'
+        f'<div style="font-family:var(--font-mono);font-size:11px;'
+        f'font-weight:600;margin-bottom:7px">{label}</div>{rows}{actions}</section>')
+
+
+def _review_notes(meta):
+    notes = list(meta.get("review_notes") or [])
+    if not notes:
+        return ""
+    rows = []
+    for note in notes:
+        location = ""
+        if note.get("file"):
+            suffix = f':{note["line"]}' if note.get("line") else ""
+            location = (f'<code style="font-family:var(--font-mono);font-size:10.5px;'
+                        f'color:var(--text-muted)">{_esc(note["file"])}'
+                        f'{_esc(suffix)}</code>')
+        rows.append(
+            '<div style="padding:8px 0;border-top:1px solid var(--border)">'
+            f'<div style="font-size:13px;font-weight:500">'
+            f'{_esc(note.get("title") or note.get("issue") or "Review note")}</div>'
+            f'<div>{location}</div>'
+            + (f'<div style="font-size:12px;color:var(--text-secondary);margin-top:3px">'
+               f'{_esc(note.get("scenario") or note.get("why") or "")}</div>'
+               if note.get("scenario") or note.get("why") else "")
+            + '</div>')
+    return ('<section class="tp-sec" id="tp-review-notes">'
+            f'<p class="tp-kicker">notes &amp; observations · {len(notes)}</p>'
+            + "".join(rows) + '</section>')
+
+
+def _clean_evidence(meta):
+    checks = list(meta.get("clean_evidence") or [])
+    if not checks:
+        return ""
+    rows = []
+    for check in checks:
+        suffix = f':{check["line"]}' if check.get("line") else ""
+        rows.append(
+            '<li style="margin-bottom:6px">'
+            f'<span style="{_MICRO}">{_esc(check.get("lens") or "check")}</span> '
+            f'{_esc(check.get("claim") or "")}'
+            + (f' <code style="font-family:var(--font-mono);font-size:10.5px;'
+               f'color:var(--text-muted)">{_esc(check.get("file"))}'
+               f'{_esc(suffix)}</code>' if check.get("file") else "")
+            + '</li>')
+    return ('<details class="tp-sec" id="tp-clean-evidence" open>'
+            f'<summary style="cursor:pointer;{_MICRO}">SOURCE-ANCHORED CLEAN '
+            f'EVIDENCE · {len(checks)}</summary><ul style="padding-inline-start:18px;'
+            f'font-size:12px;color:var(--text-secondary)">{"".join(rows)}</ul>'
+            '</details>')
+
+
 def render_findings(findings, meta=None, out=None):
     """Render a REVIEW findings dashboard — every severity, each finding an
     expandable card, filterable by severity. Independent of the loop (a pure
@@ -1793,9 +1895,13 @@ def render_findings(findings, meta=None, out=None):
     cov_map = _effective_coverage(meta)   # routing_decision wins over
     if cov_map is not None:               # lens_coverage; absent → no panel
         coverage_html = render_lens_coverage(cov_map)
-    graph_html = ""
-    if meta.get("ws"):
+    graph_html = str(meta.get("graph_fragment") or "")
+    if not graph_html and meta.get("ws"):
         graph_html = render_review_graph(meta["ws"], meta.get("impact"))
+    execution_html = _review_execution_panel(meta)
+    review_notes_html = _review_notes(meta)
+    evidence_html = _clean_evidence(meta)
+    fingerprints_html = _diagnostic_fingerprints(meta)
 
     frag = (
         f'<h2 class="sr-only">Review findings: {counts["high"]} high, '
@@ -1815,7 +1921,8 @@ def render_findings(findings, meta=None, out=None):
         f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px" '
         f'id="tpf-chips">{chips}</div>'
         f'<div id="tpf-list">{cards_html}</div>'
-        f'{coverage_html}{graph_html}{clean_html}{gate_html}{note}'
+        f'{fingerprints_html}{execution_html}{coverage_html}{graph_html}'
+        f'{evidence_html}{clean_html}{review_notes_html}{gate_html}{note}'
         f'<script>{_SEND_JS}'
         f'function tpFilter(s){{'
         f'document.querySelectorAll(".tpf-card").forEach(function(c){{'

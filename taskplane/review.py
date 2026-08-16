@@ -49,9 +49,155 @@ RESULT_AUTHOR = "lens-slot"
 # zero-dispatch run produced by the prior policy.
 KERNEL_POLICY_VERSION = "review-kernel/v3-immutable-diff-fallback"
 
+_REVIEW_EXECUTION_CHOICES = (
+    {
+        "response": "static",
+        "label": "Static review only",
+        "requires": [],
+        "description": "Do not install dependencies, run code, or open a browser.",
+    },
+    {
+        "response": "dynamic",
+        "label": "Add dynamic validation",
+        "requires": ["dependency-install", "process-execution"],
+        "description": "Run approved build/test/runtime checks after host approval.",
+    },
+    {
+        "response": "dynamic-render",
+        "label": "Validate and render",
+        "requires": ["dependency-install", "process-execution", "browser-access"],
+        "description": "Run approved checks and render the changed functionality inline.",
+    },
+)
+
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
+
+
+def review_execution_preflight(*, selection: str | None = None,
+                               decided_by: str | None = None) -> dict:
+    """Return the review's single structured runtime/render choice.
+
+    This record is deliberately declarative. Selecting dynamic work does not
+    install dependencies, execute a process, or open a browser; those remain
+    host approval boundaries and are recorded later as evidence.
+    """
+    selection = str(selection or "").strip().lower()
+    choices = [dict(row) for row in _REVIEW_EXECUTION_CHOICES]
+    if not selection:
+        return {
+            "schema": "taskplane.review-execution-preflight/v1",
+            "status": "needs_user", "static_only": True,
+            "side_effects_started": False,
+            "dynamic_validation": {"status": "pending", "detail": ""},
+            "functionality_render": {"status": "pending", "detail": ""},
+            "action": {
+                "id": "review-execution-mode",
+                "prompt": ("Choose static review, dynamic validation, or "
+                           "dynamic validation with an inline functionality render."),
+                "choices": choices,
+            },
+        }
+    allowed = {row["response"] for row in choices}
+    if selection not in allowed:
+        raise ReviewKernelError(
+            "review execution selection must be static|dynamic|dynamic-render")
+    actor = str(decided_by or "").strip()
+    if not actor:
+        raise ReviewKernelError("review execution selection requires a human identity")
+    dynamic = selection in {"dynamic", "dynamic-render"}
+    render = selection == "dynamic-render"
+    return {
+        "schema": "taskplane.review-execution-preflight/v1",
+        "status": "configured", "selection": selection,
+        "decided_by": actor, "static_only": not dynamic,
+        "side_effects_started": False,
+        "dynamic_validation": {
+            "status": "selected" if dynamic else "declined",
+            "detail": "awaiting approved runtime evidence" if dynamic
+            else "human chose static review",
+        },
+        "functionality_render": {
+            "status": "selected" if render else "declined",
+            "detail": "awaiting approved browser evidence" if render
+            else "human did not select inline rendering",
+        },
+        "required_approvals": next(
+            row["requires"] for row in choices if row["response"] == selection),
+    }
+
+
+def record_review_execution_evidence(preflight: dict, *, kind: str,
+                                     status: str, detail: str = "") -> dict:
+    """Record bounded runtime/render evidence without performing the action."""
+    if kind not in {"dynamic_validation", "functionality_render"}:
+        raise ReviewKernelError("unknown review execution evidence kind")
+    if status not in {"selected", "declined", "unavailable", "executed"}:
+        raise ReviewKernelError("invalid review execution evidence status")
+    current = dict(preflight or {})
+    if current.get("schema") != "taskplane.review-execution-preflight/v1":
+        raise ReviewKernelError("review execution preflight is invalid")
+    prior = current.get(kind) or {}
+    if status == "executed" and prior.get("status") not in {
+            "selected", "executed"}:
+        raise ReviewKernelError("review execution was not selected by the human")
+    current[kind] = {"status": status, "detail": str(detail or "")}
+    current["side_effects_started"] = any(
+        (current.get(name) or {}).get("status") == "executed"
+        for name in ("dynamic_validation", "functionality_render"))
+    current["static_only"] = (
+        (current.get("dynamic_validation") or {}).get("status")
+        in {"pending", "declined", "unavailable"})
+    return current
+
+
+def _semantic_words(value: object) -> set[str]:
+    words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+    aliases = {"never": "not", "changes": "change", "observed": "observe",
+               "observes": "observe", "observing": "observe"}
+    return {aliases.get(word, word) for word in words
+            if word not in {"a", "an", "the", "is", "are", "be"}}
+
+
+def semantic_deduplicate_findings(findings: Iterable[dict]) -> list[dict]:
+    """Cluster same-anchor semantic duplicates and retain all provenance."""
+    severity_rank = {
+        "blocker": 0, "high": 0, "major": 0, "med": 1, "medium": 1,
+        "minor": 2, "low": 2, "info": 3, "question": 3, "praise": 3,
+    }
+    clusters: list[dict] = []
+    for source in findings or []:
+        row = dict(source)
+        anchor = (str(row.get("file") or ""), int(row.get("line") or 0))
+        words = _semantic_words(row.get("title")) | _semantic_words(
+            row.get("scenario"))
+        match = None
+        for cluster in clusters:
+            if cluster["_anchor"] != anchor:
+                continue
+            other = cluster["_words"]
+            similarity = len(words & other) / max(1, len(words | other))
+            if similarity >= 0.55:
+                match = cluster
+                break
+        provenance = {
+            key: row.get(key) for key in (
+                "lens", "slot_id", "source", "result_fingerprint",
+                "canonical_revision", "severity") if row.get(key) is not None}
+        if match is None:
+            canonical = dict(row)
+            canonical["provenance"] = [provenance]
+            clusters.append({"_anchor": anchor, "_words": words,
+                             "finding": canonical})
+            continue
+        canonical = match["finding"]
+        canonical["provenance"].append(provenance)
+        match["_words"] |= words
+        if severity_rank.get(str(row.get("severity") or "").lower(), 0) < \
+                severity_rank.get(str(canonical.get("severity") or "").lower(), 0):
+            canonical["severity"] = row.get("severity")
+    return [cluster["finding"] for cluster in clusters]
 
 
 def result_schema_for_slot(required_references: list[dict] | None = None) -> dict:
@@ -533,6 +679,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                        "task_slot, then use the host Write tool to author the "
                        "declared result_schema at result_path. Copy every "
                        "identity field exactly; authored_by is lens-slot. "
+                       "For every pass verdict, include compact checked_evidence "
+                       "with at least one exact file, line, and claim describing "
+                       "what was actually inspected; an unanchored clean claim "
+                       "is recorded as a coverage limitation, not shown as clean. "
                        "Classify every row structurally as kind defect, "
                        "violation, or note. Defects require claim.trigger, "
                        "claim.outcome, and claim.repro; violations require a "
@@ -800,6 +950,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                      envelope_ref["fingerprint"], revision)
     for slot in internal_slots:
         slot["run_id"] = run_id
+    execution_preflight = (review_execution_preflight()
+                           if stage == "review" else None)
     manifest = _manifest({
         "schema": "taskplane.review-start-manifest/v2", "status": "ready",
         "stage": stage, "run_id": run_id, "routing_mode": "selective",
@@ -810,6 +962,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "routing_input": _portable_ref(routing_input_ref),
         "routing_decision": _portable_ref(decision_ref),
         "envelope": _portable_ref(envelope_ref), "routing_counts": counts,
+        **({"review_execution": execution_preflight}
+           if execution_preflight else {}),
         "slots": slots, "counters": counters,
     })
     _save_state(ws, {
@@ -819,6 +973,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "routing_decision": decision_ref, "envelope": envelope_ref,
         "quality": quality_ref, "slots": internal_slots,
         "manifest": manifest, "counters": counters,
+        **({"review_execution": execution_preflight}
+           if execution_preflight else {}),
     })
     tp.trace(ws, "review_kernel_started", stage=stage,
              run_id=run_id,
@@ -832,6 +988,49 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
              routing_counts=counts,
              slots=[row["slot_id"] for row in slots])
     return manifest
+
+
+def configure_review_execution(ws: str, *, selection: str, by: str,
+                               run_id: str | None = None) -> dict:
+    """Persist the human's optional dynamic/render choice for one review."""
+    state = _load_state(ws, run_id)
+    if state.get("stage") != "review" or state.get("status") not in {
+            "ready", "prepared", "staged", "publishing", "committed",
+            "complete"}:
+        raise ReviewKernelError("review execution choice requires an active review")
+    prior = state.get("review_execution") or review_execution_preflight()
+    if prior.get("status") == "configured":
+        same = prior.get("selection") == selection and prior.get("decided_by") == by
+        if same:
+            return prior
+        raise ReviewKernelError("review execution choice is already recorded")
+    configured = review_execution_preflight(
+        selection=selection, decided_by=by)
+    manifest = dict(state.get("manifest") or {})
+    manifest["review_execution"] = configured
+    state = dict(state, review_execution=configured,
+                 manifest=_manifest(manifest))
+    _save_state(ws, state)
+    tp.trace(ws, "review_execution_selected", run_id=state["run_id"],
+             selection=selection, by=by)
+    return configured
+
+
+def record_review_execution(ws: str, *, kind: str, status: str,
+                            detail: str = "", run_id: str | None = None) -> dict:
+    """Persist evidence after the separately approved host action finishes."""
+    state = _load_state(ws, run_id)
+    record = record_review_execution_evidence(
+        state.get("review_execution") or review_execution_preflight(),
+        kind=kind, status=status, detail=detail)
+    manifest = dict(state.get("manifest") or {})
+    manifest["review_execution"] = record
+    state = dict(state, review_execution=record,
+                 manifest=_manifest(manifest))
+    _save_state(ws, state)
+    tp.trace(ws, "review_execution_evidence", run_id=state["run_id"],
+             kind=kind, status=status)
+    return record
 
 
 def _receipt_path(ws: str, lease_fingerprint: str) -> str:
@@ -1602,9 +1801,32 @@ def _read_slot_output(ws: str, store,
                 isinstance(blockers, bool) or not isinstance(blockers, int) or \
                 blockers < 0:
             raise evidence.ProvenanceError("slot result lens verdict is invalid")
+        checked = verdict.get("checked_evidence") or []
+        if not isinstance(checked, list):
+            raise evidence.ProvenanceError(
+                "slot result checked evidence must be a list")
+        normalized_checks = []
+        for check in checked:
+            if not isinstance(check, dict) or \
+                    not isinstance(check.get("file"), str) or \
+                    not check.get("file", "").strip() or \
+                    isinstance(check.get("line"), bool) or \
+                    not isinstance(check.get("line"), int) or \
+                    check["line"] < 1 or \
+                    not isinstance(check.get("claim"), str) or \
+                    not check.get("claim", "").strip():
+                raise evidence.ProvenanceError(
+                    "slot result checked evidence is not source-anchored")
+            normalized_checks.append({
+                "lens": lens_id, "file": check["file"],
+                "line": check["line"], "claim": check["claim"],
+                "slot_id": lease["slot_id"],
+                "canonical_revision": lease["canonical_revision"],
+            })
         by_lens[lens_id] = {"lens": lens_id,
                             "verdict": verdict["verdict"],
-                            "blockers": blockers}
+                            "blockers": blockers,
+                            "checked_evidence": normalized_checks}
     if set(by_lens) != set(lease["lens_ids"]):
         raise evidence.ProvenanceError("slot result does not cover its leased lenses")
     findings = row.get("findings")
@@ -1657,10 +1879,16 @@ def _revision_record(store, envelope_ref: dict, collected: dict) -> tuple[dict, 
         raise evidence.RevisionError("slot results contradict envelope identity")
     notes = [note for result in (collected.get("results") or [])
              for note in (result.get("notes") or [])]
+    attributed = []
+    for result in collected.get("results") or []:
+        for finding in result.get("findings") or []:
+            attributed.append(dict(
+                finding, slot_id=result.get("slot_id"),
+                result_fingerprint=result.get("result_fingerprint"),
+                canonical_revision=result.get("canonical_revision")))
     material = {
         "result_fingerprints": collected.get("result_fingerprints") or [],
-        "findings": [finding for result in (collected.get("results") or [])
-                     for finding in (result.get("findings") or [])],
+        "findings": semantic_deduplicate_findings(attributed),
     }
     if notes:
         material["notes"] = notes
@@ -1973,7 +2201,8 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         body = {"meta": {**identity, "lens_coverage": decision,
                          "target": identity["target_fingerprint"],
                          "result_validations": portable_validations},
-                "findings": revision["findings"]}
+                "findings": revision["findings"],
+                "notes": revision.get("notes") or []}
         lines = ["# Engineering review", "",
                  f"Canonical revision: {identity['canonical_revision']}",
                  f"Context: `{identity['context_fingerprint']}`", "",

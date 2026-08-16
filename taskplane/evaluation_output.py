@@ -101,9 +101,15 @@ def validate_evaluator_value(value: dict) -> dict:
 
 def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
     string = {"type": "string"}
+    checked_evidence = _object({
+        "file": string,
+        "line": {"type": "integer", "minimum": 1},
+        "claim": string,
+    }, ["file", "line", "claim"])
     lens_result = _object({
         "lens": string, "verdict": {"enum": ["pass", "fail"]},
         "blockers": {"type": "integer", "minimum": 0},
+        "checked_evidence": {"type": "array", "items": checked_evidence},
     }, ["lens", "verdict", "blockers"])
     finding = _object({
         "lens": string, "kind": {"enum": ["defect", "violation", "note"]},
@@ -148,6 +154,11 @@ def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
             "required": ["lens", "verdict", "blockers"],
             "verdict": ["pass", "fail"],
             "blockers": {"type": "integer", "minimum": 0},
+            "checked_evidence": {
+                "required_for": "pass",
+                "items": {"required": ["file", "line", "claim"]},
+                "meaning": "compact source-anchored evidence actually checked",
+            },
         },
         "findings": {"type": "array", "items": "finding"},
         "finding": {

@@ -867,11 +867,9 @@ def _print_dor(ready, blockers, warnings) -> None:
 # hook that does not need the model's cooperation.
 RUN_OWES = {
     "review": (
-        ("render_dashboard", "the lens wave board, re-rendered AFTER "
-                             "dispatch so the human sees the fan-out that "
-                             "actually happened"),
-        ("render_graph", "the product's own dependency/blast-radius view — "
-                         "not a re-drawn substitute"),
+        ("render_dashboard", "the engine-authored review dashboard, rendered "
+                             "after dispatch and after collection; it embeds "
+                             "the exact dependency/blast-radius graph"),
     ),
 }
 
@@ -3821,10 +3819,9 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
     """Project the ReviewKernel into the canonical taskPlane visual system.
 
     This is a driver/presentation seam, not a second review derivation.  It
-    reads the already sealed envelope/routing/revision and writes three files:
-    the live wave board, the exact dependency graph, and (after collection)
-    the complete human-gate dashboard.  The compact CLI manifest returns only
-    references, keeping HTML out of model context.
+    reads the already sealed envelope/routing/revision and writes one human-
+    facing dashboard plus a durable standalone graph artifact for machines.
+    The graph is embedded in the dashboard; it is never a second user gate.
     """
     import dashboard
     import review as rv
@@ -3866,9 +3863,28 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
                      "no per-lens diff or graph re-derivation"),
     })
     graph = dashboard.render_review_graph(ws, impact)
+    execution = state.get("review_execution") or rv.review_execution_preflight()
+    diagnostics = {
+        "engine": f"taskplane/{plugin_version()}",
+        "routing_policy": hashlib.sha256(
+            rv.KERNEL_POLICY_VERSION.encode("utf-8")).hexdigest(),
+        "graph": str(quality.get("fingerprint") or
+                     (state.get("quality") or {}).get("fingerprint") or
+                     "unavailable"),
+        "routing_decision": str(
+            (state.get("routing_decision") or {}).get("fingerprint") or
+            "unavailable"),
+    }
+    opening = dashboard.render_findings([], {
+        "title": "Engineering review — in progress",
+        "subtitle": "one canonical diff · graph-qualified selective lenses",
+        "graph_fragment": graph,
+        "review_execution": execution,
+        "diagnostic_fingerprints": diagnostics,
+    })
     visuals = {
         "workflow_and_wave": _write_review_html(
-            ws, "wave-board.html", [workflow, wave],
+            ws, "dashboard.html", [workflow, wave, opening],
             title="taskplane — governed review workflow"),
         "dependency_graph": _write_review_html(
             ws, "graph.html", [graph],
@@ -3882,27 +3898,47 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
         except (OSError, ValueError):
             projection = {"findings": findings, "meta": {}}
         final_findings = list(projection.get("findings") or [])
+        review_notes = list(projection.get("notes") or
+                            (state.get("revision") or {}).get("notes") or [])
         meta = dict(projection.get("meta") or {})
         decision = {}
         if state.get("routing_decision"):
             decision = store.read(state["routing_decision"]).get(
                 "dispositions") or {}
         runnability = envelope.get("runnability") or {}
+        clean_evidence = [check for row in (state.get("lens_results") or [])
+                          if row.get("verdict") == "pass"
+                          for check in (row.get("checked_evidence") or [])]
+        unchecked = sorted(str(row.get("lens") or "")
+                           for row in (state.get("lens_results") or [])
+                           if row.get("verdict") == "pass"
+                           and not row.get("checked_evidence"))
+        if unchecked:
+            review_notes.append({
+                "title": "Clean verdicts without source-anchored evidence",
+                "scenario": ("Not shown as clean: " + ", ".join(unchecked)),
+                "lens": "review-kernel",
+            })
         meta.update({
             "ws": ws, "impact": impact, "routing_decision": decision,
             "title": "Engineering review",
             "subtitle": "one canonical diff · graph-qualified selective lenses",
             "tests": runnability.get("summary"),
-            "clean": [f"{row.get('lens')}: pass" for row in
-                      (state.get("lens_results") or [])
-                      if row.get("verdict") == "pass"],
+            "clean_evidence": clean_evidence,
+            "review_notes": review_notes,
+            "review_execution": execution,
+            "diagnostic_fingerprints": diagnostics,
+            "graph_fragment": graph,
+            "revision_identity": evidence.revision_identity(
+                state.get("revision") or {}),
             "gate": True,
             "gate_title": "review complete — approve or request changes",
             "gate_buttons": [
-                {"label": "Approve", "prompt": "Approve this review",
+                {"label": "Approve review",
+                 "prompt": f"Approve review run {state.get('run_id')}",
                  "primary": True},
                 {"label": "Request changes",
-                 "prompt": "Request changes from this review"},
+                 "prompt": f"Request changes for review run {state.get('run_id')}"},
             ],
             "note": "Approval remains a human decision; taskPlane does not "
                     "self-approve this gate.",
@@ -3913,14 +3949,8 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
             title="taskplane — engineering review")
     dashboard_ref = (visuals["final_dashboard"] if final else
                      visuals["workflow_and_wave"])
-    obligations = [
-        _bind_review_visual_obligation(
-            ws, "render_dashboard",
-            os.path.join(ws, dashboard_ref["path"])),
-        _bind_review_visual_obligation(
-            ws, "render_graph",
-            os.path.join(ws, visuals["dependency_graph"]["path"])),
-    ]
+    obligations = [_bind_review_visual_obligation(
+        ws, "render_dashboard", os.path.join(ws, dashboard_ref["path"]))]
     if final:
         for row in obligations:
             row["ack"] = (f"tp ack {row['id']} --delivered {row['path']}"
@@ -3947,6 +3977,33 @@ def cmd_review(a) -> int:
     import target as tgt
     import review as rv
     ws = _workspace(a.workspace)
+    if getattr(a, "review_action", None) == "option":
+        try:
+            ws = rv.resolve_review_workspace(ws, a.run_id)
+            result = rv.configure_review_execution(
+                ws, selection=a.selection, by=a.by, run_id=a.run_id)
+        except Exception as exc:
+            print(json.dumps({"schema": "taskplane.review-execution-preflight/v1",
+                              "status": "configuration_failed",
+                              "reason": f"{exc.__class__.__name__}: {exc}"},
+                             sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+    if getattr(a, "review_action", None) == "evidence":
+        try:
+            ws = rv.resolve_review_workspace(ws, a.run_id)
+            result = rv.record_review_execution(
+                ws, kind=a.kind, status=a.status, detail=a.detail or "",
+                run_id=a.run_id)
+        except Exception as exc:
+            print(json.dumps({"schema": "taskplane.review-execution-preflight/v1",
+                              "status": "evidence_failed",
+                              "reason": f"{exc.__class__.__name__}: {exc}"},
+                             sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
     if getattr(a, "review_action", None) == "collect":
         try:
             ws = rv.resolve_review_workspace(
@@ -5855,6 +5912,21 @@ def main(argv=None) -> int:
                      help="select one active review when several starts coexist")
     rvc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvc.set_defaults(fn=cmd_review)
+    rvo = rvsub.add_parser(
+        "option", help="record the human's optional dynamic review/render choice")
+    rvo.add_argument("selection", choices=("static", "dynamic", "dynamic-render"))
+    rvo.add_argument("--by", required=True, help="human identity making the choice")
+    rvo.add_argument("--run-id", required=True, help="active review run")
+    rvo.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvo.set_defaults(fn=cmd_review)
+    rve = rvsub.add_parser(
+        "evidence", help="record approved dynamic validation or render evidence")
+    rve.add_argument("kind", choices=("dynamic_validation", "functionality_render"))
+    rve.add_argument("status", choices=("selected", "declined", "unavailable", "executed"))
+    rve.add_argument("--detail", default="", help="bounded evidence summary")
+    rve.add_argument("--run-id", required=True, help="active review run")
+    rve.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rve.set_defaults(fn=cmd_review)
     rvsg = rvsub.add_parser("signoff", help="record the human decision for a "
                             "collected standalone review")
     rvsg.add_argument("decision", choices=("approve", "changes"))
