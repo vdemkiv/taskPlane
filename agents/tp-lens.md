@@ -39,14 +39,10 @@ python3 "$PLUGIN/taskplane/tp.py" new --read-only \
 
 The hook enforces this — a write to the reviewed source is blocked, not
 trusted.
-**Release on exit — ALWAYS (try/finally semantics).** In EVERY outcome —
-done, error, or blocked — your LAST action is
-`python3 "$PLUGIN/taskplane/tp.py" clear`. Treat it as the finally-block of
-your whole task: a leaked contract locks the workspace for everyone after
-you. If the clear itself is blocked (budget exhausted), STOP and report the
-leaked contract in your final message so the dispatcher/human can release it
-(`tp.py clear --workspace <ws>` from an ungoverned context) — you cannot
-free yourself or grant yourself budget; that wall is intentional. Never
+**Do not clear your own lease.** Submit the exact result and stop. The
+ReviewKernel collector owns deterministic release of every completed producer
+slot, including failed-schema recovery; a child clearing itself can race the
+write receipt or accidentally release a reused sibling identity. Never
 activate a contract in the session home or a bare root — work in the project
 checkout (`tp new` refuses bare roots).
 

@@ -10,11 +10,100 @@ import uuid
 import repository
 import run_store
 import storage
+import taskplane_lite as tp
 import target as target_module
 
 
 class PreflightError(RuntimeError):
     pass
+
+
+_BOOTSTRAP_SCHEMA = "taskplane.preflight-bootstrap/v1"
+
+
+def new_run_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _bootstrap_key(workspace: str, spec: str) -> str:
+    material = (os.path.realpath(workspace) + "\0" + str(spec)).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:24]
+
+
+def _bootstrap_path(workspace: str, spec: str) -> str:
+    return os.path.join(tp.tp_dir(os.path.realpath(workspace)), "preflight",
+                        _bootstrap_key(workspace, spec) + ".json")
+
+
+def bootstrap_response(row: dict) -> dict:
+    return {"schema": "taskplane.preflight/v1",
+            "run_id": row["run_id"], "status": "needs_user",
+            "action": dict(row["action"]),
+            "reason": str(row.get("reason") or "")}
+
+
+def find_bootstrap(workspace: str, *, spec: str | None = None,
+                   run_id: str | None = None) -> dict | None:
+    """Find the pre-store user gate that survives denied external storage.
+
+    This record lives in the caller workspace because the canonical RunStore
+    is the resource whose permission is being requested.  It contains no
+    credentials, only the sealed retry identity and user action.
+    """
+    root = os.path.join(tp.tp_dir(os.path.realpath(workspace)), "preflight")
+    paths = ([_bootstrap_path(workspace, spec)] if spec is not None else
+             [os.path.join(root, name) for name in sorted(os.listdir(root))
+              if name.endswith(".json")] if os.path.isdir(root) else [])
+    for path in paths:
+        row = tp.load_json(path, default=None, what="preflight bootstrap")
+        if not isinstance(row, dict) or row.get("schema") != _BOOTSTRAP_SCHEMA:
+            continue
+        if run_id is None or row.get("run_id") == run_id:
+            return {**row, "_path": path}
+    return None
+
+
+def persist_storage_pause(workspace: str, *, spec: str, host: dict,
+                          run_id: str, detail: str) -> dict:
+    action = RepositoryPreflight._action(
+        run_id, kind="authorize_storage_root",
+        prompt=("taskPlane needs access to its external repository/run "
+                "storage. Approve access and resume this review; a repeated "
+                "review start will remain paused."),
+        detail=detail, choices=("approve", "retry", "cancel"))
+    row = {"schema": _BOOTSTRAP_SCHEMA, "run_id": str(run_id),
+           "status": "needs_user", "workspace": os.path.realpath(workspace),
+           "spec": str(spec), "host": dict(host), "reason": detail,
+           "action": action}
+    tp.atomic_write_json(_bootstrap_path(workspace, spec), row, sort_keys=True)
+    return bootstrap_response(row)
+
+
+def authorize_bootstrap(workspace: str, *, run_id: str, action_id: str,
+                        response: str, approved_by: str) -> dict:
+    row = find_bootstrap(workspace, run_id=run_id)
+    if not row:
+        raise PreflightError("no pending storage authorization matches run")
+    action = row.get("action") or {}
+    if action.get("action_id") != action_id:
+        raise PreflightError("pending user action does not match")
+    if response not in action.get("choices", []):
+        raise PreflightError(f"response is not allowed: {response}")
+    if response == "cancel":
+        tp.safe_remove(row["_path"])
+        return {"schema": "taskplane.preflight/v1", "run_id": run_id,
+                "status": "cancelled"}
+    durable = {key: value for key, value in row.items() if key != "_path"}
+    durable["status"] = "authorized"
+    durable["authorization"] = {"response": response, "by": approved_by}
+    tp.atomic_write_json(row["_path"], durable, sort_keys=True)
+    return durable
+
+
+def clear_bootstrap(row: dict) -> None:
+    path = row.get("_path")
+    if isinstance(path, str):
+        tp.safe_remove(path)
 
 
 class RepositoryPreflight:

@@ -1418,6 +1418,9 @@ def _is_release_command(command: str) -> bool:
     if verb == "budget":
         return "--grant" in tokens and "--approved-by" in tokens
     if verb == "review":
+        if all(token in tokens for token in (
+                "collect", "--run-id")):
+            return True
         return all(token in tokens for token in (
             "resume", "--run-id", "--action-id", "--by"))
     return False
@@ -1676,6 +1679,26 @@ def _screen(a) -> int:
         tool_input = {}
     command = tp.command_text(tool_name, tool_input)
 
+    # Native Codex children can report their host cwd rather than the managed
+    # PR checkout. Resolve an absolute sealed lease back to its checkout
+    # BEFORE loading/screening the contract; doing this afterward made the
+    # exact allowlisted path look external and forced models into mkdir/touch
+    # workarounds that the engine should own.
+    _write_paths = tp.write_paths(tool_name, tool_input)
+    _review_candidate = any(
+        marker in "/" + str(path).replace("\\", "/")
+        for path in _write_paths
+        for marker in ("/kernel-v2/results/", "/lenses/results/"))
+    _review_ws = None
+    if _review_candidate and tp.task_slot():
+        try:
+            import review as _review
+            _review_ws = _review.leased_result_workspace(ws, _write_paths)
+        except Exception:
+            _review_ws = None
+        if _review_ws:
+            ws = _review_ws
+
     contract = tp.load_active(ws)
     if contract is None:
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
@@ -1857,13 +1880,7 @@ def _screen(a) -> int:
         # `authored_by` string.  The always-on write hook records the observed
         # host session and exact active producer contract before the write is
         # allowed; collect later requires this separate receipt.
-        _write_paths = tp.write_paths(tool_name, tool_input)
-        _review_candidate = any(
-            marker in "/" + str(path).replace("\\", "/")
-            for path in _write_paths
-            for marker in ("/kernel-v2/results/", "/lenses/results/"))
-        _review_ws = None
-        if _review_candidate:
+        if _review_candidate and not _review_ws:
             try:
                 import review as _review
                 _review_ws = _review.leased_result_workspace(ws, _write_paths)
@@ -3979,11 +3996,38 @@ def cmd_review(a) -> int:
         import preflight as repository_preflight_module
 
         engine = repository_preflight_module.RepositoryPreflight()
+        bootstrap = repository_preflight_module.find_bootstrap(
+            ws, run_id=a.run_id)
         try:
-            repository_preflight = engine.resume(
-                a.run_id, action_id=a.action_id, response=a.response,
-                approved_by=a.by)
+            if bootstrap:
+                authorized = repository_preflight_module.authorize_bootstrap(
+                    ws, run_id=a.run_id, action_id=a.action_id,
+                    response=a.response, approved_by=a.by)
+                if authorized.get("status") == "cancelled":
+                    print(json.dumps(authorized, sort_keys=True,
+                                     separators=(",", ":")))
+                    return 0
+                repository_preflight = engine.prepare(
+                    bootstrap["spec"], workspace=bootstrap["workspace"],
+                    host=bootstrap["host"], run_id=a.run_id)
+                # Reaching any structured result proves the external store is
+                # available again. Any later pause now lives canonically in
+                # RunStore and must not be shadowed by this bootstrap gate.
+                repository_preflight_module.clear_bootstrap(bootstrap)
+            else:
+                repository_preflight = engine.resume(
+                    a.run_id, action_id=a.action_id, response=a.response,
+                    approved_by=a.by)
         except Exception as exc:
+            if bootstrap and isinstance(exc, OSError):
+                repository_preflight = \
+                    repository_preflight_module.persist_storage_pause(
+                        ws, spec=bootstrap["spec"], host=bootstrap["host"],
+                        run_id=a.run_id,
+                        detail=f"{exc.__class__.__name__}: {exc}")
+                print(json.dumps(repository_preflight, sort_keys=True,
+                                 separators=(",", ":")))
+                return 2
             print(json.dumps({
                 "schema": "taskplane.preflight/v1", "status": "needs_user",
                 "run_id": a.run_id,
@@ -4010,30 +4054,33 @@ def cmd_review(a) -> int:
             "session_id": (os.environ.get("CODEX_THREAD_ID") or
                            os.environ.get("CLAUDE_SESSION_ID")),
         }
+        pending = repository_preflight_module.find_bootstrap(ws, spec=spec)
+        if pending:
+            print(json.dumps(
+                repository_preflight_module.bootstrap_response(pending),
+                sort_keys=True, separators=(",", ":")))
+            return 2
+        repository_run = (getattr(a, "run_id", None) or
+                          repository_preflight_module.new_run_id())
         try:
             repository_preflight = \
                 repository_preflight_module.RepositoryPreflight().prepare(
                     spec, workspace=ws, host=host_record,
-                    run_id=getattr(a, "run_id", None))
+                    run_id=repository_run)
         except Exception as exc:
             detail = f"{exc.__class__.__name__}: {exc}"
-            action = None
             if isinstance(exc, OSError):
-                material = f"storage\0{ws}\0{spec}".encode("utf-8")
-                action = {
-                    "schema": "taskplane.user-action/v1",
-                    "action_id": hashlib.sha256(material).hexdigest()[:20],
-                    "kind": "authorize_storage_root",
-                    "prompt": ("taskPlane needs access to its external "
-                               "repository/run storage. Approve access and "
-                               "retry this review; do not open a new task."),
-                    "detail": detail, "command_argv": [],
-                    "choices": ["retry", "cancel"],
-                }
-            print(json.dumps({
-                "schema": "taskplane.preflight/v1", "status": "needs_user",
-                "reason": detail, "action": action},
-                sort_keys=True, separators=(",", ":")))
+                paused = repository_preflight_module.persist_storage_pause(
+                    ws, spec=spec, host=host_record, run_id=repository_run,
+                    detail=detail)
+                print(json.dumps(paused, sort_keys=True,
+                                 separators=(",", ":")))
+            else:
+                print(json.dumps({
+                    "schema": "taskplane.preflight/v1",
+                    "status": "needs_user", "run_id": repository_run,
+                    "reason": detail, "action": None},
+                    sort_keys=True, separators=(",", ":")))
             return 2
         if repository_preflight.get("status") != "ready":
             print(json.dumps(repository_preflight, sort_keys=True,
@@ -4325,6 +4372,7 @@ def cmd_repository(a) -> int:
     import run_store as repository_run_store
 
     action = str(getattr(a, "repository_action", None) or "status")
+    ws = _workspace(a.workspace)
     engine = repository_preflight_module.RepositoryPreflight()
     if action == "migrate":
         import storage_migration
@@ -4345,11 +4393,33 @@ def cmd_repository(a) -> int:
         print(json.dumps(value, sort_keys=True, separators=(",", ":")))
         return 0
     if action == "resume":
+        bootstrap = repository_preflight_module.find_bootstrap(
+            ws, run_id=a.run_id)
         try:
-            value = engine.resume(
-                a.run_id, action_id=a.action_id, response=a.response,
-                approved_by=a.by)
+            if bootstrap:
+                authorized = repository_preflight_module.authorize_bootstrap(
+                    ws, run_id=a.run_id, action_id=a.action_id,
+                    response=a.response, approved_by=a.by)
+                if authorized.get("status") == "cancelled":
+                    value = authorized
+                else:
+                    value = engine.prepare(
+                        bootstrap["spec"], workspace=bootstrap["workspace"],
+                        host=bootstrap["host"], run_id=a.run_id)
+                    repository_preflight_module.clear_bootstrap(bootstrap)
+            else:
+                value = engine.resume(
+                    a.run_id, action_id=a.action_id, response=a.response,
+                    approved_by=a.by)
         except Exception as exc:
+            if bootstrap and isinstance(exc, OSError):
+                value = repository_preflight_module.persist_storage_pause(
+                    ws, spec=bootstrap["spec"], host=bootstrap["host"],
+                    run_id=a.run_id,
+                    detail=f"{exc.__class__.__name__}: {exc}")
+                print(json.dumps(value, sort_keys=True,
+                                 separators=(",", ":")))
+                return 2
             print(json.dumps({
                 "schema": "taskplane.preflight/v1", "status": "needs_user",
                 "run_id": a.run_id,
@@ -4357,13 +4427,22 @@ def cmd_repository(a) -> int:
                 sort_keys=True, separators=(",", ":")))
             return 2
     else:
-        ws = _workspace(a.workspace)
-        value = engine.prepare(
-            a.spec, workspace=ws,
-            host={"kind": tp.host(),
-                  "session_id": (os.environ.get("CODEX_THREAD_ID") or
-                                 os.environ.get("CLAUDE_SESSION_ID"))},
-            run_id=getattr(a, "run_id", None))
+        host = {"kind": tp.host(),
+                "session_id": (os.environ.get("CODEX_THREAD_ID") or
+                               os.environ.get("CLAUDE_SESSION_ID"))}
+        pending = repository_preflight_module.find_bootstrap(ws, spec=a.spec)
+        if pending:
+            value = repository_preflight_module.bootstrap_response(pending)
+        else:
+            run_id = (getattr(a, "run_id", None) or
+                      repository_preflight_module.new_run_id())
+            try:
+                value = engine.prepare(
+                    a.spec, workspace=ws, host=host, run_id=run_id)
+            except OSError as exc:
+                value = repository_preflight_module.persist_storage_pause(
+                    ws, spec=a.spec, host=host, run_id=run_id,
+                    detail=f"{exc.__class__.__name__}: {exc}")
     print(json.dumps(value, sort_keys=True, separators=(",", ":")))
     return 0 if value.get("status") in {"ready", "cancelled"} else 2
 

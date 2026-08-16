@@ -339,6 +339,26 @@ class TestLocalRepositoryPreflight(unittest.TestCase):
 
 
 class TestReviewCliPreflightBoundary(unittest.TestCase):
+    def test_storage_pause_persists_until_explicit_review_resume(self):
+        ws = tempfile.mkdtemp(prefix="tp-cli-storage-pause-")
+        outputs = []
+        with mock.patch.object(
+                preflight.RepositoryPreflight, "prepare",
+                side_effect=PermissionError("external storage denied")) as prepare:
+            for _ in range(2):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    rc = cli.main(["review", "start", PR,
+                                   "--workspace", ws])
+                self.assertEqual(rc, 2)
+                outputs.append(json.loads(output.getvalue()))
+        self.assertEqual(prepare.call_count, 1,
+                         "a repeated start must not bypass the pending user gate")
+        self.assertEqual(outputs[0]["run_id"], outputs[1]["run_id"])
+        self.assertEqual(outputs[0]["action"], outputs[1]["action"])
+        self.assertEqual(outputs[0]["action"]["kind"],
+                         "authorize_storage_root")
+
     def test_remote_pr_pause_is_printed_before_contract_or_graph_work(self):
         home = tempfile.mkdtemp(prefix="tp-cli-preflight-home-")
         ws = tempfile.mkdtemp(prefix="tp-cli-preflight-ws-")
@@ -404,6 +424,22 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertEqual(__import__("json").loads(output.getvalue()), expected)
         self.assertEqual(prepare.call_args.kwargs["workspace"], ws)
+
+    def test_generic_repository_storage_pause_also_requires_resume(self):
+        ws = tempfile.mkdtemp(prefix="tp-repository-storage-pause-")
+        with mock.patch.object(
+                preflight.RepositoryPreflight, "prepare",
+                side_effect=PermissionError("external storage denied")) as prepare:
+            outputs = []
+            for _ in range(2):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    rc = cli.main(["repository", "prepare", PR,
+                                   "--workspace", ws])
+                self.assertEqual(rc, 2)
+                outputs.append(json.loads(output.getvalue()))
+        self.assertEqual(prepare.call_count, 1)
+        self.assertEqual(outputs[0]["action"], outputs[1]["action"])
 
     def test_ready_kernel_activates_only_after_repository_and_route_ready(self):
         home = tempfile.mkdtemp(prefix="tp-ready-review-home-")

@@ -576,6 +576,50 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     return internal, manifest
 
 
+def _prepare_slot_result_dirs(ws: str, slots: Iterable[dict]) -> None:
+    """Create engine-owned lease parents before any reviewer is dispatched."""
+    root = os.path.realpath(ws)
+    for slot in slots:
+        declared = str(slot.get("result_path") or "")
+        path = (os.path.realpath(declared) if os.path.isabs(declared) else
+                os.path.realpath(os.path.join(root, declared)))
+        if os.path.isabs(declared):
+            if not runtime_storage.managed_path_allowed(root, path):
+                raise ReviewKernelError(
+                    "absolute leased result path is outside managed storage")
+        elif os.path.commonpath((root, path)) != root:
+            raise ReviewKernelError("leased result path escapes checkout")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+
+def _release_slot_contracts(ws: str, state: dict) -> list[str]:
+    """Release only completed ReviewKernel producers, never sibling work."""
+    released = []
+    for slot in state.get("slots") or []:
+        expected = slot.get("producer_contract") or {}
+        task_slot = str(expected.get("task_slot") or "")
+        if not task_slot:
+            continue
+        path = tp.active_contract_path(ws, task_slot)
+        if not os.path.exists(path):
+            continue
+        active = tp.load_json(path, default=None,
+                              what="review producer contract")
+        if not isinstance(active, dict) or \
+                active.get("task") != expected.get("task"):
+            continue
+        tp.safe_remove(path)
+        snapshot = os.path.join(tp.tp_dir(ws), "active",
+                                f"{task_slot}.snapshot")
+        if os.path.exists(snapshot):
+            tp.safe_remove(snapshot)
+        released.append(task_slot)
+    if released:
+        tp.trace(ws, "review_producer_contracts_released",
+                 run_id=state.get("run_id"), slots=released)
+    return released
+
+
 def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  diff: dict, runnability: dict | None = None,
                  requirement: dict | None = None,
@@ -740,6 +784,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     internal_slots, slots = _slot_plan(
         store, envelope_ref, routing, decision, base=base,
         runnability=runnability, stage=stage, settled_ref=settled_ref)
+    _prepare_slot_result_dirs(ws, internal_slots)
     counters.update({
         "dispatched_agent_count": len(slots), "envelope_count": 1,
         "view_count": len(slots),
@@ -1864,6 +1909,7 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         state = _load_state(ws, selected["run_id"])
         store = evidence.ArtifactStore(ws)
         if state.get("status") == "complete":
+            _release_slot_contracts(ws, state)
             if evidence._read_current(store) != evidence.revision_identity(
                     state.get("revision") or {}):
                 raise evidence.RevisionError(
@@ -1880,11 +1926,23 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
         refs, lens_results, result_validations = [], [], []
-        for slot in state.get("slots") or []:
-            ref, rows, validation_ref = _read_slot_output(ws, store, slot)
-            refs.append(ref)
-            lens_results.extend(rows)
-            result_validations.append(validation_ref)
+        try:
+            for slot in state.get("slots") or []:
+                ref, rows, validation_ref = _read_slot_output(ws, store, slot)
+                refs.append(ref)
+                lens_results.extend(rows)
+                result_validations.append(validation_ref)
+        finally:
+            # Once every producer has submitted its exact leased file, its
+            # work is over even when schema validation finds a defect.  The
+            # canonical run state/results remain durable for retry; leaked
+            # child contracts must not govern the parent collector forever.
+            paths = [str(slot.get("result_path") or "")
+                     for slot in state.get("slots") or []]
+            if paths and all(os.path.isfile(
+                    path if os.path.isabs(path) else os.path.join(ws, path))
+                    for path in paths):
+                _release_slot_contracts(ws, state)
         leases = [row["lease"] for row in state.get("slots") or []]
         if leases:
             collected = evidence.collect_slot_results(store, leases, refs)

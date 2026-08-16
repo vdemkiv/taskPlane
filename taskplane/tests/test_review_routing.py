@@ -401,7 +401,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         with open(oracle_path, encoding="utf-8") as stream:
             oracle = json.load(stream)
 
-        with mock.patch.dict(os.environ, {"TASKPLANE_HOME": home}):
+        with mock.patch.dict(os.environ, {"TASKPLANE_HOME": home,
+                                          "CODEX_THREAD_ID": ""}):
             opened = review.start_review(
                 checkout, target=target, graph=graph, impact=impact,
                 diff=diff, runnability={"summary": "available"},
@@ -415,9 +416,20 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                              oracle["expected"]["lens_dispositions"])
             state = review._load_state(checkout, opened["run_id"])
             artifact_store = review_evidence.ArtifactStore(checkout)
-            for slot in state["slots"]:
+            for index, slot in enumerate(state["slots"]):
                 lease = artifact_store.read(slot["lease"])
                 brief = artifact_store.read(slot["brief"])
+                self.assertTrue(os.path.isdir(os.path.dirname(
+                    slot["result_path"])),
+                    "review start owns the leased result directory")
+                producer = brief["producer_contract"]
+                contract = tp.build_contract(
+                    producer["task"], read_only=True,
+                    write_allow=producer["write_allow"], tools=["Write"])
+                with mock.patch.dict(os.environ, {
+                        "TASKPLANE_TASK": producer["task_slot"]}):
+                    tp.activate(checkout, contract,
+                                snapshot=tp.git_head(checkout))
                 result = {
                     **lease, "schema": "taskplane.lens-slot-output/v2",
                     "authored_by": "lens-slot",
@@ -431,6 +443,26 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                         brief["language_references"])
                 content = json.dumps(
                     result, sort_keys=True, separators=(",", ":"))
+                if index == 0:
+                    event = {
+                        "turn_id": "managed-child-turn",
+                        "agent_id": "managed-child-1", "cwd": parent,
+                        "tool_name": "Write",
+                        "tool_input": {"file_path": slot["result_path"],
+                                       "content": content}}
+                    review.register_slot_producer(
+                        checkout, event=event, contract=contract,
+                        task_slot=producer["task_slot"])
+                    screened = __import__("io").StringIO()
+                    with mock.patch.dict(os.environ, {
+                            "TASKPLANE_HOME": home,
+                            "TASKPLANE_TASK": producer["task_slot"]}), \
+                            mock.patch("sys.stdin", __import__("io").StringIO(
+                                json.dumps(event))), \
+                            __import__("contextlib").redirect_stdout(screened):
+                        self.assertEqual(cli.main(["screen"]), 0)
+                    self.assertEqual(screened.getvalue().strip(), "",
+                                     "Codex leased writes stay advisory")
                 self.assertEqual(
                     review.leased_result_workspace(
                         parent, [slot["result_path"]]), checkout)
@@ -459,7 +491,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             validations = [artifact_store.read(ref)
                            for ref in collected["result_validations"]]
             self.assertEqual({row["trust"] for row in validations},
-                             {"leased-artifact"})
+                             {"host-observed"})
+            self.assertEqual(tp.list_task_slots(checkout), [],
+                             "canonical collect releases finished lens slots")
             output = __import__("io").StringIO()
             with __import__("contextlib").redirect_stdout(output):
                 rc = cli.main([
