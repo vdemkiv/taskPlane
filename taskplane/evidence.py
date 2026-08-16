@@ -58,12 +58,15 @@ def _verdict_template(out: dict) -> dict:
     }
 
 
-def _canonical_kernel_obligations(ws: str, expected_stage: str) -> dict:
+def _canonical_kernel_obligations(ws: str, expected_stage: str, *,
+                                  run_id: str) -> dict:
     """Read the live kernel's terminal graph/routing decision by reference."""
     import review
     import review_evidence
 
-    kernel = review._load_state(ws)
+    if not run_id:
+        raise RuntimeError("canonical ReviewKernel run id is not bound")
+    kernel = review._load_state(ws, run_id)
     status = str(kernel.get("status") or "")
     stage = str(kernel.get("stage") or "")
     manifest = kernel.get("manifest") or {}
@@ -235,8 +238,14 @@ def evidence(ws: str, task_id: "str | None" = None,
     #     decision. Mapping here would create a second truth and can turn a
     #     terminal impact_incomplete/zero-slot decision into fresh work.
     try:
+        binding = loop.review_kernel_binding(state, "evaluate", task)
+        if not binding:
+            raise RuntimeError(
+                "loop state has no exact evaluator ReviewKernel binding")
+        kernel_ws = str(binding.get("workspace") or ws)
         obligations = _canonical_kernel_obligations(
-            ws, loop.EVALUATE_ROUTE_STAGE)
+            kernel_ws, loop.EVALUATE_ROUTE_STAGE,
+            run_id=binding["run_id"])
         out["review_kernel"] = obligations["citation"]
         out["lenses"] = obligations["lenses"]
         out["lenses_not_applicable"] = obligations["not_applicable"]

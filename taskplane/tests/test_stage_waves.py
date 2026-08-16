@@ -1071,7 +1071,12 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     nxt("execute")                                     # stage dispatch
     assert loop.submit(ws, "pass")["submitted"]
     assert loop.gate(ws, "pass")["step"] == "evaluate"         # execute gate
-    nxt("evaluate")                                    # stage dispatch
+    evaluate_action = nxt("evaluate")                  # stage dispatch
+    evaluate_state = loop.load(ws)
+    evaluate_binding = loop.review_kernel_binding(
+        evaluate_state, "evaluate", loop._current_task(evaluate_state))
+    assert evaluate_binding["run_id"] == \
+        evaluate_action["review_kernel"]["run_id"]
     assert _walk_pass_eval(ws)["step"] == "em"                 # evaluate gate
     nxt("em")
     assert _walk_pass_em(ws, loop.load(ws))["step"] == "signoff"  # em gate

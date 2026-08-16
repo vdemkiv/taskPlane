@@ -55,6 +55,28 @@ LOOP_FILE = "loop.json"
 # was dispatched. Final EM uses the review profile through the same kernel.
 EVALUATE_ROUTE_STAGE = "build"
 
+
+def _review_kernel_binding_key(step: str, task: dict | None) -> str:
+    return f"{step}:{str((task or {}).get('id') or '_')}"
+
+
+def review_kernel_binding(state: dict, step: str,
+                          task: dict | None = None) -> dict | None:
+    """Return the exact ReviewKernel identity minted for one loop action.
+
+    Historical kernel runs intentionally coexist for audit/resume. Consumers
+    must therefore follow this engine-owned pointer and never ask ReviewKernel
+    to select a global latest/only active run.
+    """
+    row = ((state.get("review_kernel_runs") or {}).get(
+        _review_kernel_binding_key(step, task)))
+    if not isinstance(row, dict):
+        return None
+    run_id = str(row.get("run_id") or "")
+    if len(run_id) != 32 or any(ch not in "0123456789abcdef" for ch in run_id):
+        return None
+    return dict(row)
+
 def _state_dir(ws: str) -> str:
     """Loop coordination state. v1.5.1: state is PER-USER even in team/repo
     knowledge mode — share knowledge, not the state machine. Two teammates'
@@ -1051,8 +1073,10 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         req_rec = reqs.get_requirement(ws, rid)
 
     review_kernel = None
+    review_workspace = None
     if step in ("evaluate", "em"):
         diff_ws = wtree if step == "evaluate" and state.get("parallel") else ws
+        review_workspace = os.path.realpath(diff_ws)
         base_ref = state.get("baseline") or "HEAD"
         try:
             review_kernel, routing = _review_kernel(
@@ -1064,6 +1088,18 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                              "reason": f"{exc.__class__.__name__}: {exc}"}
             routing = {"lenses": [], "context": {
                 "status": "kernel_unavailable", "breadth": "routed"}}
+        binding = {
+            "schema": "taskplane.review-kernel-binding/v1",
+            "run_id": review_kernel.get("run_id"),
+            "workspace": review_workspace,
+            "stage": (EVALUATE_ROUTE_STAGE if step == "evaluate" else
+                      "review"),
+            "status": review_kernel.get("status"),
+        }
+        with mutate(ws) as fresh:
+            if fresh is not None:
+                fresh.setdefault("review_kernel_runs", {})[
+                    _review_kernel_binding_key(step, task)] = binding
         tp.trace(ws, "lens_route", step=step, requested_breadth="routed",
                  engine_ran="signals" in (routing.get("context") or {}),
                  lenses=[[x["id"], x["mode"]]
@@ -1452,12 +1488,15 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     if errors:
         return errors
     errors.extend(_design_current_errors(ws, state))
+    import review as _review
+    binding = review_kernel_binding(state, "evaluate", task)
+    kernel_ws = str((binding or {}).get("workspace") or ws)
     kernel = None
-    try:
-        import review as _review
-        kernel = _review._load_state(ws)
-    except Exception:
-        kernel = None
+    if binding:
+        try:
+            kernel = _review._load_state(kernel_ws, binding["run_id"])
+        except Exception:
+            kernel = None
     if not kernel or kernel.get("stage") != EVALUATE_ROUTE_STAGE:
         # Compatibility for callers that historically submitted and gated an
         # evaluator directly without first asking for `loop next`.  This is
@@ -1466,15 +1505,21 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
         try:
             action = getattr(next_action, "__wrapped__", next_action)(ws)
             if not action.get("error"):
-                kernel = _review._load_state(ws)
+                state = load(ws) or state
+                binding = review_kernel_binding(state, "evaluate", task)
+                kernel_ws = str((binding or {}).get("workspace") or ws)
+                if binding:
+                    kernel = _review._load_state(
+                        kernel_ws, binding["run_id"])
         except Exception:
             kernel = None
     if kernel and kernel.get("status") == "ready" and \
             kernel.get("stage") == EVALUATE_ROUTE_STAGE:
         try:
             _review.collect_review(
-                ws, publish=False, run_id=kernel.get("run_id"))
-            kernel = _review._load_state(ws, kernel.get("run_id"))
+                kernel_ws, publish=False, run_id=kernel.get("run_id"))
+            kernel = _review._load_state(
+                kernel_ws, kernel.get("run_id"))
         except Exception as exc:
             errors.append("evaluation leased slot collection failed: "
                           f"{exc.__class__.__name__}: {exc}")
@@ -1819,12 +1864,17 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
         try:
             import review as _review
             import review_evidence as _review_evidence
-            kernel = _review._load_state(ws)
+            binding = review_kernel_binding(
+                state, "em", _current_task(state))
+            if not binding:
+                raise RuntimeError("loop state has no bound EM review kernel")
+            kernel_ws = str(binding.get("workspace") or ws)
+            kernel = _review._load_state(kernel_ws, binding["run_id"])
             if kernel.get("status") != "complete" or kernel.get("stage") != "review":
                 errors.append("engineering selective review kernel is incomplete")
             else:
                 current = _review_evidence._read_current(
-                    _review_evidence.ArtifactStore(ws))
+                    _review_evidence.ArtifactStore(kernel_ws))
                 for key, value in (current or {}).items():
                     if meta.get(key) != value:
                         errors.append("engineering review contradicts canonical "

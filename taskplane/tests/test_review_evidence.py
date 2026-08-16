@@ -8,8 +8,65 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import review_evidence as evidence  # noqa: E402
+import evidence as evaluation_evidence  # noqa: E402
+import lens  # noqa: E402
+import review  # noqa: E402
 import runnability  # noqa: E402
+import runtime_eval  # noqa: E402
 import target  # noqa: E402
+
+
+class TestBoundReviewKernelIdentity(unittest.TestCase):
+    def test_multiple_ready_runs_use_the_explicit_kernel_identity(self):
+        ws = tempfile.mkdtemp(prefix="tp-bound-review-kernel-")
+        store = evidence.ArtifactStore(ws)
+        dispositions = {
+            row["id"]: {"verdict": "deep" if row["id"] == "architecture"
+                        else "n/a", "evidence": ["test fixture"]}
+            for row in lens.load_catalog()["lenses"]
+        }
+        decision = store.put("routing-decision", {
+            "schema": "taskplane.routing-decision/v2",
+            "dispositions": dispositions,
+        })
+        quality = store.put("graph-quality", {
+            "schema": "taskplane.graph-quality/v1", "status": "complete",
+        })
+
+        def save(run_id, target):
+            review._save_state(ws, {
+                "schema": "taskplane.review-run-state/v2",
+                "run_id": run_id, "status": "ready", "stage": "build",
+                "target": {"fingerprint": target},
+                "quality": quality, "envelope": {"fingerprint": target},
+                "routing_decision": decision,
+                "routing": {"lenses": []},
+                "manifest": {
+                    "target_fingerprint": target,
+                    "graph_quality": quality,
+                    "routing_decision": decision,
+                },
+                "slots": [],
+            })
+
+        historical = "1" * 32
+        current = "2" * 32
+        save(historical, "target-historical")
+        save(current, "target-current")
+        with self.assertRaisesRegex(
+                review.ReviewKernelError, "several review runs are active"):
+            review._load_state(ws)
+
+        obligations = evaluation_evidence._canonical_kernel_obligations(
+            ws, "build", run_id=current)
+        self.assertEqual(obligations["citation"]["run_id"], current)
+        self.assertEqual(
+            obligations["citation"]["target_fingerprint"], "target-current")
+        facts = runtime_eval.review_facts(
+            ws, "evaluate", run_id=current)
+        self.assertTrue(facts["graph_before_route"])
+        self.assertTrue(facts["shared_review_context"])
+        self.assertTrue(facts["selective_lens_mapping"])
 
 
 class TestImmutableEnvelope(unittest.TestCase):

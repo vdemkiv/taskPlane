@@ -265,7 +265,7 @@ def assess(step: str, facts: dict | None,
     }
 
 
-def review_facts(ws: str, step: str) -> dict:
+def review_facts(ws: str, step: str, *, run_id: str) -> dict:
     """Machine-owned ReviewKernel facts used by Evaluate and final EM."""
     expected_stage = "build" if step == "evaluate" else "review"
     facts = {key: False for key in REVIEW_FACTS}
@@ -273,7 +273,7 @@ def review_facts(ws: str, step: str) -> dict:
         import review
         import review_evidence
 
-        state = review._load_state(ws)
+        state = review._load_state(ws, run_id)
         if not isinstance(state, dict) or state.get("stage") != expected_stage:
             return facts
         store = review_evidence.ArtifactStore(ws)
@@ -372,7 +372,7 @@ def review_facts(ws: str, step: str) -> dict:
     return facts
 
 
-def collect_review_if_ready(ws: str, step: str) -> None:
+def collect_review_if_ready(ws: str, step: str, *, run_id: str) -> None:
     """Seal authored leased results before the submission checkpoint.
 
     Collection used to happen only inside the later gate.  The automatic
@@ -384,7 +384,7 @@ def collect_review_if_ready(ws: str, step: str) -> None:
     try:
         import review
 
-        state = review._load_state(ws)
+        state = review._load_state(ws, run_id)
         if state.get("stage") == expected_stage and state.get("status") == "ready":
             review.collect_review(ws, publish=False, run_id=state.get("run_id"))
     except Exception:
@@ -418,9 +418,14 @@ def guide_loop(ws: str, task_id: str | None = None) -> dict:
         candidate = (task or {}).get("workspace")
         if candidate and os.path.isdir(candidate):
             review_ws = candidate
-    if step in {"evaluate", "em"}:
-        collect_review_if_ready(review_ws, step)
-    facts = review_facts(review_ws, step) if step in {"evaluate", "em"} else {}
+    binding = (loop.review_kernel_binding(state, step, task)
+               if step in {"evaluate", "em"} else None)
+    if binding:
+        review_ws = str(binding.get("workspace") or review_ws)
+        collect_review_if_ready(
+            review_ws, step, run_id=binding["run_id"])
+    facts = (review_facts(review_ws, step, run_id=binding["run_id"])
+             if binding else {}) if step in {"evaluate", "em"} else {}
     result = assess(step, facts, correction_attempts=attempts)
     recovered = result["status"] == "on_path" and attempts > 0
     with loop.mutate(ws) as fresh:
