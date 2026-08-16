@@ -129,6 +129,22 @@ class RepositoryPreflight:
             manifest = self._load_or_create(
                 identity, run_id=run, checkout=layout.worktree_root,
                 host=host, target=parsed)
+            persisted_target = manifest.get("target") or {}
+            persisted_checkout = str(
+                (manifest.get("repository") or {}).get("checkout") or "")
+            if manifest.get("status") == "ready" and \
+                    (manifest.get("preflight") or {}).get("status") == \
+                    "ready" and persisted_target.get("ok") is True and \
+                    os.path.isdir(persisted_checkout):
+                # A ready run is pinned evidence, not a request to contact
+                # GitHub again. The downstream target preflight re-verifies
+                # the local head/diff before governance starts.
+                return {
+                    "schema": "taskplane.preflight/v1", "run_id": run,
+                    "status": "ready", "checkout": persisted_checkout,
+                    "target": persisted_target,
+                    "revision": int(manifest["revision"]),
+                }
             if not (tools.get("git") or {}).get("present"):
                 return self._needs_user(run, manifest, self._action(
                     run, kind="install_git",
@@ -169,10 +185,17 @@ class RepositoryPreflight:
                                 "will resume this same run."),
                         detail=exc.detail, command_argv=command,
                         choices=("approve", "retry", "cancel")))
+                if exc.kind == "network":
+                    return self._needs_user(run, manifest, self._action(
+                        run, kind="retry_acquisition",
+                        prompt=("Repository transfer failed. taskPlane "
+                                "already limited the fetch to the requested "
+                                "target and tried its compatible transport; "
+                                "retry or cancel."),
+                        detail=exc.detail, choices=("retry", "cancel")))
                 return self._needs_user(run, manifest, self._action(
                     run, kind="retry_acquisition",
-                    prompt=("Repository preparation needs your input. Retry, "
-                            "change credentials, or cancel."),
+                    prompt=("Repository checkout failed. Retry or cancel."),
                     detail=exc.detail,
                     choices=("retry", "cancel")))
             target = {

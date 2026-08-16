@@ -116,6 +116,8 @@ class TestInteractivePreflight(unittest.TestCase):
         self.assertEqual(out["status"], "needs_user")
         self.assertEqual(out["action"]["kind"], "retry_acquisition")
         self.assertIn("unreachable", out["action"]["detail"])
+        self.assertEqual(out["action"]["choices"], ["retry", "cancel"])
+        self.assertNotIn("credentials", out["action"]["prompt"].lower())
 
     def test_successful_pr_preflight_owns_checkout_and_stays_precontract(self):
         checkout = _checkout(os.path.join(
@@ -132,6 +134,26 @@ class TestInteractivePreflight(unittest.TestCase):
         self.assertEqual(persisted["repository"]["checkout"], checkout)
         self.assertEqual(persisted["contract"]["status"], "inactive")
         self.assertNotIn(".em-review", checkout)
+
+    def test_ready_run_is_reused_without_fetching_github_again(self):
+        checkout = _checkout(os.path.join(
+            self.home, "checkouts", "project", "worktrees", "pr-7-aaaa"))
+        result = repository.AcquisitionResult(
+            checkout=checkout, base_ref="origin/main", base="b" * 40,
+            head="a" * 40, merge_base="c" * 40,
+            changed_files=("src/a.py",), metadata={"title": "Example"})
+        acquirer = _Acquirer(result=result)
+        engine = self.engine(_tools(), acquirer)
+
+        first = engine.prepare(
+            PR, workspace=self.ws, host={"kind": "codex"}, run_id="r-ready")
+        second = engine.prepare(
+            PR, workspace=self.ws, host={"kind": "codex"}, run_id="r-ready")
+
+        self.assertEqual(first["status"], "ready")
+        self.assertEqual(second["status"], "ready")
+        self.assertEqual(second["target"]["head"], "a" * 40)
+        self.assertEqual(len(acquirer.calls), 1)
 
     def test_user_authorization_is_persisted_and_resumable(self):
         engine = self.engine(_tools(authenticated=False))
@@ -471,6 +493,47 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
 
 
 class TestManagedMirrorAcquisition(unittest.TestCase):
+    def test_new_mirror_is_initialized_without_cloning_every_remote_ref(self):
+        home = tempfile.mkdtemp(prefix="tp-mirror-targeted-")
+        manager = repository.RepositoryManager(home=home)
+        identity = storage.identity_from_remote(
+            "https://github.com/backstage/backstage.git")
+        layout = storage.resolve_layout(
+            identity, home=home, run_id="acquisition")
+        calls = []
+
+        def initialize(argv, **_kwargs):
+            calls.append(argv)
+            if argv[:3] == ["git", "init", "--bare"]:
+                os.makedirs(argv[3], exist_ok=True)
+            return ""
+
+        with mock.patch.object(manager, "_run", side_effect=initialize):
+            manager._ensure_mirror(identity, layout)
+
+        self.assertEqual(calls[0][:3], ["git", "init", "--bare"])
+        self.assertTrue(any("remote" in argv and "add" in argv
+                            for argv in calls))
+        self.assertFalse(any("clone" in argv for argv in calls))
+        self.assertTrue(os.path.isdir(layout.mirror_path))
+
+    def test_rpc_http_400_retries_once_with_http11(self):
+        manager = repository.RepositoryManager(
+            home=tempfile.mkdtemp(prefix="tp-mirror-transport-"))
+        first = repository.RepositoryAcquisitionError(
+            "network", "RPC failed; HTTP 400 curl 22")
+        with mock.patch.object(manager, "_run",
+                               side_effect=[first, "ok"]) as run:
+            result = manager._fetch(
+                ["git", "--git-dir", "/tmp/mirror.git", "fetch", "origin",
+                 "+refs/pull/7/head:refs/taskplane/pr/7/head"])
+
+        self.assertEqual(result, "ok")
+        fallback = run.call_args_list[1].args[0]
+        self.assertEqual(fallback[:3],
+                         ["git", "-c", "http.version=HTTP/1.1"])
+        self.assertIn("refs/pull/7/head", " ".join(fallback))
+
     def test_review_diff_is_materialized_before_preflight_can_be_ready(self):
         manager = repository.RepositoryManager(
             home=tempfile.mkdtemp(prefix="tp-mirror-hydrate-"))

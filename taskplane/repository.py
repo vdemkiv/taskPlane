@@ -39,7 +39,9 @@ def _classify_failure(output: str) -> str:
         return "authentication"
     if any(token in value for token in (
             "could not resolve host", "network is unreachable", "timed out",
-            "connection reset", "connection refused", "temporary failure")):
+            "connection reset", "connection refused", "temporary failure",
+            "rpc failed", "http 400", "http/2 stream", "early eof",
+            "remote end hung up")):
         return "network"
     return "checkout"
 
@@ -101,6 +103,19 @@ class RepositoryManager:
                 _classify_failure(output), output[-1200:] or
                 f"git diff hydration exited {result.returncode}")
 
+    def _fetch(self, argv: list[str]) -> str:
+        """Run one targeted fetch with a bounded HTTP/1.1 transport fallback."""
+        try:
+            return self._run(argv)
+        except RepositoryAcquisitionError as exc:
+            detail = exc.detail.lower()
+            if not any(token in detail for token in (
+                    "rpc failed", "http 400", "http/2 stream",
+                    "early eof", "remote end hung up")):
+                raise
+            fallback = [argv[0], "-c", "http.version=HTTP/1.1", *argv[1:]]
+            return self._run(fallback)
+
     @staticmethod
     def _remote_url(identity: storage.RepositoryIdentity) -> str:
         if identity.kind != "hosted" or not identity.host or \
@@ -148,7 +163,13 @@ class RepositoryManager:
                 prefix=".mirror-acquire-", dir=layout.checkout_root)
             candidate = os.path.join(temporary, "mirror.git")
             try:
-                self._run(["git", "clone", "--mirror", remote, candidate])
+                # PR review never needs every branch/tag/ref. An empty bare
+                # mirror lets acquire_pr fetch only its base and PR head;
+                # `clone --mirror` made large public repositories download
+                # their complete ref universe and fail with GitHub HTTP 400.
+                self._run(["git", "init", "--bare", candidate])
+                self._run(["git", "--git-dir", candidate, "remote", "add",
+                           "origin", remote])
                 os.replace(candidate, layout.mirror_path)
             finally:
                 # This directory was minted above and can contain only an
@@ -175,7 +196,7 @@ class RepositoryManager:
                 self._ensure_mirror(identity, layout)
                 head_ref = f"refs/taskplane/pr/{number}/head"
                 base_ref = f"refs/remotes/origin/{base_name}"
-                self._run([
+                self._fetch([
                     "git", "--git-dir", layout.mirror_path, "fetch", "origin",
                     f"+refs/heads/{base_name}:{base_ref}",
                     f"+refs/pull/{number}/head:{head_ref}"])
@@ -227,8 +248,8 @@ class RepositoryManager:
         try:
             with self._acquisition_lock(layout):
                 self._ensure_mirror(identity, layout)
-                self._run(["git", "--git-dir", layout.mirror_path, "fetch",
-                           "--prune", "origin"])
+                self._fetch(["git", "--git-dir", layout.mirror_path,
+                             "fetch", "--prune", "origin"])
                 head = self._run(["git", "--git-dir", layout.mirror_path,
                                   "rev-parse", "HEAD"])
                 checkout = os.path.join(
