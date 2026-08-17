@@ -69,6 +69,22 @@ def test_attention_remains_visible_before_and_after_terminal_completion():
             assert loop.command_wave_update(wave, "a", attention) == []
 
 
+def test_attention_pauses_until_matching_explicit_resume():
+    for attention, resume in (("approval_required", "approved"),
+                              ("input_required", "input_provided")):
+        wave = loop.command_wave_create("wave-1", ["a"])
+        assert [event["state"] for event in loop.command_wave_update(
+            wave, "a", attention)] == [attention]
+        encoded = json.loads(json.dumps(wave))
+        resumed = loop.command_wave_resume(encoded, ["a"])
+        assert resumed["members"]["a"] == attention
+        assert resumed["ordinary_completion_deliveries"] == 0
+        assert loop.command_wave_update(resumed, "a", resume) == []
+        assert resumed["members"]["a"] == "running"
+        assert [event["state"] for event in loop.command_wave_update(
+            resumed, "a", "succeeded")] == ["wave_completed"]
+
+
 def test_production_workflows_aggregate_every_completion_order():
     evaluator_schema = {
         "$id": "taskplane.evaluator-output/v1",
@@ -113,19 +129,47 @@ def test_production_workflows_resume_without_relaunch_and_surface_attention():
         assert run["result"]["command_wave"]["launches"] == 2
         assert len(run["result"]["receipts"]) == 2
 
-        for attention, states in (
-                ("approval_required", ["approval_required", "succeeded"]),
-                ("input_required", ["succeeded", "input_required"])):
-            events = [{"member": "a", "state": state} for state in states]
+        for attention, resume in (
+                ("approval_required", "approved"),
+                ("input_required", "input_provided")):
+            events = [{"member": "a", "state": attention}]
             single = [dict(briefs[0])]
-            visible = _run_workflow(
+            paused = _run_workflow(
                 name, {"briefs": single, "command_events": events})
             emitted = [event["state"]
-                       for event in visible["result"]["command_events"]]
+                       for event in paused["result"]["command_events"]]
             assert emitted.count(attention) == 1
-            assert emitted.count("wave_completed") == 1
-            assert visible["result"]["command_wave"]["members"]["a"] == \
-                "succeeded"
+            assert "wave_completed" not in emitted
+            assert paused["calls"] == []
+            paused_wave = paused["result"]["command_wave"]
+            assert paused_wave["members"]["a"] == attention
+            assert paused_wave["ordinary_completion_deliveries"] == 0
+
+            # A process/runtime restart with no human transition remains
+            # paused and neither invokes nor completes the member.
+            restarted = _run_workflow(
+                name, {"briefs": single, "command_wave": paused_wave})
+            assert restarted["calls"] == []
+            assert restarted["result"]["command_events"] == []
+            assert restarted["result"]["command_wave"]["members"]["a"] == \
+                attention
+
+            # Only the matching explicit response continues on the same
+            # durable handle.  It is a resume, not another launch.
+            continued = _run_workflow(name, {
+                "briefs": single,
+                "command_wave": restarted["result"]["command_wave"],
+                "command_events": [{"member": "a", "state": resume}],
+            })
+            assert continued["calls"] == [
+                f"{'task' if name == 'execute' else 'eval'}:a"]
+            final_wave = continued["result"]["command_wave"]
+            assert final_wave["handles"]["a"] == "handle-a"
+            assert final_wave["launches"] == 1
+            assert final_wave["members"]["a"] == "succeeded"
+            assert [event["state"] for event in
+                    continued["result"]["command_events"]] == \
+                ["wave_completed"]
 
 
 def test_resume_reuses_bound_handles_and_preserves_interruption():

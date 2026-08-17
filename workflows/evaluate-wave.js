@@ -28,6 +28,8 @@ const TERMINAL = new Set(['succeeded', 'failed', 'timed_out', 'cancelled']);
 const ATTENTION = new Set([
   'approval_required', 'input_required', 'failed', 'timed_out', 'cancelled',
 ]);
+const PAUSED = new Set(['approval_required', 'input_required']);
+const RESUME = { approved: 'approval_required', input_provided: 'input_required' };
 
 function prepareCommandWave(args, briefs, stage) {
   const members = briefs.map((brief) => String(brief.id));
@@ -66,6 +68,10 @@ function updateCommandWave(wave, member, state) {
   state = String(state);
   if (!(member in wave.members)) throw new Error('unknown command-wave member');
   const events = [];
+  if (state in RESUME) {
+    if (wave.members[member] === RESUME[state]) wave.members[member] = 'running';
+    return events;
+  }
   const attentionKey = member + ':' + state;
   if (ATTENTION.has(state) && !wave.delivered_attention.includes(attentionKey)) {
     wave.delivered_attention.push(attentionKey);
@@ -100,7 +106,8 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
   // One governed read-only evaluator per built-task brief, fanned out
   // with a barrier — evaluations are independent by construction.
   const pending = briefs.filter((b) =>
-    !TERMINAL.has(commandWave.members[String(b.id)]));
+    !TERMINAL.has(commandWave.members[String(b.id)]) &&
+    !PAUSED.has(commandWave.members[String(b.id)]));
   const runs = pending.map((b) => async () => {
     const output_contract = b.output_contract || {};
     const output_schema = b.output_schema || output_contract.output_schema;

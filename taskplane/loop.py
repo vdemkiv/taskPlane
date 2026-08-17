@@ -130,6 +130,10 @@ _COMMAND_TERMINAL = frozenset(
 _COMMAND_ATTENTION = frozenset(
     {"approval_required", "input_required", "failed", "timed_out",
      "cancelled"})
+_COMMAND_RESUME = {
+    "approved": "approval_required",
+    "input_provided": "input_required",
+}
 
 
 def command_wave_create(wave_id: str, members: list[str], *,
@@ -182,6 +186,12 @@ def command_wave_update(wave: dict, member: str, state: str) -> list[dict]:
         raise KeyError(member)
     state = str(state)
     events = []
+    if state in _COMMAND_RESUME:
+        # Human attention is a durable pause.  Only its matching explicit
+        # response releases the member; replays after release are harmless.
+        if wave["members"][member] == _COMMAND_RESUME[state]:
+            wave["members"][member] = "running"
+        return events
     attention_key = f"{member}:{state}"
     if state in _COMMAND_ATTENTION:
         if attention_key not in wave["delivered_attention"]:
