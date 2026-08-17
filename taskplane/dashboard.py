@@ -864,7 +864,14 @@ _SEND_JS = (
     'typeof window.openai.sendFollowUpMessage==="function")'
     '{window.openai.sendFollowUpMessage({prompt:m});}'
     'else if(typeof window.sendPrompt==="function"){window.sendPrompt(m);}'
-    'else{tpHint(b,m);}}')
+    'else{tpHint(b,m);}}'
+    '(function(){var r=document.getElementById("tp-inline-review-root")||document;'
+    'if(r.dataset&&r.dataset.tpBound)return;if(r.dataset)r.dataset.tpBound="1";'
+    'r.addEventListener("click",function(e){var b=e.target.closest("button");'
+    'if(!b||!r.contains(b))return;if(b.dataset.tpPrompt)'
+    '{tpSend(b,b.dataset.tpPrompt);return;}if(b.dataset.sev)'
+    '{tpFilter(b.dataset.sev);return;}if(b.dataset.tpfToggle)'
+    '{tpToggle(Number(b.dataset.tpfToggle));}});tpFilter("all");})();')
 
 # Render-reliability contract (v1.5.3): a dashboard's data is too valuable to
 # depend on a single big widget that might get skipped. Three guarantees:
@@ -1132,6 +1139,50 @@ _DOC_VARS = """
   .tp-lede{font-size:13px;color:var(--text-secondary);line-height:1.65;margin:2px 0 0;}
   hr.pg{border:0;border-top:1px solid var(--border);margin:26px 0 0;}
 """
+
+
+def inline_review_style() -> str:
+    """Self-contained, root-scoped palette for Codex inline fragments."""
+    return """
+#tp-inline-review-root{
+  color-scheme:light dark;
+  --font-sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --surface-0:light-dark(#f0efea,#232220);
+  --surface-1:light-dark(#f7f6f3,#2b2a27);
+  --surface-2:light-dark(#fff,#141412);
+  --border:light-dark(#dcd9d2,#3b3934);
+  --border-strong:light-dark(#b6b2aa,#57544e);
+  --border-danger:light-dark(#a8331f,#e8836d);
+  --line:light-dark(#b6b2aa,#57544e);
+  --changed-bg:light-dark(#eceae4,#302e2a);
+  --accent:light-dark(#1f1e1c,#f2f1ed);
+  --text-primary:light-dark(#1f1e1c,#f2f1ed);
+  --text-secondary:light-dark(#55524c,#b9b5ad);
+  --text-muted:light-dark(#8b877f,#87837b);
+  --text-danger:light-dark(#a8331f,#e8836d);
+  --bg-danger:light-dark(#f6e3df,#3a231e);
+  --danger:light-dark(#a8331f,#e8836d);
+  --danger-bg:light-dark(#f6e3df,#3a231e);
+  --text-warning:light-dark(#8a5a10,#e0b062);
+  --bg-warning:light-dark(#f8ecd6,#3a2f1a);
+  box-sizing:border-box;max-width:940px;margin:0 auto;padding:8px 4px 32px;
+  color:var(--text-primary);font-family:var(--font-sans);
+  -webkit-font-smoothing:antialiased;
+}
+#tp-inline-review-root *,#tp-inline-review-root *::before,
+#tp-inline-review-root *::after{box-sizing:border-box}
+#tp-inline-review-root .sr-only{position:absolute;width:1px;height:1px;
+  overflow:hidden;clip:rect(0,0,0,0)}
+#tp-inline-review-root .tp-sec{border-top:1px solid var(--border);
+  margin-top:28px;padding-top:14px}
+#tp-inline-review-root .tp-kicker{font-family:var(--font-mono);font-size:10px;
+  letter-spacing:1.6px;text-transform:uppercase;color:var(--text-muted);
+  margin:0 0 4px}
+#tp-inline-review-root .tp-lede{font-size:13px;color:var(--text-secondary);
+  line-height:1.65;margin:2px 0 0}
+#tp-inline-review-root button{appearance:none}
+""".strip()
 
 
 def standalone_document(fragments, title="review findings") -> str:
@@ -1632,8 +1683,8 @@ def _gate_box(meta):
         f'line-height:1.7;margin-bottom:12px">{note}</div>'
         f'<div style="display:flex;gap:8px;flex-wrap:wrap">'
         + "".join(
-            f'<button onclick="tpSend(this,'
-            f'&#39;{_jsattr(b["prompt"])}&#39;)" style="border:'
+            f'<button type="button" data-tp-prompt="{_attr(b["prompt"])}" '
+            f'style="border:'
             f'{"none" if b.get("primary") else "1px solid var(--surface-2)"};'
             f'border-radius:6px;padding:9px 15px;font-size:13px;'
             f'font-weight:500;cursor:pointer;font-family:var(--font-sans);'
@@ -1697,6 +1748,11 @@ def _review_execution_panel(meta):
         return ""
     dynamic = record.get("dynamic_validation") or {}
     render = record.get("functionality_render") or {}
+    if record.get("selection") == "dynamic" and \
+            render.get("status") == "declined" and \
+            render.get("detail") == "human did not select inline rendering":
+        render = dict(render, status="not_selected",
+                      detail="not included in the selected dynamic review mode")
     static = bool(record.get("static_only"))
     label = "STATIC-ONLY" if static else "DYNAMIC REVIEW"
     rows = "".join(
@@ -1713,9 +1769,9 @@ def _review_execution_panel(meta):
     if record.get("status") == "needs_user" and action.get("choices"):
         actions = ('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
                    + "".join(
-                       f'<button type="button" onclick="tpSend(this,&#39;'
-                       f'{_jsattr(str(choice.get("prompt") or ""))}'
-                       f'&#39;)" style="border:1px solid var(--border-strong);'
+                       f'<button type="button" data-tp-prompt="'
+                       f'{_attr(str(choice.get("prompt") or ""))}" '
+                       f'style="border:1px solid var(--border-strong);'
                        f'background:none;border-radius:6px;padding:7px 11px;'
                        f'cursor:pointer;color:var(--text-primary)">'
                        f'{_esc(choice.get("label") or choice.get("response"))}</button>'
@@ -1727,6 +1783,112 @@ def _review_execution_panel(meta):
         '<p class="tp-kicker">review evidence</p>'
         f'<div style="font-family:var(--font-mono);font-size:11px;'
         f'font-weight:600;margin-bottom:7px">{label}</div>{rows}{actions}</section>')
+
+
+def _review_dor_panel(meta):
+    dor = meta.get("dor_evidence")
+    if not isinstance(dor, dict):
+        return ""
+    status = str(dor.get("status") or "not_ready")
+    source = str(dor.get("specification_source") or "none")
+    rows = "".join(
+        '<div style="padding:6px 0;border-top:1px solid var(--border)">'
+        f'<span style="{_MICRO}">{_esc(row.get("check") or "check")}</span> '
+        f'<b style="font-size:12px;font-weight:500">'
+        f'{_esc(row.get("status") or "unknown")}</b>'
+        f'<div style="font-size:11.5px;color:var(--text-secondary)">'
+        f'{_esc(row.get("detail") or "")}</div></div>'
+        for row in dor.get("checks") or [])
+    commits = "".join(
+        '<li style="margin:3px 0"><code style="font-family:var(--font-mono);'
+        f'font-size:10.5px">{_esc(str(row.get("sha") or "")[:8])}</code> '
+        f'{_esc(row.get("subject") or "")}</li>'
+        for row in dor.get("commits") or [])
+    commit_html = (f'<details style="margin-top:8px"><summary style="cursor:pointer;'
+                   f'{_MICRO}">PR COMMIT SPECIFICATION — '
+                   f'{len(dor.get("commits") or [])}</summary>'
+                   f'<ul style="margin:7px 0 0 18px;padding:0;font-size:12px;'
+                   f'color:var(--text-secondary)">{commits}</ul></details>'
+                   if commits else "")
+    requirements = "".join(
+        f'<li style="margin:3px 0">{_esc(row)}</li>'
+        for row in dor.get("requirements") or [])
+    acceptance = "".join(
+        f'<li style="margin:3px 0">{_esc(row)}</li>'
+        for row in dor.get("acceptance") or [])
+    requested = dor.get("requested_lenses") or {}
+    dispositions = dor.get("lens_dispositions") or {}
+    directives = "".join(
+        '<li style="margin:3px 0">'
+        f'{_esc(row.get("text") or "")} '
+        f'<span style="{_MICRO}">→ '
+        f'{_esc(", ".join(sorted(
+            lid + " (" + str(dispositions.get(lid) or "requested") + ")"
+            for lid, values in requested.items()
+            if (row.get("text") or "") in values)) or "unmapped")}'
+        '</span></li>'
+        for row in dor.get("review_directives") or [])
+    lists = "".join(
+        f'<div style="margin-top:10px"><div style="{_MICRO}">{label} — {count}</div>'
+        f'<ul style="margin:6px 0 0 18px;padding:0;font-size:12px;'
+        f'color:var(--text-secondary)">{items}</ul></div>'
+        for label, count, items in (
+            ("PR REQUIREMENTS", len(dor.get("requirements") or []), requirements),
+            ("ACCEPTANCE CRITERIA", len(dor.get("acceptance") or []), acceptance),
+            ("REVIEW DIRECTIVES / LENS DISPATCH",
+             len(dor.get("review_directives") or []), directives),
+        ) if items)
+    return (
+        '<section class="tp-sec" id="tp-review-dor">'
+        '<p class="tp-kicker">definition of ready — specification evidence</p>'
+        f'<div style="font-family:var(--font-mono);font-size:11px;'
+        f'font-weight:600;margin-bottom:7px">{_esc(status.upper())} · '
+        f'source: {_esc(source.replace("_", " "))}</div>{rows}{lists}{commit_html}'
+        '</section>')
+
+
+def _requirements_validation_panel(meta):
+    validation = meta.get("requirements_validation")
+    if not isinstance(validation, dict):
+        return ""
+    counts = validation.get("counts") or {}
+    summary = " · ".join(
+        f'{int(counts.get(key, 0))} {label}' for key, label in (
+            ("met", "met"), ("partial", "partial"),
+            ("not_met", "not met"), ("cannot_verify", "cannot verify")))
+    rows = []
+    for row in validation.get("criteria") or []:
+        evidence = "".join(
+            f'<li style="margin:2px 0">{_esc(item)}</li>'
+            for item in row.get("evidence") or [])
+        findings = "".join(
+            '<li style="margin:2px 0">'
+            f'{_esc(item.get("severity") or "")} · '
+            f'{_esc(item.get("title") or "finding")}'
+            f'{" — " + _esc(item.get("file")) if item.get("file") else ""}'
+            '</li>' for item in row.get("related_findings") or [])
+        rows.append(
+            '<details style="border-top:1px solid var(--border);padding:8px 0">'
+            '<summary style="cursor:pointer;font-size:12.5px">'
+            f'<code style="font-family:var(--font-mono);font-size:10.5px">'
+            f'{_esc(row.get("id") or "AC")}</code> '
+            f'<b>{_esc(str(row.get("status") or "unknown").replace("_", " "))}</b>'
+            f' · {_esc(row.get("criterion") or "")}</summary>'
+            f'<div style="margin:7px 0 0 18px;font-size:11.5px;color:'
+            f'var(--text-secondary)"><div style="{_MICRO}">EVIDENCE · '
+            f'{_esc(row.get("validation_mode") or "static")}</div>'
+            f'<ul style="margin:4px 0 7px 16px;padding:0">{evidence}</ul>'
+            + (f'<div style="{_MICRO}">RELATED FINDINGS</div><ul style="margin:'
+               f'4px 0 0 16px;padding:0">{findings}</ul>' if findings else "")
+            + '</div></details>')
+    return (
+        '<section class="tp-sec" id="tp-requirements-validation">'
+        '<p class="tp-kicker">requirements validation — implementation result</p>'
+        f'<div style="font-family:var(--font-mono);font-size:11px;'
+        f'font-weight:600;margin-bottom:7px">'
+        f'{_esc(str(validation.get("status") or "not available").upper())}</div>'
+        f'<div style="font-size:11.5px;color:var(--text-secondary);'
+        f'margin-bottom:6px">{_esc(summary)}</div>{"".join(rows)}</section>')
 
 
 def _review_notes(meta):
@@ -1814,7 +1976,7 @@ def render_findings(findings, meta=None, out=None):
         return (
             f'<button type="button" class="tpf-chip" data-sev="{key}" '
             f'aria-pressed="false" aria-label="filter: {label} ({n})" '
-            f"onclick=\"tpFilter('{key}')\" "
+            f'data-tp-action="filter" '
             f'style="{_chip_style}">'
             f'<span style="font-size:15px;font-weight:500;color:{col}">{n}'
             f'</span> {label}</button>')
@@ -1862,7 +2024,7 @@ def render_findings(findings, meta=None, out=None):
             f'var(--border);margin-top:10px;padding-top:4px">{body}</div>'
             if body else "")
         toggle = (
-            f' · <button type="button" onclick="tpToggle({i})" '
+            f' · <button type="button" data-tpf-toggle="{i}" '
             f'aria-expanded="false" aria-label="toggle failure and fix detail" '
             f'style="border:none;background:none;color:var(--text-muted);'
             f'font-family:var(--font-mono);font-size:11px;cursor:pointer;'
@@ -1921,6 +2083,8 @@ def render_findings(findings, meta=None, out=None):
     if not graph_html and meta.get("ws"):
         graph_html = render_review_graph(meta["ws"], meta.get("impact"))
     execution_html = _review_execution_panel(meta)
+    dor_html = _review_dor_panel(meta)
+    requirements_html = _requirements_validation_panel(meta)
     review_notes_html = _review_notes(meta)
     evidence_html = _clean_evidence(meta)
     fingerprints_html = _diagnostic_fingerprints(meta)
@@ -1943,7 +2107,8 @@ def render_findings(findings, meta=None, out=None):
         f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px" '
         f'id="tpf-chips">{chips}</div>'
         f'<div id="tpf-list">{cards_html}</div>'
-        f'{fingerprints_html}{execution_html}{coverage_html}{graph_html}'
+        f'{fingerprints_html}{execution_html}{dor_html}{requirements_html}'
+        f'{coverage_html}{graph_html}'
         f'{evidence_html}{clean_html}{review_notes_html}{gate_html}{note}'
         f'<script>{_SEND_JS}'
         f'function tpFilter(s){{'

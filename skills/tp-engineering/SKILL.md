@@ -124,11 +124,18 @@ yourself: on karpenter#9464 six lens agents each burned actions rediscovering
 that `go test` could not run — one fact about the environment, paid for six
 times. The probe is a capability fact, not permission to silently downgrade
 the review. Always present the engine's execution preflight, including its
-exact discovered commands. If the human selects dynamic validation, request
-the required host approvals, install missing dependencies when approved, and
-run each declared command once. Proceed static only after the human explicitly
-chooses static, or after selected dynamic work is recorded unavailable with
-host evidence.
+discovered commands. The human's dynamic option is approval for the bounded
+dependency install and command run; do not require an exact receipt phrase.
+Run each declared command once. A command that starts and fails is a review bug,
+not infrastructure unavailability: record `review evidence dynamic_validation
+failed`, which becomes a high-severity canonical finding. If validation-only
+repairs can make the checks runnable, create the engine-managed disposable copy
+with `review sandbox`, edit and execute only inside that copy, and record the
+successful result as conditional sandbox evidence. Never commit or push those
+changes, never mutate the reviewed checkout, and never let sandbox success erase
+the original build-failure finding. Use `unavailable` only when the host or
+toolchain cannot execute the command at all. Proceed static only after the human
+explicitly chooses static or dynamic work reaches a terminal evidence state.
 
 On hosts that do not register `agents/` as named definitions, dispatch a
 general subagent with the brief plus `agents/tp-lens.md` as its role

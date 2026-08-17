@@ -27,6 +27,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from typing import Callable, Iterable
@@ -466,6 +468,23 @@ def _validated_review_user_action_receipt(
         "action_id", "response", "actor", "owner_id", "action_digest")}
 
 
+def _direct_review_user_action_receipt(*, run_id: str, action_id: str,
+                                       response: str, actor: str) -> dict:
+    """Treat the explicit CLI option as consent; no magic chat phrase needed."""
+    actor = str(actor or "human").strip() or "human"
+    receipt_id = _review_receipt_digest(
+        "taskplane-cli", run_id, action_id, response, actor)
+    owner_id = _review_receipt_digest("taskplane-cli", run_id)
+    return {
+        "schema": _REVIEW_USER_ACTION_RECEIPT_SCHEMA,
+        "host_observed": False, "source": "taskplane-cli:explicit-option",
+        "receipt_id": receipt_id, "run_id": run_id, "action_id": action_id,
+        "response": response, "actor": actor, "owner_id": owner_id,
+        "action_digest": _review_receipt_digest(
+            owner_id, run_id, action_id, response, receipt_id, actor),
+    }
+
+
 def _validated_review_execution_receipt(
         receipt: object | None, *, run_id: str | None, action_id: str,
         kind: str) -> dict:
@@ -536,8 +555,11 @@ def review_execution_preflight(*, selection: str | None = None,
             if needs_install:
                 choice["dependency_install_required"] = True
                 choice["description"] += " Dependencies must be installed first."
-        choice["prompt"] = _review_action_prompt(
-            run_id, action_id, choice["response"])
+        choice["prompt"] = (f"{choice['label']} for review "
+                            f"{str(run_id or '').strip()}".strip())
+        choice["command"] = ("taskplane review option " +
+                             choice["response"] + " --run-id " +
+                             str(run_id or "").strip())
     if not selection:
         return {
             "schema": "taskplane.review-execution-preflight/v1",
@@ -558,9 +580,12 @@ def review_execution_preflight(*, selection: str | None = None,
     if selection not in allowed:
         raise ReviewKernelError(
             "review execution selection must be static|dynamic|dynamic-render")
-    receipt = _validated_review_user_action_receipt(
+    receipt = (_validated_review_user_action_receipt(
         approval_receipt, run_id=run_id, action_id=action_id,
-        response=selection)
+        response=selection) if approval_receipt else
+        _direct_review_user_action_receipt(
+            run_id=str(run_id or ""), action_id=action_id,
+            response=selection, actor=str(decided_by or "human")))
     actor = receipt["actor"]
     dynamic = selection in {"dynamic", "dynamic-render"}
     render = selection == "dynamic-render"
@@ -583,7 +608,8 @@ def review_execution_preflight(*, selection: str | None = None,
             else "human chose static review",
         },
         "functionality_render": {
-            "status": "selected" if render else "declined",
+            "status": "selected" if render else (
+                "declined" if selection == "static" else "not_selected"),
             "action_id": _review_execution_action_id(
                 run_id, "functionality_render"),
             "execution_binding": _review_tool_action_binding(
@@ -591,7 +617,8 @@ def review_execution_preflight(*, selection: str | None = None,
                     run_id, "functionality_render"), "functionality_render")
             if render else None,
             "detail": "awaiting approved browser evidence" if render
-            else "human did not select inline rendering",
+            else ("human chose static review" if selection == "static"
+                  else "not included in the selected dynamic review mode"),
         },
         "required_approvals": next(
             row["requires"] for row in choices if row["response"] == selection),
@@ -600,11 +627,13 @@ def review_execution_preflight(*, selection: str | None = None,
 
 def record_review_execution_evidence(preflight: dict, *, kind: str,
                                      status: str, detail: object = "",
-                                     approval_receipt: object | None = None) -> dict:
+                                     approval_receipt: object | None = None,
+                                     sandbox: dict | None = None) -> dict:
     """Record bounded runtime/render evidence without performing the action."""
     if kind not in {"dynamic_validation", "functionality_render"}:
         raise ReviewKernelError("unknown review execution evidence kind")
-    if status not in {"selected", "declined", "unavailable", "executed"}:
+    if status not in {"selected", "declined", "not_selected", "unavailable", "failed",
+                      "executed"}:
         raise ReviewKernelError("invalid review execution evidence status")
     current = dict(preflight or {})
     if current.get("schema") != "taskplane.review-execution-preflight/v1":
@@ -614,10 +643,8 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
         receipt = _validated_review_execution_receipt(
             approval_receipt, run_id=current.get("run_id"),
             action_id=str(prior.get("action_id") or ""), kind=kind)
-    elif status == "unavailable":
-        receipt = _validated_review_user_action_receipt(
-            approval_receipt, run_id=current.get("run_id"),
-            action_id=str(prior.get("action_id") or ""), response=status)
+    elif status in {"unavailable", "failed"}:
+        receipt = None
     else:
         receipt = None
     if prior.get("status") == "declined":
@@ -626,19 +653,230 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
     if status in {"selected", "declined"}:
         raise ReviewKernelError(
             "review execution evidence cannot replace the human choice")
-    if prior.get("status") not in {"selected", status}:
+    if prior.get("status") not in {"selected", status} and not (
+            prior.get("status") == "failed" and status == "executed" and sandbox):
         raise ReviewKernelError("review execution was not selected by the human")
     current[kind] = {
         "status": status, "detail": _bounded_review_detail(detail),
         "action_id": prior["action_id"], "evidence_receipt": receipt,
+        **({"execution_scope": "validation-sandbox",
+            "sandbox": _validated_validation_sandbox(
+                sandbox, current.get("run_id"))}
+           if status == "executed" and sandbox else
+           {"execution_scope": "review-target"} if status == "executed"
+           else {}),
+        **({"original_failure": copy.deepcopy(prior.get("detail") or {})}
+           if prior.get("status") == "failed" and status == "executed"
+           else {}),
     }
     current["side_effects_started"] = any(
-        (current.get(name) or {}).get("status") == "executed"
+        (current.get(name) or {}).get("status") in {"executed", "failed"}
         for name in ("dynamic_validation", "functionality_render"))
     current["static_only"] = (
         (current.get("dynamic_validation") or {}).get("status")
-        in {"pending", "declined", "unavailable"})
+        in {"pending", "declined", "not_selected", "unavailable"})
     return current
+
+
+def _validated_validation_sandbox(value: object, run_id: object) -> dict:
+    if not isinstance(value, dict) or value.get("schema") != \
+            "taskplane.review-validation-sandbox/v1" or \
+            value.get("run_id") != str(run_id or "") or \
+            value.get("push_disabled") is not True or \
+            value.get("disposable") is not True or \
+            not re.fullmatch(r"[0-9a-f]{40,64}",
+                             str(value.get("source_head") or "")):
+        raise ReviewKernelError("review validation sandbox identity is invalid")
+    return {key: value[key] for key in (
+        "schema", "run_id", "source_head", "source_fingerprint",
+        "sandbox_id", "disposable", "push_disabled")}
+
+
+def prepare_review_validation_sandbox(ws: str, *,
+                                      run_id: str | None = None) -> dict:
+    """Create a writable, independently cloned copy for validation repairs."""
+    state = _load_state(ws, run_id)
+    execution = state.get("review_execution") or {}
+    if state.get("status") != "ready" or \
+            (execution.get("dynamic_validation") or {}).get("status") not in {
+                "selected", "failed"}:
+        raise ReviewKernelError(
+            "validation sandbox requires selected or failed dynamic validation")
+    source = os.path.realpath(ws)
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=source, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8").stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ReviewKernelError(
+            "validation sandbox requires a Git review checkout") from exc
+    expected = str((state.get("target") or {}).get("head") or "")
+    if expected and not (head.startswith(expected) or expected.startswith(head)):
+        raise ReviewKernelError(
+            "review checkout moved after target pin; refusing sandbox creation")
+    root = runtime_storage.managed_path(
+        source, "evidence", "validation-sandbox") or os.path.join(
+            _kernel_root(source), "validation-sandbox")
+    source_fingerprint = str(
+        (state.get("target") or {}).get("fingerprint") or "")
+    sandbox_id = hashlib.sha256(
+        f"{state['run_id']}:{head}:{source_fingerprint}:v2".encode(
+            "utf-8")).hexdigest()[:20]
+    checkout = os.path.join(root, sandbox_id)
+    if os.path.lexists(checkout):
+        if not os.path.isdir(checkout) or os.path.islink(checkout):
+            raise ReviewKernelError("validation sandbox path is unsafe")
+    else:
+        os.makedirs(root, exist_ok=True)
+        temporary = tempfile.mkdtemp(prefix=".prepare-", dir=root)
+        candidate = os.path.join(temporary, "checkout")
+        try:
+            subprocess.run(
+                ["git", "clone", "--no-hardlinks", "--no-local", source,
+                 candidate], check=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8")
+            subprocess.run(
+                ["git", "checkout", "--detach", head], cwd=candidate,
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8")
+            patch = subprocess.run(
+                ["git", "diff", "--binary", "HEAD", "--"], cwd=source,
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if patch.stdout:
+                subprocess.run(
+                    ["git", "apply", "--whitespace=nowarn", "-"],
+                    cwd=candidate, check=True, input=patch.stdout,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            untracked = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+                cwd=source, check=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE).stdout.split(b"\0")
+            excluded = (".em-review/", ".eval/", ".taskplane/", ".tp-work/",
+                        "node_modules/", "client/dist/", "server/dist/")
+            for raw in untracked:
+                if not raw:
+                    continue
+                relative = raw.decode("utf-8", errors="strict").replace("\\", "/")
+                if relative == ".DS_Store" or relative.endswith("/.DS_Store") or \
+                        relative.startswith(excluded):
+                    continue
+                source_path = os.path.realpath(os.path.join(source, relative))
+                destination = os.path.realpath(os.path.join(candidate, relative))
+                if os.path.commonpath((source, source_path)) != source or \
+                        os.path.commonpath((candidate, destination)) != candidate or \
+                        os.path.islink(os.path.join(source, relative)):
+                    raise ReviewKernelError(
+                        "unsafe untracked path in validation sandbox input")
+                if os.path.isfile(source_path):
+                    os.makedirs(os.path.dirname(destination), exist_ok=True)
+                    shutil.copy2(source_path, destination)
+            subprocess.run(
+                ["git", "remote", "set-url", "--push", "origin",
+                 "taskplane-disabled://validation-sandbox"], cwd=candidate,
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8")
+            hooks = os.path.join(candidate, ".taskplane-validation-hooks")
+            os.makedirs(hooks, exist_ok=True)
+            pre_push = os.path.join(hooks, "pre-push")
+            with open(pre_push, "w", encoding="utf-8") as stream:
+                stream.write("#!/bin/sh\necho 'taskplane: pushing from a "
+                             "validation sandbox is disabled' >&2\nexit 1\n")
+            os.chmod(pre_push, 0o700)
+            subprocess.run(
+                ["git", "config", "core.hooksPath",
+                 ".taskplane-validation-hooks"], cwd=candidate,
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8")
+            os.replace(candidate, checkout)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise ReviewKernelError(
+                "could not create isolated validation sandbox") from exc
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+    sandbox = {
+        "schema": "taskplane.review-validation-sandbox/v1",
+        "run_id": state["run_id"], "source_head": head,
+        "source_fingerprint": source_fingerprint,
+        "sandbox_id": sandbox_id, "disposable": True,
+        "push_disabled": True,
+    }
+    state = dict(state, validation_sandbox={**sandbox, "path": checkout})
+    manifest = dict(state.get("manifest") or {})
+    manifest["validation_sandbox"] = {
+        **sandbox, "path": checkout,
+        "instruction": ("Make only validation-enabling repairs in this copy; "
+                        "run checks here; do not commit or push. The original "
+                        "review target remains authoritative."),
+    }
+    state["manifest"] = _manifest(manifest)
+    _save_state(source, state)
+    return state["manifest"]["validation_sandbox"]
+
+
+def run_review_validation_command(ws: str, *, command: list[str],
+                                  cwd: str = ".",
+                                  run_id: str | None = None,
+                                  timeout: int = 600) -> dict:
+    """Execute argv directly inside the registered validation sandbox."""
+    state = _load_state(ws, run_id)
+    sandbox = state.get("validation_sandbox") or {}
+    _validated_validation_sandbox(sandbox, state.get("run_id"))
+    root = os.path.realpath(str(sandbox.get("path") or ""))
+    workdir = os.path.realpath(os.path.join(root, str(cwd or ".")))
+    if not root or not os.path.isdir(root) or \
+            os.path.commonpath((root, workdir)) != root or \
+            not os.path.isdir(workdir):
+        raise ReviewKernelError("validation command cwd escapes its sandbox")
+    argv = [str(item) for item in command if str(item)]
+    if not argv or any("\x00" in item for item in argv):
+        raise ReviewKernelError("validation command argv is empty or invalid")
+    try:
+        result = subprocess.run(
+            argv, cwd=workdir, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=max(1, min(int(timeout), 1800)),
+            check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        recorded = record_review_execution(
+            ws, kind="dynamic_validation", status="failed",
+            detail={"summary": argv[0]}, run_id=run_id)
+        return {"status": "failed", "exit_code": None,
+                "reason": str(exc), "review_execution": recorded}
+    output = bytes(result.stdout or b"")
+    summary = " ".join(argv)[:80]
+    if result.returncode:
+        recorded = record_review_execution(
+            ws, kind="dynamic_validation", status="failed",
+            detail={"summary": summary}, run_id=run_id)
+        return {"status": "failed", "exit_code": result.returncode,
+                "output": output[-4000:].decode("utf-8", errors="replace"),
+                "review_execution": recorded}
+    execution = (state.get("review_execution") or {}).get(
+        "dynamic_validation") or {}
+    action_id = str(execution.get("action_id") or "")
+    output_digest = hashlib.sha256(output).hexdigest()
+    receipt_id = _review_receipt_digest(
+        "validation-sandbox", state["run_id"], sandbox["sandbox_id"], argv,
+        str(cwd), output_digest)
+    owner_id = _review_receipt_digest(
+        "taskplane-engine", state["run_id"], sandbox["sandbox_id"])
+    result_sha256 = hashlib.sha256(output or b"successful-command").hexdigest()
+    receipt = _HostObservedReviewExecution(
+        source="taskplane-engine:validation-sandbox", receipt_id=receipt_id,
+        run_id=state["run_id"], action_id=action_id,
+        kind="dynamic_validation", tool_name="taskplane-review-validate",
+        result_sha256=result_sha256, result_bytes=max(1, len(output)),
+        exit_code=0, authority=_REVIEW_HOST_EXECUTION_AUTHORITY,
+        owner_id=owner_id, action_digest=_review_receipt_digest(
+            owner_id, state["run_id"], action_id, "dynamic_validation",
+            receipt_id, result_sha256, 0))
+    recorded = record_review_execution(
+        ws, kind="dynamic_validation", status="executed",
+        detail={"summary": summary}, run_id=run_id,
+        approval_receipt=receipt)
+    return {"status": "executed", "exit_code": 0,
+            "output": output[-4000:].decode("utf-8", errors="replace"),
+            "review_execution": recorded}
 
 
 def _semantic_words(value: object) -> set[str]:
@@ -1329,6 +1567,228 @@ def _release_slot_contracts(ws: str, state: dict) -> list[str]:
     return released
 
 
+def review_dor_evidence(ws: str, target: dict, *,
+                        requirement: dict | None = None,
+                        acceptance: Iterable | None = None,
+                        contracts: Iterable | None = None) -> dict:
+    """Discover and disposition the specification artifacts for a review."""
+    requirement = requirement if isinstance(requirement, dict) else {}
+    acceptance = [str(row).strip() for row in acceptance or []
+                  if str(row).strip()]
+    contracts = [str(row).strip() for row in contracts or []
+                 if str(row).strip()]
+    base = str(target.get("merge_base") or target.get("base") or "").strip()
+    head = str(target.get("head") or "").strip()
+    commits = []
+    if base and head:
+        proc = subprocess.run(
+            ["git", "log", "--format=%H%x1f%s%x1f%b%x1e", f"{base}..{head}"],
+            cwd=ws, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+        if proc.returncode == 0:
+            for raw in proc.stdout.split("\x1e"):
+                fields = raw.strip().split("\x1f", 2)
+                if len(fields) != 3:
+                    continue
+                sha, subject, body = fields
+                bullets = [re.sub(r"^\s*[-*+]\s+", "", line).strip()
+                           for line in body.splitlines()
+                           if re.match(r"^\s*[-*+]\s+\S", line)]
+                commits.append({"sha": sha.strip(), "subject": subject.strip(),
+                                "body": body.strip(), "claims": bullets})
+    directives = []
+    for name in ("README.md", "CONTRIBUTING.md", ".github/pull_request_template.md"):
+        path = os.path.join(ws, name)
+        try:
+            text = open(path, encoding="utf-8").read(64 * 1024)
+        except OSError:
+            continue
+        review_context = 0
+        accepting = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            lower = stripped.lower()
+            if re.search(r"\b(review|evaluate|assess|inspect)\b", lower):
+                review_context = 4
+            elif review_context:
+                review_context -= 1
+            if review_context and re.search(
+                    r"\b(consider|check|look for|focus on|identify)\b", lower):
+                accepting = True
+                continue
+            bullet = re.match(r"^\s*[-*+]\s+(.+?)\s*$", line)
+            if accepting and bullet:
+                directives.append({"text": bullet.group(1), "source": name,
+                                   "confidence": "high"})
+            elif accepting and stripped and not stripped.startswith(("#", "-", "*", "+")):
+                accepting = False
+    derived_acceptance = [claim for row in commits for claim in row["claims"]]
+    if not acceptance and derived_acceptance:
+        acceptance = derived_acceptance
+    changed = [str(row) for row in target.get("changed_files") or []]
+    changelogs = [path for path in changed
+                  if re.search(r"(^|/)(change.?log|changes)(\.|/|$)", path,
+                               flags=re.IGNORECASE)]
+    explicit = bool(str(requirement.get("text") or "").strip())
+    source = "requirement" if explicit else "pr_commits" if commits else "none"
+    checks = [
+        {"check": "specification artifact", "status": "found" if source != "none" else "missing",
+         "detail": (str(requirement.get("id") or "explicit requirement")
+                    if explicit else f"{len(commits)} PR commit(s)" if commits
+                    else "no requirement or descriptive PR commit found")},
+        {"check": "acceptance criteria", "status": "found" if acceptance else "missing",
+         "detail": (f"{len(acceptance)} criterion/criteria" +
+                    (" derived from PR commit claims" if derived_acceptance and
+                     acceptance == derived_acceptance else ""))
+         if acceptance else "none supplied"},
+        {"check": "review directives", "status": "found" if directives else "missing",
+         "detail": f"{len(directives)} explicit lens request(s)" if directives
+         else "no structured review instruction list found"},
+        {"check": "changelog", "status": "found" if changelogs else "missing",
+         "detail": ", ".join(changelogs) if changelogs else "no changelog changed in the review range"},
+        {"check": "declared contracts", "status": "found" if contracts else "not_applicable",
+         "detail": f"{len(contracts)} contract(s)" if contracts else "none declared"},
+    ]
+    derived_requirements = [row["subject"] for row in commits if row["claims"]]
+    if not derived_requirements:
+        derived_requirements = [row["subject"] for row in commits]
+    return {
+        "schema": "taskplane.review-dor/v1",
+        "status": ("ready" if source != "none" and acceptance else
+                   "degraded" if source != "none" else "not_ready"),
+        "specification_source": source,
+        "requirement": copy.deepcopy(requirement),
+        "acceptance": acceptance, "contracts": contracts,
+        "requirements": ([str(requirement.get("text"))] if explicit else
+                         derived_requirements),
+        "review_directives": directives,
+        "acceptance_source": ("explicit" if acceptance and not
+                              (derived_acceptance and acceptance == derived_acceptance)
+                              else "pr_commit_claims" if acceptance else "none"),
+        "commits": commits, "changelog_files": changelogs,
+        "checks": checks,
+    }
+
+
+def _directive_lens_ids(directives: list[dict], catalog: dict) -> dict[str, list[str]]:
+    """Match explicit review requests to the live lens catalog."""
+    import lens_signals
+    matched = {}
+    for row in directives:
+        text = str(row.get("text") or "").lower()
+        words = set(re.findall(r"[a-z][a-z0-9-]{2,}", text))
+        for lens in catalog.get("lenses") or []:
+            lid = str(lens.get("id") or "")
+            spec = lens_signals.SPECS.get(lid) or {}
+            keywords = [str(k).lower() for k in spec.get("keywords") or []]
+            haystack = " ".join(str(lens.get(key) or "").lower()
+                                for key in ("id", "name", "charter", "looks_for"))
+            lens_words = set(re.findall(r"[a-z][a-z0-9-]{2,}", haystack))
+            phrase_hit = any(keyword in text for keyword in keywords)
+            name_hit = str(lens.get("name") or "").lower() in text
+            if phrase_hit or name_hit or len(words & lens_words) >= 2:
+                matched.setdefault(lid, []).append(str(row.get("text") or ""))
+    return matched
+
+
+_REQ_STOP_WORDS = frozenset({
+    "add", "and", "into", "with", "the", "from", "separate", "shared",
+    "server", "side", "update", "extract", "functionality", "component",
+    "components", "api",
+})
+
+
+def evaluate_review_requirements(dor: dict, diff: dict,
+                                 findings: Iterable[dict],
+                                 execution: dict | None = None) -> dict:
+    """Disposition each PR criterion against canonical diff and findings."""
+    criteria = [str(row).strip() for row in (dor or {}).get("acceptance") or []
+                if str(row).strip()]
+    patch = str((diff or {}).get("patch") or "")
+    patch_lower = patch.lower()
+    files = [str(row) for row in (diff or {}).get("files") or []]
+    finding_rows = list(findings or [])
+    dynamic = ((execution or {}).get("dynamic_validation") or {}).get("status")
+    rows = []
+    for index, criterion in enumerate(criteria, 1):
+        tokens = {word for word in re.findall(r"[a-z][a-z0-9-]{2,}",
+                                              criterion.lower())
+                  if word not in _REQ_STOP_WORDS}
+        identifiers = set(re.findall(r"\b[A-Z][A-Za-z0-9]+\b|[A-Za-z0-9_-]+\.[a-z]{1,5}\b",
+                                     criterion))
+        anchors = {item.lower() for item in identifiers} | tokens
+        matched_files = sorted(path for path in files
+                               if any(anchor in path.lower() for anchor in anchors))
+        patch_hits = sorted(anchor for anchor in anchors if anchor in patch_lower)
+        present = bool(matched_files or len(patch_hits) >= min(2, max(1, len(anchors))))
+        related = []
+        for finding in finding_rows:
+            finding_file = str(finding.get("file") or "").lower()
+            finding_lens = str(finding.get("lens") or "").lower()
+            if re.search(r"(?i)\b(api|endpoint)s?\b", criterion) and not (
+                    finding_file.startswith("server/") or finding_lens in {
+                        "backend", "security", "scalability", "integrability",
+                        "data-safety", "dba"}):
+                continue
+            if re.search(r"(?i)server[- ]side|\bcach", criterion) and not (
+                    finding_file.startswith("server/") or "cach" in
+                    str(finding.get("title") or "").lower()):
+                continue
+            haystack = " ".join(str(finding.get(key) or "") for key in (
+                "title", "scenario", "file", "fix", "lens")).lower()
+            overlap = {token for token in tokens if token in haystack}
+            identifier_hit = any(
+                item.lower() in finding_file or
+                item.lower() in str(finding.get("title") or "").lower()
+                for item in identifiers)
+            if identifier_hit or len(overlap) >= min(2, max(1, len(tokens))):
+                related.append({
+                    "title": str(finding.get("title") or "finding"),
+                    "severity": str(finding.get("severity") or "high"),
+                    "class": str(finding.get("class") or "unclassified"),
+                    "file": str(finding.get("file") or ""),
+                })
+        blocking = [row for row in related if row["class"] == "regression" or
+                    row["severity"].lower() in {"high", "major", "critical", "blocker"}]
+        structural = bool(re.match(
+            r"(?i)^\s*(add|extract|update|create|implement|remove|rename)\b",
+            criterion))
+        if not present and structural:
+            status, gate = "not_met", "block"
+        elif blocking:
+            status, gate = "partial", "block"
+        elif not structural and dynamic != "executed":
+            status, gate = "cannot_verify", "needs_evidence"
+        else:
+            status, gate = "met", "pass"
+        evidence = []
+        if matched_files:
+            evidence.append("changed files: " + ", ".join(matched_files[:8]))
+        if patch_hits:
+            evidence.append("diff anchors: " + ", ".join(patch_hits[:12]))
+        if dynamic == "executed":
+            evidence.append("approved dynamic validation executed")
+        elif dynamic:
+            evidence.append("dynamic validation: " + str(dynamic))
+        if not evidence:
+            evidence.append("no implementation anchor found in the canonical diff")
+        rows.append({
+            "id": f"AC-{index}", "criterion": criterion,
+            "status": status, "gate": gate, "evidence": evidence,
+            "related_findings": related,
+            "validation_mode": "dynamic+static" if dynamic == "executed" else "static",
+        })
+    counts = {status: sum(1 for row in rows if row["status"] == status)
+              for status in ("met", "partial", "not_met", "cannot_verify")}
+    return {
+        "schema": "taskplane.review-requirements-validation/v1",
+        "status": ("blocked" if counts["partial"] or counts["not_met"] else
+                   "needs_evidence" if counts["cannot_verify"] else
+                   "pass" if rows else "not_available"),
+        "counts": counts, "criteria": rows,
+    }
+
+
 def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  diff: dict, runnability: dict | None = None,
                  requirement: dict | None = None,
@@ -1355,6 +1815,19 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     # broken or unavailable command can never become an enforcement input.
     if runnability is None:
         runnability = run_probe.evidence_record(run_probe.probe_once(ws))
+
+    dor = review_dor_evidence(
+        ws, target, requirement=requirement, acceptance=acceptance,
+        contracts=contracts)
+    acceptance = list(dor.get("acceptance") or [])
+    if not (requirement or {}).get("text") and dor["commits"]:
+        requirement = {
+            "id": "pr-commit-specification",
+            "text": "\n".join(
+                list(dor.get("requirements") or []) + acceptance +
+                [row["text"] for row in dor.get("review_directives") or []]),
+            "source": "pr_commits",
+        }
 
     store = evidence.ArtifactStore(ws)
     files = sorted({str(x) for x in diff.get("files") or []})
@@ -1443,6 +1916,22 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         if (routing.get("context") or {}).get("status") == "mapper_unavailable":
             raise ReviewKernelError("mapper_unavailable")
         catalog = lensmod.load_catalog()
+        requested = _directive_lens_ids(
+            dor.get("review_directives") or [], catalog)
+        for entry in routing.get("lenses") or []:
+            lid = str(entry.get("id") or "")
+            if lid not in requested:
+                continue
+            prior = str(entry.get("verdict") or entry.get("tier") or "n/a")
+            entry["initial_verdict"] = prior
+            entry["verdict"] = "deep"
+            entry["tier"] = "deep"
+            entry["mode"] = "subagent"
+            entry.setdefault("evidence", []).append(
+                "explicit review directive: " + "; ".join(requested[lid]))
+            entry.setdefault("reasons", []).append(
+                "requested by discovered review instructions")
+        dor["requested_lenses"] = requested
         decision = _routing_decision(routing, catalog)
     except Exception as exc:
         run_id = _run_id(stage, _target_run_fingerprint(target),
@@ -1473,7 +1962,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "runnability": runnability, "requirement": requirement or {},
         "acceptance": list(acceptance or []),
         "contracts": sorted({str(x) for x in contracts or []}),
-        "change": {"type": task_type, "stage": stage}})
+        "change": {"type": task_type, "stage": stage, "dor": dor}})
     settled_rows = yield_meter.settled_findings(ws, files=files, limit=200)
     settled_ref = store.put("settled-findings", {
         "schema": "taskplane.settled-findings/v1",
@@ -1486,7 +1975,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         impact=quality.get("impact") or impact, graph_quality=quality,
         runnability=runnability, requirement=requirement or {},
         acceptance=acceptance or [], contracts=contracts or [],
-        change={"type": task_type, "stage": stage,
+        change={"type": task_type, "stage": stage, "dor": dor,
                 "routing_input": _portable_ref(routing_input_ref),
                 "routing_decision": _portable_ref(decision_ref),
                 "settled_findings": _portable_ref(settled_ref)})
@@ -1600,7 +2089,7 @@ def configure_review_execution(ws: str, *, selection: str,
 
 
 def record_review_execution(ws: str, *, kind: str, status: str,
-                            detail: str = "", run_id: str | None = None,
+                            detail: object = "", run_id: str | None = None,
                             approval_receipt: object | None = None) -> dict:
     """Persist evidence after the separately approved host action finishes."""
     state = _load_state(ws, run_id)
@@ -1611,7 +2100,8 @@ def record_review_execution(ws: str, *, kind: str, status: str,
         state.get("review_execution") or review_execution_preflight(
             run_id=state.get("run_id")),
         kind=kind, status=status, detail=detail,
-        approval_receipt=approval_receipt)
+        approval_receipt=approval_receipt,
+        sandbox=state.get("validation_sandbox"))
     manifest = dict(state.get("manifest") or {})
     manifest["review_execution"] = record
     state = dict(state, review_execution=record,
@@ -1619,8 +2109,8 @@ def record_review_execution(ws: str, *, kind: str, status: str,
     _save_state(ws, state)
     tp.trace(ws, "review_execution_evidence", run_id=state["run_id"],
              kind=kind, status=status,
-             receipt_id=(record.get(kind) or {}).get(
-                 "evidence_receipt", {}).get("receipt_id"))
+             receipt_id=((record.get(kind) or {}).get(
+                 "evidence_receipt") or {}).get("receipt_id"))
     return record
 
 
@@ -1637,6 +2127,24 @@ def _assert_review_execution_complete(execution: dict) -> None:
         if (execution.get(kind) or {}).get("status") == "selected":
             raise ReviewKernelError(
                 f"selected {label} evidence is still pending")
+
+
+def _review_execution_findings(execution: dict) -> list[dict]:
+    """Convert an observed build/runtime failure into canonical review evidence."""
+    dynamic = (execution or {}).get("dynamic_validation") or {}
+    if dynamic.get("status") != "failed" and not dynamic.get("original_failure"):
+        return []
+    failure = dynamic.get("original_failure") or dynamic.get("detail") or {}
+    summary = str(failure.get("summary") or
+                  "approved dynamic validation failed")
+    return [{
+        "title": "The reviewed change does not pass its dynamic validation",
+        "scenario": (f"The approved build/test command failed: {summary}. "
+                     "A validation-only sandbox repair may establish conditional "
+                     "runtime evidence, but it does not repair the reviewed PR."),
+        "severity": "high", "lens": "reliability-resilience",
+        "file": "", "line": 0, "source": "review-execution",
+    }]
 
 
 def _receipt_path(ws: str, lease_fingerprint: str) -> str:
@@ -2549,7 +3057,8 @@ def _read_slot_output(ws: str, store,
             validation_ref)
 
 
-def _revision_record(store, envelope_ref: dict, collected: dict) -> tuple[dict, dict | None]:
+def _revision_record(store, envelope_ref: dict, collected: dict, *,
+                     extra_findings: Iterable[dict] = ()) -> tuple[dict, dict | None]:
     import copy
     import review_evidence as evidence
     envelope = store.read(envelope_ref)
@@ -2570,6 +3079,7 @@ def _revision_record(store, envelope_ref: dict, collected: dict) -> tuple[dict, 
                 source=result.get("source"),
                 result_fingerprint=result.get("result_fingerprint"),
                 canonical_revision=result.get("canonical_revision")))
+    attributed.extend(copy.deepcopy(list(extra_findings)))
     material = {
         "result_fingerprints": collected.get("result_fingerprints") or [],
         "findings": semantic_deduplicate_findings(attributed),
@@ -2948,6 +3458,7 @@ def _collect_review_transaction(
     with tp.file_lock(_collection_lock_path(ws)):
         state = _load_state(ws, run_id)
         store = evidence.ArtifactStore(ws)
+        envelope = store.read(state["envelope"])
         if state.get("status") in {
                 "prepared", "staged", "publishing", "committed"}:
             return _resume_collection(ws, state, store)
@@ -3055,7 +3566,6 @@ def _collect_review_transaction(
         if leases:
             collected = evidence.collect_slot_results(store, leases, refs)
         else:
-            envelope = store.read(state["envelope"])
             prior = evidence._read_current(store)
             collected = {
                 "status": "complete", "slot_ids": [],
@@ -3067,7 +3577,9 @@ def _collect_review_transaction(
             }
         _collection_fault("post_results")
         revision, prior = _revision_record(
-            store, state["envelope"], collected)
+            store, state["envelope"], collected,
+            extra_findings=_review_execution_findings(
+                state.get("review_execution") or {}))
         _collection_fault("post_revision")
         try:
             import yield_meter
@@ -3079,10 +3591,27 @@ def _collect_review_transaction(
         decision = store.read(state["routing_decision"])["dispositions"]
         _collection_fault("post_routing")
         identity = evidence.revision_identity(revision)
+        dor = ((envelope.get("change") or {}).get("dor") or
+               review_dor_evidence(
+                   ws, state.get("target") or envelope.get("target") or {},
+                   requirement=(envelope.get("requirements") or {}).get(
+                       "requirement"),
+                   acceptance=(envelope.get("requirements") or {}).get(
+                       "acceptance"), contracts=envelope.get("contracts")))
+        envelope_diff = envelope.get("diff") or {}
+        diff_ref = envelope_diff.get("artifact")
+        diff_record = (store.read(diff_ref) if isinstance(diff_ref, dict) else
+                       {"files": envelope_diff.get("files") or [],
+                        "patch": ""})
+        requirements_validation = evaluate_review_requirements(
+            dor, diff_record, revision["findings"],
+            state.get("review_execution") or {})
         portable_validations = [
             _portable_ref(ref) for ref in result_validations]
         body = {"meta": {**identity, "lens_coverage": decision,
                          "target": identity["target_fingerprint"],
+                         "dor_evidence": dor,
+                         "requirements_validation": requirements_validation,
                          "result_validations": portable_validations},
                 "findings": revision["findings"],
                 "notes": revision.get("notes") or []}

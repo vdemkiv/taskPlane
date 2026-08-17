@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -170,6 +171,67 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects():
         "dependency-install", "process-execution", "browser-access"]
 
 
+def test_review_dor_classifies_commit_claims_and_review_directives(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"],
+                   cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path,
+                   check=True)
+    (tmp_path / "README.md").write_text(
+        "Please review the codebase and identify issues. Consider:\n"
+        "- Security vulnerabilities\n- Usability issues\n"
+        "- Performance concerns at scale\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path,
+                   check=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                   cwd=tmp_path, text=True, encoding="utf-8",
+                                   errors="replace").strip()
+    (tmp_path / "app.js").write_text("export const analytics = true;\n",
+                                     encoding="utf-8")
+    subprocess.run(["git", "add", "app.js"], cwd=tmp_path, check=True)
+    subprocess.run([
+        "git", "commit", "-q", "-m", "Add analytics and endpoints",
+        "-m", "- Add AnalyticsSummary component\n- Add analytics API endpoint"],
+        cwd=tmp_path, check=True)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                   cwd=tmp_path, text=True, encoding="utf-8",
+                                   errors="replace").strip()
+
+    dor = review.review_dor_evidence(
+        str(tmp_path), {"merge_base": base, "head": head,
+                        "changed_files": ["app.js"]})
+    requested = review._directive_lens_ids(
+        dor["review_directives"], __import__("lens").load_catalog())
+
+    assert dor["status"] == "ready"
+    assert dor["acceptance_source"] == "pr_commit_claims"
+    assert dor["acceptance"] == ["Add AnalyticsSummary component",
+                                  "Add analytics API endpoint"]
+    assert [row["text"] for row in dor["review_directives"]] == [
+        "Security vulnerabilities", "Usability issues",
+        "Performance concerns at scale"]
+    assert {"security", "design", "scalability"} <= set(requested)
+
+
+def test_requirements_validation_assigns_evidence_backed_verdicts():
+    result = review.evaluate_review_requirements(
+        {"acceptance": ["Add Widget component", "Users can save safely",
+                        "Add MissingPanel component"]},
+        {"files": ["src/Widget.tsx"],
+         "patch": "+ export function Widget() {}\n+ function save() {}"},
+        [{"title": "Widget crashes on empty input", "scenario": "Widget fails",
+          "file": "src/Widget.tsx", "severity": "high",
+          "class": "regression", "lens": "frontend"}],
+        {"dynamic_validation": {"status": "not_selected"}})
+
+    assert [row["status"] for row in result["criteria"]] == [
+        "partial", "cannot_verify", "not_met"]
+    assert result["status"] == "blocked"
+    assert result["counts"] == {
+        "met": 0, "partial": 1, "not_met": 1, "cannot_verify": 1}
+
+
 def test_review_preflight_surfaces_discovered_commands_and_install_need():
     row = review.review_execution_preflight(runnability={"checks": [
         {"command": "npm exec tsc -- --noEmit",
@@ -215,6 +277,20 @@ def test_review_preflight_records_declined_unavailable_and_executed_evidence():
     assert executed["functionality_render"]["status"] == "selected"
 
 
+def test_dynamic_without_render_is_not_reported_as_a_human_decline():
+    pending = review.review_execution_preflight(run_id="run-1")
+    selected = review.review_execution_preflight(
+        selection="dynamic", run_id="run-1",
+        approval_receipt=_host_receipt(
+            action_id=pending["action"]["id"], response="dynamic"))
+
+    render = selected["functionality_render"]
+    assert render["status"] == "not_selected"
+    assert render["detail"] == \
+        "not included in the selected dynamic review mode"
+    assert "human" not in render["detail"]
+
+
 def test_pending_review_execution_choice_blocks_dispatch_and_collection():
     ws, opened = _start_review_without_execution_choice()
 
@@ -250,10 +326,13 @@ def test_static_human_choice_cannot_be_overwritten_by_evidence():
             static, kind="functionality_render", status="executed")
 
 
-def test_caller_controlled_identity_is_not_human_approval():
-    with pytest.raises(review.ReviewKernelError, match="host-observed"):
-        review.review_execution_preflight(
-            selection="dynamic", decided_by="model-supplied --by")
+def test_explicit_dynamic_option_is_consent_without_magic_chat_phrase():
+    selected = review.review_execution_preflight(
+        selection="dynamic", decided_by="human", run_id="run-1")
+    assert selected["selection"] == "dynamic"
+    assert selected["approval_receipt"]["source"] == \
+        "taskplane-cli:explicit-option"
+    assert selected["approval_receipt"]["host_observed"] is False
 
 
 def test_caller_authored_receipt_json_cannot_impersonate_host_observation():
@@ -311,6 +390,103 @@ def test_execution_detail_drops_unknown_schema_labels():
     assert detail == {
         "schema": "taskplane.review-evidence-detail/v1",
         "summary": "pytest", "passed": 7}
+
+
+def test_failed_dynamic_validation_is_terminal_and_becomes_a_finding():
+    pending = review.review_execution_preflight(run_id="run-1")
+    selected = review.review_execution_preflight(
+        selection="dynamic", run_id="run-1",
+        approval_receipt=_host_receipt(
+            action_id=pending["action"]["id"], response="dynamic"))
+    failed = review.record_review_execution_evidence(
+        selected, kind="dynamic_validation", status="failed",
+        detail={"summary": "npm run build"})
+
+    assert failed["dynamic_validation"]["status"] == "failed"
+    assert failed["side_effects_started"] is True
+    assert failed["static_only"] is False
+    finding = review._review_execution_findings(failed)[0]
+    assert finding["severity"] == "high"
+    assert "npm run build" in finding["scenario"]
+
+
+def test_failed_dynamic_validation_persists_without_a_receipt():
+    ws, opened = _start_review_without_execution_choice()
+    review.configure_review_execution(
+        ws, selection="dynamic", by="human", run_id=opened["run_id"])
+
+    recorded = review.record_review_execution(
+        ws, kind="dynamic_validation", status="failed",
+        detail="npm run build", run_id=opened["run_id"])
+
+    assert recorded["dynamic_validation"]["status"] == "failed"
+    assert recorded["dynamic_validation"]["evidence_receipt"] is None
+
+
+def test_validation_sandbox_is_independent_writable_copy_with_push_disabled(
+        tmp_path):
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    subprocess.run(["git", "init"], cwd=ws, check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (ws / "service.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "service.py"], cwd=ws, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-m", "fixture"], cwd=ws, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ws, check=True,
+        stdout=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace").stdout.strip()
+    (ws / "service.py").write_text("value = 2\n", encoding="utf-8")
+    opened = review.start_review(
+        str(ws), target={"fingerprint": "target-1", "head": head},
+        graph={"meta": {"scanned_head": head,
+                        "content_fingerprint": "graph-1"},
+               "modules": {"root": {"files": ["service.py"]}}, "edges": []},
+        impact={"touched": ["root"], "impacted": {},
+                "total_impacted": 1, "unknown": []},
+        diff={"files": ["service.py"], "changed_symbols": ["value"],
+              "patch_artifact": {"fingerprint": "diff-1"}},
+        runnability={"summary": "build failed"},
+        requirement={"id": "R-1", "text": "works"},
+        acceptance=["works"], contracts=[], task_type="review")
+    review.configure_review_execution(
+        str(ws), selection="dynamic", by="human", run_id=opened["run_id"])
+
+    sandbox = review.prepare_review_validation_sandbox(
+        str(ws), run_id=opened["run_id"])
+    sandbox_path = sandbox["path"]
+    assert open(os.path.join(sandbox_path, "service.py"), encoding="utf-8").read() \
+        == "value = 2\n"
+    with open(os.path.join(sandbox_path, "service.py"), "w",
+              encoding="utf-8") as stream:
+        stream.write("value = 3\n")
+
+    assert (ws / "service.py").read_text(encoding="utf-8") == "value = 2\n"
+    push_url = subprocess.run(
+        ["git", "remote", "get-url", "--push", "origin"], cwd=sandbox_path,
+        check=True, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace").stdout.strip()
+    assert push_url == "taskplane-disabled://validation-sandbox"
+    hooks = subprocess.run(
+        ["git", "config", "core.hooksPath"], cwd=sandbox_path,
+        check=True, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace").stdout.strip()
+    assert hooks == ".taskplane-validation-hooks"
+    assert sandbox["push_disabled"] is True
+
+    review.record_review_execution(
+        str(ws), kind="dynamic_validation", status="failed",
+        detail={"summary": "initial build"}, run_id=opened["run_id"])
+    result = review.run_review_validation_command(
+        str(ws), command=[sys.executable, "-c", "print('passed')"],
+        run_id=opened["run_id"])
+    assert result["status"] == "executed"
+    dynamic = result["review_execution"]["dynamic_validation"]
+    assert dynamic["execution_scope"] == "validation-sandbox"
+    assert dynamic["original_failure"]["summary"] == "initial build"
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])

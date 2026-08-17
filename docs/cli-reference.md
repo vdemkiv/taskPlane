@@ -94,8 +94,10 @@ not repeated in the tables.
 | `tp.py review evidence` | record approved dynamic validation or render evidence |
 | `tp.py review option` | record the human's optional dynamic review/render choice |
 | `tp.py review resume` | apply one explicit user decision and continue the same repository preflight and review |
+| `tp.py review sandbox` | create a disposable writable PR copy for validation-only build repair and dynamic checks |
 | `tp.py review signoff` | record the human decision for a collected standalone review |
 | `tp.py review start` | establish the facts and activate the read-only contract |
+| `tp.py review validate` | run one argv-only dynamic check inside the registered validation sandbox and record its evidence |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
 | `tp.py screen-dispatch` | PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict) |
 | `tp.py screen-render` | PreToolUse hook for the inline-render tool: record that a render RAN, and with which bytes. Observes only — never denies |
@@ -914,6 +916,15 @@ apply one explicit user decision and continue the same repository preflight and 
 | `--run-id` | RUN_ID (required) | run-id from the needs_user preflight response |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py review sandbox`
+
+create a disposable writable PR copy for validation-only build repair and dynamic checks
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--run-id` | RUN_ID (required) | active review run |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py review signoff`
 
 record the human decision for a collected standalone review
@@ -945,6 +956,21 @@ Positional arguments:
 | `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
 | `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
 | `--run-id` | RUN_ID | resume or deterministically name the repository preflight run |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py review validate`
+
+run one argv-only dynamic check inside the registered validation sandbox and record its evidence
+
+Positional arguments:
+
+- `command` — command argv after --; no shell interpretation
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--cwd` | CWD | sandbox-relative working directory |
+| `--run-id` | RUN_ID (required) | active review run |
+| `--timeout` | TIMEOUT | command timeout in seconds (maximum 1800) |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py screen`

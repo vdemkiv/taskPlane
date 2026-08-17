@@ -463,7 +463,7 @@ SPECS: dict[str, dict] = {
         "content": [("UI markup",
                      r"(?m)(<[A-Za-z][^>\n]*>|className=|class=\"|"
                      r"<template|styled\.)")],
-        "keywords": ["ux", "visual", "layout", "empty state", "loading state"],
+        "keywords": ["ux", "usability", "visual", "layout", "empty state", "loading state"],
         "absent": ["no UI component files", "no UI markup",
                    "no UX keywords in the requirement"],
     },

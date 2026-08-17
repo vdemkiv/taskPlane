@@ -3788,7 +3788,9 @@ def _write_review_html(ws: str, name: str, fragments, *, title: str) -> dict:
         stream.write(body)
     os.replace(tmp, path)
     fragment_path = os.path.splitext(path)[0] + ".fragment.html"
-    fragment_body = ('<div class="tp-inline-review">' +
+    fragment_body = ('<style>' + dashboard.inline_review_style() + '</style>'
+                     '<div class="tp-inline-review" '
+                     'id="tp-inline-review-root">' +
                      "\n".join(fragments) + '</div>')
     fragment_tmp = f"{fragment_path}.tmp.{os.getpid()}"
     with open(fragment_tmp, "w", encoding="utf-8", newline="") as stream:
@@ -3892,6 +3894,25 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
     })
     graph = dashboard.render_review_graph(ws, impact)
     execution = state.get("review_execution") or rv.review_execution_preflight()
+    dor_evidence = ((envelope.get("change") or {}).get("dor") or
+                    rv.review_dor_evidence(
+                        ws, state.get("target") or envelope.get("target") or {},
+                        requirement=(envelope.get("requirements") or {}).get(
+                            "requirement"),
+                        acceptance=(envelope.get("requirements") or {}).get(
+                            "acceptance"),
+                        contracts=envelope.get("contracts")))
+    dor_evidence = dict(dor_evidence)
+    dor_evidence["requested_lenses"] = rv._directive_lens_ids(
+        dor_evidence.get("review_directives") or [],
+        __import__("lens").load_catalog())
+    effective_decision = {}
+    if state.get("routing_decision"):
+        effective_decision = store.read(state["routing_decision"]).get(
+            "dispositions") or {}
+    dor_evidence["lens_dispositions"] = {
+        lid: str((effective_decision.get(lid) or {}).get("verdict") or "n/a")
+        for lid in dor_evidence["requested_lenses"]}
     diagnostics = {
         "engine": f"taskplane/{plugin_version()}",
         "routing_policy": hashlib.sha256(
@@ -3908,6 +3929,7 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
         "subtitle": "one canonical diff · graph-qualified selective lenses",
         "graph_fragment": graph,
         "review_execution": execution,
+        "dor_evidence": dor_evidence,
         "diagnostic_fingerprints": diagnostics,
     })
     visuals = {
@@ -3926,10 +3948,17 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
         review_notes = list(projection.get("notes") or
                             (state.get("revision") or {}).get("notes") or [])
         meta = dict(projection.get("meta") or {})
-        decision = {}
-        if state.get("routing_decision"):
-            decision = store.read(state["routing_decision"]).get(
-                "dispositions") or {}
+        requirements_validation = meta.get("requirements_validation")
+        if not isinstance(requirements_validation, dict):
+            envelope_diff = envelope.get("diff") or {}
+            diff_ref = envelope_diff.get("artifact")
+            diff_record = (store.read(diff_ref)
+                           if isinstance(diff_ref, dict) else
+                           {"files": envelope_diff.get("files") or [],
+                            "patch": ""})
+            requirements_validation = rv.evaluate_review_requirements(
+                dor_evidence, diff_record, final_findings, execution)
+        decision = effective_decision
         runnability = envelope.get("runnability") or {}
         clean_evidence = [check for row in (state.get("lens_results") or [])
                           if row.get("verdict") == "pass"
@@ -3952,6 +3981,8 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
             "clean_evidence": clean_evidence,
             "review_notes": review_notes,
             "review_execution": execution,
+            "dor_evidence": dor_evidence,
+            "requirements_validation": requirements_validation,
             "diagnostic_fingerprints": diagnostics,
             "graph_fragment": graph,
             "revision_identity": evidence.revision_identity(
@@ -4011,13 +4042,9 @@ def cmd_review(a) -> int:
             action_id = str((pending.get("action") or {}).get("id") or
                             rv._review_execution_action_id(
                                 state.get("run_id"), "review-execution-mode"))
-            receipt = rv._host_review_action_receipt(
-                run_id=state["run_id"], action_id=action_id,
-                response=a.selection,
-                receipt_ref=getattr(a, "receipt", None))
             result = rv.configure_review_execution(
                 ws, selection=a.selection, by=getattr(a, "by", None),
-                approval_receipt=receipt, run_id=a.run_id)
+                approval_receipt=None, run_id=a.run_id)
             visuals, owed = _review_visuals(ws, result, final=False)
             result = rv._manifest({**result, "visuals": visuals,
                                    "obligations": owed})
@@ -4048,10 +4075,7 @@ def cmd_review(a) -> int:
                         "approval_receipt") or {}).get("receipt_id") or ""),
                     receipt_ref=getattr(a, "receipt", None))
             else:
-                receipt = rv._host_review_action_receipt(
-                    run_id=state["run_id"], action_id=action_id,
-                    response=a.status,
-                    receipt_ref=getattr(a, "receipt", None))
+                receipt = None
             result = rv.record_review_execution(
                 ws, kind=a.kind, status=a.status, detail=a.detail or "",
                 run_id=a.run_id,
@@ -4063,6 +4087,39 @@ def cmd_review(a) -> int:
                              sort_keys=True, separators=(",", ":")))
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+    if getattr(a, "review_action", None) == "sandbox":
+        try:
+            ws = rv.resolve_review_workspace(ws, a.run_id)
+            result = rv.prepare_review_validation_sandbox(
+                ws, run_id=a.run_id)
+        except Exception as exc:
+            print(json.dumps({
+                "schema": "taskplane.review-validation-sandbox/v1",
+                "status": "preparation_failed",
+                "reason": f"{exc.__class__.__name__}: {exc}"},
+                sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+    if getattr(a, "review_action", None) == "validate":
+        try:
+            ws = rv.resolve_review_workspace(ws, a.run_id)
+            command = list(a.command or [])
+            if command and command[0] == "--":
+                command = command[1:]
+            result = rv.run_review_validation_command(
+                ws, command=command, cwd=a.cwd, run_id=a.run_id,
+                timeout=a.timeout)
+        except Exception as exc:
+            print(json.dumps({
+                "schema": "taskplane.review-validation-command/v1",
+                "status": "validation_failed",
+                "reason": f"{exc.__class__.__name__}: {exc}"},
+                sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0 if result.get("status") == "executed" else 1
         return 0
     if getattr(a, "review_action", None) == "collect":
         try:
@@ -5993,7 +6050,7 @@ def main(argv=None) -> int:
     rve = rvsub.add_parser(
         "evidence", help="record approved dynamic validation or render evidence")
     rve.add_argument("kind", choices=("dynamic_validation", "functionality_render"))
-    rve.add_argument("status", choices=("unavailable", "executed"))
+    rve.add_argument("status", choices=("unavailable", "failed", "executed"))
     rve.add_argument("--detail", default="", help="bounded evidence summary")
     rve.add_argument("--receipt", default=None,
                      help="optional host message/turn reference; receipt "
@@ -6001,6 +6058,23 @@ def main(argv=None) -> int:
     rve.add_argument("--run-id", required=True, help="active review run")
     rve.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rve.set_defaults(fn=cmd_review)
+    rvsa = rvsub.add_parser(
+        "sandbox", help="create a disposable writable PR copy for "
+        "validation-only build repair and dynamic checks")
+    rvsa.add_argument("--run-id", required=True, help="active review run")
+    rvsa.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvsa.set_defaults(fn=cmd_review)
+    rvv = rvsub.add_parser(
+        "validate", help="run one argv-only dynamic check inside the registered "
+        "validation sandbox and record its evidence")
+    rvv.add_argument("--run-id", required=True, help="active review run")
+    rvv.add_argument("--cwd", default=".", help="sandbox-relative working directory")
+    rvv.add_argument("--timeout", type=int, default=600,
+                     help="command timeout in seconds (maximum 1800)")
+    rvv.add_argument("command", nargs=argparse.REMAINDER,
+                     help="command argv after --; no shell interpretation")
+    rvv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvv.set_defaults(fn=cmd_review)
     rvsg = rvsub.add_parser("signoff", help="record the human decision for a "
                             "collected standalone review")
     rvsg.add_argument("decision", choices=("approve", "changes"))
