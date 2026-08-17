@@ -215,6 +215,20 @@ class NativeAdapter:
     def argv(self, cwd: str) -> list[str]:  # pragma: no cover - abstract seam
         raise NotImplementedError
 
+    def command_adapter(self, *, runtime, launcher, native_wait=None,
+                        canceller=None):
+        """Bind this host to the durable command contract.
+
+        Kept separate from :meth:`run` so existing synchronous evaluation
+        callers remain byte-for-byte compatible while event-capable callers
+        can opt into durable handles.
+        """
+        from taskplane.command_adapters import CommandAdapter
+
+        return CommandAdapter(
+            host=self.host, runtime=runtime, launcher=launcher,
+            native_wait=native_wait, canceller=canceller)
+
     def run(self, manifest, *, cwd: str, timeout_s: float = 900,
             cancel=None, env=None, output_contract: dict | None = None,
             observed_write: dict | None = None) -> dict:
