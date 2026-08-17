@@ -35,6 +35,38 @@ def _bridge(ws: str) -> None:
 
 
 class TestCapabilitySnapshot:
+    def test_duplicate_hook_paths_share_one_live_event_owner(self):
+        ws = _repo()
+        event = {"session_id": "session-1", "tool_use_id": "call-1",
+                 "hook_event_name": "PreToolUse"}
+        first = lite.claim_hook_event(
+            ws, "screen", event, hook_path="native", wait_seconds=0)
+        duplicate = lite.claim_hook_event(
+            ws, "screen", event, hook_path="bridge", wait_seconds=0)
+
+        assert first["execute"] is True
+        assert duplicate["execute"] is False
+        assert duplicate["claim_id"] == first["claim_id"]
+        assert first["owner_id"] == duplicate["owner_id"]
+
+    def test_dead_hook_event_owner_can_be_recovered_once(self):
+        ws = _repo()
+        event = {"session_id": "session-1", "tool_use_id": "call-1",
+                 "hook_event_name": "PreToolUse"}
+        first = lite.claim_hook_event(
+            ws, "screen", event, hook_path="native", wait_seconds=0)
+        path = lite.hook_claim_journal_path(ws)
+        journal = lite.load_json(path, what="test hook claims")
+        journal["owners"][first["claim_id"]]["owner_pid"] = 99999999
+        lite.atomic_write_json(path, journal, sort_keys=True)
+
+        recovered = lite.claim_hook_event(
+            ws, "screen", event, hook_path="bridge", wait_seconds=0)
+
+        assert recovered["execute"] is True
+        assert recovered["status"] == "recovered"
+        assert recovered["owner_id"] != first["owner_id"]
+
     def test_runtime_hook_receipt_proves_the_loaded_session_without_repo_cwd(self):
         home = tempfile.mkdtemp(prefix="tp-host-receipt-")
         parent = tempfile.mkdtemp(prefix="tp-parent-workspace-")

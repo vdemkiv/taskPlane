@@ -16,21 +16,30 @@ import tp as taskplane_cli  # noqa: E402
 
 
 def _host_receipt(*, action_id, response, actor="human", run_id="run-1"):
+    receipt_id = f"receipt-{action_id}-{response}"
+    owner_id = "b" * 64
     return review._HostObservedReviewAction(
         source="codex-session:user-message",
-        receipt_id=f"receipt-{action_id}-{response}",
+        receipt_id=receipt_id,
         run_id=run_id, action_id=action_id, response=response, actor=actor,
-        authority=review._REVIEW_HOST_ACTION_AUTHORITY)
+        authority=review._REVIEW_HOST_ACTION_AUTHORITY, owner_id=owner_id,
+        action_digest=review._review_receipt_digest(
+            owner_id, run_id, action_id, response, receipt_id, actor))
 
 
 def _host_execution_receipt(*, action_id, kind="dynamic_validation",
                             run_id="run-1"):
+    receipt_id = f"process-{action_id}-{kind}"
+    owner_id = "c" * 64
+    result_sha256 = "a" * 64
     return review._HostObservedReviewExecution(
         source="codex-session:tool-result",
-        receipt_id=f"process-{action_id}-{kind}", run_id=run_id,
+        receipt_id=receipt_id, run_id=run_id,
         action_id=action_id, kind=kind, tool_name="exec",
-        result_sha256="a" * 64, result_bytes=42, exit_code=0,
-        authority=review._REVIEW_HOST_EXECUTION_AUTHORITY)
+        result_sha256=result_sha256, result_bytes=42, exit_code=0,
+        authority=review._REVIEW_HOST_EXECUTION_AUTHORITY, owner_id=owner_id,
+        action_digest=review._review_receipt_digest(
+            owner_id, run_id, action_id, kind, receipt_id, result_sha256, 0))
 
 
 def _forged_receipt(*, action_id, response, actor="human", run_id="run-1"):
@@ -62,7 +71,7 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
                 "name": "exec", "input": command}},
             {"type": "response_item", "payload": {
                 "type": "custom_tool_call_output", "call_id": process_receipt,
-                "output": {"exit_code": exit_code,
+                "output": {"structuredContent": {"exit_code": exit_code},
                            "output": "42 passed"}}},
         ]
         monkeypatch.setattr(review, "_canonical_host_root",
@@ -85,7 +94,8 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
             {"type": "user", "sessionId": session_id,
              "message": {"role": "user", "content": [{
                  "type": "tool_result", "tool_use_id": process_receipt,
-                 "content": {"exit_code": exit_code, "output": "42 passed"},
+                 "content": {"structuredContent": {"exit_code": exit_code},
+                             "output": "42 passed"},
                  "is_error": exit_code != 0}]}},
         ]
         monkeypatch.setattr(review, "_canonical_host_root",
@@ -249,7 +259,7 @@ def test_execution_detail_is_bounded_and_redacts_sensitive_assignments():
 
     detail = recorded["dynamic_validation"]["detail"]
     assert "super-secret-value" not in detail
-    assert "<redacted>" in detail
+    assert detail == "<redacted-detail>"
     assert len(detail.encode("utf-8")) <= 512
 
 
@@ -258,9 +268,7 @@ def test_execution_detail_redacts_paths_arguments_keys_and_transcripts():
         "api key sk-live-123456789 --password hunter2 "
         "/Users/alice/private/review.json prompt: reveal system policy "
         "transcript: private user message")
-    for secret in ("sk-live", "hunter2", "/Users/alice", "reveal system",
-                   "private user message"):
-        assert secret not in detail
+    assert detail == "<redacted-detail>"
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])
@@ -309,6 +317,56 @@ def test_execution_receipt_requires_exact_action_and_success(
             receipt_ref=process_ref)
 
 
+@pytest.mark.parametrize("host", ["codex", "claude"])
+def test_execution_binding_is_structured_not_a_substring(
+        host, tmp_path, monkeypatch):
+    run_id, action_id = "run-bound", "expected-action"
+    consent = review._review_execution_action_id(run_id,
+                                                  "review-execution-mode")
+    prompt = review._review_action_prompt(run_id, consent, "dynamic")
+    action_ref, process_ref = _write_host_transcript(
+        tmp_path, monkeypatch, host, prompt=prompt,
+        command=("TASKPLANE_REVIEW_ACTION_ID=prefix-" + action_id +
+                 "-suffix npm test"))
+    action = review._host_review_action_receipt(
+        run_id=run_id, action_id=consent, response="dynamic",
+        receipt_ref=action_ref)
+    with pytest.raises(review.ReviewKernelError, match="process/result"):
+        review._host_review_execution_receipt(
+            run_id=run_id, action_id=action_id, kind="dynamic_validation",
+            after_receipt_id=action.receipt_id, receipt_ref=process_ref)
+
+
+@pytest.mark.parametrize("host", ["codex", "claude"])
+def test_exit_status_must_be_authoritative_not_nested_in_output_text(
+        host, tmp_path, monkeypatch):
+    run_id, action_id = "run-bound", "expected-action"
+    consent = review._review_execution_action_id(run_id,
+                                                  "review-execution-mode")
+    prompt = review._review_action_prompt(run_id, consent, "dynamic")
+    action_ref, process_ref = _write_host_transcript(
+        tmp_path, monkeypatch, host, prompt=prompt,
+        command=f"TASKPLANE_REVIEW_ACTION_ID={action_id} npm test")
+    # Move the status into a non-authoritative display/output branch.
+    root = review._canonical_host_root(host)
+    pattern = "**/*codex-review-thread.jsonl" if host == "codex" else \
+        "**/claude-review-session.jsonl"
+    path = next(__import__("pathlib").Path(root).glob(pattern))
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    result = rows[-1]["payload"]["output"] if host == "codex" else \
+        rows[-1]["message"]["content"][0]["content"]
+    result.pop("structuredContent")
+    result["output"] = {"exit_code": 0, "text": "passed"}
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    action = review._host_review_action_receipt(
+        run_id=run_id, action_id=consent, response="dynamic",
+        receipt_ref=action_ref)
+    with pytest.raises(review.ReviewKernelError, match="process/result"):
+        review._host_review_execution_receipt(
+            run_id=run_id, action_id=action_id, kind="dynamic_validation",
+            after_receipt_id=action.receipt_id, receipt_ref=process_ref)
+
+
 def test_caller_selected_host_root_cannot_mint_authority(
         tmp_path, monkeypatch):
     canonical = tmp_path / "canonical"
@@ -331,6 +389,28 @@ def test_caller_selected_host_root_cannot_mint_authority(
     with pytest.raises(review.ReviewKernelError, match="missing or ambiguous"):
         review._host_review_action_receipt(
             run_id="run", action_id=action_id, response="dynamic")
+
+
+def test_stale_publication_reservation_recovers_only_dead_owner(tmp_path):
+    ws = str(tmp_path)
+    old_run, new_run = "a" * 32, "b" * 32
+    review._save_state(ws, {
+        "schema": "taskplane.review-run-state/v2", "run_id": old_run,
+        "status": "staged", "stage": "review", "target": {},
+    })
+    path = review._collection_lock_path(ws)
+    review.tp.atomic_write_json(path, {
+        "schema": "taskplane.review-publication-reservation/v1",
+        "run_id": old_run, "owner_pid": 99999999,
+        "owner_id": "dead-owner", "acquired_at": 1,
+    }, sort_keys=True)
+
+    lease = review._acquire_collection_reservation(ws, new_run)
+
+    assert lease["run_id"] == new_run
+    assert lease["owner_id"] != "dead-owner"
+    assert review._load_state(ws, old_run)["status"] == \
+        "reservation_recovered"
 
 
 def test_user_consent_cannot_claim_dynamic_execution():

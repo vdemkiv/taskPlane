@@ -82,19 +82,6 @@ _REVIEW_EXECUTION_RECEIPT_SCHEMA = \
     "taskplane.review-execution-receipt/v1"
 _REVIEW_HOST_ACTION_AUTHORITY = object()
 _REVIEW_HOST_EXECUTION_AUTHORITY = object()
-_REVIEW_DETAIL_BYTES = 512
-_REVIEW_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|"
-    r"CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*)\s*[:=]\s*[^\s,;]+")
-_REVIEW_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
-_REVIEW_API_KEY = re.compile(
-    r"(?i)(?:\bapi[ _-]?key\s+|\b(?:sk|pk|ghp|glpat)-)[^\s,;]+")
-_REVIEW_SECRET_ARGUMENT = re.compile(
-    r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key))(?:=|\s+)\S+")
-_REVIEW_USER_PATH = re.compile(
-    r"(?i)(?:/[Uu]sers|/home)/[^\s,;]+|[A-Z]:\\Users\\[^\s,;]+")
-_REVIEW_PRIVATE_TEXT = re.compile(
-    r"(?i)\b(prompt|transcript)\s*:\s*.*?(?=(?:\s+\b(?:prompt|transcript)\s*:)|$)")
 
 
 class ReviewKernelError(RuntimeError):
@@ -112,6 +99,8 @@ class _HostObservedReviewAction:
     response: str
     actor: str
     authority: object
+    owner_id: str = ""
+    action_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -128,6 +117,14 @@ class _HostObservedReviewExecution:
     result_bytes: int
     exit_code: int
     authority: object
+    owner_id: str = ""
+    action_digest: str = ""
+
+
+def _review_receipt_digest(*parts: object) -> str:
+    material = json.dumps(list(parts), ensure_ascii=False,
+                          separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
 
 
 def _review_execution_action_id(run_id: str | None, action: str) -> str:
@@ -142,19 +139,11 @@ def _review_action_prompt(run_id: str | None, action_id: str,
 
 
 def _bounded_review_detail(value: object) -> str:
-    text = _REVIEW_SECRET_ASSIGNMENT.sub("<redacted>", str(value or ""))
-    text = _REVIEW_BEARER.sub("Bearer <redacted>", text)
-    text = _REVIEW_API_KEY.sub("<redacted>", text)
-    text = _REVIEW_SECRET_ARGUMENT.sub(r"\1 <redacted>", text)
-    text = _REVIEW_USER_PATH.sub("<redacted-path>", text)
-    text = _REVIEW_PRIVATE_TEXT.sub(r"\1: <redacted>", text)
-    raw = text.encode("utf-8", errors="replace")[:_REVIEW_DETAIL_BYTES]
-    while raw:
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            raw = raw[:-1]
-    return ""
+    """Persist only a small structured-summary language, never free prose."""
+    text = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,80}: [0-9]+ passed", text):
+        return text
+    return "<redacted-detail>" if text else ""
 
 
 def _canonical_host_root(host: str) -> str:
@@ -254,6 +243,7 @@ def _host_review_action_receipt(*, run_id: str, action_id: str,
                                 ) -> _HostObservedReviewAction:
     """Resolve exact human consent through the active host adapter."""
     host, path = _host_review_transcript()
+    owner_id = _review_receipt_digest(host, os.path.realpath(path))
     records = _host_review_records(path)
     expected = _review_action_prompt(run_id, action_id, response)
     wanted_ref = str(receipt_ref or "").strip()
@@ -271,10 +261,13 @@ def _host_review_action_receipt(*, run_id: str, action_id: str,
         receipt_id = message_id or turn_id
         if not receipt_id:
             continue
+        action_digest = _review_receipt_digest(
+            owner_id, run_id, action_id, response, receipt_id, "human")
         return _HostObservedReviewAction(
             source=f"{host}-session:user-message", receipt_id=receipt_id,
             run_id=run_id, action_id=action_id, response=response,
-            actor="human", authority=_REVIEW_HOST_ACTION_AUTHORITY)
+            actor="human", authority=_REVIEW_HOST_ACTION_AUTHORITY,
+            owner_id=owner_id, action_digest=action_digest)
     raise ReviewKernelError(
         "review action requires an exact host-observed user receipt")
 
@@ -284,33 +277,35 @@ def _tool_result_bytes(value: object) -> bytes:
                       ensure_ascii=False).encode("utf-8")
 
 
-def _tool_call_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+def _tool_action_binding(value: object) -> str | None:
+    """Extract one exact engine marker; substrings are never authority."""
+    if isinstance(value, dict):
+        structured = value.get("taskplane_action")
+        if isinstance(structured, dict):
+            action = structured.get("action_id")
+            return str(action) if isinstance(action, str) and action else None
+        value = value.get("command", value.get("cmd"))
+    if not isinstance(value, str):
+        return None
+    try:
+        tokens = shlex.split(value)
+    except ValueError:
+        return None
+    prefix = "TASKPLANE_REVIEW_ACTION_ID="
+    bindings = [token[len(prefix):] for token in tokens
+                if token.startswith(prefix)]
+    return bindings[0] if len(bindings) == 1 and bindings[0] else None
 
 
 def _tool_result_exit_code(value: object) -> int | None:
-    """Extract a real process result; unknown is never rewritten to success."""
-    if isinstance(value, dict):
-        code = value.get("exit_code", value.get("exitCode"))
+    """Read only the host's structured status field, never display output."""
+    if not isinstance(value, dict):
+        return None
+    authoritative = value.get("structuredContent", value)
+    if isinstance(authoritative, dict):
+        code = authoritative.get("exit_code", authoritative.get("exitCode"))
         if isinstance(code, int) and not isinstance(code, bool):
             return code
-        for key in ("structuredContent", "result", "output", "content"):
-            if key in value:
-                nested = _tool_result_exit_code(value[key])
-                if nested is not None:
-                    return nested
-    elif isinstance(value, list):
-        for row in value:
-            nested = _tool_result_exit_code(row)
-            if nested is not None:
-                return nested
-    elif isinstance(value, str):
-        if "Script failed" in value:
-            return 1
-        if "Script completed" in value:
-            return 0
     return None
 
 
@@ -376,6 +371,7 @@ def _host_review_execution_receipt(
     if kind not in {"dynamic_validation", "functionality_render"}:
         raise ReviewKernelError("unknown review execution evidence kind")
     host, path = _host_review_transcript()
+    owner_id = _review_receipt_digest(host, os.path.realpath(path))
     records = _host_review_records(path)
     after_index = -1
     for index, record in enumerate(records):
@@ -393,10 +389,10 @@ def _host_review_execution_receipt(
                {"visualize", "browser", "screenshot", "imagegen"})
     for result in reversed(_host_tool_results(host, records)):
         tool_name = str(result.get("name") or "").lower()
-        call_text = _tool_call_text(result.get("input"))
+        bound_action = _tool_action_binding(result.get("input"))
         if result["index"] <= after_index or \
                 not any(token in tool_name for token in allowed) or \
-                action_id not in call_text:
+                bound_action != action_id:
             continue
         if wanted_ref and wanted_ref != result["receipt_id"]:
             continue
@@ -404,13 +400,18 @@ def _host_review_execution_receipt(
         exit_code = result.get("exit_code")
         if not raw or exit_code is None or exit_code != 0:
             continue
+        result_sha256 = hashlib.sha256(raw).hexdigest()
+        action_digest = _review_receipt_digest(
+            owner_id, run_id, action_id, kind, result["receipt_id"],
+            result_sha256, exit_code)
         return _HostObservedReviewExecution(
             source=f"{host}-session:tool-result",
             receipt_id=result["receipt_id"], run_id=run_id,
             action_id=action_id, kind=kind, tool_name=result["name"],
-            result_sha256=hashlib.sha256(raw).hexdigest(),
+            result_sha256=result_sha256,
             result_bytes=len(raw), exit_code=exit_code,
-            authority=_REVIEW_HOST_EXECUTION_AUTHORITY)
+            authority=_REVIEW_HOST_EXECUTION_AUTHORITY,
+            owner_id=owner_id, action_digest=action_digest)
     raise ReviewKernelError(
         "review execution requires matching host-observed process/result evidence")
 
@@ -429,6 +430,7 @@ def _validated_review_user_action_receipt(
         "source": receipt.source, "receipt_id": receipt.receipt_id,
         "run_id": receipt.run_id, "action_id": receipt.action_id,
         "response": receipt.response, "actor": receipt.actor,
+        "owner_id": receipt.owner_id, "action_digest": receipt.action_digest,
     }
     required = {
         "schema": _REVIEW_USER_ACTION_RECEIPT_SCHEMA,
@@ -437,14 +439,19 @@ def _validated_review_user_action_receipt(
         "action_id": action_id,
         "response": response,
     }
-    if any(row.get(key) != value for key, value in required.items()) or any(
+    expected_digest = _review_receipt_digest(
+        row["owner_id"], row["run_id"], row["action_id"], row["response"],
+        row["receipt_id"], row["actor"])
+    if row["action_digest"] != expected_digest or \
+            not re.fullmatch(r"[0-9a-f]{64}", row["owner_id"] or "") or \
+            any(row.get(key) != value for key, value in required.items()) or any(
             not str(row.get(key) or "").strip()
             for key in ("source", "receipt_id", "actor")):
         raise ReviewKernelError(
             "review action requires an exact host-observed user receipt")
     return {key: row[key] for key in (
         "schema", "host_observed", "source", "receipt_id", "run_id",
-        "action_id", "response", "actor")}
+        "action_id", "response", "actor", "owner_id", "action_digest")}
 
 
 def _validated_review_execution_receipt(
@@ -463,8 +470,14 @@ def _validated_review_execution_receipt(
         "tool_name": receipt.tool_name,
         "result_sha256": receipt.result_sha256,
         "result_bytes": receipt.result_bytes, "exit_code": receipt.exit_code,
+        "owner_id": receipt.owner_id, "action_digest": receipt.action_digest,
     }
-    if row["run_id"] != str(run_id or "").strip() or \
+    expected_digest = _review_receipt_digest(
+        row["owner_id"], row["run_id"], row["action_id"], row["kind"],
+        row["receipt_id"], row["result_sha256"], row["exit_code"])
+    if row["action_digest"] != expected_digest or \
+            not re.fullmatch(r"[0-9a-f]{64}", row["owner_id"] or "") or \
+            row["run_id"] != str(run_id or "").strip() or \
             row["action_id"] != action_id or row["kind"] != kind or \
             row["exit_code"] != 0 or int(row["result_bytes"] or 0) <= 0 or \
             not re.fullmatch(r"[0-9a-f]{64}", row["result_sha256"] or "") or \
@@ -2491,16 +2504,65 @@ def _collection_lock_path(ws: str) -> str:
 
 
 def _assert_collection_reservation(ws: str, run_id: str) -> None:
-    """Only one prepared canonical revision may own publication authority."""
-    for candidate in sorted(_load_index(ws)["runs"]):
-        if candidate == run_id:
-            continue
-        row = tp.load_json(_state_path(ws, candidate), default=None,
-                           what="review kernel run state")
-        if isinstance(row, dict) and row.get("status") in {
-                "prepared", "staged", "publishing", "committed"}:
-            raise __import__("review_evidence").RevisionError(
-                "another canonical revision owns the publication reservation")
+    """Compatibility wrapper around the explicit owner lease."""
+    _acquire_collection_reservation(ws, run_id)
+
+
+def _acquire_collection_reservation(ws: str, run_id: str) -> dict:
+    """Mint or recover one owner-bound publication reservation.
+
+    Callers hold ``file_lock(_collection_lock_path(ws))``. A different live
+    owner remains authoritative. Only an invalid/dead owner with a safely
+    staged predecessor may be replaced.
+    """
+    import review_evidence as evidence
+    path = _collection_lock_path(ws)
+    prior = tp.load_json(path, default=None,
+                         what="review publication reservation")
+    if isinstance(prior, dict) and prior.get("run_id") == run_id:
+        return prior
+    if prior is not None:
+        owner_pid = prior.get("owner_pid") if isinstance(prior, dict) else None
+        owner_valid = isinstance(owner_pid, int) and owner_pid > 0 and \
+            isinstance(prior.get("owner_id"), str) and \
+            bool(prior.get("owner_id"))
+        if owner_valid and tp._pid_alive(owner_pid):
+            raise evidence.RevisionError(
+                "another live owner holds the publication reservation")
+        old_run = str(prior.get("run_id") or "") if isinstance(prior, dict) \
+            else ""
+        if old_run and old_run in _load_index(ws)["runs"]:
+            old = _load_state(ws, old_run)
+            if old.get("status") not in {"prepared", "staged"}:
+                raise evidence.RevisionError(
+                    "stale publication owner is not safely recoverable")
+            _save_state(ws, dict(old, status="reservation_recovered"))
+    owner_pid = os.getpid()
+    owner_id = hashlib.sha256(
+        f"{run_id}:{owner_pid}:{__import__('time').time_ns()}".encode()
+    ).hexdigest()
+    lease = {
+        "schema": "taskplane.review-publication-reservation/v1",
+        "run_id": run_id, "owner_pid": owner_pid,
+        "owner_id": owner_id, "acquired_at": __import__("time").time(),
+    }
+    tp.atomic_write_json(path, lease, sort_keys=True)
+    return lease
+
+
+def _release_collection_reservation(ws: str, lease: dict) -> None:
+    path = _collection_lock_path(ws)
+    current = tp.load_json(path, default=None,
+                           what="review publication reservation")
+    if not isinstance(current, dict) or any(
+            current.get(key) != lease.get(key)
+            for key in ("run_id", "owner_id")):
+        raise __import__("review_evidence").RevisionError(
+            "publication reservation owner changed before release")
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
 
 
 def _atomic_write_bytes(path: str, data: bytes) -> None:
@@ -2710,10 +2772,12 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
                 raise evidence.RevisionError(
                     "completed review no longer matches canonical current revision")
             return state["manifest"]
-        _assert_collection_reservation(ws, state["run_id"])
+        reservation = _acquire_collection_reservation(ws, state["run_id"])
         if state.get("status") in {
                 "prepared", "staged", "publishing", "committed"}:
-            return _resume_collection(ws, state, store)
+            manifest = _resume_collection(ws, state, store)
+            _release_collection_reservation(ws, reservation)
+            return manifest
         if state.get("status") != "ready":
             raise ReviewKernelError(
                 f"review cannot collect from {state.get('status')}")
@@ -2800,7 +2864,9 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.
         _save_state(ws, prepared)
-        return _resume_collection(ws, prepared, store)
+        manifest = _resume_collection(ws, prepared, store)
+        _release_collection_reservation(ws, reservation)
+        return manifest
 
 
 def signoff_review(ws: str, *, decision: str, by: str, note: str = "",

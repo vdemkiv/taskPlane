@@ -4226,12 +4226,15 @@ def hook_event_identity(workspace: str, action: str, event: dict) -> str:
 
 def _load_hook_claims(path: str) -> dict:
     journal = load_json(path, default={"schema": HOOK_CLAIM_SCHEMA,
-                                      "claims": []},
+                                      "claims": [], "owners": {}},
                         what="hook claim journal")
     if not isinstance(journal, dict) or journal.get("schema") != \
             HOOK_CLAIM_SCHEMA or not isinstance(journal.get("claims"), list):
         raise StateError(path, "invalid hook claim journal",
                          "remove it only after reviewing duplicate hook state")
+    owners = journal.setdefault("owners", {})
+    if not isinstance(owners, dict):
+        raise StateError(path, "invalid hook owner registry")
     return journal
 
 
@@ -4278,6 +4281,9 @@ def claim_hook_event(workspace: str, action: str, event: dict, *,
             prior = next((row for row in fresh
                           if row.get("claim_id") == claim_id), None)
             if prior is None:
+                owner_pid = os.getpid()
+                owner_id = hashlib.sha256(
+                    f"{claim_id}:{owner_pid}:{current}".encode()).hexdigest()
                 row = {
                     "claim_id": claim_id,
                     "created_at": current,
@@ -4288,23 +4294,44 @@ def claim_hook_event(workspace: str, action: str, event: dict, *,
                 }
                 fresh.append(row)
                 journal["claims"] = fresh[-HOOK_CLAIM_CAP:]
+                journal["owners"][claim_id] = {
+                    "owner_pid": owner_pid, "owner_id": owner_id}
                 atomic_write_json(path, journal, sort_keys=True)
                 return {"schema": HOOK_CLAIM_SCHEMA, "status": "claimed",
                         "execute": True, "duplicate": False,
-                        "response_class": None, "claim_id": claim_id}
+                        "response_class": None, "claim_id": claim_id,
+                        "owner_id": owner_id}
+            owner = journal["owners"].get(claim_id) or {}
+            owner_id = str(owner.get("owner_id") or "")
+            owner_pid = owner.get("owner_pid")
             if prior.get("status") == "completed" and \
                     prior.get("response_class") in _HOOK_RESPONSE_CLASSES:
                 return {"schema": HOOK_CLAIM_SCHEMA, "status": "replay",
                         "execute": False, "duplicate": True,
                         "response_class": prior["response_class"],
-                        "claim_id": claim_id}
+                        "claim_id": claim_id, "owner_id": owner_id}
             if prior.get("status") != "pending":
                 raise StateError(path, "corrupt hook claim status")
+            if not isinstance(owner_pid, int) or owner_pid <= 0 or \
+                    not owner_id or not _pid_alive(owner_pid):
+                new_pid = os.getpid()
+                new_id = hashlib.sha256(
+                    f"{claim_id}:{new_pid}:{current}:recovered".encode()
+                ).hexdigest()
+                journal["owners"][claim_id] = {
+                    "owner_pid": new_pid, "owner_id": new_id}
+                prior["updated_at"] = current
+                prior["hook_path"] = path_name
+                atomic_write_json(path, journal, sort_keys=True)
+                return {"schema": HOOK_CLAIM_SCHEMA, "status": "recovered",
+                        "execute": True, "duplicate": True,
+                        "response_class": None, "claim_id": claim_id,
+                        "owner_id": new_id}
         if _time.monotonic() >= deadline:
             return {"schema": HOOK_CLAIM_SCHEMA,
                     "status": "duplicate_pending", "execute": False,
                     "duplicate": True, "response_class": "block",
-                    "claim_id": claim_id}
+                    "claim_id": claim_id, "owner_id": owner_id}
         _time.sleep(0.05)
 
 
@@ -4328,6 +4355,9 @@ def complete_hook_event(workspace: str, claim: dict, *,
                     and item.get("claim_id") == claim_id), None)
         if row is None:
             raise StateError(path, "hook claim disappeared before completion")
+        owner = journal.get("owners", {}).get(claim_id) or {}
+        if claim.get("owner_id") != owner.get("owner_id"):
+            raise StateError(path, "hook claim completion owner mismatch")
         if row.get("status") == "completed":
             if row.get("response_class") != response:
                 raise StateError(path, "contradictory hook completion")
