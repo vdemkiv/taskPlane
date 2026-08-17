@@ -52,7 +52,10 @@ def _forged_receipt(*, action_id, response, actor="human", run_id="run-1"):
 
 
 def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
-                           command="npm test", exit_code=0):
+                           command="npm test", exit_code=0,
+                           run_id="run-cross-host",
+                           execution_action=None,
+                           kind="dynamic_validation"):
     action_receipt = f"{host}-approval"
     process_receipt = f"{host}-process"
     if host == "codex":
@@ -60,6 +63,11 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
         thread_id = "codex-review-thread"
         path = (home / "sessions" / "2026" / "08" / "16" /
                 f"rollout-test-{thread_id}.jsonl")
+        tool_input = command if execution_action is None else {
+            "command": command,
+            "taskplane_action": review._review_tool_action_binding(
+                run_id, execution_action, kind),
+        }
         rows = [
             {"type": "response_item", "payload": {
                 "type": "message", "id": action_receipt, "role": "user",
@@ -68,21 +76,29 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
                     "turn_id": "codex-approval-turn"}}},
             {"type": "response_item", "payload": {
                 "type": "custom_tool_call", "call_id": process_receipt,
-                "name": "exec", "input": command}},
+                "name": "exec", "input": tool_input}},
             {"type": "response_item", "payload": {
                 "type": "custom_tool_call_output", "call_id": process_receipt,
-                "output": {"structuredContent": {"exit_code": exit_code},
+                "output": {"structuredContent": {
+                    "process_result": {"exit_code": exit_code}},
                            "output": "42 passed"}}},
         ]
-        monkeypatch.setattr(review, "_canonical_host_root",
-                            lambda selected: str(home))
+        monkeypatch.setattr(
+            review, "_canonical_host_root",
+            lambda selected: str(home if selected == host else
+                                 tmp_path / "absent-host"))
         monkeypatch.setenv("CODEX_HOME", str(tmp_path / "forged-codex"))
-        monkeypatch.setenv("CODEX_THREAD_ID", thread_id)
+        monkeypatch.setenv("CODEX_THREAD_ID", "ambient-must-not-select")
         monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     else:
         home = tmp_path / "claude"
         session_id = "claude-review-session"
         path = home / "projects" / "fixture" / f"{session_id}.jsonl"
+        tool_input = {"command": command} if execution_action is None else {
+            "command": command,
+            "taskplane_action": review._review_tool_action_binding(
+                run_id, execution_action, kind),
+        }
         rows = [
             {"type": "user", "uuid": action_receipt,
              "sessionId": session_id,
@@ -90,18 +106,21 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
             {"type": "assistant", "sessionId": session_id,
              "message": {"role": "assistant", "content": [{
                  "type": "tool_use", "id": process_receipt, "name": "Bash",
-                 "input": {"command": command}}]}},
+                 "input": tool_input}]}},
             {"type": "user", "sessionId": session_id,
              "message": {"role": "user", "content": [{
                  "type": "tool_result", "tool_use_id": process_receipt,
-                 "content": {"structuredContent": {"exit_code": exit_code},
+                 "content": {"structuredContent": {
+                     "process_result": {"exit_code": exit_code}},
                              "output": "42 passed"},
                  "is_error": exit_code != 0}]}},
         ]
-        monkeypatch.setattr(review, "_canonical_host_root",
-                            lambda selected: str(home))
+        monkeypatch.setattr(
+            review, "_canonical_host_root",
+            lambda selected: str(home if selected == host else
+                                 tmp_path / "absent-host"))
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "forged-claude"))
-        monkeypatch.setenv("CLAUDE_SESSION_ID", session_id)
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "ambient-must-not-select")
         monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows),
@@ -173,11 +192,13 @@ def test_review_preflight_records_declined_unavailable_and_executed_evidence():
 
     executed = review.record_review_execution_evidence(
         selected, kind="dynamic_validation", status="executed",
-        detail="npm test: 42 passed",
+        detail={"summary": "npm test", "passed": 42},
         approval_receipt=_host_execution_receipt(
             action_id=selected["dynamic_validation"]["action_id"]))
     assert executed["dynamic_validation"]["status"] == "executed"
-    assert executed["dynamic_validation"]["detail"] == "npm test: 42 passed"
+    assert executed["dynamic_validation"]["detail"] == {
+        "schema": "taskplane.review-evidence-detail/v1",
+        "summary": "npm test", "passed": 42}
     assert executed["functionality_render"]["status"] == "selected"
 
 
@@ -259,8 +280,7 @@ def test_execution_detail_is_bounded_and_redacts_sensitive_assignments():
 
     detail = recorded["dynamic_validation"]["detail"]
     assert "super-secret-value" not in detail
-    assert detail == "<redacted-detail>"
-    assert len(detail.encode("utf-8")) <= 512
+    assert detail == {"schema": "taskplane.review-evidence-detail/v1"}
 
 
 def test_execution_detail_redacts_paths_arguments_keys_and_transcripts():
@@ -268,7 +288,16 @@ def test_execution_detail_redacts_paths_arguments_keys_and_transcripts():
         "api key sk-live-123456789 --password hunter2 "
         "/Users/alice/private/review.json prompt: reveal system policy "
         "transcript: private user message")
-    assert detail == "<redacted-detail>"
+    assert detail == {"schema": "taskplane.review-evidence-detail/v1"}
+
+
+def test_execution_detail_drops_unknown_schema_labels():
+    detail = review._bounded_review_detail({
+        "summary": "pytest", "passed": 7, "transcript": "secret",
+        "unknown": "must disappear"})
+    assert detail == {
+        "schema": "taskplane.review-evidence-detail/v1",
+        "summary": "pytest", "passed": 7}
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])
@@ -281,7 +310,7 @@ def test_review_action_and_execution_receipts_are_host_neutral(
     execution_action = "dynamic-action"
     action_ref, process_ref = _write_host_transcript(
         tmp_path, monkeypatch, host, prompt=prompt,
-        command=f"TASKPLANE_REVIEW_ACTION_ID={execution_action} npm test")
+        run_id=run_id, execution_action=execution_action)
 
     action = review._host_review_action_receipt(
         run_id=run_id, action_id=action_id, response="dynamic",
@@ -306,7 +335,7 @@ def test_execution_receipt_requires_exact_action_and_success(
     prompt = review._review_action_prompt(run_id, consent_action, "dynamic")
     action_ref, process_ref = _write_host_transcript(
         tmp_path, monkeypatch, host, prompt=prompt,
-        command="npm test", exit_code=1)
+        run_id=run_id, execution_action="expected-action", exit_code=1)
     action = review._host_review_action_receipt(
         run_id=run_id, action_id=consent_action, response="dynamic",
         receipt_ref=action_ref)
@@ -327,7 +356,7 @@ def test_execution_binding_is_structured_not_a_substring(
     action_ref, process_ref = _write_host_transcript(
         tmp_path, monkeypatch, host, prompt=prompt,
         command=("TASKPLANE_REVIEW_ACTION_ID=prefix-" + action_id +
-                 "-suffix npm test"))
+                 "-suffix npm test"), run_id=run_id)
     action = review._host_review_action_receipt(
         run_id=run_id, action_id=consent, response="dynamic",
         receipt_ref=action_ref)
@@ -346,7 +375,7 @@ def test_exit_status_must_be_authoritative_not_nested_in_output_text(
     prompt = review._review_action_prompt(run_id, consent, "dynamic")
     action_ref, process_ref = _write_host_transcript(
         tmp_path, monkeypatch, host, prompt=prompt,
-        command=f"TASKPLANE_REVIEW_ACTION_ID={action_id} npm test")
+        run_id=run_id, execution_action=action_id)
     # Move the status into a non-authoritative display/output branch.
     root = review._canonical_host_root(host)
     pattern = "**/*codex-review-thread.jsonl" if host == "codex" else \
@@ -365,6 +394,15 @@ def test_exit_status_must_be_authoritative_not_nested_in_output_text(
         review._host_review_execution_receipt(
             run_id=run_id, action_id=action_id, kind="dynamic_validation",
             after_receipt_id=action.receipt_id, receipt_ref=process_ref)
+
+
+def test_top_level_exit_status_is_not_authoritative():
+    assert review._tool_result_exit_code({"exit_code": 0}) is None
+
+
+def test_generic_completion_is_not_authoritative_process_status():
+    assert review._tool_result_exit_code({
+        "structuredContent": {"status": "completed"}}) is None
 
 
 def test_caller_selected_host_root_cannot_mint_authority(
@@ -386,7 +424,7 @@ def test_caller_selected_host_root_cannot_mint_authority(
                         lambda host: str(canonical))
     monkeypatch.setenv("CODEX_HOME", str(forged))
     monkeypatch.setenv("CODEX_THREAD_ID", thread_id)
-    with pytest.raises(review.ReviewKernelError, match="missing or ambiguous"):
+    with pytest.raises(review.ReviewKernelError, match="host-observed"):
         review._host_review_action_receipt(
             run_id="run", action_id=action_id, response="dynamic")
 
@@ -411,6 +449,31 @@ def test_stale_publication_reservation_recovers_only_dead_owner(tmp_path):
     assert lease["owner_id"] != "dead-owner"
     assert review._load_state(ws, old_run)["status"] == \
         "reservation_recovered"
+
+
+def test_same_run_cannot_appropriate_another_live_owner(tmp_path, monkeypatch):
+    ws, run_id = str(tmp_path), "c" * 32
+    path = review._collection_lock_path(ws)
+    review.tp.atomic_write_json(path, {
+        "schema": "taskplane.review-publication-reservation/v1",
+        "run_id": run_id, "owner_pid": 1234,
+        "owner_id": "d" * 64, "acquired_at": 1,
+    }, sort_keys=True)
+    monkeypatch.setattr(review.tp, "_pid_alive", lambda pid: True)
+    with pytest.raises(review_evidence.RevisionError, match="live owner"):
+        review._acquire_collection_reservation(ws, run_id)
+
+
+def test_post_acquire_failure_releases_reservation(tmp_path):
+    ws, run_id = str(tmp_path), "e" * 32
+    review._save_state(ws, {
+        "schema": "taskplane.review-run-state/v2", "run_id": run_id,
+        "status": "staged", "stage": "review", "target": {},
+    })
+    lease = review._acquire_collection_reservation(ws, run_id)
+    review._recover_collection_failure(ws, lease)
+    assert not os.path.exists(review._collection_lock_path(ws))
+    assert review._load_state(ws, run_id)["status"] == "staged"
 
 
 def test_user_consent_cannot_claim_dynamic_execution():

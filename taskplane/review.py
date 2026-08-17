@@ -138,12 +138,21 @@ def _review_action_prompt(run_id: str | None, action_id: str,
             action_id + " " + response)
 
 
-def _bounded_review_detail(value: object) -> str:
-    """Persist only a small structured-summary language, never free prose."""
-    text = str(value or "").strip()
-    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,80}: [0-9]+ passed", text):
-        return text
-    return "<redacted-detail>" if text else ""
+def _bounded_review_detail(value: object) -> dict:
+    """Allowlist the persisted evidence projection; drop every other label."""
+    projected = {"schema": "taskplane.review-evidence-detail/v1"}
+    if not isinstance(value, dict):
+        return projected
+    summary = value.get("summary")
+    if isinstance(summary, str) and re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_. -]{0,80}", summary):
+        projected["summary"] = summary
+    for key in ("passed", "failed"):
+        count = value.get(key)
+        if isinstance(count, int) and not isinstance(count, bool) and \
+                0 <= count <= 1_000_000:
+            projected[key] = count
+    return projected
 
 
 def _canonical_host_root(host: str) -> str:
@@ -158,29 +167,15 @@ def _canonical_host_root(host: str) -> str:
         home, ".codex" if host == "codex" else ".claude"))
 
 
-def _host_review_transcript() -> tuple[str, str]:
-    """Return the active supported host and its host-owned transcript."""
-    thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
-    if thread_id:
-        home = _canonical_host_root("codex")
-        paths = glob.glob(os.path.join(
-            home, "sessions", "**", f"*-{thread_id}.jsonl"),
-            recursive=True)
-        host = "codex"
-    else:
-        session_id = str(os.environ.get("CLAUDE_SESSION_ID") or "").strip()
-        if not session_id:
-            raise ReviewKernelError(
-                "review action requires a supported host-observed receipt")
-        home = _canonical_host_root("claude")
-        paths = glob.glob(os.path.join(
-            home, "projects", "**", f"{session_id}.jsonl"),
-            recursive=True)
-        host = "claude"
-    if len(paths) != 1:
-        raise ReviewKernelError(
-            "review action host transcript is missing or ambiguous")
-    return host, paths[0]
+def _host_review_transcripts() -> list[tuple[str, str]]:
+    """Enumerate host-owned transcripts without ambient session selection."""
+    candidates = []
+    for host, rel in (("codex", ("sessions", "**", "*.jsonl")),
+                      ("claude", ("projects", "**", "*.jsonl"))):
+        root = _canonical_host_root(host)
+        for path in glob.glob(os.path.join(root, *rel), recursive=True):
+            candidates.append((host, os.path.realpath(path)))
+    return sorted(set(candidates))
 
 
 def _host_review_records(path: str) -> list[dict]:
@@ -242,25 +237,27 @@ def _host_review_action_receipt(*, run_id: str, action_id: str,
                                 receipt_ref: str | None = None
                                 ) -> _HostObservedReviewAction:
     """Resolve exact human consent through the active host adapter."""
-    host, path = _host_review_transcript()
-    owner_id = _review_receipt_digest(host, os.path.realpath(path))
-    records = _host_review_records(path)
     expected = _review_action_prompt(run_id, action_id, response)
     wanted_ref = str(receipt_ref or "").strip()
     if wanted_ref in {"", "latest"}:
         wanted_ref = ""
-    for record in reversed(records):
-        observed = _host_user_message(host, record)
-        if not observed:
-            continue
-        message_id, turn_id, texts = observed
-        if expected not in texts:
-            continue
-        if wanted_ref and wanted_ref not in {message_id, turn_id}:
-            continue
-        receipt_id = message_id or turn_id
-        if not receipt_id:
-            continue
+    matches = []
+    for host, path in _host_review_transcripts():
+        for record in reversed(_host_review_records(path)):
+            observed = _host_user_message(host, record)
+            if not observed:
+                continue
+            message_id, turn_id, texts = observed
+            if expected not in texts or (wanted_ref and wanted_ref not in {
+                    message_id, turn_id}):
+                continue
+            receipt_id = message_id or turn_id
+            if receipt_id:
+                matches.append((host, path, receipt_id))
+                break
+    if len(matches) == 1:
+        host, path, receipt_id = matches[0]
+        owner_id = _review_receipt_digest(host, path)
         action_digest = _review_receipt_digest(
             owner_id, run_id, action_id, response, receipt_id, "human")
         return _HostObservedReviewAction(
@@ -277,33 +274,33 @@ def _tool_result_bytes(value: object) -> bytes:
                       ensure_ascii=False).encode("utf-8")
 
 
-def _tool_action_binding(value: object) -> str | None:
-    """Extract one exact engine marker; substrings are never authority."""
-    if isinstance(value, dict):
-        structured = value.get("taskplane_action")
-        if isinstance(structured, dict):
-            action = structured.get("action_id")
-            return str(action) if isinstance(action, str) and action else None
-        value = value.get("command", value.get("cmd"))
-    if not isinstance(value, str):
-        return None
-    try:
-        tokens = shlex.split(value)
-    except ValueError:
-        return None
-    prefix = "TASKPLANE_REVIEW_ACTION_ID="
-    bindings = [token[len(prefix):] for token in tokens
-                if token.startswith(prefix)]
-    return bindings[0] if len(bindings) == 1 and bindings[0] else None
+def _review_tool_action_binding(run_id: str, action_id: str,
+                                kind: str) -> dict:
+    digest = _review_receipt_digest("tool-action", run_id, action_id, kind)
+    return {"schema": "taskplane.review-tool-action/v1",
+            "run_id": run_id, "action_id": action_id, "kind": kind,
+            "action_digest": digest}
+
+
+def _tool_action_binding(value: object, *, run_id: str, action_id: str,
+                         kind: str) -> bool:
+    """Accept only the exact structured engine action; text is inert."""
+    if not isinstance(value, dict) or not isinstance(
+            value.get("taskplane_action"), dict):
+        return False
+    return value["taskplane_action"] == _review_tool_action_binding(
+        run_id, action_id, kind)
 
 
 def _tool_result_exit_code(value: object) -> int | None:
     """Read only the host's structured status field, never display output."""
     if not isinstance(value, dict):
         return None
-    authoritative = value.get("structuredContent", value)
-    if isinstance(authoritative, dict):
-        code = authoritative.get("exit_code", authoritative.get("exitCode"))
+    authoritative = value.get("structuredContent")
+    process = authoritative.get("process_result") \
+        if isinstance(authoritative, dict) else None
+    if isinstance(process, dict):
+        code = process.get("exit_code")
         if isinstance(code, int) and not isinstance(code, bool):
             return code
     return None
@@ -330,9 +327,7 @@ def _host_tool_results(host: str, records: list[dict]) -> list[dict]:
                 call_id = str(payload.get("call_id") or "")
                 call = calls.get(call_id)
                 raw = payload.get("output")
-                text = json.dumps(raw, ensure_ascii=False)
                 if call and raw is not None and \
-                        "Script failed" not in text and \
                         not bool(payload.get("is_error")):
                     results.append({**call, "result_index": index,
                                     "receipt_id": call_id, "result": raw,
@@ -370,36 +365,39 @@ def _host_review_execution_receipt(
     """Resolve successful host tool/result evidence after human consent."""
     if kind not in {"dynamic_validation", "functionality_render"}:
         raise ReviewKernelError("unknown review execution evidence kind")
-    host, path = _host_review_transcript()
-    owner_id = _review_receipt_digest(host, os.path.realpath(path))
-    records = _host_review_records(path)
-    after_index = -1
-    for index, record in enumerate(records):
-        observed = _host_user_message(host, record)
-        if observed and after_receipt_id in observed[:2]:
-            after_index = index
-    if after_index < 0:
-        raise ReviewKernelError(
-            "review execution has no matching host-observed consent")
     wanted_ref = str(receipt_ref or "").strip()
     if wanted_ref in {"", "latest"}:
         wanted_ref = ""
     allowed = ({"exec", "exec_command", "bash", "shell"}
                if kind == "dynamic_validation" else
                {"visualize", "browser", "screenshot", "imagegen"})
-    for result in reversed(_host_tool_results(host, records)):
-        tool_name = str(result.get("name") or "").lower()
-        bound_action = _tool_action_binding(result.get("input"))
-        if result["index"] <= after_index or \
-                not any(token in tool_name for token in allowed) or \
-                bound_action != action_id:
+    matches = []
+    for host, path in _host_review_transcripts():
+        records = _host_review_records(path)
+        after_index = max((index for index, record in enumerate(records)
+                           if (lambda observed: observed and
+                               after_receipt_id in observed[:2])(
+                                   _host_user_message(host, record))),
+                          default=-1)
+        if after_index < 0:
             continue
-        if wanted_ref and wanted_ref != result["receipt_id"]:
-            continue
-        raw = _tool_result_bytes(result["result"])
-        exit_code = result.get("exit_code")
-        if not raw or exit_code is None or exit_code != 0:
-            continue
+        for result in reversed(_host_tool_results(host, records)):
+            tool_name = str(result.get("name") or "").lower()
+            if result["index"] <= after_index or \
+                    not any(token in tool_name for token in allowed) or \
+                    not _tool_action_binding(
+                        result.get("input"), run_id=run_id,
+                        action_id=action_id, kind=kind) or \
+                    (wanted_ref and wanted_ref != result["receipt_id"]):
+                continue
+            raw = _tool_result_bytes(result["result"])
+            exit_code = result.get("exit_code")
+            if raw and exit_code == 0:
+                matches.append((host, path, result, raw, exit_code))
+                break
+    if len(matches) == 1:
+        host, path, result, raw, exit_code = matches[0]
+        owner_id = _review_receipt_digest(host, path)
         result_sha256 = hashlib.sha256(raw).hexdigest()
         action_digest = _review_receipt_digest(
             owner_id, run_id, action_id, kind, result["receipt_id"],
@@ -540,10 +538,10 @@ def review_execution_preflight(*, selection: str | None = None,
             "status": "selected" if dynamic else "declined",
             "action_id": _review_execution_action_id(
                 run_id, "dynamic_validation"),
-            "execution_binding": ("TASKPLANE_REVIEW_ACTION_ID=" +
-                                  _review_execution_action_id(
-                                      run_id, "dynamic_validation"))
-            if dynamic else "",
+            "execution_binding": _review_tool_action_binding(
+                str(run_id or ""), _review_execution_action_id(
+                    run_id, "dynamic_validation"), "dynamic_validation")
+            if dynamic else None,
             "detail": "awaiting approved runtime evidence" if dynamic
             else "human chose static review",
         },
@@ -551,8 +549,10 @@ def review_execution_preflight(*, selection: str | None = None,
             "status": "selected" if render else "declined",
             "action_id": _review_execution_action_id(
                 run_id, "functionality_render"),
-            "execution_binding": _review_execution_action_id(
-                run_id, "functionality_render") if render else "",
+            "execution_binding": _review_tool_action_binding(
+                str(run_id or ""), _review_execution_action_id(
+                    run_id, "functionality_render"), "functionality_render")
+            if render else None,
             "detail": "awaiting approved browser evidence" if render
             else "human did not select inline rendering",
         },
@@ -562,7 +562,7 @@ def review_execution_preflight(*, selection: str | None = None,
 
 
 def record_review_execution_evidence(preflight: dict, *, kind: str,
-                                     status: str, detail: str = "",
+                                     status: str, detail: object = "",
                                      approval_receipt: object | None = None) -> dict:
     """Record bounded runtime/render evidence without performing the action."""
     if kind not in {"dynamic_validation", "functionality_render"}:
@@ -1930,7 +1930,7 @@ def _codex_agent_path(paths: list[str], thread_id: str) -> str:
 
 def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
                            raw_result: bytes) -> dict | None:
-    """Recover host provenance from Codex's native, read-only task store.
+    """Retired compatibility shim; session transcripts are not authority.
 
     Repo hooks remain the preferred immediate receipt.  Codex also persists a
     host-authored child record outside the model's writable checkout.  A child
@@ -1944,11 +1944,10 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
     exact immutable brief and then completes with the exact result digest.
     The original fresh-spawn task-name binding remains the preferred path.
     """
-    if tp.host() != "codex":
+    return None
+    if tp.host() != "codex":  # pragma: no cover - removed legacy body
         return None
-    parent_thread = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
-    if not parent_thread:
-        return None
+    parent_thread = ""
     brief = store.read(slot["brief"])
     role = brief.get("role") or {}
     task_name = str(role.get("task_name") or "").strip()
@@ -1960,8 +1959,7 @@ def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
     brief_ref = slot.get("brief") or {}
     brief_path = (brief_ref.get("relative_path")
                   if isinstance(brief_ref, dict) else str(brief_ref))
-    home = os.path.realpath(os.environ.get("CODEX_HOME") or
-                            os.path.join(os.path.expanduser("~"), ".codex"))
+    home = _canonical_host_root("codex")
     sessions = os.path.join(home, "sessions")
     paths = []
     for directory, _dirs, names in os.walk(sessions):
@@ -2520,7 +2518,14 @@ def _acquire_collection_reservation(ws: str, run_id: str) -> dict:
     prior = tp.load_json(path, default=None,
                          what="review publication reservation")
     if isinstance(prior, dict) and prior.get("run_id") == run_id:
-        return prior
+        owner_pid = prior.get("owner_pid")
+        if owner_pid == os.getpid() and prior.get("owner_id"):
+            return prior
+        if isinstance(owner_pid, int) and owner_pid > 0 and \
+                prior.get("owner_id") and tp._pid_alive(owner_pid):
+            raise evidence.RevisionError(
+                "another live owner holds the publication reservation")
+        prior = dict(prior, run_id="")
     if prior is not None:
         owner_pid = prior.get("owner_pid") if isinstance(prior, dict) else None
         owner_valid = isinstance(owner_pid, int) and owner_pid > 0 and \
@@ -2563,6 +2568,16 @@ def _release_collection_reservation(ws: str, lease: dict) -> None:
         os.unlink(path)
     except FileNotFoundError:
         pass
+
+
+def _recover_collection_failure(ws: str, lease: dict) -> None:
+    """Roll back recoverable publication state and relinquish exact ownership."""
+    state = _load_state(ws, lease.get("run_id"))
+    if state.get("status") in {"publishing", "committed"}:
+        import review_evidence as evidence
+        _restore_publication(ws, state, evidence.ArtifactStore(ws), evidence)
+        _save_state(ws, dict(state, status="staged"))
+    _release_collection_reservation(ws, lease)
 
 
 def _atomic_write_bytes(path: str, data: bytes) -> None:
@@ -2775,7 +2790,11 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         reservation = _acquire_collection_reservation(ws, state["run_id"])
         if state.get("status") in {
                 "prepared", "staged", "publishing", "committed"}:
-            manifest = _resume_collection(ws, state, store)
+            try:
+                manifest = _resume_collection(ws, state, store)
+            except BaseException:
+                _recover_collection_failure(ws, reservation)
+                raise
             _release_collection_reservation(ws, reservation)
             return manifest
         if state.get("status") != "ready":
@@ -2791,6 +2810,9 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
                 refs.append(ref)
                 lens_results.extend(rows)
                 result_validations.append(validation_ref)
+        except BaseException:
+            _recover_collection_failure(ws, reservation)
+            raise
         finally:
             # Once every producer has submitted its exact leased file, its
             # work is over even when schema validation finds a defect.  The
@@ -2864,7 +2886,11 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.
         _save_state(ws, prepared)
-        manifest = _resume_collection(ws, prepared, store)
+        try:
+            manifest = _resume_collection(ws, prepared, store)
+        except BaseException:
+            _recover_collection_failure(ws, reservation)
+            raise
         _release_collection_reservation(ws, reservation)
         return manifest
 

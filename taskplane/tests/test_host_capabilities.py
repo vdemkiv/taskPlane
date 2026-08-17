@@ -48,6 +48,7 @@ class TestCapabilitySnapshot:
         assert duplicate["execute"] is False
         assert duplicate["claim_id"] == first["claim_id"]
         assert first["owner_id"] == duplicate["owner_id"]
+        assert duplicate["response_class"] == "empty"
 
     def test_dead_hook_event_owner_can_be_recovered_once(self):
         ws = _repo()

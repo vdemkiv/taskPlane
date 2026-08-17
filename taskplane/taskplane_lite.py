@@ -4330,7 +4330,7 @@ def claim_hook_event(workspace: str, action: str, event: dict, *,
         if _time.monotonic() >= deadline:
             return {"schema": HOOK_CLAIM_SCHEMA,
                     "status": "duplicate_pending", "execute": False,
-                    "duplicate": True, "response_class": "block",
+                    "duplicate": True, "response_class": "empty",
                     "claim_id": claim_id, "owner_id": owner_id}
         _time.sleep(0.05)
 
