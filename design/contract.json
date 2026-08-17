@@ -1,406 +1,120 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0006",
-  "title": "Capability-bound host parity",
-  "summary": "Add one trusted HostCapabilitySnapshot and one canonical output/receipt pipeline so native hooks, repository fallback, Claude workflows, Claude Tasks, Codex tasks, evaluator output, lifecycle stops, routing, and token telemetry vary only by transport while retaining the existing ReviewKernel and orchestrator/human authorities.",
+  "requirement": "R-0007",
+  "title": "Event-driven command completion",
+  "summary": "Add a durable TaskPlane-owned command runtime and canonical adapters so commands wake the model only on meaningful idempotent events, resume without relaunch, aggregate waves, bound output, and enforce wake/token budgets across Claude and Codex.",
   "current_state": {
-    "summary": "The accepted ReviewKernel already supplies immutable envelopes, scoped views, leases, producer/write observations, taskplane.lens-slot-output/v2 collection, and canonical revisions. Host-dependent seams remain inconsistent: Codex packages native hooks and also installs a repository bridge; onboarding equates matching files with readiness; Claude review/evaluate workflows validate a legacy findings shape; bounded eval adapters do not declare native output schemas or a governed-file fallback; Stop/SubagentStop do not validate exact worker submissions; tier routing can emit unverified host values; and cached-token parsing is not provider-semantic. The external current-state inventory is empty, so these premises are grounded directly in the cited repository and accepted decisions 0005/0006.",
-    "sources": [
-      "hooks/hooks.json",
-      ".codex/hooks.json",
-      "taskplane/tp.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/review.py",
-      "taskplane/review_evidence.py",
-      "taskplane/eval_drivers.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/evidence.py",
-      "taskplane/spend.py",
-      "taskplane/loop.py",
-      "scripts/eval_skills.py",
-      "scripts/eval_record.py",
-      "workflows/review-wave.js",
-      "workflows/evaluate-wave.js",
-      "evals/scenarios/tp-go.json",
-      "taskplane/tests/test_codex_compat.py",
-      "taskplane/tests/test_evidence_bundle.py",
-      ".github/workflows/ci.yml",
-      "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/context/current-state.md",
-      "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/decisions/0005-design-approved-clean-and-complete-the-model-beh.md",
-      "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/decisions/0006-plan-approved-clean-and-complete-the-model-behav.md"
-    ]
+    "summary": "TaskPlane has durable run/loop stores, bounded process execution, normalized Claude/Codex outcomes, cancellation/timeout cleanup, and host capability routing. Execution remains caller-blocking or subprocess.run-based; eval_drivers.run_process polls an in-process Popen. No durable command handle, transition journal, reconnect contract, delivery lease, wave authority, or polling-token gate exists.",
+    "sources": ["taskplane/eval_drivers.py", "taskplane/run_store.py", "taskplane/loop.py", "taskplane/loop_recovery.py", "taskplane/runtime_eval.py", "taskplane/host_capabilities.py", "taskplane/evidence.py", "taskplane/spend.py", "scripts/eval_record.py", "scripts/eval_skills.py", "workflows/execute-wave.js", "workflows/evaluate-wave.js", "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/context/current-state.md", "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/decisions/0008-design-approved-adopt-six-verified-claude-codex-.md", "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/decisions/0019-model-evaluation-unavailability-is-not-a-product.md"]
   },
   "alternatives": [
-    {
-      "id": "capability-contract",
-      "name": "One capability snapshot and canonical contracts",
-      "description": "Derive one versioned, source-attributed HostCapabilitySnapshot and use it to select hook, schema, and routing transports; require every transport to converge on canonical output validation, ReviewKernel collection, submission validation, host receipts, and provider-normalized telemetry.",
-      "tradeoffs": {
-        "gains": [
-          "One host-neutral authority with deterministic fallbacks and shared negative fixtures",
-          "Preserves accepted ReviewKernel leases, result schema, collector, and revision identity",
-          "Makes unsupported, unknown, contradictory, inherit, and unavailable states explicit"
-        ],
-        "costs": [
-          "Adds two focused cross-cutting modules and versioned migration records",
-          "Requires coordinated adoption across hooks, workflows, adapters, lifecycle, routing, recorder, tests, and docs"
-        ],
-        "revisit_when": "Revisit the module split if capability and output contracts stabilize with fewer than two consumers each, or if a supported host exposes a single authoritative cross-product capability and receipt API."
-      }
-    },
-    {
-      "id": "host-local-patches",
-      "name": "Patch each host path independently",
-      "description": "Keep native Codex hooks, the repository bridge, Claude workflows, Task dispatch, eval adapters, and token readers as separate authorities and add local guards to each.",
-      "tradeoffs": {
-        "gains": [
-          "Smaller initial diffs in each subsystem",
-          "No new shared modules"
-        ],
-        "costs": [
-          "Preserves duplicated schemas, capability guesses, retry rules, and evidence authorities",
-          "Cannot mechanically prove semantic parity or prevent future transport drift"
-        ],
-        "revisit_when": "Revisit only if cross-host equivalence is explicitly removed from product scope and each host is allowed a different governance meaning."
-      }
-    },
-    {
-      "id": "native-only",
-      "name": "Require native capabilities and remove fallbacks",
-      "description": "Accept only native plugin hooks, native structured output, and exact native model/effort controls; reject all repository, file-validation, inherit, and unsupported host paths.",
-      "tradeoffs": {
-        "gains": [
-          "Smallest steady-state transport surface",
-          "Strongest direct host receipts"
-        ],
-        "costs": [
-          "Excludes older, unknown, managed, read-only, or policy-restricted supported hosts",
-          "Contradicts the explicit fallback and portability acceptance criteria"
-        ],
-        "revisit_when": "Revisit after every supported Claude and Codex version plus managed deployment guarantees native hooks, structured output, model control, effort control, and effective receipts."
-      }
-    }
+    {"id": "canonical-command-broker", "name": "Canonical durable command broker", "description": "TaskPlane owns handles, transitions, blocking waits, leases, artifacts, waves and budgets; adapters translate host capabilities.", "tradeoffs": {"gains": ["One replay/resume and budget authority", "Equivalent host semantics", "Deterministic tests"], "costs": ["New persistent lifecycle", "Compatibility wrapper"], "revisit_when": "Every supported host provides the complete durable, bound, replay-safe, aggregating and observable contract."}},
+    {"id": "host-native-handles", "name": "Host-native handles with thin facade", "description": "Persist host identifiers and delegate waiting and summaries.", "tradeoffs": {"gains": ["Smaller TaskPlane layer", "Native UI integration"], "costs": ["Host semantic drift", "No-event hosts regress to polling", "Budgets remain outside TaskPlane"], "revisit_when": "Both hosts publish stable equivalent completion/resume APIs and delivery receipts."}},
+    {"id": "in-memory-background", "name": "In-memory background extension", "description": "Move current polling to background threads without durable command state.", "tradeoffs": {"gains": ["Smallest diff", "Simple synchronous compatibility"], "costs": ["Restart loses commands", "Delivery is not replay-safe", "No durable wave authority"], "revisit_when": "Only for explicitly short synchronous commands."}}
   ],
-  "selected_approach": "capability-contract",
-  "decision": "Select capability-contract because R-0006 changes five cross-host contracts and requires equivalent evidence under unsupported and unknown capabilities. It is the only option that extends accepted decision 0005's host-neutral ReviewKernel instead of creating parallel hook, findings, submission, dispatch, or telemetry authorities. Two focused modules keep capability detection and output validation out of the already-large CLI, kernel, and transport adapters; every new module traces to multiple acceptance criteria and has a named owner and rollback boundary.",
+  "selected_approach": "canonical-command-broker",
+  "decision": "Extend the durable-store and bounded-adapter stack with one TaskPlane-owned lifecycle and host-neutral adapter boundary. Persist before yielding, wake only from meaningful idempotent transitions, keep UI progress out of conversation, and retain synchronous execution as an additive wrapper.",
   "modules": {
     "existing": [
-      "hooks/hooks.json",
-      ".codex/hooks.json",
-      "taskplane/tp.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/review.py",
-      "taskplane/review_evidence.py",
       "taskplane/eval_drivers.py",
+      "taskplane/run_store.py",
+      "taskplane/loop.py",
       "taskplane/runtime_eval.py",
       "taskplane/evidence.py",
       "taskplane/spend.py",
-      "taskplane/loop.py",
-      "scripts/eval_skills.py",
       "scripts/eval_record.py",
-      "workflows/review-wave.js",
-      "workflows/evaluate-wave.js",
+      "scripts/eval_skills.py",
       "workflows/execute-wave.js",
-      "workflows/fix-wave.js",
-      "evals/scenarios/tp-go.json",
-      "agents",
-      "skills/taskplane/references/runtime-evals.json",
-      "docs",
+      "workflows/evaluate-wave.js",
       "taskplane/tests"
     ],
     "new": [
-      "taskplane/host_capabilities.py",
-      "taskplane/evaluation_output.py"
+      "taskplane/command_runtime.py",
+      "taskplane/command_adapters.py"
     ]
   },
   "contracts": [
-    {
-      "relation": "changes",
-      "id": "contract:host-hook-lifecycle",
-      "description": "Versioned capability state, native-preferred/bridge-fallback selection, stable event identity, exactly-once claim/replay, truthful onboarding, and read-only submission-aware Stop/SubagentStop decisions."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:review-kernel-slot",
-      "description": "Claude workflow and Task/Codex transports consume the existing immutable envelope, view, routing, lease, producer, exact result path, taskplane.lens-slot-output/v2 schema, host write receipt, collector, and canonical revision without a parallel findings convention."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:evaluation-output",
-      "description": "Each evaluator dispatch declares one strict versioned schema, exact output path and attempt bound; native structured output and host-observed governed-file fallback converge on the same validator before record, collection, submission, or gate."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:host-dispatch-routing",
-      "description": "Abstract tiers resolve only through host capabilities to exact, inherit, unsupported_fallback, or pre-dispatch block; planned and host-observed model/effort remain separate and provider ids never cross hosts."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:evaluation-telemetry",
-      "description": "Versioned bounded lifecycle events and provider-normalized token usage report attempts, transports, validation, receipts, availability and cache categories without prompts, full transcripts, command arguments, secrets, credentials, or double counting."
-    }
+    {"id": "contract:runtime:command-state/v1", "relation": "provides", "description": "Opaque workspace/auth-bound handle, meaningful events, revisions and idempotent delivery."},
+    {"id": "contract:runtime:host-command-adapter", "relation": "changes", "description": "Host-neutral launch, wait_next, cancel, reconnect and snapshot with blocking fallback."},
+    {"id": "contract:runtime:command-wave/v1", "relation": "provides", "description": "Sealed membership, attention policy and one ordinary aggregate completion."},
+    {"id": "contract:runtime:command-efficiency/v1", "relation": "provides", "description": "Wake/token telemetry and hard budget evaluation."}
   ],
-  "graph": {
-    "baseline_fingerprint": "b2e530770c71c400f23caeb7da95ed3638662d5bc42c83b6e6e8f50c75934d3c",
-    "proposed_modules": [
-      "hooks/hooks.json",
-      ".codex/hooks.json",
-      "taskplane/tp.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/review.py",
-      "taskplane/review_evidence.py",
-      "taskplane/eval_drivers.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/evidence.py",
-      "taskplane/spend.py",
-      "taskplane/loop.py",
-      "scripts/eval_skills.py",
-      "scripts/eval_record.py",
-      "workflows/review-wave.js",
-      "workflows/evaluate-wave.js",
-      "workflows/execute-wave.js",
-      "workflows/fix-wave.js",
-      "evals/scenarios/tp-go.json",
-      "agents",
-      "skills/taskplane/references/runtime-evals.json",
-      "docs",
-      "taskplane/tests",
-      "taskplane/host_capabilities.py",
-      "taskplane/evaluation_output.py"
-    ],
-    "proposed_edges": [
-      {"from":"hooks/hooks.json","to":"contract:host-hook-lifecycle","kind":"provides","reason":"Bundled native lifecycle events invoke the canonical hook actions."},
-      {"from":".codex/hooks.json","to":"contract:host-hook-lifecycle","kind":"provides-fallback","reason":"Repository hook rows remain a named compatibility fallback and migrate only taskPlane-owned entries."},
-      {"from":"taskplane/host_capabilities.py","to":"contract:host-hook-lifecycle","kind":"provides","reason":"One source-attributed snapshot selects native, bridge, transitioning, or blocked state."},
-      {"from":"taskplane/tp.py","to":"contract:host-hook-lifecycle","kind":"consumes","reason":"Onboarding and hook entry points project capability truth and the effective path."},
-      {"from":"taskplane/taskplane_lite.py","to":"contract:host-hook-lifecycle","kind":"enforces","reason":"The kernel owns event claim/replay, exact slot lookup, submission status, and the no-auto-clear invariant."},
-      {"from":"taskplane/review_evidence.py","to":"contract:review-kernel-slot","kind":"provides","reason":"Existing envelope, view, lease, producer, result, write receipt, and revision records remain canonical."},
-      {"from":"taskplane/review.py","to":"contract:review-kernel-slot","kind":"collects","reason":"Review start/collect remains the only canonical slot collector and revision authority."},
-      {"from":"workflows/review-wave.js","to":"contract:review-kernel-slot","kind":"consumes","reason":"Claude workflow dispatches exact leased briefs and returns receipts instead of merging legacy findings."},
-      {"from":"workflows/evaluate-wave.js","to":"contract:review-kernel-slot","kind":"consumes","reason":"Evaluate workflow preserves the embedded ReviewKernel citation and canonical collection boundary."},
-      {"from":"taskplane/evaluation_output.py","to":"contract:evaluation-output","kind":"provides","reason":"One strict schema contract and validator serves native and governed-file transports."},
-      {"from":"taskplane/eval_drivers.py","to":"contract:evaluation-output","kind":"consumes","reason":"Bounded Claude/Codex adapters select schema transport from capability evidence and validate before returning evidence."},
-      {"from":"taskplane/review.py","to":"contract:evaluation-output","kind":"consumes","reason":"Leased output must validate before canonical collection."},
-      {"from":"taskplane/loop.py","to":"contract:evaluation-output","kind":"consumes","reason":"Evaluator output and composed failure diagnostics must validate before submission or gate consideration."},
-      {"from":"workflows/evaluate-wave.js","to":"contract:evaluation-output","kind":"consumes","reason":"Outer evaluators use taskplane.evaluator-output/v1 with native or governed-file transport."},
-      {"from":"workflows/execute-wave.js","to":"contract:evaluation-output","kind":"consumes","reason":"Execute receipts declare and validate the stage submission schema rather than relying on prose."},
-      {"from":"workflows/fix-wave.js","to":"contract:evaluation-output","kind":"consumes","reason":"Fix receipts declare and validate the stage submission schema rather than relying on prose."},
-      {"from":"taskplane/host_capabilities.py","to":"contract:host-dispatch-routing","kind":"provides","reason":"Host aliases and supported effort values constrain route resolution."},
-      {"from":"taskplane/taskplane_lite.py","to":"contract:host-dispatch-routing","kind":"provides","reason":"Tier resolution and expected/observed dispatch queues adopt capability-bound route states."},
-      {"from":"taskplane/loop.py","to":"contract:host-dispatch-routing","kind":"consumes","reason":"Loop briefs carry the resolved route, capability fingerprint, strictness, and fallback status."},
-      {"from":"workflows/review-wave.js","to":"contract:host-dispatch-routing","kind":"consumes","reason":"Workflow child options pass only supported non-null model and effort values."},
-      {"from":"workflows/evaluate-wave.js","to":"contract:host-dispatch-routing","kind":"consumes","reason":"Workflow evaluators record planned and host-observed effective routing."},
-      {"from":"scripts/eval_skills.py","to":"contract:host-dispatch-routing","kind":"consumes","reason":"Native skill evaluations use the same portable resolution and receipt semantics as live dispatch."},
-      {"from":"taskplane/eval_drivers.py","to":"contract:evaluation-telemetry","kind":"provides","reason":"Each bounded host attempt emits transport, timing, terminal, validation, and receipt fields."},
-      {"from":"taskplane/spend.py","to":"contract:evaluation-telemetry","kind":"provides","reason":"Provider-specific usage normalization reconciles cache categories, raw totals, effective weights, and availability."},
-      {"from":"scripts/eval_record.py","to":"contract:evaluation-telemetry","kind":"consumes","reason":"Frozen records retain bounded lifecycle/usage summaries and references rather than raw prompts or transcripts."},
-      {"from":"taskplane/runtime_eval.py","to":"contract:evaluation-telemetry","kind":"consumes","reason":"Runtime guidance remains additive to underlying unproven-criterion diagnostics and shares stable lifecycle status."},
-      {"from":"taskplane/evidence.py","to":"contract:evaluation-telemetry","kind":"consumes","reason":"Evidence bundles expose cache and validation status without manufacturing pass or zero."},
-      {"from":"evals/scenarios/tp-go.json","to":"contract:evaluation-telemetry","kind":"validates","reason":"The current canonical flow fingerprint and mutation guard protect the evaluated workflow contract."},
-      {"from":"agents","to":"contract:evaluation-output","kind":"documents","reason":"Evaluator and lens roles name exact schemas, paths, submission ownership, and recovery behavior."},
-      {"from":"skills/taskplane/references/runtime-evals.json","to":"contract:evaluation-output","kind":"documents","reason":"Live runtime guidance names the canonical validation checkpoint without replacing DoD failures."},
-      {"from":"docs","to":"contract:host-hook-lifecycle","kind":"documents","reason":"Onboarding and configuration references state trust, policy, load, effective path, fallback, and reload action truthfully."},
-      {"from":"docs","to":"contract:host-dispatch-routing","kind":"documents","reason":"Routing references distinguish planned, observed, inherit, fallback, unsupported, and strict block."},
-      {"from":"docs","to":"contract:evaluation-telemetry","kind":"documents","reason":"Evaluation references define bounded fields, privacy exclusions, and provider token semantics."},
-      {"from":"taskplane/tests","to":"contract:host-hook-lifecycle","kind":"validates","reason":"Hook selection, duplicate, trust/policy, lifecycle stop, preservation, and no-auto-clear matrices prove failure direction."},
-      {"from":"taskplane/tests","to":"contract:review-kernel-slot","kind":"validates","reason":"Claude workflow and Task/Codex parity plus wrong/missing/stale/copied/unobserved cases validate the same collector."},
-      {"from":"taskplane/tests","to":"contract:evaluation-output","kind":"validates","reason":"Native schema, governed file, malformed, wrong version, extra fields, missing write, resume, and retry tests fail closed."},
-      {"from":"taskplane/tests","to":"contract:host-dispatch-routing","kind":"validates","reason":"Host alias, effort, cross-provider, old/corrupt capability, strict, warn, and default fixtures prove actual invocation and receipt."},
-      {"from":"taskplane/tests","to":"contract:evaluation-telemetry","kind":"validates","reason":"Lifecycle schema, redaction, provider usage arithmetic, duplicate/torn input, CI failure, and full matrix tests protect telemetry and governance floors."}
-    ],
-    "depth_policy": {
-      "local_depth": 3,
-      "boundary_mode": "contract-only",
-      "contract_depth": 1,
-      "requirement_depth": 1
-    },
-    "dor": [
-      {"check":"Baseline graph is current and isolated from Design writes.","evidence":"Fingerprint b2e530770c71c400f23caeb7da95ed3638662d5bc42c83b6e6e8f50c75934d3c was captured at HEAD 92d05fddb745cd02eafe6f910c3a3df886060b16 before the corrected approval; Design does not scan, link, or mutate it."},
-      {"check":"R-0006 has exact acceptance and no open product questions.","evidence":"The requirement record contains 14 acceptance criteria, dependencies R-0005/R-0009/R-0012/R-0013, five changed contracts, and an empty open_questions list."},
-      {"check":"As-built facts and governing decisions are cited.","evidence":"The external current-state inventory is explicitly empty; direct repository sources plus accepted decisions 0005 and 0006 establish the existing ReviewKernel and current host seams."},
-      {"check":"Every module and new boundary has an owner and build order.","evidence":"Host/platform owns capability detection; evaluation/governance owns output and lifecycle; ReviewKernel/evaluation owns transport adoption; QA/docs owns compatibility proof. The four phases are ordered in design/design.md."},
-      {"check":"Distributed traversal stops at named contracts.","evidence":"Local dependencies may be followed to depth 3; host, workflow, evaluator and telemetry boundaries stop at the five named contract nodes with contract_depth=1 and requirement_depth=1."},
-      {"check":"Quality, privacy, retry and compatibility bounds are settled.","evidence":"One effective event, 2-second duplicate wait, 10/15-second hook limits, 256 KiB capability reads, 512-entry/24-hour journal, 1 MiB output, 512-byte diagnostics, two attempts, zero persisted prompt/transcript/secret bytes, and schema-preserving rollback are explicit."},
-      {"check":"The pinned CI failure and green-floor evidence is known.","evidence":"GitHub run 31858859934 at the pinned head shows two stale tp-go fingerprint tests and one masked unproven-criterion diagnostic; Windows, Codex hooks, dispatch parity, manifests/packages, docs truth and release history pass."}
-    ],
-    "dod": [
-      {"check":"The realized dependency graph conforms to every proposed module, edge and contract.","evidence":"Final Engineering Review rescans after implementation, records design meta with this approved fingerprint, checks every proposed module/edge/contract, reports verdict conformant, and has an empty drift list."},
-      {"check":"Host capability and exactly-once lifecycle behavior are mechanically realized.","evidence":"Focused hook/onboarding matrices assert native-only, bridge-only, both, neither, reinstall, resume, repeated onboarding, trust, managed policy, stable duplicate replay, unchanged unrelated rows, and no false ready state."},
-      {"check":"All evaluator and ReviewKernel transports converge on canonical validation.","evidence":"Frozen Claude workflow and Task/Codex payloads produce byte-identical canonical slot artifacts; native/file schema tests and wrong/missing/stale/copied/unobserved/resume/retry negatives fail before record, collection, submission or gate."},
-      {"check":"Stop enforcement preserves governed evidence and authority.","evidence":"Serial, parallel, review-lens, evaluate, crash, wrong identity, corrupt, repeated stop, valid submission, sibling, standalone and no-submission-required fixtures assert the exact block/allow response and byte-identical contracts/submissions/results with no lifecycle gate or clear."},
-      {"check":"Routing and telemetry are host-portable and observable.","evidence":"Claude Task/workflow and Codex native fixtures prove actual supported model/effort arguments and effective receipts; unsupported/cross-provider values never reach a child; lifecycle records validate bounds/redaction; provider usage goldens reconcile raw/effective categories without double counting."},
-      {"check":"CI is repaired without weakening floors.","evidence":"The two scenario fingerprint tests and evidence-bundle diagnostic test pass with mutation/runtime-guidance assertions intact, then python3 -m pytest taskplane/tests -q and the Python 3.10/3.11/3.12, macOS, Windows, hooks, packages/manifests, docs, release-history and dispatch-parity jobs pass with no test removals, skips, xfails, loosened assertions or de-gating."}
-    ]
-  },
   "acceptance_map": [
-    {
-      "criterion": "For native-only, bridge-only, both-present, neither-present, reinstall, resume, and repeated-onboarding Codex fixtures, each taskPlane hook event produces exactly one trace row or side effect, configuration is idempotent, and unrelated hooks remain unchanged.",
-      "design_element": "contract:host-hook-lifecycle implemented by taskplane/host_capabilities.py, taskplane/taskplane_lite.py, hooks/hooks.json, and .codex/hooks.json",
-      "validation": "Run the proposed taskplane/tests/test_codex_hook_selection.py matrix; assert effective_count==1, one side-effect digest, byte-identical second onboarding, and unchanged unrelated rows for all seven states."
-    },
-    {
-      "criterion": "For personal or managed and trusted or untrusted host fixtures, onboarding separately reports install, trust, managed-policy, loaded-session, and effective-path state; no file-presence false green, trust bypass instruction, or managed-setting overwrite is allowed.",
-      "design_element": "taskplane.host-capabilities/v1 projection in taskplane/host_capabilities.py and taskplane/tp.py under contract:host-hook-lifecycle",
-      "validation": "Run the proposed taskplane/tests/test_host_capabilities.py onboarding matrix and snapshot managed settings before/after; assert independent fields, ready only with observed load, no bypass text, and zero managed-setting mutation."
-    },
-    {
-      "criterion": "The same frozen review and evaluate payload through Claude workflow and Task or Codex transport yields byte-identical canonical ReviewKernel artifacts and equivalent collection; wrong, missing, duplicate, copied, stale, or unobserved slot evidence fails identically.",
-      "design_element": "contract:review-kernel-slot consumed by workflows/review-wave.js and workflows/evaluate-wave.js and collected only by taskplane/review.py",
-      "validation": "Run the proposed taskplane/tests/test_workflow_review_kernel_parity.py plus existing review evidence/provenance suites; compare canonical bytes and collector result codes across Claude workflow and Task/Codex for positive and seven negative cases."
-    },
-    {
-      "criterion": "Workflow resume reuses a result only when target, context, view, lease, schema, slot, producer, and canonical revision match; mismatch receives a bounded retry or named failure and no workflow agent can gate, approve, or advance state.",
-      "design_element": "Resume identity in contract:review-kernel-slot and taskplane/evaluation_output.py",
-      "validation": "Run the proposed resume matrix in taskplane/tests/test_workflow_review_kernel_parity.py; mutate each identity independently, assert at most two attempts, named terminal failure, unchanged loop state, and forbidden gate/approve/advance calls."
-    },
-    {
-      "criterion": "Every live skill, loop evaluator, and leased reviewer declares and validates one versioned output schema before record, collection, or gate; native structured output is used when supported and an exact governed host-observed JSON file is validated otherwise, while prose or schema-invalid output cannot pass.",
-      "design_element": "contract:evaluation-output provided by taskplane/evaluation_output.py and consumed by eval drivers, ReviewKernel, loop, workflows, skills, and agents",
-      "validation": "Run the proposed taskplane/tests/test_evaluation_output_contract.py across live-skill, loop and leased-review dispatches; assert schema id/digest, native option or exact file path, observed write, and pre-sink rejection for prose, malformed, missing, extra-field and wrong-version outputs."
-    },
-    {
-      "criterion": "Supported, unsupported, unknown, contradictory, and corrupt capability fixtures select native schema or governed file fallback deterministically, record source and reason, preserve write scope and evidence requirements, and never convert unavailable evidence to pass or zero.",
-      "design_element": "HostCapabilitySnapshot plus EvaluationOutputContract in taskplane/host_capabilities.py and taskplane/evaluation_output.py",
-      "validation": "Run the five-state capability table in taskplane/tests/test_evaluation_output_contract.py; compare deterministic contracts, unchanged write_allow, identical validator requirements, explicit source/reason, and no pass/zero on unavailable evidence."
-    },
-    {
-      "criterion": "A submission-required contract with missing, wrong-slot, wrong-workspace, corrupt, or absent submission blocks Stop or SubagentStop with contract, slot, missing artifact, and safe recovery details while leaving the contract active and loop state unchanged.",
-      "design_element": "Read-only submission_status and lifecycle decision in taskplane/taskplane_lite.py under contract:host-hook-lifecycle",
-      "validation": "Run the proposed taskplane/tests/test_stop_submission_enforcement.py serial/parallel/review/evaluate/crash matrix; hash active contract and loop state before/after and assert the four required diagnostic identities plus a bounded recovery action."
-    },
-    {
-      "criterion": "Valid submitted work, sibling slots, canonical review results, and submission records remain byte-identical through repeated Stop and SubagentStop; stop handling never gates or clears them, and standalone or no-submission-required contracts retain their documented lifecycle.",
-      "design_element": "No-mutation lifecycle rule and submission-required orphan exclusion in taskplane/taskplane_lite.py",
-      "validation": "Run valid-submit, sibling, post-submit crash, repeated-stop, standalone and no-submission-required cases in taskplane/tests/test_stop_submission_enforcement.py; assert byte digests unchanged and trace contains no contract_cleared, loop_gate, approve, or collector publication event."
-    },
-    {
-      "criterion": "Claude Task and workflow plus Codex native dispatch fixtures prove cheap, standard, and deep selections reach the actual child invocation and host receipt whenever supported, including model aliases and supported effort values.",
-      "design_element": "contract:host-dispatch-routing resolved by taskplane/host_capabilities.py and taskplane/taskplane_lite.py and consumed by loop/workflow/native adapters",
-      "validation": "Run the proposed taskplane/tests/test_dispatch_capabilities.py 3 tiers x 3 transports matrix; assert actual argv/tool options and host child/session receipt equal the supported resolved alias and effort."
-    },
-    {
-      "criterion": "Cross-provider ids, unsupported effort, old or corrupt capability, strict, warn, and default fixtures send no foreign or unsupported argument; fallback is explicit, and strict mode blocks before work when a required explicit route cannot be honored.",
-      "design_element": "resolve_dispatch_route state machine in contract:host-dispatch-routing",
-      "validation": "Run cross-provider, unsupported, old, corrupt and three-mode cases in taskplane/tests/test_dispatch_capabilities.py; inspect the child runner seam to assert forbidden arguments are absent, fallback reason is recorded, and strict starts zero processes."
-    },
-    {
-      "criterion": "Evaluation records validate a versioned lifecycle schema containing host capability source, transport, schema fallback, task or slot or lease, planned and observed routing, attempts, duration, terminal and validation status, telemetry availability, and bounded redacted diagnostics.",
-      "design_element": "taskplane.evaluation-lifecycle/v1 in contract:evaluation-telemetry provided by eval drivers and frozen by scripts/eval_record.py",
-      "validation": "Run the proposed taskplane/tests/test_eval_observability.py success/fallback/retry/timeout/cancel/malformed/unavailable table; validate every field, event order and stable run id, diagnostic<=512 bytes, and a secret/prompt/transcript/absolute-path redaction corpus."
-    },
-    {
-      "criterion": "Claude and Codex usage goldens, nested usage, duplicate messages, torn JSONL, absent fields, and corrupt values reconcile uncached input, cached input, cache creation, output, raw total, and effective tokens exactly without double counting; missing telemetry is unavailable with reason.",
-      "design_element": "taskplane.token-usage/v2 normalization in taskplane/spend.py under contract:evaluation-telemetry",
-      "validation": "Run the proposed taskplane/tests/test_spend_provider_usage.py golden arithmetic table; assert category totals, inclusive Codex subtraction, disjoint Claude sum, stable-id dedup, torn-line tolerance, negative/corrupt refusal, and unavailable-with-reason rather than zero."
-    },
-    {
-      "criterion": "The three failures from CI run 31858859934 pass: the tp-go flow fingerprint is current while mutation tests still detect staleness, and an unjudged engine evidence bundle still names unproven acceptance criteria even when runtime guidance also fires without advancing state.",
-      "design_element": "evals/scenarios/tp-go.json plus composed diagnostics in taskplane/loop.py, taskplane/runtime_eval.py, and taskplane/evidence.py",
-      "validation": "Run taskplane/tests/test_eval_scenario.py::TestEveryEvaluatedSkillHasAScenario::test_every_scenario_fingerprint_is_current, ::test_every_scenario_on_disk_validates, and taskplane/tests/test_evidence_bundle.py::TestTheEngineNeverJudges::test_the_refusal_names_the_unproven_criteria; also run the existing stale mutation and assert runtime guidance plus unproven criterion with unchanged step."
-    },
-    {
-      "criterion": "The complete suite passes on Python 3.10, 3.11, and 3.12, macOS, and Windows, and existing green hooks, package or manifest, docs, release-history, and dispatch-parity jobs stay green with no removed, skipped, xfailed, loosened, or de-gated test.",
-      "design_element": "taskplane/tests and existing .github/workflows/ci.yml governance floors",
-      "validation": "Run python3 -m pytest taskplane/tests -q locally, then the unchanged GitHub Actions matrix; compare collected test manifest/floor and workflow gates against HEAD 92d05fd and require no removal, new skip/xfail, assertion relaxation, or job de-gating."
-    }
+    {"criterion": "AC1: A silent command running for at least five minutes causes zero model turns between launch and its first meaningful state change.", "design_element": "taskplane/command_runtime.py runtime-owned blocking wait", "validation": "Fake clock advances 300 seconds without events; assert model_delivery_count==0 before terminal transition."},
+    {"criterion": "AC2: Normal completion causes exactly one model wake-up with a structured result.", "design_element": "contract:runtime:command-state/v1 delivery lease", "validation": "Completion/replay test asserts one delivery with status, exit code, elapsed_ms and bounded delta."},
+    {"criterion": "AC3: Failure, cancellation, timeout, and approval-needed states each cause exactly one wake-up.", "design_element": "contract:runtime:command-state/v1 wake transitions", "validation": "Parameterized fake-event test asserts one delivery for failed, cancelled, timed_out and approval_required."},
+    {"criterion": "AC4: Identical or unchanged output is never written into the conversation.", "design_element": "taskplane/command_runtime.py output-delta journal", "validation": "Repeated identical-output fixture asserts zero conversation records/deliveries until a meaningful event."},
+    {"criterion": "AC5: Large output is stored once as an artifact; the model receives only a bounded summary and reference.", "design_element": "taskplane/command_runtime.py artifact writer and 16 KiB event bound", "validation": "Oversized secret fixture asserts one redacted artifact and combined event delta <=16384 bytes."},
+    {"criterion": "AC6: A user message interrupts an active wait without terminating or duplicating the command.", "design_element": "contract:runtime:host-command-adapter wait_next interruption", "validation": "Fake user interrupt releases wait; assert running state, unchanged handle and launch_count==1."},
+    {"criterion": "AC7: Restarting or resuming a task reconnects to the existing command rather than executing it again.", "design_element": "taskplane/command_runtime.py snapshot and reconnect", "validation": "Recreate runtime; assert reconnect_count==1, launch_count==1 and terminal delivery once."},
+    {"criterion": "AC8: A validation wave with multiple processes produces no more than one ordinary completion wake-up per wave.", "design_element": "contract:runtime:command-wave/v1", "validation": "Complete three fake commands in every order; assert ordinary aggregate deliveries<=1."},
+    {"criterion": "AC9: Hosts without native completion events use a runtime-side blocking wait, not repeated model-driven polling.", "design_element": "taskplane/command_adapters.py blocking fallback", "validation": "No-event adapter asserts one runtime wait, zero model polls and one terminal delivery."},
+    {"criterion": "AC10: An end-to-end long-command scenario demonstrates at least a 90% reduction in polling-related tokens.", "design_element": "contract:runtime:command-efficiency/v1", "validation": "Run one end-to-end scenario; assert polling_token_reduction_percent>=90 against baseline."},
+    {"criterion": "AC11: Unchanged polling turns equal zero.", "design_element": "contract:runtime:command-efficiency/v1 unchanged-poll counter", "validation": "Targeted suite and end-to-end record assert unchanged_model_polls==0."},
+    {"criterion": "AC12: Polling-related raw tokens remain below 1% of total run tokens.", "design_element": "taskplane/spend.py efficiency gate", "validation": "Frozen record asserts polling_raw_tokens/total_raw_tokens<0.01 and fails closed if unavailable."},
+    {"criterion": "AC13: Authorization and human-input requests remain visible and cannot be suppressed by the optimization.", "design_element": "contract:runtime:command-state/v1 attention priority", "validation": "Race fixtures assert approval/input events remain visible before ordinary completion suppression."},
+    {"criterion": "AC14: Existing timeout, cancellation, audit, and failure-reporting behavior remains fail-safe.", "design_element": "taskplane/eval_drivers.py wrapper plus command journal", "validation": "Timeout, repeated-cancel, crash/replay, lost-binding and audit fixtures assert one fail-safe terminal record and no relaunch."}
   ],
   "risks": [
-    {"risk":"A host capability probe can become a new false authority if it trusts model prose, file presence, or stale configuration.","mitigation":"Accept only bounded host/version probes, policy/trust facts and host-observed load/child/write receipts; carry source/confidence and treat unknown/contradictory as fallback or block.","owner":"Host/platform owner"},
-    {"risk":"Both loaded hook paths can race and produce inconsistent allow/deny results.","mitigation":"Use one exclusive stable-event claim and response replay; require a fresh session when no stable event identity exists; test concurrent duplicates under the host timeout.","owner":"Governance kernel owner"},
-    {"risk":"Workflow resume can reuse semantically stale evidence despite a valid cached return value.","mitigation":"Bind cache identity to target/context/view/lease/schema/slot/producer/revision and revalidate canonical file plus host write receipt before reuse; allow one retry only.","owner":"ReviewKernel owner"},
-    {"risk":"A generic configured model name can accidentally match a foreign provider or unsupported old-host option.","mitigation":"Resolve through host-scoped alias/effort capability rows; pass only supported non-null values; strict blocks and non-strict records inherit/unsupported_fallback.","owner":"Host dispatch owner"},
-    {"risk":"Lifecycle leak recovery can destroy a valid or missing governed submission before validation.","mitigation":"Submission-required slots are never PID/TTL auto-released and Stop/SubagentStop are read-only; only orchestrator/human release after the gate.","owner":"Governance kernel owner"},
-    {"risk":"Provider usage semantics or duplicate rows can fabricate low cost or double count cache input.","mitigation":"Use provider-specific normalizers, single-sourced weights, stable event ids, reconciliation equations and unavailable status for ambiguous/corrupt data.","owner":"Evaluation/FinOps owner"},
-    {"risk":"Cross-cutting work can weaken currently green CI while fixing the three named failures.","mitigation":"Keep existing jobs and assertions as floors, add focused negative/mutation tests first, compare test manifests, then require the complete unchanged matrix.","owner":"QA owner"},
-    {"risk":"The compatibility bridge becomes permanent duplicated surface.","mitigation":"Track explicit debt and remove only after two supported releases show universal native hook load receipts across managed deployments.","owner":"Product/host platform owner"}
+    {"risk": "A handle leaks identity or is replayed across workspace/auth boundaries.", "mitigation": "Use 128-bit opaque ids, fingerprint-only metadata, and reject mismatched bindings.", "owner": "Runtime owner"},
+    {"risk": "Crash boundaries duplicate execution or delivery.", "mitigation": "Persist launch intent/binding, use monotonic revisions and consumer leases, never auto-relaunch unverifiable bindings.", "owner": "Runtime owner"},
+    {"risk": "Host drift silently reintroduces model polling.", "mitigation": "Normalize both adapters and prove no-event fallback with one blocking wait and zero model polls.", "owner": "Host owner"},
+    {"risk": "Wave aggregation suppresses attention.", "mitigation": "Prioritize approval/input/failure/timeout/cancel and suppress ordinary child completion only.", "owner": "Workflow owner"},
+    {"risk": "Telemetry becomes vanity data or leaks logs.", "mitigation": "Hard gates, counters/hashes only, and unproven status when totals are absent.", "owner": "Observability owner"}
   ],
   "failure_modes": [
-    {"mode":"Native and bridge hook paths are both loaded for one event.","detection":"hook_event signal reports duplicate claim for the same stable digest.","recovery":"The kernel owner replays the first completed safe response within 2 seconds, records one effective execution, and onboarding migrates only taskPlane-owned bridge rows for the next session."},
-    {"mode":"Trust, managed policy, load state, or stable event identity is unknown or contradictory.","detection":"host_capability signal reports unknown or contradictory status with source and confidence.","recovery":"Onboarding selects no unproved path, preserves settings, and tells the user whether a fresh session or administrator action is required; it never suggests bypass."},
-    {"mode":"Native or file-fallback evaluator output is malformed, wrong-version, oversized, extra-field, or unobserved.","detection":"evaluation_attempt signal reports validation failure code and bounded diagnostic.","recovery":"The evaluation driver retries once with the same schema and write scope, then terminates failed and admits no evidence to record, collection, submission, or gate."},
-    {"mode":"A workflow cache identity or leased slot producer/write receipt is stale or mismatched.","detection":"review_slot_validation signal reports the mismatched target/context/view/lease/schema/slot/producer/revision field.","recovery":"The workflow owner invalidates that cache entry, performs at most one fresh child attempt, and leaves canonical collection incomplete on repeated failure."},
-    {"mode":"Stop or SubagentStop sees no valid submission for its exact governed slot.","detection":"submission_stop_check signal reports contract, workspace, task, stage, slot and missing artifact/status.","recovery":"The lifecycle hook blocks and tells the worker to retry the exact submission or return to the orchestrator/human; it leaves contract, loop state, results, siblings and submission bytes unchanged."},
-    {"mode":"An explicit model or effort route cannot be honored by the current host.","detection":"dispatch_route signal reports unsupported_fallback or mismatch between planned and host-observed receipt.","recovery":"Strict mode blocks before child start; warn/default mode inherits with an explicit reason and exact_route_verified=false, then the dispatch owner may correct host-scoped configuration."},
-    {"mode":"Token usage is absent, negative, corrupt, duplicated without identity, or irreconcilable with provider totals.","detection":"token_usage signal reports unavailable and a provider-specific reconciliation reason.","recovery":"The recorder keeps workflow and structural gates active, marks token comparison unavailable/not_comparable, and asks the evaluation owner to repair telemetry; it records no fabricated zero."},
-    {"mode":"Runtime guidance fires before an engine-authored evidence bundle has proved acceptance.","detection":"evaluation_attempt signal contains both runtime-guidance and unproven-criterion diagnostic codes.","recovery":"The evaluator applies the bounded correction, but the loop still refuses pass until each criterion is proved; the orchestrator sees both diagnostics and state does not advance."},
-    {"mode":"A rollout phase breaks a previously green host, package, docs, release, or dispatch job.","detection":"ci_regression signal names the failed existing job and test-floor diff.","recovery":"The release owner stops the phase and rolls back only its transport selection while retaining exactly-once, schema validation, submission preservation and fail-closed rules; in-flight identities finish or cancel without translation."}
+    {"mode": "Duplicate terminal host event.", "detection": "command_transition signal reports existing handle/revision/delivery key.", "recovery": "Runtime immediately replays the original event without new execution or wake."},
+    {"mode": "Runtime restarts with a live command.", "detection": "command_recovery signal reports a persisted running snapshot.", "recovery": "Runtime owner reconnects once; binding_lost becomes one failure and never relaunches."},
+    {"mode": "Output exceeds bounds or contains secrets.", "detection": "command_output signal reports bytes, truncation and redaction counts.", "recovery": "Artifact writer stores one redacted artifact and emits <=16 KiB plus reference."},
+    {"mode": "Approval/input races with completion.", "detection": "command_transition signal records ordered revisions and attention priority.", "recovery": "Runtime exposes attention once; wave owner suppresses only subsequent ordinary child completion."},
+    {"mode": "Wave member exceeds deadline.", "detection": "command_transition and wave_state signals report timed_out member.", "recovery": "Runtime cancels tree, wakes once for timeout, then emits at most one aggregate terminal event."},
+    {"mode": "Efficiency denominator is unavailable.", "detection": "command_efficiency signal reports measurement_status=unproven.", "recovery": "Observability owner blocks the efficiency gate; no pass is manufactured."}
   ],
   "observability": {
-    "signals": [
-      "host_capability signal: versioned status, source, confidence, fingerprint and bounded reason per capability",
-      "hook_event signal: effective path, stable digest, first-or-duplicate claim, response class and exactly-one side-effect count",
-      "evaluation_attempt signal: stable run/attempt id, transport, schema path, timing, terminal status, validation and bounded diagnostic codes",
-      "review_slot_validation signal: target/context/view/lease/schema/slot/producer/revision match and host-observed write result",
-      "submission_stop_check signal: exact workspace/task/stage/slot, submission status, missing artifact and read-only block/allow decision",
-      "dispatch_route signal: tier, capability source, planned model/effort, passed arguments, host-observed model/effort, resolution and exact verification",
-      "token_usage signal: provider, category totals, raw/effective reconciliation, availability, reason and dedup count",
-      "ci_regression signal: pinned failure status, existing job status and test-manifest/floor diff"
-    ],
-    "alerts": [
-      "Block the affected hook/evaluation/submission/gate and surface one actionable recovery when capability authority, event identity, schema validation, slot provenance, explicit strict route, or governed submission cannot be proved.",
-      "Mark token comparison unavailable/not_comparable, without blocking absolute workflow and structural gates, when provider usage cannot be reconciled.",
-      "Stop rollout when any existing green CI job or test floor regresses."
-    ],
-    "events": [
-      "host_capability_snapshot_created",
-      "hook_path_selected",
-      "hook_event_claimed",
-      "hook_event_duplicate_replayed",
-      "evaluation_attempt_started",
-      "evaluation_output_observed",
-      "evaluation_output_validated",
-      "evaluation_attempt_finished",
-      "review_slot_resume_rejected",
-      "review_slot_collected",
-      "submission_stop_checked",
-      "submission_stop_blocked",
-      "dispatch_route_resolved",
-      "dispatch_receipt_observed",
-      "token_usage_normalized",
-      "token_usage_unavailable"
-    ],
-    "counters": [
-      "hook_events_seen",
-      "hook_effective_executions",
-      "hook_duplicate_replays",
-      "native_schema_dispatches",
-      "validated_file_dispatches",
-      "evaluation_attempts",
-      "evaluation_validation_failures",
-      "workflow_resume_rejections",
-      "submission_stop_blocks",
-      "exact_routes_verified",
-      "route_fallbacks",
-      "uncached_input_tokens",
-      "cached_input_tokens",
-      "cache_creation_tokens",
-      "output_tokens",
-      "raw_total_tokens",
-      "effective_tokens",
-      "usage_duplicates_removed"
-    ],
-    "privacy": "Persist no prompt, full transcript, command argument, secret, credential, or unnecessary absolute user path. Diagnostics are code plus at most 512 redacted bytes; large outputs are represented by repository-relative governed path, digest, and byte count."
+    "signals": ["command_transition signal: handle fingerprint, revision, state, wake reason, elapsed_ms and delivery disposition", "command_output signal: artifact hash/reference, bytes, truncation and redaction counts", "command_recovery signal: reconnect outcome, binding_lost and duplicate-launch prevention", "wave_state signal: member counts, attention wakes and aggregate completion deliveries", "command_efficiency signal: launches, duration, wakes, unchanged polls, avoided tokens, polling share, timeouts and cancellations"],
+    "alerts": ["Block when unchanged_model_polls>0.", "Block when polling_token_reduction_percent<90.", "Block when polling_raw_tokens/total_raw_tokens>=0.01 or unproven.", "Alert on more than one terminal delivery or ordinary wave completion.", "Alert on relaunch during reconnect or binding rejection."]
   },
-  "rollout": {
-    "strategy": "Four additive gates: (1) ship strict readers/validators and shadow HostCapabilitySnapshot/route/telemetry records; (2) enable exactly-once hook claims and native-preferred truthful onboarding while preserving the observed current-session path; (3) move workflows, evaluator adapters and Stop/SubagentStop to canonical schema/submission validation; (4) enable strict explicit-route enforcement, refresh only the tp-go fingerprint, compose both runtime and DoD diagnostics, then require focused negative/mutation suites and the complete unchanged CI matrix. Legacy ReviewKernel v2 results remain v2 and bridge migration edits only taskPlane-owned rows.",
-    "rollback": "Rollback may change only transport selection: native hooks may fall back to a trusted, policy-permitted, loaded bridge with exactly-once claims; model/effort may fall back to explicit inherit only in non-strict mode. It may never accept prose/unvalidated JSON, clear submission-required contracts, translate in-flight leases/revisions/output schemas, or drop host receipts and redaction. If no governed fallback exists, fail closed; preserve append-only lifecycle/usage records and cancel/restart incompatible in-flight runs."
+  "rollout": {"strategy": "Additive TASKPLANE_EVENT_COMMANDS flag: dual-record fake/telemetry with synchronous authority, enable evaluator/validation commands on both hosts, then waves after parity/resume proof. One deterministic repair batch and one end-to-end validation.", "rollback": "Disable async for new launches, retain v1 reader until handles finish/expire, finish or cancel live commands through runtime, and use synchronous wrapper for new launches; delete no state and require no simultaneous deployment."},
+  "graph": {
+    "baseline_fingerprint": "88d4233106f1fe8c41139679243741f052b954889f9ecad7a3866c68347c992b",
+    "proposed_modules": ["taskplane/command_runtime.py", "taskplane/command_adapters.py", "taskplane/eval_drivers.py", "taskplane/run_store.py", "taskplane/loop.py", "taskplane/runtime_eval.py", "taskplane/evidence.py", "taskplane/spend.py", "scripts/eval_record.py", "scripts/eval_skills.py", "workflows/execute-wave.js", "workflows/evaluate-wave.js", "taskplane/tests", "contract:runtime:command-state/v1", "contract:runtime:host-command-adapter", "contract:runtime:command-wave/v1", "contract:runtime:command-efficiency/v1"],
+    "proposed_edges": [
+      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:command-state/v1", "kind": "provides", "reason": "Owns handles, transitions, artifacts and delivery."},
+      {"from": "taskplane/command_adapters.py", "to": "contract:runtime:host-command-adapter", "kind": "provides", "reason": "Normalizes host launch, wait, cancel, reconnect and snapshot."},
+      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:host-command-adapter", "kind": "consumes", "reason": "Delegates host-specific bindings."},
+      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:command-wave/v1", "kind": "provides", "reason": "Owns wave aggregation."},
+      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:command-efficiency/v1", "kind": "provides", "reason": "Records lifecycle counters."},
+      {"from": "taskplane/eval_drivers.py", "to": "contract:runtime:host-command-adapter", "kind": "consumes", "reason": "Preserves synchronous adapter API."},
+      {"from": "taskplane/run_store.py", "to": "contract:runtime:command-state/v1", "kind": "references", "reason": "Retains handles and wave references."},
+      {"from": "taskplane/loop.py", "to": "contract:runtime:command-state/v1", "kind": "consumes", "reason": "Persists before yield and resumes from events."},
+      {"from": "workflows/execute-wave.js", "to": "contract:runtime:command-wave/v1", "kind": "consumes", "reason": "Consumes aggregate completion."},
+      {"from": "workflows/evaluate-wave.js", "to": "contract:runtime:command-wave/v1", "kind": "consumes", "reason": "Consumes aggregate completion."},
+      {"from": "taskplane/spend.py", "to": "contract:runtime:command-efficiency/v1", "kind": "evaluates", "reason": "Computes hard budgets."},
+      {"from": "scripts/eval_record.py", "to": "contract:runtime:command-efficiency/v1", "kind": "records", "reason": "Freezes evidence."},
+      {"from": "scripts/eval_skills.py", "to": "contract:runtime:host-command-adapter", "kind": "consumes", "reason": "Uses canonical lifecycle on both hosts."},
+      {"from": "taskplane/tests", "to": "contract:runtime:command-state/v1", "kind": "validates", "reason": "Proves lifecycle criteria."},
+      {"from": "taskplane/tests", "to": "contract:runtime:command-wave/v1", "kind": "validates", "reason": "Proves wave criterion."},
+      {"from": "taskplane/tests", "to": "contract:runtime:command-efficiency/v1", "kind": "validates", "reason": "Proves token gates."}
+    ],
+    "depth_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+    "dor": [
+      {"check": "Baseline graph is current and isolated.", "evidence": "Fingerprint 88d4233106f1fe8c41139679243741f052b954889f9ecad7a3866c68347c992b at HEAD 3c9ffbbe0aebf74fdb350675f796910c75643142; Design does not mutate it."},
+      {"check": "R-0007 is testable and resolved.", "evidence": "AC1-AC14, seven NFRs, named contracts, no open questions, explicit user approval."},
+      {"check": "As-built seams are cited.", "evidence": "Process, run-store, loop, telemetry, host and workflow sources ground the delta."},
+      {"check": "Ownership and order are settled.", "evidence": "Runtime, host, workflow, observability, QA; no simultaneous deployment."},
+      {"check": "Traversal stops at contracts.", "evidence": "Local depth 3; four contract nodes depth 1; requirement depth 1."},
+      {"check": "Bounds are numeric.", "evidence": "128-bit handles, <=16 KiB event, zero polls, <=1 ordinary wake, >=90% reduction, <1% share."}
+    ],
+    "dod": [
+      {"check": "Realized graph conforms.", "evidence": "Engineering rescans, binds design meta, verifies modules/edges/contracts and zero unexplained drift."},
+      {"check": "Lifecycle is durable and exactly once.", "evidence": "Fake clock/process crash, replay, interrupt, reconnect and race matrices prove no relaunch and one delivery."},
+      {"check": "Host parity and fallback hold.", "evidence": "Golden events match; no-event fixture proves blocking and zero model polls."},
+      {"check": "Output and handles are safe.", "evidence": "Oversize, secret and cross-binding fixtures prove one redacted artifact, <=16 KiB and rejection."},
+      {"check": "Wave and budgets pass.", "evidence": "All orderings <=1 completion; one end-to-end run proves >=90%, zero and <1%."},
+      {"check": "Compatibility and rollback work.", "evidence": "Synchronous fixtures stay green; flag-off reads v1 state, handles live work safely and launches synchronously."}
+    ]
   },
-  "visualization": {
-    "required": true,
-    "kind": "data-flow",
-    "path": "design/visual.html",
-    "reason": "The data-flow makes the selected authority boundary visible: three capability-dependent transport branches converge on one output/receipt path, while submission-aware Stop blocks without clearing or gating."
-  },
-  "lens_evidence": [
-    {
-      "lens": "solution-design",
-      "verdict": "pass",
-      "blockers": 0,
-      "evidence": "Checked direct as-built sources because the inventory is empty; preserved accepted ReviewKernel decision 0005; compared canonical, host-local and native-only alternatives; traced all new modules and five changed contracts to the 14 exact acceptance criteria; set numeric hook/output/retry/privacy bounds; bound failure detection to declared signals and bounded owners/recovery; made rollout and rollback schema/submission safe; named owners, sequencing, fixtures, compatibility debt and the exact three CI failures plus green floors. No material Build decision or open product question remains.",
-      "produced_by": "tp_step_designer_design_host_capabilities",
-      "content_fingerprint": "b584704ced4b026512f088bce8003ba4cf36e04b22806f23579609257eedec5c",
-      "self_attested": true
-    }
-  ],
+  "visualization": {"required": true, "kind": "state-transition", "path": "design/visual.html", "reason": "Lifecycle, interrupt/resume, meaningful wake boundary and wave suppression materially clarify the design."},
+  "lens_evidence": [{"lens": "solution-design", "verdict": "pass", "blockers": 0, "evidence": "Grounded in current durable state and bounded adapters; compared three distinct approaches; traced AC1-AC14 to named elements and runnable checks; set numeric wake/token/handle/output bounds; matched failure detection to signals and bounded recovery; preserved additive rollback and synchronous compatibility; declared cross-machine migration debt. No unresolved Build decision remains.", "produced_by": "design_event_completion", "content_fingerprint": "61accf55d1e15ad361a1968df4c2dde9e237b8fc9179dc0702563ce7ca3faa52", "self_attested": true}],
   "open_questions": []
 }

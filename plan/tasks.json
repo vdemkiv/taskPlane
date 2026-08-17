@@ -1,141 +1,37 @@
 {
   "tasks": [
     {
-      "id": "t1-host-capability-ci-repair",
-      "title": "Close host capability CI regressions as one repair batch",
+      "id": "t1-durable-command-runtime",
+      "title": "Build the durable command lifecycle and deterministic state tests",
       "scope": [
-        "taskplane/host_capabilities.py",
-        "taskplane/tp.py",
-        "taskplane/review_evidence.py",
-        "taskplane/tests/test_host_capabilities.py",
-        "taskplane/tests/test_review_evidence.py",
-        "hooks/hooks.json",
-        ".codex/hooks.json",
-        "taskplane/taskplane_lite.py",
-        "taskplane/evaluation_output.py",
-        "workflows/execute-wave.js",
-        "workflows/fix-wave.js",
-        "taskplane/tests/test_codex_hook_selection.py",
-        "taskplane/tests/test_stop_submission_enforcement.py",
-        "taskplane/review.py",
-        "taskplane/eval_drivers.py",
-        "taskplane/loop.py",
-        "scripts/eval_skills.py",
-        "workflows/review-wave.js",
-        "workflows/evaluate-wave.js",
-        "agents/tp-evaluator.md",
-        "agents/tp-engineering.md",
-        "agents/tp-lens.md",
-        "skills/taskplane/references/runtime-evals.json",
-        "taskplane/tests/test_workflow_review_kernel_parity.py",
-        "taskplane/tests/test_evaluation_output_contract.py",
-        "taskplane/tests/test_dispatch_capabilities.py",
-        "taskplane/tests/test_dispatch_parity.py",
-        "taskplane/spend.py",
-        "scripts/eval_record.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/evidence.py",
-        "evals/scenarios/tp-go.json",
-        "evals/scenarios/tp-engineering.json",
-        "taskplane/tests/test_eval_observability.py",
-        "taskplane/tests/test_spend_provider_usage.py",
-        "taskplane/tests/test_eval_scenario.py",
-        "taskplane/tests/test_evidence_bundle.py",
-        "taskplane/tests/test_onboarding_docs.py",
-        "taskplane/tests/test_selfreview_fixes.py"
-        ,"taskplane/loop_status.py"
-        ,"scripts/ci_loop_cost.py"
-        ,"docs/onboarding.md"
-        ,"docs/configuration.md"
-        ,"docs/model-evaluation.md"
-        ,"docs/routing-and-flows.md"
-        ,"docs/cli-reference.md"
-        ,"taskplane/tests/test_audit_extraction.py"
-        ,"taskplane/tests/test_audit_sweep.py"
-        ,"taskplane/tests/test_runner_isolation.py"
-        ,"taskplane/tests/test_evaluate_routing.py"
-        ,"taskplane/tests/test_loop.py"
-        ,"taskplane/tests/test_loop_cost_ratchet.py"
-        ,"taskplane/tests/test_review_wave.py"
-        ,"taskplane/tests/test_runtime_eval_guidance.py"
-        ,"taskplane/tests/test_stage_waves.py"
-        ,"taskplane/tests/test_v230_docs.py"
-        ,"taskplane/tests/fixtures/briefs/**"
+        "taskplane/command_runtime.py",
+        "taskplane/run_store.py",
+        "taskplane/tests/test_command_runtime.py"
       ],
-      "tests": "python3 -m pytest taskplane/tests -q",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_command_runtime.py",
+      "req": "R-0007",
       "deps": [],
-      "type": "integration",
+      "type": "architecture",
       "contracts": [
-        "contract:host-hook-lifecycle",
-        "contract:host-dispatch-routing",
-        "contract:review-kernel-slot",
-        "contract:evaluation-output",
-        "contract:evaluation-telemetry"
+        "contract:runtime:command-state/v1",
+        "contract:runtime:host-command-adapter",
+        "contract:runtime:command-wave/v1",
+        "contract:runtime:command-efficiency/v1"
       ],
       "new_modules": [
-        "taskplane/tp.py",
-        "taskplane/host_capabilities.py",
-        "taskplane/review_evidence.py",
-        "hooks/hooks.json",
-        ".codex/hooks.json",
-        "taskplane/taskplane_lite.py",
-        "taskplane/evaluation_output.py",
-        "workflows/execute-wave.js",
-        "workflows/fix-wave.js",
-        "taskplane/review.py",
-        "taskplane/eval_drivers.py",
-        "taskplane/loop.py",
-        "scripts/eval_skills.py",
-        "workflows/review-wave.js",
-        "workflows/evaluate-wave.js",
-        "agents",
-        "skills/taskplane/references/runtime-evals.json",
-        "taskplane/runtime_eval.py",
-        "taskplane/evidence.py",
-        "taskplane/spend.py",
-        "scripts/eval_record.py",
-        "evals/scenarios/tp-go.json"
+        "taskplane/command_runtime.py",
+        "taskplane/run_store.py",
+        "contract:runtime:command-state/v1",
+        "contract:runtime:host-command-adapter",
+        "contract:runtime:command-wave/v1",
+        "contract:runtime:command-efficiency/v1"
       ],
       "design_edges": [
-        "taskplane/host_capabilities.py->contract:host-hook-lifecycle:provides",
-        "taskplane/tp.py->contract:host-hook-lifecycle:consumes",
-        "taskplane/host_capabilities.py->contract:host-dispatch-routing:provides",
-        "taskplane/review_evidence.py->contract:review-kernel-slot:provides",
-        "hooks/hooks.json->contract:host-hook-lifecycle:provides",
-        ".codex/hooks.json->contract:host-hook-lifecycle:provides-fallback",
-        "taskplane/taskplane_lite.py->contract:host-hook-lifecycle:enforces",
-        "taskplane/evaluation_output.py->contract:evaluation-output:provides",
-        "workflows/execute-wave.js->contract:evaluation-output:consumes",
-        "workflows/fix-wave.js->contract:evaluation-output:consumes",
-        "taskplane/taskplane_lite.py->contract:host-dispatch-routing:provides",
-        "taskplane/tests->contract:host-hook-lifecycle:validates",
-        "taskplane/review.py->contract:review-kernel-slot:collects",
-        "workflows/review-wave.js->contract:review-kernel-slot:consumes",
-        "workflows/evaluate-wave.js->contract:review-kernel-slot:consumes",
-        "taskplane/eval_drivers.py->contract:evaluation-output:consumes",
-        "taskplane/review.py->contract:evaluation-output:consumes",
-        "taskplane/loop.py->contract:evaluation-output:consumes",
-        "workflows/evaluate-wave.js->contract:evaluation-output:consumes",
-        "taskplane/loop.py->contract:host-dispatch-routing:consumes",
-        "workflows/review-wave.js->contract:host-dispatch-routing:consumes",
-        "workflows/evaluate-wave.js->contract:host-dispatch-routing:consumes",
-        "scripts/eval_skills.py->contract:host-dispatch-routing:consumes",
-        "taskplane/eval_drivers.py->contract:evaluation-telemetry:provides",
-        "agents->contract:evaluation-output:documents",
-        "skills/taskplane/references/runtime-evals.json->contract:evaluation-output:documents",
-        "taskplane/tests->contract:review-kernel-slot:validates",
-        "taskplane/tests->contract:evaluation-output:validates",
-        "taskplane/tests->contract:host-dispatch-routing:validates",
-        "taskplane/spend.py->contract:evaluation-telemetry:provides",
-        "scripts/eval_record.py->contract:evaluation-telemetry:consumes",
-        "taskplane/runtime_eval.py->contract:evaluation-telemetry:consumes",
-        "taskplane/evidence.py->contract:evaluation-telemetry:consumes",
-        "evals/scenarios/tp-go.json->contract:evaluation-telemetry:validates",
-        "taskplane/tests->contract:evaluation-telemetry:validates",
-        "docs->contract:host-hook-lifecycle:documents",
-        "docs->contract:host-dispatch-routing:documents",
-        "docs->contract:evaluation-telemetry:documents"
+        "taskplane/command_runtime.py->contract:runtime:command-state/v1:provides",
+        "taskplane/command_runtime.py->contract:runtime:host-command-adapter:consumes",
+        "taskplane/command_runtime.py->contract:runtime:command-wave/v1:provides",
+        "taskplane/command_runtime.py->contract:runtime:command-efficiency/v1:provides",
+        "taskplane/run_store.py->contract:runtime:command-state/v1:references"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -144,21 +40,175 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "For personal or managed and trusted or untrusted host fixtures, onboarding separately reports install, trust, managed-policy, loaded-session, and effective-path state; no file-presence false green, trust bypass instruction, or managed-setting overwrite is allowed.",
-        "For native-only, bridge-only, both-present, neither-present, reinstall, resume, and repeated-onboarding Codex fixtures, each taskPlane hook event produces exactly one trace row or side effect, configuration is idempotent, and unrelated hooks remain unchanged.",
-        "A submission-required contract with missing, wrong-slot, wrong-workspace, corrupt, or absent submission blocks Stop or SubagentStop with contract, slot, missing artifact, and safe recovery details while leaving the contract active and loop state unchanged.",
-        "Valid submitted work, sibling slots, canonical review results, and submission records remain byte-identical through repeated Stop and SubagentStop; stop handling never gates or clears them, and standalone or no-submission-required contracts retain their documented lifecycle.",
-        "The same frozen review and evaluate payload through Claude workflow and Task or Codex transport yields byte-identical canonical ReviewKernel artifacts and equivalent collection; wrong, missing, duplicate, copied, stale, or unobserved slot evidence fails identically.",
-        "Workflow resume reuses a result only when target, context, view, lease, schema, slot, producer, and canonical revision match; mismatch receives a bounded retry or named failure and no workflow agent can gate, approve, or advance state.",
-        "Every live skill, loop evaluator, and leased reviewer declares and validates one versioned output schema before record, collection, or gate; native structured output is used when supported and an exact governed host-observed JSON file is validated otherwise, while prose or schema-invalid output cannot pass.",
-        "Supported, unsupported, unknown, contradictory, and corrupt capability fixtures select native schema or governed file fallback deterministically, record source and reason, preserve write scope and evidence requirements, and never convert unavailable evidence to pass or zero.",
-        "Claude Task and workflow plus Codex native dispatch fixtures prove cheap, standard, and deep selections reach the actual child invocation and host receipt whenever supported, including model aliases and supported effort values.",
-        "Cross-provider ids, unsupported effort, old or corrupt capability, strict, warn, and default fixtures send no foreign or unsupported argument; fallback is explicit, and strict mode blocks before work when a required explicit route cannot be honored.",
-        "Evaluation records validate a versioned lifecycle schema containing host capability source, transport, schema fallback, task or slot or lease, planned and observed routing, attempts, duration, terminal and validation status, telemetry availability, and bounded redacted diagnostics.",
-        "Claude and Codex usage goldens, nested usage, duplicate messages, torn JSONL, absent fields, and corrupt values reconcile uncached input, cached input, cache creation, output, raw total, and effective tokens exactly without double counting; missing telemetry is unavailable with reason.",
-        "The three failures from CI run 31858859934 pass: the tp-go flow fingerprint is current while mutation tests still detect staleness, and an unjudged engine evidence bundle still names unproven acceptance criteria even when runtime guidance also fires without advancing state.",
-        "The loop cost ratchet requires exactly three governed gates; both fewer and more gates fail because a missing gate is incomplete workflow execution, not a cost improvement.",
-        "The complete suite passes on Python 3.10, 3.11, and 3.12, macOS, and Windows, and existing green hooks, package or manifest, docs, release-history, and dispatch-parity jobs stay green with no removed, skipped, xfailed, loosened, or de-gated test."
+        "AC1: A silent command running for at least five minutes causes zero model turns between launch and its first meaningful state change.",
+        "AC2: Normal completion causes exactly one model wake-up with a structured result.",
+        "AC3: Failure, cancellation, timeout, and approval-needed states each cause exactly one wake-up.",
+        "AC4: Identical or unchanged output is never written into the conversation.",
+        "AC5: Large output is stored once as an artifact; the model receives only a bounded summary and reference.",
+        "AC6: A user message interrupts an active wait without terminating or duplicating the command.",
+        "AC7: Restarting or resuming a task reconnects to the existing command rather than executing it again.",
+        "AC14: Existing timeout, cancellation, audit, and failure-reporting behavior remains fail-safe."
+      ]
+    },
+    {
+      "id": "t2-host-command-adapters",
+      "title": "Normalize Claude and Codex command adapters with a blocking fallback",
+      "scope": [
+        "taskplane/command_adapters.py",
+        "taskplane/eval_drivers.py",
+        "taskplane/tests/test_command_adapters.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_command_adapters.py",
+      "req": "R-0007",
+      "deps": [
+        "t1-durable-command-runtime"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:runtime:command-state/v1",
+        "contract:runtime:host-command-adapter"
+      ],
+      "new_modules": [
+        "taskplane/command_adapters.py",
+        "taskplane/eval_drivers.py"
+      ],
+      "design_edges": [
+        "taskplane/command_adapters.py->contract:runtime:host-command-adapter:provides",
+        "taskplane/eval_drivers.py->contract:runtime:host-command-adapter:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC9: Hosts without native completion events use a runtime-side blocking wait, not repeated model-driven polling."
+      ]
+    },
+    {
+      "id": "t3-resume-and-wave-integration",
+      "title": "Integrate durable resume, attention events, and aggregate wave completion",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/evidence.py",
+        "workflows/execute-wave.js",
+        "workflows/evaluate-wave.js",
+        "taskplane/tests/test_command_wave.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_command_wave.py",
+      "req": "R-0007",
+      "deps": [
+        "t1-durable-command-runtime",
+        "t2-host-command-adapters"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:runtime:command-state/v1",
+        "contract:runtime:command-wave/v1"
+      ],
+      "new_modules": [
+        "taskplane/loop.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/evidence.py",
+        "workflows/execute-wave.js",
+        "workflows/evaluate-wave.js"
+      ],
+      "design_edges": [
+        "taskplane/loop.py->contract:runtime:command-state/v1:consumes",
+        "workflows/execute-wave.js->contract:runtime:command-wave/v1:consumes",
+        "workflows/evaluate-wave.js->contract:runtime:command-wave/v1:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC8: A validation wave with multiple processes produces no more than one ordinary completion wake-up per wave.",
+        "AC13: Authorization and human-input requests remain visible and cannot be suppressed by the optimization."
+      ]
+    },
+    {
+      "id": "t4-efficiency-telemetry-and-gates",
+      "title": "Record bounded efficiency telemetry and enforce the hard token budgets",
+      "scope": [
+        "taskplane/spend.py",
+        "scripts/eval_record.py",
+        "scripts/eval_skills.py",
+        "taskplane/tests/test_command_efficiency.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_command_efficiency.py",
+      "req": "R-0007",
+      "deps": [
+        "t1-durable-command-runtime",
+        "t2-host-command-adapters",
+        "t3-resume-and-wave-integration"
+      ],
+      "type": "observability",
+      "contracts": [
+        "contract:runtime:host-command-adapter",
+        "contract:runtime:command-efficiency/v1"
+      ],
+      "new_modules": [
+        "taskplane/spend.py",
+        "scripts/eval_record.py",
+        "scripts/eval_skills.py"
+      ],
+      "design_edges": [
+        "taskplane/spend.py->contract:runtime:command-efficiency/v1:evaluates",
+        "scripts/eval_record.py->contract:runtime:command-efficiency/v1:records",
+        "scripts/eval_skills.py->contract:runtime:host-command-adapter:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC11: Unchanged polling turns equal zero.",
+        "AC12: Polling-related raw tokens remain below 1% of total run tokens."
+      ]
+    },
+    {
+      "id": "t5-single-end-to-end-validation",
+      "title": "Run the one bounded end-to-end long-command validation",
+      "scope": [
+        "taskplane/tests/test_command_completion_e2e.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_command_completion_e2e.py",
+      "req": "R-0007",
+      "deps": [
+        "t1-durable-command-runtime",
+        "t2-host-command-adapters",
+        "t3-resume-and-wave-integration",
+        "t4-efficiency-telemetry-and-gates"
+      ],
+      "type": "validation",
+      "contracts": [
+        "contract:runtime:command-state/v1",
+        "contract:runtime:command-wave/v1",
+        "contract:runtime:command-efficiency/v1"
+      ],
+      "new_modules": [
+        "taskplane/tests"
+      ],
+      "design_edges": [
+        "taskplane/tests->contract:runtime:command-state/v1:validates",
+        "taskplane/tests->contract:runtime:command-wave/v1:validates",
+        "taskplane/tests->contract:runtime:command-efficiency/v1:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC10: An end-to-end long-command scenario demonstrates at least a 90% reduction in polling-related tokens."
       ]
     }
   ]

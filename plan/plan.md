@@ -1,75 +1,101 @@
-# R-0006 plan — integrated host-capability repair
+# R-0007 plan — event-driven command completion
 
-This plan realizes approved Design Contract fingerprint
-`3e7ceb20fe28d9194c7c2ca1bfca334a34236de6b337d24a5d0c596f9872b7d2`
-without changing its authority boundaries. Host transports may differ, but hook
-execution, ReviewKernel collection, evaluator output, submission validation,
-dispatch receipts, and telemetry converge on the five approved contracts.
-Workers never gain gate, approval, state-advance, or contract-clear authority.
+This plan realizes the human-approved Design Contract in
+`design/contract.json` (artifact SHA-256
+`03abbda518095e5866af3ecd22578a1b465383e4582e15a07ec9f53ec33b4a78`) against
+the current graph baseline at HEAD
+`3c9ffbbe0aebf74fdb350675f796910c75643142`. It preserves the selected
+Taskplane-owned durable broker, thin Claude/Codex adapters, additive feature
+flag, synchronous compatibility, and non-destructive rollback. The previous
+unstaged R-0006 plan extension is preserved verbatim in
+`plan/r0006-plan-extension.pre-r0007.md` and
+`plan/r0006-tasks-extension.pre-r0007.json`; it is not part of this delivery.
 
-## Why the repair is one batch
+## Bounded impact and design fidelity
 
-The original five-task sequence was mechanically valid but operationally
-self-blocking: the first task had to pass independent ReviewKernel evaluation
-before later tasks could implement the producer receipt and output contracts
-that collection required. That ordering produced real leased result files but
-correctly failed collection because Codex emitted no host-observed producer
-receipt. Splitting capability discovery, provenance, workflow adoption,
-routing, telemetry, and their pinned CI repairs therefore creates artificial
-gates across one runtime protocol.
+The one bounded graph-impact call covered every proposed implementation module
+using the approved policy: local depth 3, `contract-only` boundaries, contract
+depth 1, and requirement depth 1. It returned 26 impacted nodes, affected
+R-0001/R-0005/R-0006, dependent R-0002, and no unknown module IDs. Therefore
+every task declares `new_modules: []`. The five tasks collectively cover all
+13 designed code/test surfaces, all 16 proposed edges, all four exact contract
+IDs, the complete depth policy, and AC1–AC14 verbatim.
 
-The recovery preserves every approved module, edge, contract, impact bound,
-and acceptance criterion. It changes only execution order: completed runtime
-work, the six failure clusters from GitHub Actions run `31891142855`, truthful
-documentation, and final validation are closed as one coherent repair batch.
+## Delivery order
 
-## Bounded impact and graph policy
+1. **t1 — durable lifecycle first.** Implement opaque workspace/auth-bound
+   128-bit handles, revisioned/fsynced transitions, bounded redacted artifacts,
+   idempotent delivery leases, interrupt-safe wait, reconnect without relaunch,
+   repeat-safe cancellation, wave state, and efficiency counters. Deterministic
+   fake-clock/process tests own AC1–AC7 and AC14; they use no real sleeps.
+2. **t2 — host adapters.** Put Claude and Codex behind canonical `launch`,
+   `wait_next`, `cancel`, `reconnect`, and `snapshot` behavior. Preserve the
+   synchronous `NativeAdapter.run` surface and prove that a host without native
+   completion events performs one runtime-side blocking wait and zero model
+   polls (AC9).
+3. **t3 — governed-flow integration.** Persist handles before yielding,
+   reconnect on resume/compaction, keep approval/input visible, and aggregate
+   ordinary child completion into at most one wave wake. This owns AC8 and
+   AC13 after the lifecycle and adapter seams are stable.
+4. **t4 — telemetry and hard budgets.** Freeze counters/hashes rather than raw
+   argv, environment, or logs; fail closed when totals are unavailable; enforce
+   zero unchanged polls and polling raw tokens below 1% (AC11–AC12).
+5. **t5 — exactly one end-to-end validation.** After the single deterministic
+   repair batch is green, run the long-command scenario once and require at
+   least 90% polling-token reduction (AC10). Do not repeat a repository-wide or
+   end-to-end loop to chase failures; repair deterministically, then rerun only
+   the affected targeted selector unless a new human decision broadens scope.
 
-The approved impact derivation covers all 24 design modules with 21 impacted
-nodes, no unknown modules, and affected requirements R-0001, R-0005, and
-R-0006, with R-0002 as a dependent requirement. Its reported truncation is the
-approved one-hop requirement boundary, not permission to expand history.
+The dependency chain is intentionally serial because each layer consumes the
+previous layer's contract. Implementation scopes are otherwise disjoint, so
+the contract prevents workers from opportunistically changing adjacent layers.
 
-The task retains the same graph policy: three local hops, `contract-only`
-boundaries, one contract hop, and one requirement hop. Collectively they own
-all 24 proposed modules, all 38 design edges, all five exact contract ids, and
-all 14 verbatim acceptance criteria.
+## Acceptance and runnable validation map
 
-## Delivery
+| Criteria | Owner | Runnable command |
+|---|---|---|
+| AC1–AC7, AC14 | t1 | `python3 -m pytest -q taskplane/tests/test_command_runtime.py` |
+| AC9 | t2 | `python3 -m pytest -q taskplane/tests/test_command_adapters.py` |
+| AC8, AC13 | t3 | `python3 -m pytest -q taskplane/tests/test_command_wave.py` |
+| AC11–AC12 | t4 | `python3 -m pytest -q taskplane/tests/test_command_efficiency.py` |
+| AC10 | t5 | `python3 -m pytest -q taskplane/tests/test_command_completion_e2e.py` |
 
-1. **t1 — host-capability CI repair.** Preserve the committed truthful
-   capability snapshot and bounded reference-first requirement envelope, then
-   close the CI failures without weakening the new capability contracts:
-   extract loop status/evaluation presentation instead of raising the LOC
-   ceiling; make legacy fixtures author canonical evaluator evidence; align
-   workflow tests with leased receipt-only transport; keep host-specific route
-   receipts outside canonical cross-host artifact comparisons; register the
-   three intentional pytest-only files; and document the 16 capability
-   variables. The cost ratchet must require exactly three gates—fewer gates
-   are incomplete execution, not an efficiency win. Run the exact failed
-   selectors once after the batch, then
-   `python3 -m pytest taskplane/tests -q` once. Cross-version/platform,
-   packaging, manifest, release-history, docs, hook, and dispatch-parity floors
-   remain intact and may not be skipped, xfailed, loosened, or de-gated.
+The deterministic batch must explicitly cover five-minute fake time with zero
+intermediate delivery; one terminal delivery and replay; failed, cancelled,
+timed-out, approval and input transitions; identical-output suppression;
+secret-bearing oversized output with one redacted artifact and a combined
+event delta no larger than 16 KiB; user interrupt; crash/restart/reconnect;
+cross-workspace/auth binding rejection; every three-member wave completion
+ordering; attention/completion races; blocking fallback; timeout, repeated
+cancel, lost binding and audit behavior. Golden Claude/Codex events must be
+byte-equivalent after normalization.
 
-## Validation budget
+## Risks and controls
 
-The existing CI baseline is not repeated locally before repair: 28 failures,
-2831 passes, and 9 skips. The six failure clusters are repaired together, then
-the exact failed-selector set runs once. The repository-wide suite runs once
-after source, fixture, workflow, manifest, and documentation changes are
-complete; GitHub Actions is the cross-version/platform confirmation.
+- **Duplicate launch or delivery across a crash.** Persist intent and adapter
+  binding before notification, use monotonic revisions and consumer delivery
+  leases, and fail `binding_lost` once rather than auto-relaunching.
+- **Handle or output leakage.** Keep identifiers opaque and workspace/auth
+  bound; store no argv/environment in handles or telemetry; redact before one
+  bounded artifact and expose only hash/reference plus a <=16 KiB delta.
+- **Host semantic drift.** Canonicalize both adapters and require the no-event
+  fallback fixture to prove one runtime wait, zero model polls, and one result.
+- **Attention hidden by wave aggregation.** Approval, input, failure, timeout,
+  and cancellation always wake; suppress only ordinary child completion.
+- **Efficiency claimed without evidence.** Mark missing denominators
+  `unproven` and block; require zero unchanged polls, >=90% reduction, and <1%
+  raw polling-token share.
 
-## Risks, rollout, and rollback
+## Rollout and rollback
 
-Principal risks are false capability authority, duplicate hook races, stale
-workflow resume, foreign or unsupported dispatch arguments, destructive leak
-recovery, unobserved producer evidence, provider token double counting, and
-regression-floor erosion. Rollout remains additive and fail-closed: readers and
-validators first, exact hook/producer claims second, workflow and evaluator
-adoption third, strict routing and telemetry last.
+Roll out additively behind `TASKPLANE_EVENT_COMMANDS`: dual-record deterministic
+telemetry while synchronous execution remains authoritative, enable evaluator
+and validation commands on each host after parity proof, then enable waves.
+Rollback disables new asynchronous launches, retains the v1 reader until live
+handles finish or are cancelled through the runtime, and routes new launches
+through the synchronous wrapper. No state deletion, live-process migration,
+or simultaneous host deployment is allowed.
 
-Rollback may change only transport selection. It may not accept prose or
-invalid JSON, duplicate side effects, unsupported explicit routing, unproved
-submissions, translated in-flight leases/revisions, fabricated token zeros, or
-worker-owned clear/gate/approval.
+Cross-machine live-process migration remains known debt. If remote execution
+enters scope, return to Design for a remote-executor lease rather than widening
+this plan.
