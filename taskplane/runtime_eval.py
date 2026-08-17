@@ -41,6 +41,44 @@ _ABSOLUTE_PATH = re.compile(
     r"(?:(?:[A-Za-z]:[\\/])|/)(?:[^\s,;]+[\\/])*[^\s,;]*")
 
 
+def command_wave_projection(wave: dict, *, efficiency: dict | None = None,
+                            artifacts: list[dict] | None = None) -> dict:
+    """Return bounded observed wave evidence; absence stays ``unproven``."""
+    raw_efficiency = efficiency if isinstance(efficiency, dict) else {}
+    total = raw_efficiency.get("total_raw_tokens")
+    polling = max(0, int(raw_efficiency.get("polling_raw_tokens") or 0))
+    measured = isinstance(total, int) and total > 0
+    projected_artifacts = []
+    for raw in artifacts if isinstance(artifacts, list) else []:
+        row = raw if isinstance(raw, dict) else {}
+        projected_artifacts.append({
+            "path": _bounded_diagnostic(row.get("path"), 512),
+            "sha256": _bounded_diagnostic(row.get("sha256"), 128),
+            "bytes": max(0, int(row.get("bytes") or 0)),
+            "truncated": row.get("truncated") is True,
+        })
+    return {
+        "schema": "taskplane.command-wave-evidence/v1",
+        "wave_id": _bounded_diagnostic(wave.get("wave_id"), 128),
+        "members": dict(wave.get("members") or {}),
+        "interrupted": wave.get("interrupted") is True,
+        "ordinary_completion_deliveries": max(
+            0, int(wave.get("ordinary_completion_deliveries") or 0)),
+        "attention_deliveries": len(wave.get("delivered_attention") or []),
+        "artifacts": projected_artifacts,
+        "efficiency": {
+            "launches": max(0, int(raw_efficiency.get("launches") or 0)),
+            "model_wakes": max(0, int(raw_efficiency.get("model_wakes") or 0)),
+            "unchanged_model_polls": max(
+                0, int(raw_efficiency.get("unchanged_model_polls") or 0)),
+            "polling_raw_tokens": polling,
+            "total_raw_tokens": total if measured else None,
+            "polling_raw_token_share": polling / total if measured else None,
+            "measurement_status": "measured" if measured else "unproven",
+        },
+    }
+
+
 def _bounded_diagnostic(value: Any, limit: int = 512) -> str:
     text = _SECRET_ASSIGNMENT.sub("<redacted>", str(value or ""))
     text = _ABSOLUTE_PATH.sub("<redacted-path>", text)
