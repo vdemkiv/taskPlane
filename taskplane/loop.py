@@ -124,6 +124,87 @@ HUMAN_STEPS = {"design_approval", "plan_approval", "selection",
                "signoff", "escalated",
                "done", "failed"}
 
+COMMAND_WAVE_SCHEMA = "taskplane.command-wave/v1"
+_COMMAND_TERMINAL = frozenset(
+    {"succeeded", "failed", "timed_out", "cancelled"})
+_COMMAND_ATTENTION = frozenset(
+    {"approval_required", "input_required", "failed", "timed_out",
+     "cancelled"})
+
+
+def command_wave_create(wave_id: str, members: list[str], *,
+                        handles: dict | None = None) -> dict:
+    """Create the JSON-safe, loop-owned command-wave authority.
+
+    Handles are bound once.  Persisting this object in loop state therefore
+    makes resume a reattachment operation, never a launch instruction.
+    """
+    ordered = [str(member) for member in members]
+    if not ordered or len(set(ordered)) != len(ordered):
+        raise ValueError("command wave membership must be non-empty and unique")
+    bindings = {str(key): str(value) for key, value in (handles or {}).items()}
+    if set(bindings) - set(ordered):
+        raise ValueError("command handle is not a wave member")
+    return {
+        "schema": COMMAND_WAVE_SCHEMA,
+        "wave_id": str(wave_id),
+        "sealed_members": ordered,
+        "members": {member: "running" for member in ordered},
+        "handles": bindings,
+        "launches": len(bindings),
+        "interrupted": False,
+        "delivered_attention": [],
+        "ordinary_completion_deliveries": 0,
+    }
+
+
+def command_wave_resume(wave: dict, members: list[str]) -> dict:
+    """Validate and return durable wave state without changing bindings."""
+    if not isinstance(wave, dict) or wave.get("schema") != COMMAND_WAVE_SCHEMA:
+        raise ValueError("unsupported command wave")
+    if list(map(str, members)) != wave.get("sealed_members"):
+        raise ValueError("command wave membership changed after sealing")
+    if set((wave.get("handles") or {})) - set(wave["sealed_members"]):
+        raise ValueError("command wave contains an unbound member")
+    return wave
+
+
+def command_wave_update(wave: dict, member: str, state: str) -> list[dict]:
+    """Record one member observation and return model-visible events only.
+
+    Ordinary child success is silent and collapses into one aggregate event.
+    Human attention and adverse terminal outcomes are never suppressed,
+    including when host serialization observes attention after completion.
+    """
+    command_wave_resume(wave, wave.get("sealed_members") or [])
+    member = str(member)
+    if member not in wave["members"]:
+        raise KeyError(member)
+    state = str(state)
+    events = []
+    attention_key = f"{member}:{state}"
+    if state in _COMMAND_ATTENTION:
+        if attention_key not in wave["delivered_attention"]:
+            wave["delivered_attention"].append(attention_key)
+            events.append({"schema": "taskplane.command-wave-event/v1",
+                           "wave_id": wave["wave_id"], "member": member,
+                           "state": state, "attention": True})
+    # Attention observed after a terminal state is an additional event, not a
+    # state reversal. This preserves the terminal result used by the barrier.
+    if state in _COMMAND_TERMINAL:
+        wave["members"][member] = state
+    elif wave["members"][member] not in _COMMAND_TERMINAL:
+        wave["members"][member] = state
+    if (wave["ordinary_completion_deliveries"] == 0 and
+            all(value in _COMMAND_TERMINAL
+                for value in wave["members"].values())):
+        wave["ordinary_completion_deliveries"] = 1
+        events.append({"schema": "taskplane.command-wave-event/v1",
+                       "wave_id": wave["wave_id"],
+                       "state": "wave_completed", "attention": False,
+                       "members": dict(wave["members"])})
+    return events
+
 # A task is SETTLED when nothing further is owed on it: it passed, or the
 # selection gate closed it (not_selected / reference), or a human skipped it.
 # Wave readiness and "are we done?" both reason over this set.

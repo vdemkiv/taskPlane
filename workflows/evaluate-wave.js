@@ -23,9 +23,15 @@ export const meta = {
   phases: [{ title: 'Evaluate' }, { title: 'Collect' }],
 };
 
+const COMMAND_WAVE_SCHEMA = 'taskplane.command-wave/v1';
+
 export default async function evaluateWave({ args, agent, parallel, phase }) {
   phase('Evaluate');
   const briefs = args.briefs || [];
+  const commandWave = args.command_wave;
+  if (commandWave && commandWave.schema !== COMMAND_WAVE_SCHEMA) {
+    throw new Error('evaluate wave has an unsupported command-wave contract');
+  }
   // One governed read-only evaluator per built-task brief, fanned out
   // with a barrier — evaluations are independent by construction.
   const runs = briefs.map((b) => () => {
@@ -54,5 +60,5 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
   // read-only contracts; the return value hands the driver the
   // schema-validated verdicts only — the harness still owns every state
   // transition.
-  return { receipts: results.filter(Boolean) };
+  return { receipts: results.filter(Boolean), command_wave: commandWave || null };
 }

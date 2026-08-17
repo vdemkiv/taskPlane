@@ -39,6 +39,17 @@ import storage as runtime_storage
 EVIDENCE_JUDGMENT_KEYS = ("status", "verdict", "evidence", "blockers")
 
 
+def command_wave_evidence(state: dict) -> dict | None:
+    """Project only existing runtime observations into evaluator evidence."""
+    wave = state.get("command_wave") if isinstance(state, dict) else None
+    if not isinstance(wave, dict):
+        return None
+    import runtime_eval
+    return runtime_eval.command_wave_projection(
+        wave, efficiency=state.get("command_efficiency"),
+        artifacts=state.get("command_artifacts"))
+
+
 def _verdict_template(out: dict) -> dict:
     """Project rich engine context into the strict evaluator output shape."""
     graph = out.get("graph") if isinstance(out.get("graph"), dict) else {}
@@ -159,6 +170,9 @@ def evidence(ws: str, task_id: "str | None" = None,
                  "baseline": base,
                  "generated_by": "tp loop evidence",
                  "judgment_owed": list(EVIDENCE_JUDGMENT_KEYS)}
+    wave_evidence = command_wave_evidence(state)
+    if wave_evidence is not None:
+        out["command_wave"] = wave_evidence
 
     # --- the suite. The execute/fix gate already paid for and bound this
     # result to the exact command/tree/engine/env key. Consume that record

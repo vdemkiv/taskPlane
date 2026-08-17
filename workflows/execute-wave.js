@@ -24,6 +24,8 @@ export const meta = {
   phases: [{ title: 'Build' }, { title: 'Collect' }],
 };
 
+const COMMAND_WAVE_SCHEMA = 'taskplane.command-wave/v1';
+
 // contract:wave-workflow — the schema-pinned submission receipt per
 // build agent: receipts[{task, outcome, note}].
 const RECEIPT_SCHEMA = {
@@ -42,6 +44,10 @@ const RECEIPT_SCHEMA = {
 export default async function executeWave({ args, agent, parallel, phase }) {
   phase('Build');
   const briefs = args.briefs || [];
+  const commandWave = args.command_wave;
+  if (commandWave && commandWave.schema !== COMMAND_WAVE_SCHEMA) {
+    throw new Error('execute wave has an unsupported command-wave contract');
+  }
   // One governed build agent per claimed task brief, fanned out with a
   // barrier — tasks in one wave are independent by plan construction.
   const runs = briefs.map((b) => () => {
@@ -61,5 +67,6 @@ export default async function executeWave({ args, agent, parallel, phase }) {
   // the harness still owns every state transition.
   return {
     receipts: results.filter(Boolean),
+    command_wave: commandWave || null,
   };
 }
