@@ -1,70 +1,50 @@
-# Design Contract: Event-driven command completion
+# R-0008 — Size-safe ReviewKernel dispatch
 
-Requirement: R-0007  
-Status: proposed; requires human Design approval before Plan or implementation
+## Outcome
 
-## Context
+Large canonical review envelopes and dashboards must never inflate a leased producer prompt. ReviewKernel will keep one immutable canonical envelope, then derive each lens slot through a deterministic, reference-first projection whose serialized view is at most 16 KiB. The view keeps its complete identity/provenance spine inline; lens-relevant sections consume the remaining budget; overflow is stored once in the existing content-addressed `ArtifactStore` and cited by verified references. An unresolvable reference stops the slot before dispatch and cannot become a successful zero-slot review.
 
-TaskPlane already owns durable run/loop state (`taskplane/run_store.py`, `taskplane/loop.py`) and bounded Claude/Codex process execution (`taskplane/eval_drivers.py`). However, `run_process` blocks its caller and polls a local `Popen`; other command sites use `subprocess.run`. Terminal outcomes are normalized, but there is no durable workspace-bound handle, transition journal, reconnect operation, wave-completion authority, idempotent delivery lease, or hard wake/token budget. Host session/cell identifiers are transport details, not a canonical identity.
-
-The design preserves synchronous callers, timeout/cancellation semantics, visible approval/input requests, bounded redacted evidence, and the accepted rule that host unavailability is evidence rather than automatically a product defect. Hosts without native completion events must work without model polling.
+This extends the existing `taskplane/review_evidence.py` envelope, artifact reference, scoped-view, lease, and result machinery. Today large requirements and impact can be referenced, but `graph_quality`, `runnability`, `change`, `evidence`, contracts, and target data are copied wholesale and the final size check only raises. Dashboard generation is downstream, but this failure prevents lenses reaching it.
 
 ## Alternatives
 
-### A. Canonical durable command broker (selected)
+### A. Deterministic reference-first section projection — selected
 
-TaskPlane owns opaque handles, process bindings, an append-only transition journal, artifact-backed output, blocking waits, delivery leases, wave aggregation, and efficiency counters. Claude and Codex adapters translate native capabilities into the same contract; adapters without events block inside runtime code.
+Extend the incumbent artifact store with governed section artifacts and a projector that reserves mandatory inline provenance, ranks lens-relevant context using sealed routing facts, stores each unique overflow section once, and inventories omissions.
 
-Gains: one authority for replay, resume, budgets, redaction, and parity; deterministic tests. Costs: a new persistent lifecycle and compatibility wrapper. Revisit when every supported host offers the complete durable, workspace-bound, replay-safe, aggregating, observable contract—not merely a session identifier.
+Gains: bounded views independent of canonical/dashboard size; one evidence authority; deterministic bytes; narrow compatibility change. Costs: versioned view/reference contracts and verification at dispatch/collection. Revisit when every supported transport guarantees a materially larger bounded payload and duplication cost is negligible.
 
-### B. Host-native handles with a thin facade
+### B. Increase or remove 16 KiB
 
-Persist Codex/Claude native identifiers and delegate waiting and summaries to each host. Gains: smaller TaskPlane layer and direct native UI integration. Costs: divergent persistence, output, cancellation and aggregation semantics; no-event hosts regress to polling; budgets are outside TaskPlane authority. Revisit when both hosts publish equivalent stable completion/resume APIs and delivery receipts.
+Gains: smallest patch. Costs: failure moves to provider limits, prompt/storage multiply by lens count, and no deterministic bound remains. Revisit when all transports enforce the same substantially larger minimum context.
 
-### C. In-memory background extension
+### C. Paginate each lens
 
-Move current polling to background threads and retain `ProcessOutcome`. Gains: smallest diff and simple synchronous compatibility. Costs: restart loses identity; completion can be delivered twice or never; waves have no durable authority. Revisit only for commands explicitly classified as short and synchronous.
+Gains: bounded exhaustive pages. Costs: breaks one-lens/one-lease authorship, adds result merge/deduplication, multiplies producers, and risks inconsistent verdicts. Revisit when evidence proves lenses require exhaustive sequential reading rather than targeted verified resolution.
 
-## Decision and contracts
+## Selected design
 
-Select A. Add `taskplane/command_runtime.py` as lifecycle authority and `taskplane/command_adapters.py` as the host boundary. `RunStore` references command/wave snapshots. Existing `NativeAdapter.run` remains synchronous by delegating to launch plus runtime wait; governed long-command flows launch, persist the handle, yield the model turn, and receive one event later.
+`contract:review-kernel-evidence-reference/v2` adds target binding, canonical revision, section identity, digest, byte length, semantic fingerprint, and immutable artifact identity to a portable reference. It contains no absolute path. Resolution derives the canonical store path from kind/fingerprint; rejects traversal, symlinks, aliases, and authorization mismatch; verifies bytes/digest/fingerprint/target/revision; then returns only the named section.
 
-`contract:runtime:command-state/v1` defines an opaque 128-bit handle bound to workspace and authorization fingerprints; command fingerprint, timestamps/deadline, state revision, adapter binding, artifact references, and optional wave id; states `created`, `running`, `approval_required`, `input_required`, `milestone`, `succeeded`, `failed`, `timed_out`, `cancelled`; structured events with wake reason, exit code, elapsed time, <=16 KiB redacted output delta, artifact reference, and delivery key. `(handle, revision, consumer)` is leased and acknowledged once; replay never launches.
+`contract:review-kernel-scoped-view/v3` has two layers:
 
-`contract:runtime:host-command-adapter` defines `launch`, `wait_next`, `cancel`, `reconnect`, and `snapshot`. Native events may satisfy `wait_next`; otherwise the adapter blocks runtime-side. Neither path emits running conversation events.
+1. Mandatory inline spine: schema, target/context fingerprints, canonical revision, routing fingerprint, lens ids, slot id, lease precursor, producer identity, envelope fingerprint/digest, reference-manifest fingerprint, view fingerprint, integrity algorithm, and omission inventory.
+2. Deterministic projection: normalize candidates and sort by `(lens relevance class, canonical section id, content fingerprint)`. Mandatory relevant summaries enter first. Each candidate is inline if exact canonical JSON fits, otherwise it becomes one verified reference. Every optional omission records section id, reason, bytes, digest, and reference.
 
-`contract:runtime:command-wave/v1` defines sealed membership, attention/fail-fast policy, and one ordinary aggregate completion delivery. Failure, approval, input, timeout, or cancellation may wake early; ordinary child completions remain suppressed.
+The projector reserves spine/manifest bytes first and fails with `review_scoped_view_budget_impossible` if mandatory provenance cannot fit. It never truncates JSON or drops a routed lens. Pinned inputs therefore produce stable fingerprints regardless of ordering.
 
-`contract:runtime:command-efficiency/v1` records launches, duration, wake reasons, unchanged polls prevented/observed, estimated raw/effective tokens avoided, polling token share, timeouts and cancellations. Gates require zero unchanged polls, >=90% reduction, and <1% raw-token share.
+`taskplane/review.py` prepares every routed slot, verifies its manifest, and enforces `selected == prepared == dispatched == collected` for non-zero selection. Failure becomes a named slot error with safe digests, never an empty success. Collection re-resolves references and rejects mismatched view, manifest, lease, target, producer, revision, lens, or slot.
 
-## Persistence, safety, resume, and output
+`taskplane/dashboard.py` projects canonical collected state only. Dashboard size and pagination have no input edge to routing, leasing, findings, or gates and may grow independently.
 
-Transitions are appended and fsynced before notification; revision-checked snapshots support fast reads. Raw argv/environment never enter handles or telemetry. Output streams through redaction into one per-command bounded artifact; model events get a hash/reference and <=16 KiB delta. UI progress reads snapshots out of band.
+## Bounds, failure, rollout, validation
 
-Resume loads the snapshot and reconnects using the adapter's private binding. Terminal state replays idempotently; a live binding reattaches; an unverifiable binding becomes one `failed/binding_lost` event and is never relaunched. Cancellation is revision checked and repeat safe. A user message interrupts only the blocking consumer wait, preserving process and handle.
+- Each canonical UTF-8 JSON producer view is `<= 16,384` bytes at dispatch.
+- One content-addressed copy exists per unique overflow digest; total inline bytes are at most `16,384 × prepared slots`.
+- Mandatory provenance is never truncated. No availability/RPO/RTO applies because this is a local retryable artifact pipeline.
+- Signals: `review_projection`, `review_reference_verify`, `review_slot_conservation`, and `review_dashboard_projection`; diagnostics contain safe digests/counts, never paths, source text, credentials, or secrets.
+- Missing/stale/mismatched/unauthorized/traversal/symlink/mutated references stop before producer execution or canonical publication. Retry rebuilds views from the pinned envelope without re-deriving facts.
+- Roll out behind `TASKPLANE_REFERENCE_FIRST_VIEWS`, compare fitting-review parity, then make v3 authoritative while retaining v2 readers for active leases. Rollback disables new v3 preparation but continues collecting issued v3 leases; immutable artifacts require no migration.
+- Unit tests cover exact bounds, multi-megabyte sections, permutations, relevance, deduplication, and rejection matrices. Integration tests compare small/large routed slots, findings, and gates; dashboard size/pages vary metamorphically. Collection tests tamper every identity. A regression recreates a non-zero routed review whose old scoped view exceeded 16 KiB.
 
-## Sequence and ownership
-
-1. Runtime owner: schemas, store, fake clock/process, launch/wait/cancel/reconnect, artifacts, leases, synchronous wrapper.
-2. Host owner: Codex/Claude adapters with native-event and blocking-fallback paths.
-3. Workflow owner: persist-before-yield, resume, validation-wave aggregation.
-4. Observability owner: bounded counters and hard budget evaluation.
-5. QA owner: one targeted deterministic batch, then exactly one end-to-end long-command validation; no real sleeps or repeated full suite.
-
-## Failure handling
-
-Duplicate events replay the same delivery. Crash around launch reconciles persisted intent/binding without silent retry. Lost binding fails once. Oversized/sensitive output is redacted into one artifact and a bounded event. Revision ordering preserves approval/input races. A timed-out wave member produces attention and at most one later aggregate completion. Missing efficiency totals yield `unproven`, never a manufactured pass.
-
-## Rollout and rollback
-
-Ship additively behind `TASKPLANE_EVENT_COMMANDS`. First dual-record fake/telemetry evidence with synchronous authority; then enable evaluator/validation commands on both hosts; then waves after parity/resume proofs. Rollback disables new async launches, retains the v1 reader until handles expire, lets live processes finish or cancels them through the runtime, and returns new launches to the synchronous wrapper. No destructive migration or simultaneous host deployment is required.
-
-## Validation trace
-
-AC1/2/4/11: fake clock advances five minutes with zero deliveries, then one structured terminal event and no running record. AC3 parameterizes failure/cancel/timeout/approval/input for one delivery each. AC5 streams oversized secret-bearing output and proves one redacted artifact and <=16 KiB event. AC6 interrupts wait and proves same live handle and one launch. AC7 reconstructs from disk and proves reconnect without relaunch. AC8 completes multi-process waves in every order and proves <=1 ordinary aggregate wake. AC9 proves one runtime blocking wait and zero model polls without native events. AC10-12 run exactly one end-to-end scenario and enforce >=90%, zero, and <1%. AC13 races attention against completion. AC14 covers timeout, repeated cancel, crash/replay, lost binding and audit. Claude/Codex golden fixtures normalize shared cases byte-equivalently.
-
-## Known debt
-
-This slice uses the local filesystem journal and local runtime process ownership already present in TaskPlane; it does not migrate live processes across machines. If remote execution enters scope, record a remote-executor lease while preserving `contract:runtime:command-state/v1`.
-
-The state/data-flow visual is included because lifecycle transitions, interrupt/resume, and wave suppression materially clarify the design.
+The data-flow visual is included because separation of canonical evidence, bounded views, and independently growing dashboard output is the central decision.

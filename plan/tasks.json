@@ -1,38 +1,73 @@
 {
   "tasks": [
     {
-      "id": "t1-durable-command-runtime",
-      "status": "passed",
-      "title": "Build the durable command lifecycle and deterministic state tests",
+      "id": "t4-inline-integrity-and-untrusted-evidence-guard",
+      "title": "Seal inline-section integrity and obstruct prompt injection from PR-controlled evidence",
       "scope": [
-        "taskplane/command_runtime.py",
-        "taskplane/run_store.py",
-        "taskplane/tests/test_command_runtime.py"
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_review_inline_integrity.py",
+        "taskplane/tests/test_review_untrusted_evidence.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_command_runtime.py",
-      "req": "R-0007",
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_inline_integrity.py taskplane/tests/test_review_untrusted_evidence.py",
+      "req": "R-0008",
+      "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-scoped-view",
+        "contract:review-kernel-evidence-reference"
+      ],
+      "new_modules": [
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "contract:review-kernel-slot",
+        "contract:review-kernel-scoped-view",
+        "contract:review-kernel-evidence-reference"
+      ],
+      "design_edges": [
+        "taskplane/review_evidence.py->contract:review-kernel-evidence-reference:provides",
+        "taskplane/review_evidence.py->contract:review-kernel-scoped-view:provides",
+        "taskplane/review.py->contract:review-kernel-scoped-view:consumes",
+        "taskplane/review.py->contract:review-kernel-slot:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Canonical verification of inline_sections completeness, disjointness, and omissions.",
+        "Mandatory untrusted-data delimiter plus detect/obstruct/flag prompt-injection guard for PR-controlled diff, requirement, and change evidence."
+      ]
+    },
+    {
+      "id": "t1-reference-first-projection",
+      "title": "Implement bounded deterministic scoped views and immutable evidence references",
+      "status": "passed",
+      "scope": [
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_review_reference_first_projection.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_reference_first_projection.py",
+      "req": "R-0008",
       "deps": [],
       "type": "architecture",
       "contracts": [
-        "contract:runtime:command-state/v1",
-        "contract:runtime:host-command-adapter",
-        "contract:runtime:command-wave/v1",
-        "contract:runtime:command-efficiency/v1"
+        "contract:review-kernel-scoped-view",
+        "contract:review-kernel-evidence-reference"
       ],
       "new_modules": [
-        "taskplane/command_runtime.py",
-        "taskplane/run_store.py",
-        "contract:runtime:command-state/v1",
-        "contract:runtime:host-command-adapter",
-        "contract:runtime:command-wave/v1",
-        "contract:runtime:command-efficiency/v1"
+        "taskplane/review_evidence.py",
+        "contract:review-kernel-scoped-view",
+        "contract:review-kernel-evidence-reference"
       ],
       "design_edges": [
-        "taskplane/command_runtime.py->contract:runtime:command-state/v1:provides",
-        "taskplane/command_runtime.py->contract:runtime:host-command-adapter:consumes",
-        "taskplane/command_runtime.py->contract:runtime:command-wave/v1:provides",
-        "taskplane/command_runtime.py->contract:runtime:command-efficiency/v1:provides",
-        "taskplane/run_store.py->contract:runtime:command-state/v1:references"
+        "taskplane/review_evidence.py->contract:review-kernel-evidence-reference:provides",
+        "taskplane/review_evidence.py->contract:review-kernel-scoped-view:provides",
+        "taskplane/tests->contract:review-kernel-scoped-view:validates",
+        "taskplane/tests->contract:review-kernel-evidence-reference:validates"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -41,42 +76,51 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC1: A silent command running for at least five minutes causes zero model turns between launch and its first meaningful state change.",
-        "AC2: Normal completion causes exactly one model wake-up with a structured result.",
-        "AC3: Failure, cancellation, timeout, and approval-needed states each cause exactly one wake-up.",
-        "AC4: Identical or unchanged output is never written into the conversation.",
-        "AC5: Large output is stored once as an artifact; the model receives only a bounded summary and reference.",
-        "AC6: A user message interrupts an active wait without terminating or duplicating the command.",
-        "AC7: Restarting or resuming a task reconnects to the existing command rather than executing it again.",
-        "AC14: Existing timeout, cancellation, audit, and failure-reporting behavior remains fail-safe."
+        "Every serialized producer view remains within its configured byte budget at boundary and multi-megabyte sizes.",
+        "Mandatory target, revision, routing, lens, slot, lease, schema, producer, and integrity identities remain inline.",
+        "Overflow content is stored once and represented by stable target-bound digest-verified references.",
+        "Missing, stale, mismatched, unauthorized, traversal, symlink-escape, and mutated references fail closed.",
+        "Pinned inputs produce deterministic view fingerprints and reference manifests regardless of input ordering.",
+        "Lens-relevant context survives budget pressure and omitted optional material is explicitly inventoried.",
+        "Preparation stores one governed copy per unique overflow artifact and aggregate inline bytes remain bounded by slot budgets."
       ]
     },
     {
-      "id": "t2-host-command-adapters",
+      "id": "t2-slot-conservation-and-collection-integrity",
+      "title": "Enforce routed-slot conservation and provenance-bound collection",
       "status": "passed",
-      "title": "Normalize Claude and Codex command adapters with a blocking fallback",
       "scope": [
-        "taskplane/command_adapters.py",
-        "taskplane/eval_drivers.py",
-        "taskplane/tests/test_command_adapters.py"
+        "taskplane/review.py",
+        "taskplane/evidence.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/loop.py",
+        "taskplane/tests/test_review_slot_conservation.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_command_adapters.py",
-      "req": "R-0007",
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_slot_conservation.py",
+      "req": "R-0008",
       "deps": [
-        "t1-durable-command-runtime"
+        "t1-reference-first-projection"
       ],
       "type": "integration",
       "contracts": [
-        "contract:runtime:command-state/v1",
-        "contract:runtime:host-command-adapter"
+        "contract:review-kernel-slot",
+        "contract:review-kernel-scoped-view",
+        "contract:review-kernel-evidence-reference"
       ],
       "new_modules": [
-        "taskplane/command_adapters.py",
-        "taskplane/eval_drivers.py"
+        "taskplane/review.py",
+        "taskplane/evidence.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/loop.py",
+        "contract:review-kernel-slot"
       ],
       "design_edges": [
-        "taskplane/command_adapters.py->contract:runtime:host-command-adapter:provides",
-        "taskplane/eval_drivers.py->contract:runtime:host-command-adapter:consumes"
+        "taskplane/review.py->contract:review-kernel-scoped-view:consumes",
+        "taskplane/review.py->contract:review-kernel-slot:provides",
+        "taskplane/evidence.py->contract:review-kernel-slot:consumes",
+        "taskplane/runtime_eval.py->contract:review-kernel-slot:consumes",
+        "taskplane/loop.py->contract:review-kernel-slot:consumes",
+        "taskplane/tests->contract:review-kernel-slot:validates"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -85,43 +129,41 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC9: Hosts without native completion events use a runtime-side blocking wait, not repeated model-driven polling."
+        "Canonical envelopes, evidence sets, and dashboards substantially above 16 KiB dispatch the same routed slot set as equivalent small inputs.",
+        "Selected lens count greater than zero cannot become a successful zero-slot review.",
+        "Collection rejects mismatched view, reference manifest, lease, target, producer, revision, or slot."
       ]
     },
     {
-      "id": "t3-resume-and-wave-integration",
+      "id": "t3-dashboard-independence-and-compatibility",
+      "title": "Keep dashboard projection independent and preserve fitting-review behavior",
       "status": "passed",
-      "title": "Integrate durable resume, attention events, and aggregate wave completion",
       "scope": [
-        "taskplane/loop.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/evidence.py",
-        "workflows/execute-wave.js",
-        "workflows/evaluate-wave.js",
-        "taskplane/tests/test_command_wave.py"
+        "taskplane/dashboard.py",
+        "taskplane/tests",
+        "taskplane/tests/test_review_dashboard_independence.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_command_wave.py",
-      "req": "R-0007",
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_dashboard_independence.py",
+      "req": "R-0008",
       "deps": [
-        "t1-durable-command-runtime",
-        "t2-host-command-adapters"
+        "t1-reference-first-projection",
+        "t2-slot-conservation-and-collection-integrity"
       ],
       "type": "integration",
       "contracts": [
-        "contract:runtime:command-state/v1",
-        "contract:runtime:command-wave/v1"
+        "contract:review-kernel-slot",
+        "contract:review-kernel-scoped-view",
+        "contract:review-dashboard-projection"
       ],
       "new_modules": [
-        "taskplane/loop.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/evidence.py",
-        "workflows/execute-wave.js",
-        "workflows/evaluate-wave.js"
+        "taskplane/dashboard.py",
+        "taskplane/tests",
+        "contract:review-dashboard-projection"
       ],
       "design_edges": [
-        "taskplane/loop.py->contract:runtime:command-state/v1:consumes",
-        "workflows/execute-wave.js->contract:runtime:command-wave/v1:consumes",
-        "workflows/evaluate-wave.js->contract:runtime:command-wave/v1:consumes"
+        "taskplane/dashboard.py->contract:review-dashboard-projection:provides",
+        "taskplane/dashboard.py->contract:review-kernel-slot:consumes",
+        "taskplane/tests->contract:review-dashboard-projection:validates"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -130,90 +172,8 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC8: A validation wave with multiple processes produces no more than one ordinary completion wake-up per wave.",
-        "AC13: Authorization and human-input requests remain visible and cannot be suppressed by the optimization."
-      ]
-    },
-    {
-      "id": "t4-efficiency-telemetry-and-gates",
-      "status": "passed",
-      "title": "Record bounded efficiency telemetry and enforce the hard token budgets",
-      "scope": [
-        "taskplane/spend.py",
-        "scripts/eval_record.py",
-        "scripts/eval_skills.py",
-        "taskplane/tests/test_command_efficiency.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_command_efficiency.py",
-      "req": "R-0007",
-      "deps": [
-        "t1-durable-command-runtime",
-        "t2-host-command-adapters",
-        "t3-resume-and-wave-integration"
-      ],
-      "type": "observability",
-      "contracts": [
-        "contract:runtime:host-command-adapter",
-        "contract:runtime:command-efficiency/v1"
-      ],
-      "new_modules": [
-        "taskplane/spend.py",
-        "scripts/eval_record.py",
-        "scripts/eval_skills.py"
-      ],
-      "design_edges": [
-        "taskplane/spend.py->contract:runtime:command-efficiency/v1:evaluates",
-        "scripts/eval_record.py->contract:runtime:command-efficiency/v1:records",
-        "scripts/eval_skills.py->contract:runtime:host-command-adapter:consumes"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC11: Unchanged polling turns equal zero.",
-        "AC12: Polling-related raw tokens remain below 1% of total run tokens."
-      ]
-    },
-    {
-      "id": "t5-single-end-to-end-validation",
-      "title": "Run the one bounded end-to-end long-command validation",
-      "scope": [
-        "taskplane/runtime_eval.py",
-        "taskplane/tests/test_command_completion_e2e.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_command_completion_e2e.py",
-      "req": "R-0007",
-      "deps": [
-        "t1-durable-command-runtime",
-        "t2-host-command-adapters",
-        "t3-resume-and-wave-integration",
-        "t4-efficiency-telemetry-and-gates"
-      ],
-      "type": "validation",
-      "contracts": [
-        "contract:runtime:command-state/v1",
-        "contract:runtime:command-wave/v1",
-        "contract:runtime:command-efficiency/v1"
-      ],
-      "new_modules": [
-        "taskplane/tests"
-      ],
-      "design_edges": [
-        "taskplane/tests->contract:runtime:command-state/v1:validates",
-        "taskplane/tests->contract:runtime:command-wave/v1:validates",
-        "taskplane/tests->contract:runtime:command-efficiency/v1:validates"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC10: An end-to-end long-command scenario demonstrates at least a 90% reduction in polling-related tokens."
+        "Dashboard size and pagination do not affect routing, leasing, dispatch, collection, findings, or gate values.",
+        "Small fitting reviews retain compatible routing, evidence, findings, and gate behavior."
       ]
     }
   ]

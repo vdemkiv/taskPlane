@@ -12,7 +12,7 @@ import json
 import os
 import re
 import tempfile
-from typing import Any, Iterable, TypeAlias, TypedDict
+from typing import Any, Iterable, Iterator, TypeAlias, TypedDict
 
 import storage as runtime_storage
 import taskplane_lite as tp
@@ -519,16 +519,27 @@ def _section_summary(section: str, value) -> dict:
     return summary
 
 
-def _text_values(value):
+def _text_values(value: JsonValue) -> Iterator[str]:
     """Yield strings for detection only; never copy them into safe flags."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
         for key in sorted(value, key=str):
             yield from _text_values(value[key])
-    elif isinstance(value, (list, tuple)):
+    elif isinstance(value, list):
         for item in value:
             yield from _text_values(item)
+
+
+def _content_bound_delimiters(section: str, value: JsonValue) -> tuple[str, str]:
+    """Create deterministic markers that PR content cannot pre-inject."""
+    identity = hashlib.sha256(
+        section.encode("utf-8") + b"\0" + canonical_bytes(value)
+    ).hexdigest()[:24]
+    return (
+        f"<TASKPLANE_UNTRUSTED_REVIEW_DATA:{identity}>",
+        f"</TASKPLANE_UNTRUSTED_REVIEW_DATA:{identity}>",
+    )
 
 
 _LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a",
@@ -574,13 +585,14 @@ def frame_review_evidence(section: str, value: JsonValue) -> JsonValue:
     """Structurally isolate PR-owned evidence from producer control text."""
     if section not in UNTRUSTED_REVIEW_SECTIONS:
         return copy.deepcopy(value)
+    begin, end = _content_bound_delimiters(section, value)
     return {
         "schema": "taskplane.untrusted-review-data/v1",
         "section": section,
         "interpretation": "data-only",
-        "begin": UNTRUSTED_DATA_BEGIN,
+        "begin": begin,
         "content": copy.deepcopy(value),
-        "end": UNTRUSTED_DATA_END,
+        "end": end,
         "flags": _injection_flags(section, value),
     }
 

@@ -1,120 +1,78 @@
 {
-  "schema": "taskplane.design/v1",
-  "requirement": "R-0007",
-  "title": "Event-driven command completion",
-  "summary": "Add a durable TaskPlane-owned command runtime and canonical adapters so commands wake the model only on meaningful idempotent events, resume without relaunch, aggregate waves, bound output, and enforce wake/token budgets across Claude and Codex.",
-  "current_state": {
-    "summary": "TaskPlane has durable run/loop stores, bounded process execution, normalized Claude/Codex outcomes, cancellation/timeout cleanup, and host capability routing. Execution remains caller-blocking or subprocess.run-based; eval_drivers.run_process polls an in-process Popen. No durable command handle, transition journal, reconnect contract, delivery lease, wave authority, or polling-token gate exists.",
-    "sources": ["taskplane/eval_drivers.py", "taskplane/run_store.py", "taskplane/loop.py", "taskplane/loop_recovery.py", "taskplane/runtime_eval.py", "taskplane/host_capabilities.py", "taskplane/evidence.py", "taskplane/spend.py", "scripts/eval_record.py", "scripts/eval_skills.py", "workflows/execute-wave.js", "workflows/evaluate-wave.js", "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/context/current-state.md", "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/decisions/0008-design-approved-adopt-six-verified-claude-codex-.md", "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/decisions/0019-model-evaluation-unavailability-is-not-a-product.md"]
-  },
-  "alternatives": [
-    {"id": "canonical-command-broker", "name": "Canonical durable command broker", "description": "TaskPlane owns handles, transitions, blocking waits, leases, artifacts, waves and budgets; adapters translate host capabilities.", "tradeoffs": {"gains": ["One replay/resume and budget authority", "Equivalent host semantics", "Deterministic tests"], "costs": ["New persistent lifecycle", "Compatibility wrapper"], "revisit_when": "Every supported host provides the complete durable, bound, replay-safe, aggregating and observable contract."}},
-    {"id": "host-native-handles", "name": "Host-native handles with thin facade", "description": "Persist host identifiers and delegate waiting and summaries.", "tradeoffs": {"gains": ["Smaller TaskPlane layer", "Native UI integration"], "costs": ["Host semantic drift", "No-event hosts regress to polling", "Budgets remain outside TaskPlane"], "revisit_when": "Both hosts publish stable equivalent completion/resume APIs and delivery receipts."}},
-    {"id": "in-memory-background", "name": "In-memory background extension", "description": "Move current polling to background threads without durable command state.", "tradeoffs": {"gains": ["Smallest diff", "Simple synchronous compatibility"], "costs": ["Restart loses commands", "Delivery is not replay-safe", "No durable wave authority"], "revisit_when": "Only for explicitly short synchronous commands."}}
+  "schema":"taskplane.design/v1","requirement":"R-0008","title":"Size-safe ReviewKernel dispatch for large reviews","summary":"Decouple unbounded canonical evidence and dashboards from deterministic <=16 KiB producer views using immutable storage, verified reference-first projection, complete inline provenance, slot conservation, and fail-closed collection.",
+  "current_state":{"summary":"ReviewKernel already owns immutable envelopes, content-addressed artifacts, section references, scoped v2 views, leases, and provenance-bound results. Requirements and impact can be referenced, but other sections remain copied inline and create_scoped_view raises after exceeding 16 KiB, preventing routed lens dispatch. Dashboard rendering is downstream of canonical collection.","sources":["taskplane/review_evidence.py","taskplane/review.py","taskplane/evidence.py","taskplane/runtime_eval.py","taskplane/loop.py","taskplane/dashboard.py","taskplane/tests/test_review_evidence.py","taskplane/tests/test_review_routing.py","/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-1faa04e2/knowledge/requirements/R-0008-size-safe-reviewkernel-dispatch-for-large-review.md"]},
+  "alternatives":[
+    {"id":"reference-first-projection","name":"Deterministic reference-first section projection","description":"Extend the incumbent immutable artifact store and scoped-view boundary with budgeted section projection and verified resolution.","tradeoffs":{"gains":["Bounded views independent of canonical/dashboard size","One authority and deterministic fingerprints","Small-review compatibility"],"costs":["Versioned view/reference contracts","Resolver checks at dispatch and collection"],"revisit_when":"All supported transports guarantee a materially larger bounded payload and duplication is negligible."}},
+    {"id":"raise-limit","name":"Raise or remove the view limit","description":"Keep copying scoped context and rely on provider context windows.","tradeoffs":{"gains":["Small immediate patch"],"costs":["Failure moves to provider limits","Evidence multiplies by lens count","No deterministic bound"],"revisit_when":"Every producer transport enforces the same substantially larger minimum context."}},
+    {"id":"paginate-lenses","name":"Paginate each lens","description":"Issue multiple page leases for one lens and merge partial verdicts.","tradeoffs":{"gains":["Bounded exhaustive pages"],"costs":["Breaks one-lens/one-lease authorship","More producers and cross-page deduplication","Verdict consistency risk"],"revisit_when":"A lens demonstrably requires exhaustive sequential reading rather than targeted verified resolution."}}
   ],
-  "selected_approach": "canonical-command-broker",
-  "decision": "Extend the durable-store and bounded-adapter stack with one TaskPlane-owned lifecycle and host-neutral adapter boundary. Persist before yielding, wake only from meaningful idempotent transitions, keep UI progress out of conversation, and retain synchronous execution as an additive wrapper.",
-  "modules": {
-    "existing": [
-      "taskplane/eval_drivers.py",
-      "taskplane/run_store.py",
-      "taskplane/loop.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/evidence.py",
-      "taskplane/spend.py",
-      "scripts/eval_record.py",
-      "scripts/eval_skills.py",
-      "workflows/execute-wave.js",
-      "workflows/evaluate-wave.js",
-      "taskplane/tests"
-    ],
-    "new": [
-      "taskplane/command_runtime.py",
-      "taskplane/command_adapters.py"
-    ]
-  },
-  "contracts": [
-    {"id": "contract:runtime:command-state/v1", "relation": "provides", "description": "Opaque workspace/auth-bound handle, meaningful events, revisions and idempotent delivery."},
-    {"id": "contract:runtime:host-command-adapter", "relation": "changes", "description": "Host-neutral launch, wait_next, cancel, reconnect and snapshot with blocking fallback."},
-    {"id": "contract:runtime:command-wave/v1", "relation": "provides", "description": "Sealed membership, attention policy and one ordinary aggregate completion."},
-    {"id": "contract:runtime:command-efficiency/v1", "relation": "provides", "description": "Wake/token telemetry and hard budget evaluation."}
+  "selected_approach":"reference-first-projection","decision":"Extend the existing ReviewKernel artifact/provenance boundary. Reserve a complete inline identity spine, deterministically inline lens-relevant context that fits, reference overflow once, inventory every omission, verify before dispatch and collection, and conserve routed slots. Dashboard projection remains downstream and independent.",
+  "modules":{"existing":["taskplane/review_evidence.py","taskplane/review.py","taskplane/evidence.py","taskplane/runtime_eval.py","taskplane/loop.py","taskplane/dashboard.py","taskplane/tests"],"new":[]},
+  "contracts":[
+    {"id":"contract:review-kernel-slot","relation":"changes","description":"Conserves every non-zero routed slot through preparation, dispatch, and collection or returns a named fail-closed error."},
+    {"id":"contract:review-kernel-scoped-view","relation":"changes","description":"Versioned v3 canonical <=16 KiB producer view with mandatory inline provenance, deterministic context projection, and explicit omission inventory."},
+    {"id":"contract:review-kernel-evidence-reference","relation":"provides","description":"Versioned v2 portable target/revision-bound immutable section reference verified by digest, length, semantic fingerprint, authorization, and canonical store location."},
+    {"id":"contract:review-dashboard-projection","relation":"changes","description":"Dashboard consumes canonical collected state only; size and pagination cannot affect review semantics."}
   ],
-  "acceptance_map": [
-    {"criterion": "AC1: A silent command running for at least five minutes causes zero model turns between launch and its first meaningful state change.", "design_element": "taskplane/command_runtime.py runtime-owned blocking wait", "validation": "Fake clock advances 300 seconds without events; assert model_delivery_count==0 before terminal transition."},
-    {"criterion": "AC2: Normal completion causes exactly one model wake-up with a structured result.", "design_element": "contract:runtime:command-state/v1 delivery lease", "validation": "Completion/replay test asserts one delivery with status, exit code, elapsed_ms and bounded delta."},
-    {"criterion": "AC3: Failure, cancellation, timeout, and approval-needed states each cause exactly one wake-up.", "design_element": "contract:runtime:command-state/v1 wake transitions", "validation": "Parameterized fake-event test asserts one delivery for failed, cancelled, timed_out and approval_required."},
-    {"criterion": "AC4: Identical or unchanged output is never written into the conversation.", "design_element": "taskplane/command_runtime.py output-delta journal", "validation": "Repeated identical-output fixture asserts zero conversation records/deliveries until a meaningful event."},
-    {"criterion": "AC5: Large output is stored once as an artifact; the model receives only a bounded summary and reference.", "design_element": "taskplane/command_runtime.py artifact writer and 16 KiB event bound", "validation": "Oversized secret fixture asserts one redacted artifact and combined event delta <=16384 bytes."},
-    {"criterion": "AC6: A user message interrupts an active wait without terminating or duplicating the command.", "design_element": "contract:runtime:host-command-adapter wait_next interruption", "validation": "Fake user interrupt releases wait; assert running state, unchanged handle and launch_count==1."},
-    {"criterion": "AC7: Restarting or resuming a task reconnects to the existing command rather than executing it again.", "design_element": "taskplane/command_runtime.py snapshot and reconnect", "validation": "Recreate runtime; assert reconnect_count==1, launch_count==1 and terminal delivery once."},
-    {"criterion": "AC8: A validation wave with multiple processes produces no more than one ordinary completion wake-up per wave.", "design_element": "contract:runtime:command-wave/v1", "validation": "Complete three fake commands in every order; assert ordinary aggregate deliveries<=1."},
-    {"criterion": "AC9: Hosts without native completion events use a runtime-side blocking wait, not repeated model-driven polling.", "design_element": "taskplane/command_adapters.py blocking fallback", "validation": "No-event adapter asserts one runtime wait, zero model polls and one terminal delivery."},
-    {"criterion": "AC10: An end-to-end long-command scenario demonstrates at least a 90% reduction in polling-related tokens.", "design_element": "contract:runtime:command-efficiency/v1", "validation": "Run one end-to-end scenario; assert polling_token_reduction_percent>=90 against baseline."},
-    {"criterion": "AC11: Unchanged polling turns equal zero.", "design_element": "contract:runtime:command-efficiency/v1 unchanged-poll counter", "validation": "Targeted suite and end-to-end record assert unchanged_model_polls==0."},
-    {"criterion": "AC12: Polling-related raw tokens remain below 1% of total run tokens.", "design_element": "taskplane/spend.py efficiency gate", "validation": "Frozen record asserts polling_raw_tokens/total_raw_tokens<0.01 and fails closed if unavailable."},
-    {"criterion": "AC13: Authorization and human-input requests remain visible and cannot be suppressed by the optimization.", "design_element": "contract:runtime:command-state/v1 attention priority", "validation": "Race fixtures assert approval/input events remain visible before ordinary completion suppression."},
-    {"criterion": "AC14: Existing timeout, cancellation, audit, and failure-reporting behavior remains fail-safe.", "design_element": "taskplane/eval_drivers.py wrapper plus command journal", "validation": "Timeout, repeated-cancel, crash/replay, lost-binding and audit fixtures assert one fail-safe terminal record and no relaunch."}
+  "acceptance_map":[
+    {"criterion":"Canonical envelopes, evidence sets, and dashboards substantially above 16 KiB dispatch the same routed slot set as equivalent small inputs.","design_element":"contract:review-kernel-slot","validation":"Integration test parameterizes fitting and 4 MiB canonical/dashboard fixtures and asserts identical non-zero routed, prepared, and dispatched slot ids."},
+    {"criterion":"Every serialized producer view remains within its configured byte budget at boundary and multi-megabyte sizes.","design_element":"contract:review-kernel-scoped-view","validation":"Boundary test serializes 16 KiB-edge and 8 MiB inputs and asserts each dispatch payload is <=16384 canonical UTF-8 bytes."},
+    {"criterion":"Mandatory target, revision, routing, lens, slot, lease, schema, producer, and integrity identities remain inline.","design_element":"contract:review-kernel-scoped-view","validation":"Schema pressure test asserts all ten identity classes remain inline and covered by the view fingerprint."},
+    {"criterion":"Overflow content is stored once and represented by stable target-bound digest-verified references.","design_element":"contract:review-kernel-evidence-reference","validation":"Project repeated overflow into 26 slots; assert one artifact per unique digest and stable target-bound references."},
+    {"criterion":"Missing, stale, mismatched, unauthorized, traversal, symlink-escape, and mutated references fail closed.","design_element":"contract:review-kernel-evidence-reference","validation":"Parameterized resolver test exercises all seven rejection classes before dispatch and collection and expects named errors with no producer/result."},
+    {"criterion":"Selected lens count greater than zero cannot become a successful zero-slot review.","design_element":"contract:review-kernel-slot","validation":"Route a lens then inject preparation failure; assert slot-conservation error rather than success with zero slots."},
+    {"criterion":"Dashboard size and pagination do not affect routing, leasing, dispatch, collection, findings, or gate values.","design_element":"contract:review-dashboard-projection","validation":"Render one collection at 1, 10, and 100 pages; assert identical routing, leases, results, findings, and gate fingerprint."},
+    {"criterion":"Pinned inputs produce deterministic view fingerprints and reference manifests regardless of input ordering.","design_element":"contract:review-kernel-scoped-view","validation":"Shuffle sections/files/symbols 100 times; assert byte-identical views, manifests, and fingerprints."},
+    {"criterion":"Lens-relevant context survives budget pressure and omitted optional material is explicitly inventoried.","design_element":"contract:review-kernel-scoped-view","validation":"Per-lens pressure fixtures assert relevant summaries inline and each non-inline section has reason, bytes, digest, and resolvable reference."},
+    {"criterion":"Collection rejects mismatched view, reference manifest, lease, target, producer, revision, or slot.","design_element":"contract:review-kernel-slot","validation":"Collection test independently tampers all seven identities and asserts rejection before canonical publication."},
+    {"criterion":"Small fitting reviews retain compatible routing, evidence, findings, and gate behavior.","design_element":"contract:review-kernel-scoped-view","validation":"Golden fitting fixtures run through v3 and assert equivalent routing, evidence semantics, findings, and gates."},
+    {"criterion":"Preparation stores one governed copy per unique overflow artifact and aggregate inline bytes remain bounded by slot budgets.","design_element":"contract:review-kernel-evidence-reference","validation":"26-lens 8 MiB load fixture asserts unique artifact count and aggregate inline bytes <=16384 times prepared slots."}
   ],
-  "risks": [
-    {"risk": "A handle leaks identity or is replayed across workspace/auth boundaries.", "mitigation": "Use 128-bit opaque ids, fingerprint-only metadata, and reject mismatched bindings.", "owner": "Runtime owner"},
-    {"risk": "Crash boundaries duplicate execution or delivery.", "mitigation": "Persist launch intent/binding, use monotonic revisions and consumer leases, never auto-relaunch unverifiable bindings.", "owner": "Runtime owner"},
-    {"risk": "Host drift silently reintroduces model polling.", "mitigation": "Normalize both adapters and prove no-event fallback with one blocking wait and zero model polls.", "owner": "Host owner"},
-    {"risk": "Wave aggregation suppresses attention.", "mitigation": "Prioritize approval/input/failure/timeout/cancel and suppress ordinary child completion only.", "owner": "Workflow owner"},
-    {"risk": "Telemetry becomes vanity data or leaks logs.", "mitigation": "Hard gates, counters/hashes only, and unproven status when totals are absent.", "owner": "Observability owner"}
+  "risks":[
+    {"risk":"Resolution crosses target or store boundaries.","mitigation":"Derive path from kind/fingerprint; bind target/revision; reject paths, traversal, symlinks, aliases, and authorization mismatch.","owner":"Review evidence owner"},
+    {"risk":"Budget policy omits lens-relevant evidence.","mitigation":"Reserve mandatory relevance summaries first and require a complete resolvable omission inventory.","owner":"Routing owner"},
+    {"risk":"Preparation failure is mistaken for no selected work.","mitigation":"Enforce selected/prepared/dispatched/collected conservation with a named fail-closed error.","owner":"ReviewKernel owner"},
+    {"risk":"Dashboard presentation leaks into review semantics.","mitigation":"Accept only canonical collection fingerprint as dashboard input and test size/page independence.","owner":"Dashboard owner"},
+    {"risk":"Rollout strands active v2 leases.","mitigation":"Keep v2 reader/collector until active leases expire; v3 is additive and immutable.","owner":"ReviewKernel owner"}
   ],
-  "failure_modes": [
-    {"mode": "Duplicate terminal host event.", "detection": "command_transition signal reports existing handle/revision/delivery key.", "recovery": "Runtime immediately replays the original event without new execution or wake."},
-    {"mode": "Runtime restarts with a live command.", "detection": "command_recovery signal reports a persisted running snapshot.", "recovery": "Runtime owner reconnects once; binding_lost becomes one failure and never relaunches."},
-    {"mode": "Output exceeds bounds or contains secrets.", "detection": "command_output signal reports bytes, truncation and redaction counts.", "recovery": "Artifact writer stores one redacted artifact and emits <=16 KiB plus reference."},
-    {"mode": "Approval/input races with completion.", "detection": "command_transition signal records ordered revisions and attention priority.", "recovery": "Runtime exposes attention once; wave owner suppresses only subsequent ordinary child completion."},
-    {"mode": "Wave member exceeds deadline.", "detection": "command_transition and wave_state signals report timed_out member.", "recovery": "Runtime cancels tree, wakes once for timeout, then emits at most one aggregate terminal event."},
-    {"mode": "Efficiency denominator is unavailable.", "detection": "command_efficiency signal reports measurement_status=unproven.", "recovery": "Observability owner blocks the efficiency gate; no pass is manufactured."}
+  "failure_modes":[
+    {"mode":"Mandatory inline spine exceeds budget.","detection":"review_projection reports mandatory_bytes and budget.","recovery":"ReviewKernel owner stops before dispatch with review_scoped_view_budget_impossible; retry follows contract/policy correction."},
+    {"mode":"Artifact is missing, altered, stale, or unauthorized.","detection":"review_reference_verify reports safe digest and reason.","recovery":"Resolver stops immediately; operator restores the pinned artifact or restarts from the sealed envelope."},
+    {"mode":"A routed slot disappears.","detection":"review_slot_conservation reports unequal selected/prepared/dispatched counts.","recovery":"ReviewKernel aborts before publication and retries the named slot from its pinned envelope."},
+    {"mode":"Collection receives mismatched provenance.","detection":"review_reference_verify and review_slot_conservation report the identity.","recovery":"Collector rejects without advancing revision; producer is re-leased from the same pinned view."},
+    {"mode":"Large dashboard render fails.","detection":"review_dashboard_projection reports render failure after collection.","recovery":"Dashboard owner retries or paginates; canonical findings and gate stay sealed."}
   ],
-  "observability": {
-    "signals": ["command_transition signal: handle fingerprint, revision, state, wake reason, elapsed_ms and delivery disposition", "command_output signal: artifact hash/reference, bytes, truncation and redaction counts", "command_recovery signal: reconnect outcome, binding_lost and duplicate-launch prevention", "wave_state signal: member counts, attention wakes and aggregate completion deliveries", "command_efficiency signal: launches, duration, wakes, unchanged polls, avoided tokens, polling share, timeouts and cancellations"],
-    "alerts": ["Block when unchanged_model_polls>0.", "Block when polling_token_reduction_percent<90.", "Block when polling_raw_tokens/total_raw_tokens>=0.01 or unproven.", "Alert on more than one terminal delivery or ordinary wave completion.", "Alert on relaunch during reconnect or binding rejection."]
-  },
-  "rollout": {"strategy": "Additive TASKPLANE_EVENT_COMMANDS flag: dual-record fake/telemetry with synchronous authority, enable evaluator/validation commands on both hosts, then waves after parity/resume proof. One deterministic repair batch and one end-to-end validation.", "rollback": "Disable async for new launches, retain v1 reader until handles finish/expire, finish or cancel live commands through runtime, and use synchronous wrapper for new launches; delete no state and require no simultaneous deployment."},
-  "graph": {
-    "baseline_fingerprint": "88d4233106f1fe8c41139679243741f052b954889f9ecad7a3866c68347c992b",
-    "proposed_modules": ["taskplane/command_runtime.py", "taskplane/command_adapters.py", "taskplane/eval_drivers.py", "taskplane/run_store.py", "taskplane/loop.py", "taskplane/runtime_eval.py", "taskplane/evidence.py", "taskplane/spend.py", "scripts/eval_record.py", "scripts/eval_skills.py", "workflows/execute-wave.js", "workflows/evaluate-wave.js", "taskplane/tests", "contract:runtime:command-state/v1", "contract:runtime:host-command-adapter", "contract:runtime:command-wave/v1", "contract:runtime:command-efficiency/v1"],
-    "proposed_edges": [
-      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:command-state/v1", "kind": "provides", "reason": "Owns handles, transitions, artifacts and delivery."},
-      {"from": "taskplane/command_adapters.py", "to": "contract:runtime:host-command-adapter", "kind": "provides", "reason": "Normalizes host launch, wait, cancel, reconnect and snapshot."},
-      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:host-command-adapter", "kind": "consumes", "reason": "Delegates host-specific bindings."},
-      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:command-wave/v1", "kind": "provides", "reason": "Owns wave aggregation."},
-      {"from": "taskplane/command_runtime.py", "to": "contract:runtime:command-efficiency/v1", "kind": "provides", "reason": "Records lifecycle counters."},
-      {"from": "taskplane/eval_drivers.py", "to": "contract:runtime:host-command-adapter", "kind": "consumes", "reason": "Preserves synchronous adapter API."},
-      {"from": "taskplane/run_store.py", "to": "contract:runtime:command-state/v1", "kind": "references", "reason": "Retains handles and wave references."},
-      {"from": "taskplane/loop.py", "to": "contract:runtime:command-state/v1", "kind": "consumes", "reason": "Persists before yield and resumes from events."},
-      {"from": "workflows/execute-wave.js", "to": "contract:runtime:command-wave/v1", "kind": "consumes", "reason": "Consumes aggregate completion."},
-      {"from": "workflows/evaluate-wave.js", "to": "contract:runtime:command-wave/v1", "kind": "consumes", "reason": "Consumes aggregate completion."},
-      {"from": "taskplane/spend.py", "to": "contract:runtime:command-efficiency/v1", "kind": "evaluates", "reason": "Computes hard budgets."},
-      {"from": "scripts/eval_record.py", "to": "contract:runtime:command-efficiency/v1", "kind": "records", "reason": "Freezes evidence."},
-      {"from": "scripts/eval_skills.py", "to": "contract:runtime:host-command-adapter", "kind": "consumes", "reason": "Uses canonical lifecycle on both hosts."},
-      {"from": "taskplane/tests", "to": "contract:runtime:command-state/v1", "kind": "validates", "reason": "Proves lifecycle criteria."},
-      {"from": "taskplane/tests", "to": "contract:runtime:command-wave/v1", "kind": "validates", "reason": "Proves wave criterion."},
-      {"from": "taskplane/tests", "to": "contract:runtime:command-efficiency/v1", "kind": "validates", "reason": "Proves token gates."}
-    ],
-    "depth_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-    "dor": [
-      {"check": "Baseline graph is current and isolated.", "evidence": "Fingerprint 88d4233106f1fe8c41139679243741f052b954889f9ecad7a3866c68347c992b at HEAD 3c9ffbbe0aebf74fdb350675f796910c75643142; Design does not mutate it."},
-      {"check": "R-0007 is testable and resolved.", "evidence": "AC1-AC14, seven NFRs, named contracts, no open questions, explicit user approval."},
-      {"check": "As-built seams are cited.", "evidence": "Process, run-store, loop, telemetry, host and workflow sources ground the delta."},
-      {"check": "Ownership and order are settled.", "evidence": "Runtime, host, workflow, observability, QA; no simultaneous deployment."},
-      {"check": "Traversal stops at contracts.", "evidence": "Local depth 3; four contract nodes depth 1; requirement depth 1."},
-      {"check": "Bounds are numeric.", "evidence": "128-bit handles, <=16 KiB event, zero polls, <=1 ordinary wake, >=90% reduction, <1% share."}
-    ],
-    "dod": [
-      {"check": "Realized graph conforms.", "evidence": "Engineering rescans, binds design meta, verifies modules/edges/contracts and zero unexplained drift."},
-      {"check": "Lifecycle is durable and exactly once.", "evidence": "Fake clock/process crash, replay, interrupt, reconnect and race matrices prove no relaunch and one delivery."},
-      {"check": "Host parity and fallback hold.", "evidence": "Golden events match; no-event fixture proves blocking and zero model polls."},
-      {"check": "Output and handles are safe.", "evidence": "Oversize, secret and cross-binding fixtures prove one redacted artifact, <=16 KiB and rejection."},
-      {"check": "Wave and budgets pass.", "evidence": "All orderings <=1 completion; one end-to-end run proves >=90%, zero and <1%."},
-      {"check": "Compatibility and rollback work.", "evidence": "Synchronous fixtures stay green; flag-off reads v1 state, handles live work safely and launches synchronously."}
-    ]
-  },
-  "visualization": {"required": true, "kind": "state-transition", "path": "design/visual.html", "reason": "Lifecycle, interrupt/resume, meaningful wake boundary and wave suppression materially clarify the design."},
-  "lens_evidence": [{"lens": "solution-design", "verdict": "pass", "blockers": 0, "evidence": "Grounded in current durable state and bounded adapters; compared three distinct approaches; traced AC1-AC14 to named elements and runnable checks; set numeric wake/token/handle/output bounds; matched failure detection to signals and bounded recovery; preserved additive rollback and synchronous compatibility; declared cross-machine migration debt. No unresolved Build decision remains.", "produced_by": "design_event_completion", "content_fingerprint": "61accf55d1e15ad361a1968df4c2dde9e237b8fc9179dc0702563ce7ca3faa52", "self_attested": true}],
-  "open_questions": []
+  "observability":{"signals":["review_projection: canonical_bytes, inline_bytes, referenced_bytes, omission_count, view_fingerprint","review_reference_verify: kind, safe digest, outcome, reason","review_slot_conservation: selected, prepared, dispatched, collected counts and slot fingerprints","review_dashboard_projection: canonical fingerprint, rendered bytes, pages, semantic fingerprint"],"alerts":["Block when a producer view exceeds 16384 bytes.","Block on reference verification failure.","Block when non-zero selected differs from prepared, dispatched, or collected.","Alert on dashboard render failure without changing canonical gate state."]},
+  "rollout":{"strategy":"Add v2 reference and v3 scoped-view contracts behind TASKPLANE_REFERENCE_FIRST_VIEWS; dual-evaluate fitting fixtures; enable large reviews; then make v3 authoritative while retaining v2 readers for active leases.","rollback":"Disable new v3 preparation, continue resolving/collecting issued v3 leases, and resume v2 for new reviews. Artifacts are immutable/additive; no migration is reversed."},
+  "graph":{"baseline_fingerprint":"5e86f66a9adfcd871703b3fa175325ec890d93843b305c8636a9560d83f1fcd5","proposed_modules":["taskplane/review_evidence.py","taskplane/review.py","taskplane/evidence.py","taskplane/runtime_eval.py","taskplane/loop.py","taskplane/dashboard.py","taskplane/tests","contract:review-kernel-slot","contract:review-kernel-scoped-view","contract:review-kernel-evidence-reference","contract:review-dashboard-projection"],"proposed_edges":[
+    {"from":"taskplane/review_evidence.py","to":"contract:review-kernel-evidence-reference","kind":"provides","reason":"Stores, binds, resolves, and verifies overflow sections."},
+    {"from":"taskplane/review_evidence.py","to":"contract:review-kernel-scoped-view","kind":"provides","reason":"Projects deterministic bounded per-lens views."},
+    {"from":"taskplane/review.py","to":"contract:review-kernel-scoped-view","kind":"consumes","reason":"Prepares and verifies views before dispatch."},
+    {"from":"taskplane/review.py","to":"contract:review-kernel-slot","kind":"provides","reason":"Enforces slot conservation and provenance-bound collection."},
+    {"from":"taskplane/evidence.py","to":"contract:review-kernel-slot","kind":"consumes","reason":"Consumes canonical collected decisions."},
+    {"from":"taskplane/runtime_eval.py","to":"contract:review-kernel-slot","kind":"consumes","reason":"Projects machine-owned facts without remapping."},
+    {"from":"taskplane/loop.py","to":"contract:review-kernel-slot","kind":"consumes","reason":"Binds Evaluate and EM to the canonical run."},
+    {"from":"taskplane/dashboard.py","to":"contract:review-dashboard-projection","kind":"provides","reason":"Renders canonical results independently."},
+    {"from":"taskplane/dashboard.py","to":"contract:review-kernel-slot","kind":"consumes","reason":"Reads sealed collection/gates only."},
+    {"from":"taskplane/tests","to":"contract:review-kernel-scoped-view","kind":"validates","reason":"Proves bounds, determinism, relevance, compatibility."},
+    {"from":"taskplane/tests","to":"contract:review-kernel-evidence-reference","kind":"validates","reason":"Proves deduplication, integrity, authorization, path safety."},
+    {"from":"taskplane/tests","to":"contract:review-kernel-slot","kind":"validates","reason":"Proves dispatch conservation and collection rejection."},
+    {"from":"taskplane/tests","to":"contract:review-dashboard-projection","kind":"validates","reason":"Proves presentation independence."}
+  ],"depth_policy":{"local_depth":3,"boundary_mode":"contract-only","contract_depth":1,"requirement_depth":1},"dor":[
+    {"check":"Baseline graph is pinned and Design is overlay-only.","evidence":"Captured baseline fingerprint 5e86f66a9adfcd871703b3fa175325ec890d93843b305c8636a9560d83f1fcd5; no graph mutation."},
+    {"check":"Existing evidence seams are verified.","evidence":"review_evidence.py owns immutable artifacts, references, scoped views, leases, and result provenance."},
+    {"check":"R-0008 is measurable and resolved.","evidence":"Twelve criteria, seven NFRs, four contracts, 16384-byte bound, no open questions."},
+    {"check":"Ownership and rollout are settled.","evidence":"Evidence, ReviewKernel, routing, dashboard, QA owners; additive v3 then authority cutover."},
+    {"check":"Traversal is bounded.","evidence":"Local depth 3; contract/requirement depth 1; distributed traversal stops at named contracts."}
+  ],"dod":[
+    {"check":"Realized graph and contracts conform.","evidence":"Engineering scan verifies declared edges/contracts and zero unexplained drift."},
+    {"check":"Large dispatch is conserved and bounded.","evidence":"4-8 MiB fixtures prove identical routed slots and every view <=16384 bytes."},
+    {"check":"Reference integrity and safety hold.","evidence":"Deduplication and seven-class rejection matrix pass at dispatch/collection."},
+    {"check":"Relevant deterministic identity holds.","evidence":"Permutation/pressure fixtures prove stable fingerprints, inline provenance, complete omission inventory."},
+    {"check":"Collection is fail-closed.","evidence":"Tampered view, manifest, lease, target, producer, revision, or slot is rejected."},
+    {"check":"Dashboard and fitting behavior remain compatible.","evidence":"Golden/metamorphic suites prove equivalent routing/findings/gates independent of pages/size."}
+  ]},
+  "visualization":{"required":true,"kind":"data-flow","path":"design/visual.html","reason":"Separation between unbounded canonical evidence, bounded per-lens views, and independently growing dashboard output is the central decision."},
+  "lens_evidence":[{"lens":"solution-design","verdict":"pass","blockers":0,"evidence":"Grounded in incumbent immutable artifacts and the actual overflow failure; compared extension, limit removal, and pagination; mapped all 12 criteria to named contracts and executable bounds/integrity/metamorphic tests; matched failures to declared signals and bounded actors; preserved additive rollback; no new service, migration, unresolved sequencing decision, or silent debt.","produced_by":"tp_step_designer_design_28973ea6","content_fingerprint":"9f24b0a342ecfae4a0a700fb7698e2076776fd32a678ff496a5862bb136dd9db","self_attested":true}],
+  "open_questions":[]
 }

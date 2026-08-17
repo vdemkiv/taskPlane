@@ -1,104 +1,118 @@
-# R-0007 plan — event-driven command completion
+# R-0008 plan — size-safe ReviewKernel dispatch
 
-This plan realizes the human-approved Design Contract in
-`design/contract.json` (artifact SHA-256
-`03abbda518095e5866af3ecd22578a1b465383e4582e15a07ec9f53ec33b4a78`) against
-the current graph baseline at HEAD
-`3c9ffbbe0aebf74fdb350675f796910c75643142`. It preserves the selected
-Taskplane-owned durable broker, thin Claude/Codex adapters, additive feature
-flag, synchronous compatibility, and non-destructive rollback. The previous
-unstaged R-0006 plan extension is preserved verbatim in
-`plan/r0006-plan-extension.pre-r0007.md` and
-`plan/r0006-tasks-extension.pre-r0007.json`; it is not part of this delivery.
+This plan realizes the approved reference-first Design Contract in
+`design/contract.json` (SHA-256
+`3f0b049b1a179ab580e7c41d632714991e15d0874ab1950647805d0d15b9a046`).
+Its graph baseline fingerprint
+`5e86f66a9adfcd871703b3fa175325ec890d93843b305c8636a9560d83f1fcd5`
+matches the single bounded impact projection. The prior R-0007 plan is
+preserved unchanged in `plan/r0007-plan.pre-r0008.md` and
+`plan/r0007-tasks.pre-r0008.json`; the older R-0006 artifacts also remain
+untouched.
 
-## Bounded impact and design fidelity
+## Impact and design fidelity
 
-The one bounded graph-impact call covered every proposed implementation module
-using the approved policy: local depth 3, `contract-only` boundaries, contract
-depth 1, and requirement depth 1. It returned 26 impacted nodes, affected
-R-0001/R-0005/R-0006, dependent R-0002, and no unknown module IDs. Therefore
-every task declares `new_modules: []`. The five tasks collectively cover all
-13 designed code/test surfaces, all 16 proposed edges, all four exact contract
-IDs, the complete depth policy, and AC1–AC14 verbatim.
+The required one-time graph projection covered all seven designed local
+surfaces with local depth 3, `contract-only` boundaries, contract depth 1, and
+requirement depth 1. It returned 30 impacted nodes and no unknown modules. The
+gate's graph-coverage interface uses `new_modules` as its explicit declaration
+of approved graph nodes even when those nodes already exist, so the tasks list
+every exact `graph.proposed_modules` value there; this is coverage metadata,
+not a claim that existing files or contracts are newly created. The original
+three tasks collectively cover every approved module, all 13 proposed edges,
+all four exact contracts, the depth policy, and all 12 acceptance criteria
+verbatim. The approved security/integrity amendment adds one bounded final
+task without reopening or invalidating credited work.
 
-## Delivery order
+## Risk-first delivery
 
-1. **t1 — durable lifecycle first.** Implement opaque workspace/auth-bound
-   128-bit handles, revisioned/fsynced transitions, bounded redacted artifacts,
-   idempotent delivery leases, interrupt-safe wait, reconnect without relaunch,
-   repeat-safe cancellation, wave state, and efficiency counters. Deterministic
-   fake-clock/process tests own AC1–AC7 and AC14; they use no real sleeps.
-2. **t2 — host adapters.** Put Claude and Codex behind canonical `launch`,
-   `wait_next`, `cancel`, `reconnect`, and `snapshot` behavior. Preserve the
-   synchronous `NativeAdapter.run` surface and prove that a host without native
-   completion events performs one runtime-side blocking wait and zero model
-   polls (AC9).
-3. **t3 — governed-flow integration.** Persist handles before yielding,
-   reconnect on resume/compaction, keep approval/input visible, and aggregate
-   ordinary child completion into at most one wave wake. This owns AC8 and
-   AC13 after the lifecycle and adapter seams are stable.
-4. **t4 — telemetry and hard budgets.** Freeze counters/hashes rather than raw
-   argv, environment, or logs; fail closed when totals are unavailable; enforce
-   zero unchanged polls and polling raw tokens below 1% (AC11–AC12).
-5. **t5 — exactly one end-to-end validation.** After the single deterministic
-   repair batch is green, run the long-command scenario once and require at
-   least 90% polling-token reduction (AC10). Do not repeat a repository-wide or
-   end-to-end loop to chase failures; repair deterministically, then rerun only
-   the affected targeted selector unless a new human decision broadens scope.
-   The approved E2E amendment adds `taskplane/runtime_eval.py` solely to repair
-   safe relative artifact-reference redaction exposed by the first validation;
-   it does not reopen the completed runtime, adapter, wave, or telemetry work.
+1. **Reference-first projection.** Extend the incumbent evidence authority,
+   not a parallel store. Add v2 target/revision-bound immutable section
+   references and deterministic v3 scoped views. Reserve the complete inline
+   identity spine and omission manifest before lens-relevant content; emit
+   exact canonical JSON only when it fits, otherwise one verified reference.
+   Fail `review_scoped_view_budget_impossible` rather than truncate provenance
+   or drop a lens. Focused tests cover the 16,384-byte edge, 4–8 MiB input,
+   100 input permutations, per-lens pressure, deduplication, aggregate bounds,
+   and the seven reference rejection classes.
+2. **Slot conservation and collection integrity.** Prepare and verify every
+   routed slot, then enforce non-zero `selected == prepared == dispatched ==
+   collected`. Bind view, reference manifest, lease, target, producer,
+   revision, lens, and slot through dispatch and collection. Any preparation
+   or provenance mismatch returns a named fail-closed error before producer
+   execution or canonical publication. The evidence, runtime-evaluation, and
+   loop consumers may project machine-owned facts but may not remap them.
+3. **Dashboard independence and compatibility.** Render only sealed canonical
+   collection/gate state. Vary dashboard size and pagination without changing
+   routing, leases, results, findings, or gate fingerprints. Golden fitting
+   fixtures must retain equivalent routing, evidence semantics, findings, and
+   gates through v3.
+4. **Inline integrity and untrusted-evidence guard.** Preserve t1/t2 as passed
+   and credit the completed t3 dashboard behavior, then make one bounded pass
+   over `review.py` and `review_evidence.py`. Canonically verify that
+   `inline_sections`, referenced sections, and omission inventory are complete
+   and pairwise disjoint for the pinned envelope; reject duplicates, gaps,
+   undeclared sections, or contradictory omission state before dispatch and
+   collection. Treat PR-controlled diff, requirement, and change evidence as
+   untrusted data behind a mandatory delimiter. Deterministically detect,
+   obstruct, and flag prompt-injection attempts without treating the embedded
+   text as reviewer instructions. The flag is safe provenance/evidence, never
+   permission to silently discard the underlying code-review data.
 
-The dependency chain is intentionally serial because each layer consumes the
-previous layer's contract. Implementation scopes are otherwise disjoint, so
-the contract prevents workers from opportunistically changing adjacent layers.
+The order is deliberately serial: collection cannot safely consume references
+until the projector/verifier contract is deterministic, and dashboard
+independence cannot be proven until canonical slot conservation is sealed.
+Implementation-file scopes remain tight; the exact `taskplane/tests` graph
+module is assigned to the final compatibility task for mechanical Design
+coverage, and the serial dependencies prevent its shared test surface from
+creating concurrent edits.
 
-## Acceptance and runnable validation map
+## Runnable validation map
 
-| Criteria | Owner | Runnable command |
+| Focus | Acceptance coverage | Command |
 |---|---|---|
-| AC1–AC7, AC14 | t1 | `python3 -m pytest -q taskplane/tests/test_command_runtime.py` |
-| AC9 | t2 | `python3 -m pytest -q taskplane/tests/test_command_adapters.py` |
-| AC8, AC13 | t3 | `python3 -m pytest -q taskplane/tests/test_command_wave.py` |
-| AC11–AC12 | t4 | `python3 -m pytest -q taskplane/tests/test_command_efficiency.py` |
-| AC10 | t5 | `python3 -m pytest -q taskplane/tests/test_command_completion_e2e.py` |
+| Reference-first bounds, determinism, relevance, deduplication, reference safety | 7 criteria | `python3 -m pytest -q taskplane/tests/test_review_reference_first_projection.py` |
+| Large/small slot parity, zero-slot prevention, collection tamper matrix | 3 criteria | `python3 -m pytest -q taskplane/tests/test_review_slot_conservation.py` |
+| Dashboard metamorphism and fitting-review compatibility | 2 criteria | `python3 -m pytest -q taskplane/tests/test_review_dashboard_independence.py` |
+| Inline completeness/disjointness/omissions and untrusted-evidence injection defense | Approved amendment | `python3 -m pytest -q taskplane/tests/test_review_inline_integrity.py taskplane/tests/test_review_untrusted_evidence.py` |
 
-The deterministic batch must explicitly cover five-minute fake time with zero
-intermediate delivery; one terminal delivery and replay; failed, cancelled,
-timed-out, approval and input transitions; identical-output suppression;
-secret-bearing oversized output with one redacted artifact and a combined
-event delta no larger than 16 KiB; user interrupt; crash/restart/reconnect;
-cross-workspace/auth binding rejection; every three-member wave completion
-ordering; attention/completion races; blocking fallback; timeout, repeated
-cancel, lost binding and audit behavior. Golden Claude/Codex events must be
-byte-equivalent after normalization.
+The integrity suite independently tampers view, manifest, lease, target,
+producer, revision, and slot. The reference suite rejects missing, stale,
+mismatched, unauthorized, traversal, symlink-escape, and mutated artifacts at
+both preparation and collection boundaries. Diagnostics contain only safe
+digests/counts—never paths, source text, credentials, or secrets.
+
+The amendment tests cover missing, duplicated, intersecting, reordered, and
+undeclared inline/reference/omission identities; canonical byte/fingerprint
+verification; delimiter presence at every producer boundary; benign text that
+resembles instructions; direct and obfuscated override/exfiltration attempts;
+and fail-closed detect/obstruct/flag behavior that preserves safe evidence for
+the collector.
 
 ## Risks and controls
 
-- **Duplicate launch or delivery across a crash.** Persist intent and adapter
-  binding before notification, use monotonic revisions and consumer delivery
-  leases, and fail `binding_lost` once rather than auto-relaunching.
-- **Handle or output leakage.** Keep identifiers opaque and workspace/auth
-  bound; store no argv/environment in handles or telemetry; redact before one
-  bounded artifact and expose only hash/reference plus a <=16 KiB delta.
-- **Host semantic drift.** Canonicalize both adapters and require the no-event
-  fallback fixture to prove one runtime wait, zero model polls, and one result.
-- **Attention hidden by wave aggregation.** Approval, input, failure, timeout,
-  and cancellation always wake; suppress only ordinary child completion.
-- **Efficiency claimed without evidence.** Mark missing denominators
-  `unproven` and block; require zero unchanged polls, >=90% reduction, and <1%
-  raw polling-token share.
+- **Mandatory provenance exceeds the budget.** Reserve and measure the spine
+  first; fail explicitly rather than truncate JSON or erase selected work.
+- **Reference substitution or escape.** Resolve from kind/fingerprint inside
+  the canonical store, reject symlinks/aliases/traversal and authorization
+  mismatch, then verify digest, byte length, semantic fingerprint, target, and
+  revision before returning the named section.
+- **Evidence multiplies by lens count.** Store once per unique digest and cap
+  aggregate inline bytes at `16,384 × prepared slots`.
+- **Collection publishes mixed provenance.** Re-resolve references and compare
+  every identity before canonical publication; any mismatch fails closed.
+- **Presentation affects semantics.** Keep dashboard pagination downstream of
+  the sealed collection and gate fingerprint, with no routing input edge.
+- **PR-controlled evidence impersonates control instructions.** Delimit every
+  untrusted evidence class, interpret it only as review data, detect and
+  obstruct override/exfiltration patterns, and emit a bounded safe flag for
+  canonical collection.
 
 ## Rollout and rollback
 
-Roll out additively behind `TASKPLANE_EVENT_COMMANDS`: dual-record deterministic
-telemetry while synchronous execution remains authoritative, enable evaluator
-and validation commands on each host after parity proof, then enable waves.
-Rollback disables new asynchronous launches, retains the v1 reader until live
-handles finish or are cancelled through the runtime, and routes new launches
-through the synchronous wrapper. No state deletion, live-process migration,
-or simultaneous host deployment is allowed.
-
-Cross-machine live-process migration remains known debt. If remote execution
-enters scope, return to Design for a remote-executor lease rather than widening
-this plan.
+Roll out behind `TASKPLANE_REFERENCE_FIRST_VIEWS`: first compare fitting-review
+parity, then make v3 authoritative while retaining v2 readers for active
+leases. Rollback disables new v3 preparation but continues collecting already
+issued v3 leases. Immutable artifacts need no migration or deletion. Retrying
+rebuilds views from the pinned canonical envelope without re-deriving review
+facts.
