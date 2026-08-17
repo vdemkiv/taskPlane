@@ -299,7 +299,10 @@ class TestCodexHookProtocol(unittest.TestCase):
                            "schema": "taskplane.lens-slot-output/v2",
                            "authored_by": "lens-slot", "findings": [],
                            "lens_results": [
-                               {"lens": lid, "verdict": "pass", "blockers": 0}
+                               {"lens": lid, "verdict": "pass", "blockers": 0,
+                                "checked_evidence": [{
+                                    "file": "src/a.py", "line": 1,
+                                    "claim": "reviewed the changed source"}]}
                                for lid in lease["lens_ids"]]}
                     if brief.get("language_references"):
                         row["references_applied"] = list(

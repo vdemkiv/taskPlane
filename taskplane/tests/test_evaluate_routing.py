@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
@@ -108,7 +109,11 @@ def _write_kernel_results(ws, *, dropped=None):
         row = {**lease, "schema": "taskplane.lens-slot-output/v2",
                "authored_by": "lens-slot", "findings": [],
                "lens_results": [{"lens": lid, "verdict": "pass",
-                                  "blockers": 0} for lid in lens_ids]}
+                                  "blockers": 0,
+                                  "checked_evidence": [{
+                                      "file": "src/app/feature.py", "line": 1,
+                                      "claim": "reviewed source"}]}
+                                 for lid in lens_ids]}
         if brief.get("language_references"):
             row["references_applied"] = list(brief["language_references"])
         content = json.dumps(row, sort_keys=True, separators=(",", ":"))
@@ -140,7 +145,9 @@ def _pass_eval(ws, brief):
             for x in _routed(brief)]
     _write_kernel_results(ws)
     _write_verdict(ws, task["id"], loop._criteria_for(ws, state, task), rows)
-    loop.submit(ws, "pass")
+    with mock.patch("runtime_eval.guide_loop",
+                    return_value={"status": "on_path", "recovered": False}):
+        loop.submit(ws, "pass")
     return loop.gate(ws, "pass")
 
 
@@ -254,7 +261,11 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
             }] if is_blocking else [])
             rows = [{"lens": lid,
                      "verdict": "fail" if lid == blocking_lens else "pass",
-                     "blockers": 1 if lid == blocking_lens else 0}
+                     "blockers": 1 if lid == blocking_lens else 0,
+                     **({"checked_evidence": [{
+                         "file": "src/app/feature.py", "line": 1,
+                         "claim": "reviewed source"}]}
+                        if lid != blocking_lens else {})}
                     for lid in lease["lens_ids"]]
             payload = {**lease,
                        "schema": "taskplane.lens-slot-output/v2",

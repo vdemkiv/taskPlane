@@ -284,7 +284,9 @@ class OneCallOpening(_WS):
 
     def test_it_returns_the_briefs_ready_to_dispatch(self):
         _, d, _ = self._start()
-        prompt = d["review_execution"]["action"]["choices"][0]["prompt"]
+        prompt = next(choice["prompt"] for choice in
+                      d["review_execution"]["action"]["choices"]
+                      if choice["response"] == "static")
         self._observe_user_action(
             prompt, message_id="review-cost-static-choice")
         rc, out, _ = _run(

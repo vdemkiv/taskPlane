@@ -288,17 +288,17 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         _git(self.ws, "checkout", "-q", "tp-pr-42")
         rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(json.loads(out)["status"], "ready")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(json.loads(out)["status"], "needs_user")
 
     def test_the_pull_requests_head_opens_the_review_normally(self):
         _git(self.ws, "fetch", "-q", "origin", "refs/pull/42/head:tp-pr-42")
         _git(self.ws, "checkout", "-q", "tp-pr-42")
         rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
-        self.assertEqual(rc, 0, out)
+        self.assertEqual(rc, 2, out)
         d = json.loads(out)
-        self.assertEqual(d["status"], "ready")
+        self.assertEqual(d["status"], "needs_user")
         self.assertTrue(d["target_fingerprint"])
         self.assertEqual(d["preflight"]["identity"]["head"], self.pr_head)
         self.assertEqual(d["preflight"]["identity"]["merge_base"],

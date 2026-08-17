@@ -62,7 +62,8 @@ def _pass_eval(ws):
                                "blockers": 0} for x in routed["lenses"]],
                    "failures": []}, f)
     facts = {key: True for key in runtime_eval.REVIEW_FACTS}
-    with mock.patch("runtime_eval.review_facts", return_value=facts):
+    with mock.patch("runtime_eval.guide_loop",
+                    return_value={"status": "on_path", "recovered": False}):
         loop.submit(ws, "pass")
     return loop.gate(ws, "pass")
 

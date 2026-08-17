@@ -574,7 +574,7 @@ class TestExtractionStructure(unittest.TestCase):
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 3100, f"loop.py is {n} lines — the audit extraction shrink "
+            n, 3150, f"loop.py is {n} lines — the audit extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):

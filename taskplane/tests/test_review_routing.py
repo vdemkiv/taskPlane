@@ -272,7 +272,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertTrue(all("ack" not in row for row in obligations))
         self.assertEqual(next(row for row in obligations
                               if row["kind"] == "render_dashboard")["path"],
-                         ".em-review/wave-board.html")
+                         ".em-review/dashboard.html")
         for row in visuals.values():
             self.assertTrue(os.path.isfile(os.path.join(self.ws, row["path"])))
             inline = os.path.join(self.ws, row["inline"]["path"])
@@ -443,7 +443,11 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                     **lease, "schema": "taskplane.lens-slot-output/v2",
                     "authored_by": "lens-slot",
                     "lens_results": [{"lens": lens_id, "verdict": "pass",
-                                      "blockers": 0}
+                                      "blockers": 0,
+                                      "checked_evidence": [{
+                                          "file": "PluginHeader.tsx",
+                                          "line": 1,
+                                          "claim": "reviewed source"}]}
                                      for lens_id in lease["lens_ids"]],
                     "findings": [],
                 }
@@ -556,8 +560,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                                     "exact language references"):
             review.collect_review(self.ws, publish=False)
 
-    def test_codex_native_session_store_can_bind_exact_slot_result_bytes(self):
-        """A native child completion is provenance, not model self-assertion."""
+    def test_legacy_codex_session_inference_is_not_provenance(self):
+        """Session prose cannot replace the sealed leased-result contract."""
         import hashlib
 
         self._start()
@@ -573,7 +577,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             row = {**lease, "schema": "taskplane.lens-slot-output/v2",
                    "authored_by": "lens-slot", "findings": [],
                    "lens_results": [
-                       {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                       {"lens": lens_id, "verdict": "pass", "blockers": 0,
+                        "checked_evidence": [{"file": "src/service.py",
+                                              "line": 1,
+                                              "claim": "reviewed source"}]}
                        for lens_id in lease["lens_ids"]]}
             if brief.get("language_references"):
                 row["references_applied"] = list(
@@ -612,16 +619,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 with open(os.path.join(self.ws, slot["result_path"]),
                           "rb") as stream:
                     raw = stream.read()
-                self.assertIsNotNone(review._codex_session_receipt(
+                self.assertIsNone(review._codex_session_receipt(
                     self.ws, store, slot, lease, raw))
             out = review.collect_review(self.ws, publish=False)
         self.assertEqual(out["status"], "complete")
-        for slot in state["slots"]:
-            lease = store.read(slot["lease"])
-            receipt = tp.load_json(review._receipt_path(
-                self.ws, lease["lease_fingerprint"]))
-            self.assertEqual(receipt["host_event"], "CodexTaskComplete")
-            self.assertEqual(receipt["tool"], "native-session-result-receipt")
 
     def test_valid_leased_artifacts_collect_without_hook_receipts(self):
         self._start()
@@ -633,7 +634,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             row = {**lease, "schema": "taskplane.lens-slot-output/v2",
                    "authored_by": "lens-slot", "findings": [],
                    "lens_results": [
-                       {"lens": lid, "verdict": "pass", "blockers": 0}
+                       {"lens": lid, "verdict": "pass", "blockers": 0,
+                        "checked_evidence": [{"file": "src/service.py",
+                                              "line": 1,
+                                              "claim": "reviewed source"}]}
                        for lid in lease["lens_ids"]]}
             if brief.get("language_references"):
                 row["references_applied"] = list(
@@ -688,7 +692,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         content = json.dumps({
             **lease, "schema": "taskplane.lens-slot-output/v2",
             "authored_by": "lens-slot", "findings": [],
-            "lens_results": [{"lens": lid, "verdict": "pass", "blockers": 0}
+            "lens_results": [{"lens": lid, "verdict": "pass", "blockers": 0,
+                              "checked_evidence": [{
+                                  "file": "src/service.py", "line": 1,
+                                  "claim": "reviewed source"}]}
                              for lid in lease["lens_ids"]],
             **({"references_applied": list(brief["language_references"])}
                if brief.get("language_references") else {}),

@@ -47,7 +47,9 @@ def git_ws(tmp, tasks):
 
 
 def submit_gate(ws, outcome="pass", task_id=None):
-    submitted = loop.submit(ws, outcome, task_id=task_id)
+    with mock.patch("runtime_eval.guide_loop",
+                    return_value={"status": "on_path", "recovered": False}):
+        submitted = loop.submit(ws, outcome, task_id=task_id)
     if "error" in submitted:
         return submitted
     return loop.gate(ws, outcome, task_id=task_id)
@@ -69,7 +71,9 @@ def author_leased_results(ws):
             "schema": "taskplane.lens-slot-output/v2",
             "authored_by": "lens-slot",
             "lens_results": [
-                {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                {"lens": lens_id, "verdict": "pass", "blockers": 0,
+                 "checked_evidence": [{"file": "src/todo/a.py", "line": 1,
+                                       "claim": "reviewed source"}]}
                 for lens_id in lease["lens_ids"]
             ],
             "findings": [],

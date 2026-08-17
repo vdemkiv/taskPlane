@@ -167,7 +167,10 @@ def _author_leased_evaluation_results(ws: str) -> None:
             **lease, "schema": "taskplane.lens-slot-output/v2",
             "authored_by": "lens-slot", "findings": [],
             "lens_results": [{"lens": lens_id, "verdict": "pass",
-                              "blockers": 0}
+                              "blockers": 0,
+                              "checked_evidence": [{
+                                  "file": "src/todo/a.py", "line": 1,
+                                  "claim": "reviewed source"}]}
                              for lens_id in lease["lens_ids"]],
         }
         if brief.get("language_references"):

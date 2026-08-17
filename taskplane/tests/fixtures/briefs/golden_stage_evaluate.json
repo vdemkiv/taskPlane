@@ -26,6 +26,9 @@
     ]
   },
   "dashboard": {
+    "inline": {
+      "path": "<WS>/.taskplane/dashboard.fragment.html"
+    },
     "obligation": "o-d452794682",
     "path": ".taskplane/dashboard.html",
     "render": "refreshed for this internal transition \u2014 keep using this path as the progress reference; do not render or acknowledge it until a human gate or explicit status request"

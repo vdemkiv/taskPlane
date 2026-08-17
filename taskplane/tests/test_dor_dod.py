@@ -47,16 +47,23 @@ class TestSignoffDoD(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
 
     def _state(self, base, scope=("src/**",)):
-        return {"goal": "g", "step": "signoff", "current_task": 0,
+        state = {"goal": "g", "step": "signoff", "current_task": 0,
                 "max_fix_cycles": 2, "checkpoints": ["plan", "em"],
                 "tasks": [{"id": "t1", "scope": list(scope),
                            "tests": "true", "criteria": ["works"]}],
                 "baseline": base}
+        if getattr(self, "_review_binding", None):
+            state["review_kernel_runs"] = {
+                "em:t1": dict(self._review_binding)}
+        return state
 
     def _review_evidence(self, ws):
         coverage = {x["id"]: "sweep"
                     for x in lens.load_catalog()["lenses"]}
         complete_review(ws, coverage=coverage)
+        kernel = __import__("review")._load_state(ws)
+        self._review_binding = {"run_id": kernel["run_id"],
+                                "workspace": ws}
 
     def test_in_scope_change_passes(self):
         ws = _repo(self.tmp)

@@ -91,6 +91,8 @@ not repeated in the tables.
 | `tp.py req signoff` | record the human Product gate |
 | `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
 | `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
+| `tp.py review evidence` | record approved dynamic validation or render evidence |
+| `tp.py review option` | record the human's optional dynamic review/render choice |
 | `tp.py review resume` | apply one explicit user decision and continue the same repository preflight and review |
 | `tp.py review signoff` | record the human decision for a collected standalone review |
 | `tp.py review start` | establish the facts and activate the read-only contract |
@@ -864,6 +866,37 @@ validate leased lens results and publish one canonical findings revision
 | --- | --- | --- |
 | `--no-publish` | flag | skip the external artifact-store snapshot (tests and isolated calibration only) |
 | `--run-id` | RUN_ID | select one active review when several starts coexist |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py review evidence`
+
+record approved dynamic validation or render evidence
+
+Positional arguments:
+
+- `kind`
+- `status`
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--detail` | DETAIL | bounded evidence summary |
+| `--receipt` | RECEIPT | optional host message/turn reference; receipt content is resolved from the host transcript |
+| `--run-id` | RUN_ID (required) | active review run |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py review option`
+
+record the human's optional dynamic review/render choice
+
+Positional arguments:
+
+- `selection`
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY | deprecated display attribution; receipt actor is authoritative |
+| `--receipt` | RECEIPT | optional host message/turn reference; receipt content is resolved from the host transcript |
+| `--run-id` | RUN_ID (required) | active review run |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py review resume`

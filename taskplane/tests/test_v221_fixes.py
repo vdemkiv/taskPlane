@@ -84,7 +84,9 @@ class TestH1SubmitTaskAttribution(_Env):
         loop.init(ws, "g")
         _to_step(ws, "evaluate")
         facts = {key: True for key in runtime_eval.REVIEW_FACTS}
-        with mock.patch("runtime_eval.review_facts", return_value=facts):
+        with mock.patch("runtime_eval.guide_loop",
+                        return_value={"status": "on_path",
+                                      "recovered": False}):
             out = loop.submit(ws, "pass", task_id="t1")
         self.assertNotIn("error", out)
 

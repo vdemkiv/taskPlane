@@ -197,11 +197,11 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
              "--workspace", self.ws], capture_output=True, text=True,
             encoding="utf-8", errors="replace", env=dict(os.environ))
 
-    def test_a_review_owes_the_board_and_the_graph(self):
+    def test_a_review_owes_the_dashboard_with_its_embedded_graph(self):
         r = self.new("--owes", "review")
         self.assertEqual(r.returncode, 0, r.stderr)
         kinds = sorted(o["kind"] for o in obligations.blocking(self.ws))
-        self.assertEqual(kinds, ["render_dashboard", "render_graph"])
+        self.assertEqual(kinds, ["render_dashboard"])
         self.assertIn("owes", r.stdout)
 
     def test_without_owes_nothing_is_seeded(self):
@@ -216,11 +216,10 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         """Deterministic ids: re-activating must not inflate the debt."""
         self.new("--owes", "review")
         self.new("--owes", "review")
-        self.assertEqual(len(obligations.blocking(self.ws)), 2)
+        self.assertEqual(len(obligations.blocking(self.ws)), 1)
 
-    def test_graph_render_binds_the_seeded_review_obligation(self):
-        """Review owes one graph before bytes exist; rendering those bytes
-        must enrich that demand, not mint a second graph delivery."""
+    def test_standalone_graph_render_remains_a_graph_obligation(self):
+        """An explicitly rendered graph remains independently accountable."""
         self.assertEqual(self.new("--owes", "review").returncode, 0)
         with io.open(os.path.join(self.ws, "a.py"), "w", encoding="utf-8") as f:
             f.write("value = 1\n")
@@ -243,7 +242,7 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         graphs = [row for row in issued.values()
                   if row.get("kind") == "render_graph"]
         self.assertEqual(len(graphs), 1)
-        self.assertEqual(graphs[0].get("step"), "review")
+        self.assertEqual(graphs[0].get("step"), "graph")
         self.assertEqual(graphs[0].get("artifact"), out)
         self.assertEqual(graphs[0].get("fingerprint"),
                          obligations.artifact_fingerprint(out))

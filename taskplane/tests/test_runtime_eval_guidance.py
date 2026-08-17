@@ -105,10 +105,15 @@ class TestRuntimeEvalLoopWiring(unittest.TestCase):
         }
         complete = {key: True for key in runtime_eval.REVIEW_FACTS}
 
-        with mock.patch("runtime_eval.review_facts", return_value=missing):
+        binding = {"run_id": "a" * 32, "workspace": self.ws}
+        with mock.patch("loop.review_kernel_binding", return_value=binding), \
+                mock.patch("runtime_eval.collect_review_if_ready"), \
+                mock.patch("runtime_eval.review_facts", return_value=missing):
             first = loop.guide(self.ws)
             second = loop.guide(self.ws)
-        with mock.patch("runtime_eval.review_facts", return_value=complete):
+        with mock.patch("loop.review_kernel_binding", return_value=binding), \
+                mock.patch("runtime_eval.collect_review_if_ready"), \
+                mock.patch("runtime_eval.review_facts", return_value=complete):
             recovered = loop.guide(self.ws)
 
         self.assertEqual(first["status"], "correct")
@@ -128,7 +133,10 @@ class TestRuntimeEvalLoopWiring(unittest.TestCase):
         }
         complete = {key: True for key in runtime_eval.REVIEW_FACTS}
 
-        with mock.patch("runtime_eval.review_facts", return_value=missing):
+        binding = {"run_id": "a" * 32, "workspace": self.ws}
+        with mock.patch("loop.review_kernel_binding", return_value=binding), \
+                mock.patch("runtime_eval.collect_review_if_ready"), \
+                mock.patch("runtime_eval.review_facts", return_value=missing):
             corrected = loop.submit(self.ws, "pass")
             blocked = loop.submit(self.ws, "pass")
         self.assertFalse(corrected["submitted"])
@@ -136,7 +144,9 @@ class TestRuntimeEvalLoopWiring(unittest.TestCase):
         self.assertEqual(blocked["runtime_eval"]["status"], "blocked")
         self.assertNotIn("_submission", loop.load(self.ws))
 
-        with mock.patch("runtime_eval.review_facts", return_value=complete):
+        with mock.patch("loop.review_kernel_binding", return_value=binding), \
+                mock.patch("runtime_eval.collect_review_if_ready"), \
+                mock.patch("runtime_eval.review_facts", return_value=complete):
             accepted = loop.submit(self.ws, "pass")
         self.assertTrue(accepted["submitted"])
         self.assertTrue(accepted["runtime_eval"]["recovered"])
