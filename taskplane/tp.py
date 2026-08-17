@@ -3774,28 +3774,44 @@ def cmd_dashboard(a) -> int:
 
 
 def _write_review_html(ws: str, name: str, fragments, *, title: str) -> dict:
-    """Write one taskPlane-styled review artifact and return a compact ref."""
+    """Write durable HTML plus a widget fragment for inline delivery."""
     import dashboard
     import hashlib
     import review as review_runtime
 
     path = os.path.join(review_runtime._public_root(ws), name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    body = dashboard.standalone_document(list(fragments), title=title)
+    fragments = list(fragments)
+    body = dashboard.standalone_document(fragments, title=title)
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8", newline="") as stream:
         stream.write(body)
     os.replace(tmp, path)
+    fragment_path = os.path.splitext(path)[0] + ".fragment.html"
+    fragment_body = ('<div class="tp-inline-review">' +
+                     "\n".join(fragments) + '</div>')
+    fragment_tmp = f"{fragment_path}.tmp.{os.getpid()}"
+    with open(fragment_tmp, "w", encoding="utf-8", newline="") as stream:
+        stream.write(fragment_body)
+    os.replace(fragment_tmp, fragment_path)
     raw = body.encode("utf-8")
     relative = os.path.relpath(path, ws)
     display_path = (relative.replace(os.sep, "/")
                     if relative != ".." and not relative.startswith(
                         ".." + os.sep) else path)
+    fragment_relative = os.path.relpath(fragment_path, ws)
+    fragment_display = (fragment_relative.replace(os.sep, "/")
+                        if fragment_relative != ".." and not
+                        fragment_relative.startswith(".." + os.sep)
+                        else fragment_path)
+    fragment_raw = fragment_body.encode("utf-8")
     return {
         "path": display_path,
         "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
-        "delivery": "deliver this engine-authored file by reference; do not "
-                    "paste, redraw, or restyle its HTML",
+        "inline": {"path": fragment_display, "bytes": len(fragment_raw),
+                   "sha256": hashlib.sha256(fragment_raw).hexdigest()},
+        "delivery": "render inline from inline.path using the host widget; "
+                    "use path only as a fallback if inline rendering fails",
     }
 
 
@@ -3828,8 +3844,8 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
 
     This is a driver/presentation seam, not a second review derivation.  It
     reads the already sealed envelope/routing/revision and writes one human-
-    facing dashboard plus a durable standalone graph artifact for machines.
-    The graph is embedded in the dashboard; it is never a second user gate.
+    facing dashboard. The graph is embedded in that dashboard and is never
+    emitted as a second user-facing artifact or gate.
     """
     import dashboard
     import review as rv
@@ -3894,9 +3910,6 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
         "workflow_and_wave": _write_review_html(
             ws, "dashboard.html", [workflow, wave, opening],
             title="taskplane — governed review workflow"),
-        "dependency_graph": _write_review_html(
-            ws, "graph.html", [graph],
-            title="taskplane — dependency graph and blast radius"),
     }
     if final:
         findings_path = os.path.join(rv._public_root(ws), "findings.json")
@@ -4058,9 +4071,15 @@ def cmd_review(a) -> int:
             result = rv._manifest({**result, "visuals": visuals,
                                    "obligations": owed})
         except Exception as exc:
-            print(json.dumps({"schema": "taskplane.review-collect-manifest/v2",
-                              "status": "collect_failed",
-                              "reason": f"{exc.__class__.__name__}: {exc}"},
+            failure = {"schema": "taskplane.review-collect-manifest/v2",
+                       "status": "collect_failed",
+                       "reason": f"{exc.__class__.__name__}: {exc}"}
+            if isinstance(exc, rv.ReviewSlotValidationErrors):
+                failure["repairs"] = exc.repairs
+                failure["next_action"] = (
+                    "dispatch every listed repair to its original producer "
+                    "in one batch, then retry review collect once")
+            print(json.dumps(failure,
                              sort_keys=True, separators=(",", ":")))
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))

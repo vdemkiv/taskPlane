@@ -307,12 +307,13 @@ class TestStaticFallbackButtons(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         frag = dashboard.widget(_loop_ws(tmp))
         body = frag[frag.index("function tpFire"):]
-        guard = body.index("if(!window.sendPrompt){tpHint(b,m);return;}")
+        guard = body.index("if(!tpHasBridge()){tpHint(b,m);return;}")
         mutate = body.index("b.disabled=true")
         self.assertLess(guard, mutate,
                         "tpFire must bail to the hint BEFORE restyling the "
                         "button as '✓ approved'")
         self.assertIn("function tpHint", frag)
+        self.assertIn("window.openai.sendFollowUpMessage", frag)
         self.assertIn("reply in chat", frag)
 
     def test_onboarding_and_findings_buttons_use_tpsend_with_hint(self):

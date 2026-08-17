@@ -103,6 +103,10 @@ sign-off) stop for an explicit human yes; and no worker clears its contract
 after a submission, weakens tests, silently widens scope, or treats an
 incomplete action list as completion.
 
+At every human checkpoint, render the engine-provided dashboard fragment
+inline through the host widget so its approval controls remain interactive.
+Use the standalone HTML path only as a fallback when inline rendering fails.
+
 ## Dependency graph is part of Ready and Done
 
 Requirements record product dependencies with `--depends R-XXXX` and named

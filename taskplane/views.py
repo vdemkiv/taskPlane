@@ -292,6 +292,11 @@ def refresh_views(ws: str, out: dict) -> dict:
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(doc)
         os.replace(tmp, p)
+        fragment_path = os.path.splitext(p)[0] + ".fragment.html"
+        fragment_tmp = f"{fragment_path}.tmp.{os.getpid()}"
+        with open(fragment_tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(frag)
+        os.replace(fragment_tmp, fragment_path)
         step = _transition_step(out)
         human_gate = step in _HUMAN_DASHBOARD_STEPS
         logical_path = (p if _runtime_storage.load_workspace_locator(ws)
@@ -300,9 +305,10 @@ def refresh_views(ws: str, out: dict) -> dict:
             # logical pointer, not a path: os.path.join made
             # this '\\' on Windows and the goldens disagreed
             "path": logical_path,
+            "inline": {"path": fragment_path},
             "render": (
-                "human gate — deliver this engine-authored file by reference "
-                "before asking for approval or rejection"
+                "human gate — render inline.path with the host widget before "
+                "asking for approval or rejection; path is fallback only"
                 if human_gate else
                 "refreshed for this internal transition — keep using this "
                 "path as the progress reference; do not render or acknowledge "

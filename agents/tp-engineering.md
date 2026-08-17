@@ -63,8 +63,12 @@ radius evidence, the complete 26-lens dispositions, immutable scoped views,
 and exact leased slots. Never call `lens route`, `lens dispatch`, `graph
 impact`, runnability discovery, or `git diff` again. Dispatch only the returned
 deep slots plus the optional single light-sweep slot, then call `review collect`
-once. Deliver `visuals.workflow_and_wave`, `visuals.dependency_graph`, and the
-collected `visuals.final_dashboard` by reference; never reconstruct their HTML.
+once. Render `visuals.workflow_and_wave.inline.path` and the collected
+`visuals.final_dashboard.inline.path` directly in the host widget. The graph is
+already embedded; never generate a second graph or reconstruct their HTML.
+When collection returns `repairs`, send all listed schema corrections to their
+original producers in one batch, wait for the whole repair wave, then collect
+once more. These are metadata repairs, not new reviews.
 
 **Loop exit:** submit, do not clear. `loop submit` binds the report to the
 workspace and graph fingerprints and leaves the contract active until the

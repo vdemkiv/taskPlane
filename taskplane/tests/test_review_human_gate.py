@@ -6,6 +6,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import dashboard  # noqa: E402
+import review  # noqa: E402
 
 
 def test_review_gate_is_standalone_and_cannot_be_answered_by_preflight_state():
@@ -28,3 +29,11 @@ def test_review_gate_is_standalone_and_cannot_be_answered_by_preflight_state():
     assert "remote-source-approval" not in html
     assert "Approve this flow" not in html
 
+
+def test_execution_buttons_send_exact_receipt_prompt_through_codex_bridge():
+    preflight = review.review_execution_preflight(run_id="run-123")
+    html = dashboard.render_findings([], {"review_execution": preflight})
+    for choice in preflight["action"]["choices"]:
+        assert choice["prompt"] in html
+    assert "Select review mode" not in html
+    assert "window.openai.sendFollowUpMessage" in html

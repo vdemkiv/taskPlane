@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover - Windows host
 
 import storage as runtime_storage
 import taskplane_lite as tp
+import review_evidence as review_evidence_runtime
 
 # This value crosses host boundaries inside immutable briefs. Keep the
 # reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
@@ -58,14 +59,8 @@ KERNEL_POLICY_VERSION = "review-kernel/v3-immutable-diff-fallback"
 
 _REVIEW_EXECUTION_CHOICES = (
     {
-        "response": "static",
-        "label": "Static review only",
-        "requires": [],
-        "description": "Do not install dependencies, run code, or open a browser.",
-    },
-    {
         "response": "dynamic",
-        "label": "Add dynamic validation",
+        "label": "Run dynamic validation (recommended)",
         "requires": ["dependency-install", "process-execution"],
         "description": "Run approved build/test/runtime checks after host approval.",
     },
@@ -74,6 +69,12 @@ _REVIEW_EXECUTION_CHOICES = (
         "label": "Validate and render",
         "requires": ["dependency-install", "process-execution", "browser-access"],
         "description": "Run approved checks and render the changed functionality inline.",
+    },
+    {
+        "response": "static",
+        "label": "Static review only",
+        "requires": [],
+        "description": "Do not install dependencies, run code, or open a browser.",
     },
 )
 _REVIEW_USER_ACTION_RECEIPT_SCHEMA = \
@@ -86,6 +87,17 @@ _REVIEW_HOST_EXECUTION_AUTHORITY = object()
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
+
+
+class ReviewSlotValidationErrors(review_evidence_runtime.ProvenanceError):
+    """All producer-owned slot errors discovered in one validation pass."""
+
+    def __init__(self, repairs: list[dict]):
+        self.repairs = repairs
+        summary = "; ".join(
+            f"{row['slot_id']}: {row['reason']}" for row in repairs)
+        super().__init__(
+            f"{len(repairs)} slot result(s) require producer repair: {summary}")
 
 
 @dataclass(frozen=True)
@@ -489,6 +501,7 @@ def _validated_review_execution_receipt(
 def review_execution_preflight(*, selection: str | None = None,
                                decided_by: str | None = None,
                                run_id: str | None = None,
+                               runnability: dict | None = None,
                                approval_receipt: object | None = None) -> dict:
     """Return the review's single structured runtime/render choice.
 
@@ -497,9 +510,30 @@ def review_execution_preflight(*, selection: str | None = None,
     host approval boundaries and are recorded later as evidence.
     """
     selection = str(selection or "").strip().lower()
-    choices = [dict(row) for row in _REVIEW_EXECUTION_CHOICES]
+    runnability = runnability if isinstance(runnability, dict) else {}
+    commands = []
+    for check in runnability.get("checks") or []:
+        command = str(check.get("command") or "").strip() \
+            if isinstance(check, dict) else ""
+        if command and command not in commands:
+            commands.append(command)
+    needs_install = any(
+        token in str(check.get("detail") or "").lower()
+        for check in runnability.get("checks") or []
+        if isinstance(check, dict)
+        for token in ("node_modules", "dependencies are not installed",
+                      "dependency install"))
+    choices = [{**row, "requires": list(row["requires"])}
+               for row in _REVIEW_EXECUTION_CHOICES]
     action_id = _review_execution_action_id(run_id, "review-execution-mode")
     for choice in choices:
+        if choice["response"] != "static":
+            if commands:
+                choice["commands"] = commands
+                choice["description"] += " Commands: " + "; ".join(commands)
+            if needs_install:
+                choice["dependency_install_required"] = True
+                choice["description"] += " Dependencies must be installed first."
         choice["prompt"] = _review_action_prompt(
             run_id, action_id, choice["response"])
     if not selection:
@@ -512,8 +546,9 @@ def review_execution_preflight(*, selection: str | None = None,
             "functionality_render": {"status": "pending", "detail": ""},
             "action": {
                 "id": action_id,
-                "prompt": ("Choose static review, dynamic validation, or "
-                           "dynamic validation with an inline functionality render."),
+                "prompt": ("Choose dynamic validation (recommended), dynamic "
+                           "validation with an inline functionality render, or "
+                           "an explicitly static-only review."),
                 "choices": choices,
             },
         }
@@ -1405,7 +1440,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     # The execution/render choice belongs to a standalone human-requested
     # review. Loop-internal EM review already has its own governed human
     # gates and must not acquire a second, unrelated approval boundary.
-    execution_preflight = (review_execution_preflight(run_id=run_id)
+    execution_preflight = (review_execution_preflight(
+                               run_id=run_id, runnability=runnability)
                            if stage == "review" and task_type == "review"
                            else None)
     opening_status = "needs_user" if execution_preflight else "ready"
@@ -2851,12 +2887,31 @@ def _collect_review_transaction(
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
         refs, lens_results, result_validations = [], [], []
+        repairs = []
         try:
             for slot in state.get("slots") or []:
-                ref, rows, validation_ref = _read_slot_output(ws, store, slot)
+                try:
+                    ref, rows, validation_ref = _read_slot_output(
+                        ws, store, slot)
+                except evidence.ProvenanceError as exc:
+                    brief = store.read(slot["brief"])
+                    producer = brief.get("producer_contract") or {}
+                    role = brief.get("role") or {}
+                    repairs.append({
+                        "slot_id": str(slot.get("slot_id") or ""),
+                        "result_path": str(slot.get("result_path") or ""),
+                        "producer_task": str(
+                            role.get("task_name") or
+                            producer.get("task_slot") or
+                            producer.get("task") or ""),
+                        "reason": str(exc),
+                    })
+                    continue
                 refs.append(ref)
                 lens_results.extend(rows)
                 result_validations.append(validation_ref)
+            if repairs:
+                raise ReviewSlotValidationErrors(repairs)
         finally:
             # Once every producer has submitted its exact leased file, its
             # work is over even when schema validation finds a defect.  The

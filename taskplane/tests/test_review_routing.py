@@ -62,7 +62,11 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 "authored_by": "lens-slot",
                 "lens_results": [
                     {"lens": lens_id, "verdict": verdict,
-                     "blockers": 0 if verdict == "pass" else 1}
+                     "blockers": 0 if verdict == "pass" else 1,
+                     **({"checked_evidence": [{
+                         "file": "src/service.py", "line": 1,
+                         "claim": "reviewed the changed service behavior",
+                     }]} if verdict == "pass" else {})}
                     for lens_id in lease["lens_ids"]
                 ],
                 "findings": list(slot_findings or []),
@@ -264,14 +268,19 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         started = self._start()
         visuals, obligations = cli._review_visuals(
             self.ws, started, final=False)
-        self.assertEqual(set(visuals), {
-            "workflow_and_wave", "dependency_graph"})
+        self.assertEqual(set(visuals), {"workflow_and_wave"})
         self.assertTrue(all("ack" not in row for row in obligations))
         self.assertEqual(next(row for row in obligations
                               if row["kind"] == "render_dashboard")["path"],
                          ".em-review/wave-board.html")
         for row in visuals.values():
             self.assertTrue(os.path.isfile(os.path.join(self.ws, row["path"])))
+            inline = os.path.join(self.ws, row["inline"]["path"])
+            self.assertTrue(os.path.isfile(inline))
+            with open(inline, encoding="utf-8") as stream:
+                fragment = stream.read()
+            self.assertNotIn("<!doctype", fragment.lower())
+            self.assertIn('id="tp-dependency-flow"', fragment)
 
         self._write_slot_results()
         collected = review.collect_review(self.ws, publish=False)
@@ -732,6 +741,37 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             review.collect_review(self.ws, publish=False)
         self.assertIsNone(review_evidence._read_current(
             review_evidence.ArtifactStore(self.ws)))
+
+    def test_collection_reports_every_invalid_slot_in_one_repair_batch(self):
+        self._start()
+        self._write_slot_results(findings=lambda lease: [{
+            "lens": lease["lens_ids"][0], "kind": "defect",
+            "severity": "high", "class": "regression",
+            "file": "src/service.py", "line": 1,
+            "title": "unsafe behavior", "scenario": "production request",
+            "fix": "repair the invariant",
+            "claim": {
+                "trigger": "send a production request through the unsafe path",
+                "outcome": "the request violates the required safety invariant",
+                "repro": "run the failing request against the changed service"},
+        }])
+        state = review._load_state(self.ws)
+        with self.assertRaises(review.ReviewSlotValidationErrors) as caught:
+            review.collect_review(self.ws, publish=False)
+        repairs = caught.exception.repairs
+        self.assertEqual({row["slot_id"] for row in repairs},
+                         {row["slot_id"] for row in state["slots"]})
+        self.assertTrue(all(row["producer_task"] for row in repairs))
+        self.assertTrue(all("blocking finding contradicts" in row["reason"]
+                            for row in repairs))
+        output = __import__("io").StringIO()
+        with __import__("contextlib").redirect_stdout(output):
+            rc = cli.main(["review", "collect", "--workspace", self.ws,
+                           "--no-publish"])
+        payload = json.loads(output.getvalue())
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["repairs"], repairs)
+        self.assertIn("one batch", payload["next_action"])
 
     def test_review_blocking_policy_matches_the_canonical_class_rule(self):
         cases = [

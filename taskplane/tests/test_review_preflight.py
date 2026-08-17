@@ -163,11 +163,24 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects():
     assert row["static_only"] is True
     assert row["side_effects_started"] is False
     assert [choice["response"] for choice in row["action"]["choices"]] == [
-        "static", "dynamic", "dynamic-render"]
-    assert row["action"]["choices"][1]["requires"] == [
+        "dynamic", "dynamic-render", "static"]
+    assert row["action"]["choices"][0]["requires"] == [
         "dependency-install", "process-execution"]
-    assert row["action"]["choices"][2]["requires"] == [
+    assert row["action"]["choices"][1]["requires"] == [
         "dependency-install", "process-execution", "browser-access"]
+
+
+def test_review_preflight_surfaces_discovered_commands_and_install_need():
+    row = review.review_execution_preflight(runnability={"checks": [
+        {"command": "npm exec tsc -- --noEmit",
+         "detail": "dependencies are not installed (no node_modules)"},
+        {"command": "npm test", "detail": "missing node_modules"},
+    ]})
+    dynamic = row["action"]["choices"][0]
+    assert dynamic["commands"] == ["npm exec tsc -- --noEmit", "npm test"]
+    assert dynamic["dependency_install_required"] is True
+    assert "npm test" in dynamic["description"]
+    assert row["status"] == "needs_user"
 
 
 def test_review_preflight_records_declined_unavailable_and_executed_evidence():

@@ -120,25 +120,35 @@ before composing briefs, states the verdict in every brief, and records it in
 the canonical context for collect/headline projection. Do NOT let an agent re-probe, and do not re-probe
 yourself: on karpenter#9464 six lens agents each burned actions rediscovering
 that `go test` could not run — one fact about the environment, paid for six
-times. When the suite cannot run, the review is static by construction: say
-so at the top, and put "needs a dynamic check this environment cannot
-perform" in the finding's `scenario` rather than retrying the command.
+times. The probe is a capability fact, not permission to silently downgrade
+the review. Always present the engine's execution preflight, including its
+exact discovered commands. If the human selects dynamic validation, request
+the required host approvals, install missing dependencies when approved, and
+run each declared command once. Proceed static only after the human explicitly
+chooses static, or after selected dynamic work is recorded unavailable with
+host evidence.
 
 On hosts that do not register `agents/` as named definitions, dispatch a
 general subagent with the brief plus `agents/tp-lens.md` as its role
 instructions. The contract and output path remain identical.
 
 **SHOW PROGRESS WITHOUT RE-DERIVING.** Render or deliver the wave-board
-artifact at `review start.visuals.workflow_and_wave` and the exact blast-radius
-artifact at `review start.visuals.dependency_graph`; both are already rendered
-in taskPlane's canonical visual language from the sealed ReviewKernel state.
+artifact at `review start.visuals.workflow_and_wave` inline through the host
+widget. Its dashboard already embeds the exact blast-radius graph; do not
+create or deliver a second graph artifact.
 Dispatch the returned briefs, then run `$TP review collect` once. Collect
 validates each leased result, commits one canonical findings revision, and
 returns `visuals.final_dashboard`, whose structure is workflow/gates first,
 dependency graph second, then the complete findings and approval/rejection
-surface. Deliver those files by reference. Do not call `lens dispatch
+surface. Render `visuals.final_dashboard.inline.path` inline; use its durable
+file only if the host cannot render the widget. Do not call `lens dispatch
 --dashboard`, `graph html`, `findings --paged`, route/dispatch again, or author a
 replacement visualization during the normal ReviewKernel path.
+If collection returns a `repairs` array, dispatch every listed correction to
+its named original producer concurrently as one repair wave, wait for all of
+them, and retry `$TP review collect` once. Never retry collection after only a
+subset of the reported repairs, and never turn a schema repair into a fresh
+substantive review.
 If collection reports that producer provenance is unavailable, stop with that
 named host/provenance blocker. Do not inspect taskplane's implementation,
 reconstruct a receipt, hand-merge results, or dispatch replacement lenses.

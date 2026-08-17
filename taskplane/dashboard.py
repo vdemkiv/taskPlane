@@ -857,7 +857,13 @@ _SEND_JS = (
     'd.setAttribute("role","note");'
     'd.textContent="no chat bridge in this static view — reply in chat: "+m;'
     'b.parentNode.appendChild(d);}'
-    'function tpSend(b,m){if(window.sendPrompt){sendPrompt(m);}'
+    'function tpHasBridge(){return !!(window.openai&&'
+    'typeof window.openai.sendFollowUpMessage==="function")||'
+    'typeof window.sendPrompt==="function";}'
+    'function tpSend(b,m){if(window.openai&&'
+    'typeof window.openai.sendFollowUpMessage==="function")'
+    '{window.openai.sendFollowUpMessage({prompt:m});}'
+    'else if(typeof window.sendPrompt==="function"){window.sendPrompt(m);}'
     'else{tpHint(b,m);}}')
 
 # Render-reliability contract (v1.5.3): a dashboard's data is too valuable to
@@ -1694,11 +1700,13 @@ def _review_execution_panel(meta):
         actions = ('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
                    + "".join(
                        f'<button type="button" onclick="tpSend(this,&#39;'
-                       f'{_jsattr("Select review mode " + str(choice.get("response") or ""))}'
+                       f'{_jsattr(str(choice.get("prompt") or ""))}'
                        f'&#39;)" style="border:1px solid var(--border-strong);'
                        f'background:none;border-radius:6px;padding:7px 11px;'
                        f'cursor:pointer;color:var(--text-primary)">'
                        f'{_esc(choice.get("label") or choice.get("response"))}</button>'
+                       f'<div style="font-size:11px;color:var(--text-secondary);'
+                       f'flex-basis:100%">{_esc(choice.get("description") or "")}</div>'
                        for choice in action.get("choices") or []) + '</div>')
     return (
         '<section class="tp-sec" id="tp-review-execution">'
@@ -3844,7 +3852,7 @@ def _widget_dor(full_trace, step):
 _WIDGET_JS = (
     '<script>' + _SEND_JS +
     'function tpFire(b,m,l){'
-    'if(!window.sendPrompt){tpHint(b,m);return;}'
+    'if(!tpHasBridge()){tpHint(b,m);return;}'
     'b.disabled=true;'
     'b.style.background="var(--surface-0)";'
     'b.style.color="var(--text-muted)";b.style.border="none";'
@@ -3852,7 +3860,7 @@ _WIDGET_JS = (
     'if(l)b.innerHTML="<i class=\'ti ti-check\'></i> "+l;'
     'Array.from(b.parentNode.querySelectorAll("button")).forEach('
     'function(x){if(x!==b){x.disabled=true;x.style.opacity="0.45";'
-    'x.style.cursor="default";}});sendPrompt(m);}'
+    'x.style.cursor="default";}});tpSend(b,m);}'
     'function tpTab(w){if(w==="map")tpView("detail");'
     '["loop","map"].forEach('
     'function(k){var p=document.getElementById("tp-panel-"+k),'
