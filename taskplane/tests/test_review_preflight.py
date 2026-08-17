@@ -476,6 +476,44 @@ def test_post_acquire_failure_releases_reservation(tmp_path):
     assert review._load_state(ws, run_id)["status"] == "staged"
 
 
+@pytest.mark.parametrize("fault_point", [
+    "post_guards", "post_results", "post_revision", "post_routing",
+    "post_manifest", "post_prepare", "post_projection", "post_pointer",
+    "post_aliases", "post_publish", "post_commit",
+])
+def test_collection_owner_transaction_recovers_each_post_acquire_failure(
+        fault_point, monkeypatch):
+    ws, opened = _start_review_without_execution_choice()
+    ready = review.configure_review_execution(
+        ws, selection="static", run_id=opened["run_id"],
+        approval_receipt=_host_receipt(
+            run_id=opened["run_id"],
+            action_id=opened["review_execution"]["action"]["id"],
+            response="static"))
+    state = review._load_state(ws, ready["run_id"])
+    review._save_state(ws, dict(state, slots=[], dispatch_slots=[]))
+    original = review._collection_fault
+    fired = []
+
+    def inject(point):
+        if point == fault_point and not fired:
+            fired.append(point)
+            raise RuntimeError("injected collection fault: " + point)
+
+    monkeypatch.setattr(review, "_collection_fault", inject)
+    with pytest.raises(RuntimeError, match=fault_point):
+        review.collect_review(ws, publish=False, run_id=ready["run_id"])
+    assert fired == [fault_point]
+    assert not os.path.exists(review._collection_lock_path(ws))
+
+    monkeypatch.setattr(review, "_collection_fault", original)
+    completed = review.collect_review(
+        ws, publish=False, run_id=ready["run_id"])
+    assert completed["canonical_revision"] == 1
+    assert review._load_state(ws, ready["run_id"])["status"] == "complete"
+    assert not os.path.exists(review._collection_lock_path(ws))
+
+
 def test_user_consent_cannot_claim_dynamic_execution():
     pending = review.review_execution_preflight(run_id="run-1")
     selected = review.review_execution_preflight(

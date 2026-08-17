@@ -2580,6 +2580,11 @@ def _recover_collection_failure(ws: str, lease: dict) -> None:
     _release_collection_reservation(ws, lease)
 
 
+def _collection_fault(point: str) -> None:
+    """Test seam for bounded transaction fault injection."""
+    del point
+
+
 def _atomic_write_bytes(path: str, data: bytes) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
@@ -2713,6 +2718,7 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
                 store, revision, kind="gate", body={"ready": True}),
         ]
         _preflight_projections(store, revision, projections)
+        _collection_fault("post_projection")
         transaction = _snapshot_publication(ws, state)
         counters = dict(state.get("counters") or {})
         counters["artifact_render_bytes"] = (
@@ -2734,12 +2740,14 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
         report_path = os.path.join(_public_root(ws), "report.md")
         try:
             evidence._advance_current(store, identity, expected_current=prior)
+            _collection_fault("post_pointer")
             state = dict(state, status="committed")
             _save_state(ws, state)
             tp.atomic_write_json(
                 findings_path, state["publication_body"], sort_keys=True)
             _atomic_write_bytes(
                 report_path, state["report_markdown"].encode("utf-8"))
+            _collection_fault("post_aliases")
             published = None
             if state.get("publish_requested"):
                 import views
@@ -2747,6 +2755,7 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
                 if not published:
                     raise ReviewKernelError(
                         "review artifact publication failed")
+            _collection_fault("post_publish")
             manifest = dict(state["manifest"])
             manifest["published"] = (
                 {"root": tp.to_posix(published["root"]),
@@ -2756,6 +2765,7 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
             state = dict(state, status="complete", manifest=manifest,
                          counters=manifest["counters"])
             _save_state(ws, state)
+            _collection_fault("post_commit")
         except BaseException:
             _restore_publication(ws, state, store, evidence)
             state = dict(state, status="staged")
@@ -2771,9 +2781,8 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
 
 def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
                    publish: bool = True, run_id: str | None = None) -> dict:
-    """Validate slot-authored results and publish one canonical revision."""
+    """Run collection under one exact-owner transaction boundary."""
     import review_evidence as evidence
-
     selected = _load_state(ws, run_id)
     with tp.file_lock(_collection_lock_path(ws)):
         state = _load_state(ws, selected["run_id"])
@@ -2788,15 +2797,31 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
                     "completed review no longer matches canonical current revision")
             return state["manifest"]
         reservation = _acquire_collection_reservation(ws, state["run_id"])
+    try:
+        manifest = _collect_review_transaction(
+            ws, result_refs=result_refs, publish=publish,
+            run_id=state["run_id"])
+    except BaseException:
+        with tp.file_lock(_collection_lock_path(ws)):
+            _recover_collection_failure(ws, reservation)
+        raise
+    with tp.file_lock(_collection_lock_path(ws)):
+        _release_collection_reservation(ws, reservation)
+    return manifest
+
+
+def _collect_review_transaction(
+        ws: str, *, result_refs: Iterable[dict] | None,
+        publish: bool, run_id: str) -> dict:
+    """Collect under a reservation owned and finalized by ``collect_review``."""
+    import review_evidence as evidence
+    with tp.file_lock(_collection_lock_path(ws)):
+        state = _load_state(ws, run_id)
+        store = evidence.ArtifactStore(ws)
         if state.get("status") in {
                 "prepared", "staged", "publishing", "committed"}:
-            try:
-                manifest = _resume_collection(ws, state, store)
-            except BaseException:
-                _recover_collection_failure(ws, reservation)
-                raise
-            _release_collection_reservation(ws, reservation)
-            return manifest
+            return _resume_collection(ws, state, store)
+        _collection_fault("post_guards")
         if state.get("status") != "ready":
             raise ReviewKernelError(
                 f"review cannot collect from {state.get('status')}")
@@ -2810,9 +2835,6 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
                 refs.append(ref)
                 lens_results.extend(rows)
                 result_validations.append(validation_ref)
-        except BaseException:
-            _recover_collection_failure(ws, reservation)
-            raise
         finally:
             # Once every producer has submitted its exact leased file, its
             # work is over even when schema validation finds a defect.  The
@@ -2838,8 +2860,10 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
                 "canonical_revision": int(
                     (prior or {}).get("canonical_revision", 0)) + 1,
             }
+        _collection_fault("post_results")
         revision, prior = _revision_record(
             store, state["envelope"], collected)
+        _collection_fault("post_revision")
         try:
             import yield_meter
             yield_meter.record_notes(
@@ -2848,6 +2872,7 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         except Exception:
             pass
         decision = store.read(state["routing_decision"])["dispositions"]
+        _collection_fault("post_routing")
         identity = evidence.revision_identity(revision)
         portable_validations = [
             _portable_ref(ref) for ref in result_validations]
@@ -2877,6 +2902,7 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             "report": None, "projections": [],
             "published": None, "counters": counters,
         })
+        _collection_fault("post_manifest")
         prepared = dict(
             state, status="prepared", revision=revision,
             projections=[], manifest=manifest,
@@ -2886,13 +2912,8 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.
         _save_state(ws, prepared)
-        try:
-            manifest = _resume_collection(ws, prepared, store)
-        except BaseException:
-            _recover_collection_failure(ws, reservation)
-            raise
-        _release_collection_reservation(ws, reservation)
-        return manifest
+        _collection_fault("post_prepare")
+        return _resume_collection(ws, prepared, store)
 
 
 def signoff_review(ws: str, *, decision: str, by: str, note: str = "",
