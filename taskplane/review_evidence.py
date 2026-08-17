@@ -334,10 +334,10 @@ def _impact_view(envelope_ref: dict, impact: dict) -> dict:
     return summary
 
 
-def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
-                       slot_id: str, lens_ids, relevant_files=None,
-                       evidence=None) -> dict:
-    """Derive a bounded deterministic view; never re-derive shared facts."""
+def _create_scoped_view_v2(store: ArtifactStore, envelope_ref: dict, *,
+                           slot_id: str, lens_ids, relevant_files=None,
+                           evidence=None) -> dict:
+    """Derive the fitting legacy view while active v2 leases drain."""
     if not _SLOT.fullmatch(str(slot_id or "")):
         raise ProvenanceError("invalid slot id")
     envelope = _load_complete_envelope(store, envelope_ref)
@@ -398,6 +398,183 @@ def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
         raise ArtifactIntegrityError(
             f"scoped view exceeds {MAX_SCOPED_VIEW_BYTES} byte bound")
     return store.put("view", payload, fingerprint=view_fp)
+
+
+def _evidence_reference(store: ArtifactStore, envelope: dict, *, section: str,
+                        value, canonical_revision: int) -> dict:
+    """Store one target/revision-bound governed copy of an overflow section."""
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", section):
+        raise ProvenanceError("invalid evidence section")
+    record = {
+        "schema": "taskplane.review-evidence-section/v2",
+        "section": section,
+        "target_fingerprint": envelope["target_fingerprint"],
+        "context_fingerprint": envelope["context_fingerprint"],
+        "canonical_revision": int(canonical_revision),
+        "content_fingerprint": content_fingerprint(value),
+        "content": copy.deepcopy(value),
+    }
+    artifact = store.put("review-section", record)
+    return {
+        "schema": "taskplane.review-evidence-reference/v2",
+        "section": section,
+        "target_fingerprint": envelope["target_fingerprint"],
+        "context_fingerprint": envelope["context_fingerprint"],
+        "canonical_revision": int(canonical_revision),
+        "content_fingerprint": record["content_fingerprint"],
+        "digest": artifact["digest"],
+        "bytes": artifact["bytes"],
+        "fingerprint": artifact["fingerprint"],
+        "artifact": artifact,
+        "transport": "artifact-reference",
+    }
+
+
+def resolve_evidence_reference(store: ArtifactStore, reference: dict, *,
+                               target_fingerprint: str,
+                               canonical_revision: int,
+                               allowed_sections: Iterable[str]):
+    """Resolve a v2 overflow reference, rejecting every identity mismatch."""
+    if not isinstance(reference, dict) or reference.get("schema") != \
+            "taskplane.review-evidence-reference/v2":
+        raise ProvenanceError("invalid review evidence reference")
+    section = str(reference.get("section") or "")
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", section):
+        raise ProvenanceError("invalid evidence section")
+    allowed = {str(value) for value in allowed_sections}
+    if section not in allowed:
+        raise ProvenanceError("evidence section is unauthorized")
+    if reference.get("target_fingerprint") != target_fingerprint:
+        raise ProvenanceError("evidence reference belongs to another target")
+    if int(reference.get("canonical_revision", -1)) != int(canonical_revision):
+        raise ProvenanceError("evidence reference canonical revision is stale")
+    artifact = reference.get("artifact")
+    if not isinstance(artifact, dict):
+        raise ProvenanceError("evidence reference artifact is missing")
+    for key in ("fingerprint", "digest", "bytes"):
+        if reference.get(key) != artifact.get(key):
+            raise ProvenanceError(f"evidence reference {key} mismatch")
+    record = store.read(artifact)
+    expected = {
+        "schema": "taskplane.review-evidence-section/v2",
+        "section": section,
+        "target_fingerprint": target_fingerprint,
+        "context_fingerprint": reference.get("context_fingerprint"),
+        "canonical_revision": int(canonical_revision),
+        "content_fingerprint": reference.get("content_fingerprint"),
+    }
+    for key, value in expected.items():
+        if record.get(key) != value:
+            raise ProvenanceError(f"evidence record {key} mismatch")
+    content = record.get("content")
+    if content_fingerprint(content) != record.get("content_fingerprint"):
+        raise ProvenanceError("evidence content fingerprint mismatch")
+    return content
+
+
+def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
+                           slot_id: str, lens_ids, relevant_files,
+                           canonical_revision: int,
+                           routing_fingerprint: str,
+                           producer: str) -> dict:
+    """Project a deterministic bounded identity spine plus verified overflow."""
+    if not _SLOT.fullmatch(str(slot_id or "")):
+        raise ProvenanceError("invalid slot id")
+    if not str(routing_fingerprint or "").strip():
+        raise ProvenanceError("routing fingerprint is required")
+    if not str(producer or "").strip():
+        raise ProvenanceError("producer identity is required")
+    revision = int(canonical_revision)
+    if revision < 1:
+        raise ProvenanceError("canonical revision must be positive")
+    envelope = _load_complete_envelope(store, envelope_ref)
+    graph_quality = envelope.get("graph_quality") or {}
+    if graph_quality.get("status") == "impact_incomplete" and not (
+            graph_quality.get("review_fallback") or {}).get("mode") == \
+            "immutable_diff":
+        raise ProvenanceError("impact_incomplete creates zero scoped views")
+
+    sections = ("diff", "impact", "graph_quality", "runnability",
+                "requirements", "contracts", "change")
+    manifest = []
+    for section in sections:
+        value = envelope.get(section)
+        reference = _evidence_reference(
+            store, envelope, section=section, value=value,
+            canonical_revision=revision)
+        manifest.append({
+            "section": section,
+            "reason": "canonical content available by verified reference",
+            "content_bytes": len(canonical_bytes(value)),
+            "content_fingerprint": content_fingerprint(value),
+            "reference": reference,
+        })
+
+    wanted = _strings(relevant_files)
+    changed = set(_strings((envelope.get("diff") or {}).get("files")))
+    relevant = [path for path in wanted if path in changed]
+    base = {
+        "schema": "taskplane.scoped-review-view/v3",
+        "target_fingerprint": envelope["target_fingerprint"],
+        "context_fingerprint": envelope["context_fingerprint"],
+        "envelope_fingerprint": envelope_ref["fingerprint"],
+        "canonical_revision": revision,
+        "routing_fingerprint": str(routing_fingerprint).strip(),
+        "slot_id": slot_id,
+        "lens_ids": _strings(lens_ids),
+        "producer": str(producer).strip(),
+        "lease_identity": {
+            "slot_id": slot_id,
+            "canonical_revision": revision,
+            "producer": str(producer).strip(),
+        },
+        "relevance": {
+            "files": relevant,
+            "file_count": len(relevant),
+            "changed_file_count": len(changed),
+        },
+        "reference_manifest": manifest,
+        "omissions": [{
+            "section": row["section"],
+            "reason": "referenced outside the bounded producer view",
+            "bytes": row["content_bytes"],
+            "digest": row["reference"]["digest"],
+        } for row in manifest],
+        "forbidden_derivations": ["git diff", "graph impact", "graph scan",
+                                  "requirement lookup", "runnability probe"],
+    }
+    integrity = content_fingerprint(base)
+    payload = dict(base, integrity={"algorithm": "sha256",
+                                    "fingerprint": integrity},
+                   view_fingerprint=integrity)
+    size = len(canonical_bytes(payload))
+    if size > MAX_SCOPED_VIEW_BYTES:
+        raise ArtifactIntegrityError(
+            "mandatory scoped view spine exceeds "
+            f"{MAX_SCOPED_VIEW_BYTES} byte bound ({size} bytes)")
+    return store.put("view", payload, fingerprint=integrity)
+
+
+def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
+                       slot_id: str, lens_ids, relevant_files=None,
+                       evidence=None, canonical_revision: int | None = None,
+                       routing_fingerprint: str | None = None,
+                       producer: str | None = None) -> dict:
+    """Derive a bounded view; v3 is selected by its explicit identity spine."""
+    v3_values = (canonical_revision, routing_fingerprint, producer)
+    if any(value is not None for value in v3_values):
+        if not all(value is not None for value in v3_values):
+            raise ProvenanceError("v3 scoped view identity is incomplete")
+        if evidence:
+            raise ProvenanceError("v3 evidence must use governed references")
+        return _create_scoped_view_v3(
+            store, envelope_ref, slot_id=slot_id, lens_ids=lens_ids,
+            relevant_files=relevant_files,
+            canonical_revision=canonical_revision,
+            routing_fingerprint=routing_fingerprint, producer=producer)
+    return _create_scoped_view_v2(
+        store, envelope_ref, slot_id=slot_id, lens_ids=lens_ids,
+        relevant_files=relevant_files, evidence=evidence)
 
 
 def next_revision(store: ArtifactStore) -> int:
