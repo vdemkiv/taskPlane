@@ -1,3 +1,4 @@
+import re
 import threading
 
 import pytest
@@ -27,8 +28,8 @@ def test_hosts_expose_the_same_opaque_bound_lifecycle(adapter):
     handle = command_adapter.launch(["python", "-m", "build"], cwd="/repo")
 
     assert launches == [(["python", "-m", "build"], "/repo")]
-    assert len(handle) == 32
-    assert "41" not in handle and "host-private" not in handle
+    assert re.fullmatch(r"[0-9a-f]{32}", handle)
+    assert handle not in {"41", "host-private"}
     snapshot = command_adapter.snapshot(handle)
     assert snapshot["state"] == "running"
     assert "process" not in str(snapshot)
