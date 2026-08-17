@@ -1376,7 +1376,8 @@ def _verify_v3_view(store, envelope_ref: dict, view_ref: dict) -> dict:
            for name in inline_names):
         raise evidence.ProvenanceError("inline section is undeclared")
     for section, value in inline.items():
-        if value != envelope.get(section):
+        content = evidence.unframe_review_evidence(section, value)
+        if content != envelope.get(section):
             raise evidence.ProvenanceError(
                 f"inline section {section} differs from canonical envelope")
     manifest = view.get("reference_manifest")
@@ -1405,10 +1406,12 @@ def _verify_v3_view(store, envelope_ref: dict, view_ref: dict) -> dict:
             target_fingerprint=view["target_fingerprint"],
             canonical_revision=view["canonical_revision"],
             allowed_sections=sections)
+        raw_content = evidence.unframe_review_evidence(
+            str(row.get("section") or ""), content)
         if reference.get("section") != row.get("section") or \
-                evidence.content_fingerprint(content) != row.get(
+                evidence.content_fingerprint(raw_content) != row.get(
                     "content_fingerprint") or \
-                len(evidence.canonical_bytes(content)) != row.get(
+                len(evidence.canonical_bytes(raw_content)) != row.get(
                     "content_bytes"):
             raise evidence.ProvenanceError("reference manifest content mismatch")
     omissions = view.get("omissions")

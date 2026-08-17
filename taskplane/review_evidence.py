@@ -423,7 +423,10 @@ def _evidence_reference(store: ArtifactStore, envelope: dict, *, section: str,
         "context_fingerprint": envelope["context_fingerprint"],
         "canonical_revision": int(canonical_revision),
         "content_fingerprint": content_fingerprint(value),
-        "content": copy.deepcopy(value),
+        # The immutable resolved path carries the same structural data-only
+        # frame as inline producer evidence.  A consumer never receives raw
+        # PR-controlled content at the control-text level.
+        "content": frame_review_evidence(section, value),
     }
     artifact = store.put("review-section", record)
     return {
@@ -508,29 +511,65 @@ _INJECTION_PATTERNS = {
     "role_override": re.compile(
         r"\b(?:you are now|act as|new role)\b.{0,96}"
         r"\b(?:system|developer|administrator|reviewer)\b"),
+    "boundary_marker_injection": re.compile(
+        r"taskplane[_\s-]*untrusted[_\s-]*review[_\s-]*data", re.I),
 }
+
+
+def _injection_flags(section: str, value) -> list[dict]:
+    """Detect attacks without ever reflecting attacker-controlled strings."""
+    categories = set()
+    match_count = 0
+    for raw in _text_values(value):
+        normalized = re.sub(r"\s+", " ", raw.lower().translate(_LEET))
+        for category, pattern in _INJECTION_PATTERNS.items():
+            count = len(pattern.findall(normalized))
+            if count:
+                categories.add(category)
+                match_count += count
+    if not categories:
+        return []
+    return [{
+        "section": section,
+        "categories": sorted(categories),
+        "match_count": min(match_count, 999),
+        "action": "obstructed-as-instruction; preserved-as-review-data",
+    }]
+
+
+def frame_review_evidence(section: str, value):
+    """Structurally isolate PR-owned evidence from producer control text."""
+    if section not in UNTRUSTED_REVIEW_SECTIONS:
+        return copy.deepcopy(value)
+    return {
+        "schema": "taskplane.untrusted-review-data/v1",
+        "section": section,
+        "interpretation": "data-only",
+        "begin": UNTRUSTED_DATA_BEGIN,
+        "content": copy.deepcopy(value),
+        "end": UNTRUSTED_DATA_END,
+        "flags": _injection_flags(section, value),
+    }
+
+
+def unframe_review_evidence(section: str, value):
+    """Validate a producer frame and return its canonical evidence content."""
+    if section not in UNTRUSTED_REVIEW_SECTIONS:
+        return value
+    if not isinstance(value, dict):
+        raise ProvenanceError("untrusted review evidence is not framed")
+    content = value.get("content")
+    expected = frame_review_evidence(section, content)
+    if value != expected:
+        raise ProvenanceError("untrusted review evidence frame mismatch")
+    return content
 
 
 def untrusted_evidence_boundary(envelope: dict) -> dict:
     """Return bounded, source-free injection flags for PR-controlled data."""
     flags = []
     for section in UNTRUSTED_REVIEW_SECTIONS:
-        categories = set()
-        match_count = 0
-        for raw in _text_values(envelope.get(section)):
-            normalized = re.sub(r"\s+", " ", raw.lower().translate(_LEET))
-            for category, pattern in _INJECTION_PATTERNS.items():
-                count = len(pattern.findall(normalized))
-                if count:
-                    categories.add(category)
-                    match_count += count
-        if categories:
-            flags.append({
-                "section": section,
-                "categories": sorted(categories),
-                "match_count": min(match_count, 999),
-                "action": "obstructed-as-instruction; preserved-as-review-data",
-            })
+        flags.extend(_injection_flags(section, envelope.get(section)))
     return {
         "schema": "taskplane.untrusted-review-data-boundary/v1",
         "sections": list(UNTRUSTED_REVIEW_SECTIONS),
@@ -578,7 +617,8 @@ def resolve_evidence_reference(store: ArtifactStore, reference: dict, *,
         if record.get(key) != value:
             raise ProvenanceError(f"evidence record {key} mismatch")
     content = record.get("content")
-    if content_fingerprint(content) != record.get("content_fingerprint"):
+    raw_content = unframe_review_evidence(section, content)
+    if content_fingerprint(raw_content) != record.get("content_fingerprint"):
         raise ProvenanceError("evidence content fingerprint mismatch")
     return content
 
@@ -683,7 +723,8 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
         row = next(item for item in manifest if item["section"] == section)
         candidate_manifest = [item for item in manifest if item is not row]
         candidate_inline = dict(inline_sections)
-        candidate_inline[section] = copy.deepcopy(envelope.get(section))
+        candidate_inline[section] = frame_review_evidence(
+            section, envelope.get(section))
         if len(canonical_bytes(shaped_payload(
                 candidate_inline, candidate_manifest))) <= MAX_SCOPED_VIEW_BYTES:
             inline_sections = candidate_inline
