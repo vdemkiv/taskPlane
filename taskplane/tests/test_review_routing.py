@@ -978,6 +978,81 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(outcomes["winner"]["status"], "complete")
         self.assertIsInstance(outcomes["loser"], review_evidence.RevisionError)
 
+    def test_completed_run_releases_dead_exact_reservation_before_next_revision(self):
+        first = self._start()
+        state = review._load_state(self.ws, first["run_id"])
+        review._save_state(
+            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        first_out = review.collect_review(
+            self.ws, publish=False, run_id=first["run_id"])
+        reservation_path = review._collection_lock_path(self.ws)
+        dead_lease = {
+            "schema": "taskplane.review-publication-reservation/v1",
+            "run_id": first["run_id"], "owner_pid": 99999999,
+            "owner_id": "dead-after-durable-complete", "acquired_at": 1,
+        }
+        review.tp.atomic_write_json(
+            reservation_path, dead_lease, sort_keys=True)
+
+        with mock.patch.object(review.tp, "_pid_alive", return_value=False):
+            self.assertEqual(review.collect_review(
+                self.ws, publish=False, run_id=first["run_id"]), first_out)
+        self.assertFalse(os.path.exists(reservation_path))
+
+        second = self._start(
+            target={"fingerprint": "target-2", "head": "abc123"})
+        state = review._load_state(self.ws, second["run_id"])
+        review._save_state(
+            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        self.assertEqual(review.collect_review(
+            self.ws, publish=False, run_id=second["run_id"]
+        )["canonical_revision"], 2)
+
+    def test_completed_run_rejects_live_different_owner_without_releasing_it(self):
+        opened = self._start()
+        state = review._load_state(self.ws, opened["run_id"])
+        review._save_state(
+            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        review.collect_review(
+            self.ws, publish=False, run_id=opened["run_id"])
+        reservation_path = review._collection_lock_path(self.ws)
+        live_lease = {
+            "schema": "taskplane.review-publication-reservation/v1",
+            "run_id": opened["run_id"], "owner_pid": 1234,
+            "owner_id": "live-different-owner", "acquired_at": 1,
+        }
+        review.tp.atomic_write_json(
+            reservation_path, live_lease, sort_keys=True)
+
+        with mock.patch.object(review.tp, "_pid_alive", return_value=True):
+            with self.assertRaisesRegex(
+                    review_evidence.RevisionError, "live owner"):
+                review.collect_review(
+                    self.ws, publish=False, run_id=opened["run_id"])
+        self.assertEqual(review.tp.load_json(
+            reservation_path, what="test reservation"), live_lease)
+
+    def test_completed_run_leaves_another_runs_reservation_untouched(self):
+        opened = self._start()
+        state = review._load_state(self.ws, opened["run_id"])
+        review._save_state(
+            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        manifest = review.collect_review(
+            self.ws, publish=False, run_id=opened["run_id"])
+        reservation_path = review._collection_lock_path(self.ws)
+        other_lease = {
+            "schema": "taskplane.review-publication-reservation/v1",
+            "run_id": "f" * 32, "owner_pid": 99999999,
+            "owner_id": "another-runs-owner", "acquired_at": 1,
+        }
+        review.tp.atomic_write_json(
+            reservation_path, other_lease, sort_keys=True)
+
+        self.assertEqual(review.collect_review(
+            self.ws, publish=False, run_id=opened["run_id"]), manifest)
+        self.assertEqual(review.tp.load_json(
+            reservation_path, what="test reservation"), other_lease)
+
     def test_two_active_runs_are_addressable_and_never_overwrite(self):
         first = self._start()
         second = self._start(

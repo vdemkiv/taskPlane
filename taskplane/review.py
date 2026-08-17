@@ -2570,6 +2570,27 @@ def _release_collection_reservation(ws: str, lease: dict) -> None:
         pass
 
 
+def _reconcile_completed_collection_reservation(ws: str, state: dict) -> None:
+    """Release only this completed run's abandoned exact-owner lease."""
+    import review_evidence as evidence
+    lease = tp.load_json(
+        _collection_lock_path(ws), default=None,
+        what="review publication reservation")
+    if not isinstance(lease, dict) or \
+            lease.get("run_id") != state.get("run_id"):
+        return
+    owner_pid = lease.get("owner_pid")
+    owner_id = lease.get("owner_id")
+    owner_valid = isinstance(owner_pid, int) and owner_pid > 0 and \
+        isinstance(owner_id, str) and bool(owner_id)
+    if not owner_valid:
+        return
+    if owner_pid != os.getpid() and tp._pid_alive(owner_pid):
+        raise evidence.RevisionError(
+            "another live owner holds the publication reservation")
+    _release_collection_reservation(ws, lease)
+
+
 def _recover_collection_failure(ws: str, lease: dict) -> None:
     """Roll back recoverable publication state and relinquish exact ownership."""
     state = _load_state(ws, lease.get("run_id"))
@@ -2790,11 +2811,12 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
         execution = state.get("review_execution") or {}
         _assert_review_execution_complete(execution)
         if state.get("status") == "complete":
-            _release_slot_contracts(ws, state)
             if evidence._read_current(store) != evidence.revision_identity(
                     state.get("revision") or {}):
                 raise evidence.RevisionError(
                     "completed review no longer matches canonical current revision")
+            _reconcile_completed_collection_reservation(ws, state)
+            _release_slot_contracts(ws, state)
             return state["manifest"]
         reservation = _acquire_collection_reservation(ws, state["run_id"])
     try:
