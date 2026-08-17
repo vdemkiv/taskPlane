@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -43,9 +44,47 @@ def test_attention_and_terminal_states_are_delivered_once(runtime, state):
     runtime.transition(handle, state)
     first = runtime.pending(handle, consumer="model")
     second = runtime.pending(handle, consumer="model")
-    assert first == second
+    assert second is None
     runtime.ack(handle, consumer="model", delivery_key=first["delivery_key"])
     assert runtime.pending(handle, consumer="model") is None
+
+
+def test_delivery_claim_is_atomic_for_concurrent_consumers(runtime):
+    handle = runtime.create(command_fingerprint="race", binding={"pid": 12})
+    runtime.transition(handle, "succeeded")
+
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        claims = list(workers.map(
+            lambda _: runtime.pending(handle, consumer="model"), range(8)))
+
+    delivered = [claim for claim in claims if claim is not None]
+    assert len(delivered) == 1
+    lease = runtime.snapshot(handle)["delivery_leases"]["model"]
+    assert lease["delivery_key"] == delivered[0]["delivery_key"]
+
+
+def test_expired_durable_claim_replays_after_crash_then_acks(tmp_path):
+    now = [1000.0]
+    root = str(tmp_path / "commands")
+    first_runtime = CommandRuntime(
+        root, workspace="repo-a", authorization="actor-a",
+        clock=lambda: now[0], delivery_lease_seconds=30)
+    handle = first_runtime.create(command_fingerprint="crash",
+                                  binding={"pid": 13})
+    first_runtime.transition(handle, "failed")
+    first = first_runtime.pending(handle, consumer="model")
+
+    resumed = CommandRuntime(
+        root, workspace="repo-a", authorization="actor-a",
+        clock=lambda: now[0], delivery_lease_seconds=30)
+    assert resumed.pending(handle, consumer="model") is None
+    now[0] = 1030.0
+    replay = resumed.pending(handle, consumer="model")
+    assert replay["delivery_key"] == first["delivery_key"]
+    resumed.ack(handle, consumer="model",
+                delivery_key=replay["delivery_key"])
+    assert resumed.pending(handle, consumer="model") is None
+    assert resumed.snapshot(handle)["metrics"]["model_delivery_count"] == 1
 
 
 def test_large_output_is_redacted_stored_once_and_summary_is_bounded(runtime):
@@ -61,6 +100,28 @@ def test_large_output_is_redacted_stored_once_and_summary_is_bounded(runtime):
     assert secret not in artifact
     assert "[REDACTED]" in artifact
     assert len(list((runtime.root / handle / "artifacts").iterdir())) == 1
+
+
+@pytest.mark.parametrize("secret", [
+    "ghp_" + "A" * 36,
+    "github_pat_" + "B" * 40,
+    "npm_" + "C" * 36,
+    "xoxb-" + "D" * 36,
+    "AKIA" + "E" * 16,
+    "eyJ" + "a" * 12 + "." + "b" * 12 + "." + "c" * 12,
+    "Bearer " + "z" * 32,
+])
+def test_common_credentials_are_redacted_from_summary_and_artifact(
+        runtime, secret):
+    handle = runtime.create(command_fingerprint="credentials",
+                            binding={"pid": 14})
+    runtime.append_output(handle, "credential=" + secret)
+    runtime.transition(handle, "failed", reason="failed with " + secret)
+    event = runtime.pending(handle, consumer="model")
+    assert secret not in event["output_delta"]
+    assert secret not in event["reason"]
+    assert secret not in runtime.read_artifact(handle)
+    assert "[REDACTED]" in event["output_delta"]
 
 
 def test_wait_interrupt_preserves_command_and_resume_does_not_relaunch(runtime):

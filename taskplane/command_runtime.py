@@ -13,11 +13,14 @@ from pathlib import Path
 import re
 import secrets
 import time
+from contextlib import contextmanager
+import fcntl
 from typing import Callable, Mapping
 
 
 SCHEMA = "taskplane.command-state/v1"
 MAX_EVENT_OUTPUT = 16 * 1024
+DEFAULT_DELIVERY_LEASE_SECONDS = 30.0
 TERMINAL_STATES = frozenset({
     "succeeded", "failed", "timed_out", "cancelled",
 })
@@ -29,6 +32,14 @@ VALID_STATES = MEANINGFUL_STATES | {"created", "running"}
 
 _SECRET_PATTERNS = (
     re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,255}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
+    re.compile(r"\bnpm_[A-Za-z0-9]{20,255}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,255}\b"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\."
+               r"[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}"),
     re.compile(
         r"(?i)\b(authorization|token|password|secret|api[_-]?key)"
         r"\s*[:=]\s*([^\s,;]+)"
@@ -104,12 +115,16 @@ class CommandRuntime:
     """Filesystem-backed authority for durable command lifecycle records."""
 
     def __init__(self, root: str, *, workspace: str, authorization: str,
-                 clock: Callable[[], float] | None = None):
+                 clock: Callable[[], float] | None = None,
+                 delivery_lease_seconds: float =
+                 DEFAULT_DELIVERY_LEASE_SECONDS):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._workspace = _fingerprint(str(workspace))
         self._authorization = _fingerprint(str(authorization))
         self._clock = clock or time.time
+        self._delivery_lease_seconds = max(0.001,
+                                           float(delivery_lease_seconds))
 
     def _dir(self, handle: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{32}", str(handle)):
@@ -118,6 +133,18 @@ class CommandRuntime:
 
     def _path(self, handle: str) -> Path:
         return self._dir(handle) / "snapshot.json"
+
+    @contextmanager
+    def _delivery_lock(self, handle: str):
+        """Serialize durable delivery claims across processes and threads."""
+        directory = self._dir(handle)
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "delivery.lock").open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def _load(self, handle: str) -> dict:
         try:
@@ -181,6 +208,7 @@ class CommandRuntime:
             "reason": None,
             "events": [],
             "deliveries": {},
+            "delivery_leases": {},
             "artifact": None,
             "output_summary": "",
             "output_digest": None,
@@ -220,10 +248,13 @@ class CommandRuntime:
 
         revision = int(snapshot["revision"]) + 1
         now = float(self._clock())
+        safe_reason, reason_redactions = _redact(str(reason)) \
+            if reason is not None else (None, 0)
         snapshot.update({
             "state": state, "revision": revision, "updated_at": now,
-            "exit_code": exit_code, "reason": reason,
+            "exit_code": exit_code, "reason": safe_reason,
         })
+        snapshot["metrics"]["output_redactions"] += reason_redactions
         event = self._build_event(snapshot)
         if state in MEANINGFUL_STATES:
             snapshot["events"].append(event)
@@ -303,28 +334,54 @@ class CommandRuntime:
         return path.read_text(encoding="utf-8")
 
     def pending(self, handle: str, *, consumer: str) -> dict | None:
-        snapshot = self._load(handle)
-        acknowledged = int((snapshot.get("deliveries") or {}).get(
-            str(consumer), 0))
-        for event in snapshot.get("events") or []:
-            if int(event["revision"]) > acknowledged:
+        consumer = str(consumer)
+        with self._delivery_lock(handle):
+            snapshot = self._load(handle)
+            acknowledged = int((snapshot.get("deliveries") or {}).get(
+                consumer, 0))
+            leases = snapshot.setdefault("delivery_leases", {})
+            now = float(self._clock())
+            for event in snapshot.get("events") or []:
+                revision = int(event["revision"])
+                if revision <= acknowledged:
+                    continue
+                lease = leases.get(consumer)
+                if (lease and int(lease.get("revision", -1)) == revision and
+                        float(lease.get("expires_at", 0)) > now):
+                    return None
+                # Claim is persisted before the event can become model-visible.
+                # An unacknowledged claim is replayable only after deterministic
+                # expiry, allowing recovery from a crash-before-ack boundary.
+                leases[consumer] = {
+                    "revision": revision,
+                    "delivery_key": event["delivery_key"],
+                    "claimed_at": now,
+                    "expires_at": now + self._delivery_lease_seconds,
+                }
+                self._save(handle, snapshot)
                 return event
-        return None
+            return None
 
     def ack(self, handle: str, *, consumer: str, delivery_key: str) -> dict:
-        snapshot = self._load(handle)
-        event = next((row for row in snapshot.get("events") or []
-                      if row.get("delivery_key") == delivery_key), None)
-        if event is None:
-            raise CommandRuntimeError("delivery key is unknown")
-        previous = int(snapshot["deliveries"].get(str(consumer), 0))
-        revision = int(event["revision"])
-        if revision > previous:
-            snapshot["deliveries"][str(consumer)] = revision
-            if consumer == "model":
-                snapshot["metrics"]["model_delivery_count"] += 1
+        consumer = str(consumer)
+        with self._delivery_lock(handle):
+            snapshot = self._load(handle)
+            event = next((row for row in snapshot.get("events") or []
+                          if row.get("delivery_key") == delivery_key), None)
+            if event is None:
+                raise CommandRuntimeError("delivery key is unknown")
+            lease = (snapshot.get("delivery_leases") or {}).get(consumer)
+            if (lease is None or lease.get("delivery_key") != delivery_key):
+                raise CommandRuntimeError("delivery is not claimed by consumer")
+            previous = int(snapshot["deliveries"].get(consumer, 0))
+            revision = int(event["revision"])
+            if revision > previous:
+                snapshot["deliveries"][consumer] = revision
+                if consumer == "model":
+                    snapshot["metrics"]["model_delivery_count"] += 1
+            snapshot["delivery_leases"].pop(consumer, None)
             self._save(handle, snapshot)
-        return event
+            return event
 
     def wait_next(self, handle: str, *, consumer: str,
                   interrupted: Callable[[], bool] | None = None,
