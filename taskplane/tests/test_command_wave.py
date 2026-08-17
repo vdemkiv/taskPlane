@@ -1,4 +1,7 @@
 import json
+import base64
+import itertools
+import subprocess
 from pathlib import Path
 
 import evidence
@@ -6,24 +9,123 @@ import loop
 import runtime_eval
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_workflow(name, args, order=None):
+    """Run the production JS workflow with deterministic host doubles."""
+    source = base64.b64encode(
+        (ROOT / "workflows" / f"{name}-wave.js").read_bytes()).decode()
+    script = r"""
+const mod = await import('data:text/javascript;base64,' + process.argv[1]);
+const args = JSON.parse(process.argv[2]);
+const order = JSON.parse(process.argv[3]);
+const name = process.argv[4];
+const calls = [];
+const agent = async (_prompt, options) => {
+  calls.push(options.label);
+  const member = options.label.split(':').slice(1).join(':');
+  return name === 'execute'
+    ? {task: member, outcome: 'pass', note: 'ok'}
+    : {schema: 'taskplane.evaluator-output/v1', task: member, verdict: 'pass'};
+};
+const parallel = async (runs) => {
+  const sequence = order.length ? order : runs.map((_run, index) => index);
+  const values = [];
+  for (const index of sequence) values.push(await runs[index]());
+  return values;
+};
+const result = await mod.default({args, agent, parallel, phase: () => {}});
+process.stdout.write(JSON.stringify({result, calls}));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, source,
+         json.dumps(args), json.dumps(order or []), name],
+        check=True, capture_output=True, text=True)
+    return json.loads(completed.stdout)
+
+
 def test_wave_suppresses_child_success_and_emits_one_aggregate():
-    wave = loop.command_wave_create("wave-1", ["a", "b", "c"])
-    assert loop.command_wave_update(wave, "a", "succeeded") == []
-    assert loop.command_wave_update(wave, "b", "succeeded") == []
-    events = loop.command_wave_update(wave, "c", "succeeded")
-    assert [event["state"] for event in events] == ["wave_completed"]
-    assert loop.command_wave_update(wave, "c", "succeeded") == []
-    assert wave["ordinary_completion_deliveries"] == 1
+    for ordering in itertools.permutations(["a", "b", "c"]):
+        wave = loop.command_wave_create("wave-1", ["a", "b", "c"])
+        events = []
+        for member in ordering:
+            events += loop.command_wave_update(wave, member, "succeeded")
+        assert [event["state"] for event in events] == ["wave_completed"]
+        assert wave["ordinary_completion_deliveries"] == 1
 
 
-def test_attention_remains_visible_after_terminal_completion():
-    wave = loop.command_wave_create("wave-1", ["a"])
-    assert [e["state"] for e in loop.command_wave_update(
-        wave, "a", "succeeded")] == ["wave_completed"]
-    events = loop.command_wave_update(wave, "a", "approval_required")
-    assert [event["state"] for event in events] == ["approval_required"]
-    assert wave["members"]["a"] == "succeeded"
-    assert loop.command_wave_update(wave, "a", "approval_required") == []
+def test_attention_remains_visible_before_and_after_terminal_completion():
+    for attention in ("approval_required", "input_required"):
+        for ordering in (("succeeded", attention),
+                         (attention, "succeeded")):
+            wave = loop.command_wave_create("wave-1", ["a"])
+            events = []
+            for state in ordering:
+                events += loop.command_wave_update(wave, "a", state)
+            assert sum(e["state"] == attention for e in events) == 1
+            assert sum(e["state"] == "wave_completed" for e in events) == 1
+            assert wave["members"]["a"] == "succeeded"
+            assert loop.command_wave_update(wave, "a", attention) == []
+
+
+def test_production_workflows_aggregate_every_completion_order():
+    evaluator_schema = {
+        "$id": "taskplane.evaluator-output/v1",
+        "additionalProperties": False,
+    }
+    for name in ("execute", "evaluate"):
+        briefs = [{"id": member, "prompt": member,
+                   "resume_identity": f"handle-{member}",
+                   "output_schema": evaluator_schema}
+                  for member in ("a", "b", "c")]
+        for ordering in itertools.permutations(range(3)):
+            run = _run_workflow(name, {"briefs": briefs}, ordering)
+            wave = run["result"]["command_wave"]
+            events = run["result"]["command_events"]
+            assert sum(e["state"] == "wave_completed" for e in events) == 1
+            assert wave["ordinary_completion_deliveries"] == 1
+            assert wave["handles"] == {
+                "a": "handle-a", "b": "handle-b", "c": "handle-c"}
+
+
+def test_production_workflows_resume_without_relaunch_and_surface_attention():
+    evaluator_schema = {
+        "$id": "taskplane.evaluator-output/v1",
+        "additionalProperties": False,
+    }
+    for name in ("execute", "evaluate"):
+        briefs = [{"id": member, "prompt": member,
+                   "resume_identity": f"handle-{member}",
+                   "output_schema": evaluator_schema}
+                  for member in ("a", "b")]
+        prior_receipt = ({"task": "a", "outcome": "pass", "note": "ok"}
+                         if name == "execute" else
+                         {"schema": "taskplane.evaluator-output/v1",
+                          "task": "a", "verdict": "pass"})
+        wave = loop.command_wave_create(
+            f"{name}-wave", ["a", "b"],
+            handles={"a": "handle-a", "b": "handle-b"})
+        loop.command_wave_update(wave, "a", "succeeded")
+        wave["receipts"] = {"a": prior_receipt}
+        run = _run_workflow(name, {"briefs": briefs, "command_wave": wave})
+        assert run["calls"] == [f"{'task' if name == 'execute' else 'eval'}:b"]
+        assert run["result"]["command_wave"]["launches"] == 2
+        assert len(run["result"]["receipts"]) == 2
+
+        for attention, states in (
+                ("approval_required", ["approval_required", "succeeded"]),
+                ("input_required", ["succeeded", "input_required"])):
+            events = [{"member": "a", "state": state} for state in states]
+            single = [dict(briefs[0])]
+            visible = _run_workflow(
+                name, {"briefs": single, "command_events": events})
+            emitted = [event["state"]
+                       for event in visible["result"]["command_events"]]
+            assert emitted.count(attention) == 1
+            assert emitted.count("wave_completed") == 1
+            assert visible["result"]["command_wave"]["members"]["a"] == \
+                "succeeded"
 
 
 def test_resume_reuses_bound_handles_and_preserves_interruption():

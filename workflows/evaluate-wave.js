@@ -24,17 +24,84 @@ export const meta = {
 };
 
 const COMMAND_WAVE_SCHEMA = 'taskplane.command-wave/v1';
+const TERMINAL = new Set(['succeeded', 'failed', 'timed_out', 'cancelled']);
+const ATTENTION = new Set([
+  'approval_required', 'input_required', 'failed', 'timed_out', 'cancelled',
+]);
+
+function prepareCommandWave(args, briefs, stage) {
+  const members = briefs.map((brief) => String(brief.id));
+  if (!members.length || new Set(members).size !== members.length) {
+    throw new Error(stage + ' wave membership must be non-empty and unique');
+  }
+  const supplied = args.command_wave;
+  const wave = supplied || {
+    schema: COMMAND_WAVE_SCHEMA,
+    wave_id: String(args.wave_id || stage + ':' + members.join(',')),
+    sealed_members: members,
+    members: Object.fromEntries(members.map((member) => [member, 'running'])),
+    handles: {}, launches: 0, interrupted: false,
+    delivered_attention: [], ordinary_completion_deliveries: 0, receipts: {},
+  };
+  if (wave.schema !== COMMAND_WAVE_SCHEMA ||
+      JSON.stringify(wave.sealed_members) !== JSON.stringify(members)) {
+    throw new Error(stage + ' wave cannot resume with changed membership');
+  }
+  wave.handles ||= {};
+  wave.receipts ||= {};
+  wave.delivered_attention ||= [];
+  for (const brief of briefs) {
+    const member = String(brief.id);
+    if (!wave.handles[member]) {
+      wave.handles[member] = String(
+        brief.resume_identity || stage + ':' + wave.wave_id + ':' + member);
+      wave.launches += 1;
+    }
+  }
+  return wave;
+}
+
+function updateCommandWave(wave, member, state) {
+  member = String(member);
+  state = String(state);
+  if (!(member in wave.members)) throw new Error('unknown command-wave member');
+  const events = [];
+  const attentionKey = member + ':' + state;
+  if (ATTENTION.has(state) && !wave.delivered_attention.includes(attentionKey)) {
+    wave.delivered_attention.push(attentionKey);
+    events.push({ schema: 'taskplane.command-wave-event/v1',
+      wave_id: wave.wave_id, member, state, attention: true });
+  }
+  if (TERMINAL.has(state)) wave.members[member] = state;
+  else if (!TERMINAL.has(wave.members[member])) wave.members[member] = state;
+  if (!wave.ordinary_completion_deliveries &&
+      Object.values(wave.members).every((value) => TERMINAL.has(value))) {
+    wave.ordinary_completion_deliveries = 1;
+    events.push({ schema: 'taskplane.command-wave-event/v1',
+      wave_id: wave.wave_id, state: 'wave_completed', attention: false,
+      members: { ...wave.members } });
+  }
+  return events;
+}
+
+function receiptState(receipt) {
+  const explicit = receipt && (receipt.command_state || receipt.state);
+  return TERMINAL.has(explicit) || ATTENTION.has(explicit) ? explicit : 'succeeded';
+}
 
 export default async function evaluateWave({ args, agent, parallel, phase }) {
   phase('Evaluate');
   const briefs = args.briefs || [];
-  const commandWave = args.command_wave;
-  if (commandWave && commandWave.schema !== COMMAND_WAVE_SCHEMA) {
-    throw new Error('evaluate wave has an unsupported command-wave contract');
+  const commandWave = prepareCommandWave(args, briefs, 'evaluate');
+  const events = [];
+  for (const event of args.command_events || []) {
+    events.push(...updateCommandWave(commandWave, event.member, event.state));
   }
   // One governed read-only evaluator per built-task brief, fanned out
   // with a barrier — evaluations are independent by construction.
-  const runs = briefs.map((b) => () => {
+  const pending = briefs.filter((b) =>
+    !TERMINAL.has(commandWave.members[String(b.id)]));
+  const runs = pending.map((b) => async () => {
     const output_contract = b.output_contract || {};
     const output_schema = b.output_schema || output_contract.output_schema;
     if (!output_schema || typeof output_schema !== 'object' ||
@@ -44,14 +111,18 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
     }
     const resume_identity = b.resume_identity;
     const max_attempts = b.max_attempts || output_contract.max_attempts || 2;
-    return agent(b.prompt, {
-      label: 'eval:' + b.id,
-      phase: 'Evaluate',
-      schema: output_schema,
-      outputContract: output_contract,
-      resumeKey: resume_identity,
-      maxAttempts: max_attempts,
-    });
+    try {
+      const receipt = await agent(b.prompt, {
+        label: 'eval:' + b.id, phase: 'Evaluate', schema: output_schema,
+        outputContract: output_contract,
+        resumeKey: commandWave.handles[String(b.id)] || resume_identity,
+        maxAttempts: max_attempts,
+      });
+      return { member: String(b.id), receipt, state: receiptState(receipt) };
+    } catch (error) {
+      return { member: String(b.id), receipt: null, state: 'failed',
+        error: String(error && error.message || error) };
+    }
   });
   const results = await parallel(runs);
 
@@ -60,5 +131,11 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
   // read-only contracts; the return value hands the driver the
   // schema-validated verdicts only — the harness still owns every state
   // transition.
-  return { receipts: results.filter(Boolean), command_wave: commandWave || null };
+  for (const result of results.filter(Boolean)) {
+    if (result.receipt) commandWave.receipts[result.member] = result.receipt;
+    events.push(...updateCommandWave(commandWave, result.member, result.state));
+  }
+  return { receipts: commandWave.sealed_members
+      .map((member) => commandWave.receipts[member]).filter(Boolean),
+    command_wave: commandWave, command_events: events };
 }
