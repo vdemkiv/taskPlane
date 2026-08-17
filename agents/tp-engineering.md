@@ -63,7 +63,9 @@ radius evidence, the complete 26-lens dispositions, immutable scoped views,
 and exact leased slots. Never call `lens route`, `lens dispatch`, `graph
 impact`, runnability discovery, or `git diff` again. Dispatch only the returned
 deep slots plus the optional single light-sweep slot, then call `review collect`
-once. Render `visuals.workflow_and_wave.inline.path` and the collected
+once. If collection returns `needs_deep_followup`, dispatch all returned deep
+slots as one bounded second wave against the same sealed context, then collect
+once more. Render `visuals.workflow_and_wave.inline.path` and the collected
 `visuals.final_dashboard.inline.path` directly in the host widget. The graph is
 already embedded; never generate a second graph or reconstruct their HTML.
 When collection returns `repairs`, send all listed schema corrections to their

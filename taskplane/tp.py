@@ -3868,10 +3868,14 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
     lanes = []
     for slot in state.get("slots") or []:
         lids = list(slot.get("lens_ids") or [])
+        result_path = str(slot.get("result_path") or "")
+        result_exists = bool(result_path) and os.path.isfile(
+            result_path if os.path.isabs(result_path)
+            else os.path.join(ws, result_path))
         lanes.append({
             "id": str(slot.get("slot_id") or ",".join(lids)),
             "name": ", ".join(lids),
-            "status": "done" if final else "running",
+            "status": "done" if final or result_exists else "running",
             "findings": (sum(by_lens.get(lid, 0) for lid in lids)
                          if final else None),
             "slot_id": slot.get("slot_id"),
@@ -4067,7 +4071,8 @@ def cmd_review(a) -> int:
             result = rv.collect_review(
                 ws, publish=not bool(getattr(a, "no_publish", False)),
                 run_id=getattr(a, "run_id", None))
-            visuals, owed = _review_visuals(ws, result, final=True)
+            visuals, owed = _review_visuals(
+                ws, result, final=result.get("status") == "complete")
             result = rv._manifest({**result, "visuals": visuals,
                                    "obligations": owed})
         except Exception as exc:

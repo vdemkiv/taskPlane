@@ -1398,6 +1398,8 @@ def _lens_coverage_v2(routed):
                 na += 1
         row = {"id": lz["id"], "name": lz.get("name", lz["id"]),
                "tier": tier, "score": score, "reason": reason}
+        if isinstance(entry, dict) and entry.get("promotion"):
+            row["promotion"] = entry["promotion"]
         # R-0003 (contract:lens-brief, ADDITIVE): the component(s) that
         # contributed a routed lens — the key exists only when the routing
         # ran the component path, so legacy maps render byte-identically.
@@ -1461,6 +1463,10 @@ def _render_lens_coverage_v2(routed):
                 # and inline line exist only when the routing was
                 # component-assembled; legacy renders byte-identically.
                 tip += ' · via ' + ", ".join(l["components"])
+            if l.get("promotion"):
+                trigger_count = len(l["promotion"].get("triggers") or [])
+                tip += (" · promoted from light after "
+                        f"{trigger_count} high-severity finding(s)")
             chips.append(
                 f'<span title="{_attr(tip)}" style="display:inline-flex;'
                 f'align-items:center;gap:5px;font-size:11.5px;'
@@ -1485,6 +1491,14 @@ def _render_lens_coverage_v2(routed):
                     f'color:var(--text-muted);padding:1px 0">◆ '
                     f'{_esc(l["name"])} — component: '
                     f'{_attr(", ".join(l["components"]))}</div>')
+            if l.get("promotion"):
+                triggers = l["promotion"].get("triggers") or []
+                titles = "; ".join(str(row.get("title") or "untitled")
+                                   for row in triggers)
+                reasons.append(
+                    f'<div style="font-size:11px;color:var(--text-danger);'
+                    f'padding:1px 0">↗ {_esc(l["name"])} — promoted '
+                    f'light → deep: {_attr(titles)}</div>')
         rows.append(f'<div style="margin-top:8px"><div style="{_MICRO};'
                     f'margin-bottom:3px">{_esc(grp["group"])}</div>'
                     + "".join(chips) + "".join(reasons) + "</div>")

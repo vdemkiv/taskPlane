@@ -20,8 +20,9 @@ Neither changes what a review DECIDES. The briefs carry the same contract,
 the same lens, the same read-only harness; they just stop restating a
 document that is already on disk next to them.
 """
-import hashlib
+import copy
 import glob
+import hashlib
 import json
 import os
 import re
@@ -55,7 +56,8 @@ RESULT_AUTHOR = "lens-slot"
 # Review runs are cached by semantic policy as well as target/context. A
 # marketplace update that changes the graph fallback must never resurrect a
 # zero-dispatch run produced by the prior policy.
-KERNEL_POLICY_VERSION = "review-kernel/v3-immutable-diff-fallback"
+KERNEL_POLICY_VERSION = "review-kernel/v4-adaptive-deep-wave"
+ADAPTIVE_PROMOTION_SEVERITIES = frozenset({"high"})
 
 _REVIEW_EXECUTION_CHOICES = (
     {
@@ -1211,6 +1213,76 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     if expanded != set(deep) | set(light) or len(entries) > len(deep) + 1:
         raise ReviewKernelError("dispatch slots do not equal deep plus light mapping")
     return internal, manifest
+
+
+def _promoted_slot_plan(store, state: dict, promotions: dict[str, list[dict]]) \
+        -> tuple[list, list]:
+    """Allocate one bounded deep slot for every light lens that found high."""
+    promoted = sorted(promotions)
+    routing = copy.deepcopy(state.get("routing") or {})
+    for row in routing.get("lenses") or []:
+        lens_id = str(row.get("id") or "")
+        if lens_id in promotions:
+            row["tier"] = row["verdict"] = "deep"
+            row.setdefault("evidence", []).append(
+                "adaptive promotion: light sweep reported a high-severity finding")
+        else:
+            row["tier"] = row["verdict"] = "n/a"
+            row["negative_evidence"] = ["not part of adaptive promotion wave"]
+    original = store.read(state["routing_decision"])["dispositions"]
+    decision = {}
+    for lens_id in promoted:
+        entry = copy.deepcopy(original[lens_id])
+        entry["verdict"] = "deep"
+        entry["initial_verdict"] = "light"
+        entry["promotion"] = {
+            "source_slot": "light-sweep",
+            "reason": "high-severity finding discovered during light sweep",
+            "triggers": copy.deepcopy(promotions[lens_id]),
+        }
+        entry.setdefault("evidence", []).append(
+            "adaptive promotion: light sweep reported a high-severity finding")
+        decision[lens_id] = entry
+    envelope = store.read(state["envelope"])
+    settled_ref = ((envelope.get("change") or {}).get("settled_findings"))
+    runnability = envelope.get("runnability") or {}
+    return _slot_plan(
+        store, state["envelope"], routing, decision,
+        base=str((routing.get("context") or {}).get("base") or "HEAD"),
+        runnability=runnability, stage=state.get("stage") or "review",
+        settled_ref=settled_ref)
+
+
+def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
+        -> dict[str, list[dict]]:
+    """Return light lenses whose validated sweep output contains high risk."""
+    import loop
+
+    if state.get("adaptive_wave"):
+        return {}
+    decision = store.read(state["routing_decision"])["dispositions"]
+    promotions: dict[str, list[dict]] = {}
+    for ref in refs:
+        result = store.read(ref)
+        if result.get("slot_id") != "light-sweep":
+            continue
+        for finding in result.get("findings") or []:
+            lens_id = str(finding.get("lens") or "")
+            if (decision.get(lens_id) or {}).get("verdict") != "light":
+                continue
+            if loop.normalize_severity(finding.get("severity")) not in \
+                    ADAPTIVE_PROMOTION_SEVERITIES:
+                continue
+            triggers = promotions.setdefault(lens_id, [])
+            if len(triggers) >= 5:
+                continue
+            triggers.append({
+                "severity": str(finding.get("severity") or ""),
+                "title": str(finding.get("title") or "")[:200],
+                "file": str(finding.get("file") or "")[:300],
+                "line": int(finding.get("line") or 1),
+            })
+    return promotions
 
 
 def _prepare_slot_result_dirs(ws: str, slots: Iterable[dict]) -> None:
@@ -2923,6 +2995,62 @@ def _collect_review_transaction(
                     path if os.path.isabs(path) else os.path.join(ws, path))
                     for path in paths):
                 _release_slot_contracts(ws, state)
+        promotions = _light_sweep_promotions(store, state, refs)
+        if promotions:
+            promoted_internal, promoted_manifest = _promoted_slot_plan(
+                store, state, promotions)
+            for slot in promoted_internal:
+                slot["run_id"] = state["run_id"]
+            _prepare_slot_result_dirs(ws, promoted_internal)
+            effective = copy.deepcopy(
+                store.read(state["routing_decision"])["dispositions"])
+            for lens_id, triggers in promotions.items():
+                effective[lens_id]["initial_verdict"] = "light"
+                effective[lens_id]["verdict"] = "deep"
+                effective[lens_id]["promotion"] = {
+                    "source_slot": "light-sweep",
+                    "reason": "high-severity finding discovered during light sweep",
+                    "triggers": copy.deepcopy(triggers),
+                }
+                effective[lens_id].setdefault("evidence", []).append(
+                    "adaptive promotion: light sweep reported a high-severity finding")
+            effective_ref = store.put("routing-decision", {
+                "schema": "taskplane.routing-decision/v2",
+                "stage": state.get("stage"), "routing_mode": "adaptive",
+                "dispositions": effective,
+            })
+            counters = dict(state.get("counters") or {})
+            counters["dispatched_agent_count"] = int(
+                counters.get("dispatched_agent_count", 0)) + len(promoted_manifest)
+            counters["view_count"] = int(counters.get("view_count", 0)) + len(
+                promoted_manifest)
+            counters["prompt_view_bytes"] = int(
+                counters.get("prompt_view_bytes", 0)) + sum(
+                    row["view"]["bytes"] for row in promoted_manifest)
+            manifest = _manifest({
+                "schema": "taskplane.review-collect-manifest/v2",
+                "status": "needs_deep_followup", "run_id": state["run_id"],
+                "target_fingerprint": store.read(state["envelope"])[
+                    "target_fingerprint"],
+                "context_fingerprint": state["envelope"]["fingerprint"],
+                "routing_decision": _portable_ref(effective_ref),
+                "promotions": copy.deepcopy(promotions),
+                "slots": promoted_manifest, "counters": counters,
+                "next_action": "dispatch every promoted deep slot in one wave, "
+                               "then retry review collect once",
+            })
+            updated = dict(
+                state, status="ready",
+                slots=list(state.get("slots") or []) + promoted_internal,
+                dispatch_slots=promoted_manifest,
+                routing_decision=effective_ref,
+                adaptive_wave={"status": "dispatched", "wave": 2,
+                               "promotions": copy.deepcopy(promotions)},
+                manifest=manifest, counters=counters)
+            _save_state(ws, updated)
+            tp.trace(ws, "review_adaptive_deep_wave", run_id=state["run_id"],
+                     promoted_lenses=sorted(promotions), wave=2)
+            return manifest
         leases = [row["lease"] for row in state.get("slots") or []]
         if leases:
             collected = evidence.collect_slot_results(store, leases, refs)

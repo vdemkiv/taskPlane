@@ -16,7 +16,8 @@ grader never graded their own definition.
 
 `flow.json` is the approved Review graph: **pin target → derive one diff and
 graph impact → graph-quality gate → 26 dispositions → deep slots plus one
-light sweep → canonical collect → workflow/graph/findings dashboard → human
+light sweep → adaptive deep wave when sweep finds high risk → canonical
+collect → workflow/graph/findings dashboard → human
 approve or request changes**. Collection is not completion; the final human
 decision is mandatory for loop and standalone reviews.
 
@@ -111,8 +112,9 @@ in one host-native parallel wave. Each agent activates that exact task slot,
 reads only the referenced scoped view, and writes only the declared result
 bytes to `result_path`; it must not create the removed per-lens findings
 layout. None can touch code (the harness
-holds — read-only, metered). A 7-lens review runs in one wall-clock pass
-instead of seven.
+holds — read-only, metered). Most reviews finish in one wall-clock pass. A
+light lens that reports a normalized high/major/blocker finding is promoted
+to one dedicated deep slot in a single bounded second wave.
 
 **Runnability is probed ONCE, before briefs.** `review start` answers
 "can `go test` / `npm test` / `pytest` even start in this checkout"
@@ -136,8 +138,11 @@ instructions. The contract and output path remain identical.
 artifact at `review start.visuals.workflow_and_wave` inline through the host
 widget. Its dashboard already embeds the exact blast-radius graph; do not
 create or deliver a second graph artifact.
-Dispatch the returned briefs, then run `$TP review collect` once. Collect
-validates each leased result, commits one canonical findings revision, and
+Dispatch the returned briefs, then run `$TP review collect`. Collect validates
+each leased result. If it returns `status: needs_deep_followup`, dispatch every
+returned promoted slot concurrently; they reuse the original sealed context
+and must not rerun routing, diff, graph, or runnability discovery. Then retry
+`$TP review collect` once. Otherwise collection commits one canonical findings revision and
 returns `visuals.final_dashboard`, whose structure is workflow/gates first,
 dependency graph second, then the complete findings and approval/rejection
 surface. Render `visuals.final_dashboard.inline.path` inline; use its durable
@@ -149,6 +154,10 @@ its named original producer concurrently as one repair wave, wait for all of
 them, and retry `$TP review collect` once. Never retry collection after only a
 subset of the reported repairs, and never turn a schema repair into a fresh
 substantive review.
+Promotion is substantive review, not schema repair: it occurs only when the
+light sweep itself reports normalized high risk, is bounded to one additional
+wave, and is shown as `light → deep` with its triggering findings in final lens
+coverage.
 If collection reports that producer provenance is unavailable, stop with that
 named host/provenance blocker. Do not inspect taskplane's implementation,
 reconstruct a receipt, hand-merge results, or dispatch replacement lenses.

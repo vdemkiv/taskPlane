@@ -96,6 +96,63 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as stream:
                 stream.write(content)
 
+    def _write_pending_slots(self, *, findings_by_lens=None, run_id=None):
+        """Author only newly dispatched slots, deriving summaries per lens."""
+        state = review._load_state(self.ws, run_id)
+        store = review_evidence.ArtifactStore(self.ws)
+        findings_by_lens = findings_by_lens or {}
+        for index, slot in enumerate(state["slots"]):
+            path = os.path.join(self.ws, slot["result_path"])
+            if os.path.isfile(path):
+                continue
+            lease = store.read(slot["lease"])
+            brief = store.read(slot["brief"])
+            slot_findings = [row for lens_id in lease["lens_ids"]
+                             for row in findings_by_lens.get(lens_id, [])]
+            lens_results = []
+            for lens_id in lease["lens_ids"]:
+                blockers = sum(
+                    1 for row in slot_findings
+                    if row["lens"] == lens_id and
+                    loop.finding_blocks(row))
+                lens_results.append({
+                    "lens": lens_id,
+                    "verdict": "fail" if blockers else "pass",
+                    "blockers": blockers,
+                    **({"checked_evidence": [{
+                        "file": "src/service.py", "line": 1,
+                        "claim": "reviewed the changed service behavior",
+                    }]} if not blockers else {}),
+                })
+            row = {
+                **lease, "schema": "taskplane.lens-slot-output/v2",
+                "authored_by": "lens-slot", "lens_results": lens_results,
+                "findings": slot_findings,
+            }
+            if brief.get("language_references"):
+                row["references_applied"] = list(
+                    brief["language_references"])
+            content = json.dumps(row, sort_keys=True, separators=(",", ":"))
+            event = {"session_id": f"adaptive-session-{state['run_id']}",
+                     "agent_id": f"adaptive-child-{index}",
+                     "tool_name": "Write",
+                     "tool_input": {"file_path": slot["result_path"],
+                                    "content": content}}
+            contract = {
+                "task": brief["producer_contract"]["task"],
+                "task_id": f"adaptive-contract-{index}", "read_only": True,
+                "write_allow": [slot["result_path"]],
+            }
+            review.register_slot_producer(
+                self.ws, event=event, contract=contract,
+                task_slot=brief["producer_contract"]["task_slot"])
+            review.record_slot_write_observation(
+                self.ws, event=event, contract=contract,
+                task_slot=brief["producer_contract"]["task_slot"])
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write(content)
+
     def test_start_maps_all_lenses_but_dispatches_only_deep_plus_one_sweep(self):
         def route_with_one_light_lens():
             routing = lens.route(
@@ -262,6 +319,91 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(out["context_fingerprint"],
                          started["context_fingerprint"])
         self.assertEqual(out["counters"]["top_level_cli_count"], 2)
+
+    def test_major_light_sweep_finding_dispatches_one_bounded_deep_wave(self):
+        started = self._start()
+        state = review._load_state(self.ws, started["run_id"])
+        decision = review_evidence.ArtifactStore(self.ws).read(
+            state["routing_decision"])["dispositions"]
+        light_lens = next(lens_id for lens_id, row in decision.items()
+                          if row["verdict"] == "light")
+        finding = {
+            "lens": light_lens, "kind": "defect", "severity": "major",
+            "class": "regression", "file": "src/service.py", "line": 1,
+            "title": "Sweep discovered a high-risk regression",
+            "scenario": "Calling changed() returns unsafe output.",
+            "fix": "Correct and cover the changed behavior.",
+            "claim": {
+                "trigger": "call changed with the documented fixture input",
+                "outcome": "the function returns an unsafe output value",
+                "repro": "invoke changed in the fixture and inspect its output",
+            },
+        }
+        self._write_pending_slots(
+            findings_by_lens={light_lens: [finding]},
+            run_id=started["run_id"])
+
+        followup = review.collect_review(
+            self.ws, publish=False, run_id=started["run_id"])
+
+        self.assertEqual(followup["status"], "needs_deep_followup")
+        self.assertEqual([row["lens_ids"] for row in followup["slots"]],
+                         [[light_lens]])
+        self.assertEqual(followup["context_fingerprint"],
+                         started["context_fingerprint"])
+        promoted = review._load_state(self.ws, started["run_id"])
+        self.assertEqual(promoted["adaptive_wave"]["wave"], 2)
+        self.assertEqual(len([row for row in promoted["slots"]
+                              if row["lens_ids"] == [light_lens]]), 1)
+        self.assertTrue(any(row["slot_id"] == "light-sweep" and
+                            light_lens in row["lens_ids"]
+                            for row in promoted["slots"]))
+        effective = review_evidence.ArtifactStore(self.ws).read(
+            promoted["routing_decision"])["dispositions"][light_lens]
+        self.assertEqual(effective["initial_verdict"], "light")
+        self.assertEqual(effective["verdict"], "deep")
+
+        self._write_pending_slots(run_id=started["run_id"])
+        completed = review.collect_review(
+            self.ws, publish=False, run_id=started["run_id"])
+        self.assertEqual(completed["status"], "complete")
+        self.assertEqual(completed["canonical_revision"], 1)
+        rendered = __import__("dashboard").render_lens_coverage(
+            review_evidence.ArtifactStore(self.ws).read(
+                review._load_state(self.ws, started["run_id"])[
+                    "routing_decision"])["dispositions"])
+        self.assertIn("promoted light → deep", rendered)
+        self.assertIn(finding["title"], rendered)
+
+    def test_low_light_sweep_finding_does_not_dispatch_a_deep_wave(self):
+        started = self._start()
+        state = review._load_state(self.ws, started["run_id"])
+        decision = review_evidence.ArtifactStore(self.ws).read(
+            state["routing_decision"])["dispositions"]
+        light_lens = next(lens_id for lens_id, row in decision.items()
+                          if row["verdict"] == "light")
+        finding = {
+            "lens": light_lens, "kind": "defect", "severity": "minor",
+            "class": "observation", "file": "src/service.py", "line": 1,
+            "title": "Minor sweep observation",
+            "scenario": "The fixture could be clearer.",
+            "fix": "Clarify the fixture.",
+            "claim": {
+                "trigger": "read the service fixture during routine review",
+                "outcome": "the wording leaves a minor behavioral ambiguity",
+                "repro": "inspect the changed function in src service.py",
+            },
+        }
+        self._write_pending_slots(
+            findings_by_lens={light_lens: [finding]},
+            run_id=started["run_id"])
+
+        completed = review.collect_review(
+            self.ws, publish=False, run_id=started["run_id"])
+
+        self.assertEqual(completed["status"], "complete")
+        self.assertNotIn("adaptive_wave", review._load_state(
+            self.ws, started["run_id"]))
 
     def test_review_visuals_reuse_the_sealed_context_and_show_the_human_gate(self):
         depgraph.save(self.ws, self.graph)

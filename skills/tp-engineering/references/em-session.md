@@ -42,7 +42,8 @@ evidence that materially changes the decision; do not generate three versions
 of the same simulation merely to satisfy a ritual. Fixed session order:
 
 **(0) one ReviewKernel start → (1) deliver workflow + dependency graph → (2)
-dispatch only mapped lenses → (3) one canonical collect → (4) requirements
+dispatch only mapped lenses → (3) canonical collect, with one bounded promoted
+deep wave when a light lens reports high risk → (4) requirements
 walk + the best relevant runtime/visual evidence → (5) human sign-off.**
 
 ### No human to drive it (headless / unattended)
