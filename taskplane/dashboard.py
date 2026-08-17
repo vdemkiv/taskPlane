@@ -1212,7 +1212,11 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
     Each page carries a 'part i/n' title. Returns [{"title","html"}]."""
     meta = meta or {}
     full = render_findings(findings, meta)
-    if len(full) <= budget:
+    # PAGE_BUDGET is a transport budget, so its unit is serialized UTF-8
+    # bytes rather than Python code points.  Using len(full) here let a
+    # non-ASCII dashboard take the fitting fast path and emit an oversized
+    # single page, bypassing the byte-safe pagination below.
+    if _page_bytes(full) <= budget:
         return [{"title": meta.get("title", "review findings"), "html": full}]
 
     norm = []
