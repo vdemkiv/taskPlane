@@ -187,3 +187,27 @@ class RunStore:
                 str(item.get("path")), str(item.get("source"))))
             _atomic_write_json(path, record)
             return record
+
+    def reference_command(self, run_id: str, *, expected_revision: int,
+                          handle: str,
+                          wave_id: str | None = None) -> dict:
+        """Revision-check and retain opaque command/wave references.
+
+        The run manifest never stores argv, environment, output, host process
+        identifiers, or authorization material. Those remain owned by the
+        command runtime's bound record.
+        """
+        current = self.load(run_id)
+        commands = copy.deepcopy(current.get("commands") or {
+            "handles": [], "waves": [],
+        })
+        handles = list(commands.get("handles") or [])
+        if str(handle) not in handles:
+            handles.append(str(handle))
+        waves = list(commands.get("waves") or [])
+        if wave_id is not None and str(wave_id) not in waves:
+            waves.append(str(wave_id))
+        return self.commit(run_id, expected_revision=expected_revision,
+                           changes={"commands": {
+                               "handles": handles, "waves": waves,
+                           }})
