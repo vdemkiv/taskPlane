@@ -52,7 +52,7 @@ def command_wave_projection(wave: dict, *, efficiency: dict | None = None,
     for raw in artifacts if isinstance(artifacts, list) else []:
         row = raw if isinstance(raw, dict) else {}
         projected_artifacts.append({
-            "path": _bounded_diagnostic(row.get("path"), 512),
+            "path": _bounded_artifact_path(row.get("path"), 512),
             "sha256": _bounded_diagnostic(row.get("sha256"), 128),
             "bytes": max(0, int(row.get("bytes") or 0)),
             "truncated": row.get("truncated") is True,
@@ -82,6 +82,25 @@ def command_wave_projection(wave: dict, *, efficiency: dict | None = None,
 def _bounded_diagnostic(value: Any, limit: int = 512) -> str:
     text = _SECRET_ASSIGNMENT.sub("<redacted>", str(value or ""))
     text = _ABSOLUTE_PATH.sub("<redacted-path>", text)
+    raw = text.encode("utf-8", errors="replace")[:limit]
+    while raw:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return ""
+
+
+def _bounded_artifact_path(value: Any, limit: int = 512) -> str:
+    """Preserve safe relative references without exposing host paths."""
+    text = str(value or "")
+    if _SECRET_ASSIGNMENT.search(text):
+        return "<redacted>"
+    normalized = text.replace("\\", "/")
+    if (normalized.startswith("/") or
+            re.match(r"^[A-Za-z]:/", normalized) or
+            ".." in normalized.split("/")):
+        return "<redacted-path>"
     raw = text.encode("utf-8", errors="replace")[:limit]
     while raw:
         try:

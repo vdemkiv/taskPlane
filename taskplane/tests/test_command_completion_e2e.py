@@ -115,6 +115,15 @@ def test_silent_command_end_to_end_completion_resume_attention_and_efficiency(
     assert projection["efficiency"]["model_wakes"] == 1
     assert projection["efficiency"]["unchanged_model_polls"] == 0
     assert projection["artifacts"] == [completed["artifact"]]
+    unsafe = runtime_eval.command_wave_projection(
+        resumed_wave, artifacts=[
+            {"path": "/private/build/output.log"},
+            {"path": "../outside/output.log"},
+            {"path": "TOKEN=secret-value/artifact.log"},
+        ])
+    assert [row["path"] for row in unsafe["artifacts"]] == [
+        "<redacted-path>", "<redacted-path>", "<redacted>",
+    ]
 
     # Adverse endings and reconnect audit failures fail safe and deduplicate.
     timeout_handle = restarted.launch("timeout", cwd="/repo")
