@@ -1578,6 +1578,16 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
         resume_identity = review_slot_resume_identity(
             lease=store.read(lease_ref), result_schema=result_schema,
             producer_contract=producer_contract, result_path=result_path)
+        role = {key: source.get(key) for key in
+                ("agent", "model_tier", "reasoning_effort",
+                 "task_name", "role_marker") if source.get(key) is not None}
+        base_task_name = str(role.get("task_name") or "tp_lens")
+        # Native Codex task paths are stable for the life of a conversation.
+        # A lease-specific suffix makes every retry a fresh legal child instead
+        # of forcing a previously bound reviewer thread to impersonate a new
+        # producer contract.
+        role["task_name"] = (
+            f"{base_task_name[:55]}_{lease_ref['fingerprint'][:8]}")
         brief = {
             "schema": "taskplane.lens-brief/v2", "slot_id": slot_id,
             "lens_ids": lens_ids, "target_fingerprint":
@@ -1624,9 +1634,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             # Concrete model ids are host-adapter transport, not canonical
             # review evidence: Claude's cheap default is `haiku`, while Codex
             # inherits.  Persist the portable capability request only.
-            "role": {key: source.get(key) for key in
-                     ("agent", "model_tier", "reasoning_effort",
-                      "task_name", "role_marker") if source.get(key) is not None},
+            "role": role,
         }
         if required_references:
             brief["language_references"] = required_references
@@ -2722,6 +2730,21 @@ def record_slot_write_observation(ws: str, *, event: dict, contract: dict,
     if prior is not None and prior != receipt:
         raise ReviewKernelError("leased result already observed from another producer")
     tp.atomic_write_json(path, receipt, sort_keys=True)
+    # The immutable receipt is now the collection authority. Keeping the
+    # read-only producer contract active adds no evidence and constrains the
+    # orchestrator plus unrelated completed slots, so release this exact slot
+    # immediately instead of waiting for whole-run collection.
+    active_path = tp.active_contract_path(ws, expected["task_slot"])
+    active = tp.load_json(active_path, default=None,
+                          what="review producer contract")
+    if isinstance(active, dict) and active.get("task") == expected["task"]:
+        tp.safe_remove(active_path)
+        snapshot = active_path + ".snapshot"
+        if os.path.exists(snapshot):
+            tp.safe_remove(snapshot)
+        tp.trace(ws, "review_producer_contract_released",
+                 run_id=state["run_id"], slot=expected["task_slot"],
+                 reason="host-observed-result")
     return receipt
 
 
@@ -3390,10 +3413,14 @@ def _acquire_collection_reservation(ws: str, run_id: str) -> dict:
             else ""
         if old_run and old_run in _load_index(ws)["runs"]:
             old = _load_state(ws, old_run)
-            if old.get("status") not in {"prepared", "staged"}:
+            # `ready` means collection never mutated canonical publication;
+            # a dead owner can be discarded directly. Prepared/staged states
+            # carry the durable recovery material used by the normal resume.
+            if old.get("status") not in {"ready", "prepared", "staged"}:
                 raise evidence.RevisionError(
                     "stale publication owner is not safely recoverable")
-            _save_state(ws, dict(old, status="reservation_recovered"))
+            if old.get("status") != "ready":
+                _save_state(ws, dict(old, status="reservation_recovered"))
     owner_pid = os.getpid()
     owner_id = hashlib.sha256(
         f"{run_id}:{owner_pid}:{__import__('time').time_ns()}".encode()

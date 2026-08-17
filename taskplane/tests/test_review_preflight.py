@@ -680,7 +680,17 @@ def test_collection_owner_transaction_recovers_each_post_acquire_failure(
             action_id=opened["review_execution"]["action"]["id"],
             response="static"))
     state = review._load_state(ws, ready["run_id"])
-    review._save_state(ws, dict(state, slots=[], dispatch_slots=[]))
+    # This transaction test intentionally has no producers. Make routing agree
+    # with that fixture instead of violating the slot-conservation contract.
+    store = review_evidence.ArtifactStore(ws)
+    routing = store.read(state["routing_decision"])
+    for row in (routing.get("dispositions") or {}).values():
+        row["verdict"] = "n/a"
+        row["tier"] = "n/a"
+        row["negative_evidence"] = ["transaction-only zero-slot fixture"]
+    routing_ref = store.put("routing-decision", routing)
+    review._save_state(ws, dict(
+        state, slots=[], dispatch_slots=[], routing_decision=routing_ref))
     original = review._collection_fault
     fired = []
 

@@ -177,12 +177,18 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         brief = review_evidence.ArtifactStore(self.ws).read(sweep["brief"])
         dispatch = tp.dispatch_fields(
             "lens", "tp-lens", "sweep", "cheap")
-        self.assertEqual(brief["role"], {
+        expected_role = {
             "agent": "tp-lens",
             **{key: dispatch[key] for key in (
-                "model_tier", "reasoning_effort", "task_name",
+                "model_tier", "reasoning_effort",
                 "role_marker")}
-        })
+        }
+        self.assertEqual({key: brief["role"][key] for key in expected_role},
+                         expected_role)
+        lease = review_evidence.ArtifactStore(self.ws).read(sweep["lease"])
+        self.assertEqual(
+            brief["role"]["task_name"],
+            f"{dispatch['task_name'][:55]}_{lease['lease_fingerprint'][:8]}")
         self.assertNotIn("breadth", json.dumps(out).lower())
         self.assertLessEqual(len(json.dumps(out).encode()), 16 * 1024)
 
@@ -863,6 +869,33 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 self.ws, event=sibling, contract=producer,
                 task_slot=brief["producer_contract"]["task_slot"])
 
+    def test_observed_result_releases_exact_producer_contract(self):
+        self._start()
+        state = review._load_state(self.ws)
+        slot = state["slots"][0]
+        producer = slot["producer_contract"]
+        contract = {**producer, "task_id": producer["task_slot"],
+                    "budget": {"max_actions": 20}}
+        tp.activate(self.ws, contract, snapshot=None)
+        self._write_slot_results(run_id=state["run_id"])
+        self.assertFalse(os.path.exists(
+            tp.active_contract_path(self.ws, producer["task_slot"])))
+
+    def test_dead_ready_collection_owner_is_recoverable(self):
+        opened = self._start()
+        path = review._collection_lock_path(self.ws)
+        tp.atomic_write_json(path, {
+            "schema": "taskplane.review-publication-reservation/v1",
+            "run_id": opened["run_id"], "owner_pid": 99999999,
+            "owner_id": "dead-owner", "acquired_at": 1,
+        }, sort_keys=True)
+        with mock.patch.object(tp, "_pid_alive", return_value=False):
+            lease = review._acquire_collection_reservation(
+                self.ws, opened["run_id"])
+        self.assertEqual(lease["run_id"], opened["run_id"])
+        self.assertEqual(review._load_state(
+            self.ws, opened["run_id"])["status"], "ready")
+
     def test_malformed_findings_are_rejected_before_canonical_commit(self):
         self._start()
         self._write_slot_results(findings=[{"title": "missing evidence"}])
@@ -1169,9 +1202,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
 
     def test_completed_run_releases_dead_exact_reservation_before_next_revision(self):
         first = self._start()
-        state = review._load_state(self.ws, first["run_id"])
-        review._save_state(
-            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        self._write_slot_results(run_id=first["run_id"])
         first_out = review.collect_review(
             self.ws, publish=False, run_id=first["run_id"])
         reservation_path = review._collection_lock_path(self.ws)
@@ -1190,18 +1221,14 @@ class TestSelectiveReviewKernel(unittest.TestCase):
 
         second = self._start(
             target={"fingerprint": "target-2", "head": "abc123"})
-        state = review._load_state(self.ws, second["run_id"])
-        review._save_state(
-            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        self._write_slot_results(run_id=second["run_id"])
         self.assertEqual(review.collect_review(
             self.ws, publish=False, run_id=second["run_id"]
         )["canonical_revision"], 2)
 
     def test_completed_run_rejects_live_different_owner_without_releasing_it(self):
         opened = self._start()
-        state = review._load_state(self.ws, opened["run_id"])
-        review._save_state(
-            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        self._write_slot_results(run_id=opened["run_id"])
         review.collect_review(
             self.ws, publish=False, run_id=opened["run_id"])
         reservation_path = review._collection_lock_path(self.ws)
@@ -1223,9 +1250,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
 
     def test_completed_run_leaves_another_runs_reservation_untouched(self):
         opened = self._start()
-        state = review._load_state(self.ws, opened["run_id"])
-        review._save_state(
-            self.ws, dict(state, slots=[], dispatch_slots=[]))
+        self._write_slot_results(run_id=opened["run_id"])
         manifest = review.collect_review(
             self.ws, publish=False, run_id=opened["run_id"])
         reservation_path = review._collection_lock_path(self.ws)
