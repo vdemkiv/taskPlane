@@ -12,7 +12,7 @@ import json
 import os
 import re
 import tempfile
-from typing import Any, Iterable
+from typing import Any, Iterable, TypeAlias, TypedDict
 
 import storage as runtime_storage
 import taskplane_lite as tp
@@ -26,9 +26,41 @@ REVIEW_EVIDENCE_SECTIONS = frozenset({
     "diff", "impact", "graph_quality", "runnability", "requirements",
     "contracts", "change",
 })
-UNTRUSTED_REVIEW_SECTIONS = ("change", "diff", "requirements")
-UNTRUSTED_DATA_BEGIN = "<TASKPLANE_UNTRUSTED_REVIEW_DATA>"
-UNTRUSTED_DATA_END = "</TASKPLANE_UNTRUSTED_REVIEW_DATA>"
+UNTRUSTED_REVIEW_SECTIONS: tuple[str, ...] = (
+    "change", "diff", "requirements")
+UNTRUSTED_DATA_BEGIN: str = "<TASKPLANE_UNTRUSTED_REVIEW_DATA>"
+UNTRUSTED_DATA_END: str = "</TASKPLANE_UNTRUSTED_REVIEW_DATA>"
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+class ReviewEvidenceReference(TypedDict, total=False):
+    """Portable identity required to resolve one immutable review section."""
+
+    schema: str
+    section: str
+    target_fingerprint: str
+    context_fingerprint: str
+    canonical_revision: int
+    content_fingerprint: str
+    digest: str
+    bytes: int
+    fingerprint: str
+    artifact: dict[str, JsonValue]
+    transport: str
+
+
+class UntrustedReviewEvidenceFrame(TypedDict):
+    """Fixed control/data boundary around PR-controlled evidence."""
+
+    schema: str
+    section: str
+    interpretation: str
+    begin: str
+    content: JsonValue
+    end: str
+    flags: list[dict[str, JsonValue]]
 
 
 class ArtifactIntegrityError(ValueError):
@@ -516,7 +548,8 @@ _INJECTION_PATTERNS = {
 }
 
 
-def _injection_flags(section: str, value) -> list[dict]:
+def _injection_flags(
+        section: str, value: JsonValue) -> list[dict[str, JsonValue]]:
     """Detect attacks without ever reflecting attacker-controlled strings."""
     categories = set()
     match_count = 0
@@ -537,7 +570,7 @@ def _injection_flags(section: str, value) -> list[dict]:
     }]
 
 
-def frame_review_evidence(section: str, value):
+def frame_review_evidence(section: str, value: JsonValue) -> JsonValue:
     """Structurally isolate PR-owned evidence from producer control text."""
     if section not in UNTRUSTED_REVIEW_SECTIONS:
         return copy.deepcopy(value)
@@ -552,7 +585,7 @@ def frame_review_evidence(section: str, value):
     }
 
 
-def unframe_review_evidence(section: str, value):
+def unframe_review_evidence(section: str, value: JsonValue) -> JsonValue:
     """Validate a producer frame and return its canonical evidence content."""
     if section not in UNTRUSTED_REVIEW_SECTIONS:
         return value
@@ -565,7 +598,8 @@ def unframe_review_evidence(section: str, value):
     return content
 
 
-def untrusted_evidence_boundary(envelope: dict) -> dict:
+def untrusted_evidence_boundary(
+        envelope: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Return bounded, source-free injection flags for PR-controlled data."""
     flags = []
     for section in UNTRUSTED_REVIEW_SECTIONS:
@@ -580,10 +614,13 @@ def untrusted_evidence_boundary(envelope: dict) -> dict:
     }
 
 
-def resolve_evidence_reference(store: ArtifactStore, reference: dict, *,
+def resolve_evidence_reference(
+        store: ArtifactStore, reference: ReviewEvidenceReference, *,
                                target_fingerprint: str,
                                canonical_revision: int,
-                               allowed_sections: Iterable[str]):
+                               allowed_sections: Iterable[str],
+                               context_fingerprint: str | None = None
+                               ) -> JsonValue:
     """Resolve a v2 overflow reference, rejecting every identity mismatch."""
     if not isinstance(reference, dict) or reference.get("schema") != \
             "taskplane.review-evidence-reference/v2":
@@ -596,6 +633,9 @@ def resolve_evidence_reference(store: ArtifactStore, reference: dict, *,
         raise ProvenanceError("evidence section is unauthorized")
     if reference.get("target_fingerprint") != target_fingerprint:
         raise ProvenanceError("evidence reference belongs to another target")
+    if context_fingerprint is not None and reference.get(
+            "context_fingerprint") != context_fingerprint:
+        raise ProvenanceError("evidence reference belongs to another context")
     if int(reference.get("canonical_revision", -1)) != int(canonical_revision):
         raise ProvenanceError("evidence reference canonical revision is stale")
     artifact = reference.get("artifact")
@@ -609,7 +649,9 @@ def resolve_evidence_reference(store: ArtifactStore, reference: dict, *,
         "schema": "taskplane.review-evidence-section/v2",
         "section": section,
         "target_fingerprint": target_fingerprint,
-        "context_fingerprint": reference.get("context_fingerprint"),
+        "context_fingerprint": (context_fingerprint if context_fingerprint
+                                is not None else reference.get(
+                                    "context_fingerprint")),
         "canonical_revision": int(canonical_revision),
         "content_fingerprint": reference.get("content_fingerprint"),
     }

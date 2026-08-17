@@ -1347,6 +1347,9 @@ def _verify_v3_view(store, envelope_ref: dict, view_ref: dict) -> dict:
     import review_evidence as evidence
 
     view = store.read(view_ref)
+    if len(evidence.canonical_bytes(view)) > evidence.MAX_SCOPED_VIEW_BYTES:
+        raise evidence.ProvenanceError(
+            "scoped review view exceeds canonical byte bound")
     if view.get("schema") != "taskplane.scoped-review-view/v3" or \
             view.get("view_fingerprint") != view_ref.get("fingerprint"):
         raise evidence.ProvenanceError("scoped view fingerprint mismatch")
@@ -1405,10 +1408,12 @@ def _verify_v3_view(store, envelope_ref: dict, view_ref: dict) -> dict:
             store, reference,
             target_fingerprint=view["target_fingerprint"],
             canonical_revision=view["canonical_revision"],
-            allowed_sections=sections)
+            allowed_sections=sections,
+            context_fingerprint=envelope["context_fingerprint"])
         raw_content = evidence.unframe_review_evidence(
             str(row.get("section") or ""), content)
         if reference.get("section") != row.get("section") or \
+                raw_content != envelope.get(row.get("section")) or \
                 evidence.content_fingerprint(raw_content) != row.get(
                     "content_fingerprint") or \
                 len(evidence.canonical_bytes(raw_content)) != row.get(
