@@ -22,6 +22,13 @@ MAX_SCOPED_VIEW_BYTES = 16 * 1024
 MAX_INLINE_REQUIREMENTS_BYTES = 4 * 1024
 _KIND = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _SLOT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
+REVIEW_EVIDENCE_SECTIONS = frozenset({
+    "diff", "impact", "graph_quality", "runnability", "requirements",
+    "contracts", "change",
+})
+UNTRUSTED_REVIEW_SECTIONS = ("change", "diff", "requirements")
+UNTRUSTED_DATA_BEGIN = "<TASKPLANE_UNTRUSTED_REVIEW_DATA>"
+UNTRUSTED_DATA_END = "</TASKPLANE_UNTRUSTED_REVIEW_DATA>"
 
 
 class ArtifactIntegrityError(ValueError):
@@ -477,6 +484,63 @@ def _section_summary(section: str, value) -> dict:
     return summary
 
 
+def _text_values(value):
+    """Yield strings for detection only; never copy them into safe flags."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key in sorted(value, key=str):
+            yield from _text_values(value[key])
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _text_values(item)
+
+
+_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a",
+                       "5": "s", "7": "t"})
+_INJECTION_PATTERNS = {
+    "instruction_override": re.compile(
+        r"\b(?:ignore|disregard|override|forget)\b.{0,96}"
+        r"\b(?:previous|prior|system|developer|instructions?)\b"),
+    "exfiltration": re.compile(
+        r"\b(?:reveal|show|print|exfiltrate|send|leak)\b.{0,96}"
+        r"\b(?:system|developer|secret|credentials?|tokens?|prompts?|instructions?)\b"),
+    "role_override": re.compile(
+        r"\b(?:you are now|act as|new role)\b.{0,96}"
+        r"\b(?:system|developer|administrator|reviewer)\b"),
+}
+
+
+def untrusted_evidence_boundary(envelope: dict) -> dict:
+    """Return bounded, source-free injection flags for PR-controlled data."""
+    flags = []
+    for section in UNTRUSTED_REVIEW_SECTIONS:
+        categories = set()
+        match_count = 0
+        for raw in _text_values(envelope.get(section)):
+            normalized = re.sub(r"\s+", " ", raw.lower().translate(_LEET))
+            for category, pattern in _INJECTION_PATTERNS.items():
+                count = len(pattern.findall(normalized))
+                if count:
+                    categories.add(category)
+                    match_count += count
+        if categories:
+            flags.append({
+                "section": section,
+                "categories": sorted(categories),
+                "match_count": min(match_count, 999),
+                "action": "obstructed-as-instruction; preserved-as-review-data",
+            })
+    return {
+        "schema": "taskplane.untrusted-review-data-boundary/v1",
+        "sections": list(UNTRUSTED_REVIEW_SECTIONS),
+        "begin": UNTRUSTED_DATA_BEGIN,
+        "end": UNTRUSTED_DATA_END,
+        "interpretation": "data-only",
+        "flags": flags,
+    }
+
+
 def resolve_evidence_reference(store: ArtifactStore, reference: dict, *,
                                target_fingerprint: str,
                                canonical_revision: int,
@@ -573,6 +637,7 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
             "changed_file_count": len(changed),
         },
         "relevant_summaries": summaries,
+        "untrusted_evidence_boundary": untrusted_evidence_boundary(envelope),
         "forbidden_derivations": ["git diff", "graph impact", "graph scan",
                                   "requirement lookup", "runnability probe"],
     }
@@ -600,7 +665,6 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
             "reason": "referenced outside the bounded producer view",
             "bytes": row["content_bytes"],
             "digest": row["reference"]["digest"],
-            "reference": row["reference"],
         } for row in current_manifest]
         base = dict(
             spine, inline_sections=current_inline,
