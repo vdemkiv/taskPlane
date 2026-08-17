@@ -45,6 +45,9 @@ IDs, the complete depth policy, and AC1–AC14 verbatim.
    least 90% polling-token reduction (AC10). Do not repeat a repository-wide or
    end-to-end loop to chase failures; repair deterministically, then rerun only
    the affected targeted selector unless a new human decision broadens scope.
+   The approved E2E amendment adds `taskplane/runtime_eval.py` solely to repair
+   safe relative artifact-reference redaction exposed by the first validation;
+   it does not reopen the completed runtime, adapter, wave, or telemetry work.
 
 The dependency chain is intentionally serial because each layer consumes the
 previous layer's contract. Implementation scopes are otherwise disjoint, so

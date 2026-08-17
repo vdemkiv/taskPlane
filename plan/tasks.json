@@ -2,6 +2,7 @@
   "tasks": [
     {
       "id": "t1-durable-command-runtime",
+      "status": "passed",
       "title": "Build the durable command lifecycle and deterministic state tests",
       "scope": [
         "taskplane/command_runtime.py",
@@ -52,6 +53,7 @@
     },
     {
       "id": "t2-host-command-adapters",
+      "status": "passed",
       "title": "Normalize Claude and Codex command adapters with a blocking fallback",
       "scope": [
         "taskplane/command_adapters.py",
@@ -88,6 +90,7 @@
     },
     {
       "id": "t3-resume-and-wave-integration",
+      "status": "passed",
       "title": "Integrate durable resume, attention events, and aggregate wave completion",
       "scope": [
         "taskplane/loop.py",
@@ -133,6 +136,7 @@
     },
     {
       "id": "t4-efficiency-telemetry-and-gates",
+      "status": "passed",
       "title": "Record bounded efficiency telemetry and enforce the hard token budgets",
       "scope": [
         "taskplane/spend.py",
@@ -177,6 +181,7 @@
       "id": "t5-single-end-to-end-validation",
       "title": "Run the one bounded end-to-end long-command validation",
       "scope": [
+        "taskplane/runtime_eval.py",
         "taskplane/tests/test_command_completion_e2e.py"
       ],
       "tests": "python3 -m pytest -q taskplane/tests/test_command_completion_e2e.py",
