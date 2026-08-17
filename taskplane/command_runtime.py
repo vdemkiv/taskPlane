@@ -135,8 +135,8 @@ class CommandRuntime:
         return self._dir(handle) / "snapshot.json"
 
     @contextmanager
-    def _delivery_lock(self, handle: str):
-        """Serialize durable delivery claims across processes and threads."""
+    def _state_lock(self, handle: str):
+        """Serialize every read-modify-write for one command handle."""
         directory = self._dir(handle)
         directory.mkdir(parents=True, exist_ok=True)
         with (directory / "delivery.lock").open("a+b") as lock:
@@ -233,7 +233,16 @@ class CommandRuntime:
                    expected_revision: int | None = None) -> dict:
         if state not in VALID_STATES:
             raise InvalidTransition(f"unknown command state: {state}")
-        snapshot = self._load(handle)
+        with self._state_lock(handle):
+            snapshot = self._load(handle)
+            return self._transition_locked(
+                handle, snapshot, state, exit_code=exit_code, reason=reason,
+                expected_revision=expected_revision)
+
+    def _transition_locked(self, handle: str, snapshot: dict, state: str, *,
+                           exit_code: int | None = None,
+                           reason: str | None = None,
+                           expected_revision: int | None = None) -> dict:
         if expected_revision is not None and snapshot["revision"] != expected_revision:
             raise RevisionConflict(
                 f"command revision is {snapshot['revision']}, expected "
@@ -288,40 +297,42 @@ class CommandRuntime:
         }
 
     def append_output(self, handle: str, output: str) -> dict:
-        snapshot = self._load(handle)
-        redacted, redactions = _redact(str(output))
-        digest = hashlib.sha256(redacted.encode("utf-8")).hexdigest()
-        if digest == snapshot.get("output_digest"):
+        with self._state_lock(handle):
+            snapshot = self._load(handle)
+            redacted, redactions = _redact(str(output))
+            digest = hashlib.sha256(redacted.encode("utf-8")).hexdigest()
+            if digest == snapshot.get("output_digest"):
+                return snapshot
+            artifact_dir = self._dir(handle) / "artifacts"
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = artifact_dir / "output.log"
+            # One canonical artifact per command. Output is appended once per
+            # new digest; repeated identical chunks are ignored.
+            with artifact_path.open("a", encoding="utf-8", newline="") as target:
+                target.write(redacted)
+                target.flush()
+                os.fsync(target.fileno())
+            all_bytes = artifact_path.read_bytes()
+            artifact_digest = hashlib.sha256(all_bytes).hexdigest()
+            summary = redacted.encode("utf-8")[:MAX_EVENT_OUTPUT].decode(
+                "utf-8", errors="ignore")
+            snapshot["output_summary"] = summary
+            snapshot["output_digest"] = digest
+            snapshot["artifact"] = {
+                "path": f"artifacts/{artifact_path.name}",
+                "sha256": artifact_digest,
+                "bytes": len(all_bytes),
+                "truncated": len(redacted.encode("utf-8")) > MAX_EVENT_OUTPUT,
+            }
+            snapshot["metrics"]["output_redactions"] += redactions
+            snapshot["updated_at"] = float(self._clock())
+            snapshot["revision"] += 1
+            self._save(handle, snapshot, {
+                "revision": snapshot["revision"], "state": "output_changed",
+                "at": snapshot["updated_at"],
+                "artifact_sha256": artifact_digest,
+            })
             return snapshot
-        artifact_dir = self._dir(handle) / "artifacts"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = artifact_dir / "output.log"
-        # One canonical artifact per command. Output is appended once per new
-        # digest; repeated identical chunks are ignored.
-        with artifact_path.open("a", encoding="utf-8", newline="") as target:
-            target.write(redacted)
-            target.flush()
-            os.fsync(target.fileno())
-        all_bytes = artifact_path.read_bytes()
-        artifact_digest = hashlib.sha256(all_bytes).hexdigest()
-        summary = redacted.encode("utf-8")[:MAX_EVENT_OUTPUT].decode(
-            "utf-8", errors="ignore")
-        snapshot["output_summary"] = summary
-        snapshot["output_digest"] = digest
-        snapshot["artifact"] = {
-            "path": f"artifacts/{artifact_path.name}",
-            "sha256": artifact_digest,
-            "bytes": len(all_bytes),
-            "truncated": len(redacted.encode("utf-8")) > MAX_EVENT_OUTPUT,
-        }
-        snapshot["metrics"]["output_redactions"] += redactions
-        snapshot["updated_at"] = float(self._clock())
-        snapshot["revision"] += 1
-        self._save(handle, snapshot, {
-            "revision": snapshot["revision"], "state": "output_changed",
-            "at": snapshot["updated_at"], "artifact_sha256": artifact_digest,
-        })
-        return snapshot
 
     def read_artifact(self, handle: str) -> str:
         snapshot = self._load(handle)
@@ -335,7 +346,7 @@ class CommandRuntime:
 
     def pending(self, handle: str, *, consumer: str) -> dict | None:
         consumer = str(consumer)
-        with self._delivery_lock(handle):
+        with self._state_lock(handle):
             snapshot = self._load(handle)
             acknowledged = int((snapshot.get("deliveries") or {}).get(
                 consumer, 0))
@@ -362,26 +373,43 @@ class CommandRuntime:
                 return event
             return None
 
-    def ack(self, handle: str, *, consumer: str, delivery_key: str) -> dict:
+    def receive(self, handle: str, *, consumer: str,
+                delivery_key: str) -> dict | None:
+        """Durably deduplicate a candidate before making it model-visible.
+
+        ``pending`` only leases an internal candidate.  A host adapter MUST
+        use the event returned here as its wake payload.  The receipt is
+        persisted before return, so replay after a crash-before-receive is
+        safe and a crash-after-return cannot cause a second model wake.
+        This is consumer idempotency, not a claim of process-level exactly
+        once execution.
+        """
         consumer = str(consumer)
-        with self._delivery_lock(handle):
+        with self._state_lock(handle):
             snapshot = self._load(handle)
             event = next((row for row in snapshot.get("events") or []
                           if row.get("delivery_key") == delivery_key), None)
             if event is None:
                 raise CommandRuntimeError("delivery key is unknown")
+            revision = int(event["revision"])
+            previous = int(snapshot["deliveries"].get(consumer, 0))
+            if revision <= previous:
+                return None
             lease = (snapshot.get("delivery_leases") or {}).get(consumer)
             if (lease is None or lease.get("delivery_key") != delivery_key):
                 raise CommandRuntimeError("delivery is not claimed by consumer")
-            previous = int(snapshot["deliveries"].get(consumer, 0))
-            revision = int(event["revision"])
-            if revision > previous:
-                snapshot["deliveries"][consumer] = revision
-                if consumer == "model":
-                    snapshot["metrics"]["model_delivery_count"] += 1
+            snapshot["deliveries"][consumer] = revision
+            if consumer == "model":
+                snapshot["metrics"]["model_delivery_count"] += 1
             snapshot["delivery_leases"].pop(consumer, None)
             self._save(handle, snapshot)
             return event
+
+    def ack(self, handle: str, *, consumer: str,
+            delivery_key: str) -> dict | None:
+        """Compatibility name for the durable consumer receipt boundary."""
+        return self.receive(handle, consumer=consumer,
+                            delivery_key=delivery_key)
 
     def wait_next(self, handle: str, *, consumer: str,
                   interrupted: Callable[[], bool] | None = None,
@@ -400,19 +428,21 @@ class CommandRuntime:
             time.sleep(interval)
 
     def reconnect(self, handle: str, *, binding: Mapping | None) -> dict:
-        snapshot = self._load(handle)
-        if snapshot["state"] in TERMINAL_STATES:
-            return self._event_for_state(snapshot, snapshot["state"])
-        supplied = _canonical_digest(binding) if binding else None
-        if not supplied or supplied != snapshot.get("binding_digest"):
-            return self.transition(handle, "failed", reason="binding_lost")
-        snapshot["metrics"]["reconnect_count"] += 1
-        snapshot["updated_at"] = float(self._clock())
-        self._save(handle, snapshot, {
-            "revision": snapshot["revision"], "state": "reconnected",
-            "at": snapshot["updated_at"],
-        })
-        return snapshot
+        with self._state_lock(handle):
+            snapshot = self._load(handle)
+            if snapshot["state"] in TERMINAL_STATES:
+                return self._event_for_state(snapshot, snapshot["state"])
+            supplied = _canonical_digest(binding) if binding else None
+            if not supplied or supplied != snapshot.get("binding_digest"):
+                return self._transition_locked(
+                    handle, snapshot, "failed", reason="binding_lost")
+            snapshot["metrics"]["reconnect_count"] += 1
+            snapshot["updated_at"] = float(self._clock())
+            self._save(handle, snapshot, {
+                "revision": snapshot["revision"], "state": "reconnected",
+                "at": snapshot["updated_at"],
+            })
+            return snapshot
 
     def cancel(self, handle: str, *, expected_revision: int | None = None) -> dict:
         return self.transition(handle, "cancelled",

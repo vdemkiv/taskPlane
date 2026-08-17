@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 
@@ -26,11 +27,12 @@ def test_silent_command_delivers_only_one_meaningful_terminal_event(runtime):
     assert runtime.pending(handle, consumer="model") is None
 
     runtime.transition(handle, "succeeded", exit_code=0)
-    event = runtime.pending(handle, consumer="model")
+    candidate = runtime.pending(handle, consumer="model")
+    event = runtime.receive(
+        handle, consumer="model", delivery_key=candidate["delivery_key"])
     assert event["state"] == "succeeded"
     assert event["exit_code"] == 0
     assert event["delivery_key"]
-    runtime.ack(handle, consumer="model", delivery_key=event["delivery_key"])
     assert runtime.pending(handle, consumer="model") is None
 
 
@@ -45,8 +47,37 @@ def test_attention_and_terminal_states_are_delivered_once(runtime, state):
     first = runtime.pending(handle, consumer="model")
     second = runtime.pending(handle, consumer="model")
     assert second is None
-    runtime.ack(handle, consumer="model", delivery_key=first["delivery_key"])
+    assert runtime.receive(
+        handle, consumer="model", delivery_key=first["delivery_key"])
     assert runtime.pending(handle, consumer="model") is None
+
+
+def test_concurrent_meaningful_transitions_are_serialized(runtime):
+    handle = runtime.create(command_fingerprint="state-race",
+                            binding={"pid": 15})
+    runtime.transition(handle, "running")
+    barrier = threading.Barrier(2)
+
+    def transition(state):
+        barrier.wait()
+        try:
+            runtime.transition(handle, state)
+        except Exception as exc:  # one terminal ordering may reject attention
+            return exc
+        return None
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(
+            transition, ("approval_required", "succeeded")))
+
+    snapshot = runtime.snapshot(handle)
+    states = [event["state"] for event in snapshot["events"]]
+    assert states in (["approval_required", "succeeded"], ["succeeded"])
+    # Serialization either preserves attention before completion or rejects
+    # the later invalid transition; it can never overwrite an accepted event.
+    if "approval_required" not in states:
+        assert any(isinstance(result, Exception) for result in results)
+    assert len({event["revision"] for event in snapshot["events"]}) == len(states)
 
 
 def test_delivery_claim_is_atomic_for_concurrent_consumers(runtime):
@@ -81,9 +112,32 @@ def test_expired_durable_claim_replays_after_crash_then_acks(tmp_path):
     now[0] = 1030.0
     replay = resumed.pending(handle, consumer="model")
     assert replay["delivery_key"] == first["delivery_key"]
-    resumed.ack(handle, consumer="model",
-                delivery_key=replay["delivery_key"])
+    wake = resumed.receive(handle, consumer="model",
+                           delivery_key=replay["delivery_key"])
+    assert wake["delivery_key"] == first["delivery_key"]
     assert resumed.pending(handle, consumer="model") is None
+    assert resumed.snapshot(handle)["metrics"]["model_delivery_count"] == 1
+
+
+def test_crash_after_receive_uses_receipt_to_prevent_second_model_wake(
+        tmp_path):
+    root = str(tmp_path / "commands")
+    first_runtime = CommandRuntime(
+        root, workspace="repo-a", authorization="actor-a")
+    handle = first_runtime.create(command_fingerprint="receipt-crash",
+                                  binding={"pid": 16})
+    first_runtime.transition(handle, "succeeded")
+    candidate = first_runtime.pending(handle, consumer="model")
+    wake = first_runtime.receive(
+        handle, consumer="model", delivery_key=candidate["delivery_key"])
+    assert wake is not None
+
+    resumed = CommandRuntime(root, workspace="repo-a",
+                             authorization="actor-a")
+    assert resumed.pending(handle, consumer="model") is None
+    assert resumed.receive(
+        handle, consumer="model", delivery_key=candidate["delivery_key"]) \
+        is None
     assert resumed.snapshot(handle)["metrics"]["model_delivery_count"] == 1
 
 
@@ -92,7 +146,9 @@ def test_large_output_is_redacted_stored_once_and_summary_is_bounded(runtime):
     secret = "sk-" + "x" * 80
     runtime.append_output(handle, (secret + "\n") * 600)
     runtime.transition(handle, "failed", exit_code=1)
-    event = runtime.pending(handle, consumer="model")
+    candidate = runtime.pending(handle, consumer="model")
+    event = runtime.receive(
+        handle, consumer="model", delivery_key=candidate["delivery_key"])
     assert len(event["output_delta"].encode()) <= 16 * 1024
     assert secret not in event["output_delta"]
     assert event["artifact"]["sha256"]
@@ -117,7 +173,9 @@ def test_common_credentials_are_redacted_from_summary_and_artifact(
                             binding={"pid": 14})
     runtime.append_output(handle, "credential=" + secret)
     runtime.transition(handle, "failed", reason="failed with " + secret)
-    event = runtime.pending(handle, consumer="model")
+    candidate = runtime.pending(handle, consumer="model")
+    event = runtime.receive(
+        handle, consumer="model", delivery_key=candidate["delivery_key"])
     assert secret not in event["output_delta"]
     assert secret not in event["reason"]
     assert secret not in runtime.read_artifact(handle)
