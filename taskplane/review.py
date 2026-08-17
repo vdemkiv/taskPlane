@@ -1342,6 +1342,139 @@ def _routing_decision(routing: dict, catalog: dict) -> dict:
     return decision
 
 
+def _verify_v3_view(store, envelope_ref: dict, view_ref: dict) -> dict:
+    """Verify the complete v3 identity spine and every overflow reference."""
+    import review_evidence as evidence
+
+    view = store.read(view_ref)
+    if view.get("schema") != "taskplane.scoped-review-view/v3" or \
+            view.get("view_fingerprint") != view_ref.get("fingerprint"):
+        raise evidence.ProvenanceError("scoped view fingerprint mismatch")
+    base = {key: value for key, value in view.items()
+            if key not in ("integrity", "view_fingerprint")}
+    fingerprint = evidence.content_fingerprint(base)
+    if view.get("integrity") != {"algorithm": "sha256",
+                                  "fingerprint": fingerprint}:
+        raise evidence.ProvenanceError("scoped view integrity mismatch")
+    envelope = store.read(envelope_ref)
+    if view.get("envelope_fingerprint") != envelope_ref.get("fingerprint") or \
+            view.get("envelope_digest") != envelope_ref.get("digest") or \
+            view.get("context_fingerprint") != envelope.get(
+                "context_fingerprint") or \
+            view.get("target_fingerprint") != envelope.get(
+                "target_fingerprint"):
+        raise evidence.ProvenanceError("scoped view belongs to another envelope")
+    manifest = view.get("reference_manifest")
+    if not isinstance(manifest, list) or \
+            view.get("reference_manifest_fingerprint") != \
+            evidence.content_fingerprint(manifest):
+        raise evidence.ProvenanceError("reference manifest fingerprint mismatch")
+    sections = [str(row.get("section") or "") for row in manifest
+                if isinstance(row, dict)]
+    if len(sections) != len(manifest) or len(set(sections)) != len(sections):
+        raise evidence.ProvenanceError("reference manifest section mismatch")
+    for row in manifest:
+        reference = row.get("reference")
+        content = evidence.resolve_evidence_reference(
+            store, reference,
+            target_fingerprint=view["target_fingerprint"],
+            canonical_revision=view["canonical_revision"],
+            allowed_sections=sections)
+        if reference.get("section") != row.get("section") or \
+                evidence.content_fingerprint(content) != row.get(
+                    "content_fingerprint") or \
+                len(evidence.canonical_bytes(content)) != row.get(
+                    "content_bytes"):
+            raise evidence.ProvenanceError("reference manifest content mismatch")
+    return view
+
+
+def _create_verified_v3_lease(store, envelope_ref: dict, view_ref: dict, *,
+                              slot_id: str, lens_ids,
+                              canonical_revision: int) -> dict:
+    """Mint a lease only after its bounded v3 view resolves fail-closed."""
+    import review_evidence as evidence
+
+    view = _verify_v3_view(store, envelope_ref, view_ref)
+    lenses = sorted({str(value).strip() for value in lens_ids
+                     if str(value).strip()})
+    if view.get("slot_id") != slot_id or view.get("lens_ids") != lenses or \
+            view.get("canonical_revision") != int(canonical_revision):
+        raise evidence.ProvenanceError("slot lease does not match scoped view")
+    if int(canonical_revision) != evidence.next_revision(store):
+        raise evidence.RevisionError("slot lease canonical revision is stale or skipped")
+    base = {
+        "schema": "taskplane.slot-lease/v1", "slot_id": slot_id,
+        "lens_ids": lenses,
+        "target_fingerprint": view["target_fingerprint"],
+        "context_fingerprint": view["context_fingerprint"],
+        "view_fingerprint": view["view_fingerprint"],
+        "reference_manifest_fingerprint":
+            view["reference_manifest_fingerprint"],
+        "routing_fingerprint": view["routing_fingerprint"],
+        "producer": view["producer"],
+        "canonical_revision": int(canonical_revision),
+    }
+    fingerprint = evidence.content_fingerprint(base)
+    return store.put("lease", dict(base, lease_fingerprint=fingerprint),
+                     fingerprint=fingerprint)
+
+
+def _assert_slot_conservation(*, selected, prepared, dispatched,
+                              collected) -> list[str]:
+    """Require exact slot identity conservation at every kernel boundary."""
+    sets = [sorted(str(value) for value in values)
+            for values in (selected, prepared, dispatched, collected)]
+    if sets[0] and (not all(sets) or any(values != sets[0] for values in sets[1:])):
+        raise ReviewKernelError(
+            "review slot conservation failed: selected/prepared/dispatched/"
+            "collected identities differ")
+    if any(sets) and any(values != sets[0] for values in sets[1:]):
+        raise ReviewKernelError("review slot conservation failed")
+    return sets[0]
+
+
+def _slot_conservation_record(*, selected, prepared, dispatched,
+                              collected) -> dict:
+    selected, prepared, dispatched, collected = (
+        list(values) for values in
+        (selected, prepared, dispatched, collected))
+    identities = _assert_slot_conservation(
+        selected=selected, prepared=prepared, dispatched=dispatched,
+        collected=collected)
+    return {
+        "schema": "taskplane.review-slot-conservation/v1",
+        "status": "complete" if identities else "empty",
+        "selected": {"count": len(selected), "slot_ids": identities},
+        "prepared": {"count": len(prepared), "slot_ids": identities},
+        "dispatched": {"count": len(dispatched), "slot_ids": identities},
+        "collected": {"count": len(collected), "slot_ids": identities},
+        "slot_fingerprint": hashlib.sha256(
+            json.dumps(identities, separators=(",", ":")).encode()).hexdigest(),
+    }
+
+
+def _collect_verified_slot_results(store, lease_refs, result_refs) -> dict:
+    """Verify v3 provenance identities before canonical collection."""
+    import review_evidence as evidence
+
+    leases = [store.read(ref) for ref in lease_refs]
+    results = [store.read(ref) for ref in result_refs]
+    by_lease = {row.get("lease_fingerprint"): row for row in leases}
+    for result in results:
+        lease = by_lease.get(result.get("lease_fingerprint"))
+        if lease is None:
+            raise evidence.ProvenanceError("result cites an unexpected lease")
+        for field in ("slot_id", "lens_ids", "target_fingerprint",
+                      "context_fingerprint", "view_fingerprint",
+                      "reference_manifest_fingerprint", "producer",
+                      "canonical_revision"):
+            if result.get(field) != lease.get(field):
+                raise evidence.ProvenanceError(
+                    f"result {field} does not match lease")
+    return evidence.collect_slot_results(store, lease_refs, result_refs)
+
+
 def _slot_plan(store, envelope_ref: dict, routing: dict,
                decision: dict, *, base: str, runnability: dict,
                stage: str, settled_ref: dict | None = None) -> tuple[list, list]:
@@ -1362,11 +1495,15 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     if full.get("sweep"):
         full_briefs["light-sweep"] = full["sweep"]
     internal, manifest = [], []
+    routing_fingerprint = evidence.content_fingerprint({
+        "routing": routing, "decision": decision})
+    relevant_files = store.read(envelope_ref).get("diff", {}).get("files") or []
     for slot_id, lens_ids in entries:
         view_ref = evidence.create_scoped_view(
             store, envelope_ref, slot_id=slot_id, lens_ids=lens_ids,
-            evidence={lid: decision[lid] for lid in lens_ids})
-        lease_ref = evidence.create_slot_lease(
+            relevant_files=relevant_files, canonical_revision=revision,
+            routing_fingerprint=routing_fingerprint, producer=RESULT_AUTHOR)
+        lease_ref = _create_verified_v3_lease(
             store, envelope_ref, view_ref, slot_id=slot_id,
             lens_ids=lens_ids, canonical_revision=revision)
         source = full_briefs.get(
@@ -1438,6 +1575,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             brief["settled_findings"] = _portable_ref(settled_ref)
         brief_ref = store.put("lens-brief", brief)
         row = {"slot_id": slot_id, "lens_ids": lens_ids,
+               "envelope": envelope_ref,
                "view": view_ref, "lease": lease_ref,
                "brief": brief_ref, "result_path": result_path,
                "producer_contract": producer_contract}
@@ -1450,6 +1588,11 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     expanded = {lid for row in internal for lid in row["lens_ids"]}
     if expanded != set(deep) | set(light) or len(entries) > len(deep) + 1:
         raise ReviewKernelError("dispatch slots do not equal deep plus light mapping")
+    _assert_slot_conservation(
+        selected=[slot_id for slot_id, _ in entries],
+        prepared=[row["slot_id"] for row in internal],
+        dispatched=[row["slot_id"] for row in manifest],
+        collected=[row["slot_id"] for row in manifest])
     return internal, manifest
 
 
@@ -1998,6 +2141,18 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                      envelope_ref["fingerprint"], revision)
     for slot in internal_slots:
         slot["run_id"] = run_id
+    slot_ids = sorted(row["slot_id"] for row in internal_slots)
+    slot_fingerprint = hashlib.sha256(json.dumps(
+        slot_ids, separators=(",", ":")).encode()).hexdigest()
+    slot_conservation = {
+        "schema": "taskplane.review-slot-conservation/v1",
+        "status": "dispatched",
+        "selected": {"count": len(slot_ids), "slot_ids": slot_ids},
+        "prepared": {"count": len(slot_ids), "slot_ids": slot_ids},
+        "dispatched": {"count": len(slot_ids), "slot_ids": slot_ids},
+        "collected": {"count": 0, "slot_ids": []},
+        "slot_fingerprint": slot_fingerprint,
+    }
     # The execution/render choice belongs to a standalone human-requested
     # review. Loop-internal EM review already has its own governed human
     # gates and must not acquire a second, unrelated approval boundary.
@@ -2017,6 +2172,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "routing_input": _portable_ref(routing_input_ref),
         "routing_decision": _portable_ref(decision_ref),
         "envelope": _portable_ref(envelope_ref), "routing_counts": counts,
+        "slot_conservation": slot_conservation,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
         # A pending human execution-mode choice is a real dispatch boundary.
@@ -2034,6 +2190,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "quality": quality_ref, "slots": internal_slots,
         "dispatch_slots": slots,
         "manifest": manifest, "counters": counters,
+        "slot_conservation": slot_conservation,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
     })
@@ -2220,6 +2377,16 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
     state, slot = candidates[0]
     store = __import__("review_evidence").ArtifactStore(ws)
     lease = store.read(slot["lease"])
+    view = _verify_v3_view(store, slot["envelope"], slot["view"])
+    for field in ("slot_id", "lens_ids", "target_fingerprint",
+                  "context_fingerprint", "view_fingerprint",
+                  "reference_manifest_fingerprint", "routing_fingerprint",
+                  "producer", "canonical_revision"):
+        expected = (view.get(field) if field != "view_fingerprint"
+                    else view["view_fingerprint"])
+        if lease.get(field) != expected:
+            raise evidence.ProvenanceError(
+                f"slot lease {field} does not match verified view")
     host, session, child_id = _hook_child_identity(event)
     assignment = {
         "schema": "taskplane.slot-producer-assignment/v1",
@@ -3041,6 +3208,14 @@ def _read_slot_output(ws: str, store,
         authored_by=row["authored_by"],
         references_applied=expected_references,
         source=slot["result_path"])
+    canonical = store.read(ref)
+    canonical.update({key: lease[key] for key in (
+        "reference_manifest_fingerprint", "routing_fingerprint", "producer")})
+    material = {key: value for key, value in canonical.items()
+                if key != "result_fingerprint"}
+    canonical["result_fingerprint"] = evidence.content_fingerprint(material)
+    ref = store.put("slot-result", canonical,
+                    fingerprint=canonical["result_fingerprint"])
     validation_ref = store.put("slot-validation", {
         "schema": "taskplane.slot-result-validation/v1",
         "run_id": slot.get("run_id"),
@@ -3563,9 +3738,22 @@ def _collect_review_transaction(
                      promoted_lenses=sorted(promotions), wave=2)
             return manifest
         leases = [row["lease"] for row in state.get("slots") or []]
+        conservation = None
         if leases:
-            collected = evidence.collect_slot_results(store, leases, refs)
+            collected = _collect_verified_slot_results(store, leases, refs)
+            slot_ids = [str(row.get("slot_id") or "")
+                        for row in state.get("slots") or []]
+            conservation = _slot_conservation_record(
+                selected=slot_ids, prepared=slot_ids, dispatched=slot_ids,
+                collected=collected.get("slot_ids") or [])
         else:
+            routed = store.read(state["routing_decision"]).get(
+                "dispositions") or {}
+            if any((row or {}).get("verdict") in {"deep", "light"}
+                   for row in routed.values()):
+                raise ReviewKernelError(
+                    "review slot conservation failed: routed lenses produced "
+                    "a successful zero-slot collection")
             prior = evidence._read_current(store)
             collected = {
                 "status": "complete", "slot_ids": [],
@@ -3575,6 +3763,8 @@ def _collect_review_transaction(
                 "canonical_revision": int(
                     (prior or {}).get("canonical_revision", 0)) + 1,
             }
+            conservation = _slot_conservation_record(
+                selected=[], prepared=[], dispatched=[], collected=[])
         _collection_fault("post_results")
         revision, prior = _revision_record(
             store, state["envelope"], collected,
@@ -3635,12 +3825,14 @@ def _collect_review_transaction(
             "result_validations": portable_validations,
             "report": None, "projections": [],
             "published": None, "counters": counters,
+            "slot_conservation": conservation,
         })
         _collection_fault("post_manifest")
         prepared = dict(
             state, status="prepared", revision=revision,
             projections=[], manifest=manifest,
             counters=manifest["counters"], lens_results=lens_results,
+            slot_conservation=conservation,
             result_validations=result_validations,
             prior_identity=prior, publication_body=body,
             report_markdown=markdown, publish_requested=bool(publish))
