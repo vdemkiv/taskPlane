@@ -251,7 +251,29 @@ class CommandRuntime:
         if current in TERMINAL_STATES:
             if current == state:
                 return self._event_for_state(snapshot, state)
-            raise InvalidTransition(f"terminal command cannot move {current} -> {state}")
+            if state in ATTENTION_STATES:
+                # Attention is an audit/wake event, not a terminal-state
+                # reversal. A host may observe approval/input concurrently
+                # with completion and serialize it second. Preserve it once
+                # at a new revision while retaining the terminal authority.
+                existing = next((event for event in snapshot.get("events") or []
+                                 if event.get("state") == state), None)
+                if existing is not None:
+                    return existing
+                revision = int(snapshot["revision"]) + 1
+                now = float(self._clock())
+                safe_reason, reason_redactions = _redact(str(reason)) \
+                    if reason is not None else (None, 0)
+                snapshot["revision"] = revision
+                snapshot["updated_at"] = now
+                snapshot["metrics"]["output_redactions"] += reason_redactions
+                event = self._build_event(
+                    snapshot, state=state, reason=safe_reason or state)
+                snapshot["events"].append(event)
+                self._save(handle, snapshot, event)
+                return event
+            raise InvalidTransition(
+                f"terminal command cannot move {current} -> {state}")
         if current == state:
             return self._event_for_state(snapshot, state)
 
@@ -276,16 +298,17 @@ class CommandRuntime:
                 return event
         return self._build_event(snapshot)
 
-    def _build_event(self, snapshot: dict) -> dict:
+    def _build_event(self, snapshot: dict, *, state: str | None = None,
+                     reason: str | None = None) -> dict:
         revision = int(snapshot["revision"])
-        state = snapshot["state"]
+        event_state = state or snapshot["state"]
         artifact = snapshot.get("artifact")
         return {
             "schema": "taskplane.command-event/v1",
             "handle": snapshot["handle"],
             "revision": revision,
-            "state": state,
-            "reason": snapshot.get("reason") or state,
+            "state": event_state,
+            "reason": reason or snapshot.get("reason") or event_state,
             "exit_code": snapshot.get("exit_code"),
             "elapsed_ms": max(0, int((float(snapshot["updated_at"]) -
                                       float(snapshot["created_at"])) * 1000)),

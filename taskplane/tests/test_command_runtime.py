@@ -52,32 +52,50 @@ def test_attention_and_terminal_states_are_delivered_once(runtime, state):
     assert runtime.pending(handle, consumer="model") is None
 
 
-def test_concurrent_meaningful_transitions_are_serialized(runtime):
+@pytest.mark.parametrize("attention", ["approval_required", "input_required"])
+@pytest.mark.parametrize("first", ["attention", "terminal"])
+def test_concurrent_terminal_attention_orderings_preserve_both_events(
+        runtime, attention, first):
     handle = runtime.create(command_fingerprint="state-race",
                             binding={"pid": 15})
     runtime.transition(handle, "running")
     barrier = threading.Barrier(2)
+    first_done = threading.Event()
+    first_state = attention if first == "attention" else "succeeded"
+    second_state = "succeeded" if first == "attention" else attention
 
     def transition(state):
         barrier.wait()
-        try:
-            runtime.transition(handle, state)
-        except Exception as exc:  # one terminal ordering may reject attention
-            return exc
-        return None
+        if state == second_state:
+            assert first_done.wait(timeout=2)
+        event = runtime.transition(handle, state)
+        if state == first_state:
+            first_done.set()
+        return event
 
     with ThreadPoolExecutor(max_workers=2) as workers:
-        results = list(workers.map(
-            transition, ("approval_required", "succeeded")))
+        list(workers.map(transition, (attention, "succeeded")))
 
     snapshot = runtime.snapshot(handle)
     states = [event["state"] for event in snapshot["events"]]
-    assert states in (["approval_required", "succeeded"], ["succeeded"])
-    # Serialization either preserves attention before completion or rejects
-    # the later invalid transition; it can never overwrite an accepted event.
-    if "approval_required" not in states:
-        assert any(isinstance(result, Exception) for result in results)
-    assert len({event["revision"] for event in snapshot["events"]}) == len(states)
+    assert states == [first_state, second_state]
+    assert snapshot["state"] == "succeeded"
+    assert len({event["revision"] for event in snapshot["events"]}) == 2
+
+    wakes = []
+    while (candidate := runtime.pending(handle, consumer="model")) is not None:
+        wakes.append(runtime.receive(
+            handle, consumer="model",
+            delivery_key=candidate["delivery_key"]))
+    assert [wake["state"] for wake in wakes] == states
+    assert runtime.snapshot(handle)["metrics"]["model_delivery_count"] == 2
+
+    # Replayed host notifications and post-receipt restart remain idempotent.
+    assert runtime.transition(handle, attention)["delivery_key"] == next(
+        wake["delivery_key"] for wake in wakes if wake["state"] == attention)
+    resumed = CommandRuntime(str(runtime.root), workspace="repo-a",
+                             authorization="actor-a", clock=lambda: 1001.0)
+    assert resumed.pending(handle, consumer="model") is None
 
 
 def test_delivery_claim_is_atomic_for_concurrent_consumers(runtime):
