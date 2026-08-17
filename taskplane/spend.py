@@ -32,6 +32,13 @@ from typing import Any
 # Cache reads ×0.1, cache writes ×2, output ×5, plain input ×1.
 WEIGHTS = {"input": 1.0, "cache_read": 0.1, "cache_write": 2.0, "output": 5.0}
 USAGE_SCHEMA = "taskplane.token-usage/v2"
+COMMAND_EFFICIENCY_SCHEMA = "taskplane.command-efficiency/v1"
+
+_COMMAND_COUNTERS = (
+    "launches", "elapsed_ms", "meaningful_wakes", "unchanged_model_polls",
+    "polling_raw_tokens", "total_raw_tokens", "avoided_polling_raw_tokens",
+    "baseline_polling_raw_tokens", "timeouts", "cancellations",
+)
 
 
 def _nonnegative_number(value: Any) -> float | None:
@@ -39,6 +46,81 @@ def _nonnegative_number(value: Any) -> float | None:
         return None
     number = float(value)
     return number if number >= 0 else None
+
+
+def _nonnegative_integer(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def command_efficiency(values: dict | None) -> dict:
+    """Normalize bounded command counters and enforce the hard cost gates.
+
+    Missing, malformed, and zero denominators are measurement failures.  They
+    never become convenient zeroes: a cost gate with no instrument is
+    ``unproven`` and therefore cannot qualify a frozen evaluation.
+    """
+    raw = values if isinstance(values, dict) else {}
+    counters = {name: _nonnegative_integer(raw.get(name))
+                for name in _COMMAND_COUNTERS}
+    total = counters["total_raw_tokens"]
+    baseline = counters["baseline_polling_raw_tokens"]
+    polling = counters["polling_raw_tokens"]
+    avoided = counters["avoided_polling_raw_tokens"]
+    share = (polling / total
+             if polling is not None and total is not None and total > 0
+             else None)
+    reduction = (avoided / baseline
+                 if avoided is not None and baseline is not None
+                 and baseline > 0 else None)
+
+    missing = [name for name, value in counters.items() if value is None]
+    unproven = []
+    if reduction is None:
+        unproven.append("polling token reduction is unproven")
+    if share is None:
+        unproven.append("polling token share is unproven")
+    if (polling is not None and total is not None and total > 0
+            and polling > total):
+        share = None
+        unproven.append("polling token total does not reconcile")
+    if (avoided is not None and baseline is not None and polling is not None
+            and baseline > 0 and avoided + polling != baseline):
+        reduction = None
+        unproven.append("polling baseline does not reconcile")
+    if missing and not unproven:
+        unproven.append("command efficiency counters are unproven: "
+                        + ", ".join(missing))
+
+    failures = []
+    unchanged = counters["unchanged_model_polls"]
+    if unchanged is not None and unchanged != 0:
+        failures.append("unchanged model polls must equal zero")
+    if reduction is not None and reduction < .90:
+        failures.append("polling token reduction must be at least 90%")
+    if share is not None and share >= .01:
+        failures.append(
+            "polling raw tokens must be less than 1% of total raw tokens")
+
+    if missing or unproven:
+        status = "unproven"
+        gate_failures = unproven
+    elif failures:
+        status = "fail"
+        gate_failures = failures
+    else:
+        status = "pass"
+        gate_failures = []
+    return {
+        "schema": COMMAND_EFFICIENCY_SCHEMA,
+        **counters,
+        "polling_token_reduction": reduction,
+        "polling_raw_token_share": share,
+        "measurement_status": ("measured" if not missing and not unproven
+                               else "unproven"),
+        "gate": {"status": status, "failures": gate_failures},
+    }
 
 
 def _first_number(mapping: dict, *keys: str) -> tuple[float | None, bool]:

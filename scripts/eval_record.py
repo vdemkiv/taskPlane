@@ -1192,6 +1192,21 @@ def _efficiency(*, ledger, obligation_rows, report, context_rows,
     return counters
 
 
+def _command_efficiency(*, driver_result, cost) -> dict:
+    """Freeze canonical runtime counters without retaining model content.
+
+    Provider totals are a fallback denominator, not an additional counter;
+    this prevents a host transcript and its driver projection being counted
+    twice.  The polling attribution and baseline must remain runtime-owned.
+    """
+    result = driver_result if isinstance(driver_result, dict) else {}
+    supplied = result.get("command_efficiency")
+    supplied = dict(supplied) if isinstance(supplied, dict) else {}
+    if supplied.get("total_raw_tokens") is None and cost.get("available"):
+        supplied["total_raw_tokens"] = cost.get("raw_total_tokens")
+    return spend.command_efficiency(supplied)
+
+
 def _plugin_version(root: str) -> "str | None":
     for rel in ((".codex-plugin", "plugin.json"),
                 (".claude-plugin", "plugin.json")):
@@ -1288,6 +1303,8 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
                              obligation_rows=obligation_rows, report=report,
                              context_rows=context_rows,
                              driver_result=driver_result, cost=cost)
+    command_efficiency = _command_efficiency(
+        driver_result=driver_result, cost=cost)
     driver_record = _driver_artifacts(out_dir, driver_result)
     fixture_key = hashlib.sha256(eval_drivers.canonical_bytes({
         "branch": fixture.get("branch"), "shas": fixture.get("shas") or [],
@@ -1327,6 +1344,7 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
             "reasoning_effort": reasoning_effort,
             "taskplane_version": _plugin_version(root),
             "efficiency": efficiency,
+            "command_efficiency": command_efficiency,
             "evaluation_lifecycle": _lifecycle_record(
                 run_id=run_id, host=host, driver_result=driver_result,
                 model=model, reasoning_effort=reasoning_effort, cost=cost),
@@ -1358,7 +1376,13 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
                 "workflow_failures": result["workflow"]["failures"],
                 "structural_failures": result["structural_efficiency"]["failures"],
                 "token_status": result["token_efficiency"]["status"],
+                "command_efficiency_status": command_efficiency["gate"]["status"],
             }
+            if command_efficiency["gate"]["status"] != "pass":
+                eligible = False
+                why = ("ineligible: command efficiency "
+                       + command_efficiency["gate"]["status"] + ": "
+                       + ", ".join(command_efficiency["gate"]["failures"]))
         else:
             eligible = False
             why = "ineligible: scenario manifest unavailable"

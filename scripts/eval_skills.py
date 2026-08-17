@@ -53,6 +53,20 @@ DELEGATING_SKILLS = frozenset({
     "taskplane", "tp-go", "tp-build", "tp-design", "tp-engineering",
 })
 
+_COMMAND_EFFICIENCY_FIELDS = (
+    "launches", "elapsed_ms", "meaningful_wakes", "unchanged_model_polls",
+    "polling_raw_tokens", "total_raw_tokens", "avoided_polling_raw_tokens",
+    "baseline_polling_raw_tokens", "timeouts", "cancellations",
+)
+
+
+def command_efficiency_telemetry(result: dict, *, host: str) -> dict:
+    """Host-neutral bounded projection; never copy prompts or transcripts."""
+    del host  # Both adapters intentionally implement the same contract.
+    source = ((result or {}).get("command_efficiency") or {}
+              if isinstance(result, dict) else {})
+    return {name: source.get(name) for name in _COMMAND_EFFICIENCY_FIELDS}
+
 
 def _files(root: str):
     for rel in STAGED_PATHS:
@@ -523,6 +537,8 @@ def run_skill(*, skill: str, host: str, output_root: str,
             base=ctx.base, head=ctx.head)
         result = adapter.run(manifest, cwd=ctx.ws, timeout_s=timeout_s,
                              env=ctx.env)
+        result["command_efficiency"] = command_efficiency_telemetry(
+            result, host=host)
         result["dispatch_route"] = route
         result["capability_source"] = route["capability_source"]
         result["onboarding"] = onboard
