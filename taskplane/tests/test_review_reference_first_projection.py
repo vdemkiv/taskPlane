@@ -63,12 +63,37 @@ class ReferenceFirstProjectionTest(unittest.TestCase):
         self.assertEqual(view["slot_id"], "deep.architecture-security")
         self.assertEqual(view["lens_ids"], ["architecture", "security"])
         self.assertEqual(view["producer"], "lens-slot")
+        self.assertEqual(view["envelope_digest"], envelope["digest"])
+        self.assertEqual(view["reference_manifest_fingerprint"],
+                         evidence.content_fingerprint(view["reference_manifest"]))
         self.assertEqual(view["integrity"]["algorithm"], "sha256")
         self.assertTrue(view["reference_manifest"])
         self.assertEqual(view["relevance"]["files"],
                          ["src/component-00001.py"])
         self.assertEqual({row["section"] for row in view["omissions"]},
                          {row["section"] for row in view["reference_manifest"]})
+
+    def test_portable_references_omit_host_paths_and_resolve_by_identity(self):
+        view = self.store.read(self.project(self.envelope(64 * 1024)))
+        reference = view["reference_manifest"][0]["reference"]
+        artifact = reference["artifact"]
+        self.assertNotIn("path", artifact)
+        self.assertNotIn("relative_path", artifact)
+        self.assertFalse(any(os.path.isabs(str(value))
+                             for value in artifact.values()))
+        self.assertIsNotNone(evidence.resolve_evidence_reference(
+            self.store, reference, target_fingerprint="target-1",
+            canonical_revision=7, allowed_sections={reference["section"]}))
+
+    def test_relevant_summaries_and_fitting_exact_sections_stay_inline(self):
+        view = self.store.read(self.project(self.envelope(2048)))
+        summaries = {row["section"] for row in view["relevant_summaries"]}
+        self.assertIn("diff", summaries)
+        self.assertIn("requirements", summaries)
+        self.assertTrue(view["inline_sections"])
+        self.assertTrue(set(view["inline_sections"]).isdisjoint(
+            row["section"] for row in view["reference_manifest"]))
+        self.assertLessEqual(len(evidence.canonical_bytes(view)), 16 * 1024)
 
     def test_exact_budget_boundary_is_accepted_and_impossible_spine_fails(self):
         envelope = self.envelope(2048)
@@ -79,7 +104,10 @@ class ReferenceFirstProjectionTest(unittest.TestCase):
             exact = len(evidence.canonical_bytes(view))
             evidence.MAX_SCOPED_VIEW_BYTES = exact
             self.project(envelope)
-            evidence.MAX_SCOPED_VIEW_BYTES = exact - 1
+            # A one-byte reduction may legitimately externalize another exact
+            # candidate.  A budget below the mandatory provenance spine must
+            # still fail closed rather than truncate it.
+            evidence.MAX_SCOPED_VIEW_BYTES = 1
             with self.assertRaisesRegex(evidence.ArtifactIntegrityError,
                                         "mandatory scoped view spine"):
                 self.project(envelope)
@@ -146,7 +174,8 @@ class ReferenceFirstProjectionTest(unittest.TestCase):
                     self.store, changed, target_fingerprint="target-1",
                     canonical_revision=7, allowed_sections={ref["section"]})
 
-        os.unlink(ref["artifact"]["path"])
+        os.unlink(self.store._path(ref["artifact"]["kind"],
+                                   ref["artifact"]["fingerprint"]))
         with self.assertRaises(evidence.ArtifactIntegrityError):
             evidence.resolve_evidence_reference(
                 self.store, ref, target_fingerprint="target-1",
@@ -159,7 +188,9 @@ class ReferenceFirstProjectionTest(unittest.TestCase):
             return view["reference_manifest"][0]["reference"]
 
         mutated = reference()
-        with open(mutated["artifact"]["path"], "ab") as stream:
+        mutated_path = self.store._path(mutated["artifact"]["kind"],
+                                        mutated["artifact"]["fingerprint"])
+        with open(mutated_path, "ab") as stream:
             stream.write(b"altered")
         with self.assertRaisesRegex(evidence.ArtifactIntegrityError,
                                     "digest mismatch"):
@@ -173,7 +204,8 @@ class ReferenceFirstProjectionTest(unittest.TestCase):
         envelope = self.envelope(32 * 1024)
         view = self.store.read(self.project(envelope, canonical_revision=8))
         escaped = view["reference_manifest"][0]["reference"]
-        path = escaped["artifact"]["path"]
+        path = self.store._path(escaped["artifact"]["kind"],
+                                escaped["artifact"]["fingerprint"])
         os.unlink(path)
         external = os.path.join(self.ws, "outside.json")
         with open(external, "w", encoding="utf-8") as stream:

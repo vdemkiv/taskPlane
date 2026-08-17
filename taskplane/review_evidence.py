@@ -141,9 +141,13 @@ class ArtifactStore:
         kind = self._validate_kind(ref.get("kind"))
         expected = os.path.abspath(self._path(kind, ref.get("fingerprint")))
         supplied_path = ref.get("path")
-        if not supplied_path:
+        if not supplied_path and ref.get("relative_path"):
             relative = str(ref.get("relative_path") or "")
             supplied_path = os.path.join(self.workspace, *relative.split("/"))
+        if not supplied_path:
+            # Portable references deliberately carry no host-specific path.
+            # Their kind/fingerprint tuple is the canonical local locator.
+            supplied_path = expected
         supplied = os.path.abspath(str(supplied_path))
         if supplied != expected:
             raise ArtifactIntegrityError("artifact reference points outside canonical store path")
@@ -425,9 +429,52 @@ def _evidence_reference(store: ArtifactStore, envelope: dict, *, section: str,
         "digest": artifact["digest"],
         "bytes": artifact["bytes"],
         "fingerprint": artifact["fingerprint"],
-        "artifact": artifact,
+        "artifact": {
+            key: artifact[key] for key in (
+                "schema", "kind", "fingerprint", "digest", "bytes",
+                "transport")
+        },
         "transport": "artifact-reference",
     }
+
+
+_LENS_RELEVANT_SECTIONS = {
+    "architecture": {"diff", "impact", "graph_quality", "requirements",
+                     "contracts", "change"},
+    "security": {"diff", "impact", "runnability", "requirements",
+                 "contracts", "change"},
+    "performance": {"diff", "impact", "graph_quality", "runnability",
+                    "change"},
+    "scalability": {"diff", "impact", "graph_quality", "runnability",
+                    "change"},
+    "privacy-compliance": {"diff", "requirements", "contracts", "change"},
+    "data-safety": {"diff", "impact", "requirements", "contracts", "change"},
+}
+
+
+def _relevant_sections(lens_ids) -> set[str]:
+    """Return deterministic evidence candidates useful to the routed lenses."""
+    relevant = {"diff", "requirements", "change"}
+    for lens_id in _strings(lens_ids):
+        relevant.update(_LENS_RELEVANT_SECTIONS.get(lens_id, ()))
+    return relevant
+
+
+def _section_summary(section: str, value) -> dict:
+    """Produce a small deterministic summary without inventing review facts."""
+    summary = {
+        "section": section,
+        "content_bytes": len(canonical_bytes(value)),
+        "content_fingerprint": content_fingerprint(value),
+    }
+    if isinstance(value, dict):
+        summary["keys"] = sorted(str(key) for key in value)[:16]
+        for key in ("status", "total_impacted", "truncated"):
+            if key in value and isinstance(value[key], (str, int, bool, type(None))):
+                summary[key] = value[key]
+    elif isinstance(value, list):
+        summary["item_count"] = len(value)
+    return summary
 
 
 def resolve_evidence_reference(store: ArtifactStore, reference: dict, *,
@@ -496,32 +543,24 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
 
     sections = ("diff", "impact", "graph_quality", "runnability",
                 "requirements", "contracts", "change")
-    manifest = []
-    for section in sections:
-        value = envelope.get(section)
-        reference = _evidence_reference(
-            store, envelope, section=section, value=value,
-            canonical_revision=revision)
-        manifest.append({
-            "section": section,
-            "reason": "canonical content available by verified reference",
-            "content_bytes": len(canonical_bytes(value)),
-            "content_fingerprint": content_fingerprint(value),
-            "reference": reference,
-        })
+    lenses = _strings(lens_ids)
+    relevant_sections = _relevant_sections(lenses)
+    summaries = [_section_summary(section, envelope.get(section))
+                 for section in sections if section in relevant_sections]
 
     wanted = _strings(relevant_files)
     changed = set(_strings((envelope.get("diff") or {}).get("files")))
     relevant = [path for path in wanted if path in changed]
-    base = {
+    spine = {
         "schema": "taskplane.scoped-review-view/v3",
         "target_fingerprint": envelope["target_fingerprint"],
         "context_fingerprint": envelope["context_fingerprint"],
         "envelope_fingerprint": envelope_ref["fingerprint"],
+        "envelope_digest": envelope_ref["digest"],
         "canonical_revision": revision,
         "routing_fingerprint": str(routing_fingerprint).strip(),
         "slot_id": slot_id,
-        "lens_ids": _strings(lens_ids),
+        "lens_ids": lenses,
         "producer": str(producer).strip(),
         "lease_identity": {
             "slot_id": slot_id,
@@ -533,20 +572,67 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
             "file_count": len(relevant),
             "changed_file_count": len(changed),
         },
-        "reference_manifest": manifest,
-        "omissions": [{
+        "relevant_summaries": summaries,
+        "forbidden_derivations": ["git diff", "graph impact", "graph scan",
+                                  "requirement lookup", "runnability probe"],
+    }
+    ordered = sorted(sections, key=lambda section: (
+        0 if section in relevant_sections else 1, section,
+        content_fingerprint(envelope.get(section))))
+    inline_sections = {}
+    manifest = []
+    for section in ordered:
+        value = envelope.get(section)
+        reference = _evidence_reference(
+            store, envelope, section=section, value=value,
+            canonical_revision=revision)
+        manifest.append({
+            "section": section,
+            "reason": "canonical content exceeds bounded producer view",
+            "content_bytes": len(canonical_bytes(value)),
+            "content_fingerprint": content_fingerprint(value),
+            "reference": reference,
+        })
+
+    def shaped_payload(current_inline, current_manifest):
+        omissions = [{
             "section": row["section"],
             "reason": "referenced outside the bounded producer view",
             "bytes": row["content_bytes"],
             "digest": row["reference"]["digest"],
-        } for row in manifest],
-        "forbidden_derivations": ["git diff", "graph impact", "graph scan",
-                                  "requirement lookup", "runnability probe"],
-    }
+            "reference": row["reference"],
+        } for row in current_manifest]
+        base = dict(
+            spine, inline_sections=current_inline,
+            reference_manifest=current_manifest,
+            reference_manifest_fingerprint=content_fingerprint(current_manifest),
+            omissions=omissions)
+        integrity = content_fingerprint(base)
+        return dict(base, integrity={"algorithm": "sha256",
+                                     "fingerprint": integrity},
+                    view_fingerprint=integrity)
+
+    # Start from the fully bounded reference representation, then spend only
+    # verified remaining bytes on exact content in relevance order.  Testing
+    # the complete final shape reserves all manifest/omission bytes up front.
+    for section in ordered:
+        row = next(item for item in manifest if item["section"] == section)
+        candidate_manifest = [item for item in manifest if item is not row]
+        candidate_inline = dict(inline_sections)
+        candidate_inline[section] = copy.deepcopy(envelope.get(section))
+        if len(canonical_bytes(shaped_payload(
+                candidate_inline, candidate_manifest))) <= MAX_SCOPED_VIEW_BYTES:
+            inline_sections = candidate_inline
+            manifest = candidate_manifest
+
+    payload = shaped_payload(inline_sections, manifest)
+    base = {key: value for key, value in payload.items()
+            if key not in ("integrity", "view_fingerprint")}
     integrity = content_fingerprint(base)
-    payload = dict(base, integrity={"algorithm": "sha256",
-                                    "fingerprint": integrity},
-                   view_fingerprint=integrity)
+    # shaped_payload and this explicit calculation intentionally agree; keep
+    # the final binding adjacent to the boundary check for auditability.
+    payload["integrity"] = {"algorithm": "sha256", "fingerprint": integrity}
+    payload["view_fingerprint"] = integrity
     size = len(canonical_bytes(payload))
     if size > MAX_SCOPED_VIEW_BYTES:
         raise ArtifactIntegrityError(
