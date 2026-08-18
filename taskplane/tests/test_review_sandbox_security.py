@@ -104,6 +104,8 @@ def test_validation_launch_rejects_unbound_boolean_only_claim(tmp_path):
     ["git", "send-pack", "ssh://example.test/repo", "HEAD"],
     ["env", "TOKEN=x", "git", "push", "origin", "HEAD"],
     ["sh", "-c", "git push https://example.test/repo HEAD --no-verify"],
+    ["git", "-c", "alias.x=push", "x", "https://example.test/repo", "HEAD"],
+    ["git", "x", "https://example.test/repo", "HEAD"],
 ])
 def test_validation_transport_rejects_push_and_shell_bypasses(tmp_path, command):
     root = tmp_path / "sandbox"
@@ -116,6 +118,20 @@ def test_validation_transport_rejects_push_and_shell_bypasses(tmp_path, command)
             command, cwd=str(root), session=_session(), sandbox=_sandbox(root),
         )
     assert launches == []
+
+
+def test_validation_transport_allows_explicit_read_only_git_builtin(tmp_path):
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    launches = []
+    adapter = _adapter(tmp_path, launches)
+
+    adapter.launch_review_validation(
+        ["git", "status", "--short"], cwd=str(root), session=_session(),
+        sandbox=_sandbox(root),
+    )
+
+    assert launches == [(["git", "status", "--short"], str(root.resolve()))]
 
 
 def test_remote_evidence_cannot_treat_two_missing_observations_as_unchanged():

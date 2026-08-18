@@ -22,6 +22,18 @@ from taskplane.review_session import (
 
 SUPPORTED_HOSTS = frozenset({"claude", "codex"})
 
+# Git aliases and external helpers make a denylist unsafe here: an apparently
+# harmless, unknown subcommand can resolve to ``push`` (or arbitrary shell
+# code) before the sandbox's disabled origin is consulted.  Validation only
+# needs repository inspection, so admit named built-ins whose behavior is
+# read-only and reject Git's global-option/configuration command layer.
+_REVIEW_READ_ONLY_GIT_COMMANDS = frozenset({
+    "branch", "cat-file", "check-attr", "check-ignore", "diff",
+    "diff-files", "diff-index", "diff-tree", "for-each-ref", "grep",
+    "log", "ls-files", "ls-tree", "merge-base", "name-rev", "rev-list",
+    "rev-parse", "show", "show-ref", "status", "symbolic-ref",
+})
+
 
 class Launcher(Protocol):
     def __call__(self, command: object, cwd: str) -> "HostLaunch": ...
@@ -150,10 +162,14 @@ class CommandAdapter:
             argv = argv[index:]
             executable = os.path.basename(argv[0]).lower() if argv else ""
         if executable in {"git", "git.exe"}:
-            forbidden = {"push", "send-pack", "remote"}
-            if any(item.lower() in forbidden for item in argv[1:]):
+            # The subcommand must be the first argument.  In particular,
+            # reject ``-c alias.x=push x`` and config/env indirections rather
+            # than attempting to interpret Git's extensible command grammar.
+            subcommand = argv[1].lower() if len(argv) > 1 else ""
+            if subcommand not in _REVIEW_READ_ONLY_GIT_COMMANDS:
                 raise ValueError(
-                    "push-disabled review validation forbids remote writes")
+                    "push-disabled review validation permits only explicit "
+                    "read-only git commands")
 
     def wait_review_event(self, handle: str, *, consumer: str,
                           interrupted: Callable[[], bool] | None = None,
