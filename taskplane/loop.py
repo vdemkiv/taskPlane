@@ -31,6 +31,7 @@ import json
 import os
 import time
 
+import authority as authority_engine
 import command_wave
 import depgraph
 import evaluation_output
@@ -62,6 +63,74 @@ EVALUATE_ROUTE_STAGE = "build"
 _review_kernel_binding_key = review_retry.binding_key
 review_kernel_binding = review_retry.binding
 review_session_authority_gate = review_session_engine.request_authority
+
+
+def _consolidated_enabled() -> bool:
+    return os.environ.get("TASKPLANE_CONSOLIDATED_FLOW", "").strip().lower() \
+        in {"1", "true", "yes", "on"}
+
+
+def _authorization_fields(ws: str, state: dict) -> dict:
+    """Build the semantic preimplementation envelope from engine facts."""
+    requirement = reqs.get_requirement(ws, state.get("requirement_id")) or {}
+    design, _ = _design_contract(ws)
+    tasks = state.get("tasks") or []
+    scope = sorted({str(path) for task in tasks
+                    for path in task.get("scope") or []})
+    contracts = {
+        str(row.get("id")): str(row.get("relation") or "")
+        for row in requirement.get("contracts") or []
+        if isinstance(row, dict) and row.get("id")
+    }
+    for row in (design or {}).get("contracts") or []:
+        if isinstance(row, dict) and row.get("id"):
+            contracts[str(row["id"])] = {
+                "relation": str(row.get("relation") or ""),
+                "description": str(row.get("description") or ""),
+            }
+    plan = [{
+        "id": str(task.get("id") or ""),
+        "scope": sorted(str(path) for path in task.get("scope") or []),
+        "tests": str(task.get("tests") or ""),
+        "deps": sorted(str(dep) for dep in task.get("deps") or []),
+        "variant": task.get("variant"),
+    } for task in tasks]
+    return {
+        "requirement": str(state.get("requirement_id") or ""),
+        "acceptance": list(requirement.get("acceptance") or []),
+        "target": {"repository": os.path.realpath(ws),
+                   "revision": (state.get("authority_target_revision") or
+                                tp.git_head(ws))},
+        "scope": scope,
+        "contracts": contracts,
+        "design": {
+            "decision": str((design or {}).get("decision") or ""),
+            "depth_policy": ((design or {}).get("graph") or {}).get(
+                "depth_policy") or {},
+        },
+        "plan": {"tasks": plan, "parallel": bool(state.get("parallel"))},
+        "dynamic_validation": state.get("dynamic_validation_intent", "declared"),
+        "sandbox": state.get("sandbox_authority", "ordinary_scoped_activity"),
+        "recovery": {"max_fix_cycles": int(state.get("max_fix_cycles", 2)),
+                     "gate_weakening": False},
+        "evaluation": "declared tests, routed lenses, collection",
+        "artifact_delivery": ["canonical_json", "inline_or_complete_markdown"],
+        "execution_bounds": {"parallel": bool(state.get("parallel")),
+                             "external_effects": False},
+    }
+
+
+def _derive_consolidated_authority(ws: str, state: dict,
+                                   stage: str) -> dict | None:
+    packet, receipt = (state.get("authority_packet"),
+                       state.get("authority_receipt"))
+    if not _consolidated_enabled() or not packet or not receipt:
+        return None
+    return authority_engine.derive(
+        packet, receipt, stage=stage,
+        current=_authorization_fields(ws, state),
+        actor=str(receipt.get("actor") or ""),
+        thread=str(receipt.get("thread") or ""))
 
 def _state_dir(ws: str) -> str:
     """Loop coordination state. v1.5.1: state is PER-USER even in team/repo
@@ -849,7 +918,11 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         awaiting = {
             "design_approval": "human: review design/design.md and the "
                                "Design Contract, then `loop approve`",
-            "plan_approval": "human: review plan/plan.md, then `loop approve`",
+            "plan_approval": ("human: review the consolidated requirement, "
+                              "conditional design, plan, scope, validation, "
+                              "recovery, and delivery packet, then `loop approve`"
+                              if _consolidated_enabled() else
+                              "human: review plan/plan.md, then `loop approve`"),
             "selection": "human: A/B gate — compare the variants (rendered "
                          "side by side, criteria + lenses + spend), then "
                          "`loop select <variant|task-id|hybrid>`",
@@ -2593,7 +2666,18 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     _validated["requirement_refinement"]
             state["step"] = ("design" if state.get("design_required") else "plan")
         elif step == "design":
-            state["step"] = "design_approval"
+            if _consolidated_enabled():
+                contract, _ = _design_contract(ws)
+                state["design_fingerprint"] = _design_evidence_fingerprint(
+                    ws, contract)
+                state["design_approved_by"] = "mechanical-definition-gate"
+                _record_design_contracts(ws, state, contract)
+                state["step"] = ("design_approval" if state.get("design_only")
+                                 else "plan")
+                tp.trace(ws, "mechanical_gate", gate="design",
+                         outcome="pass", human_required=False)
+            else:
+                state["step"] = "design_approval"
         elif step == "plan":
             # Product↔engineering graph, PLANNED side: link each task's
             # requirement to the modules its scope intends to touch, then
@@ -2602,8 +2686,20 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             # human approves the plan seeing both; the executor's contract
             # briefing carries them; evaluation compares against them later.
             _annotate_plan_graph(ws, state)
-            state["step"] = ("plan_approval" if "plan" in state["checkpoints"]
-                             else "execute")
+            derivation = _derive_consolidated_authority(ws, state, "execute")
+            if derivation and derivation.get("authorized"):
+                state["authority_derivations"] = {
+                    **(state.get("authority_derivations") or {}),
+                    "execute": derivation,
+                }
+                state["step"] = "execute"
+                tp.trace(ws, "mechanical_gate", gate="plan",
+                         outcome="pass", human_required=False,
+                         authority=derivation.get("fingerprint"))
+            else:
+                state["step"] = ("plan_approval"
+                                 if "plan" in state["checkpoints"]
+                                 else "execute")
             state["current_task"] = 0
             if state["step"] == "execute":
                 state["baseline"] = tp.git_head(ws)
@@ -2992,6 +3088,25 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
                                                 "approve", by=by)):
             return refusal
+        if _consolidated_enabled():
+            state["authority_target_revision"] = tp.git_head(ws)
+            fields = _authorization_fields(ws, state)
+            packet = authority_engine.create_packet(fields)
+            actor = str(by or "").strip()
+            receipt = authority_engine.approve(
+                packet, actor=actor,
+                thread="loop:" + packet["fingerprint"][:20],
+                authenticated=bool(actor))
+            state["authority_packet"] = packet
+            state["authority_receipt"] = receipt
+            state["authority_derivations"] = {
+                "execute": authority_engine.derive(
+                    packet, receipt, stage="execute", current=fields,
+                    actor=receipt["actor"], thread=receipt["thread"])
+            }
+            tp.trace(ws, "authority_packet", actor=receipt["actor"],
+                     packet=packet["fingerprint"],
+                     receipt=receipt["fingerprint"])
         # Baseline for later diff-routing at EVALUATE/EM.
         state["baseline"] = tp.git_head(ws)
         state["step"] = "execute"
