@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import html
 
 import taskplane_lite as tp
 import loop as _loop        # engine owns the state machine; the view derives
@@ -4701,6 +4702,289 @@ def report_widget(ws: str) -> str:
 def _page_bytes(html: str) -> int:
     """The ENFORCED budget unit: UTF-8 bytes of the emitted fragment."""
     return len(html.encode("utf-8"))
+
+
+# Host-native dashboard contract (R-0011).  These are semantic component
+# identifiers, deliberately independent of either host's visual vocabulary.
+HOST_DASHBOARD_COMPONENTS = (
+    "workflow", "dor", "dependency_impact", "agents", "lenses",
+    "criteria", "findings", "validation", "artifacts", "gate",
+)
+
+
+def _dashboard_plain(value):
+    """Return JSON-shaped presentation data without mutating canonical data."""
+    if isinstance(value, dict) or hasattr(value, "items"):
+        return {str(key): _dashboard_plain(item)
+                for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_dashboard_plain(item) for item in value]
+    return value
+
+
+def carousel_pages(items, *, filters=None, current=1, page_size=8):
+    """Create deterministic, lossless carousel pages of three to eight items.
+
+    Zero and one item remain concise native cards.  Larger collections use a
+    stable input order; a one/two-item tail is rebalanced into the preceding
+    page so every carousel page stays within the host UI guideline.  Filtering
+    is explicit equality matching and therefore serializable and replayable.
+    """
+    if isinstance(page_size, bool) or not isinstance(page_size, int) \
+            or not 3 <= page_size <= 8:
+        raise ValueError("page_size must be between 3 and 8")
+    filters = dict(filters or {})
+    selected = []
+    identities = set()
+    for raw in items:
+        row = _dashboard_plain(raw)
+        identity = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(identity, str) or not identity.strip() \
+                or identity in identities:
+            raise ValueError("every carousel item requires a stable unique id")
+        identities.add(identity)
+        if all(row.get(key) == value for key, value in filters.items()):
+            selected.append(row)
+
+    chunks = [selected[i:i + page_size]
+              for i in range(0, len(selected), page_size)]
+    if len(chunks) > 1 and len(chunks[-1]) < 3:
+        needed = 3 - len(chunks[-1])
+        chunks[-1][0:0] = chunks[-2][-needed:]
+        del chunks[-2][-needed:]
+    total_pages = len(chunks)
+    active = min(max(int(current or 1), 1), max(total_pages, 1))
+    pages = [{
+        "id": f"page-{index}",
+        "position": index,
+        "total_pages": total_pages,
+        "items": chunk,
+        "item_ids": [item["id"] for item in chunk],
+    } for index, chunk in enumerate(chunks, 1)]
+    return {
+        "schema": "taskplane.host-carousel/v1",
+        "total_items": len(selected),
+        "total_pages": total_pages,
+        "current": active,
+        "filters": filters,
+        "navigation": {
+            "previous": active - 1 if total_pages and active > 1 else None,
+            "next": active + 1 if active < total_pages else None,
+        },
+        "pages": pages,
+    }
+
+
+def native_dashboard_projection(snapshot, *, host, filters=None, current=1):
+    """Project one canonical snapshot into an accessible host-native model.
+
+    The host-specific section contains styling and interaction affordances
+    only.  It cannot change semantic values, evidence, provenance, ordering,
+    actions, or gate state, keeping Claude and Codex projections comparable.
+    """
+    if host not in {"codex", "claude"}:
+        raise ValueError("host must be codex or claude")
+    canonical = snapshot.to_dict()
+    values = canonical["values"]
+    components = []
+    for order, name in enumerate(HOST_DASHBOARD_COMPONENTS):
+        value = _dashboard_plain(values.get(name, {}))
+        row = {"id": name, "order": order, "value": value}
+        if isinstance(value, dict) and isinstance(value.get("items"), list):
+            row["collection"] = carousel_pages(
+                value["items"], filters=filters, current=current)
+        components.append(row)
+
+    actions = list(canonical["safe_actions"])
+    return {
+        "schema": "taskplane.host-native-dashboard/v1",
+        "identity": {key: canonical[key] for key in (
+            "workflow_id", "run_id", "target", "revision", "sequence")},
+        "stage": canonical["stage"],
+        "state": canonical["state"],
+        "fingerprint": canonical["fingerprint"],
+        "components": components,
+        "evidence": list(canonical["evidence"]),
+        "safe_actions": actions,
+        "presentation": {
+            "host": host,
+            "style": "openai-system" if host == "codex" else "claude-system",
+            "primary_actions": actions[:2],
+            "detail_actions": actions[2:],
+            "card": {
+                "single_purpose": True,
+                "max_primary_actions": 2,
+                "nested_scroll": False,
+                "deep_navigation": False,
+                "rich_detail_surface": "fullscreen",
+                "composer_retained": True,
+            },
+            "responsive": {"min_viewport_px": 320, "layout": "fluid"},
+            "accessibility": {
+                "semantic_labels": True,
+                "alt_text": True,
+                "keyboard_navigation": True,
+                "visible_focus": True,
+                "text_scale_percent": 200,
+                "reduced_motion": True,
+                "status_not_color_only": True,
+                "contrast": "WCAG-AA",
+                "fonts": "system",
+                "tokens": "host-system",
+                "themes": ["light", "dark"],
+            },
+        },
+    }
+
+
+_HOST_SURFACE_TOKENS = {
+    "light": {
+        "background": "#ffffff", "surface": "#f8fafc",
+        "text": "#111827", "muted": "#4b5563", "border": "#64748b",
+        "focus": "#1d4ed8", "status": "#166534",
+    },
+    "dark": {
+        "background": "#111827", "surface": "#1f2937",
+        "text": "#f9fafb", "muted": "#d1d5db", "border": "#94a3b8",
+        "focus": "#93c5fd", "status": "#86efac",
+    },
+}
+
+
+def render_native_dashboard_surface(projection, *, viewport_px=1024,
+                                    theme="light", text_scale_percent=100,
+                                    reduced_motion=False):
+    """Render the host projection as a bounded, testable inline surface.
+
+    This is the shared fallback/reference projector used when a host does not
+    expose its native widget API and as the behavioral fixture for both native
+    projectors.  Unlike the projection metadata, the returned HTML embodies
+    the contract: semantic single-purpose cards, a composer outside the
+    dashboard region, at most two inline actions, and rich detail in a linked
+    fullscreen dialog.  Host adapters may restyle it but must retain this DOM
+    and interaction graph.
+    """
+    if projection.get("schema") != "taskplane.host-native-dashboard/v1":
+        raise ValueError("unsupported dashboard projection")
+    if theme not in _HOST_SURFACE_TOKENS:
+        raise ValueError("theme must be light or dark")
+    if isinstance(viewport_px, bool) or not isinstance(viewport_px, int) \
+            or viewport_px < 320:
+        raise ValueError("viewport_px must be at least 320")
+    if text_scale_percent not in {100, 200}:
+        raise ValueError("text_scale_percent must be 100 or 200")
+
+    tokens = _HOST_SURFACE_TOKENS[theme]
+    token_css = ";".join(
+        f"--tp-{name}:{value}" for name, value in tokens.items())
+    layout = "single-column" if viewport_px < 720 else "responsive-grid"
+    motion = "none" if reduced_motion else "120ms ease"
+    styles = (
+        ".tp-host{box-sizing:border-box;background:var(--tp-background);"
+        "color:var(--tp-text);font-family:system-ui,-apple-system,sans-serif;"
+        "max-width:100%;overflow:visible}"
+        ".tp-dashboard{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));"
+        "gap:12px}.tp-card{background:var(--tp-surface);border:1px solid "
+        "var(--tp-border);padding:12px;min-width:0;overflow:visible}"
+        ".tp-card:focus-within,.tp-action:focus-visible,.tp-detail:focus-visible{"
+        "outline:3px solid var(--tp-focus);outline-offset:2px}"
+        ".tp-status{color:var(--tp-status);font-weight:650}"
+        ".tp-muted{color:var(--tp-muted)}.tp-actions{display:flex;flex-wrap:wrap;gap:8px}"
+        ".tp-detail{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;"
+        "max-height:none;margin:0;background:var(--tp-background);color:var(--tp-text);"
+        "border:0;padding:24px}.tp-composer{display:flex;margin-top:12px}"
+        "@media(max-width:719px){.tp-dashboard{grid-template-columns:1fr}}"
+        "@media(prefers-reduced-motion:reduce){*,*::before,*::after{"
+        "animation-duration:.01ms!important;transition-duration:.01ms!important}}"
+    )
+
+    cards = []
+    for component in projection.get("components", []):
+        component_id = html.escape(str(component["id"]), quote=True)
+        label_id = f"tp-{component_id}-label"
+        value = component.get("value", {})
+        status = value.get("status", "available") if isinstance(value, dict) \
+            else "available"
+        provenance = value.get("provenance", "not recorded") \
+            if isinstance(value, dict) else "not recorded"
+        collection = component.get("collection")
+        collection_text = ""
+        if collection:
+            collection_text = (
+                f'<p class="tp-muted" aria-label="Carousel position">'
+                f'{collection["total_items"]} items; page '
+                f'{collection["current"]} of {max(collection["total_pages"], 1)}'
+                f'</p>')
+        cards.append(
+            f'<section class="tp-card" data-purpose="{component_id}" '
+            f'aria-labelledby="{label_id}"><h2 id="{label_id}">{component_id}</h2>'
+            f'<p class="tp-status"><span aria-hidden="true">&#10003;</span> '
+            f'<span>{html.escape(str(status))}</span></p>{collection_text}'
+            f'<p class="tp-muted">Provenance: {html.escape(str(provenance))}</p>'
+            f'</section>')
+
+    inline_actions = projection.get("presentation", {}).get("primary_actions", [])[:2]
+    detail_actions = projection.get("presentation", {}).get("detail_actions", [])
+    # The detail trigger is itself a primary inline action. Reserve one of the
+    # two slots for it when overflow actions exist.
+    if detail_actions:
+        detail_actions = inline_actions[1:] + detail_actions
+        inline_actions = inline_actions[:1]
+    action_buttons = "".join(
+        f'<button class="tp-action" type="button" aria-label="{html.escape(str(action))}" '
+        f'data-action="{html.escape(str(action), quote=True)}">'
+        f'{html.escape(str(action))}</button>' for action in inline_actions)
+    detail_buttons = "".join(
+        f'<button type="button" aria-label="{html.escape(str(action))}">'
+        f'{html.escape(str(action))}</button>' for action in detail_actions)
+    if detail_actions:
+        action_buttons += (
+            '<button class="tp-action" type="button" aria-label="Open full details" '
+            'aria-controls="tp-fullscreen-detail" data-detail-trigger="true">Details</button>')
+
+    interaction = (
+        '<script>(function(){'
+        'var root=document.currentScript.closest(".tp-host");'
+        'if(!root){return;}'
+        'var trigger=root.querySelector("[data-detail-trigger]");'
+        'var dialog=root.querySelector("#tp-fullscreen-detail");'
+        'var closer=root.querySelector("[data-detail-close]");'
+        'if(!trigger||!dialog||!closer){return;}'
+        'var opener=null;'
+        'function openDetail(){opener=document.activeElement||trigger;'
+        'if(typeof dialog.showModal==="function"){dialog.showModal();}'
+        'else{dialog.setAttribute("open","");}'
+        'closer.focus();}'
+        'function closeDetail(){'
+        'if(dialog.open&&typeof dialog.close==="function"){dialog.close();}'
+        'else{dialog.removeAttribute("open");}'
+        'if(opener&&typeof opener.focus==="function"){opener.focus();}}'
+        'trigger.addEventListener("click",openDetail);'
+        'closer.addEventListener("click",closeDetail);'
+        'dialog.addEventListener("cancel",function(event){'
+        'event.preventDefault();closeDetail();});'
+        '})();</script>')
+
+    return (
+        '<div class="tp-host" data-host="'
+        + html.escape(str(projection["presentation"]["host"]), quote=True)
+        + f'" data-theme="{theme}" data-layout="{layout}" '
+          f'data-viewport-width="{viewport_px}" data-reduced-motion="'
+        + ("true" if reduced_motion else "false")
+        + f'" style="{token_css};font-size:{text_scale_percent}%;transition:{motion}">'
+          f'<style>{styles}</style><main class="tp-dashboard" '
+          f'aria-label="Taskplane workflow dashboard">{"".join(cards)}</main>'
+          f'<nav class="tp-actions" aria-label="Dashboard actions">{action_buttons}</nav>'
+          f'<dialog id="tp-fullscreen-detail" class="tp-detail" '
+          f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">Dashboard details</h2>'
+          f'<img alt="Workflow evidence overview" width="1" height="1" '
+          f'src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" />{detail_buttons}'
+          f'<button type="button" aria-label="Close details" '
+          f'data-detail-close="true">Close</button></dialog>'
+          f'<form class="tp-composer" aria-label="Conversation composer">'
+          f'<label for="tp-message">Message</label><textarea id="tp-message" '
+          f'name="message"></textarea><button type="submit">Send</button></form>'
+          f'{interaction}</div>')
 
 
 def _fit_page(html: str, budget: int) -> str:
