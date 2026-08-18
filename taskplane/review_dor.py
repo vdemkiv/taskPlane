@@ -16,6 +16,17 @@ from typing import Iterable, Mapping
 
 DOR_SCHEMA = "taskplane.review-dor-evidence/v1"
 CRITERION_SCHEMA = "taskplane.review-criterion-ledger/v1"
+NORTH_STAR_FIELDS = (
+    "alignment", "leverage", "reversibility", "opportunity_cost",
+    "coherence", "sharpest_tension", "recommendation",
+)
+
+_NORTH_STAR_SIGNALS = {
+    "strategic_ambiguity": (
+        "strategic ambiguity", "strategy unclear", "direction unclear"),
+    "high_opportunity_cost": ("high opportunity cost", "opportunity cost"),
+    "irreversible_direction": ("irreversible", "lock-in", "one-way door"),
+}
 
 # Eight canonical probes.  Linked specifications and standalone acceptance
 # text share one requirements probe because hosts expose them differently.
@@ -379,3 +390,33 @@ def criterion_ledger(results: Iterable[Mapping], *, revision: str) -> dict:
     }
     payload["fingerprint"] = _fingerprint(payload)
     return payload
+
+
+def north_star_advice(requirement_text: Iterable[str], *, explicit: bool = False,
+                      advice: Mapping | None = None) -> dict:
+    """Conditionally shape Product's internal strategic note.
+
+    This is advisory evidence only.  Missing or disagreeing advice is visible
+    but cannot independently become a delivery blocker.
+    """
+    combined = " ".join(str(item or "").lower()
+                        for item in requirement_text or ())
+    triggers = sorted(
+        name for name, phrases in _NORTH_STAR_SIGNALS.items()
+        if any(phrase in combined for phrase in phrases)
+    )
+    if explicit:
+        triggers.append("explicit_request")
+    triggers = sorted(set(triggers))
+    if not triggers:
+        return {"invoked": False, "blocking": False, "reasons": []}
+    note = {field: str((advice or {}).get(field) or "").strip()
+            for field in NORTH_STAR_FIELDS}
+    reasons = [] if all(note.values()) else ["advice_incomplete"]
+    return {
+        "invoked": True,
+        "blocking": False,
+        "triggers": triggers,
+        "advice": note,
+        "reasons": reasons,
+    }
