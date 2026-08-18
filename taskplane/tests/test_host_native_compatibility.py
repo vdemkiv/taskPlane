@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
-from taskplane.dashboard import native_dashboard_projection
 from taskplane.host_capabilities import Observation, negotiate_host_surfaces
-from taskplane.host_native import HostSurfaceEvent, HostSurfaceSnapshot
+from taskplane.host_native import HostSurfaceSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,8 +27,14 @@ IDENTITY = {
 }
 
 
-def _manifest(path: str) -> dict:
-    return json.loads((ROOT / path).read_text(encoding="utf-8"))
+def _runtime_module():
+    path = ROOT / "hooks" / "host_native_runtime.py"
+    spec = importlib.util.spec_from_file_location("host_native_runtime", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _snapshot(sequence: int, state: str = "running") -> HostSurfaceSnapshot:
@@ -53,9 +61,10 @@ def _snapshot(sequence: int, state: str = "running") -> HostSurfaceSnapshot:
 
 
 def test_codex_and_claude_packages_declare_one_canonical_contract() -> None:
-    codex = _manifest(".codex-plugin/host-native.json")
-    claude = _manifest(".claude-plugin/host-native.json")
-    hook_contract = _manifest("hooks/host-native.json")
+    runtime = _runtime_module()
+    codex = runtime.discover_host_native_contract(ROOT, "codex")
+    claude = runtime.discover_host_native_contract(ROOT, "claude")
+    hook_contract = runtime.discover_hook_contract(ROOT)
 
     assert codex == claude == hook_contract
     assert codex["schema"] == "taskplane.host-native-package/v1"
@@ -65,58 +74,75 @@ def test_codex_and_claude_packages_declare_one_canonical_contract() -> None:
     assert codex["fallback"] == "accessible_bounded"
     assert codex["nativeUiIsAuthority"] is False
 
+    hooks = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))
+    commands = [hook["command"] for entry in hooks["hooks"]["SessionStart"]
+                for hook in entry["hooks"]]
+    assert any("host_native_runtime.py\" check --host claude" in command
+               for command in commands)
+    checked = subprocess.run(
+        [sys.executable, str(ROOT / "hooks/host_native_runtime.py"),
+         "check", "--host", "claude"], cwd=ROOT, check=False,
+        capture_output=True, text=True)
+    assert checked.returncode == 0, checked.stderr
+
 
 @pytest.mark.parametrize(
     "case", ("concurrent", "reconnect", "stale", "duplicate", "host_switch",
              "terminal_close"),
 )
 def test_recovery_fixtures_keep_one_identity_and_ordered_audit(case: str) -> None:
+    runtime = _runtime_module()
+    observations = {
+        name: Observation(status="supported", source="fixture", confidence="high")
+        for name in SURFACES
+    }
+    selections = negotiate_host_surfaces(
+        host="codex", host_version="test", observations=observations)
+    recovery = runtime.HostNativeRecovery()
     snapshots = [_snapshot(1), _snapshot(2)]
     if case == "concurrent":
         delivered = [snapshots[1], snapshots[0]]
-        ordered = sorted(delivered, key=lambda row: row.sequence)
     elif case == "reconnect":
-        ordered = [snapshots[0], snapshots[1]]
+        recovery = runtime.HostNativeRecovery.resume(
+            (snapshots[0],), selections=selections)
+        delivered = [snapshots[0], snapshots[1]]
     elif case in {"stale", "duplicate"}:
-        ordered = [snapshots[0], snapshots[0], snapshots[1]]
+        delivered = [snapshots[0], snapshots[0], snapshots[1]]
     else:
-        ordered = snapshots
+        delivered = snapshots
     terminal = _snapshot(3, "completed")
     if case == "terminal_close":
-        ordered += [terminal, terminal]
+        delivered += [terminal, terminal, _snapshot(4, "running")]
 
-    accepted = []
-    seen = set()
-    terminal_count = 0
-    for snapshot in ordered:
-        identity = (snapshot.workflow_id, snapshot.run_id, snapshot.target,
-                    snapshot.revision, snapshot.values["task_id"],
-                    snapshot.values["slot_id"])
-        assert identity == tuple(IDENTITY.values())
-        event = HostSurfaceEvent.from_snapshot(snapshot, event_type=snapshot.state)
-        key = (event.workflow_id, event.run_id, event.revision, event.sequence,
-               event.fingerprint)
-        if key in seen:
-            continue
-        if accepted and event.sequence <= accepted[-1].sequence:
-            continue
-        seen.add(key)
-        accepted.append(event)
-        terminal_count += snapshot.state == "completed"
+    recovery.recover(delivered, host="codex", selections=selections)
+    # Switching hosts reprojects the last canonical state but cannot append a
+    # duplicate event to the workflow audit.
+    current = terminal if case == "terminal_close" else snapshots[1]
+    before_switch = len(recovery.audit)
+    recovery.apply(current, host="claude", selections=selections)
+    assert len(recovery.audit) == before_switch
 
-        for host in ("codex", "claude"):
-            projection = native_dashboard_projection(snapshot, host=host)
-            assert projection["identity"]["workflow_id"] == IDENTITY["workflow_id"]
-            assert projection["identity"]["run_id"] == IDENTITY["run_id"]
-            assert projection["identity"]["target"] == IDENTITY["target"]
-            assert projection["identity"]["revision"] == IDENTITY["revision"]
-            assert projection["evidence"] == ["sha256:e14"]
-            assert snapshot.values["preview"]["target"] == IDENTITY["target"]
-            assert snapshot.values["preview"]["revision"] == IDENTITY["revision"]
+    sequences = [event.sequence for event in recovery.audit]
+    assert sequences == sorted(set(sequences))
+    assert sum(event.event_type == "completed" for event in recovery.audit) <= 1
+    assert recovery.identity == tuple(IDENTITY.values())
 
-    assert [event.sequence for event in accepted] == sorted(
-        {event.sequence for event in accepted})
-    assert terminal_count <= 1
+    expected_sequence = 3 if case == "terminal_close" else 2
+    for host in ("codex", "claude"):
+        assert set(recovery.projections[host]) == set(runtime.SURFACE_ROLES)
+        for role, projection in recovery.projections[host].items():
+            canonical = projection["canonical"]
+            assert projection["surface_role"] == role
+            assert canonical["workflow_id"] == IDENTITY["workflow_id"]
+            assert canonical["run_id"] == IDENTITY["run_id"]
+            assert canonical["target"] == IDENTITY["target"]
+            assert canonical["revision"] == IDENTITY["revision"]
+            assert canonical["sequence"] == expected_sequence
+            assert canonical["values"]["task_id"] == IDENTITY["task_id"]
+            assert canonical["values"]["slot_id"] == IDENTITY["slot_id"]
+            assert canonical["values"]["gate"]["state"] == "awaiting_human"
+            assert canonical["evidence"] == ["sha256:e14"]
+            assert [row["sequence"] for row in projection["audit"]] == sequences
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])
@@ -197,7 +223,7 @@ def test_documented_legacy_flows_keep_evidence_and_human_gates() -> None:
 
 
 def test_hooks_skills_and_agents_share_projection_not_authority_semantics() -> None:
-    hook_contract = _manifest("hooks/host-native.json")
+    hook_contract = _runtime_module().discover_hook_contract(ROOT)
     assert hook_contract["canonicalModel"] == \
         "taskplane.host-surface-snapshot/v1"
     assert hook_contract["runtimeReceiptRequired"] is True

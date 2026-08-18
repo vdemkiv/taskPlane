@@ -435,11 +435,15 @@ def test_deadline_automatically_kills_real_process_tree(tmp_path):
     runtime._save(preview)
     runtime.open(preview["preview_id"])
     runtime.arm_deadline(preview["preview_id"])
-    deadline = time.monotonic() + 3
-    while process.poll() is None and time.monotonic() < deadline:
+    deadline = time.monotonic() + 5
+    outcome = None
+    while time.monotonic() < deadline:
+        outcome = runtime._load(preview["preview_id"])["outcome"]
+        if process.poll() is not None and outcome == "timed_out":
+            break
         time.sleep(0.05)
     assert process.poll() is not None
-    assert runtime._load(preview["preview_id"])["outcome"] == "timed_out"
+    assert outcome == "timed_out"
 
 
 def test_resource_limit_enforcement_fails_closed_when_unsupported(

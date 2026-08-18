@@ -21,6 +21,7 @@
     "guardrails"
   ],
   "skills": "./skills/",
+  "hostNative": "./host-native.json",
   "interface": {
     "displayName": "taskplane",
     "shortDescription": "AI delivery with proof",

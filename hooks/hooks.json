@@ -1,4 +1,5 @@
 {
+  "hostNative": "./host-native.json",
   "hooks": {
     "PreToolUse": [
       {
@@ -36,6 +37,17 @@
       }
     ],
     "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/hooks/host_native_runtime.py\" check --host claude",
+            "commandWindows": "if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\hooks\\host_native_runtime.py\" check --host claude) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\hooks\\host_native_runtime.py\" check --host claude) else (echo taskplane host-native discovery: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset 1>&2 & exit /b 2)",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "startup|resume|clear|compact",
         "hooks": [
