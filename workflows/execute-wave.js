@@ -30,7 +30,9 @@ const ATTENTION = new Set([
   'approval_required', 'input_required', 'failed', 'timed_out', 'cancelled',
 ]);
 const PAUSED = new Set(['approval_required', 'input_required']);
-const RESUME = { approved: 'approval_required', input_provided: 'input_required' };
+const RESUME = {
+  authorization_granted: 'approval_required', input_provided: 'input_required',
+};
 
 function prepareCommandWave(args, briefs, stage) {
   const members = briefs.map((brief) => String(brief.id));
@@ -128,7 +130,7 @@ export default async function executeWave({ args, agent, parallel, phase }) {
   const pending = briefs.filter((b) =>
     !TERMINAL.has(commandWave.members[String(b.id)]) &&
     !PAUSED.has(commandWave.members[String(b.id)]));
-  const runs = pending.map((b) => async () => {
+  const runs = pending.map((b) => () => (async () => {
     const output_contract = b.output_contract || {};
     try {
       const receipt = await agent(b.prompt, {
@@ -143,7 +145,7 @@ export default async function executeWave({ args, agent, parallel, phase }) {
       return { member: String(b.id), receipt: null, state: 'failed',
         error: String(error && error.message || error) };
     }
-  });
+  })());
   const results = await parallel(runs);
 
   phase('Collect');

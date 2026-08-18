@@ -28,8 +28,8 @@ REVIEW_EVIDENCE_SECTIONS = frozenset({
 })
 UNTRUSTED_REVIEW_SECTIONS: tuple[str, ...] = (
     "change", "diff", "requirements")
-UNTRUSTED_DATA_BEGIN: str = "<TASKPLANE_UNTRUSTED_REVIEW_DATA>"
-UNTRUSTED_DATA_END: str = "</TASKPLANE_UNTRUSTED_REVIEW_DATA>"
+UNTRUSTED_DATA_BEGIN: str = "<taskplane-untrusted-review-data>"
+UNTRUSTED_DATA_END: str = "</taskplane-untrusted-review-data>"
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -537,8 +537,8 @@ def _content_bound_delimiters(section: str, value: JsonValue) -> tuple[str, str]
         section.encode("utf-8") + b"\0" + canonical_bytes(value)
     ).hexdigest()[:24]
     return (
-        f"<TASKPLANE_UNTRUSTED_REVIEW_DATA:{identity}>",
-        f"</TASKPLANE_UNTRUSTED_REVIEW_DATA:{identity}>",
+        f"<taskplane-untrusted-review-data:{identity}>",
+        f"</taskplane-untrusted-review-data:{identity}>",
     )
 
 

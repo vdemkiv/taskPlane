@@ -41,7 +41,8 @@ process.stdout.write(JSON.stringify({result, calls}));
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script, source,
          json.dumps(args), json.dumps(order or []), name],
-        check=True, capture_output=True, text=True)
+        check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
     return json.loads(completed.stdout)
 
 
@@ -70,7 +71,7 @@ def test_attention_remains_visible_before_and_after_terminal_completion():
 
 
 def test_attention_pauses_until_matching_explicit_resume():
-    for attention, resume in (("approval_required", "approved"),
+    for attention, resume in (("approval_required", "authorization_granted"),
                               ("input_required", "input_provided")):
         wave = loop.command_wave_create("wave-1", ["a"])
         assert [event["state"] for event in loop.command_wave_update(
@@ -130,7 +131,7 @@ def test_production_workflows_resume_without_relaunch_and_surface_attention():
         assert len(run["result"]["receipts"]) == 2
 
         for attention, resume in (
-                ("approval_required", "approved"),
+                ("approval_required", "authorization_granted"),
                 ("input_required", "input_provided")):
             events = [{"member": "a", "state": attention}]
             single = [dict(briefs[0])]

@@ -31,6 +31,7 @@ import json
 import os
 import time
 
+import command_wave
 import depgraph
 import evaluation_output
 import host_capabilities
@@ -40,6 +41,7 @@ import loop_status
 import loop_recovery
 import retro as retro_engine
 import requirements as reqs
+import review_retry
 import runtime_eval
 import storage as runtime_storage
 import taskplane_lite as tp
@@ -56,26 +58,8 @@ LOOP_FILE = "loop.json"
 EVALUATE_ROUTE_STAGE = "build"
 
 
-def _review_kernel_binding_key(step: str, task: dict | None) -> str:
-    return f"{step}:{str((task or {}).get('id') or '_')}"
-
-
-def review_kernel_binding(state: dict, step: str,
-                          task: dict | None = None) -> dict | None:
-    """Return the exact ReviewKernel identity minted for one loop action.
-
-    Historical kernel runs intentionally coexist for audit/resume. Consumers
-    must therefore follow this engine-owned pointer and never ask ReviewKernel
-    to select a global latest/only active run.
-    """
-    row = ((state.get("review_kernel_runs") or {}).get(
-        _review_kernel_binding_key(step, task)))
-    if not isinstance(row, dict):
-        return None
-    run_id = str(row.get("run_id") or "")
-    if len(run_id) != 32 or any(ch not in "0123456789abcdef" for ch in run_id):
-        return None
-    return dict(row)
+_review_kernel_binding_key = review_retry.binding_key
+review_kernel_binding = review_retry.binding
 
 def _state_dir(ws: str) -> str:
     """Loop coordination state. v1.5.1: state is PER-USER even in team/repo
@@ -124,96 +108,10 @@ HUMAN_STEPS = {"design_approval", "plan_approval", "selection",
                "signoff", "escalated",
                "done", "failed"}
 
-COMMAND_WAVE_SCHEMA = "taskplane.command-wave/v1"
-_COMMAND_TERMINAL = frozenset(
-    {"succeeded", "failed", "timed_out", "cancelled"})
-_COMMAND_ATTENTION = frozenset(
-    {"approval_required", "input_required", "failed", "timed_out",
-     "cancelled"})
-_COMMAND_RESUME = {
-    "approved": "approval_required",
-    "input_provided": "input_required",
-}
-
-
-def command_wave_create(wave_id: str, members: list[str], *,
-                        handles: dict | None = None) -> dict:
-    """Create the JSON-safe, loop-owned command-wave authority.
-
-    Handles are bound once.  Persisting this object in loop state therefore
-    makes resume a reattachment operation, never a launch instruction.
-    """
-    ordered = [str(member) for member in members]
-    if not ordered or len(set(ordered)) != len(ordered):
-        raise ValueError("command wave membership must be non-empty and unique")
-    bindings = {str(key): str(value) for key, value in (handles or {}).items()}
-    if set(bindings) - set(ordered):
-        raise ValueError("command handle is not a wave member")
-    return {
-        "schema": COMMAND_WAVE_SCHEMA,
-        "wave_id": str(wave_id),
-        "sealed_members": ordered,
-        "members": {member: "running" for member in ordered},
-        "handles": bindings,
-        "launches": len(bindings),
-        "interrupted": False,
-        "delivered_attention": [],
-        "ordinary_completion_deliveries": 0,
-    }
-
-
-def command_wave_resume(wave: dict, members: list[str]) -> dict:
-    """Validate and return durable wave state without changing bindings."""
-    if not isinstance(wave, dict) or wave.get("schema") != COMMAND_WAVE_SCHEMA:
-        raise ValueError("unsupported command wave")
-    if list(map(str, members)) != wave.get("sealed_members"):
-        raise ValueError("command wave membership changed after sealing")
-    if set((wave.get("handles") or {})) - set(wave["sealed_members"]):
-        raise ValueError("command wave contains an unbound member")
-    return wave
-
-
-def command_wave_update(wave: dict, member: str, state: str) -> list[dict]:
-    """Record one member observation and return model-visible events only.
-
-    Ordinary child success is silent and collapses into one aggregate event.
-    Human attention and adverse terminal outcomes are never suppressed,
-    including when host serialization observes attention after completion.
-    """
-    command_wave_resume(wave, wave.get("sealed_members") or [])
-    member = str(member)
-    if member not in wave["members"]:
-        raise KeyError(member)
-    state = str(state)
-    events = []
-    if state in _COMMAND_RESUME:
-        # Human attention is a durable pause.  Only its matching explicit
-        # response releases the member; replays after release are harmless.
-        if wave["members"][member] == _COMMAND_RESUME[state]:
-            wave["members"][member] = "running"
-        return events
-    attention_key = f"{member}:{state}"
-    if state in _COMMAND_ATTENTION:
-        if attention_key not in wave["delivered_attention"]:
-            wave["delivered_attention"].append(attention_key)
-            events.append({"schema": "taskplane.command-wave-event/v1",
-                           "wave_id": wave["wave_id"], "member": member,
-                           "state": state, "attention": True})
-    # Attention observed after a terminal state is an additional event, not a
-    # state reversal. This preserves the terminal result used by the barrier.
-    if state in _COMMAND_TERMINAL:
-        wave["members"][member] = state
-    elif wave["members"][member] not in _COMMAND_TERMINAL:
-        wave["members"][member] = state
-    if (wave["ordinary_completion_deliveries"] == 0 and
-            all(value in _COMMAND_TERMINAL
-                for value in wave["members"].values())):
-        wave["ordinary_completion_deliveries"] = 1
-        events.append({"schema": "taskplane.command-wave-event/v1",
-                       "wave_id": wave["wave_id"],
-                       "state": "wave_completed", "attention": False,
-                       "members": dict(wave["members"])})
-    return events
+COMMAND_WAVE_SCHEMA = command_wave.COMMAND_WAVE_SCHEMA
+command_wave_create = command_wave.create
+command_wave_resume = command_wave.resume
+command_wave_update = command_wave.update
 
 # A task is SETTLED when nothing further is owed on it: it passed, or the
 # selection gate closed it (not_selected / reference), or a human skipped it.
@@ -537,43 +435,6 @@ def _diff_files(ws: str, base: str) -> list:
     return [f for f in (run(["diff", "--name-only", base])
                         + run(["ls-files", "--others",
                                "--exclude-standard"])).splitlines() if f]
-
-
-def _incremental_retry_context(ws: str, diff_ws: str, state: dict,
-                               task: dict | None) -> dict | None:
-    """Return prior failed lenses only when their passing peers are sealed.
-
-    Evaluate retries are followed by the full final engineering review. Reusing
-    prior PASS dispositions here avoids a second broad fan-out while retaining
-    a broad regression gate before sign-off. Any missing or unsealed evidence
-    falls back to the normal complete route.
-    """
-    if not task or int(task.get("fix_cycles") or 0) <= 0:
-        return None
-    binding = review_kernel_binding(state, "evaluate", task)
-    if not binding:
-        return None
-    try:
-        import review
-        prior_ws = str(binding.get("workspace") or diff_ws)
-        prior = review._load_state(prior_ws, binding["run_id"])
-        verdict = tp.load_json(
-            runtime_storage.evaluation_path(ws), default=None,
-            what="prior evaluator verdict")
-    except Exception:
-        return None
-    if prior.get("status") != "complete" or not isinstance(verdict, dict) or \
-            verdict.get("task") != task.get("id") or \
-            verdict.get("verdict") != "fail":
-        return None
-    failed = sorted({
-        str(row.get("lens") or "") for row in verdict.get("lenses") or []
-        if isinstance(row, dict) and (
-            row.get("verdict") == "fail" or int(row.get("blockers") or 0) > 0)
-    } - {""})
-    if not failed:
-        return None
-    return {"lenses": failed, "source_run_id": binding["run_id"]}
 
 
 def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
@@ -1212,8 +1073,9 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         review_workspace = os.path.realpath(diff_ws)
         base_ref = state.get("baseline") or "HEAD"
         try:
-            retry_context = (_incremental_retry_context(
-                ws, diff_ws, state, task) if step == "evaluate" else None)
+            retry_context = (review_retry.incremental_context(
+                ws, diff_ws, task, review_kernel_binding(state, "evaluate", task))
+                if step == "evaluate" else None)
             review_kernel, routing = _review_kernel(
                 ws, diff_ws, base=base_ref, step=step, task=task,
                 graph=depgraph.load(ws), impact=imp or {},
