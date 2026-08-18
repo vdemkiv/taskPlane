@@ -4703,6 +4703,139 @@ def _page_bytes(html: str) -> int:
     return len(html.encode("utf-8"))
 
 
+# Host-native dashboard contract (R-0011).  These are semantic component
+# identifiers, deliberately independent of either host's visual vocabulary.
+HOST_DASHBOARD_COMPONENTS = (
+    "workflow", "dor", "dependency_impact", "agents", "lenses",
+    "criteria", "findings", "validation", "artifacts", "gate",
+)
+
+
+def _dashboard_plain(value):
+    """Return JSON-shaped presentation data without mutating canonical data."""
+    if isinstance(value, dict) or hasattr(value, "items"):
+        return {str(key): _dashboard_plain(item)
+                for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_dashboard_plain(item) for item in value]
+    return value
+
+
+def carousel_pages(items, *, filters=None, current=1, page_size=8):
+    """Create deterministic, lossless carousel pages of three to eight items.
+
+    Zero and one item remain concise native cards.  Larger collections use a
+    stable input order; a one/two-item tail is rebalanced into the preceding
+    page so every carousel page stays within the host UI guideline.  Filtering
+    is explicit equality matching and therefore serializable and replayable.
+    """
+    if isinstance(page_size, bool) or not isinstance(page_size, int) \
+            or not 3 <= page_size <= 8:
+        raise ValueError("page_size must be between 3 and 8")
+    filters = dict(filters or {})
+    selected = []
+    identities = set()
+    for raw in items:
+        row = _dashboard_plain(raw)
+        identity = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(identity, str) or not identity.strip() \
+                or identity in identities:
+            raise ValueError("every carousel item requires a stable unique id")
+        identities.add(identity)
+        if all(row.get(key) == value for key, value in filters.items()):
+            selected.append(row)
+
+    chunks = [selected[i:i + page_size]
+              for i in range(0, len(selected), page_size)]
+    if len(chunks) > 1 and len(chunks[-1]) < 3:
+        needed = 3 - len(chunks[-1])
+        chunks[-1][0:0] = chunks[-2][-needed:]
+        del chunks[-2][-needed:]
+    total_pages = len(chunks)
+    active = min(max(int(current or 1), 1), max(total_pages, 1))
+    pages = [{
+        "id": f"page-{index}",
+        "position": index,
+        "total_pages": total_pages,
+        "items": chunk,
+        "item_ids": [item["id"] for item in chunk],
+    } for index, chunk in enumerate(chunks, 1)]
+    return {
+        "schema": "taskplane.host-carousel/v1",
+        "total_items": len(selected),
+        "total_pages": total_pages,
+        "current": active,
+        "filters": filters,
+        "navigation": {
+            "previous": active - 1 if total_pages and active > 1 else None,
+            "next": active + 1 if active < total_pages else None,
+        },
+        "pages": pages,
+    }
+
+
+def native_dashboard_projection(snapshot, *, host, filters=None, current=1):
+    """Project one canonical snapshot into an accessible host-native model.
+
+    The host-specific section contains styling and interaction affordances
+    only.  It cannot change semantic values, evidence, provenance, ordering,
+    actions, or gate state, keeping Claude and Codex projections comparable.
+    """
+    if host not in {"codex", "claude"}:
+        raise ValueError("host must be codex or claude")
+    canonical = snapshot.to_dict()
+    values = canonical["values"]
+    components = []
+    for order, name in enumerate(HOST_DASHBOARD_COMPONENTS):
+        value = _dashboard_plain(values.get(name, {}))
+        row = {"id": name, "order": order, "value": value}
+        if isinstance(value, dict) and isinstance(value.get("items"), list):
+            row["collection"] = carousel_pages(
+                value["items"], filters=filters, current=current)
+        components.append(row)
+
+    actions = list(canonical["safe_actions"])
+    return {
+        "schema": "taskplane.host-native-dashboard/v1",
+        "identity": {key: canonical[key] for key in (
+            "workflow_id", "run_id", "target", "revision", "sequence")},
+        "stage": canonical["stage"],
+        "state": canonical["state"],
+        "fingerprint": canonical["fingerprint"],
+        "components": components,
+        "evidence": list(canonical["evidence"]),
+        "safe_actions": actions,
+        "presentation": {
+            "host": host,
+            "style": "openai-system" if host == "codex" else "claude-system",
+            "primary_actions": actions[:2],
+            "detail_actions": actions[2:],
+            "card": {
+                "single_purpose": True,
+                "max_primary_actions": 2,
+                "nested_scroll": False,
+                "deep_navigation": False,
+                "rich_detail_surface": "fullscreen",
+                "composer_retained": True,
+            },
+            "responsive": {"min_viewport_px": 320, "layout": "fluid"},
+            "accessibility": {
+                "semantic_labels": True,
+                "alt_text": True,
+                "keyboard_navigation": True,
+                "visible_focus": True,
+                "text_scale_percent": 200,
+                "reduced_motion": True,
+                "status_not_color_only": True,
+                "contrast": "WCAG-AA",
+                "fonts": "system",
+                "tokens": "host-system",
+                "themes": ["light", "dark"],
+            },
+        },
+    }
+
+
 def _fit_page(html: str, budget: int) -> str:
     """Guarantee a page fits the BYTE budget. Content is only ever removed
     via _truncate_marked (an explicit '+N more' marker naming the omission
