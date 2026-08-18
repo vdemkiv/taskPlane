@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -60,7 +62,9 @@ def _snapshot(sequence: int, state: str = "running") -> HostSurfaceSnapshot:
     )
 
 
-def test_codex_and_claude_packages_declare_one_canonical_contract() -> None:
+def test_codex_and_claude_packages_declare_one_canonical_contract(
+    tmp_path: Path,
+) -> None:
     runtime = _runtime_module()
     codex = runtime.discover_host_native_contract(ROOT, "codex")
     claude = runtime.discover_host_native_contract(ROOT, "claude")
@@ -73,17 +77,36 @@ def test_codex_and_claude_packages_declare_one_canonical_contract() -> None:
     assert tuple(codex["optionalSurfaces"]) == SURFACES
     assert codex["fallback"] == "accessible_bounded"
     assert codex["nativeUiIsAuthority"] is False
+    assert not (ROOT / ".codex-plugin/host-native.json").exists()
+    assert not (ROOT / ".claude-plugin/host-native.json").exists()
 
     hooks = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))
     commands = [hook["command"] for entry in hooks["hooks"]["SessionStart"]
                 for hook in entry["hooks"]]
     assert any("host_native_runtime.py\" check --host claude" in command
                for command in commands)
-    checked = subprocess.run(
-        [sys.executable, str(ROOT / "hooks/host_native_runtime.py"),
-         "check", "--host", "claude"], cwd=ROOT, check=False,
-        capture_output=True, text=True)
-    assert checked.returncode == 0, checked.stderr
+    codex_runtime = json.loads(
+        (ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
+    )["hostNativeRuntime"]
+
+    # Exercise the commands from a copied install layout, not the source paths
+    # that authored the declarations.
+    installed = tmp_path / "installed-taskplane"
+    for directory in (".codex-plugin", ".claude-plugin", "hooks", "taskplane"):
+        shutil.copytree(ROOT / directory, installed / directory)
+    commands = {
+        "codex": [sys.executable,
+                  str(installed / ".codex-plugin" /
+                      codex_runtime["entrypoint"]),
+                  *codex_runtime["arguments"]],
+        "claude": [sys.executable,
+                   str(installed / "hooks/host_native_runtime.py"),
+                   "check", "--host", "claude"],
+    }
+    for host, command in commands.items():
+        checked = subprocess.run(command, cwd=installed, check=False,
+                                 capture_output=True, text=True)
+        assert checked.returncode == 0, f"{host}: {checked.stderr}"
 
 
 @pytest.mark.parametrize(
@@ -119,7 +142,7 @@ def test_recovery_fixtures_keep_one_identity_and_ordered_audit(case: str) -> Non
     # duplicate event to the workflow audit.
     current = terminal if case == "terminal_close" else snapshots[1]
     before_switch = len(recovery.audit)
-    recovery.apply(current, host="claude", selections=selections)
+    recovery.switch_host("claude", selections=selections)
     assert len(recovery.audit) == before_switch
 
     sequences = [event.sequence for event in recovery.audit]
@@ -143,6 +166,49 @@ def test_recovery_fixtures_keep_one_identity_and_ordered_audit(case: str) -> Non
             assert canonical["values"]["gate"]["state"] == "awaiting_human"
             assert canonical["evidence"] == ["sha256:e14"]
             assert [row["sequence"] for row in projection["audit"]] == sequences
+
+
+def test_late_stale_duplicates_never_reproject_or_reopen_terminal_state() -> None:
+    runtime = _runtime_module()
+    selections = negotiate_host_surfaces(
+        host="codex", host_version="test", observations={
+            name: Observation(status="supported", source="fixture",
+                              confidence="high")
+            for name in SURFACES
+        })
+    recovery = runtime.HostNativeRecovery()
+    recovery.recover((_snapshot(1), _snapshot(2)), host="codex",
+                     selections=selections)
+    recovery.switch_host("claude", selections=selections)
+    at_sequence_two = copy.deepcopy(recovery.projections)
+
+    for host in ("codex", "claude"):
+        recovery.apply(_snapshot(1, "waiting"), host=host,
+                       selections=selections)
+        recovery.apply(_snapshot(2), host=host, selections=selections)
+    assert recovery.projections == at_sequence_two
+    assert [event.sequence for event in recovery.audit] == [1, 2]
+
+    terminal = _snapshot(3, "completed")
+    recovery.apply(terminal, host="codex", selections=selections)
+    recovery.switch_host("claude", selections=selections)
+    at_terminal = copy.deepcopy(recovery.projections)
+    for host in ("codex", "claude"):
+        recovery.apply(terminal, host=host, selections=selections)
+        recovery.apply(_snapshot(2), host=host, selections=selections)
+        recovery.apply(_snapshot(4), host=host, selections=selections)
+
+    assert recovery.projections == at_terminal
+    assert [event.sequence for event in recovery.audit] == [1, 2, 3]
+    assert recovery.terminal_sequence == 3
+    assert {row["reason"] for row in recovery.rejections} == {
+        "duplicate", "stale", "terminal_closed"}
+    for host_views in recovery.projections.values():
+        assert set(host_views) == set(runtime.SURFACE_ROLES)
+        assert all(view["canonical"]["sequence"] == 3
+                   for view in host_views.values())
+        assert all(view["canonical"]["state"] == "completed"
+                   for view in host_views.values())
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])

@@ -21,7 +21,11 @@
     "guardrails"
   ],
   "skills": "./skills/",
-  "hostNative": "./host-native.json",
+  "hostNative": "../hooks/host-native.json",
+  "hostNativeRuntime": {
+    "entrypoint": "../hooks/host_native_runtime.py",
+    "arguments": ["check", "--host", "codex"]
+  },
   "interface": {
     "displayName": "taskplane",
     "shortDescription": "AI delivery with proof",

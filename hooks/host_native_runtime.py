@@ -53,8 +53,8 @@ def discover_host_native_contract(root: Path | str, host: str) -> dict:
     if not isinstance(relative, str) or not relative.strip():
         raise ValueError(f"{host} plugin manifest has no hostNative declaration")
     declaration_path = (manifest_path.parent / relative).resolve()
-    if declaration_path.parent != manifest_path.parent.resolve():
-        raise ValueError("hostNative declaration must remain inside its manifest")
+    if root not in declaration_path.parents:
+        raise ValueError("hostNative declaration must remain inside plugin root")
     declaration = _load_json(declaration_path)
     if declaration.get("schema") != PACKAGE_SCHEMA:
         raise ValueError("unsupported host-native package schema")
@@ -94,7 +94,9 @@ class HostNativeRecovery:
     identity: tuple[str, ...] | None = None
     audit: list[HostSurfaceEvent] = field(default_factory=list)
     projections: dict[str, dict[str, dict]] = field(default_factory=dict)
+    rejections: list[dict[str, object]] = field(default_factory=list)
     terminal_sequence: int | None = None
+    current_snapshot: HostSurfaceSnapshot | None = None
     _seen: set[tuple[str, str, str, int, str]] = field(default_factory=set)
 
     @classmethod
@@ -143,22 +145,49 @@ class HostNativeRecovery:
                event.sequence, event.fingerprint)
         duplicate = key in self._seen
         stale = bool(self.audit and event.sequence <= self.audit[-1].sequence)
-        after_terminal = (self.terminal_sequence is not None and
-                          event.sequence > self.terminal_sequence)
+        after_terminal = self.terminal_sequence is not None
 
-        # A host switch may need the current projection even though its event
-        # was already sealed. It must not append or reorder canonical audit.
-        if duplicate and not after_terminal:
-            self._project(snapshot, host=host, selections=selections)
-        if duplicate or stale or after_terminal:
+        # Disposition is complete before any view can observe the candidate.
+        # Rejection audit intentionally carries identity, order and fingerprint
+        # only: rejected canonical values never become presentation state.
+        if duplicate:
+            self._reject(event, "duplicate")
+            return None
+        if after_terminal:
+            self._reject(event, "terminal_closed")
+            return None
+        if stale:
+            self._reject(event, "stale")
             return None
 
         self._seen.add(key)
         self.audit.append(event)
+        self.current_snapshot = snapshot
         if snapshot.state in TERMINAL_STATES:
             self.terminal_sequence = snapshot.sequence
         self._project(snapshot, host=host, selections=selections)
         return event
+
+    def switch_host(
+        self,
+        host: str,
+        *,
+        selections: Mapping[str, SurfaceSelection],
+    ) -> None:
+        """Project only the last accepted snapshot into a newly active host."""
+        if self.current_snapshot is None:
+            raise ValueError("cannot switch host before an accepted snapshot")
+        self._project(self.current_snapshot, host=host, selections=selections)
+
+    def _reject(self, event: HostSurfaceEvent, reason: str) -> None:
+        self.rejections.append({
+            "workflow_id": event.workflow_id,
+            "run_id": event.run_id,
+            "revision": event.revision,
+            "sequence": event.sequence,
+            "event_fingerprint": event.fingerprint,
+            "reason": reason,
+        })
 
     def _project(
         self,
