@@ -54,11 +54,13 @@ def _digest(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _path_fingerprint(root: Path) -> str:
+def _path_fingerprint(root: Path, *, exclude_vcs: bool = False) -> str:
     """Fingerprint names and bytes without following links outside ``root``."""
     rows: list[tuple[str, str]] = []
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
+        if exclude_vcs and relative.split("/", 1)[0] == ".git":
+            continue
         if path.is_symlink():
             rows.append((relative, f"link:{os.readlink(path)}"))
         elif path.is_file():
@@ -210,6 +212,11 @@ class PreviewRuntime:
         # descendant process tree may write freely inside this disposable copy.
         try:
             for child in source.iterdir():
+                # A preview is a pinned content copy, never a repository.
+                # Omitting VCS metadata makes remote mutation/push impossible
+                # even for an arbitrary interpreter inside the sandbox.
+                if child.name == ".git":
+                    continue
                 destination = sandbox / child.name
                 if child.is_symlink():
                     resolved = child.resolve()
@@ -225,7 +232,8 @@ class PreviewRuntime:
             raise
         materialized_fingerprint = _path_fingerprint(sandbox)
         source_fingerprint = _path_fingerprint(source)
-        if materialized_fingerprint != source_fingerprint:
+        source_content_fingerprint = _path_fingerprint(source, exclude_vcs=True)
+        if materialized_fingerprint != source_content_fingerprint:
             shutil.rmtree(sandbox, ignore_errors=True)
             self._deny("escaped_path", "pinned source materialization failed",
                        target=target, revision=revision)
@@ -236,6 +244,7 @@ class PreviewRuntime:
             "state": "registered", "outcome": "registered",
             "surface": surfaces[0], "surface_fallbacks": surfaces[1:],
             "source_fingerprint": source_fingerprint,
+            "source_content_fingerprint": source_content_fingerprint,
             "materialized_fingerprint": materialized_fingerprint,
             "source_root_fingerprint": _digest(str(source)),
             "authorization_fingerprint": self._authorization,
@@ -252,6 +261,7 @@ class PreviewRuntime:
                     detail=f"{flow} preview registered on {surfaces[0]}",
                     target=str(target), revision=revision)
         return self._save(preview)
+
 
     def open(self, preview_id: str) -> dict:
         preview = self._load(preview_id)
@@ -374,3 +384,60 @@ class PreviewRuntime:
                     detail="preview teardown completed", target=preview["target"],
                     revision=preview["revision"])
         return self._save(preview)
+
+
+def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
+                           source_root: str | Path, authorization: str,
+                           target: str, revision: int, capabilities: Mapping,
+                           command: object, limits: Mapping) -> dict:
+    """Production entry point shared by design, build, and dynamic review."""
+    from taskplane.command_adapters import (
+        CommandAdapter, native_surface_transport,
+        os_preview_isolation_launcher,
+    )
+    from taskplane.command_runtime import CommandRuntime
+
+    root = Path(state_root)
+    preview_runtime = PreviewRuntime(
+        root / "previews", workspace=source_root,
+        authorization=authorization,
+        surface_transport=native_surface_transport)
+    preview = preview_runtime.register(
+        flow=flow, target=target, revision=revision, source_root=source_root,
+        authorization=authorization, capabilities=capabilities, limits=limits,
+        network_allowlist=[])
+    command_runtime = CommandRuntime(
+        str(root / "commands"), workspace=str(Path(source_root).resolve()),
+        authorization=authorization)
+    adapter = CommandAdapter(
+        host=host, runtime=command_runtime,
+        launcher=lambda *_: (_ for _ in ()).throw(
+            ValueError("ordinary launcher is forbidden for previews")),
+        review_isolation_launcher=os_preview_isolation_launcher)
+    sandbox = preview_runtime.sandbox_path(preview["preview_id"])
+    try:
+        handle = adapter.launch_preview(command, cwd=str(sandbox),
+                                        preview=preview)
+        opened = preview_runtime.open(preview["preview_id"])
+    except Exception:
+        preview_runtime.record_outcome(preview["preview_id"], "unavailable")
+        raise
+    if opened["state"] != "open":
+        raise PreviewDenied(opened["outcome"], "native preview did not open")
+    return {"schema": "taskplane.working-preview-launch/v1",
+            "flow": flow, "preview": opened, "command_handle": handle}
+
+
+def launch_design_preview(**kwargs) -> dict:
+    """Production design-flow preview entry."""
+    return launch_working_preview(flow="design", **kwargs)
+
+
+def launch_build_preview(**kwargs) -> dict:
+    """Production build-flow preview entry."""
+    return launch_working_preview(flow="build", **kwargs)
+
+
+def launch_dynamic_review_preview(**kwargs) -> dict:
+    """Production dynamic-review preview entry."""
+    return launch_working_preview(flow="dynamic_review", **kwargs)

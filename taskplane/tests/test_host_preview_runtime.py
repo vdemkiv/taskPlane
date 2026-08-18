@@ -6,7 +6,11 @@ import pytest
 
 from taskplane.command_adapters import CommandAdapter, HostLaunch
 from taskplane.command_runtime import CommandRuntime
-from taskplane.preview_runtime import PreviewDenied, PreviewRuntime
+from taskplane.preview_runtime import (
+    PreviewDenied, PreviewRuntime, launch_build_preview,
+    launch_design_preview, launch_dynamic_review_preview,
+    launch_working_preview,
+)
 
 
 def capabilities(**supported):
@@ -178,3 +182,66 @@ def test_push_path_network_and_teardown_faults_fail_safe(tmp_path, monkeypatch):
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError()))
     closed = previews.close(preview["preview_id"])
     assert closed["outcome"] == "teardown_failed"
+
+
+@pytest.mark.parametrize("flow", ["design", "build", "dynamic_review"])
+def test_production_entry_invokes_native_surface_and_os_isolation(
+        tmp_path, monkeypatch, flow):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.txt").write_text("pinned")
+    (source / ".git").mkdir()
+    (source / ".git" / "config").write_text(
+        '[remote "origin"]\nurl=https://example.test/private.git\n')
+    calls = []
+
+    class Process:
+        pid = 731
+
+    def popen(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        # Both the preview process and host surface receive only the copy.
+        cwd = Path(kwargs["cwd"])
+        assert cwd != source and not (cwd / ".git").exists()
+        return Process()
+
+    monkeypatch.setattr("taskplane.command_adapters.subprocess.Popen", popen)
+    monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
+    original_isfile = __import__("os").path.isfile
+    monkeypatch.setattr(
+        "taskplane.command_adapters.os.path.isfile",
+        lambda path: True if path == "/usr/bin/sandbox-exec"
+        else original_isfile(path))
+    monkeypatch.setenv("TASKPLANE_SIDE_PANEL_COMMAND", "native-side-panel open")
+    entry = {"design": launch_design_preview,
+             "build": launch_build_preview,
+             "dynamic_review": launch_dynamic_review_preview}[flow]
+    result = entry(
+        host="codex", state_root=tmp_path / "state",
+        source_root=source, authorization="human", target="commit-a",
+        revision=4, capabilities=capabilities(sandbox=True, side_panel=True),
+        command=["python3", "-c", "print('preview')"],
+        limits={"lifetime_seconds": 60, "cpu_seconds": 10,
+                "memory_bytes": 1_000_000})
+    assert result["flow"] == flow and result["preview"]["state"] == "open"
+    assert calls[0][0][0] == "/usr/bin/sandbox-exec"
+    assert calls[1][0][0:2] == ["native-side-panel", "open"]
+    assert calls[1][0][-2:] == ["--preview-id", result["preview"]["preview_id"]]
+    assert (source / ".git" / "config").read_text().startswith('[remote')
+
+
+def test_production_entry_fails_closed_without_os_or_surface(tmp_path,
+                                                             monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.txt").write_text("pinned")
+    monkeypatch.delenv("TASKPLANE_BROWSER_COMMAND", raising=False)
+    monkeypatch.setattr("taskplane.command_adapters.sys.platform", "linux")
+    with pytest.raises(OSError, match="isolation is unavailable"):
+        launch_working_preview(
+            flow="build", host="claude", state_root=tmp_path / "state",
+            source_root=source, authorization="human", target="commit-a",
+            revision=4, capabilities=capabilities(sandbox=True, browser=True),
+            command=["node", "app.js"],
+            limits={"lifetime_seconds": 60, "cpu_seconds": 10,
+                    "memory_bytes": 1_000_000})

@@ -10,6 +10,10 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
 from typing import Callable, Mapping, Protocol
 
 from taskplane.command_runtime import CommandRuntime, TERMINAL_STATES
@@ -57,6 +61,72 @@ class HostLaunch:
 
     binding: Mapping[str, object]
     isolation: Mapping[str, object] | None = None
+
+
+_SURFACE_ENV = {
+    "side_panel": "TASKPLANE_SIDE_PANEL_COMMAND",
+    "browser": "TASKPLANE_BROWSER_COMMAND",
+    "hosting": "TASKPLANE_HOSTING_COMMAND",
+}
+
+
+def native_surface_transport(surface: str, sandbox: str,
+                             preview: Mapping[str, object]) -> Mapping[str, object]:
+    """Invoke the configured host-native surface bridge without a shell."""
+    env_name = _SURFACE_ENV.get(surface)
+    configured = os.environ.get(env_name or "", "").strip()
+    if not configured:
+        raise OSError(f"native {surface} transport is unavailable")
+    argv = shlex.split(configured)
+    if not argv:
+        raise OSError(f"native {surface} transport is invalid")
+    process = subprocess.Popen(
+        [*argv, "--workspace", sandbox, "--preview-id",
+         str(preview["preview_id"])], cwd=sandbox,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+    return {"schema": "taskplane.host-preview-surface/v1",
+            "surface": surface, "binding": f"pid:{process.pid}"}
+
+
+def os_preview_isolation_launcher(command: object, cwd: str,
+                                  policy: Mapping[str, object]) -> HostLaunch:
+    """Launch a complete descendant tree under an OS-enforced preview policy."""
+    if not isinstance(command, (list, tuple)) or not command:
+        raise ValueError("preview isolation requires direct argv")
+    root = Path(cwd).resolve()
+    if (policy.get("network"), policy.get("scope"), policy.get("push"),
+            policy.get("filesystem"), policy.get("source"),
+            policy.get("remotes")) != (
+                "deny", "complete-process-tree", "deny", "sandbox-only",
+                "immutable", "disabled"):
+        raise ValueError("preview isolation policy is incomplete")
+    # Remote disabling is physical, not a promise in a receipt.
+    if (root / ".git").exists():
+        raise ValueError("preview sandbox contains repository remotes")
+    if sys.platform != "darwin" or not os.path.isfile("/usr/bin/sandbox-exec"):
+        raise OSError("complete preview process-tree isolation is unavailable")
+    escaped = str(root).replace("\\", "\\\\").replace('"', '\\"')
+    profile = " ".join((("(version 1)"), "(deny default)",
+                        '(import "system.sb")', "(allow process*)",
+                        "(allow file-read*)",
+                        f'(allow file-write* (subpath "{escaped}"))',
+                        "(deny network*)"))
+    process = subprocess.Popen(
+        ["/usr/bin/sandbox-exec", "-p", profile, "--", *command], cwd=str(root),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, start_new_session=True)
+    fingerprint = hashlib.sha256(json.dumps(
+        dict(policy), sort_keys=True, separators=(",", ":"))
+        .encode("utf-8")).hexdigest()
+    return HostLaunch(binding={"pid": process.pid, "process_group": process.pid},
+                      isolation={
+                          "schema": "taskplane.preview-isolation-receipt/v1",
+                          "network": "denied", "scope": "complete-process-tree",
+                          "push": "denied", "filesystem": "sandbox-only",
+                          "source": "immutable", "remotes": "disabled",
+                          "mechanism": "macos-seatbelt",
+                          "policy_fingerprint": fingerprint})
 
 
 _STATUS_MAP = {
