@@ -39,7 +39,8 @@ class TestHookPathManifests(unittest.TestCase):
                             for command in commands))
 
     def test_native_manifest_prefers_version_independent_workspace_runner(self):
-        commands = self._commands("hooks/hooks.json")
+        commands = [command for command in self._commands("hooks/hooks.json")
+                    if "host_native_runtime.py" not in command]
         self.assertTrue(all('.taskplane/codex-hook.py' in command
                             for command in commands))
         self.assertTrue(all('[ -f ".taskplane/codex-hook.py" ]' in command
@@ -140,9 +141,13 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all('TASKPLANE_HOOK_PATH=bridge' in
                             hook.get("commandWindows", "")
                             for hook in hooks))
+        governed_hooks = [
+            hook for hook in hooks
+            if "host_native_runtime.py" not in hook.get("command", "")
+        ]
         self.assertTrue(all('if exist ".taskplane\\codex-hook.py"' in
                             hook.get("commandWindows", "")
-                            for hook in hooks))
+                            for hook in governed_hooks))
         native = json.loads((ROOT / "hooks" / "hooks.json").read_text(
             encoding="utf-8"))
         native_hooks = [
@@ -151,9 +156,13 @@ class TestHookPathManifests(unittest.TestCase):
             for row in rows
             for hook in row.get("hooks") or []
         ]
+        governed_hooks = [
+            hook for hook in native_hooks
+            if "host_native_runtime.py" not in hook.get("command", "")
+        ]
         self.assertTrue(all('if exist ".taskplane\\codex-hook.py"' in
                             hook.get("commandWindows", "")
-                            for hook in native_hooks))
+                            for hook in governed_hooks))
 
     def test_generated_workspace_hook_config_is_git_local_only(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-git-") as ws:

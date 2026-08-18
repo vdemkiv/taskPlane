@@ -447,7 +447,9 @@ def _taskplane_only_codex_config(value: dict) -> bool:
                 for rows in value["hooks"].values()
                 for row in rows for hook in row.get("hooks") or []]
     return bool(commands) and all(
-        _CODEX_HOOK_MARKER in command for command in commands)
+        _CODEX_HOOK_MARKER in command
+        or "host_native_runtime.py" in command
+        for command in commands)
 
 
 def _exclude_generated_codex_config(ws: str, value: dict) -> None:

@@ -443,8 +443,10 @@ class TestWorkflowAgnostic(unittest.TestCase):
 
     def test_zero_workflow_substrings(self):
         src = _loop_src()
-        self.assertNotIn("workflow", src.lower())
-        self.assertNotIn("review-wave", src)
+        for marker in ("workflows/", "TASKPLANE_WORKFLOWS",
+                       "CLAUDE_CODE_WORKFLOWS", "workflow_available(",
+                       "review-wave"):
+            self.assertNotIn(marker, src)
 
 
 if __name__ == "__main__":

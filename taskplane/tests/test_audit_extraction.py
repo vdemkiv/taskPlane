@@ -569,12 +569,17 @@ class TestExtractionStructure(unittest.TestCase):
         loop.py; the audit implementation remains extracted and is still
         guarded by the body/constant assertions above.
 
+        3100 → 3260 (R-0011 host-native workflow UX): canonical progress and
+        durable approval session authority belongs beside loop state and
+        gates. Optional JS workflow transport remains excluded and is pinned
+        independently; extracted audit bodies stay single-sourced.
+
         What guards the extraction itself is the body/constant assertions
         above, not this count."""
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 3150, f"loop.py is {n} lines — the audit extraction shrink "
+            n, 3260, f"loop.py is {n} lines — the audit extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):
