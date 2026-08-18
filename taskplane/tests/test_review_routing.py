@@ -192,6 +192,32 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertNotIn("breadth", json.dumps(out).lower())
         self.assertLessEqual(len(json.dumps(out).encode()), 16 * 1024)
 
+    def test_incremental_retry_dispatches_only_prior_failed_lenses(self):
+        prior_run = "a" * 32
+        opened = self._start(
+            retry_lenses={"architecture", "code-quality"},
+            retry_source_run_id=prior_run)
+        state = review._load_state(self.ws, opened["run_id"])
+        self.assertEqual(
+            {lens_id for slot in state["slots"]
+             for lens_id in slot["lens_ids"]},
+            {"architecture", "code-quality"})
+        decision = review_evidence.ArtifactStore(self.ws).read(
+            state["routing_decision"])["dispositions"]
+        self.assertEqual(decision["architecture"]["verdict"], "deep")
+        self.assertEqual(decision["code-quality"]["verdict"], "deep")
+        self.assertTrue(all(
+            row["verdict"] == "n/a" for lens_id, row in decision.items()
+            if lens_id not in {"architecture", "code-quality"}))
+        envelope = review_evidence.ArtifactStore(self.ws).read(
+            state["envelope"])
+        self.assertEqual(
+            envelope["change"]["dor"]["incremental_retry"], {
+                "source_run_id": prior_run,
+                "lenses": ["architecture", "code-quality"],
+                "reuse": "sealed-pass-dispositions",
+            })
+
     def test_standalone_signoff_requires_collection_and_human_words(self):
         opened = self._start()
         with self.assertRaises(review.ReviewKernelError):

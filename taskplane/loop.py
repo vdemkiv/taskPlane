@@ -539,9 +539,47 @@ def _diff_files(ws: str, base: str) -> list:
                                "--exclude-standard"])).splitlines() if f]
 
 
+def _incremental_retry_context(ws: str, diff_ws: str, state: dict,
+                               task: dict | None) -> dict | None:
+    """Return prior failed lenses only when their passing peers are sealed.
+
+    Evaluate retries are followed by the full final engineering review. Reusing
+    prior PASS dispositions here avoids a second broad fan-out while retaining
+    a broad regression gate before sign-off. Any missing or unsealed evidence
+    falls back to the normal complete route.
+    """
+    if not task or int(task.get("fix_cycles") or 0) <= 0:
+        return None
+    binding = review_kernel_binding(state, "evaluate", task)
+    if not binding:
+        return None
+    try:
+        import review
+        prior_ws = str(binding.get("workspace") or diff_ws)
+        prior = review._load_state(prior_ws, binding["run_id"])
+        verdict = tp.load_json(
+            runtime_storage.evaluation_path(ws), default=None,
+            what="prior evaluator verdict")
+    except Exception:
+        return None
+    if prior.get("status") != "complete" or not isinstance(verdict, dict) or \
+            verdict.get("task") != task.get("id") or \
+            verdict.get("verdict") != "fail":
+        return None
+    failed = sorted({
+        str(row.get("lens") or "") for row in verdict.get("lenses") or []
+        if isinstance(row, dict) and (
+            row.get("verdict") == "fail" or int(row.get("blockers") or 0) > 0)
+    } - {""})
+    if not failed:
+        return None
+    return {"lenses": failed, "source_run_id": binding["run_id"]}
+
+
 def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                    task: dict | None, graph: dict, impact: dict,
-                   requirement: dict | None) -> tuple[dict, dict]:
+                   requirement: dict | None,
+                   retry_context: dict | None = None) -> tuple[dict, dict]:
     """One evidence/routing kernel shared by Evaluate and final EM."""
     import hashlib
     import subprocess
@@ -575,7 +613,11 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         stage=stage,
         task_type=(task or {}).get("type"), base=base,
         caller_expander=review.bounded_caller_expander(graph),
-        routing_content=review.changed_content_from_patch(patch))
+        routing_content=review.changed_content_from_patch(patch),
+        retry_lenses=((retry_context or {}).get("lenses")
+                      if step == "evaluate" else None),
+        retry_source_run_id=((retry_context or {}).get("source_run_id")
+                             if step == "evaluate" else None))
     state = review._load_state(diff_ws, manifest.get("run_id"))
     return manifest, (state.get("routing") or {"lenses": [], "context": {
         "status": manifest.get("status"), "breadth": "routed"}})
@@ -1170,10 +1212,12 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         review_workspace = os.path.realpath(diff_ws)
         base_ref = state.get("baseline") or "HEAD"
         try:
+            retry_context = (_incremental_retry_context(
+                ws, diff_ws, state, task) if step == "evaluate" else None)
             review_kernel, routing = _review_kernel(
                 ws, diff_ws, base=base_ref, step=step, task=task,
                 graph=depgraph.load(ws), impact=imp or {},
-                requirement=req_rec)
+                requirement=req_rec, retry_context=retry_context)
         except Exception as exc:
             review_kernel = {"status": "kernel_unavailable", "slots": [],
                              "reason": f"{exc.__class__.__name__}: {exc}"}

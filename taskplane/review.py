@@ -2007,7 +2007,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  task_type: str | None = None, base: str = "HEAD",
                  caller_expander: Callable | None = None,
                  router: Callable | None = None,
-                 routing_content: dict | None = None) -> dict:
+                 routing_content: dict | None = None,
+                 retry_lenses: Iterable[str] | None = None,
+                 retry_source_run_id: str | None = None) -> dict:
     """Run the normal Review/Evaluate/final-EM evidence kernel once.
 
     The absolute order is target -> graph quality/one expansion -> complete
@@ -2142,6 +2144,32 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
             entry.setdefault("reasons", []).append(
                 "requested by discovered review instructions")
         dor["requested_lenses"] = requested
+        if retry_lenses is not None:
+            retry = {str(value) for value in retry_lenses if str(value)}
+            known = {str(row.get("id") or "")
+                     for row in catalog.get("lenses") or []}
+            if not retry or not retry <= known or not retry_source_run_id:
+                raise ReviewKernelError("incremental retry evidence is invalid")
+            for entry in routing.get("lenses") or []:
+                lid = str(entry.get("id") or "")
+                prior = str(entry.get("verdict") or entry.get("tier") or "n/a")
+                entry["initial_verdict"] = prior
+                if lid in retry:
+                    entry["verdict"] = entry["tier"] = "deep"
+                    entry["mode"] = "subagent"
+                    entry.setdefault("evidence", []).append(
+                        "incremental retry of prior failed lens")
+                else:
+                    entry["verdict"] = entry["tier"] = "n/a"
+                    entry["mode"] = "inline"
+                    entry["negative_evidence"] = [
+                        "prior sealed pass retained; final engineering review "
+                        "remains the broad regression gate"]
+            dor["incremental_retry"] = {
+                "source_run_id": retry_source_run_id,
+                "lenses": sorted(retry),
+                "reuse": "sealed-pass-dispositions",
+            }
         decision = _routing_decision(routing, catalog)
     except Exception as exc:
         run_id = _run_id(stage, _target_run_fingerprint(target),
