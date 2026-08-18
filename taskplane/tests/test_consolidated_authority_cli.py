@@ -1,0 +1,111 @@
+"""Production CLI coverage for consolidated authority host dispatch."""
+from __future__ import annotations
+
+import io
+import json
+import sys
+
+import authority
+import loop
+import tp
+
+
+def test_loop_authorize_dispatches_every_routine_flow(monkeypatch, capsys):
+    calls = []
+
+    def fake_authorize(ws, flow):
+        calls.append((ws, flow))
+        return {"authorized": True, "flow": flow}
+
+    monkeypatch.setattr(loop, "authorize_routine_flow", fake_authorize)
+
+    for flow in authority.ROUTINE_FLOWS:
+        assert tp.main(["loop", "--workspace", "/repo", "authorize",
+                        flow]) == 0
+        assert json.loads(capsys.readouterr().out) == {
+            "authorized": True, "flow": flow}
+
+    assert calls == [("/repo", flow) for flow in authority.ROUTINE_FLOWS]
+
+
+def test_loop_host_input_dispatches_bound_human_decision(monkeypatch,
+                                                         capsys):
+    captured = {}
+
+    def fake_handle(ws, event):
+        captured.update(ws=ws, event=event)
+        return {"authorized": True}
+
+    event = {
+        "type": "human_decision",
+        "reason": "destructive",
+        "response": {"decision": "approve", "authenticated": True},
+        "actor": "user-7",
+        "thread": "thread-9",
+        "revision": "r1",
+        "fact": "remove generated cache",
+        "consequence": "cannot be restored",
+        "authenticated": True,
+    }
+    monkeypatch.setattr(loop, "handle_host_input", fake_handle)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
+
+    assert tp.main(["loop", "--workspace", "/repo", "host-input"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"authorized": True}
+    assert captured == {"ws": "/repo", "event": event}
+
+
+def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
+        monkeypatch, tmp_path, capsys):
+    state = {
+        "requirement_id": "R-1",
+        "baseline": "r1",
+        "authority_target_revision": "r1",
+        "authority_receipt": {"actor": "user-7", "thread": "thread-9"},
+    }
+    monkeypatch.setattr(loop, "load", lambda ws: state)
+    monkeypatch.setattr(loop, "record_preview_feedback",
+                        lambda ws, text, **identity: loop._preview_feedback(
+                            state, text, actor=identity["actor"],
+                            authenticated=identity["authenticated"],
+                            kind=identity["kind"]))
+
+    preview = {
+        "type": "preview_feedback", "text": "increase spacing",
+        "actor": "user-7", "authenticated": True,
+        "change_kind": "cosmetic",
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(preview)))
+    assert tp.main(["loop", "--workspace", str(tmp_path),
+                    "host-input"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["target"] == {"revision": "r1"}
+    assert result["requirement"] == "R-1"
+
+    decision = {
+        "type": "human_decision", "reason": "final_signoff",
+        "response": {"decision": "approve", "authenticated": True},
+        "actor": "user-7", "thread": "thread-9", "revision": "r1",
+        "fact": "review complete", "consequence": "ship",
+        "authenticated": True,
+    }
+    for field, value, reason in (
+            ("actor", "other", "wrong_actor"),
+            ("thread", "other", "wrong_thread"),
+            ("revision", "old", "wrong_revision"),
+            ("authenticated", False, "unauthenticated")):
+        event = {**decision, field: value}
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
+        assert tp.main(["loop", "--workspace", str(tmp_path),
+                        "host-input"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["authorized"] is False
+        assert reason in result["reasons"]
+
+
+def test_loop_host_input_rejects_non_object_event(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("[]"))
+
+    assert tp.main(["loop", "--workspace", "/repo", "host-input"]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "host event must be a JSON object"}

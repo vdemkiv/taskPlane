@@ -2216,6 +2216,38 @@ def cmd_loop(a) -> int:
                                write=getattr(a, "write", False))
     elif action == "guide":
         out = loopmod.guide(ws, task_id=getattr(a, "task", None))
+    elif action == "authorize":
+        # Host/facade dispatchers derive routine authority through the same
+        # production boundary as the loop engine.  A CLI surface keeps host
+        # adapters from reimplementing receipt or target checks.
+        out = loopmod.authorize_routine_flow(ws, a.flow)
+    elif action == "host-input":
+        # Host transports provide their authenticated event envelope on
+        # stdin.  Preserve actor/thread/revision/authentication fields as a
+        # single value and let loop.handle_host_input bind them to current
+        # loop state; presentation-layer state is never authority.
+        try:
+            event = json.load(sys.stdin)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            out = {"error": f"host event must be valid JSON: {exc.msg}"}
+        else:
+            if not isinstance(event, dict):
+                out = {"error": "host event must be a JSON object"}
+            else:
+                # A response body cannot self-assert authentication.  Bind
+                # the decision's authentication bit to the host envelope;
+                # the canonical boundary then checks actor, thread and
+                # revision against current state.
+                if str(event.get("type") or "").strip().lower() == \
+                        "human_decision" and \
+                        isinstance(event.get("response"), dict):
+                    event = dict(event)
+                    response = dict(event["response"])
+                    response["authenticated"] = bool(
+                        event.get("authenticated")) and bool(
+                            response.get("authenticated"))
+                    event["response"] = response
+                out = loopmod.handle_host_input(ws, event)
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
@@ -5619,6 +5651,15 @@ def main(argv=None) -> int:
         "guide", help="before pass submission, check deterministic workflow "
         "facts and return one bounded drift correction")
     lguide.add_argument("--task", help="task id (parallel execute waves)")
+    lau = lsub.add_parser(
+        "authorize", help="derive routine authority for a real host/facade "
+        "flow from the bound consolidated receipt")
+    lau.add_argument(
+        "flow", help="routine flow identity (facade, delivery, product, "
+        "design, build, engineering, status, help, north_star or tag_slack)")
+    lsub.add_parser(
+        "host-input", help="consume one authenticated host event JSON object "
+        "from stdin through the governed human-input boundary")
     lsub.add_parser("status", help="show the loop's stage, tasks and gates")
     lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "
