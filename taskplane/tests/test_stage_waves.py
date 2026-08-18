@@ -1105,12 +1105,18 @@ class TestWorkflowAgnosticModulesExtended:
     def test_loop_lens_and_audit_have_zero_workflow_coupling(self):
         """The R-0002 pin (loop.py/lens.py workflow-agnostic) EXTENDS to
         audit.py: the stage emitter lives in tp.py ONLY, so no gate can
-        ever be reachable only via workflows."""
+        ever be reachable only via workflows. Canonical product identities
+        such as ``workflow_id`` are allowed; coupling means importing,
+        selecting, or launching the optional JS workflow transport."""
+        transport_markers = (
+            "workflows/", "TASKPLANE_WORKFLOWS",
+            "CLAUDE_CODE_WORKFLOWS", "workflow_available(",
+        )
         for mod in ("loop.py", "lens.py", "audit.py"):
             with open(os.path.join(ROOT, "taskplane", mod), encoding="utf-8") as f:
                 src = f.read()
-            assert "workflow" not in src.lower(), \
-                f"taskplane/{mod} must stay workflow-agnostic"
+            for marker in transport_markers:
+                assert marker not in src, (mod, marker)
             for name in STAGES:
                 assert name not in src, (mod, name)
 
