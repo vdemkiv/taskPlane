@@ -96,6 +96,7 @@ _REVIEW_EXECUTION_RECEIPT_SCHEMA = \
 _REVIEW_HOST_ACTION_AUTHORITY = object()
 _REVIEW_HOST_EXECUTION_AUTHORITY = object()
 _NATIVE_APPROVAL_SCHEMA = "taskplane.native-approval-receipt/v1"
+_NATIVE_APPROVAL_LEDGER_SCHEMA = "taskplane.native-approval-ledger/v1"
 
 
 def _native_approval_fingerprint(decision: dict) -> str:
@@ -139,18 +140,64 @@ def native_approval_decision(*, decision_id: str, kind: str, reason: str,
 class NativeApprovalLedger:
     """Issue and consume actor/decision/revision-bound receipts once."""
 
-    def __init__(self, secret: bytes, *, ttl_seconds: int = 900) -> None:
+    def __init__(self, secret: bytes, *, ttl_seconds: int = 900,
+                 state_path: str | None = None) -> None:
         if not isinstance(secret, bytes) or len(secret) < 16:
             raise ValueError("approval authority must be at least 16 bytes")
         self._secret = secret
         self._ttl = max(1, int(ttl_seconds))
         self._consumed: set[str] = set()
+        authority = hashlib.sha256(secret).hexdigest()
+        self._state_path = os.path.abspath(state_path) if state_path else \
+            os.path.join(runtime_storage.taskplane_home(),
+                         "native-approval-ledgers", f"{authority}.json")
 
     def _signature(self, receipt: dict) -> str:
         unsigned = {key: receipt[key] for key in receipt if key != "signature"}
         material = json.dumps(unsigned, sort_keys=True,
                               separators=(",", ":")).encode()
         return hmac.new(self._secret, material, hashlib.sha256).hexdigest()
+
+    def _audit_key(self, receipt: dict) -> str:
+        """Bind exactly-once state to the full authoritative transition."""
+        fields = ("receipt_id", "decision_id", "decision_fingerprint",
+                  "target", "revision", "action", "actor", "signature")
+        material = {key: receipt.get(key) for key in fields}
+        return hashlib.sha256(json.dumps(
+            material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def _consume_once(self, receipt: dict) -> bool:
+        """Atomically persist consumption; return false for a durable replay."""
+        audit_key = self._audit_key(receipt)
+        try:
+            with tp.file_lock(self._state_path):
+                state = tp.load_json(
+                    self._state_path,
+                    {"schema": _NATIVE_APPROVAL_LEDGER_SCHEMA,
+                     "consumed": {}},
+                    what="native approval ledger")
+                if not isinstance(state, dict) or \
+                        state.get("schema") != _NATIVE_APPROVAL_LEDGER_SCHEMA or \
+                        not isinstance(state.get("consumed"), dict):
+                    raise ReviewKernelError(
+                        "native approval ledger is corrupt")
+                if audit_key in state["consumed"]:
+                    self._consumed.add(audit_key)
+                    return False
+                state["consumed"][audit_key] = {
+                    "receipt_id": receipt["receipt_id"],
+                    "decision_id": receipt["decision_id"],
+                    "target": receipt["target"],
+                    "revision": receipt["revision"],
+                    "action": receipt["action"],
+                    "actor": receipt["actor"],
+                }
+                tp.atomic_write_json(self._state_path, state, sort_keys=True)
+                self._consumed.add(audit_key)
+                return True
+        except tp.StateError as exc:
+            raise ReviewKernelError(
+                f"native approval ledger is unavailable: {exc}") from exc
 
     def issue(self, decision: dict, *, action: str, actor: str,
               authenticated: bool, nonce: str, now: int) -> dict:
@@ -208,10 +255,9 @@ class NativeApprovalLedger:
                 int(receipt.get("expires_at") or 0) < int(now):
             raise ReviewKernelError("native approval receipt is expired")
         receipt_id = str(receipt.get("receipt_id") or "")
-        if receipt_id in self._consumed:
+        if not self._consume_once(receipt):
             return {"advanced": False, "status": "duplicate",
                     "receipt_id": receipt_id}
-        self._consumed.add(receipt_id)
         return {"advanced": True, "status": "accepted",
                 "receipt_id": receipt_id, "actor": receipt["actor"],
                 "action": receipt["action"]}
