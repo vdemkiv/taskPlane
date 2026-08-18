@@ -15,6 +15,7 @@ import html
 import json
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Mapping
 
@@ -251,24 +252,51 @@ def parse_artifact(kind: str, data: bytes) -> dict:
 
 
 def _assert_safe_root(root: str) -> str:
-    root = os.path.abspath(str(root or ""))
-    if not root:
-        raise ArtifactPublicationError("artifact output root is required")
-    probe = root
-    while not os.path.lexists(probe):
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            break
-        probe = parent
-    if os.path.islink(probe):
-        raise ArtifactPublicationError("artifact output root uses a symlink")
-    if os.path.lexists(root) and (os.path.islink(root) or not os.path.isdir(root)):
+    raw_root = os.fspath(root) if root is not None else ""
+    if not raw_root or not os.path.isabs(raw_root):
         raise ArtifactPublicationError(
-            "artifact output root is a symlink or not a directory")
+            "artifact output root must be an explicit absolute path")
+    root = os.path.abspath(raw_root)
+    _assert_no_symlink_components(root, "artifact output root")
+    if os.path.lexists(root) and not os.path.isdir(root):
+        raise ArtifactPublicationError("artifact output root is not a directory")
     os.makedirs(root, mode=0o700, exist_ok=True)
-    if os.path.islink(root):
-        raise ArtifactPublicationError("artifact output root is a symlink")
+    # Recheck after creation.  This also catches a pre-existing symlink in any
+    # ancestor, rather than checking only the nearest existing component.
+    _assert_no_symlink_components(root, "artifact output root")
+    if not os.path.isdir(root):
+        raise ArtifactPublicationError("artifact output root is not a directory")
     return root
+
+
+def _assert_no_symlink_components(path: str, label: str) -> None:
+    """Reject a symlink in every existing component of an absolute path."""
+    current = os.path.sep
+    for component in os.path.abspath(path).split(os.path.sep)[1:]:
+        current = os.path.join(current, component)
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(mode):
+            raise ArtifactPublicationError(f"{label} uses a symlink")
+
+
+def _assert_confined(root: str, path: str, label: str, *,
+                     existing_file: bool = False) -> None:
+    """Prove a publisher-controlled path is below the sealed output root."""
+    candidate = os.path.abspath(path)
+    try:
+        confined = os.path.commonpath((root, candidate)) == root
+    except ValueError:
+        confined = False
+    if not confined or candidate == root:
+        raise ArtifactPublicationError(f"{label} escapes artifact output root")
+    _assert_no_symlink_components(candidate, label)
+    if os.path.lexists(candidate):
+        mode = os.lstat(candidate).st_mode
+        if existing_file and not stat.S_ISREG(mode):
+            raise ArtifactPublicationError(f"{label} is not a regular file")
 
 
 def _atomic_write(path: str, data: bytes) -> None:
@@ -300,13 +328,15 @@ def _put_object(root: str, kind: str, data: bytes) -> dict:
     if not _SAFE_COMPONENT.fullmatch(name):
         raise ArtifactPublicationError("unsafe artifact object name")
     directory = os.path.join(root, "objects")
-    if os.path.lexists(directory) and os.path.islink(directory):
-        raise ArtifactPublicationError("artifact object directory is a symlink")
+    _assert_confined(root, directory, "artifact object directory")
     os.makedirs(directory, mode=0o700, exist_ok=True)
+    _assert_confined(root, directory, "artifact object directory")
+    if not os.path.isdir(directory):
+        raise ArtifactPublicationError(
+            "artifact object directory is not a directory")
     path = os.path.join(directory, name)
+    _assert_confined(root, path, "artifact object path", existing_file=True)
     if os.path.lexists(path):
-        if os.path.islink(path) or not os.path.isfile(path):
-            raise ArtifactPublicationError("artifact object path is unsafe")
         with open(path, "rb") as stream:
             if stream.read() != data:
                 raise ArtifactPublicationError(
@@ -370,8 +400,10 @@ def publish_revision_artifacts(root: str, model: Mapping, *,
         }
         manifest = dict(core, fingerprint=_digest(_canonical_bytes(core)))
         manifest_bytes = _canonical_bytes(manifest)
-        _atomic_write(os.path.join(output_root, "artifact-set.json"),
-                      manifest_bytes)
+        manifest_path = os.path.join(output_root, "artifact-set.json")
+        _assert_confined(output_root, manifest_path, "artifact manifest",
+                         existing_file=True)
+        _atomic_write(manifest_path, manifest_bytes)
         return {
             "schema": "taskplane.review-artifact-publication/v1",
             "status": "published",
