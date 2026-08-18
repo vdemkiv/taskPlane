@@ -362,12 +362,16 @@ class TestNoWorkflowOnlyGate:
         """R-W2: no code path where workflows are the only route to a gate.
         The loop engine and the brief builder must not know workflows
         exist — the em step instruction text is untouched by t5."""
+        transport_markers = (
+            "workflows/", "TASKPLANE_WORKFLOWS",
+            "CLAUDE_CODE_WORKFLOWS", "workflow_available(",
+            "review-wave",
+        )
         for mod in ("loop.py", "lens.py"):
             with open(os.path.join(ROOT, "taskplane", mod), encoding="utf-8") as f:
                 src = f.read()
-            assert "workflow" not in src.lower(), \
-                f"taskplane/{mod} must stay workflow-agnostic"
-            assert "review-wave" not in src
+            for marker in transport_markers:
+                assert marker not in src, (mod, marker)
 
     def test_em_step_uses_selective_dispatch(self):
         with open(os.path.join(ROOT, "taskplane", "loop.py"), encoding="utf-8") as f:

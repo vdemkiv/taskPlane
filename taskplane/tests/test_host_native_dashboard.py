@@ -220,7 +220,8 @@ closer.emit("click");
 if (dialog.open || document.activeElement !== trigger) process.exit(4);
 '''
     completed = subprocess.run(
-        [node, "-e", harness], text=True, capture_output=True, check=False)
+        [node, "-e", harness], text=True, encoding="utf-8",
+        errors="replace", capture_output=True, check=False)
     assert completed.returncode == 0, completed.stderr
 
 

@@ -492,7 +492,7 @@ def test_restart_rehydrates_ownership_and_kills_real_detached_group(tmp_path):
          "[sys.executable,'-c','import time; time.sleep(30)'],"
          "start_new_session=True,stdout=subprocess.DEVNULL,"
          "stderr=subprocess.DEVNULL); print(p.pid, flush=True)"],
-        stdout=subprocess.PIPE, text=True)
+        stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     child_pid = int(launcher.communicate(timeout=2)[0].strip())
     ownership = {"schema": "taskplane.preview-process-ownership/v1",
                  "pid": child_pid, "pgid": child_pid,

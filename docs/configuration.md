@@ -65,6 +65,26 @@ restart every already-green cluster.
 
 ## Host capability receipts (set by adapters, not guessed)
 
+### Native workflow surfaces and preview transports
+
+These optional variables are adapter observations or native transport commands.
+Unset capabilities remain unknown and use the accessible bounded fallback; unset
+commands make the corresponding preview surface unavailable rather than guessed.
+
+| Variable | Default | Effect | Enforcement-relevant |
+| --- | --- | --- | --- |
+| `TASKPLANE_NATIVE_PIP` | *(unset)* | Host-observed Picture in Picture support. | No. |
+| `TASKPLANE_NATIVE_VISUALIZATION` | *(unset)* | Host-observed native visualization support. | No. |
+| `TASKPLANE_NATIVE_CAROUSEL` | *(unset)* | Host-observed native carousel support. | No. |
+| `TASKPLANE_NATIVE_APPROVAL` | *(unset)* | Host-observed native approval surface support. | **Yes** — approval still requires an authenticated canonical receipt. |
+| `TASKPLANE_NATIVE_SANDBOX` | *(unset)* | Host-observed disposable sandbox support. | **Yes** — it is evidence only; validation still requires the isolation receipt. |
+| `TASKPLANE_NATIVE_HOSTING` | *(unset)* | Host-observed private preview hosting support. | No. |
+| `TASKPLANE_NATIVE_BROWSER` | *(unset)* | Host-observed integrated browser support. | No. |
+| `TASKPLANE_NATIVE_SIDE_PANEL` | *(unset)* | Host-observed side-panel support. | No. |
+| `TASKPLANE_SIDE_PANEL_COMMAND` | *(unset)* | Native side-panel transport command used for a governed preview. | **Yes** — parsed without a shell and bound to the preview receipt. |
+| `TASKPLANE_BROWSER_COMMAND` | *(unset)* | Native browser transport command used for a governed preview. | **Yes** — parsed without a shell and bound to the preview receipt. |
+| `TASKPLANE_HOSTING_COMMAND` | *(unset)* | Native private-hosting transport command used for a governed preview. | **Yes** — parsed without a shell and bound to the preview receipt. |
+
 These values are runtime observations supplied by the Claude or Codex host
 adapter. File presence proves configuration only; it never proves that a hook
 loaded, a repository is trusted, or a native dispatch argument is supported.

@@ -106,7 +106,8 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     }
     for host, command in commands.items():
         checked = subprocess.run(command, cwd=installed, check=False,
-                                 capture_output=True, text=True)
+                                 capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace")
         assert checked.returncode == 0, f"{host}: {checked.stderr}"
 
 
