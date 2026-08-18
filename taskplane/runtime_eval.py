@@ -31,6 +31,42 @@ REVIEW_FACTS = (
     "output_schema_declared", "output_schema_validated",
     "output_producer_observed")
 
+TOKEN_PROJECTION_SCHEMA = "taskplane.host-token-projection/v1"
+
+
+def observed_token_projection(usage: dict | None, *, provider: str,
+                              source: str, scope: str) -> dict:
+    """Project observed usage; absent provider data is never fabricated."""
+    raw = usage if isinstance(usage, dict) else {}
+    raw_value = raw.get("raw_total_tokens", raw.get("total_tokens"))
+    effective_value = raw.get("effective_tokens", raw.get("effective"))
+
+    def valid(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    present = [raw_value is not None, effective_value is not None]
+    malformed = ((raw_value is not None and not valid(raw_value)) or
+                 (effective_value is not None and not valid(effective_value)))
+    if malformed:
+        status, raw_value, effective_value = "malformed", None, None
+    elif all(present):
+        status = "observed"
+    elif any(present):
+        status = "partial"
+    else:
+        status = "unavailable"
+    row = {
+        "schema": TOKEN_PROJECTION_SCHEMA, "status": status,
+        "raw_tokens": raw_value if valid(raw_value) else None,
+        "effective_tokens": effective_value if valid(effective_value) else None,
+        "scope": str(scope or "unknown"), "provider": str(provider or "unknown"),
+        "source": str(source or "unavailable"),
+        "observed": status in {"observed", "partial"}, "estimated": False,
+    }
+    encoded = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+    row["fingerprint"] = hashlib.sha256(encoded).hexdigest()
+    return row
+
 _LIFECYCLE_TERMINAL = {"success", "failed", "timeout", "cancelled",
                        "unavailable"}
 _VALIDATION_STATUSES = {"valid", "invalid", "unavailable"}
