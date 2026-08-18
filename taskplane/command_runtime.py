@@ -231,11 +231,16 @@ class CommandRuntime:
             review_sandbox = dict(review_sandbox)
             required = {"schema", "sandbox_id", "root_fingerprint",
                         "push_disabled"}
-            if set(review_sandbox) != required or review_sandbox.get(
+            optional = {"isolation_fingerprint"}
+            if not required.issubset(review_sandbox) or \
+                    set(review_sandbox) - required - optional or \
+                    review_sandbox.get(
                     "schema") != "taskplane.review-sandbox-binding/v1" or \
                     review_sandbox.get("push_disabled") is not True or any(
                     not str(review_sandbox.get(key) or "").strip()
-                    for key in required - {"push_disabled"}):
+                    for key in required - {"push_disabled"}) or \
+                    ("isolation_fingerprint" in review_sandbox and
+                     not str(review_sandbox["isolation_fingerprint"]).strip()):
                 raise ValueError("review sandbox binding is invalid")
         snapshot = {
             "schema": SCHEMA,

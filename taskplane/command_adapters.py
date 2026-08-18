@@ -39,6 +39,13 @@ class Launcher(Protocol):
     def __call__(self, command: object, cwd: str) -> "HostLaunch": ...
 
 
+class IsolationLauncher(Protocol):
+    """Trusted host boundary that confines a complete descendant process tree."""
+
+    def __call__(self, command: object, cwd: str,
+                 policy: Mapping[str, object]) -> "HostLaunch": ...
+
+
 class NativeWait(Protocol):
     def __call__(self, binding: Mapping[str, object], timeout: float | None,
                  interrupted: Callable[[], bool] | None) -> Mapping | None: ...
@@ -49,6 +56,7 @@ class HostLaunch:
     """Private host launch result used to bind an opaque runtime handle."""
 
     binding: Mapping[str, object]
+    isolation: Mapping[str, object] | None = None
 
 
 _STATUS_MAP = {
@@ -99,7 +107,8 @@ class CommandAdapter:
 
     def __init__(self, *, host: str, runtime: CommandRuntime,
                  launcher: Launcher, native_wait: NativeWait | None = None,
-                 canceller: Callable[[Mapping[str, object]], None] | None = None):
+                 canceller: Callable[[Mapping[str, object]], None] | None = None,
+                 review_isolation_launcher: IsolationLauncher | None = None):
         if host not in SUPPORTED_HOSTS:
             raise ValueError(f"unsupported command host {host!r}")
         self.host = host
@@ -107,6 +116,7 @@ class CommandAdapter:
         self._launcher = launcher
         self._native_wait = native_wait
         self._canceller = canceller
+        self._review_isolation_launcher = review_isolation_launcher
         self._bindings: dict[str, Mapping[str, object]] = {}
 
     def launch(self, command: object, *, cwd: str,
@@ -135,10 +145,42 @@ class CommandAdapter:
         except ReviewSessionError as exc:
             raise ValueError(str(exc)) from exc
         self._validate_push_disabled_command(command)
-        return self.launch(
-            command, cwd=workdir,
+        if self._review_isolation_launcher is None:
+            raise ValueError(
+                "push-disabled review validation requires verified process "
+                "and network isolation")
+        policy = {
+            "schema": "taskplane.review-isolation-policy/v1",
+            "network": "deny",
+            "scope": "complete-process-tree",
+        }
+        policy_fingerprint = hashlib.sha256(
+            json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")).hexdigest()
+        launched = self._review_isolation_launcher(command, workdir, policy)
+        if not isinstance(launched, HostLaunch) or not launched.binding:
+            raise ValueError("isolated host launch must return a non-empty binding")
+        isolation = dict(launched.isolation or {})
+        if isolation.get("schema") != "taskplane.review-isolation-receipt/v1" or \
+                isolation.get("network") != "denied" or \
+                isolation.get("scope") != "complete-process-tree" or \
+                isolation.get("policy_fingerprint") != policy_fingerprint or \
+                not str(isolation.get("mechanism") or "").strip():
+            raise ValueError(
+                "push-disabled review validation requires a verified "
+                "process-tree isolation receipt")
+        sandbox_binding = dict(sandbox_binding)
+        sandbox_binding["isolation_fingerprint"] = hashlib.sha256(
+            json.dumps(isolation, sort_keys=True, separators=(",", ":"),
+                       default=str).encode("utf-8")).hexdigest()
+        handle = self.runtime.create(
+            command_fingerprint=_fingerprint_command(command),
+            binding=launched.binding,
             review_session=session_transport_binding(session),
             review_sandbox=sandbox_binding)
+        self._bindings[handle] = dict(launched.binding)
+        self.runtime.transition(handle, "running")
+        return handle
 
     @staticmethod
     def _validate_push_disabled_command(command: object) -> None:

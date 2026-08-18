@@ -1,4 +1,6 @@
 from pathlib import Path
+import hashlib
+import json
 
 import pytest
 
@@ -32,6 +34,20 @@ def _adapter(tmp_path, launches):
         launcher=lambda command, cwd: (
             launches.append((command, cwd)) or HostLaunch(binding={"pid": 1})
         ),
+        review_isolation_launcher=lambda command, cwd, policy: (
+            launches.append((command, cwd)) or HostLaunch(
+                binding={"pid": 1},
+                isolation={
+                    "schema": "taskplane.review-isolation-receipt/v1",
+                    "network": "denied",
+                    "scope": "complete-process-tree",
+                    "mechanism": "test-process-sandbox",
+                    "policy_fingerprint": hashlib.sha256(json.dumps(
+                        policy, sort_keys=True, separators=(",", ":"))
+                        .encode("utf-8")).hexdigest(),
+                },
+            )
+        ),
     )
 
 
@@ -62,6 +78,7 @@ def test_validation_launch_is_bound_to_verified_sandbox_root(tmp_path):
     assert binding["sandbox_id"] == "sandbox-1"
     assert binding["push_disabled"] is True
     assert binding["root_fingerprint"]
+    assert binding["isolation_fingerprint"]
     assert str(root) not in str(binding)
 
 
@@ -132,6 +149,95 @@ def test_validation_transport_allows_explicit_read_only_git_builtin(tmp_path):
     )
 
     assert launches == [(["git", "status", "--short"], str(root.resolve()))]
+
+
+def test_interpreter_requires_process_tree_network_isolation(tmp_path):
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    launches = []
+    runtime = CommandRuntime(
+        str(tmp_path / "runtime"), workspace="repo", authorization="human")
+    adapter = CommandAdapter(
+        host="codex", runtime=runtime,
+        launcher=lambda command, cwd: (
+            launches.append((command, cwd)) or HostLaunch(binding={"pid": 1})
+        ),
+    )
+    command = [
+        "python3", "-c",
+        "import subprocess; subprocess.run(['git','push',"
+        "'https://example.test/repo','HEAD','--no-verify'])",
+    ]
+
+    with pytest.raises(ValueError, match="process and network isolation"):
+        adapter.launch_review_validation(
+            command, cwd=str(root), session=_session(), sandbox=_sandbox(root),
+        )
+
+    assert launches == []
+
+
+def test_interpreter_is_delegated_to_process_tree_network_isolation(tmp_path):
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    isolated = []
+    runtime = CommandRuntime(
+        str(tmp_path / "runtime"), workspace="repo", authorization="human")
+    command = ["python3", "-c", "print('dynamic validation')"]
+
+    def isolate(selected, cwd, policy):
+        isolated.append((selected, cwd, policy))
+        return HostLaunch(
+            binding={"pid": 1},
+            isolation={
+                "schema": "taskplane.review-isolation-receipt/v1",
+                "network": "denied", "scope": "complete-process-tree",
+                "mechanism": "host-process-sandbox",
+                "policy_fingerprint": hashlib.sha256(json.dumps(
+                    policy, sort_keys=True, separators=(",", ":"))
+                    .encode("utf-8")).hexdigest(),
+            },
+        )
+
+    adapter = CommandAdapter(
+        host="codex", runtime=runtime,
+        launcher=lambda selected, cwd: pytest.fail("ordinary launcher used"),
+        review_isolation_launcher=isolate,
+    )
+    handle = adapter.launch_review_validation(
+        command, cwd=str(root), session=_session(), sandbox=_sandbox(root),
+    )
+
+    assert isolated == [(command, str(root.resolve()), {
+        "schema": "taskplane.review-isolation-policy/v1",
+        "network": "deny", "scope": "complete-process-tree",
+    })]
+    assert adapter.snapshot(handle)["review_sandbox"][
+        "isolation_fingerprint"]
+
+
+def test_isolation_receipt_must_cover_network_and_descendants(tmp_path):
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    launches = []
+    runtime = CommandRuntime(
+        str(tmp_path / "runtime"), workspace="repo", authorization="human")
+    adapter = CommandAdapter(
+        host="codex", runtime=runtime,
+        launcher=lambda command, cwd: HostLaunch(binding={"pid": 1}),
+        review_isolation_launcher=lambda command, cwd, policy: HostLaunch(
+            binding={"pid": 1},
+            isolation={"schema": "taskplane.review-isolation-receipt/v1",
+                       "network": "denied", "scope": "parent-only",
+                       "mechanism": "incomplete",
+                       "policy_fingerprint": "not-the-requested-policy"}),
+    )
+
+    with pytest.raises(ValueError, match="process-tree isolation receipt"):
+        adapter.launch_review_validation(
+            ["npm", "test"], cwd=str(root), session=_session(),
+            sandbox=_sandbox(root),
+        )
 
 
 def test_remote_evidence_cannot_treat_two_missing_observations_as_unchanged():
