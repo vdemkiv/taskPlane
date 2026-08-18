@@ -14,8 +14,13 @@ import re
 import secrets
 import time
 from contextlib import contextmanager
-import fcntl
 from typing import Callable, Mapping
+
+try:
+    import fcntl as _file_lock
+except ImportError:  # pragma: no cover - exercised by windows-latest
+    _file_lock = None
+    import msvcrt as _windows_lock
 
 
 SCHEMA = "taskplane.command-state/v1"
@@ -45,6 +50,26 @@ _SECRET_PATTERNS = (
         r"\s*[:=]\s*([^\s,;]+)"
     ),
 )
+
+
+def _lock_file(handle) -> None:
+    if _file_lock is not None:
+        _file_lock.flock(handle.fileno(), _file_lock.LOCK_EX)
+        return
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+    handle.seek(0)
+    _windows_lock.locking(handle.fileno(), _windows_lock.LK_LOCK, 1)
+
+
+def _unlock_file(handle) -> None:
+    if _file_lock is not None:
+        _file_lock.flock(handle.fileno(), _file_lock.LOCK_UN)
+        return
+    handle.seek(0)
+    _windows_lock.locking(handle.fileno(), _windows_lock.LK_UNLCK, 1)
 
 
 class CommandRuntimeError(RuntimeError):
@@ -140,11 +165,11 @@ class CommandRuntime:
         directory = self._dir(handle)
         directory.mkdir(parents=True, exist_ok=True)
         with (directory / "delivery.lock").open("a+b") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            _lock_file(lock)
             try:
                 yield
             finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                _unlock_file(lock)
 
     def _load(self, handle: str) -> dict:
         try:
