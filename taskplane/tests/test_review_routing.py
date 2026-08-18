@@ -1312,6 +1312,37 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(out["counters"]["emitted_bytes"],
                          out["manifest_bytes"])
 
+    def test_full_catalog_dispatch_fits_aggregate_manifest_budget(self):
+        catalog = lens.load_catalog()["lenses"]
+        routing = {
+            "lenses": [
+                {
+                    **row,
+                    "tier": "deep", "verdict": "deep",
+                    "mode": "subagent", "score": 100,
+                    "evidence": ["forced full-catalog regression fixture"],
+                }
+                for row in catalog
+            ],
+            "context": {"signals": {}},
+        }
+
+        out = self._start(router=lambda: routing, task_type="implementation")
+
+        self.assertEqual(out["status"], "ready")
+        self.assertEqual(out["routing_counts"]["deep"], len(catalog))
+        self.assertGreater(out["manifest_bytes"], 16 * 1024)
+        self.assertLessEqual(out["manifest_bytes"], review.MAX_MANIFEST_BYTES)
+        self.assertEqual(out["manifest_bytes"],
+                         len(review_evidence.canonical_bytes(out)))
+
+    def test_aggregate_manifest_budget_remains_bounded(self):
+        oversized = {"payload": "x" * review.MAX_MANIFEST_BYTES}
+
+        with self.assertRaisesRegex(
+                review.ReviewKernelError, "review manifest exceeds"):
+            review._manifest(oversized)
+
     def test_collect_commits_empty_revision_when_all_lenses_are_na(self):
         catalog = lens.load_catalog()["lenses"]
         routing = {"lenses": [

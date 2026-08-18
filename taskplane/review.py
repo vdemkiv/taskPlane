@@ -48,7 +48,13 @@ CONTEXT_DIR = ".em-review/context"
 DIFF_NAME = "diff.patch"
 IMPACT_NAME = "impact.json"
 BRIEF_NAME = "blast-radius.md"
-MAX_MANIFEST_BYTES = 16 * 1024
+# The start/collection manifest is aggregate control-plane data: it contains
+# one bounded reference/lease row per dispatched slot. It must not share the
+# 16 KiB limit used for an individual model-facing scoped view. The complete
+# lens catalog currently contains 26 lenses; 128 KiB leaves bounded headroom
+# for a full deep dispatch while still rejecting accidentally inlined review
+# evidence or dashboard payloads.
+MAX_MANIFEST_BYTES = 128 * 1024
 MAX_ROUTING_FILES = 200
 MAX_ROUTING_FILE_BYTES = 64 * 1024
 KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
