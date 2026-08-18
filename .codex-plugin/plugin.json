@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.17.7",
+  "version": "2.17.8",
   "description": "AI software-delivery control plane for Claude and Codex: simple design, build, review, and status prompts backed by dependency-aware readiness, scoped execution, fingerprinted evidence, 26-lens review, and human approval.",
   "author": {
     "name": "Volodymyr Demkiv",
@@ -43,7 +43,7 @@
       "Review code and solution designs through 26 engineering lenses",
       "Publish progress artifacts for team handoff",
       "Show status on demand: current step, gates, and what taskplane is waiting on",
-      "Project host-native PiP, agent fan-out, approvals, dashboards, carousels, and governed previews from canonical evidence with accessible fallbacks"
+      "Project native PiP, fan-out, approvals, dashboards, carousels, and governed previews with accessible fallbacks"
     ],
     "websiteURL": "https://github.com/vdemkiv/taskPlane",
     "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",

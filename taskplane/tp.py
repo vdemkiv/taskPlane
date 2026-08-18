@@ -402,7 +402,13 @@ runpy.run_path(ENGINE, run_name="__main__")
 
 
 def _codex_hook_action(command: str) -> str:
-    match = re.search(r'tp\.py"?\s+([a-z][a-z0-9-]*)', str(command or ""))
+    value = str(command or "")
+    if re.search(r'host_native_runtime\.py"?\s+check\s+--host\s+claude(?:\s|$)', value):
+        # Host-native capability discovery is context acquisition. Treat it
+        # as the same fail-closed class so repo-local Codex hook installation
+        # can preserve the shared Claude/Codex declaration safely.
+        return "context"
+    match = re.search(r'tp\.py"?\s+([a-z][a-z0-9-]*)', value)
     if not match:
         raise RuntimeError("bundled hook command has no taskplane action")
     return match.group(1)

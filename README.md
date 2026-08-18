@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.8** | **Host-native workflow UX now shares one governed model across Codex and Claude.** PiP progress reports observed token usage, native fan-out and durable approval surfaces retain canonical identities, dashboards use accessible deterministic carousels, and pinned disposable previews fail closed unless isolation and teardown are verified. |
 | **v2.17.7** | **Review governance is now isolated at the real boundaries.** Structured acceptance criteria survive canonical DoR and approval, dynamic validation enforces verified process-tree isolation against direct and descendant pushes, and lifecycle contracts bind to exact worktrees so sibling Codex tasks can proceed independently. |
 | **v2.17.6** | **Bounded fixes now receive bounded re-review.** After a sealed failed evaluation, Taskplane reruns only the failed lenses and reuses prior passing dispositions; incomplete or unsealed evidence still falls back to the full route, and final engineering review remains broad. This removes repeated no-value lens waves without weakening sign-off. |
-| **v2.17.5** | **Large-review retries no longer devolve into lease housekeeping.** Review views stay within 16 KiB using canonical references and content-bound untrusted-data markers; every lease receives a run-unique Codex task identity; completed producer contracts release immediately after their host-observed result; and dead pre-publication reservations recover safely. This keeps provenance strict while removing the fresh-thread collisions, stale contract unions, and manual collector recovery seen during dogfooding. |
 
 ## Install
 
