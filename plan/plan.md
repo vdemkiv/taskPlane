@@ -1,93 +1,98 @@
-# R-0010 plan — structured criteria and process-tree no-push closure
+# R-0011 plan — host-native workflow UX for Codex and Claude
 
-R-0010 is intentionally limited to the blockers confirmed by engineering
-decision 0046 plus the amended worktree-lifecycle isolation defect: structured
-acceptance supplied outside `requirement.text` is lost before canonical DoR, a
-validation descendant can push to an explicit URL with `--no-verify`, and a
-contract bound to worktree A can intercept lifecycle events belonging to
-worktree B. The preceding focused R-0009 correction plan is
-preserved unchanged in
-`plan/r0009-focused-correction-plan.pre-r0010.md` and
-`plan/r0009-focused-correction-tasks.pre-r0010.json`.
+This plan realizes the human-approved Design Contract fingerprint
+`a1d4612d2f606932c01a36f9882b6c15fe7bb1f3a72c3246b867d55efb87bd86`.
+The current contract artifact SHA-256 is
+`6b59d1dac55af786226ebf39eab2bf19769a52db405caaf0d669a4b60cb8efec`;
+the approved fingerprint remains the decision identity. The prior R-0010 plan
+is preserved unchanged in `plan/r0010-plan.pre-r0011.md` and
+`plan/r0010-tasks.pre-r0011.json`.
 
-## Bounded impact and graph contract
+## Graph and Design coverage
 
-The single required impact projection for the amendment confirmed
-`taskplane/tp.py` and `taskplane/taskplane_lite.py` as the exact lifecycle
-owners. It returned 30 impacted nodes, no unknown modules, and the current
-graph fingerprint
-`cadabcfd487b979671df0220062d0bd0fe3c7dbd2b5565f0620e0cd8c2761667`
-at HEAD `33d1ee985f4319cc48b6d79700a1caf05c16c585`. Every task retains the typed
-policy: local depth 3, `contract-only` boundaries, contract depth 1, and
-requirement depth 1.
+The required single bounded impact call covered every proposed implementation
+surface and matched the approved baseline fingerprint
+`a37ace66548f41464159678b3f8d88b315db4b63a6f488349842fdf93a92779b`
+at HEAD `383d77bd70d53d33aa2977df0720e69d085b8a08`. It returned 31 impacted
+nodes, no unknown modules, and the approved policy: local depth 3,
+`contract-only` boundaries, contract depth 1, requirement depth 1.
 
-The plan declares two exact contracts:
-`contract:review-dor-evidence` and
-`contract:review-validation-sandbox`. Its eight exact edges bind canonical
-DoR production/consumption, sandbox production/consumption, and focused test
-validation through those boundaries. The amendment introduces no third
-cross-boundary contract or invented edge: it tightens lifecycle ownership
-inside the existing Taskplane control plane. Explicit graph-node declarations
-cover all nine owning modules, `taskplane/tests`, and both contracts.
+The five tasks collectively declare every one of the 23 proposed graph nodes,
+all six exact contracts, all 18 proposed edges, and AC1–AC15 verbatim. The
+first task establishes the canonical schema. Dashboard, workflow/approval, and
+preview tasks then use disjoint source/test scopes and may execute in parallel
+isolated worktrees. The final host-packaging/compatibility task depends on all
+of them and owns the generic `taskplane/tests` graph node.
 
-## Delivery
+## Risk-first delivery
 
-The three implementation tasks are scope-disjoint and can run concurrently in
-isolated worktrees. A small test-only task joins the first two because AC9
-requires one proof that those R-0009 corrections compose without changing
-R-0009. Taskplane's exact-file scopes keep the lifecycle regression separate
-from that compatibility task.
-
-1. **Canonical structured criteria.** Admit the existing structured criteria
-   field as a first-class canonical DoR source even when `requirement.text` is
-   empty or unrelated. Preserve source order and authoritative source/target/
-   revision provenance; assign deterministic identities; deduplicate only true
-   semantic duplicates; reject empty or malformed entries fail-closed; and
-   carry the same records through ledger, approval evidence, JSON, Markdown,
-   HTML, and inline projections. A failed, unproven, or unsupported entry must
-   block approval exactly like a text-extracted criterion.
-2. **Process-tree no-push isolation.** Establish isolation before launch and
-   bind it to validation run, sandbox root, cwd, environment, executable, and
-   descendants. Enforce remote-write denial below Git command spelling so an
-   explicit URL/refspec, `--no-verify`, alternate configuration, hook override,
-   shell/package wrapper, child, or grandchild cannot bypass it. Verify the
-   isolated destination and reviewed checkout before/after. Missing, tampered,
-   escaped, or unverifiable isolation blocks execution and cannot record pass,
-   while ordinary reads, builds, tests, and disposable local writes continue.
-3. **R-0009 compatibility verification.** Run one bounded integration selector
-   covering the new cross-contract fixture plus the existing production,
-   routing, and session regressions. Audit the selected tests for removal,
-   skip, xfail, loosened floors, or reclassification. This task changes tests
-   only and depends on both implementations.
-4. **Exact-worktree lifecycle isolation.** Resolve and bind contract lookup,
-   lifecycle interception, processed-event identity, and duplicate-delivery
-   keys to the exact canonical workspace/worktree plus task lifecycle id—not a
-   repository family, shared Git directory, host event shape, or path prefix.
-   With A governed, `create_thread` and unrelated work in sibling worktree B
-   must proceed under B's own state while A remains governed. Re-delivering the
-   same event for A stays idempotent; an identical-shaped event for B is
-   independent. Tests cover sibling worktrees, shared `.git` metadata,
-   path-prefix collisions, duplicate delivery in A, and identical host events
-   across A/B without clearing or weakening either contract.
+1. **Canonical surface model and capability negotiation.** Add one versioned
+   snapshot/event/audit model and one serialized adapter queue. Persist each
+   canonical update before delivery; acknowledge by workflow, revision,
+   sequence, and surface; replay from the last acknowledgement. Capability
+   records include host/version, source/confidence/freshness, limitations,
+   selected surface, and explicit fallback. Unknown, stale, contradictory,
+   partial, or changed-mid-run evidence never becomes support. Fallbacks expose
+   the same values/evidence/decisions/actions and say unavailable, not declined.
+2. **Live workflow, fan-out, and approval authority.** Publish ordered stage,
+   wave, agent, token, attention, gate, and terminal events from existing
+   canonical owners. PiP opens only for live persistent work, coalesces to at
+   most four <=16 KiB updates/second without dropping attention/terminal
+   transitions, reconnects, and closes once. Token values remain observed,
+   source-attributed, partial, or unavailable. Native approval cards show the
+   complete decision with <=2 primary actions; only authenticated current
+   actor/decision/target/revision receipts advance exactly once.
+3. **Native dashboard, carousel, and accessibility.** Project workflow, DoR,
+   dependency/impact, agents, lenses, criteria, findings, validation, artifacts,
+   and gate from canonical state. Zero/one items use concise cards; 3–8 use one
+   page; 9+ use deterministic pages of eight with a final page rebalanced to
+   at least three where possible. Preserve item ids, filters, focus, totals,
+   composer access, <=14 KiB inline payloads, and lossless artifact links. Use
+   system tokens and meet WCAG AA, keyboard, 200% text, reduced motion,
+   light/dark, alt-text, semantic-label, focus, responsive, and non-color cues.
+4. **Governed working previews.** Register design/build/review previews against
+   target/revision, private authorization, sandbox/hosting identity, CPU/memory/
+   time/network policy, no-push transport, teardown deadline, and capability
+   receipt. Browser/side-panel interaction becomes canonical evidence. Denial,
+   unavailability, build failure, timeout, push, path escape, external network,
+   public exposure, or teardown failure stays bounded and cannot change source
+   checkout/remotes or synthesize success.
+5. **Cross-host packaging and compatibility.** Declare/observe capabilities in
+   the Codex and Claude packages, align hooks/skills/agents/docs with the same
+   semantics, and run cross-host/native-disabled goldens. Host styling and API
+   names may differ; canonical values, ordering, provenance, actions, audit,
+   gates, and accessible fallbacks may not. Existing non-native design, build,
+   review, status, approval, and artifact flows retain full evidence and gate
+   strength.
 
 ## Exact non-functional requirements
 
-- **security**: The no-push policy is enforced at the real validation process-tree boundary and cannot be bypassed by explicit URLs, --no-verify, Git configuration, hooks, wrappers, or descendants; inability to prove isolation blocks execution.
-- **architecture**: Structured acceptance is one canonical input to DoR, ledger, projections, and approval; validation isolation is one host-neutral process-tree contract; lifecycle governance is scoped by exact resolved worktree and task identity rather than repository family.
-- **data-safety**: Neither the reviewed checkout nor any local or remote Git destination may change during disposable validation, and structured criteria/evidence cannot be silently dropped, duplicated, or reordered.
-- **sre**: Isolation establishment, blocked attempts, and criterion-propagation failures produce stable actionable states with bounded execution and no partial or false-success record.
-- **integrability**: Existing R-0009 consumers remain compatible, and multiple Codex tasks may work concurrently in separate worktrees of one repository without clearing or weakening each other's contracts.
+- **security**: Native actions, previews, sandbox/hosting, browser interaction, and capability claims are authenticated, target-bound, least-privilege, and fail closed; UI state is not authority and previews cannot push, escape isolation, leak secrets, or become public by default.
+- **architecture**: One versioned canonical semantic model and audit stream drive all Claude/Codex native projections and fallbacks; host adapters negotiate/render capabilities without creating parallel workflow truth.
+- **accessibility**: Native and fallback surfaces meet WCAG AA, support keyboard and responsive text, retain focus/composer access, provide alt text and semantic labels, and never communicate status by color alone.
+- **integrability**: PiP, visualization, approval, dashboard, carousel, preview, and capability contracts are versioned and tolerate additive host evolution without hard-coding identical Claude/Codex APIs.
+- **privacy-compliance**: UI and preview telemetry minimize repository/user data, redact credentials, secrets, personal paths, prompts, and unrelated content, and expose preview access only to the authorized conversation/session.
+- **sre**: Every native surface has explicit open, update, attention, terminal, error, reconnect, and teardown lifecycle with bounded retries/payloads and an actionable fallback rather than stuck or false completion.
+- **scalability**: Agent waves, token events, findings, criteria, and dashboards remain responsive through bounded updates and 3-to-8-item pages; host payloads do not copy full history on every update.
+- **cost-finops**: Token reporting is source-attributed and never estimated as observed; UI update coalescing and previews have bounded resource budgets and do not trigger redundant model turns or persist hosting after completion.
 
 ## Runnable validation
 
 | Task | Criteria | Command |
 |---|---|---|
-| Canonical structured criteria | AC1–AC4 | `python3 -m pytest -q taskplane/tests/test_review_structured_criteria.py` |
-| Process-tree no-push isolation | AC5–AC8 | `python3 -m pytest -q taskplane/tests/test_review_process_tree_isolation.py` |
-| R-0009 compatibility | AC9 | `python3 -m pytest -q taskplane/tests/test_r0010_r0009_compatibility.py taskplane/tests/test_review_production_integration.py taskplane/tests/test_review_routing.py taskplane/tests/test_review_session.py` |
-| Exact-worktree lifecycle isolation | AC10–AC11 | `python3 -m pytest -q taskplane/tests/test_contract_worktree_isolation.py` |
+| Canonical model/capabilities | AC11–AC12 | `python3 -m pytest -q taskplane/tests/test_host_native_capabilities.py` |
+| PiP/fan-out/approval | AC1–AC5 | `python3 -m pytest -q taskplane/tests/test_host_native_workflow.py` |
+| Dashboard/carousel/a11y | AC6–AC8, AC13 | `python3 -m pytest -q taskplane/tests/test_host_native_dashboard.py` |
+| Preview runtime | AC9–AC10 | `python3 -m pytest -q taskplane/tests/test_host_preview_runtime.py` |
+| Cross-host/legacy compatibility | AC14–AC15 | `python3 -m pytest -q taskplane/tests/test_host_native_compatibility.py` |
 
-No additional product feature, broad cleanup, artifact redesign, routing change, or
-host-specific review authority is authorized. Rollback disables the corrected
-paths for new reviews only and returns to the existing R-0009 implementation;
-it never rewrites review evidence, criteria, sandbox records, or test history.
+## Rollout and rollback
+
+Roll out behind `TASKPLANE_HOST_NATIVE_UX`: canonical audit-only projectors,
+capability/fallback, dashboard/fan-out, PiP/tokens, approval receipts, then
+previews independently per capability. UI updates never wake the model. Retry
+each surface transition at most twice; teardown once plus one forced provider
+cleanup. Rollback disables new native sessions, closes active PiP/private
+previews, retains event/receipt readers, and routes canonical snapshots through
+legacy bounded accessible widgets/artifacts. No canonical data is migrated,
+rewritten, or deleted, and no package/Python-floor/dependency change is needed.

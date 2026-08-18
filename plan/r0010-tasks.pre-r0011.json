@@ -1,0 +1,152 @@
+{
+  "tasks": [
+    {
+      "id": "t1-canonical-structured-criteria",
+      "title": "Carry structured criteria through canonical DoR, ledger, evidence, projections, and approval",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/review_dor.py",
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_review_structured_criteria.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_structured_criteria.py",
+      "req": "R-0010",
+      "deps": [],
+      "type": "architecture",
+      "contracts": [
+        "contract:review-dor-evidence"
+      ],
+      "new_modules": [
+        "taskplane/review.py",
+        "taskplane/review_dor.py",
+        "taskplane/review_evidence.py",
+        "contract:review-dor-evidence"
+      ],
+      "design_edges": [
+        "taskplane/review_dor.py->contract:review-dor-evidence:provides",
+        "taskplane/review.py->contract:review-dor-evidence:consumes",
+        "taskplane/review_evidence.py->contract:review-dor-evidence:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC1: With empty or unrelated requirement.text, multiple valid structured criteria appear exactly once and in source order in canonical DoR with source identity and target/revision provenance.",
+        "AC2: A review using only structured criteria round-trips every criterion exactly once through the canonical ledger, approval evidence, JSON, Markdown, HTML, and inline projections with matching ids, text, status, evidence, and counts.",
+        "AC3: A structured criterion that is failed, unproven, or missing valid evidence prevents approval exactly like a text-extracted criterion; pass permits approval only when every other R-0009 gate is satisfied.",
+        "AC4: Duplicate, reordered, distinct, empty-text, and malformed mixed-source fixtures prove deterministic identity, order, authoritative provenance, deduplication, and fail-closed rejection without losing distinct criteria."
+      ]
+    },
+    {
+      "id": "t2-process-tree-no-push-isolation",
+      "title": "Enforce explicit-URL and descendant-process no-push isolation at the validation boundary",
+      "scope": [
+        "taskplane/command_adapters.py",
+        "taskplane/command_runtime.py",
+        "taskplane/review_session.py",
+        "taskplane/tests/test_review_process_tree_isolation.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_process_tree_isolation.py",
+      "req": "R-0010",
+      "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:review-validation-sandbox"
+      ],
+      "new_modules": [
+        "taskplane/command_adapters.py",
+        "taskplane/command_runtime.py",
+        "taskplane/review_session.py",
+        "contract:review-validation-sandbox"
+      ],
+      "design_edges": [
+        "taskplane/command_adapters.py->contract:review-validation-sandbox:provides",
+        "taskplane/command_runtime.py->contract:review-validation-sandbox:consumes",
+        "taskplane/review_session.py->contract:review-validation-sandbox:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC5: From a registered validation sandbox, git push --no-verify to an explicit URL and refspec returns a stable blocked result and leaves the isolated bare destination bytes and refs unchanged.",
+        "AC6: Direct commands plus child, grandchild, shell, package-script, and executable-wrapper processes cannot push via explicit URLs, alternate Git config, --no-verify, or hook overrides, and every block identifies its validation run and sandbox.",
+        "AC7: If no-push isolation is unavailable, tampered, or unverifiable, or command cwd escapes the sandbox, dynamic validation does not run and cannot be recorded executed/pass; reviewed checkout and destination refs remain intact.",
+        "AC8: Normal read-only builds, tests, dependency reads, and disposable local writes still work in the sandbox; the focused R-0009 dynamic scenario records process-tree isolation evidence and proves original checkout and destination refs unchanged."
+      ]
+    },
+    {
+      "id": "t4-exact-worktree-lifecycle-isolation",
+      "title": "Bind lifecycle interception and deduplication to the exact resolved worktree and task identity",
+      "scope": [
+        "taskplane/tp.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tests/test_contract_worktree_isolation.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_contract_worktree_isolation.py",
+      "req": "R-0010",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:review-dor-evidence",
+        "contract:review-validation-sandbox"
+      ],
+      "new_modules": [
+        "taskplane/tp.py",
+        "taskplane/taskplane_lite.py"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC10: With a contract active in worktree A, creating a Codex task or running unrelated work bound to worktree B of the same repository is not blocked, replayed, or marked already processed by A; A remains governed and B receives only its own contract.",
+        "AC11: Lifecycle deduplication keys include the exact resolved workspace/worktree and task lifecycle identity, so duplicate delivery in one task remains idempotent while identical host event shapes in separate worktrees proceed independently."
+      ]
+    },
+    {
+      "id": "t3-r0009-compatibility-verification",
+      "title": "Verify both blockers together without changing any other R-0009 behavior",
+      "scope": [
+        "taskplane/tests",
+        "taskplane/tests/test_r0010_r0009_compatibility.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0010_r0009_compatibility.py taskplane/tests/test_review_production_integration.py taskplane/tests/test_review_routing.py taskplane/tests/test_review_session.py",
+      "req": "R-0010",
+      "deps": [
+        "t1-canonical-structured-criteria",
+        "t2-process-tree-no-push-isolation",
+        "t4-exact-worktree-lifecycle-isolation"
+      ],
+      "type": "validation",
+      "contracts": [
+        "contract:review-dor-evidence",
+        "contract:review-validation-sandbox"
+      ],
+      "new_modules": [
+        "taskplane/tests"
+      ],
+      "design_edges": [
+        "taskplane/tests->contract:review-dor-evidence:validates",
+        "taskplane/tests->contract:review-validation-sandbox:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC9: Focused tests and the complete R-0009 regression suite pass with no removed, skipped, xfailed, loosened, or reclassified assertion and no change to other R-0009 behavior."
+      ]
+    }
+  ]
+}

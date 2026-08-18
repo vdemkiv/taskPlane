@@ -1,31 +1,37 @@
 {
   "tasks": [
     {
-      "id": "t1-canonical-structured-criteria",
-      "title": "Carry structured criteria through canonical DoR, ledger, evidence, projections, and approval",
+      "id": "t1-canonical-host-surface-model",
+      "title": "Define the canonical host-surface model, capability negotiation, and bounded fallback",
       "scope": [
-        "taskplane/review.py",
-        "taskplane/review_dor.py",
-        "taskplane/review_evidence.py",
-        "taskplane/tests/test_review_structured_criteria.py"
+        "taskplane/host_native.py",
+        "taskplane/host_capabilities.py",
+        "taskplane/tests/test_host_native_capabilities.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_structured_criteria.py",
-      "req": "R-0010",
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_capabilities.py",
+      "req": "R-0011",
       "deps": [],
       "type": "architecture",
       "contracts": [
-        "contract:review-dor-evidence"
+        "contract:host-native-progress",
+        "contract:host-native-visualization",
+        "contract:host-native-approval",
+        "contract:host-capability-negotiation"
       ],
       "new_modules": [
-        "taskplane/review.py",
-        "taskplane/review_dor.py",
-        "taskplane/review_evidence.py",
-        "contract:review-dor-evidence"
+        "taskplane/host_native.py",
+        "taskplane/host_capabilities.py",
+        "contract:host-native-progress",
+        "contract:host-native-visualization",
+        "contract:host-native-approval",
+        "contract:host-capability-negotiation"
       ],
       "design_edges": [
-        "taskplane/review_dor.py->contract:review-dor-evidence:provides",
-        "taskplane/review.py->contract:review-dor-evidence:consumes",
-        "taskplane/review_evidence.py->contract:review-dor-evidence:consumes"
+        "taskplane/host_capabilities.py->contract:host-capability-negotiation:provides",
+        "taskplane/host_native.py->contract:host-native-progress:provides",
+        "taskplane/host_native.py->contract:host-native-visualization:provides",
+        "taskplane/host_native.py->contract:host-native-approval:provides",
+        "taskplane/host_native.py->contract:host-capability-negotiation:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -34,38 +40,125 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC1: With empty or unrelated requirement.text, multiple valid structured criteria appear exactly once and in source order in canonical DoR with source identity and target/revision provenance.",
-        "AC2: A review using only structured criteria round-trips every criterion exactly once through the canonical ledger, approval evidence, JSON, Markdown, HTML, and inline projections with matching ids, text, status, evidence, and counts.",
-        "AC3: A structured criterion that is failed, unproven, or missing valid evidence prevents approval exactly like a text-extracted criterion; pass permits approval only when every other R-0009 gate is satisfied.",
-        "AC4: Duplicate, reordered, distinct, empty-text, and malformed mixed-source fixtures prove deterministic identity, order, authoritative provenance, deduplication, and fail-closed rejection without losing distinct criteria."
+        "AC11: Supported, unsupported, partial, unknown, stale, contradictory, and changed-mid-run capability profiles record host/version, source/confidence, selected surface, limitations, and fallback and select deterministic behavior without false support.",
+        "AC12: Disabling PiP, visualization, carousel, approval, sandbox, hosting, browser, and side-panel capabilities independently preserves canonical values, evidence, audit, gates, and reachable safe actions in an accessible bounded fallback that names unavailable rather than user-declined."
       ]
     },
     {
-      "id": "t2-process-tree-no-push-isolation",
-      "title": "Enforce explicit-URL and descendant-process no-push isolation at the validation boundary",
+      "id": "t2-live-workflow-fanout-and-approvals",
+      "title": "Publish truthful PiP, agent topology, and authoritative native approval receipts",
       "scope": [
-        "taskplane/command_adapters.py",
-        "taskplane/command_runtime.py",
-        "taskplane/review_session.py",
-        "taskplane/tests/test_review_process_tree_isolation.py"
+        "taskplane/loop.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/review.py",
+        "workflows/**",
+        "taskplane/tests/test_host_native_workflow.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_process_tree_isolation.py",
-      "req": "R-0010",
-      "deps": [],
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_workflow.py",
+      "req": "R-0011",
+      "deps": [
+        "t1-canonical-host-surface-model"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:host-native-progress",
+        "contract:host-native-visualization",
+        "contract:host-native-approval",
+        "contract:host-capability-negotiation"
+      ],
+      "new_modules": [
+        "taskplane/loop.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/review.py",
+        "workflows"
+      ],
+      "design_edges": [
+        "taskplane/loop.py->contract:host-native-progress:consumes",
+        "taskplane/runtime_eval.py->contract:host-native-progress:consumes",
+        "taskplane/review.py->contract:host-native-approval:consumes",
+        "workflows->contract:host-native-visualization:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC1: On every host profile supporting persistent PiP, one active workflow opens one session showing workflow identity, stage, active/completed work, attention, and last update; ordered changes are reflected and the session closes automatically on completion, cancellation, or failure, while completed static work never opens PiP.",
+        "AC2: Complete, incremental, delayed, absent, malformed, and cross-provider usage fixtures show observed raw/effective tokens with scope/source or explicit partial/unavailable status, reconcile to the canonical token record, and never fabricate zero or estimates.",
+        "AC3: Serial, parallel, mixed-wave, retry, cancellation, failure, and resume fixtures visualize every dispatched agent with stable task/slot identity, role, scope, relationship, state, attention, and outcome matching the canonical audit record without duplicates or phantoms.",
+        "AC4: Plan, design, dynamic-validation, review, and signoff approval fixtures show the exact decision, reason, target/revision, relevant evidence, consequences, owner, and approvability, with at most two primary inline actions and richer content moved to detail/fullscreen.",
+        "AC5: A native approval advances state exactly once only when an authenticated human receipt is bound to the current decision, actor, target, and revision; stale, duplicate, replayed, disabled, unauthenticated, wrong-revision, or presentation-only actions cannot advance."
+      ]
+    },
+    {
+      "id": "t3-native-dashboard-carousel-and-a11y",
+      "title": "Project native dashboard components with deterministic carousels and accessible conversational layouts",
+      "scope": [
+        "taskplane/dashboard.py",
+        "taskplane/tests/test_host_native_dashboard.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_dashboard.py",
+      "req": "R-0011",
+      "deps": [
+        "t1-canonical-host-surface-model"
+      ],
+      "type": "frontend",
+      "contracts": [
+        "contract:host-native-dashboard",
+        "contract:host-capability-negotiation"
+      ],
+      "new_modules": [
+        "taskplane/dashboard.py",
+        "contract:host-native-dashboard"
+      ],
+      "design_edges": [
+        "taskplane/dashboard.py->contract:host-native-dashboard:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC6: Canonical workflow, DoR, dependency/impact, agents, lenses, criteria, findings, validation, artifacts, and gate snapshots project on Codex and Claude with equal values, ordering semantics, provenance, and actions despite allowed host-specific styling.",
+        "AC7: Dataset fixtures containing 0, 1, 3, 8, 9, 120, and multi-page items use deterministic 3-to-8-item visually consistent carousel pages where needed, expose concise metadata plus total/current position, support navigation/filtering, and preserve every stable item identity.",
+        "AC8: Inline structure and viewport tests prove cards are single-purpose, responsive, have no nested scrolling/deep navigation, preserve the conversational composer, respect the two-primary-action limit, and use detail/fullscreen for rich multi-step exploration.",
+        "AC13: Automated accessibility, keyboard, text-scaling, reduced-motion, light/dark theme, and responsive viewport checks prove native/fallback surfaces use system tokens/fonts/layout, WCAG AA contrast, semantic labels, alt text, visible focus, and non-color status cues."
+      ]
+    },
+    {
+      "id": "t4-governed-preview-runtime",
+      "title": "Run design, build, and review previews in pinned private disposable scopes",
+      "scope": [
+        "taskplane/preview_runtime.py",
+        "taskplane/command_runtime.py",
+        "taskplane/command_adapters.py",
+        "taskplane/tests/test_host_preview_runtime.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_preview_runtime.py",
+      "req": "R-0011",
+      "deps": [
+        "t1-canonical-host-surface-model"
+      ],
       "type": "security",
       "contracts": [
-        "contract:review-validation-sandbox"
+        "contract:host-preview-runtime",
+        "contract:host-capability-negotiation"
       ],
       "new_modules": [
-        "taskplane/command_adapters.py",
+        "taskplane/preview_runtime.py",
         "taskplane/command_runtime.py",
-        "taskplane/review_session.py",
-        "contract:review-validation-sandbox"
+        "taskplane/command_adapters.py",
+        "contract:host-preview-runtime"
       ],
       "design_edges": [
-        "taskplane/command_adapters.py->contract:review-validation-sandbox:provides",
-        "taskplane/command_runtime.py->contract:review-validation-sandbox:consumes",
-        "taskplane/review_session.py->contract:review-validation-sandbox:consumes"
+        "taskplane/preview_runtime.py->contract:host-preview-runtime:provides",
+        "taskplane/preview_runtime.py->contract:host-capability-negotiation:consumes",
+        "taskplane/command_runtime.py->contract:host-preview-runtime:consumes",
+        "taskplane/command_adapters.py->contract:host-preview-runtime:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -74,69 +167,54 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC5: From a registered validation sandbox, git push --no-verify to an explicit URL and refspec returns a stable blocked result and leaves the isolated bare destination bytes and refs unchanged.",
-        "AC6: Direct commands plus child, grandchild, shell, package-script, and executable-wrapper processes cannot push via explicit URLs, alternate Git config, --no-verify, or hook overrides, and every block identifies its validation run and sandbox.",
-        "AC7: If no-push isolation is unavailable, tampered, or unverifiable, or command cwd escapes the sandbox, dynamic validation does not run and cannot be recorded executed/pass; reviewed checkout and destination refs remain intact.",
-        "AC8: Normal read-only builds, tests, dependency reads, and disposable local writes still work in the sandbox; the focused R-0009 dynamic scenario records process-tree isolation evidence and proves original checkout and destination refs unchanged."
+        "AC9: One authorized design, build, and dynamic-review scenario opens an interactive pinned working preview in the host-integrated browser or side panel where supported, records preview identity/lifecycle, and links observed behavior to canonical evidence.",
+        "AC10: Valid, unavailable, denied, build-failed, timeout, attempted-push, escaped-path, external-network, and teardown preview fixtures prove execution occurs only in a registered pinned bounded disposable scope, never pushes or changes the source checkout/remotes, and fails safely with auditable outcomes."
       ]
     },
     {
-      "id": "t4-exact-worktree-lifecycle-isolation",
-      "title": "Bind lifecycle interception and deduplication to the exact resolved worktree and task identity",
+      "id": "t5-cross-host-packaging-and-compatibility",
+      "title": "Ship capability declarations, native guidance, and cross-host fallback compatibility",
       "scope": [
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/tests/test_contract_worktree_isolation.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_contract_worktree_isolation.py",
-      "req": "R-0010",
-      "deps": [],
-      "type": "reliability",
-      "contracts": [
-        "contract:review-dor-evidence",
-        "contract:review-validation-sandbox"
-      ],
-      "new_modules": [
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py"
-      ],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC10: With a contract active in worktree A, creating a Codex task or running unrelated work bound to worktree B of the same repository is not blocked, replayed, or marked already processed by A; A remains governed and B receives only its own contract.",
-        "AC11: Lifecycle deduplication keys include the exact resolved workspace/worktree and task lifecycle identity, so duplicate delivery in one task remains idempotent while identical host event shapes in separate worktrees proceed independently."
-      ]
-    },
-    {
-      "id": "t3-r0009-compatibility-verification",
-      "title": "Verify both blockers together without changing any other R-0009 behavior",
-      "scope": [
+        ".codex-plugin/**",
+        ".claude-plugin/**",
+        "skills/**",
+        "agents/**",
+        "hooks/**",
+        "docs/**",
         "taskplane/tests",
-        "taskplane/tests/test_r0010_r0009_compatibility.py"
+        "taskplane/tests/test_host_native_compatibility.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0010_r0009_compatibility.py taskplane/tests/test_review_production_integration.py taskplane/tests/test_review_routing.py taskplane/tests/test_review_session.py",
-      "req": "R-0010",
+      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_compatibility.py",
+      "req": "R-0011",
       "deps": [
-        "t1-canonical-structured-criteria",
-        "t2-process-tree-no-push-isolation",
-        "t4-exact-worktree-lifecycle-isolation"
+        "t1-canonical-host-surface-model",
+        "t2-live-workflow-fanout-and-approvals",
+        "t3-native-dashboard-carousel-and-a11y",
+        "t4-governed-preview-runtime"
       ],
-      "type": "validation",
+      "type": "integration",
       "contracts": [
-        "contract:review-dor-evidence",
-        "contract:review-validation-sandbox"
+        "contract:host-native-progress",
+        "contract:host-native-visualization",
+        "contract:host-native-approval",
+        "contract:host-native-dashboard",
+        "contract:host-preview-runtime",
+        "contract:host-capability-negotiation"
       ],
       "new_modules": [
+        ".codex-plugin",
+        ".claude-plugin",
+        "skills",
+        "agents",
+        "hooks",
+        "docs",
         "taskplane/tests"
       ],
       "design_edges": [
-        "taskplane/tests->contract:review-dor-evidence:validates",
-        "taskplane/tests->contract:review-validation-sandbox:validates"
+        ".codex-plugin->contract:host-capability-negotiation:consumes",
+        ".claude-plugin->contract:host-capability-negotiation:consumes",
+        "taskplane/tests->contract:host-native-dashboard:validates",
+        "taskplane/tests->contract:host-preview-runtime:validates"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -145,7 +223,8 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC9: Focused tests and the complete R-0009 regression suite pass with no removed, skipped, xfailed, loosened, or reclassified assertion and no change to other R-0009 behavior."
+        "AC14: Concurrent update, reconnect/resume, stale UI, duplicate event, host switch, and terminal-close fixtures prove PiP, fan-out, approvals, dashboards, carousels, previews, fallbacks, and artifacts reference one workflow/run, target, revision, task/slot identity, evidence, gate state, and ordered audit history.",
+        "AC15: Existing non-native design, build, review, status, approval, and artifact golden scenarios plus the native-capability matrix pass without lost evidence, weaker gates, removed tests, skips, xfails, loosened assertions, or reclassified failures."
       ]
     }
   ]
