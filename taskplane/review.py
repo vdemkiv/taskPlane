@@ -925,7 +925,8 @@ def semantic_deduplicate_findings(findings: Iterable[dict]) -> list[dict]:
                              "finding": canonical})
             continue
         canonical = match["finding"]
-        canonical["provenance"].append(provenance)
+        if provenance not in canonical["provenance"]:
+            canonical["provenance"].append(provenance)
         match["_words"] |= words
         if severity_rank.get(str(row.get("severity") or "").lower(), 0) < \
                 severity_rank.get(str(canonical.get("severity") or "").lower(), 0):
@@ -3348,8 +3349,17 @@ def _read_slot_output(ws: str, store,
             validation_ref)
 
 
-def _revision_record(store, envelope_ref: dict, collected: dict, *,
-                     extra_findings: Iterable[dict] = ()) -> tuple[dict, dict | None]:
+def build_review_revision(store, envelope_ref: dict, collected: dict, *,
+                          extra_findings: Iterable[dict] = (),
+                          prior_provisional: dict | None = None) -> dict:
+    """Build one immutable canonical or provisional findings revision.
+
+    Incomplete producer evidence is a state of the review, not a reason to
+    discard already validated sibling results.  Provisional revisions never
+    advance the canonical pointer and explicitly disable approval.  Replaying
+    identical inputs returns the same content-addressed artifact; a changed
+    provisional revision names the exact provisional artifact it supersedes.
+    """
     import copy
     import review_evidence as evidence
     envelope = store.read(envelope_ref)
@@ -3371,25 +3381,72 @@ def _revision_record(store, envelope_ref: dict, collected: dict, *,
                 result_fingerprint=result.get("result_fingerprint"),
                 canonical_revision=result.get("canonical_revision")))
     attributed.extend(copy.deepcopy(list(extra_findings)))
+    completeness = copy.deepcopy(collected.get("completeness") or {
+        "expected": len(collected.get("slot_ids") or []),
+        "collected": len(collected.get("slot_ids") or []),
+        "missing": 0, "complete": True,
+    })
+    gaps = copy.deepcopy(collected.get("gaps") or [])
+    is_complete = completeness.get("complete") is True and not gaps
+    disposition = "canonical" if is_complete else "provisional"
     material = {
         "result_fingerprints": collected.get("result_fingerprints") or [],
         "findings": semantic_deduplicate_findings(attributed),
+        "disposition": disposition,
+        "completeness": completeness,
+        "gaps": gaps,
     }
     if notes:
         material["notes"] = notes
+    collection_fingerprint = evidence.content_fingerprint({
+        "target_fingerprint": envelope["target_fingerprint"],
+        "context_fingerprint": envelope["context_fingerprint"],
+        "canonical_revision": revision_number,
+        **material,
+    })
+    supersedes_provisional = None
+    if isinstance(prior_provisional, dict):
+        if prior_provisional.get("collection_fingerprint") == \
+                collection_fingerprint:
+            supersedes_provisional = prior_provisional.get(
+                "supersedes_provisional")
+        else:
+            supersedes_provisional = (prior_provisional.get("artifact") or {}).get(
+                "fingerprint")
     record = {
-        "schema": "taskplane.findings-revision/v1",
+        "schema": "taskplane.findings-revision/v2",
         "target_fingerprint": envelope["target_fingerprint"],
         "context_fingerprint": envelope["context_fingerprint"],
         "findings_fingerprint": evidence.content_fingerprint(material),
         "canonical_revision": revision_number,
+        "disposition": disposition,
+        "collection_fingerprint": collection_fingerprint,
         "result_fingerprints": list(material["result_fingerprints"]),
         "findings": copy.deepcopy(material["findings"]),
+        "completeness": completeness,
+        "gaps": gaps,
+        "approval": ({"enabled": True, "reason": "review evidence is complete"}
+                     if is_complete else
+                     {"enabled": False,
+                      "reason": "review evidence is incomplete"}),
         "supersedes_revision": revision_number - 1 if revision_number > 1 else None,
+        "supersedes_provisional": supersedes_provisional,
     }
     if notes:
         record["notes"] = copy.deepcopy(notes)
-    return dict(record, artifact=store.put("findings-revision", record)), prior
+    return dict(record, artifact=store.put("findings-revision", record))
+
+
+def _revision_record(store, envelope_ref: dict, collected: dict, *,
+                     extra_findings: Iterable[dict] = (),
+                     prior_provisional: dict | None = None
+                     ) -> tuple[dict, dict | None]:
+    """Compatibility wrapper returning the prior canonical identity."""
+    import review_evidence as evidence
+    prior = evidence._read_current(store)
+    return (build_review_revision(
+        store, envelope_ref, collected, extra_findings=extra_findings,
+        prior_provisional=prior_provisional), prior)
 
 
 def _preflight_projections(store, revision: dict, refs: list[dict]) -> None:
@@ -3788,8 +3845,6 @@ def _collect_review_transaction(
                 refs.append(ref)
                 lens_results.extend(rows)
                 result_validations.append(validation_ref)
-            if repairs:
-                raise ReviewSlotValidationErrors(repairs)
         finally:
             # Once every producer has submitted its exact leased file, its
             # work is over even when schema validation finds a defect.  The
@@ -3801,6 +3856,75 @@ def _collect_review_transaction(
                     path if os.path.isabs(path) else os.path.join(ws, path))
                     for path in paths):
                 _release_slot_contracts(ws, state)
+        leases = [row["lease"] for row in state.get("slots") or []]
+        if repairs:
+            collected = evidence.collect_partial_slot_results(
+                store, leases, refs, gaps=repairs)
+            revision, prior = _revision_record(
+                store, state["envelope"], collected,
+                extra_findings=_review_execution_findings(
+                    state.get("review_execution") or {}),
+                prior_provisional=state.get("provisional_revision"))
+            if revision.get("disposition") != "provisional":
+                raise evidence.RevisionError(
+                    "incomplete collection produced a canonical revision")
+            import runtime_eval
+            projection = runtime_eval.review_revision_projection(revision)
+            expected_ids = [str(row.get("slot_id") or "")
+                            for row in state.get("slots") or []]
+            conservation = {
+                "schema": "taskplane.review-slot-conservation/v1",
+                "status": "incomplete",
+                "selected": {"count": len(expected_ids),
+                             "slot_ids": sorted(expected_ids)},
+                "prepared": {"count": len(expected_ids),
+                             "slot_ids": sorted(expected_ids)},
+                "dispatched": {"count": len(expected_ids),
+                               "slot_ids": sorted(expected_ids)},
+                "collected": {
+                    "count": len(collected["collected_slot_ids"]),
+                    "slot_ids": collected["collected_slot_ids"]},
+                "gaps": copy.deepcopy(collected["gaps"]),
+                "slot_fingerprint": evidence.content_fingerprint(
+                    sorted(expected_ids)),
+            }
+            portable_validations = [
+                _portable_ref(ref) for ref in result_validations]
+            counters = dict(state.get("counters") or {})
+            manifest = _manifest({
+                "schema": "taskplane.review-collect-manifest/v3",
+                "status": "incomplete", "run_id": state["run_id"],
+                "target_fingerprint": revision["target_fingerprint"],
+                "context_fingerprint": revision["context_fingerprint"],
+                "canonical_revision": revision["canonical_revision"],
+                "findings_fingerprint": revision["findings_fingerprint"],
+                "findings": _portable_ref(revision["artifact"]),
+                "result_validations": portable_validations,
+                "gaps": copy.deepcopy(collected["gaps"]),
+                "completeness": copy.deepcopy(revision["completeness"]),
+                "approval": copy.deepcopy(revision["approval"]),
+                "machine_projection": projection,
+                "slot_conservation": conservation,
+                "counters": counters,
+                "next_action": "repair only the named producer slots, then "
+                               "retry review collect once",
+            })
+            history = list(state.get("provisional_history") or [])
+            artifact_ref = _portable_ref(revision["artifact"])
+            if not history or history[-1].get("fingerprint") != \
+                    artifact_ref.get("fingerprint"):
+                history.append(artifact_ref)
+            _save_state(ws, dict(
+                state, status="ready", provisional_revision=revision,
+                provisional_history=history, provisional_manifest=manifest,
+                result_validations=result_validations,
+                slot_conservation=conservation))
+            tp.trace(
+                ws, "review_kernel_provisional", run_id=state["run_id"],
+                collected_slots=len(collected["collected_slot_ids"]),
+                gap_slots=len(collected["gaps"]),
+                findings=len(revision["findings"]), approval_enabled=False)
+            return manifest
         promotions = _light_sweep_promotions(store, state, refs)
         if promotions:
             promoted_internal, promoted_manifest = _promoted_slot_plan(
@@ -3857,7 +3981,6 @@ def _collect_review_transaction(
             tp.trace(ws, "review_adaptive_deep_wave", run_id=state["run_id"],
                      promoted_lenses=sorted(promotions), wave=2)
             return manifest
-        leases = [row["lease"] for row in state.get("slots") or []]
         conservation = None
         if leases:
             collected = _collect_verified_slot_results(store, leases, refs)
@@ -3889,7 +4012,8 @@ def _collect_review_transaction(
         revision, prior = _revision_record(
             store, state["envelope"], collected,
             extra_findings=_review_execution_findings(
-                state.get("review_execution") or {}))
+                state.get("review_execution") or {}),
+            prior_provisional=state.get("provisional_revision"))
         _collection_fault("post_revision")
         try:
             import yield_meter

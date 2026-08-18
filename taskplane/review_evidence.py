@@ -904,8 +904,18 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
                      fingerprint=result_fp)
 
 
-def collect_slot_results(store: ArtifactStore, lease_refs: Iterable[dict],
-                         result_refs: Iterable[dict]) -> dict:
+def collect_partial_slot_results(store: ArtifactStore,
+                                 lease_refs: Iterable[dict],
+                                 result_refs: Iterable[dict], *,
+                                 gaps: Iterable[dict] = ()) -> dict:
+    """Collect every valid result while making missing evidence explicit.
+
+    A producer failure must not erase its valid siblings.  This function is
+    deliberately identity-strict for the results it accepts, but represents
+    absent/invalid slots as bounded gap records instead of pretending the
+    review is complete.  Callers may persist the returned collection as an
+    immutable provisional revision and retry only the named gaps.
+    """
     lease_refs = list(lease_refs)
     result_refs = list(result_refs)
     leases = [store.read(ref) for ref in lease_refs]
@@ -923,32 +933,90 @@ def collect_slot_results(store: ArtifactStore, lease_refs: Iterable[dict],
         if lease_fp in actual:
             raise ProvenanceError("copied result cannot satisfy two slots")
         lease = expected[lease_fp]
-        for field in ("slot_id", "lens_ids", "target_fingerprint",
-                      "context_fingerprint", "view_fingerprint",
-                      "canonical_revision"):
+        identity_fields = [
+            "slot_id", "lens_ids", "target_fingerprint",
+            "context_fingerprint", "view_fingerprint", "canonical_revision",
+        ]
+        identity_fields.extend(field for field in (
+            "reference_manifest_fingerprint", "routing_fingerprint",
+            "producer") if field in lease)
+        for field in identity_fields:
             if row.get(field) != lease.get(field):
                 raise ProvenanceError(f"result {field} does not match lease")
         if row.get("authored_by") != "lens-slot":
             raise ProvenanceError("result is not slot-authored")
         actual[lease_fp] = row
-    missing = sorted(set(expected) - set(actual))
-    if missing:
-        raise ProvenanceError("missing slot results: " + ", ".join(missing))
     revisions = {row.get("canonical_revision") for row in leases}
     targets = {row.get("target_fingerprint") for row in leases}
     contexts = {row.get("context_fingerprint") for row in leases}
     if len(revisions) != 1 or len(targets) != 1 or len(contexts) != 1:
         raise ProvenanceError("slot results mix canonical identities")
+    expected_by_slot = {str(row.get("slot_id") or ""): row for row in leases}
+    if "" in expected_by_slot or len(expected_by_slot) != len(leases):
+        raise ProvenanceError("duplicate or missing slot identity")
+    normalized_gaps = []
+    gap_slots = set()
+    for raw in gaps:
+        row = raw if isinstance(raw, dict) else {}
+        slot_id = str(row.get("slot_id") or "").strip()
+        if slot_id not in expected_by_slot:
+            raise ProvenanceError("gap cites an unexpected slot")
+        if slot_id in gap_slots:
+            raise ProvenanceError("duplicate gap for slot: " + slot_id)
+        reason = str(row.get("reason") or "").strip()
+        if not reason:
+            raise ProvenanceError("slot gap requires a reason")
+        normalized = {"slot_id": slot_id, "reason": reason}
+        for key in ("producer_task", "result_path"):
+            if str(row.get(key) or "").strip():
+                normalized[key] = str(row[key]).strip()
+        normalized_gaps.append(normalized)
+        gap_slots.add(slot_id)
+    actual_slots = {str(row.get("slot_id") or "") for row in actual.values()}
+    if actual_slots & gap_slots:
+        raise ProvenanceError("slot cannot be both collected and incomplete")
+    missing_slots = set(expected_by_slot) - actual_slots
+    if missing_slots != gap_slots:
+        unnamed = sorted(missing_slots - gap_slots)
+        extra = sorted(gap_slots - missing_slots)
+        detail = ", ".join(unnamed or extra)
+        raise ProvenanceError("slot gaps do not match missing results: " + detail)
     ordered = sorted(results, key=lambda row: row["slot_id"])
+    normalized_gaps.sort(key=lambda row: row["slot_id"])
+    complete = not normalized_gaps
     return {
-        "status": "complete",
+        "schema": "taskplane.partial-slot-collection/v1",
+        "status": "complete" if complete else "incomplete",
+        "expected_slot_ids": sorted(expected_by_slot),
+        "collected_slot_ids": [row["slot_id"] for row in ordered],
         "slot_ids": [row["slot_id"] for row in ordered],
         "result_fingerprints": [row["result_fingerprint"] for row in ordered],
         "results": ordered,
+        "gaps": normalized_gaps,
+        "completeness": {
+            "expected": len(leases), "collected": len(ordered),
+            "missing": len(normalized_gaps), "complete": complete,
+        },
         "target_fingerprint": next(iter(targets)),
         "context_fingerprint": next(iter(contexts)),
         "canonical_revision": next(iter(revisions)),
     }
+
+
+def collect_slot_results(store: ArtifactStore, lease_refs: Iterable[dict],
+                         result_refs: Iterable[dict]) -> dict:
+    """Compatibility strict collection: every leased slot must be present."""
+    lease_refs = list(lease_refs)
+    result_refs = list(result_refs)
+    leases = [store.read(ref) for ref in lease_refs]
+    present = {store.read(ref).get("lease_fingerprint") for ref in result_refs}
+    missing = sorted(str(row.get("lease_fingerprint") or "")
+                     for row in leases
+                     if row.get("lease_fingerprint") not in present)
+    if missing:
+        raise ProvenanceError("missing slot results: " + ", ".join(missing))
+    return collect_partial_slot_results(
+        store, lease_refs, result_refs, gaps=[])
 
 
 def revision_identity(record: dict) -> dict:

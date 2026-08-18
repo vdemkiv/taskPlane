@@ -41,6 +41,41 @@ _ABSOLUTE_PATH = re.compile(
     r"(?:(?:[A-Za-z]:[\\/])|/)(?:[^\s,;]+[\\/])*[^\s,;]*")
 
 
+def review_revision_projection(revision: dict) -> dict:
+    """Project revision health without copying findings into machine context."""
+    row = revision if isinstance(revision, dict) else {}
+    completeness = row.get("completeness") \
+        if isinstance(row.get("completeness"), dict) else {}
+    gaps = row.get("gaps") if isinstance(row.get("gaps"), list) else []
+    gap_ids = sorted({str(gap.get("slot_id") or "").strip()
+                      for gap in gaps if isinstance(gap, dict)
+                      and str(gap.get("slot_id") or "").strip()})
+    approval = row.get("approval") \
+        if isinstance(row.get("approval"), dict) else {}
+    complete = completeness.get("complete") is True and not gap_ids
+    return {
+        "schema": "taskplane.review-revision-projection/v1",
+        "status": "complete" if complete else "incomplete",
+        "disposition": str(row.get("disposition") or
+                           ("canonical" if complete else "provisional")),
+        "canonical_revision": int(row.get("canonical_revision") or 0),
+        "target_fingerprint": _bounded_diagnostic(
+            row.get("target_fingerprint"), 128),
+        "context_fingerprint": _bounded_diagnostic(
+            row.get("context_fingerprint"), 128),
+        "findings_fingerprint": _bounded_diagnostic(
+            row.get("findings_fingerprint"), 128),
+        "finding_count": len(row.get("findings") or [])
+        if isinstance(row.get("findings"), list) else 0,
+        "expected_slot_count": max(
+            0, int(completeness.get("expected") or 0)),
+        "collected_slot_count": max(
+            0, int(completeness.get("collected") or 0)),
+        "gap_slot_ids": gap_ids,
+        "approval_enabled": approval.get("enabled") is True and complete,
+    }
+
+
 def command_wave_projection(wave: dict, *, efficiency: dict | None = None,
                             artifacts: list[dict] | None = None) -> dict:
     """Return bounded observed wave evidence; absence stays ``unproven``."""
