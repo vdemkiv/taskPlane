@@ -214,7 +214,8 @@ class CommandRuntime:
 
     def create(self, *, command_fingerprint: str, binding: Mapping | None,
                deadline: float | None = None, wave_id: str | None = None,
-               review_session: Mapping | None = None) -> str:
+               review_session: Mapping | None = None,
+               review_sandbox: Mapping | None = None) -> str:
         handle = secrets.token_hex(16)
         now = float(self._clock())
         if review_session is not None:
@@ -226,6 +227,21 @@ class CommandRuntime:
                     not str(review_session.get(key) or "").strip()
                     for key in required):
                 raise ValueError("review session binding is invalid")
+        if review_sandbox is not None:
+            review_sandbox = dict(review_sandbox)
+            required = {"schema", "sandbox_id", "root_fingerprint",
+                        "push_disabled"}
+            optional = {"isolation_fingerprint"}
+            if not required.issubset(review_sandbox) or \
+                    set(review_sandbox) - required - optional or \
+                    review_sandbox.get(
+                    "schema") != "taskplane.review-sandbox-binding/v1" or \
+                    review_sandbox.get("push_disabled") is not True or any(
+                    not str(review_sandbox.get(key) or "").strip()
+                    for key in required - {"push_disabled"}) or \
+                    ("isolation_fingerprint" in review_sandbox and
+                     not str(review_sandbox["isolation_fingerprint"]).strip()):
+                raise ValueError("review sandbox binding is invalid")
         snapshot = {
             "schema": SCHEMA,
             "handle": handle,
@@ -241,6 +257,8 @@ class CommandRuntime:
             "wave_id": wave_id,
             **({"review_session": review_session}
                if review_session is not None else {}),
+            **({"review_sandbox": review_sandbox}
+               if review_sandbox is not None else {}),
             "exit_code": None,
             "reason": None,
             "events": [],

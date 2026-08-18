@@ -9,17 +9,41 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from typing import Callable, Mapping, Protocol
 
 from taskplane.command_runtime import CommandRuntime, TERMINAL_STATES
-from taskplane.review_session import session_transport_binding
+from taskplane.review_session import (
+    ReviewSessionError,
+    sandbox_transport_binding,
+    session_transport_binding,
+)
 
 
 SUPPORTED_HOSTS = frozenset({"claude", "codex"})
 
+# Git aliases and external helpers make a denylist unsafe here: an apparently
+# harmless, unknown subcommand can resolve to ``push`` (or arbitrary shell
+# code) before the sandbox's disabled origin is consulted.  Validation only
+# needs repository inspection, so admit named built-ins whose behavior is
+# read-only and reject Git's global-option/configuration command layer.
+_REVIEW_READ_ONLY_GIT_COMMANDS = frozenset({
+    "branch", "cat-file", "check-attr", "check-ignore", "diff",
+    "diff-files", "diff-index", "diff-tree", "for-each-ref", "grep",
+    "log", "ls-files", "ls-tree", "merge-base", "name-rev", "rev-list",
+    "rev-parse", "show", "show-ref", "status", "symbolic-ref",
+})
+
 
 class Launcher(Protocol):
     def __call__(self, command: object, cwd: str) -> "HostLaunch": ...
+
+
+class IsolationLauncher(Protocol):
+    """Trusted host boundary that confines a complete descendant process tree."""
+
+    def __call__(self, command: object, cwd: str,
+                 policy: Mapping[str, object]) -> "HostLaunch": ...
 
 
 class NativeWait(Protocol):
@@ -32,6 +56,7 @@ class HostLaunch:
     """Private host launch result used to bind an opaque runtime handle."""
 
     binding: Mapping[str, object]
+    isolation: Mapping[str, object] | None = None
 
 
 _STATUS_MAP = {
@@ -82,7 +107,8 @@ class CommandAdapter:
 
     def __init__(self, *, host: str, runtime: CommandRuntime,
                  launcher: Launcher, native_wait: NativeWait | None = None,
-                 canceller: Callable[[Mapping[str, object]], None] | None = None):
+                 canceller: Callable[[Mapping[str, object]], None] | None = None,
+                 review_isolation_launcher: IsolationLauncher | None = None):
         if host not in SUPPORTED_HOSTS:
             raise ValueError(f"unsupported command host {host!r}")
         self.host = host
@@ -90,19 +116,21 @@ class CommandAdapter:
         self._launcher = launcher
         self._native_wait = native_wait
         self._canceller = canceller
+        self._review_isolation_launcher = review_isolation_launcher
         self._bindings: dict[str, Mapping[str, object]] = {}
 
     def launch(self, command: object, *, cwd: str,
                deadline: float | None = None,
                wave_id: str | None = None,
-               review_session: Mapping | None = None) -> str:
+               review_session: Mapping | None = None,
+               review_sandbox: Mapping | None = None) -> str:
         launched = self._launcher(command, cwd)
         if not isinstance(launched, HostLaunch) or not launched.binding:
             raise ValueError("host launch must return a non-empty binding")
         handle = self.runtime.create(
             command_fingerprint=_fingerprint_command(command),
             binding=launched.binding, deadline=deadline, wave_id=wave_id,
-            review_session=review_session)
+            review_session=review_session, review_sandbox=review_sandbox)
         self._bindings[handle] = dict(launched.binding)
         self.runtime.transition(handle, "running")
         return handle
@@ -111,14 +139,79 @@ class CommandAdapter:
                                  session: Mapping,
                                  sandbox: Mapping) -> str:
         """Launch only inside a disposable, push-disabled review copy."""
-        if sandbox.get("disposable") is not True or \
-                sandbox.get("push_disabled") is not True or \
-                not str(sandbox.get("sandbox_id") or "").strip():
+        try:
+            sandbox_binding, workdir = sandbox_transport_binding(
+                sandbox, cwd=cwd)
+        except ReviewSessionError as exc:
+            raise ValueError(str(exc)) from exc
+        self._validate_push_disabled_command(command)
+        if self._review_isolation_launcher is None:
             raise ValueError(
-                "review validation requires a disposable push-disabled sandbox")
-        return self.launch(
-            command, cwd=cwd,
-            review_session=session_transport_binding(session))
+                "push-disabled review validation requires verified process "
+                "and network isolation")
+        policy = {
+            "schema": "taskplane.review-isolation-policy/v1",
+            "network": "deny",
+            "scope": "complete-process-tree",
+        }
+        policy_fingerprint = hashlib.sha256(
+            json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")).hexdigest()
+        launched = self._review_isolation_launcher(command, workdir, policy)
+        if not isinstance(launched, HostLaunch) or not launched.binding:
+            raise ValueError("isolated host launch must return a non-empty binding")
+        isolation = dict(launched.isolation or {})
+        if isolation.get("schema") != "taskplane.review-isolation-receipt/v1" or \
+                isolation.get("network") != "denied" or \
+                isolation.get("scope") != "complete-process-tree" or \
+                isolation.get("policy_fingerprint") != policy_fingerprint or \
+                not str(isolation.get("mechanism") or "").strip():
+            raise ValueError(
+                "push-disabled review validation requires a verified "
+                "process-tree isolation receipt")
+        sandbox_binding = dict(sandbox_binding)
+        sandbox_binding["isolation_fingerprint"] = hashlib.sha256(
+            json.dumps(isolation, sort_keys=True, separators=(",", ":"),
+                       default=str).encode("utf-8")).hexdigest()
+        handle = self.runtime.create(
+            command_fingerprint=_fingerprint_command(command),
+            binding=launched.binding,
+            review_session=session_transport_binding(session),
+            review_sandbox=sandbox_binding)
+        self._bindings[handle] = dict(launched.binding)
+        self.runtime.transition(handle, "running")
+        return handle
+
+    @staticmethod
+    def _validate_push_disabled_command(command: object) -> None:
+        """Reject argv forms that bypass a disabled remote or pre-push hook."""
+        if not isinstance(command, (list, tuple)) or not command or any(
+                not isinstance(item, (str, bytes)) for item in command):
+            raise ValueError(
+                "push-disabled review validation requires direct argv")
+        argv = [item.decode() if isinstance(item, bytes) else item
+                for item in command]
+        executable = os.path.basename(argv[0]).lower()
+        if executable in {"sh", "bash", "zsh", "dash", "fish", "cmd",
+                          "cmd.exe", "powershell", "pwsh"}:
+            raise ValueError(
+                "push-disabled review validation forbids shell wrappers")
+        if executable == "env":
+            index = 1
+            while index < len(argv) and ("=" in argv[index] or
+                                          argv[index].startswith("-")):
+                index += 1
+            argv = argv[index:]
+            executable = os.path.basename(argv[0]).lower() if argv else ""
+        if executable in {"git", "git.exe"}:
+            # The subcommand must be the first argument.  In particular,
+            # reject ``-c alias.x=push x`` and config/env indirections rather
+            # than attempting to interpret Git's extensible command grammar.
+            subcommand = argv[1].lower() if len(argv) > 1 else ""
+            if subcommand not in _REVIEW_READ_ONLY_GIT_COMMANDS:
+                raise ValueError(
+                    "push-disabled review validation permits only explicit "
+                    "read-only git commands")
 
     def wait_review_event(self, handle: str, *, consumer: str,
                           interrupted: Callable[[], bool] | None = None,
