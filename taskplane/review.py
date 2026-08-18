@@ -1869,7 +1869,7 @@ def review_dor_evidence(ws: str, target: dict, *,
     derived_requirements = [row["subject"] for row in commits if row["claims"]]
     if not derived_requirements:
         derived_requirements = [row["subject"] for row in commits]
-    return {
+    legacy = {
         "schema": "taskplane.review-dor/v1",
         "status": ("ready" if source != "none" and acceptance else
                    "degraded" if source != "none" else "not_ready"),
@@ -1885,6 +1885,54 @@ def review_dor_evidence(ws: str, target: dict, *,
         "commits": commits, "changelog_files": changelogs,
         "checks": checks,
     }
+    # The legacy projection remains for existing dashboards, while every new
+    # production consumer receives the provenance-bound canonical ledger.
+    import review_dor
+    sources = []
+    revision = head or str(target.get("revision") or "unknown")
+    for key, kind in (("title", "pr_title"), ("body", "pr_body")):
+        if str(target.get(key) or "").strip():
+            sources.append({"kind": kind, "identity": str(
+                                target.get("id") or "review-target"),
+                            "revision": revision,
+                            "content": str(target[key])})
+    if explicit:
+        sources.append({"kind": "linked_requirements",
+                        "identity": str(requirement.get("id") or "requirement"),
+                        "revision": revision,
+                        "content": str(requirement.get("text") or "") + "\n" +
+                                   "\n".join("- " + row for row in acceptance)})
+    if commits:
+        sources.append({"kind": "commits", "identity": "review-range",
+                        "revision": revision,
+                        "content": "\n".join(
+                            row["subject"] + ("\n" + row["body"]
+                                              if row["body"] else "")
+                            for row in commits)})
+    if changelogs:
+        content = []
+        for name in changelogs:
+            try:
+                content.append(open(os.path.join(ws, name), encoding="utf-8").read(
+                    64 * 1024))
+            except OSError:
+                pass
+        sources.append({"kind": "changelog", "identity": ",".join(changelogs),
+                        "revision": revision, "content": "\n".join(content),
+                        "accessible": bool(content)})
+    if contracts:
+        sources.append({"kind": "repository_contracts",
+                        "identity": "declared-contracts", "revision": revision,
+                        "content": "\n".join(contracts)})
+    canonical = review_dor.discover(sources, target_revision=revision)
+    legacy["canonical"] = canonical
+    legacy["sources"] = canonical["sources"]
+    legacy["criteria"] = canonical["criteria"]
+    legacy["items"] = canonical["items"]
+    legacy["clarifications"] = canonical["clarifications"]
+    legacy["approvable"] = canonical["approvable"]
+    legacy["fingerprint"] = canonical["fingerprint"]
+    return legacy
 
 
 def _directive_lens_ids(directives: list[dict], catalog: dict) -> dict[str, list[str]]:
@@ -2004,6 +2052,132 @@ def evaluate_review_requirements(dor: dict, diff: dict,
                    "pass" if rows else "not_available"),
         "counts": counts, "criteria": rows,
     }
+
+
+def production_validation_projection(execution: dict | None) -> dict:
+    """Project validation without trusting the old boolean sandbox claim."""
+    row = copy.deepcopy(execution) if isinstance(execution, dict) else {}
+    dynamic = row.get("dynamic_validation") \
+        if isinstance(row.get("dynamic_validation"), dict) else {}
+    sandbox = dynamic.get("sandbox") \
+        if isinstance(dynamic.get("sandbox"), dict) else {}
+    binding = dynamic.get("sandbox_binding") \
+        if isinstance(dynamic.get("sandbox_binding"), dict) else None
+    valid = binding if binding and binding.get("schema") == \
+        "taskplane.review-sandbox-binding/v1" and \
+        binding.get("push_disabled") is True and \
+        str(binding.get("root_fingerprint") or "") else None
+    status = str(dynamic.get("status") or "not_selected")
+    if status == "executed" and valid is None:
+        status = "unverified"
+    return {
+        "status": status, "selection": str(row.get("selection") or "static"),
+        "dynamic_validation": copy.deepcopy(dynamic),
+        "functionality_render": copy.deepcopy(
+            row.get("functionality_render") or {}),
+        "sandbox_binding": copy.deepcopy(valid),
+        "legacy_push_disabled_claim": sandbox.get("push_disabled") is True,
+    }
+
+
+def production_review_model(state: dict, revision: dict, *, dor: dict,
+                            requirements_validation: dict) -> dict:
+    """Build the immutable model shared by production artifact/render paths."""
+    import review_artifacts
+    completeness = revision.get("completeness") \
+        if isinstance(revision.get("completeness"), dict) else {}
+    gaps = revision.get("gaps") if isinstance(revision.get("gaps"), list) else []
+    complete = revision.get("disposition") == "canonical" and \
+        completeness.get("complete") is True and not gaps
+    dor_row = copy.deepcopy(dor) if isinstance(dor, dict) else {}
+    if isinstance(dor_row.get("canonical"), dict):
+        dor_row = copy.deepcopy(dor_row["canonical"])
+    criteria = []
+    for raw in (requirements_validation or {}).get("criteria") or []:
+        status = str(raw.get("status") or raw.get("verdict") or "unproven")
+        criteria.append({
+            "id": str(raw.get("id") or raw.get("criterion_id") or "criterion"),
+            "text": str(raw.get("criterion") or raw.get("text") or ""),
+            "verdict": {"met": "pass", "not_met": "fail",
+                        "cannot_verify": "unproven"}.get(status, status),
+            "rationale": str(raw.get("evidence") or raw.get("rationale") or ""),
+            "evidence": copy.deepcopy(raw.get("evidence_refs") or []),
+            "verification": str(raw.get("validation_mode") or "review"),
+            "responsible": "review-kernel",
+        })
+    if not criteria:
+        criteria = [{"id": str(raw.get("id") or "criterion"),
+                     "text": str(raw.get("text") or ""),
+                     "verdict": "unproven",
+                     "rationale": "No criterion judgment was recorded.",
+                     "evidence": [], "verification": "review",
+                     "responsible": "review-kernel"}
+                    for raw in dor_row.get("criteria") or []]
+    gap_ids = {str(row.get("slot_id") or "") for row in gaps
+               if isinstance(row, dict)}
+    slots = [{"slot_id": str(raw.get("slot_id") or ""),
+              "lens_ids": list(raw.get("lens_ids") or []),
+              "status": "missing" if str(raw.get("slot_id") or "") in gap_ids
+                        else "valid", "result_fingerprint": None}
+             for raw in state.get("slots") or []]
+    consent = copy.deepcopy((state.get("review_session") or {}).get("consent"))
+    if consent is None:
+        consent = copy.deepcopy((state.get("review_execution") or {}).get(
+            "consent"))
+    return {
+        "schema": review_artifacts.ARTIFACT_MODEL_SCHEMA,
+        "revision": {"id": "revision-" + str(
+                         revision.get("canonical_revision") or 0),
+                     "fingerprint": str(
+                         revision.get("findings_fingerprint") or ""),
+                     "target_revision": str(
+                         (state.get("target") or {}).get("head") or ""),
+                     "disposition": "canonical" if complete else "provisional",
+                     "status": "complete" if complete else "incomplete",
+                     "supersedes": revision.get("supersedes_provisional")},
+        "dor": {"status": "ready" if dor_row.get("approvable") is True else
+                str(dor_row.get("status") or "degraded"),
+                "sources": list(dor_row.get("sources") or []),
+                "objectives": [x.get("text") for x in dor_row.get("items") or []
+                               if x.get("classification") == "objective"],
+                "clarifications": list(dor_row.get("clarifications") or [])},
+        "criteria": criteria, "slots": slots,
+        "findings": copy.deepcopy(revision.get("findings") or []),
+        "validation": production_validation_projection(
+            state.get("review_execution")),
+        "collection": {"status": "complete" if complete else "incomplete",
+                       "expected": int(completeness.get("expected") or len(slots)),
+                       "collected": int(completeness.get("collected") or 0),
+                       "gaps": copy.deepcopy(gaps)},
+        "provenance": {"target_fingerprint": str(
+                           revision.get("target_fingerprint") or ""),
+                       "context_fingerprint": str(
+                           revision.get("context_fingerprint") or ""),
+                       "run_id": str(state.get("run_id") or "")},
+        "gate": {"status": "awaiting-human" if complete else "blocked",
+                 "approval_enabled": complete and
+                     (revision.get("approval") or {}).get("enabled") is True,
+                 "reason": "human disposition" if complete else
+                           "review collection is incomplete",
+                 "actions": ["approve", "request-changes"] if complete else [],
+                 "consent": consent},
+    }
+
+
+def publish_production_review(root: str, state: dict, revision: dict, *,
+                              dor: dict, requirements_validation: dict,
+                              host: str = "codex") -> dict:
+    """Publish lossless files and bounded inline pages from the same model."""
+    import dashboard
+    import review_artifacts
+    model = production_review_model(
+        state, revision, dor=dor,
+        requirements_validation=requirements_validation)
+    publication = review_artifacts.publish_revision_artifacts(root, model)
+    pages = (dashboard.render_review_model_paged(model, host=host)
+             if publication.get("status") == "published" else [])
+    return {"model": model, "publication": publication,
+            "inline_pages": pages}
 
 
 def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
@@ -2262,6 +2436,27 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                                run_id=run_id, runnability=runnability)
                            if stage == "review" and task_type == "review"
                            else None)
+    review_session = None
+    if execution_preflight:
+        import review_session
+        session_target_fingerprint = str(target.get("fingerprint") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", session_target_fingerprint):
+            # Compatibility for pre-canonical callers: bind their opaque
+            # identity rather than weakening the session schema.
+            session_target_fingerprint = hashlib.sha256(
+                session_target_fingerprint.encode("utf-8")).hexdigest()
+        review_session = review_session.create_session(
+            run_id=run_id,
+            target={"fingerprint": session_target_fingerprint,
+                    "revision": str(target.get("head") or "unknown")},
+            available_actions=[
+                {"id": "collection", "non_destructive": True},
+                {"id": "mechanical_repair", "non_destructive": True},
+                {"id": "affected_retry", "non_destructive": True},
+                {"id": "artifact_publication", "non_destructive": True},
+                {"id": "dynamic_validation", "non_destructive": True},
+                {"id": "inline_render", "non_destructive": True},
+            ])
     opening_status = "needs_user" if execution_preflight else "ready"
     manifest = _manifest({
         "schema": "taskplane.review-start-manifest/v2",
@@ -2277,6 +2472,10 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "slot_conservation": slot_conservation,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
+        **({"review_session": {"schema": review_session["schema"],
+                               "status": review_session["status"],
+                               "run_id": run_id}}
+           if review_session else {}),
         # A pending human execution-mode choice is a real dispatch boundary.
         # Keep the sealed leases in private run state, but expose no slot that
         # a host could dispatch until configure_review_execution records the
@@ -2295,6 +2494,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "slot_conservation": slot_conservation,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
+        **({"review_session": review_session} if review_session else {}),
     })
     tp.trace(ws, "review_kernel_started", stage=stage,
              run_id=run_id,
@@ -2334,11 +2534,22 @@ def configure_review_execution(ws: str, *, selection: str,
     configured = review_execution_preflight(
         selection=selection, decided_by=by, run_id=state.get("run_id"),
         approval_receipt=approval_receipt)
+    session = state.get("review_session")
+    if isinstance(session, dict) and session.get("status") == "awaiting_consent":
+        import review_session
+        session = review_session.record_consent(
+            session, response=selection,
+            actor=str(configured.get("decided_by") or by or "human"))
     manifest = dict(state.get("manifest") or {})
     manifest["status"] = "ready"
     manifest["slots"] = list(state.get("dispatch_slots") or [])
     manifest["review_execution"] = configured
+    if isinstance(session, dict):
+        manifest["review_session"] = {
+            "schema": session["schema"], "status": session["status"],
+            "run_id": session["run_id"], "consent": session.get("consent")}
     state = dict(state, status="ready", review_execution=configured,
+                 review_session=session,
                  manifest=_manifest(manifest))
     _save_state(ws, state)
     tp.trace(ws, "review_execution_selected", run_id=state["run_id"],
@@ -3870,6 +4081,20 @@ def _collect_review_transaction(
                     "incomplete collection produced a canonical revision")
             import runtime_eval
             projection = runtime_eval.review_revision_projection(revision)
+            provisional_dor = ((envelope.get("change") or {}).get("dor") or {})
+            envelope_diff = envelope.get("diff") or {}
+            provisional_diff_ref = envelope_diff.get("artifact")
+            provisional_diff = (store.read(provisional_diff_ref)
+                                if isinstance(provisional_diff_ref, dict) else
+                                {"files": envelope_diff.get("files") or [],
+                                 "patch": ""})
+            provisional_requirements = evaluate_review_requirements(
+                provisional_dor, provisional_diff, revision["findings"],
+                state.get("review_execution") or {})
+            canonical_output = publish_production_review(
+                os.path.abspath(os.path.join(_public_root(ws), "artifacts")),
+                state, revision, dor=provisional_dor,
+                requirements_validation=provisional_requirements)
             expected_ids = [str(row.get("slot_id") or "")
                             for row in state.get("slots") or []]
             conservation = {
@@ -3904,6 +4129,9 @@ def _collect_review_transaction(
                 "completeness": copy.deepcopy(revision["completeness"]),
                 "approval": copy.deepcopy(revision["approval"]),
                 "machine_projection": projection,
+                "artifact_set": copy.deepcopy(
+                    canonical_output["publication"]),
+                "inline_page_count": len(canonical_output["inline_pages"]),
                 "slot_conservation": conservation,
                 "counters": counters,
                 "next_action": "repair only the named producer slots, then "
@@ -3917,6 +4145,7 @@ def _collect_review_transaction(
             _save_state(ws, dict(
                 state, status="ready", provisional_revision=revision,
                 provisional_history=history, provisional_manifest=manifest,
+                production_review=canonical_output,
                 result_validations=result_validations,
                 slot_conservation=conservation))
             tp.trace(
@@ -4040,6 +4269,15 @@ def _collect_review_transaction(
         requirements_validation = evaluate_review_requirements(
             dor, diff_record, revision["findings"],
             state.get("review_execution") or {})
+        canonical_output = publish_production_review(
+            os.path.abspath(os.path.join(_public_root(ws), "artifacts")),
+            state, revision, dor=dor,
+            requirements_validation=requirements_validation)
+        if canonical_output["publication"].get("status") != "published":
+            raise ReviewKernelError(
+                "canonical review artifact publication failed: " +
+                str(canonical_output["publication"].get("reason") or
+                    "unknown publication error"))
         portable_validations = [
             _portable_ref(ref) for ref in result_validations]
         body = {"meta": {**identity, "lens_coverage": decision,
@@ -4069,11 +4307,14 @@ def _collect_review_transaction(
             "result_validations": portable_validations,
             "report": None, "projections": [],
             "published": None, "counters": counters,
+            "artifact_set": copy.deepcopy(canonical_output["publication"]),
+            "inline_page_count": len(canonical_output["inline_pages"]),
             "slot_conservation": conservation,
         })
         _collection_fault("post_manifest")
         prepared = dict(
             state, status="prepared", revision=revision,
+            production_review=canonical_output,
             projections=[], manifest=manifest,
             counters=manifest["counters"], lens_results=lens_results,
             slot_conservation=conservation,
