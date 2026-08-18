@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -168,7 +170,58 @@ def test_rendered_actions_use_fullscreen_detail_without_deep_navigation():
     dialog = dom.matching("dialog", id="tp-fullscreen-detail")
     assert len(dialog) == 1
     assert "position:fixed;inset:0;width:100vw;height:100vh" in markup
+    assert dom.matching("button", **{"data-detail-close": "true"})
+    assert "showModal" in markup and "addEventListener" in markup
     assert not dom.matching("a")
+
+
+def test_details_controls_activate_modal_and_restore_keyboard_focus():
+    """Execute the emitted controller against a minimal browser event model."""
+    snapshot = HostSurfaceSnapshot.create(
+        workflow_id="wf", run_id="run", target="repo", revision="abc",
+        sequence=1, stage="review", state="waiting", values={},
+        safe_actions=("approve", "decline", "inspect"),
+    )
+    markup = render_native_dashboard_surface(
+        native_dashboard_projection(snapshot, host="codex"))
+    controller = re.search(r"<script>(.*?)</script>", markup, re.DOTALL)
+    assert controller, "rendered detail surface must include its controller"
+    node = shutil.which("node")
+    assert node, "Node.js is required to exercise the emitted host controller"
+    harness = r'''
+class Target {
+  constructor() { this.listeners = {}; this.attributes = {}; }
+  addEventListener(name, fn) { this.listeners[name] = fn; }
+  emit(name, event = {}) { this.listeners[name](event); }
+  focus() { document.activeElement = this; }
+  setAttribute(name, value) { this.attributes[name] = value; if (name === "open") this.open = true; }
+  removeAttribute(name) { delete this.attributes[name]; if (name === "open") this.open = false; }
+}
+const trigger = new Target();
+const closer = new Target();
+const dialog = new Target();
+dialog.open = false;
+dialog.showModal = function() { this.open = true; };
+dialog.close = function() { this.open = false; };
+const root = {querySelector(selector) {
+  if (selector === "[data-detail-trigger]") return trigger;
+  if (selector === "#tp-fullscreen-detail") return dialog;
+  if (selector === "[data-detail-close]") return closer;
+}};
+global.document = {activeElement: trigger, currentScript: {closest() { return root; }}};
+''' + controller.group(1) + r'''
+trigger.emit("click");
+if (!dialog.open || document.activeElement !== closer) process.exit(2);
+let prevented = false;
+dialog.emit("cancel", {preventDefault() { prevented = true; }});
+if (dialog.open || !prevented || document.activeElement !== trigger) process.exit(3);
+trigger.emit("click");
+closer.emit("click");
+if (dialog.open || document.activeElement !== trigger) process.exit(4);
+'''
+    completed = subprocess.run(
+        [node, "-e", harness], text=True, capture_output=True, check=False)
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_more_than_two_actions_moves_extras_to_fullscreen_detail():

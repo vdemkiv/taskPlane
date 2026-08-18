@@ -4942,6 +4942,29 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
             '<button class="tp-action" type="button" aria-label="Open full details" '
             'aria-controls="tp-fullscreen-detail" data-detail-trigger="true">Details</button>')
 
+    interaction = (
+        '<script>(function(){'
+        'var root=document.currentScript.closest(".tp-host");'
+        'if(!root){return;}'
+        'var trigger=root.querySelector("[data-detail-trigger]");'
+        'var dialog=root.querySelector("#tp-fullscreen-detail");'
+        'var closer=root.querySelector("[data-detail-close]");'
+        'if(!trigger||!dialog||!closer){return;}'
+        'var opener=null;'
+        'function openDetail(){opener=document.activeElement||trigger;'
+        'if(typeof dialog.showModal==="function"){dialog.showModal();}'
+        'else{dialog.setAttribute("open","");}'
+        'closer.focus();}'
+        'function closeDetail(){'
+        'if(dialog.open&&typeof dialog.close==="function"){dialog.close();}'
+        'else{dialog.removeAttribute("open");}'
+        'if(opener&&typeof opener.focus==="function"){opener.focus();}}'
+        'trigger.addEventListener("click",openDetail);'
+        'closer.addEventListener("click",closeDetail);'
+        'dialog.addEventListener("cancel",function(event){'
+        'event.preventDefault();closeDetail();});'
+        '})();</script>')
+
     return (
         '<div class="tp-host" data-host="'
         + html.escape(str(projection["presentation"]["host"]), quote=True)
@@ -4956,10 +4979,12 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
           f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">Dashboard details</h2>'
           f'<img alt="Workflow evidence overview" width="1" height="1" '
           f'src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" />{detail_buttons}'
-          f'<button type="button" aria-label="Close details">Close</button></dialog>'
+          f'<button type="button" aria-label="Close details" '
+          f'data-detail-close="true">Close</button></dialog>'
           f'<form class="tp-composer" aria-label="Conversation composer">'
           f'<label for="tp-message">Message</label><textarea id="tp-message" '
-          f'name="message"></textarea><button type="submit">Send</button></form></div>')
+          f'name="message"></textarea><button type="submit">Send</button></form>'
+          f'{interaction}</div>')
 
 
 def _fit_page(html: str, budget: int) -> str:
