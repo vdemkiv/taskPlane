@@ -9,10 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from typing import Callable, Mapping, Protocol
 
 from taskplane.command_runtime import CommandRuntime, TERMINAL_STATES
-from taskplane.review_session import session_transport_binding
+from taskplane.review_session import (
+    ReviewSessionError,
+    sandbox_transport_binding,
+    session_transport_binding,
+)
 
 
 SUPPORTED_HOSTS = frozenset({"claude", "codex"})
@@ -95,14 +100,15 @@ class CommandAdapter:
     def launch(self, command: object, *, cwd: str,
                deadline: float | None = None,
                wave_id: str | None = None,
-               review_session: Mapping | None = None) -> str:
+               review_session: Mapping | None = None,
+               review_sandbox: Mapping | None = None) -> str:
         launched = self._launcher(command, cwd)
         if not isinstance(launched, HostLaunch) or not launched.binding:
             raise ValueError("host launch must return a non-empty binding")
         handle = self.runtime.create(
             command_fingerprint=_fingerprint_command(command),
             binding=launched.binding, deadline=deadline, wave_id=wave_id,
-            review_session=review_session)
+            review_session=review_session, review_sandbox=review_sandbox)
         self._bindings[handle] = dict(launched.binding)
         self.runtime.transition(handle, "running")
         return handle
@@ -111,14 +117,43 @@ class CommandAdapter:
                                  session: Mapping,
                                  sandbox: Mapping) -> str:
         """Launch only inside a disposable, push-disabled review copy."""
-        if sandbox.get("disposable") is not True or \
-                sandbox.get("push_disabled") is not True or \
-                not str(sandbox.get("sandbox_id") or "").strip():
-            raise ValueError(
-                "review validation requires a disposable push-disabled sandbox")
+        try:
+            sandbox_binding, workdir = sandbox_transport_binding(
+                sandbox, cwd=cwd)
+        except ReviewSessionError as exc:
+            raise ValueError(str(exc)) from exc
+        self._validate_push_disabled_command(command)
         return self.launch(
-            command, cwd=cwd,
-            review_session=session_transport_binding(session))
+            command, cwd=workdir,
+            review_session=session_transport_binding(session),
+            review_sandbox=sandbox_binding)
+
+    @staticmethod
+    def _validate_push_disabled_command(command: object) -> None:
+        """Reject argv forms that bypass a disabled remote or pre-push hook."""
+        if not isinstance(command, (list, tuple)) or not command or any(
+                not isinstance(item, (str, bytes)) for item in command):
+            raise ValueError(
+                "push-disabled review validation requires direct argv")
+        argv = [item.decode() if isinstance(item, bytes) else item
+                for item in command]
+        executable = os.path.basename(argv[0]).lower()
+        if executable in {"sh", "bash", "zsh", "dash", "fish", "cmd",
+                          "cmd.exe", "powershell", "pwsh"}:
+            raise ValueError(
+                "push-disabled review validation forbids shell wrappers")
+        if executable == "env":
+            index = 1
+            while index < len(argv) and ("=" in argv[index] or
+                                          argv[index].startswith("-")):
+                index += 1
+            argv = argv[index:]
+            executable = os.path.basename(argv[0]).lower() if argv else ""
+        if executable in {"git", "git.exe"}:
+            forbidden = {"push", "send-pack", "remote"}
+            if any(item.lower() in forbidden for item in argv[1:]):
+                raise ValueError(
+                    "push-disabled review validation forbids remote writes")
 
     def wait_review_event(self, handle: str, *, consumer: str,
                           interrupted: Callable[[], bool] | None = None,

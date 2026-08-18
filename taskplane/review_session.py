@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 from typing import Iterable, Mapping
 
@@ -237,14 +238,56 @@ def session_transport_binding(session: Mapping) -> dict:
     }
 
 
+def sandbox_transport_binding(sandbox: Mapping, *, cwd: str) -> tuple[dict, str]:
+    """Bind a validation launch to the real path of its disposable copy.
+
+    Boolean ``push_disabled`` claims are not authority.  The adapter records a
+    non-reversible root fingerprint in durable state and launches only from a
+    real directory contained by that root.  Resolving both paths also closes
+    symlink escapes.
+    """
+    sandbox = dict(sandbox or {})
+    if sandbox.get("disposable") is not True or \
+            sandbox.get("push_disabled") is not True or \
+            not str(sandbox.get("sandbox_id") or "").strip():
+        raise ReviewSessionError(
+            "review validation requires a disposable push-disabled sandbox")
+    root_value = str(sandbox.get("path") or sandbox.get("root") or "").strip()
+    if not root_value:
+        raise ReviewSessionError("review validation requires a sandbox root")
+    root = os.path.realpath(root_value)
+    workdir = os.path.realpath(str(cwd or ""))
+    try:
+        contained = os.path.commonpath((root, workdir)) == root
+    except ValueError:
+        contained = False
+    if not os.path.isdir(root) or not os.path.isdir(workdir) or not contained:
+        raise ReviewSessionError("review validation cwd escapes its sandbox")
+    material = {
+        "sandbox_id": str(sandbox["sandbox_id"]),
+        "root": root,
+        "push_disabled": True,
+    }
+    return ({
+        "schema": "taskplane.review-sandbox-binding/v1",
+        "sandbox_id": material["sandbox_id"],
+        "root_fingerprint": _canonical_digest(material),
+        "push_disabled": True,
+    }, workdir)
+
+
 def validation_evidence(*, submitted: Mapping, sandbox: Mapping) -> dict:
     """Validate and distinguish submitted-PR and sandbox outcomes."""
     submitted = dict(submitted or {})
     sandbox = dict(sandbox or {})
     head_unchanged = bool(submitted.get("head_before")) and \
         submitted.get("head_before") == submitted.get("head_after")
-    remote_unchanged = submitted.get("remote_before") == \
-        submitted.get("remote_after")
+    remote_before = submitted.get("remote_before")
+    remote_after = submitted.get("remote_after")
+    if remote_before in (None, "") or remote_after in (None, ""):
+        raise ReviewSessionError(
+            "submitted remote observations are required")
+    remote_unchanged = remote_before == remote_after
     if not head_unchanged or not remote_unchanged:
         raise ReviewSessionError(
             "submitted checkout and remote must remain unchanged")
