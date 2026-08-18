@@ -215,7 +215,8 @@ class CommandRuntime:
     def create(self, *, command_fingerprint: str, binding: Mapping | None,
                deadline: float | None = None, wave_id: str | None = None,
                review_session: Mapping | None = None,
-               review_sandbox: Mapping | None = None) -> str:
+               review_sandbox: Mapping | None = None,
+               preview: Mapping | None = None) -> str:
         handle = secrets.token_hex(16)
         now = float(self._clock())
         if review_session is not None:
@@ -242,6 +243,20 @@ class CommandRuntime:
                     ("isolation_fingerprint" in review_sandbox and
                      not str(review_sandbox["isolation_fingerprint"]).strip()):
                 raise ValueError("review sandbox binding is invalid")
+        if preview is not None:
+            preview = dict(preview)
+            required = {"schema", "preview_id", "target", "revision",
+                        "sandbox_id", "push_disabled", "network"}
+            if (not required.issubset(preview) or
+                    preview.get("schema") != "taskplane.host-preview/v1" or
+                    preview.get("push_disabled") is not True or
+                    not isinstance(preview.get("revision"), int) or
+                    not all(str(preview.get(key) or "").strip()
+                            for key in ("preview_id", "target", "sandbox_id")) or
+                    not isinstance(preview.get("network"), dict) or
+                    preview["network"].get("mode") != "deny"):
+                raise ValueError("preview binding is invalid")
+            preview = {key: preview[key] for key in required}
         snapshot = {
             "schema": SCHEMA,
             "handle": handle,
@@ -259,6 +274,7 @@ class CommandRuntime:
                if review_session is not None else {}),
             **({"review_sandbox": review_sandbox}
                if review_sandbox is not None else {}),
+            **({"preview": preview} if preview is not None else {}),
             "exit_code": None,
             "reason": None,
             "events": [],
@@ -374,6 +390,8 @@ class CommandRuntime:
             }),
             **({"review_session": dict(snapshot["review_session"])}
                if snapshot.get("review_session") else {}),
+            **({"preview": dict(snapshot["preview"])}
+               if snapshot.get("preview") else {}),
         }
 
     def append_output(self, handle: str, output: str) -> dict:

@@ -182,6 +182,51 @@ class CommandAdapter:
         self.runtime.transition(handle, "running")
         return handle
 
+    def launch_preview(self, command: object, *, cwd: str,
+                       preview: Mapping) -> str:
+        """Launch a registered preview using the verified isolation boundary.
+
+        Preview commands share review validation's direct-argv/no-push rules,
+        but additionally carry the preview pin in every durable event.
+        """
+        if self._review_isolation_launcher is None:
+            raise ValueError("preview requires verified process-tree isolation")
+        if preview.get("schema") != "taskplane.host-preview/v1" or \
+                preview.get("state") not in {"registered", "open"} or \
+                preview.get("push_disabled") is not True or \
+                (preview.get("network") or {}).get("mode") != "deny":
+            raise ValueError("preview registration is not executable")
+        self._validate_push_disabled_command(command)
+        workdir = os.path.realpath(cwd)
+        workdir_fingerprint = hashlib.sha256(
+            workdir.encode("utf-8")).hexdigest()
+        if workdir_fingerprint != preview.get("sandbox_id"):
+            raise ValueError("preview command cwd escapes registered sandbox")
+        policy = {
+            "schema": "taskplane.preview-isolation-policy/v1",
+            "network": "deny", "scope": "complete-process-tree",
+            "push": "deny", "sandbox_id": preview.get("sandbox_id"),
+            "limits": dict(preview.get("limits") or {}),
+        }
+        launched = self._review_isolation_launcher(command, workdir, policy)
+        if not isinstance(launched, HostLaunch) or not launched.binding:
+            raise ValueError("isolated preview launch returned no binding")
+        isolation = dict(launched.isolation or {})
+        if (isolation.get("schema") not in {
+                "taskplane.preview-isolation-receipt/v1",
+                "taskplane.review-isolation-receipt/v1"} or
+                isolation.get("network") != "denied" or
+                isolation.get("scope") != "complete-process-tree" or
+                not str(isolation.get("mechanism") or "").strip()):
+            raise ValueError("preview isolation receipt is invalid")
+        handle = self.runtime.create(
+            command_fingerprint=_fingerprint_command(command),
+            binding=launched.binding, deadline=preview.get("deadline"),
+            preview=preview)
+        self._bindings[handle] = dict(launched.binding)
+        self.runtime.transition(handle, "running")
+        return handle
+
     @staticmethod
     def _validate_push_disabled_command(command: object) -> None:
         """Reject argv forms that bypass a disabled remote or pre-push hook."""
