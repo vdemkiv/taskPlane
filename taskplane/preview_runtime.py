@@ -13,8 +13,9 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import time
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Protocol
 
 
 SCHEMA = "taskplane.host-preview/v1"
@@ -38,6 +39,13 @@ class PreviewDenied(PreviewError):
     def __init__(self, outcome: str, message: str):
         super().__init__(message)
         self.outcome = outcome
+
+
+class SurfaceTransport(Protocol):
+    """Trusted host bridge for an integrated browser/side-panel surface."""
+
+    def __call__(self, surface: str, sandbox: str,
+                 preview: Mapping[str, object]) -> Mapping[str, object]: ...
 
 
 def _digest(value: object) -> str:
@@ -73,7 +81,8 @@ class PreviewRuntime:
     """Register private, pinned, bounded previews and seal their evidence."""
 
     def __init__(self, root: str | Path, *, workspace: str | Path,
-                 authorization: str, clock: Callable[[], float] | None = None):
+                 authorization: str, clock: Callable[[], float] | None = None,
+                 surface_transport: SurfaceTransport | None = None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.workspace = Path(workspace).resolve()
@@ -81,6 +90,7 @@ class PreviewRuntime:
             raise ValueError("preview workspace must be a directory")
         self._authorization = _digest(str(authorization))
         self._clock = clock or time.time
+        self._surface_transport = surface_transport
         self._audit_path = self.root / "audit.json"
 
     def _audit(self, *, preview_id: str | None, outcome: str,
@@ -196,13 +206,37 @@ class PreviewRuntime:
         preview_id = secrets.token_hex(16)
         sandbox = self._path(preview_id).parent / "sandbox"
         sandbox.mkdir(parents=True, exist_ok=False)
+        # Materialize the pinned input.  Never link back into the source: the
+        # descendant process tree may write freely inside this disposable copy.
+        try:
+            for child in source.iterdir():
+                destination = sandbox / child.name
+                if child.is_symlink():
+                    resolved = child.resolve()
+                    if source not in (resolved, *resolved.parents):
+                        raise PreviewDenied(
+                            "escaped_path", "source contains an escaping link")
+                if child.is_dir():
+                    shutil.copytree(child, destination, symlinks=True)
+                else:
+                    shutil.copy2(child, destination, follow_symlinks=False)
+        except Exception:
+            shutil.rmtree(sandbox, ignore_errors=True)
+            raise
+        materialized_fingerprint = _path_fingerprint(sandbox)
+        source_fingerprint = _path_fingerprint(source)
+        if materialized_fingerprint != source_fingerprint:
+            shutil.rmtree(sandbox, ignore_errors=True)
+            self._deny("escaped_path", "pinned source materialization failed",
+                       target=target, revision=revision)
         now = float(self._clock())
         preview = {
             "schema": SCHEMA, "preview_id": preview_id, "flow": flow,
             "target": str(target), "revision": revision,
             "state": "registered", "outcome": "registered",
             "surface": surfaces[0], "surface_fallbacks": surfaces[1:],
-            "source_fingerprint": _path_fingerprint(source),
+            "source_fingerprint": source_fingerprint,
+            "materialized_fingerprint": materialized_fingerprint,
             "source_root_fingerprint": _digest(str(source)),
             "authorization_fingerprint": self._authorization,
             "visibility": "private", "push_disabled": True,
@@ -225,9 +259,29 @@ class PreviewRuntime:
             raise PreviewError("only a registered preview can open")
         if float(self._clock()) > preview["deadline"]:
             return self.record_outcome(preview_id, "timed_out")
+        if self._surface_transport is None:
+            return self.record_outcome(preview_id, "unavailable")
+        sandbox = self.sandbox_path(preview_id)
+        if _path_fingerprint(sandbox) != preview["materialized_fingerprint"]:
+            return self.record_outcome(preview_id, "escaped_path")
+        try:
+            result = dict(self._surface_transport(
+                preview["surface"], str(sandbox), dict(preview)))
+        except Exception as exc:
+            self._audit(preview_id=preview_id, outcome="unavailable",
+                        detail=f"surface transport failed: {exc}",
+                        target=preview["target"], revision=preview["revision"])
+            return self.record_outcome(preview_id, "unavailable")
+        if (result.get("schema") != "taskplane.host-preview-surface/v1" or
+                result.get("surface") != preview["surface"] or
+                not str(result.get("binding") or "").strip()):
+            return self.record_outcome(preview_id, "unavailable")
         preview["state"] = "open"
         preview["outcome"] = "open"
-        preview["events"].append({"kind": "opened", "at": self._clock()})
+        preview["surface_binding_fingerprint"] = _digest(result)
+        preview["events"].append({"kind": "opened", "at": self._clock(),
+                                  "surface": preview["surface"],
+                                  "transport": _digest(result)})
         self._audit(preview_id=preview_id, outcome="open", detail="preview opened",
                     target=preview["target"], revision=preview["revision"])
         return self._save(preview)
@@ -278,7 +332,7 @@ class PreviewRuntime:
         # is delegated to the isolation launcher before this bounded removal.
         removed = False
         try:
-            sandbox.rmdir()
+            shutil.rmtree(sandbox)
             removed = True
         except OSError:
             removed = False

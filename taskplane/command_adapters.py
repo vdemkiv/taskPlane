@@ -205,9 +205,14 @@ class CommandAdapter:
         policy = {
             "schema": "taskplane.preview-isolation-policy/v1",
             "network": "deny", "scope": "complete-process-tree",
-            "push": "deny", "sandbox_id": preview.get("sandbox_id"),
+            "push": "deny", "filesystem": "sandbox-only",
+            "source": "immutable", "remotes": "disabled",
+            "sandbox_id": preview.get("sandbox_id"),
             "limits": dict(preview.get("limits") or {}),
         }
+        policy_fingerprint = hashlib.sha256(
+            json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")).hexdigest()
         launched = self._review_isolation_launcher(command, workdir, policy)
         if not isinstance(launched, HostLaunch) or not launched.binding:
             raise ValueError("isolated preview launch returned no binding")
@@ -217,6 +222,11 @@ class CommandAdapter:
                 "taskplane.review-isolation-receipt/v1"} or
                 isolation.get("network") != "denied" or
                 isolation.get("scope") != "complete-process-tree" or
+                isolation.get("push") != "denied" or
+                isolation.get("filesystem") != "sandbox-only" or
+                isolation.get("source") != "immutable" or
+                isolation.get("remotes") != "disabled" or
+                isolation.get("policy_fingerprint") != policy_fingerprint or
                 not str(isolation.get("mechanism") or "").strip()):
             raise ValueError("preview isolation receipt is invalid")
         handle = self.runtime.create(
