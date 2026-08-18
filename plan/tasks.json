@@ -1,35 +1,34 @@
 {
   "tasks": [
     {
-      "id": "t4-inline-integrity-and-untrusted-evidence-guard",
-      "title": "Seal inline-section integrity and obstruct prompt injection from PR-controlled evidence",
+      "id": "t1-close-sandbox-push-bypasses",
+      "title": "Bind disposable validation to a verified push-disabled sandbox",
       "scope": [
-        "taskplane/review.py",
-        "taskplane/review_evidence.py",
-        "taskplane/tests/test_review_inline_integrity.py",
-        "taskplane/tests/test_review_untrusted_evidence.py"
+        "taskplane/command_adapters.py",
+        "taskplane/command_runtime.py",
+        "taskplane/review_session.py",
+        "taskplane/tests/test_review_sandbox_security.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_inline_integrity.py taskplane/tests/test_review_untrusted_evidence.py",
-      "req": "R-0008",
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_sandbox_security.py",
+      "req": "R-0009",
       "deps": [],
       "type": "security",
       "contracts": [
-        "contract:review-kernel-slot",
-        "contract:review-kernel-scoped-view",
-        "contract:review-kernel-evidence-reference"
+        "contract:review-host-adapter",
+        "contract:review-human-consent"
       ],
       "new_modules": [
-        "taskplane/review.py",
-        "taskplane/review_evidence.py",
-        "contract:review-kernel-slot",
-        "contract:review-kernel-scoped-view",
-        "contract:review-kernel-evidence-reference"
+        "taskplane/command_adapters.py",
+        "taskplane/command_runtime.py",
+        "taskplane/review_session.py",
+        "contract:review-host-adapter",
+        "contract:review-human-consent"
       ],
       "design_edges": [
-        "taskplane/review_evidence.py->contract:review-kernel-evidence-reference:provides",
-        "taskplane/review_evidence.py->contract:review-kernel-scoped-view:provides",
-        "taskplane/review.py->contract:review-kernel-scoped-view:consumes",
-        "taskplane/review.py->contract:review-kernel-slot:provides"
+        "taskplane/review_session.py->contract:review-human-consent:provides",
+        "taskplane/review_session.py->contract:review-host-adapter:consumes",
+        "taskplane/command_adapters.py->contract:review-host-adapter:provides",
+        "taskplane/command_runtime.py->contract:review-host-adapter:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -38,89 +37,139 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Canonical verification of inline_sections completeness, disjointness, and omissions.",
-        "Mandatory untrusted-data delimiter plus detect/obstruct/flag prompt-injection guard for PR-controlled diff, requirement, and change evidence."
+        "AC15: Broken-build dynamic validation operates only in a disposable review copy: the pinned checkout/ref and remote remain unchanged, no push occurs, sandbox delta is evidence, and final output distinguishes submitted-PR from sandbox outcomes."
       ]
     },
     {
-      "id": "t1-reference-first-projection",
-      "title": "Implement bounded deterministic scoped views and immutable evidence references",
-      "status": "passed",
+      "id": "t2-confine-artifact-publication",
+      "title": "Confine artifact roots and return stable unavailable results for unsafe paths",
       "scope": [
-        "taskplane/review_evidence.py",
-        "taskplane/tests/test_review_reference_first_projection.py"
+        "taskplane/review_artifacts.py",
+        "taskplane/tests/test_review_artifact_confinement.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_reference_first_projection.py",
-      "req": "R-0008",
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_artifact_confinement.py",
+      "req": "R-0009",
       "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:review-artifact-set"
+      ],
+      "new_modules": [
+        "taskplane/review_artifacts.py",
+        "contract:review-artifact-set"
+      ],
+      "design_edges": [
+        "taskplane/review_artifacts.py->contract:review-artifact-set:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC12: Publishing a provisional or canonical revision automatically writes JSON, Markdown, and HTML containing complete DoR, criterion evidence, slot/lens status, all findings, dynamic evidence, collection/provenance, and gate state; a 120-finding round trip proves semantic equality and identical counts without a prompt."
+      ]
+    },
+    {
+      "id": "t3-repair-summary-or-rerun-affected-slot",
+      "title": "Make leased producer-summary repair collectable or rerun only the affected slot",
+      "scope": [
+        "taskplane/review_recovery.py",
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_review_summary_recovery.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_summary_recovery.py",
+      "req": "R-0009",
+      "deps": [],
+      "type": "integration",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair"
+      ],
+      "new_modules": [
+        "taskplane/review_recovery.py",
+        "taskplane/review_evidence.py",
+        "contract:review-kernel-slot",
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair"
+      ],
+      "design_edges": [
+        "taskplane/review_evidence.py->contract:review-kernel-partial-revision:provides",
+        "taskplane/review_recovery.py->contract:review-kernel-mechanical-repair:provides",
+        "taskplane/review_recovery.py->contract:review-kernel-slot:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC9: The observed valid fail/one-finding frontend result with unresolved free-form declaration identity is mechanically repaired from leased authority and collected without substantive rerun; changed findings, evidence, target, producer, slot, or unverifiable identity cannot be repaired and rerun only the affected slot.",
+        "AC10: Mixed-result retries invoke only affected producers; valid slots are neither re-reviewed nor rewritten, collection is idempotent, and final canonical output contains no duplicated findings."
+      ]
+    },
+    {
+      "id": "t4-wire-canonical-production-review",
+      "title": "Compose DoR, session, recovery, artifacts, and bounded inline pages into the production transaction",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/loop.py",
+        "taskplane/evidence.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/dashboard.py",
+        "taskplane/tests",
+        "taskplane/tests/test_review_production_integration.py",
+        "taskplane/tests/test_review_routing.py",
+        "taskplane/tests/test_review_session.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_production_integration.py",
+      "req": "R-0009",
+      "deps": [
+        "t1-close-sandbox-push-bypasses",
+        "t2-confine-artifact-publication",
+        "t3-repair-summary-or-rerun-affected-slot"
+      ],
       "type": "architecture",
       "contracts": [
-        "contract:review-kernel-scoped-view",
-        "contract:review-kernel-evidence-reference"
-      ],
-      "new_modules": [
-        "taskplane/review_evidence.py",
-        "contract:review-kernel-scoped-view",
-        "contract:review-kernel-evidence-reference"
-      ],
-      "design_edges": [
-        "taskplane/review_evidence.py->contract:review-kernel-evidence-reference:provides",
-        "taskplane/review_evidence.py->contract:review-kernel-scoped-view:provides",
-        "taskplane/tests->contract:review-kernel-scoped-view:validates",
-        "taskplane/tests->contract:review-kernel-evidence-reference:validates"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "Every serialized producer view remains within its configured byte budget at boundary and multi-megabyte sizes.",
-        "Mandatory target, revision, routing, lens, slot, lease, schema, producer, and integrity identities remain inline.",
-        "Overflow content is stored once and represented by stable target-bound digest-verified references.",
-        "Missing, stale, mismatched, unauthorized, traversal, symlink-escape, and mutated references fail closed.",
-        "Pinned inputs produce deterministic view fingerprints and reference manifests regardless of input ordering.",
-        "Lens-relevant context survives budget pressure and omitted optional material is explicitly inventoried.",
-        "Preparation stores one governed copy per unique overflow artifact and aggregate inline bytes remain bounded by slot budgets."
-      ]
-    },
-    {
-      "id": "t2-slot-conservation-and-collection-integrity",
-      "title": "Enforce routed-slot conservation and provenance-bound collection",
-      "status": "passed",
-      "scope": [
-        "taskplane/review.py",
-        "taskplane/evidence.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/loop.py",
-        "taskplane/tests/test_review_slot_conservation.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_slot_conservation.py",
-      "req": "R-0008",
-      "deps": [
-        "t1-reference-first-projection"
-      ],
-      "type": "integration",
-      "contracts": [
         "contract:review-kernel-slot",
-        "contract:review-kernel-scoped-view",
-        "contract:review-kernel-evidence-reference"
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair",
+        "contract:review-dor-evidence",
+        "contract:review-host-adapter",
+        "contract:review-human-consent",
+        "contract:review-inline-presentation",
+        "contract:review-artifact-set"
       ],
       "new_modules": [
         "taskplane/review.py",
         "taskplane/evidence.py",
         "taskplane/runtime_eval.py",
+        "taskplane/dashboard.py",
         "taskplane/loop.py",
-        "contract:review-kernel-slot"
+        "workflows",
+        "skills",
+        "agents",
+        "lenses",
+        "taskplane/tests",
+        "taskplane/review_dor.py",
+        "contract:review-dor-evidence",
+        "contract:review-inline-presentation"
       ],
       "design_edges": [
-        "taskplane/review.py->contract:review-kernel-scoped-view:consumes",
+        "taskplane/review_dor.py->contract:review-dor-evidence:provides",
         "taskplane/review.py->contract:review-kernel-slot:provides",
-        "taskplane/evidence.py->contract:review-kernel-slot:consumes",
-        "taskplane/runtime_eval.py->contract:review-kernel-slot:consumes",
-        "taskplane/loop.py->contract:review-kernel-slot:consumes",
-        "taskplane/tests->contract:review-kernel-slot:validates"
+        "taskplane/dashboard.py->contract:review-inline-presentation:provides",
+        "taskplane/dashboard.py->contract:review-artifact-set:consumes",
+        "taskplane/evidence.py->contract:review-dor-evidence:consumes",
+        "taskplane/runtime_eval.py->contract:review-kernel-partial-revision:consumes",
+        "taskplane/loop.py->contract:review-human-consent:consumes",
+        "taskplane/tests->contract:review-host-adapter:validates",
+        "taskplane/tests->contract:review-kernel-mechanical-repair:validates",
+        "taskplane/tests->contract:review-artifact-set:validates",
+        "taskplane/tests->contract:review-inline-presentation:validates"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -129,51 +178,18 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Canonical envelopes, evidence sets, and dashboards substantially above 16 KiB dispatch the same routed slot set as equivalent small inputs.",
-        "Selected lens count greater than zero cannot become a successful zero-slot review.",
-        "Collection rejects mismatched view, reference manifest, lease, target, producer, revision, or slot."
-      ]
-    },
-    {
-      "id": "t3-dashboard-independence-and-compatibility",
-      "title": "Keep dashboard projection independent and preserve fitting-review behavior",
-      "status": "passed",
-      "scope": [
-        "taskplane/dashboard.py",
-        "taskplane/tests",
-        "taskplane/tests/test_review_dashboard_independence.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_dashboard_independence.py",
-      "req": "R-0008",
-      "deps": [
-        "t1-reference-first-projection",
-        "t2-slot-conservation-and-collection-integrity"
-      ],
-      "type": "integration",
-      "contracts": [
-        "contract:review-kernel-slot",
-        "contract:review-kernel-scoped-view",
-        "contract:review-dashboard-projection"
-      ],
-      "new_modules": [
-        "taskplane/dashboard.py",
-        "taskplane/tests",
-        "contract:review-dashboard-projection"
-      ],
-      "design_edges": [
-        "taskplane/dashboard.py->contract:review-dashboard-projection:provides",
-        "taskplane/dashboard.py->contract:review-kernel-slot:consumes",
-        "taskplane/tests->contract:review-dashboard-projection:validates"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "Dashboard size and pagination do not affect routing, leasing, dispatch, collection, findings, or gate values.",
-        "Small fitting reviews retain compatible routing, evidence, findings, and gate behavior."
+        "AC1: The same pinned PR, requirements, options, and deterministic lens fixtures on Claude and Codex produce semantically equivalent DoR, routing, leases, validation, findings, collection, gate, and JSON/Markdown/HTML results, with only transport metadata differing.",
+        "AC2: Fixtures for PR title/body/comments, commits, changelog, linked issue/spec/acceptance text, and repository contracts prove every available source is checked before routing with identity and revision provenance; missing, inaccessible, contradictory, and stale sources are explicit.",
+        "AC3: Paraphrase, bullet, prose, commit, changelog, comment, conflict, and non-requirement fixtures are dynamically classified as objective, acceptance criterion, review directive, constraint, or context; one clarification occurs only when ambiguity materially changes review.",
+        "AC4: Every extracted criterion is rendered as pass, fail, unproven, or not-applicable with rationale, evidence reference, verification method, and responsible lens/step; unproven or unjustified not-applicable prevents approval.",
+        "AC5: Semantic variants of security, bugs, usability, scale performance, quality, and architecture directives route applicable catalog lenses separately from feature acceptance criteria and do not silently suppress executable validation.",
+        "AC6: One complete-review choice covering all then-known non-destructive options reaches the final human gate without repeated render, dynamic, collection, repair, retry, or artifact approvals, and free-form equivalent consent works without an exact phrase.",
+        "AC7: A new approval is requested only for changed target/scope, newly destructive/external action, permission/credential escalation, unsafe operation, irreconcilable requirement ambiguity, or final disposition, and names the new fact and authority needed.",
+        "AC8: With zero, one, several, or all invalid/missing slots, valid findings remain in an immutable provisional revision with per-slot reasons, explicit incompleteness, disabled approval, stable provenance, and later supersession into a canonical revision.",
+        "AC11: On both hosts, inline interaction tests prove target/revision, DoR status/sources, expandable criterion evidence, lens status, severity/lens/file findings with rationale/action, dynamic evidence, provisional gaps, provenance, gate reason, filtering, keyboard navigation, and action receipts; approval controls are enabled only for complete approvable revisions.",
+        "AC13: Reviews at least as large as 126 KiB Markdown and 342 KiB HTML plus multi-megabyte fixtures dispatch every selected slot, retain every finding in exports, render inline by bounded pages/references, and preserve one revision/provenance across pages without making dashboard bytes producer input.",
+        "AC14: Host limitation, unavailable dynamic check, invalid reference, renderer failure, artifact-write failure, and unrepaired-slot injection produce stable actionable non-success states and never zero findings, declined-user-choice, completed review, or pass.",
+        "AC16: Existing complete small-review goldens retain routing, findings, gates, and artifact consumers unchanged or through an explicit versioned migration, with no test removal, skip, xfail, lowered floor, or weakened governance assertion."
       ]
     }
   ]
