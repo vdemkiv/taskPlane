@@ -98,6 +98,14 @@ _REVIEW_HOST_EXECUTION_AUTHORITY = object()
 _NATIVE_APPROVAL_SCHEMA = "taskplane.native-approval-receipt/v1"
 
 
+def _native_approval_fingerprint(decision: dict) -> str:
+    """Fingerprint the authoritative decision fields, not presentation data."""
+    canonical = {key: decision[key] for key in decision
+                 if key not in {"detail_action", "fingerprint"}}
+    return hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
 
@@ -124,9 +132,7 @@ def native_approval_decision(*, decision_id: str, kind: str, reason: str,
         "approvable": bool(approvable), "actions": primary[:2],
         "detail_action": {"id": "view-details", "authoritative": False},
     }
-    canonical = {key: row[key] for key in row if key != "detail_action"}
-    row["fingerprint"] = hashlib.sha256(json.dumps(
-        canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    row["fingerprint"] = _native_approval_fingerprint(row)
     return row
 
 
@@ -170,13 +176,28 @@ class NativeApprovalLedger:
         receipt["signature"] = self._signature(receipt)
         return receipt
 
-    def consume(self, receipt: dict, decision: dict, *, now: int) -> dict:
+    def consume(self, receipt: dict, decision: dict, *, actor: str,
+                authenticated: bool, now: int) -> dict:
         if not isinstance(receipt, dict) or \
                 receipt.get("schema") != _NATIVE_APPROVAL_SCHEMA:
             raise ReviewKernelError("native approval receipt is invalid")
         if not hmac.compare_digest(str(receipt.get("signature") or ""),
                                    self._signature(receipt)):
             raise ReviewKernelError("native approval receipt is unauthenticated")
+        current_actor = str(actor or "").strip()
+        if not authenticated or not current_actor or \
+                receipt.get("actor") != current_actor:
+            raise ReviewKernelError("native approval actor is not authenticated")
+        if not decision.get("approvable"):
+            raise ReviewKernelError("native approval decision is disabled")
+        if receipt.get("action") not in {
+                row.get("id") for row in decision.get("actions") or []}:
+            raise ReviewKernelError("native approval action is not offered")
+        current_fingerprint = _native_approval_fingerprint(decision)
+        if not hmac.compare_digest(
+                str(decision.get("fingerprint") or ""),
+                current_fingerprint):
+            raise ReviewKernelError("native approval decision is stale")
         bindings = (("decision_id", "decision_id"),
                     ("decision_fingerprint", "fingerprint"),
                     ("target", "target"), ("revision", "revision"))

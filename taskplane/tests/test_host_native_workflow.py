@@ -94,12 +94,43 @@ def test_authenticated_receipt_advances_exactly_once_and_rejects_stale():
     )
     receipt = ledger.issue(decision, action="approve", actor="user-7",
                            authenticated=True, nonce="n-1", now=100)
-    assert ledger.consume(receipt, decision, now=101)["advanced"] is True
-    assert ledger.consume(receipt, decision, now=101)["advanced"] is False
+    consume = {"actor": "user-7", "authenticated": True, "now": 101}
+    assert ledger.consume(receipt, decision, **consume)["advanced"] is True
+    assert ledger.consume(receipt, decision, **consume)["advanced"] is False
     stale = dict(decision, revision="def456")
-    with pytest.raises(review.ReviewKernelError, match="binding"):
-        review.NativeApprovalLedger(secret).consume(receipt, stale, now=101)
+    with pytest.raises(review.ReviewKernelError, match="stale"):
+        review.NativeApprovalLedger(secret).consume(receipt, stale, **consume)
     with pytest.raises(review.ReviewKernelError, match="authenticated"):
         review.NativeApprovalLedger(secret).issue(
             decision, action="approve", actor="bot", authenticated=False,
             nonce="n-2", now=100)
+
+
+def test_receipt_revalidates_current_decision_action_and_actor_authority():
+    secret = b"host-owned-test-key"
+    decision = review.native_approval_decision(
+        decision_id="plan-1", kind="plan", reason="Ready",
+        target="repo", revision="abc123", evidence=["plan.md"],
+        consequences=["execute begins"], owner="human", approvable=True,
+        actions=[{"id": "approve", "label": "Approve"}],
+    )
+    receipt = review.NativeApprovalLedger(secret).issue(
+        decision, action="approve", actor="user-7", authenticated=True,
+        nonce="n-1", now=100)
+    current = dict(decision, approvable=False)
+    with pytest.raises(review.ReviewKernelError, match="disabled"):
+        review.NativeApprovalLedger(secret).consume(
+            receipt, current, actor="user-7", authenticated=True, now=101)
+
+    replacement = review.native_approval_decision(
+        decision_id="plan-1", kind="plan", reason="Ready",
+        target="repo", revision="abc123", evidence=["plan.md"],
+        consequences=["execute begins"], owner="human", approvable=True,
+        actions=[{"id": "request-changes", "label": "Request changes"}],
+    )
+    with pytest.raises(review.ReviewKernelError, match="not offered"):
+        review.NativeApprovalLedger(secret).consume(
+            receipt, replacement, actor="user-7", authenticated=True, now=101)
+    with pytest.raises(review.ReviewKernelError, match="actor"):
+        review.NativeApprovalLedger(secret).consume(
+            receipt, decision, actor="user-8", authenticated=True, now=101)
