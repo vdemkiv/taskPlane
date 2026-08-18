@@ -1651,7 +1651,9 @@ def _governed_root(cwd: str) -> str:
         _GIT_TOP_CACHE[start] = top
     cur = start
     while True:
-        if os.path.exists(os.path.join(tp.tp_dir(cur), "active_contract.json")):
+        if os.path.exists(os.path.join(tp.tp_dir(cur),
+                                       "active_contract.json")) or \
+                tp.list_task_slots(cur):
             return cur
         parent = os.path.dirname(cur)
         real_cur = os.path.realpath(cur)

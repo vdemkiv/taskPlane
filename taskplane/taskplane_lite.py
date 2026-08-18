@@ -4163,7 +4163,27 @@ _HOOK_RESPONSE_CLASSES = frozenset(
 
 def hook_claim_journal_path(workspace: str) -> str:
     """Per-checkout duplicate boundary; never committed or externally shared."""
-    return os.path.join(tp_dir(workspace), "hook-claims.json")
+    return os.path.join(tp_dir(_resolved_worktree(workspace)),
+                        "hook-claims.json")
+
+
+def _resolved_worktree(workspace: str) -> str:
+    """Return the exact Git worktree root owning ``workspace``.
+
+    Lifecycle hooks are frequently delivered with a component subdirectory as
+    their cwd. Treating that raw cwd as the checkout identity split one host
+    event into several claim journals. Conversely, resolving through the Git
+    common directory would collapse sibling worktrees. ``--show-toplevel``
+    provides the required middle ground: stable within one worktree and
+    distinct across worktrees of the same repository.
+    """
+    candidate = _workspace_identity(workspace)
+    try:
+        top = _run(["git", "rev-parse", "--show-toplevel"], cwd=candidate) \
+            .stdout.strip()
+    except OSError:
+        top = ""
+    return _workspace_identity(top) if top else candidate
 
 
 def _bounded_hook_identity(value, limit: int = 160) -> str:
@@ -4219,7 +4239,7 @@ def hook_event_identity(workspace: str, action: str, event: dict) -> str:
             event.get("task_slot") or os.environ.get("TASKPLANE_TASK"),
             64).strip(),
         "workspace": hashlib.sha256(os.path.normcase(
-            _workspace_identity(workspace)).encode("utf-8")).hexdigest(),
+            _resolved_worktree(workspace)).encode("utf-8")).hexdigest(),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -4248,6 +4268,7 @@ def claim_hook_event(workspace: str, action: str, event: dict, *,
     A duplicate pending claim waits at most two seconds, then returns a safe
     block instead of executing the action twice.
     """
+    workspace = _resolved_worktree(workspace)
     identity = hook_event_identity(workspace, action, event)
     path_name = str(hook_path or "").strip().lower()
     if path_name not in {"native", "bridge"}:
@@ -4346,6 +4367,7 @@ def complete_hook_event(workspace: str, claim: dict, *,
     if not isinstance(claim_id, str) or not re.fullmatch(r"[0-9a-f]{64}",
                                                          claim_id):
         raise ValueError("completion needs a valid hook claim id")
+    workspace = _resolved_worktree(workspace)
     path = hook_claim_journal_path(workspace)
     current = _time.time() if now is None else float(now)
     with file_lock(path):
@@ -4871,6 +4893,19 @@ def load_active(workspace: str) -> dict | None:
     path = active_contract_path(workspace, slot)
     if slot is not None:
         if not os.path.exists(path):
+            # Host lifecycle processes may inherit TASKPLANE_TASK from the
+            # task that spawned them. That authority is meaningful only in
+            # the exact worktree containing the slot. A sibling worktree
+            # with no contract state of its own is ungoverned; it must not be
+            # blocked (or governed) by the parent's slot. Preserve fail-closed
+            # behavior when this checkout has any contract state: there a
+            # missing named slot is a real local mismatch.
+            legacy_path = os.path.join(tp_dir(workspace),
+                                       "active_contract.json")
+            active_dir = os.path.join(tp_dir(workspace), "active")
+            if not os.path.exists(legacy_path) and \
+                    not os.path.isdir(active_dir):
+                return None
             raise StateError(
                 path, f"unknown TASKPLANE_TASK slot '{slot}' — no per-task "
                 "contract activated for it",
