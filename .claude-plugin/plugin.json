@@ -23,5 +23,6 @@
     "guardrails"
   ],
   "homepage": "https://github.com/vdemkiv/taskPlane",
-  "repository": "https://github.com/vdemkiv/taskPlane"
+  "repository": "https://github.com/vdemkiv/taskPlane",
+  "hostNative": "../hooks/host-native.json"
 }

@@ -148,6 +148,18 @@ changing it would alter a material risk or delivery decision.
 
 ## What the user sees
 
+### Host-native projection contract
+
+Codex and Claude may expose PiP progress, agent fan-out, approval controls,
+dashboard carousels, integrated previews, and hosting through different native
+APIs and evolving styles. Project all of them from the canonical host-surface
+snapshot and ordered audit stream. Preserve workflow/run, target, revision,
+task/slot, evidence, gate, and action identity across reconnects and host
+switches. A fresh runtime receipt is required for each optional capability;
+otherwise use its accessible bounded fallback and report unavailable, not
+declined. Native UI is presentation only: it cannot approve, weaken a gate,
+invent evidence, or synthesize preview success.
+
 Every transition already returns its current step, headline/dashboard path,
 and next action. Reuse that payload; do not call `$TP summary` after internal
 transitions. Run it only for an explicit status request or once at a human
