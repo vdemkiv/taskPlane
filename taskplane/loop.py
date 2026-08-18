@@ -45,6 +45,7 @@ import requirements as reqs
 import review_retry
 import runtime_eval
 import review_session as review_session_engine
+import review_dor
 import storage as runtime_storage
 import taskplane_lite as tp
 import yield_meter
@@ -118,6 +119,71 @@ def _authorization_fields(ws: str, state: dict) -> dict:
         "execution_bounds": {"parallel": bool(state.get("parallel")),
                              "external_effects": False},
     }
+
+
+def _product_definition_gate(requirement: dict) -> dict:
+    """Product refinement is mechanical; strategic advice is attributable."""
+    text = [str(requirement.get("title") or ""),
+            *[str(x) for x in requirement.get("acceptance") or []]]
+    advice = review_dor.north_star_advice(
+        text, explicit=bool(requirement.get("north_star_requested")),
+        advice=requirement.get("north_star_advice"))
+    evidence = {
+        "requirement": requirement.get("title") or requirement.get("id"),
+        "acceptance": requirement.get("acceptance"),
+        "contracts": {"checked": True,
+                      "items": requirement.get("contracts") or []},
+        "dependencies": {"checked": True,
+                         "items": requirement.get("dependencies") or []},
+        "nfrs": {"checked": True, "items": requirement.get("nfrs") or []},
+        "score": requirement.get("score"),
+    }
+    return {**authority_engine.mechanical_definition_gate("product", evidence),
+            "north_star": advice}
+
+
+def _preview_feedback(state: dict, text: str, *, actor: str,
+                      authenticated: bool, kind: str) -> dict:
+    return authority_engine.preview_change(
+        text, actor=actor, authenticated=authenticated,
+        requirement=str(state.get("requirement_id") or ""),
+        target={"revision": str(state.get("authority_target_revision") or
+                                state.get("baseline") or "")}, kind=kind)
+
+
+def request_human_decision(state: dict, reason: str, response: object, *,
+                           actor: str, thread: str, revision: str,
+                           consumed: bool = False, fact: str = "",
+                           consequence: str = "") -> dict:
+    """Single production boundary for every exceptional human decision."""
+    receipt = state.get("authority_receipt") or {}
+    return authority_engine.decision_input(
+        reason, response, fact=fact, consequence=consequence,
+        actor=actor, thread=thread, revision=revision,
+        expected_actor=str(receipt.get("actor") or ""),
+        expected_thread=str(receipt.get("thread") or ""),
+        expected_revision=str(state.get("authority_target_revision") or
+                              state.get("baseline") or ""),
+        consumed=consumed)
+
+
+def record_preview_feedback(ws: str, text: str, *, actor: str,
+                            authenticated: bool, kind: str) -> dict:
+    """Persist attributable preview feedback without treating UI as authority."""
+    with mutate(ws) as state:
+        if state is None:
+            return {"error": "no active loop"}
+        change = _preview_feedback(
+            state, text, actor=actor, authenticated=authenticated, kind=kind)
+        if not change["accepted"]:
+            return change
+        state.setdefault("preview_changes", []).append(change)
+        if change["reauthorization_required"]:
+            state["reauthorization_required"] = True
+        tp.trace(ws, "preview_change", actor=change["actor"], kind=kind,
+                 material=change["material"],
+                 change=change["fingerprint"])
+        return change
 
 
 def _derive_consolidated_authority(ws: str, state: dict,
@@ -2499,6 +2565,14 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     ws, rec["id"], context_files,
                     kind="planned", replace=True)
             state["requirement_refinement"] = refinement
+            # Product owns refinement, including the optional strategic note.
+            # The note is recorded as advisory evidence and cannot create a
+            # standalone user gate or override the canonical Product DoR.
+            product_evidence = dict(rec)
+            product_evidence.setdefault("score", refinement.get("score", 1)
+                                        if isinstance(refinement, dict) else 1)
+            state["product_definition"] = _product_definition_gate(
+                product_evidence)
 
     # Validate the proposed HOW while its read-only contract is active. The
     # designer cannot self-certify or mutate the as-built graph; a complete
@@ -3194,6 +3268,19 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                          f"(current: {state['step']})"}
     tasks = state.get("tasks") or []
     variants = [t for t in tasks if t.get("variant")] or tasks
+    boundary = authority_engine.build_selection(
+        variants, selected=choice.strip(),
+        revision=str(state.get("authority_target_revision") or
+                     state.get("baseline") or ""),
+        expected_revision=str(state.get("authority_target_revision") or
+                              state.get("baseline") or ""))
+    if not boundary["authorized"] and "invalid_selection" in boundary["reasons"] \
+            and choice.strip().lower() not in {
+                "hybrid", "neither", "none", "reject", "reject-both"}:
+        return {"error": f"no variant matches '{choice}' — use a task "
+                         "id, a variant letter, or 'hybrid'",
+                "variants": [{"id": t["id"], "variant": t.get("variant")}
+                             for t in variants]}
     if choice.strip().lower() == "hybrid":
         state["selection"] = {"choice": "hybrid", "note": note}
         for t in variants:

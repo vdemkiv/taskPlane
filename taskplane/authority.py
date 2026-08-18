@@ -15,6 +15,13 @@ from collections.abc import Mapping, Sequence
 PACKET_SCHEMA = "taskplane.consolidated-authorization/v1"
 RECEIPT_SCHEMA = "taskplane.authorization-receipt/v1"
 DERIVATION_SCHEMA = "taskplane.authorization-derivation/v1"
+DECISION_SCHEMA = "taskplane.human-decision/v1"
+CHANGE_SCHEMA = "taskplane.attributable-change/v1"
+
+ROUTINE_FLOWS = (
+    "facade", "delivery", "product", "design", "build", "engineering",
+    "status", "help", "north_star", "tag_slack",
+)
 
 REQUIRED_FIELDS = (
     "requirement", "acceptance", "target", "scope", "contracts", "design",
@@ -208,3 +215,126 @@ def human_boundary(reason: str, *, fact: str = "",
         "consequence": str(consequence or "").strip(),
         "authority_requested": normalized,
     }
+
+
+def mechanical_definition_gate(stage: str, evidence: Mapping) -> dict:
+    """Return the named mechanical outcome for Product, Design, or Plan.
+
+    A missing fact blocks the stage; it never gets converted into a request
+    for ceremonial human approval.
+    """
+    normalized = str(stage or "").strip().lower()
+    required = {
+        "product": ("requirement", "acceptance", "contracts",
+                    "dependencies", "nfrs", "score"),
+        "design": ("contracts", "graph", "acceptance_mapping", "lenses"),
+        "plan": ("contracts", "graph", "acceptance_mapping", "tasks"),
+    }
+    if normalized not in required:
+        raise ValueError("unsupported mechanical definition gate")
+    missing = [name for name in required[normalized]
+               if not evidence.get(name)]
+    return {
+        "stage": normalized,
+        "passed": not missing,
+        "human_required": False,
+        "blocker": None if not missing else
+        f"{normalized}_evidence_incomplete:" + ",".join(missing),
+    }
+
+
+def routine_flow_trace(packet: Mapping, receipt: Mapping, *, current: Mapping,
+                       actor: str, thread: str) -> dict:
+    """Prove the same receipt derives unchanged routine work for every flow."""
+    stages = {}
+    for flow in ROUTINE_FLOWS:
+        stages[flow] = derive(packet, receipt, stage=flow, current=current,
+                              actor=actor, thread=thread)
+    return {
+        "receipt": receipt.get("fingerprint"),
+        "stages": stages,
+        "authorized": all(row["authorized"] for row in stages.values()),
+    }
+
+
+def decision_input(reason: str, response: object, *, fact: str,
+                   consequence: str, actor: str, thread: str,
+                   revision: str, expected_actor: str,
+                   expected_thread: str, expected_revision: str,
+                   consumed: bool = False) -> dict:
+    """Validate a human-owned decision; absence and prose never authorize.
+
+    Hosts must pass a structured response with an explicit decision. This
+    makes timeout, free-form ambiguity, stale revisions and replay ordinary
+    fail-closed states rather than inferred consent.
+    """
+    boundary = human_boundary(reason, fact=fact, consequence=consequence)
+    reasons = []
+    if not boundary["human_required"]:
+        return {"schema": DECISION_SCHEMA, "authorized": True,
+                "human_required": False, "reasons": []}
+    if not isinstance(response, Mapping):
+        reasons.append("missing_or_ambiguous_response")
+        response = {}
+    if response.get("decision") != "approve":
+        reasons.append("not_approved")
+    if not response.get("authenticated"):
+        reasons.append("unauthenticated")
+    if not actor or actor != expected_actor:
+        reasons.append("wrong_actor")
+    if not thread or thread != expected_thread:
+        reasons.append("wrong_thread")
+    if not revision or revision != expected_revision:
+        reasons.append("wrong_revision")
+    if consumed:
+        reasons.append("replayed_decision")
+    return {
+        "schema": DECISION_SCHEMA,
+        **boundary,
+        "authorized": not reasons,
+        "reasons": sorted(set(reasons)),
+        "actor": actor,
+        "thread": thread,
+        "revision": revision,
+    }
+
+
+def build_selection(variants: Sequence[Mapping], *, selected: str | None,
+                    revision: str, expected_revision: str) -> dict:
+    """Conserve the sole ordinary mid-build gate for explicit A/B work."""
+    rows = [dict(row) for row in variants]
+    if len(rows) <= 1:
+        return {"human_required": False, "authorized": True,
+                "selected": rows[0].get("id") if rows else None}
+    ids = {str(value) for row in rows
+           for value in (row.get("id"), row.get("variant")) if value}
+    reasons = []
+    if revision != expected_revision:
+        reasons.append("stale_selection")
+    if not selected or selected not in ids:
+        reasons.append("invalid_selection")
+    return {"human_required": True, "reason": "ab_selection",
+            "authorized": not reasons, "selected": selected,
+            "reasons": reasons}
+
+
+def preview_change(text: str, *, actor: str, authenticated: bool,
+                   requirement: str, target: Mapping, kind: str) -> dict:
+    """Record preview feedback as an attributable scoped change request."""
+    normalized = str(kind or "").strip().lower().replace("-", "_")
+    material = normalized in {"acceptance", "scope", "authority"}
+    reasons = []
+    if not authenticated or not str(actor or "").strip():
+        reasons.append("unauthenticated")
+    if not str(text or "").strip():
+        reasons.append("feedback_missing")
+    payload = {
+        "schema": CHANGE_SCHEMA, "actor": str(actor or "").strip(),
+        "requirement": str(requirement or "").strip(),
+        "target": _plain(target), "kind": normalized,
+        "feedback": str(text or "").strip(), "material": material,
+        "reauthorization_required": material, "accepted": not reasons,
+        "reasons": reasons,
+    }
+    payload["fingerprint"] = _fingerprint(payload)
+    return payload
