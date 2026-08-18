@@ -170,13 +170,20 @@ def test_loop_derives_consolidated_stage_authority_only_when_rollout_enabled(
     assert result["stage"] == "execute"
 
 
-def test_one_receipt_covers_all_ten_routine_flows():
+def test_one_receipt_covers_all_ten_production_flow_entry_points(monkeypatch):
     packet, receipt = approved_packet()
-    trace = authority.routine_flow_trace(
-        packet, receipt, current=BASE, actor="user-7", thread="thread-9")
-    assert trace["authorized"] is True
-    assert tuple(trace["stages"]) == authority.ROUTINE_FLOWS
-    assert {row["receipt_fingerprint"] for row in trace["stages"].values()} \
+    state = {"authority_packet": packet, "authority_receipt": receipt}
+    monkeypatch.setattr(loop, "load", lambda ws: state)
+    monkeypatch.setattr(loop, "_authorization_fields", lambda ws, st: BASE)
+    monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
+    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
+
+    results = {flow: loop.authorize_routine_flow("/repo", flow)
+               for flow in authority.ROUTINE_FLOWS}
+
+    assert all(row["authorized"] for row in results.values())
+    assert tuple(results) == authority.ROUTINE_FLOWS
+    assert {row["receipt_fingerprint"] for row in results.values()} \
         == {receipt["fingerprint"]}
 
 
@@ -240,6 +247,21 @@ def test_product_gate_invokes_persists_nonblocking_north_star_advice():
     assert result["north_star"]["blocking"] is False
 
 
+@pytest.mark.parametrize("missing", ["contracts", "dependencies", "nfrs"])
+def test_product_gate_blocks_missing_required_evidence(missing):
+    requirement = {
+        "id": "R-gap", "title": "Incomplete requirement",
+        "acceptance": ["works"], "contracts": ["c"],
+        "dependencies": ["d"], "nfrs": ["n"], "score": 1,
+    }
+    requirement[missing] = []
+
+    result = loop._product_definition_gate(requirement)
+
+    assert result["passed"] is False
+    assert missing in result["blocker"]
+
+
 @pytest.mark.parametrize("variants,selected,revision,authorized,human", [
     ([{"id": "a"}], None, "r1", True, False),
     ([{"id": "a"}, {"id": "b"}], "b", "r1", True, True),
@@ -297,3 +319,73 @@ def test_loop_preview_feedback_projects_current_requirement_and_target():
     assert result["accepted"] is True
     assert result["requirement"] == "R-1"
     assert result["target"] == {"revision": "r1"}
+
+
+def test_host_input_calls_production_human_decision_boundary(monkeypatch):
+    packet, receipt = approved_packet()
+    state = {"authority_packet": packet, "authority_receipt": receipt,
+             "authority_target_revision": "r1"}
+    monkeypatch.setattr(loop, "load", lambda ws: state)
+
+    result = loop.handle_host_input("/repo", {
+        "type": "human_decision", "reason": "destructive",
+        "response": {"decision": "approve", "authenticated": True},
+        "actor": "user-7", "thread": "thread-9", "revision": "r1",
+        "fact": "remove generated cache", "consequence": "irreversible",
+    })
+
+    assert result["authorized"] is True
+
+
+def test_host_input_calls_production_preview_persistence(monkeypatch):
+    captured = {}
+
+    def fake_record(ws, text, *, actor, authenticated, kind):
+        captured.update(ws=ws, text=text, actor=actor,
+                        authenticated=authenticated, kind=kind)
+        return {"accepted": True}
+
+    monkeypatch.setattr(loop, "record_preview_feedback", fake_record)
+    result = loop.handle_host_input("/repo", {
+        "type": "preview_feedback", "text": "increase spacing",
+        "actor": "user-7", "authenticated": True,
+        "change_kind": "cosmetic",
+    })
+
+    assert result == {"accepted": True}
+    assert captured == {"ws": "/repo", "text": "increase spacing",
+                        "actor": "user-7", "authenticated": True,
+                        "kind": "cosmetic"}
+
+
+def test_select_rejects_stale_checkout_and_resumed_current_selection(
+        monkeypatch):
+    base = {"step": "selection", "goal": "choose", "baseline": "r1",
+            "authority_target_revision": "r1", "tasks": [
+                {"id": "a", "variant": "A", "scope": []},
+                {"id": "b", "variant": "B", "scope": []},
+            ]}
+    monkeypatch.setattr(loop, "load", lambda ws: dict(base))
+    monkeypatch.setattr(loop.tp, "git_head", lambda ws: "r2")
+    stale = loop.select("/repo", "a")
+    assert "stale" in stale["error"].lower()
+    assert stale["expected_revision"] == "r1"
+    assert stale["actual_revision"] == "r2"
+
+    saved = {}
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        state = dict(base)
+        yield state
+        saved.update(state)
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop.tp, "git_head", lambda ws: "r1")
+    monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(loop.kb, "record_decision", lambda *args, **kwargs: None)
+    monkeypatch.setattr(loop, "status", lambda ws: {"step": "em"})
+    resumed = loop.select("/repo", "a", note="resumed choice")
+    assert resumed["step"] == "em"
+    assert resumed["selection"]["revision"] == "r1"
+    assert saved["selection"]["choice"] == "a"

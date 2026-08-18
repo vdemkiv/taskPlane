@@ -131,11 +131,11 @@ def _product_definition_gate(requirement: dict) -> dict:
     evidence = {
         "requirement": requirement.get("title") or requirement.get("id"),
         "acceptance": requirement.get("acceptance"),
-        "contracts": {"checked": True,
-                      "items": requirement.get("contracts") or []},
-        "dependencies": {"checked": True,
-                         "items": requirement.get("dependencies") or []},
-        "nfrs": {"checked": True, "items": requirement.get("nfrs") or []},
+        # Pass the facts themselves. Truthy ``checked/items`` envelopes made
+        # empty collections look complete and allowed incomplete refinement.
+        "contracts": requirement.get("contracts"),
+        "dependencies": requirement.get("dependencies"),
+        "nfrs": requirement.get("nfrs"),
         "score": requirement.get("score"),
     }
     return {**authority_engine.mechanical_definition_gate("product", evidence),
@@ -186,6 +186,32 @@ def record_preview_feedback(ws: str, text: str, *, actor: str,
         return change
 
 
+def handle_host_input(ws: str, event: dict) -> dict:
+    """Consume one authenticated host event through governed boundaries."""
+    if not isinstance(event, dict):
+        return {"error": "host event must be a mapping"}
+    kind = str(event.get("type") or "").strip().lower()
+    if kind == "preview_feedback":
+        return record_preview_feedback(
+            ws, str(event.get("text") or ""),
+            actor=str(event.get("actor") or ""),
+            authenticated=bool(event.get("authenticated")),
+            kind=str(event.get("change_kind") or "behavioral"))
+    if kind == "human_decision":
+        state = load(ws)
+        if state is None:
+            return {"error": "no active loop"}
+        return request_human_decision(
+            state, str(event.get("reason") or "unsafe_or_ambiguous"),
+            event.get("response"), actor=str(event.get("actor") or ""),
+            thread=str(event.get("thread") or ""),
+            revision=str(event.get("revision") or ""),
+            consumed=bool(event.get("consumed")),
+            fact=str(event.get("fact") or ""),
+            consequence=str(event.get("consequence") or ""))
+    return {"error": "host event type must be preview_feedback|human_decision"}
+
+
 def _derive_consolidated_authority(ws: str, state: dict,
                                    stage: str) -> dict | None:
     packet, receipt = (state.get("authority_packet"),
@@ -197,6 +223,23 @@ def _derive_consolidated_authority(ws: str, state: dict,
         current=_authorization_fields(ws, state),
         actor=str(receipt.get("actor") or ""),
         thread=str(receipt.get("thread") or ""))
+
+
+def authorize_routine_flow(ws: str, flow: str) -> dict:
+    """Production entry point used by each host flow to derive authority."""
+    normalized = str(flow or "").strip().lower().replace("-", "_")
+    if normalized not in authority_engine.ROUTINE_FLOWS:
+        return {"error": f"unknown routine flow '{flow}'"}
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop"}
+    derived = _derive_consolidated_authority(ws, state, normalized)
+    if derived is None:
+        return {"error": "consolidated authorization is unavailable"}
+    tp.trace(ws, "authority_derived", flow=normalized,
+             authorized=derived["authorized"],
+             receipt=derived.get("receipt_fingerprint"))
+    return derived
 
 def _state_dir(ws: str) -> str:
     """Loop coordination state. v1.5.1: state is PER-USER even in team/repo
@@ -3268,12 +3311,20 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                          f"(current: {state['step']})"}
     tasks = state.get("tasks") or []
     variants = [t for t in tasks if t.get("variant")] or tasks
+    expected_revision = str(state.get("authority_target_revision") or
+                            state.get("baseline") or "")
+    current_revision = tp.git_head(ws)
     boundary = authority_engine.build_selection(
         variants, selected=choice.strip(),
-        revision=str(state.get("authority_target_revision") or
-                     state.get("baseline") or ""),
-        expected_revision=str(state.get("authority_target_revision") or
-                              state.get("baseline") or ""))
+        revision=current_revision, expected_revision=expected_revision)
+    if not boundary["authorized"] and "stale_selection" in boundary["reasons"]:
+        return {"error": "A/B selection is stale — the checkout revision "
+                         "changed after the selection gate opened; refresh "
+                         "the variants before choosing",
+                "expected_revision": expected_revision,
+                "actual_revision": current_revision,
+                "variants": [{"id": t["id"], "variant": t.get("variant")}
+                             for t in variants]}
     if not boundary["authorized"] and "invalid_selection" in boundary["reasons"] \
             and choice.strip().lower() not in {
                 "hybrid", "neither", "none", "reject", "reject-both"}:
@@ -3282,7 +3333,8 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                 "variants": [{"id": t["id"], "variant": t.get("variant")}
                              for t in variants]}
     if choice.strip().lower() == "hybrid":
-        state["selection"] = {"choice": "hybrid", "note": note}
+        state["selection"] = {"choice": "hybrid", "note": note,
+                              "revision": current_revision}
         for t in variants:
             t["status"] = "reference"
         state["step"] = "plan"
@@ -3297,7 +3349,8 @@ def select(ws: str, choice: str, note: str = "") -> dict:
         # become not_selected (kept as reference branches) and the loop goes
         # back to PLAN for a fresh approach, so the human who picks "neither"
         # has a real transition instead of parking at the selection gate.
-        state["selection"] = {"choice": "neither", "note": note}
+        state["selection"] = {"choice": "neither", "note": note,
+                              "revision": current_revision}
         for t in variants:
             t["status"] = "not_selected"
         state["step"] = "plan"
@@ -3319,7 +3372,8 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                                   "variant": t.get("variant")}
                                  for t in variants]}
         state["selection"] = {"choice": win["id"],
-                              "variant": win.get("variant"), "note": note}
+                              "variant": win.get("variant"), "note": note,
+                              "revision": current_revision}
         win["selected"] = True
         win["status"] = "passed"
         for t in variants:
