@@ -419,7 +419,10 @@ def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
         handle = adapter.launch_preview(command, cwd=str(sandbox),
                                         preview=preview)
         opened = preview_runtime.open(preview["preview_id"])
-    except Exception:
+    except Exception as exc:
+        preview_runtime.record_stage(
+            preview["preview_id"], stage="interaction", outcome="failed",
+            detail=f"preview startup failed: {exc}")
         preview_runtime.record_outcome(preview["preview_id"], "unavailable")
         raise
     if opened["state"] != "open":

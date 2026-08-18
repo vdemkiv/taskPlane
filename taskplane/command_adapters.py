@@ -69,6 +69,27 @@ _SURFACE_ENV = {
     "hosting": "TASKPLANE_HOSTING_COMMAND",
 }
 
+_STARTUP_TIMEOUT_SECONDS = 0.15
+
+
+def _require_live_startup(process, *, label: str) -> None:
+    """Prove a child survived its bounded startup window before receipting it."""
+    try:
+        returncode = process.wait(timeout=_STARTUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return
+    output = b""
+    try:
+        captured = process.communicate(timeout=0)[0]
+        output = bytes(captured or b"")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    detail = output[-512:].decode("utf-8", errors="replace").strip()
+    if "sandbox_apply" in detail:
+        raise OSError(f"{label} could not apply isolation: {detail}")
+    suffix = f": {detail}" if detail else ""
+    raise OSError(f"{label} exited during startup ({returncode}){suffix}")
+
 
 def native_surface_transport(surface: str, sandbox: str,
                              preview: Mapping[str, object]) -> Mapping[str, object]:
@@ -85,6 +106,7 @@ def native_surface_transport(surface: str, sandbox: str,
          str(preview["preview_id"])], cwd=sandbox,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, start_new_session=True)
+    _require_live_startup(process, label=f"native {surface} transport")
     return {"schema": "taskplane.host-preview-surface/v1",
             "surface": surface, "binding": f"pid:{process.pid}"}
 
@@ -116,6 +138,10 @@ def os_preview_isolation_launcher(command: object, cwd: str,
         ["/usr/bin/sandbox-exec", "-p", profile, "--", *command], cwd=str(root),
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, start_new_session=True)
+    # The receipt below describes observed enforcement, not policy intent.
+    # Seatbelt failures and commands that immediately die are rejected before
+    # the caller can persist a running handle or open a host surface.
+    _require_live_startup(process, label="preview sandbox")
     fingerprint = hashlib.sha256(json.dumps(
         dict(policy), sort_keys=True, separators=(",", ":"))
         .encode("utf-8")).hexdigest()

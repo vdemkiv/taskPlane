@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from taskplane.command_adapters import CommandAdapter, HostLaunch
+from taskplane.command_adapters import (
+    CommandAdapter, HostLaunch, os_preview_isolation_launcher,
+)
 from taskplane.command_runtime import CommandRuntime
 from taskplane.preview_runtime import (
     PreviewDenied, PreviewRuntime, launch_build_preview,
@@ -198,6 +200,9 @@ def test_production_entry_invokes_native_surface_and_os_isolation(
     class Process:
         pid = 731
 
+        def wait(self, timeout):
+            raise __import__("subprocess").TimeoutExpired("preview", timeout)
+
     def popen(argv, **kwargs):
         calls.append((list(argv), dict(kwargs)))
         # Both the preview process and host surface receive only the copy.
@@ -245,3 +250,100 @@ def test_production_entry_fails_closed_without_os_or_surface(tmp_path,
             command=["node", "app.js"],
             limits={"lifetime_seconds": 60, "cpu_seconds": 10,
                     "memory_bytes": 1_000_000})
+
+
+@pytest.mark.parametrize("returncode,output,match", [
+    (71, b"sandbox-exec: sandbox_apply: Operation not permitted",
+     "could not apply isolation"),
+    (0, b"", "exited during startup"),
+])
+def test_os_isolation_never_receipts_early_exit(tmp_path, monkeypatch,
+                                                returncode, output, match):
+    root = tmp_path / "sandbox"
+    root.mkdir()
+
+    class EarlyExit:
+        pid = 55
+
+        def wait(self, timeout):
+            return returncode
+
+        def communicate(self, timeout=0):
+            return output, b""
+
+    monkeypatch.setattr("taskplane.command_adapters.subprocess.Popen",
+                        lambda *_a, **_k: EarlyExit())
+    monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
+    monkeypatch.setattr("taskplane.command_adapters.os.path.isfile",
+                        lambda path: path == "/usr/bin/sandbox-exec")
+    policy = {"network": "deny", "scope": "complete-process-tree",
+              "push": "deny", "filesystem": "sandbox-only",
+              "source": "immutable", "remotes": "disabled",
+              "sandbox_id": "pin", "limits": {}}
+    with pytest.raises(OSError, match=match):
+        os_preview_isolation_launcher(["/usr/bin/true"], str(root), policy)
+
+
+def test_os_isolation_receipts_only_long_lived_startup(tmp_path, monkeypatch):
+    root = tmp_path / "sandbox"
+    root.mkdir()
+
+    class Running:
+        pid = 56
+
+        def wait(self, timeout):
+            raise __import__("subprocess").TimeoutExpired("preview", timeout)
+
+    monkeypatch.setattr("taskplane.command_adapters.subprocess.Popen",
+                        lambda *_a, **_k: Running())
+    monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
+    monkeypatch.setattr("taskplane.command_adapters.os.path.isfile",
+                        lambda path: path == "/usr/bin/sandbox-exec")
+    policy = {"network": "deny", "scope": "complete-process-tree",
+              "push": "deny", "filesystem": "sandbox-only",
+              "source": "immutable", "remotes": "disabled",
+              "sandbox_id": "pin", "limits": {}}
+    launched = os_preview_isolation_launcher(
+        ["python3", "-m", "http.server"], str(root), policy)
+    assert launched.binding["pid"] == 56
+    assert launched.isolation["mechanism"] == "macos-seatbelt"
+
+
+def test_production_startup_failure_is_durable_and_surface_never_opens(
+        tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.txt").write_text("pinned")
+    surface_calls = []
+
+    class SandboxApplyFailure:
+        pid = 57
+
+        def wait(self, timeout):
+            return 71
+
+        def communicate(self, timeout=0):
+            return b"sandbox-exec: sandbox_apply: Operation not permitted", b""
+
+    def popen(argv, **kwargs):
+        if argv[0] != "/usr/bin/sandbox-exec":
+            surface_calls.append(argv)
+        return SandboxApplyFailure()
+
+    monkeypatch.setattr("taskplane.command_adapters.subprocess.Popen", popen)
+    monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
+    monkeypatch.setattr("taskplane.command_adapters.os.path.isfile",
+                        lambda path: path == "/usr/bin/sandbox-exec")
+    monkeypatch.setenv("TASKPLANE_SIDE_PANEL_COMMAND", "native-side-panel")
+    state = tmp_path / "state"
+    with pytest.raises(OSError, match="could not apply isolation"):
+        launch_build_preview(
+            host="codex", state_root=state, source_root=source,
+            authorization="human", target="commit-a", revision=4,
+            capabilities=capabilities(sandbox=True, side_panel=True),
+            command=["/usr/bin/true"], limits={"lifetime_seconds": 60,
+                "cpu_seconds": 10, "memory_bytes": 1_000_000})
+    assert surface_calls == []
+    audit = json.loads((state / "previews" / "audit.json").read_text())
+    assert any("sandbox_apply" in row["detail"] for row in audit)
+    assert audit[-1]["outcome"] == "unavailable"
