@@ -482,11 +482,74 @@ def test_validation_sandbox_is_independent_writable_copy_with_push_disabled(
         detail={"summary": "initial build"}, run_id=opened["run_id"])
     result = review.run_review_validation_command(
         str(ws), command=[sys.executable, "-c", "print('passed')"],
-        run_id=opened["run_id"])
+        run_id=opened["run_id"], isolation_launcher=lambda argv, cwd, timeout: (
+            subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=timeout,
+                           check=False),
+            {"schema": "taskplane.review-isolation-receipt/v1",
+             "scope": "complete-process-tree", "network": "denied",
+             "mechanism": "test-isolation"}))
     assert result["status"] == "executed"
     dynamic = result["review_execution"]["dynamic_validation"]
     assert dynamic["execution_scope"] == "validation-sandbox"
     assert dynamic["original_failure"]["summary"] == "initial build"
+
+
+def test_production_validation_blocks_direct_and_descendant_explicit_pushes(
+        tmp_path):
+    ws = tmp_path / "repo"
+    direct = tmp_path / "direct.git"
+    descendant = tmp_path / "descendant.git"
+    ws.mkdir()
+    for path in (direct, descendant):
+        subprocess.run(["git", "init", "--bare", str(path)], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "init"], cwd=ws, check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (ws / "service.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "service.py"], cwd=ws, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-m", "fixture"], cwd=ws, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ws, check=True,
+        stdout=subprocess.PIPE, text=True).stdout.strip()
+    opened = review.start_review(
+        str(ws), target={"fingerprint": "target-1", "head": head},
+        graph={"meta": {"scanned_head": head,
+                        "content_fingerprint": "graph-1"},
+               "modules": {"root": {"files": ["service.py"]}}, "edges": []},
+        impact={"touched": ["root"], "impacted": {}, "total_impacted": 1,
+                "unknown": []},
+        diff={"files": ["service.py"], "changed_symbols": ["value"],
+              "patch_artifact": {"fingerprint": "diff-1"}},
+        runnability={"summary": "ready"},
+        requirement={"id": "R-1", "text": "works"}, acceptance=["works"],
+        contracts=[], task_type="review")
+    review.configure_review_execution(
+        str(ws), selection="dynamic", by="human", run_id=opened["run_id"])
+    review.prepare_review_validation_sandbox(
+        str(ws), run_id=opened["run_id"])
+
+    direct_result = review.run_review_validation_command(
+        str(ws), command=["git", "push", str(direct),
+                          "HEAD:refs/heads/bypass", "--no-verify"],
+        run_id=opened["run_id"])
+    code = ("import subprocess,sys; sys.exit(subprocess.run(["
+            "'git','push',sys.argv[1],'HEAD:refs/heads/descendant',"
+            "'--no-verify']).returncode)")
+    descendant_result = review.run_review_validation_command(
+        str(ws), command=[sys.executable, "-c", code, str(descendant)],
+        run_id=opened["run_id"])
+
+    assert direct_result["status"] == "failed"
+    assert descendant_result["status"] == "failed"
+    for destination in (direct, descendant):
+        refs = subprocess.run(
+            ["git", "show-ref"], cwd=destination, check=False,
+            stdout=subprocess.PIPE, text=True).stdout
+        assert refs == ""
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])
