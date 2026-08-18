@@ -3303,110 +3303,113 @@ def select(ws: str, choice: str, note: str = "") -> dict:
     step variants never have: a winner goes to the engineering review; a
     hybrid goes back to plan for the graft (both variants kept as
     reference). Recorded to the KB — the WHY outlives the losing branch."""
-    state = load(ws)
-    if state is None:
-        return {"error": "no active loop"}
-    if state["step"] != "selection":
-        return {"error": f"selection only at the selection gate "
-                         f"(current: {state['step']})"}
-    tasks = state.get("tasks") or []
-    variants = [t for t in tasks if t.get("variant")] or tasks
-    expected_revision = str(state.get("authority_target_revision") or
-                            state.get("baseline") or "")
-    current_revision = tp.git_head(ws)
-    boundary = authority_engine.build_selection(
-        variants, selected=choice.strip(),
-        revision=current_revision, expected_revision=expected_revision)
-    if not boundary["authorized"] and "stale_selection" in boundary["reasons"]:
-        return {"error": "A/B selection is stale — the checkout revision "
-                         "changed after the selection gate opened; refresh "
-                         "the variants before choosing",
-                "expected_revision": expected_revision,
-                "actual_revision": current_revision,
-                "variants": [{"id": t["id"], "variant": t.get("variant")}
-                             for t in variants]}
-    if not boundary["authorized"] and "invalid_selection" in boundary["reasons"] \
-            and choice.strip().lower() not in {
-                "hybrid", "neither", "none", "reject", "reject-both"}:
-        return {"error": f"no variant matches '{choice}' — use a task "
-                         "id, a variant letter, or 'hybrid'",
-                "variants": [{"id": t["id"], "variant": t.get("variant")}
-                             for t in variants]}
-    if choice.strip().lower() == "hybrid":
-        state["selection"] = {"choice": "hybrid", "note": note,
-                              "revision": current_revision}
-        for t in variants:
-            t["status"] = "reference"
-        state["step"] = "plan"
-        instruction = (
-            "Hybrid selected: write a NEW plan/tasks.json with the graft "
-            "task(s) — name the base variant's branch and what to graft "
-            "from the other — then `loop gate pass`. Plan approval and the "
-            "build/evaluate cycle apply as usual; both variant branches "
-            "stay as reference until the retro.")
-    elif choice.strip().lower() in ("neither", "none", "reject", "reject-both"):
-        # Neither variant ships — the A/B round is abandoned. Both variants
-        # become not_selected (kept as reference branches) and the loop goes
-        # back to PLAN for a fresh approach, so the human who picks "neither"
-        # has a real transition instead of parking at the selection gate.
-        state["selection"] = {"choice": "neither", "note": note,
-                              "revision": current_revision}
-        for t in variants:
-            t["status"] = "not_selected"
-        state["step"] = "plan"
-        instruction = (
-            "Neither variant selected: both are set aside (branches kept as "
-            "reference). Write a NEW plan/tasks.json taking a different "
-            "approach — what did both variants get wrong? — then "
-            "`loop gate pass`. Plan approval and the build/evaluate cycle "
-            "apply as usual.")
-    else:
-        c = choice.strip()
-        win = next((t for t in variants
-                    if t["id"] == c
-                    or str(t.get("variant", "")).lower() == c.lower()), None)
-        if win is None:
+    with mutate(ws) as state:
+        if state is None:
+            return {"error": "no active loop"}
+        if state["step"] != "selection":
+            return {"error": f"selection only at the selection gate "
+                             f"(current: {state['step']})"}
+        tasks = state.get("tasks") or []
+        variants = [t for t in tasks if t.get("variant")] or tasks
+        expected_revision = str(state.get("authority_target_revision") or
+                                state.get("baseline") or "")
+        # Revision validation and state mutation share one lock. A checkout
+        # change can no longer land between validation and persistence.
+        current_revision = tp.git_head(ws)
+        boundary = authority_engine.build_selection(
+            variants, selected=choice.strip(), revision=current_revision,
+            expected_revision=expected_revision)
+        if not boundary["authorized"] and \
+                "stale_selection" in boundary["reasons"]:
+            return {"error": "A/B selection is stale — the checkout revision "
+                             "changed after the selection gate opened; refresh "
+                             "the variants before choosing",
+                    "expected_revision": expected_revision,
+                    "actual_revision": current_revision,
+                    "variants": [{"id": t["id"],
+                                  "variant": t.get("variant")}
+                                 for t in variants]}
+        if not boundary["authorized"] and \
+                "invalid_selection" in boundary["reasons"] and \
+                choice.strip().lower() not in {
+                    "hybrid", "neither", "none", "reject", "reject-both"}:
             return {"error": f"no variant matches '{choice}' — use a task "
                              "id, a variant letter, or 'hybrid'",
                     "variants": [{"id": t["id"],
                                   "variant": t.get("variant")}
                                  for t in variants]}
-        state["selection"] = {"choice": win["id"],
-                              "variant": win.get("variant"), "note": note,
-                              "revision": current_revision}
-        win["selected"] = True
-        win["status"] = "passed"
-        for t in variants:
-            if t is not win:
+        if choice.strip().lower() == "hybrid":
+            state["selection"] = {"choice": "hybrid", "note": note,
+                                  "revision": current_revision}
+            for t in variants:
+                t["status"] = "reference"
+            state["step"] = "plan"
+            instruction = (
+                "Hybrid selected: write a NEW plan/tasks.json with the graft "
+                "task(s) — name the base variant's branch and what to graft "
+                "from the other — then `loop gate pass`. Plan approval and "
+                "the build/evaluate cycle apply as usual; both variant "
+                "branches stay as reference until the retro.")
+        elif choice.strip().lower() in (
+                "neither", "none", "reject", "reject-both"):
+        # Neither variant ships — the A/B round is abandoned. Both variants
+        # become not_selected (kept as reference branches) and the loop goes
+        # back to PLAN for a fresh approach, so the human who picks "neither"
+        # has a real transition instead of parking at the selection gate.
+            state["selection"] = {"choice": "neither", "note": note,
+                                  "revision": current_revision}
+            for t in variants:
                 t["status"] = "not_selected"
-        state["step"] = "em"
-        instruction = (
-            f"Winner: {win['id']}. Merge its branch "
-            f"(`git merge tp/{win['id']}`), keep the losing branch as "
-            "reference until the retro, clear the variant worktree "
-            "contracts, then run the engineering review of the merged "
-            "result (the complete selective routing decision).")
+            state["step"] = "plan"
+            instruction = (
+                "Neither variant selected: both are set aside (branches kept "
+                "as reference). Write a NEW plan/tasks.json taking a "
+                "different approach — what did both variants get wrong? — "
+                "then `loop gate pass`. Plan approval and the build/evaluate "
+                "cycle apply as usual.")
+        else:
+            c = choice.strip()
+            win = next((t for t in variants
+                        if t["id"] == c or
+                        str(t.get("variant", "")).lower() == c.lower()), None)
+            if win is None:
+                return {"error": f"no variant matches '{choice}' — use a task "
+                                 "id, a variant letter, or 'hybrid'",
+                        "variants": [{"id": t["id"],
+                                      "variant": t.get("variant")}
+                                     for t in variants]}
+            state["selection"] = {"choice": win["id"],
+                                  "variant": win.get("variant"), "note": note,
+                                  "revision": current_revision}
+            win["selected"] = True
+            win["status"] = "passed"
+            for t in variants:
+                if t is not win:
+                    t["status"] = "not_selected"
+            state["step"] = "em"
+            instruction = (
+                f"Winner: {win['id']}. Merge its branch "
+                f"(`git merge tp/{win['id']}`), keep the losing branch as "
+                "reference until the retro, clear the variant worktree "
+                "contracts, then run the engineering review of the merged "
+                "result (the complete selective routing decision).")
+        selection = dict(state["selection"])
+        goal = str(state.get("goal") or "")
+        context_files = sorted({g for t in variants
+                                for g in t.get("scope", [])})
+    # Observable effects occur only after the locked state transition commits.
     tp.trace(ws, "loop_select", choice=state["selection"]["choice"],
              note=note)
     kb.record_decision(
-        ws, f"A/B selection: {state['selection']['choice']} — "
-            f"{state['goal'][:48]}",
+        ws, f"A/B selection: {selection['choice']} — {goal[:48]}",
         context=(f"Goal: {state['goal']}; variants: "
                  + ", ".join(t["id"] for t in variants)),
-        decision=(note or f"Human selected {state['selection']['choice']} "
+        decision=(note or f"Human selected {selection['choice']} "
                           "at the selection gate."),
         tags=["ab-selection"],
-        context_files=sorted({g for t in variants
-                              for g in t.get("scope", [])}),
+        context_files=context_files,
         links={"loop": "selection"})
-    with mutate(ws) as locked:                       # v2.3.1: locked commit
-        if locked.get("step") != "selection":
-            return {"error": "the loop advanced concurrently during selection "
-                             f"(now '{locked.get('step')}') — re-run",
-                    "step": locked.get("step")}
-        locked.clear()
-        locked.update(state)
-    return {"step": state["step"], "selection": state["selection"],
+    return {"step": state["step"], "selection": selection,
             "instruction": instruction, "status": status(ws)}
 
 

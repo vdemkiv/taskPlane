@@ -389,3 +389,41 @@ def test_select_rejects_stale_checkout_and_resumed_current_selection(
     assert resumed["step"] == "em"
     assert resumed["selection"]["revision"] == "r1"
     assert saved["selection"]["choice"] == "a"
+
+
+def test_select_revalidates_revision_under_lock_before_side_effects(
+        monkeypatch):
+    state = {"step": "selection", "goal": "choose", "baseline": "r1",
+             "authority_target_revision": "r1", "tasks": [
+                 {"id": "a", "variant": "A", "scope": []},
+                 {"id": "b", "variant": "B", "scope": []},
+             ]}
+    locked = False
+    effects = []
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        nonlocal locked
+        locked = True
+        try:
+            yield state
+        finally:
+            locked = False
+
+    monkeypatch.setattr(loop, "load", lambda ws: state)
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop.tp, "git_head",
+                        lambda ws: "r2" if locked else "r1")
+    monkeypatch.setattr(loop.tp, "trace",
+                        lambda *args, **kwargs: effects.append("trace"))
+    monkeypatch.setattr(loop.kb, "record_decision",
+                        lambda *args, **kwargs: effects.append("kb"))
+
+    result = loop.select("/repo", "a")
+
+    assert "stale" in result["error"].lower()
+    assert result["expected_revision"] == "r1"
+    assert result["actual_revision"] == "r2"
+    assert "selection" not in state
+    assert state["step"] == "selection"
+    assert effects == []
