@@ -52,6 +52,69 @@ def test_production_model_preserves_canonical_truth_and_disables_partial_gate(tm
     assert model["findings"] == revision["findings"]
 
 
+def test_production_model_disables_approval_when_any_criterion_is_unproven(tmp_path):
+    state, revision, dor, validation = _production_inputs(tmp_path)
+    validation = {"status": "fail", "criteria": [{
+        "id": "AC-1", "criterion": "Preserve every finding",
+        "status": "cannot_verify", "evidence": "No executable evidence",
+    }]}
+
+    model = review.production_review_model(
+        state, revision, dor=dor, requirements_validation=validation)
+
+    assert model["criteria"][0]["verdict"] == "unproven"
+    assert model["gate"]["approval_enabled"] is False
+    assert model["gate"]["actions"] == []
+
+
+def test_production_dor_ingests_comments_linked_issue_and_spec(tmp_path):
+    target = {
+        "head": "abc123", "title": "Refactor timeline",
+        "pr_comments": [{"id": "comment-7", "revision": "v2",
+                         "body": "Please review security vulnerabilities"}],
+        "linked_issue": {"id": "ISSUE-9", "revision": "3",
+                         "body": "The timeline must paginate"},
+        "linked_spec": {"id": "SPEC-4", "revision": "8",
+                        "body": "Copy action should report failure"},
+    }
+
+    dor = review.review_dor_evidence(str(tmp_path), target)
+
+    checks = dor["canonical"]["source_checks"]
+    assert checks["pr_comments"]["status"] == "available"
+    assert checks["linked_issue"]["status"] == "available"
+    assert checks["linked_requirements"]["status"] == "available"
+    assert "security" in dor["canonical"]["requested_lenses"]
+
+
+def test_publication_and_renderer_failures_are_stable_non_success(tmp_path, monkeypatch):
+    import sys
+    state, revision, dor, validation = _production_inputs(tmp_path)
+    artifact_runtime = sys.modules.get("review_artifacts", review_artifacts)
+    monkeypatch.setattr(artifact_runtime, "publish_revision_artifacts",
+                        lambda *_: {"status": "unavailable", "reason": "disk full"})
+    failed = review.publish_production_review(
+        str(tmp_path), state, revision, dor=dor,
+        requirements_validation=validation)
+    assert failed["status"] == "incomplete"
+    assert failed["failure"]["code"] == "artifact_write_failure"
+
+    dashboard_runtime = sys.modules.get("dashboard", dashboard)
+    monkeypatch.setattr(artifact_runtime, "publish_revision_artifacts",
+                        lambda *_: {"status": "published"})
+    exploding_renderer = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("boom"))
+    monkeypatch.setattr(dashboard_runtime, "render_review_model_paged",
+                        exploding_renderer)
+    monkeypatch.setattr(dashboard, "render_review_model_paged",
+                        exploding_renderer)
+    failed = review.publish_production_review(
+        str(tmp_path), state, revision, dor=dor,
+        requirements_validation=validation)
+    assert failed["status"] == "incomplete"
+    assert failed["failure"]["code"] == "renderer_failure"
+
+
 def test_production_publication_is_lossless_and_inline_is_bounded(tmp_path):
     state, revision, dor, validation = _production_inputs(tmp_path)
     result = review.publish_production_review(
@@ -81,12 +144,18 @@ def test_boolean_only_sandbox_claim_is_never_promoted_to_validation_evidence():
     assert projected["legacy_push_disabled_claim"] is True
 
 
-def test_real_collector_publishes_canonical_artifact_set_and_inline_pages():
+def test_real_collector_publishes_canonical_artifact_set_and_inline_pages(monkeypatch):
     from taskplane.tests.test_review_routing import TestSelectiveReviewKernel
 
     fixture = TestSelectiveReviewKernel()
     fixture.setUp()
     try:
+        actions = []
+        original_authority = review._consume_review_authority
+        monkeypatch.setattr(
+            review, "_consume_review_authority",
+            lambda state, action, fact: (
+                actions.append(action), original_authority(state, action, fact))[1])
         opened = fixture._start()
         fixture._write_slot_results(run_id=opened["run_id"])
         collected = review.collect_review(
@@ -99,5 +168,6 @@ def test_real_collector_publishes_canonical_artifact_set_and_inline_pages():
             "disposition"] == "canonical"
         assert state["production_review"]["publication"][
             "finding_count"] == len(state["revision"]["findings"])
+        assert actions == ["collection", "artifact_publication"]
     finally:
         fixture.tearDown()

@@ -119,12 +119,24 @@ def test_host_transport_is_metadata_only_and_runtime_keeps_session_binding(
         adapter = CommandAdapter(
             host=host, runtime=runtime,
             launcher=lambda command, cwd: HostLaunch(binding={"pid": 10}),
+            review_isolation_launcher=lambda command, cwd, policy: HostLaunch(
+                binding={"pid": 10}, isolation={
+                    "schema": "taskplane.review-isolation-receipt/v1",
+                    "network": "denied", "scope": "complete-process-tree",
+                    "policy_fingerprint": __import__("hashlib").sha256(
+                        __import__("json").dumps(
+                            policy, sort_keys=True, separators=(",", ":"))
+                        .encode()).hexdigest(),
+                    "mechanism": "test-namespace",
+                }),
         )
         session = _configured()
+        sandbox = tmp_path / (host + "-sandbox")
+        sandbox.mkdir()
         handle = adapter.launch_review_validation(
-            ["npm", "test"], cwd="/sandbox", session=session,
+            ["npm", "test"], cwd=str(sandbox), session=session,
             sandbox={"disposable": True, "push_disabled": True,
-                     "sandbox_id": "box-1"},
+                     "sandbox_id": "box-1", "root": str(sandbox)},
         )
         adapter.notify(handle, {"status": "completed", "exit_code": 0})
         envelope = adapter.wait_review_event(handle, consumer="review")
