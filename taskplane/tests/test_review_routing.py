@@ -730,9 +730,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         row.pop("references_applied")
         with open(path, "w", encoding="utf-8") as stream:
             json.dump(row, stream, sort_keys=True, separators=(",", ":"))
-        with self.assertRaisesRegex(review_evidence.ProvenanceError,
-                                    "exact language references"):
-            review.collect_review(self.ws, publish=False)
+        manifest = review.collect_review(self.ws, publish=False)
+        self.assertEqual(manifest["status"], "incomplete")
+        self.assertTrue(any("exact language references" in gap["reason"]
+                            for gap in manifest["gaps"]))
 
     def test_legacy_codex_session_inference_is_not_provenance(self):
         """Session prose cannot replace the sealed leased-result contract."""
@@ -851,9 +852,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         }]
         with open(path, "w", encoding="utf-8") as stream:
             json.dump(row, stream, sort_keys=True, separators=(",", ":"))
-        with self.assertRaisesRegex(review_evidence.ProvenanceError,
-                                    "exact observed bytes"):
-            review.collect_review(self.ws, publish=False)
+        manifest = review.collect_review(self.ws, publish=False)
+        self.assertEqual(manifest["status"], "incomplete")
+        self.assertTrue(any("exact observed bytes" in gap["reason"]
+                            for gap in manifest["gaps"]))
 
     def test_real_lifecycle_binds_after_child_activates_producer_contract(self):
         """SubagentStart observes the child before its leased contract exists."""
@@ -925,9 +927,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
     def test_malformed_findings_are_rejected_before_canonical_commit(self):
         self._start()
         self._write_slot_results(findings=[{"title": "missing evidence"}])
-        with self.assertRaisesRegex(review_evidence.ProvenanceError,
-                                    "finding schema"):
-            review.collect_review(self.ws, publish=False)
+        manifest = review.collect_review(self.ws, publish=False)
+        self.assertEqual(manifest["status"], "incomplete")
+        self.assertTrue(any("finding schema" in gap["reason"]
+                            for gap in manifest["gaps"]))
         self.assertIsNone(review_evidence._read_current(
             review_evidence.ArtifactStore(self.ws)))
 
@@ -944,9 +947,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 "outcome": "the request violates the required safety invariant",
                 "repro": "run the failing request against the changed service"},
         }])
-        with self.assertRaisesRegex(review_evidence.ProvenanceError,
-                                    "blocking finding"):
-            review.collect_review(self.ws, publish=False)
+        manifest = review.collect_review(self.ws, publish=False)
+        self.assertEqual(manifest["status"], "incomplete")
+        self.assertTrue(any("blocking finding" in gap["reason"]
+                            for gap in manifest["gaps"]))
         self.assertIsNone(review_evidence._read_current(
             review_evidence.ArtifactStore(self.ws)))
 
@@ -964,22 +968,17 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 "repro": "run the failing request against the changed service"},
         }])
         state = review._load_state(self.ws)
-        with self.assertRaises(review.ReviewSlotValidationErrors) as caught:
-            review.collect_review(self.ws, publish=False)
-        repairs = caught.exception.repairs
+        manifest = review.collect_review(self.ws, publish=False)
+        repairs = manifest["gaps"]
         self.assertEqual({row["slot_id"] for row in repairs},
                          {row["slot_id"] for row in state["slots"]})
         self.assertTrue(all(row["producer_task"] for row in repairs))
         self.assertTrue(all("blocking finding contradicts" in row["reason"]
                             for row in repairs))
-        output = __import__("io").StringIO()
-        with __import__("contextlib").redirect_stdout(output):
-            rc = cli.main(["review", "collect", "--workspace", self.ws,
-                           "--no-publish"])
-        payload = json.loads(output.getvalue())
-        self.assertEqual(rc, 1)
-        self.assertEqual(payload["repairs"], repairs)
-        self.assertIn("one batch", payload["next_action"])
+        self.assertEqual(manifest["schema"],
+                         "taskplane.review-collect-manifest/v3")
+        self.assertFalse(manifest["approval"]["enabled"])
+        self.assertIn("repair only", manifest["next_action"])
 
     def test_review_blocking_policy_matches_the_canonical_class_rule(self):
         cases = [

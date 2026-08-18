@@ -1869,7 +1869,7 @@ def review_dor_evidence(ws: str, target: dict, *,
     derived_requirements = [row["subject"] for row in commits if row["claims"]]
     if not derived_requirements:
         derived_requirements = [row["subject"] for row in commits]
-    return {
+    legacy = {
         "schema": "taskplane.review-dor/v1",
         "status": ("ready" if source != "none" and acceptance else
                    "degraded" if source != "none" else "not_ready"),
@@ -1885,6 +1885,85 @@ def review_dor_evidence(ws: str, target: dict, *,
         "commits": commits, "changelog_files": changelogs,
         "checks": checks,
     }
+    # The legacy projection remains for existing dashboards, while every new
+    # production consumer receives the provenance-bound canonical ledger.
+    import review_dor
+    sources = []
+    revision = head or str(target.get("revision") or "unknown")
+
+    def add_host_sources(value, kind: str, default_identity: str) -> None:
+        """Normalize host PR metadata without making its shape authoritative."""
+        rows = value if isinstance(value, list) else [value]
+        for index, raw in enumerate(rows, 1):
+            if raw in (None, ""):
+                continue
+            row = raw if isinstance(raw, dict) else {"content": raw}
+            content = str(row.get("content") or row.get("body") or
+                          row.get("text") or row.get("description") or "").strip()
+            if not content:
+                continue
+            sources.append({
+                "kind": kind,
+                "identity": str(row.get("identity") or row.get("id") or
+                                f"{default_identity}:{index}"),
+                "revision": str(row.get("revision") or row.get("updated_at") or
+                                revision),
+                "content": content,
+                "accessible": row.get("accessible", True),
+                "fresh": row.get("fresh", True),
+                "contradictions": list(row.get("contradictions") or []),
+                "material_ambiguity": bool(row.get("material_ambiguity")),
+            })
+
+    for key, kind in (("title", "pr_title"), ("body", "pr_body")):
+        if str(target.get(key) or "").strip():
+            sources.append({"kind": kind, "identity": str(
+                                target.get("id") or "review-target"),
+                            "revision": revision,
+                            "content": str(target[key])})
+    add_host_sources(target.get("pr_comments") or target.get("comments"),
+                     "pr_comments", "pr-comment")
+    add_host_sources(target.get("linked_issue") or target.get("linked_issues"),
+                     "linked_issue", "linked-issue")
+    add_host_sources(target.get("linked_spec") or target.get("linked_specs"),
+                     "linked_requirements", "linked-spec")
+    if explicit:
+        sources.append({"kind": "linked_requirements",
+                        "identity": str(requirement.get("id") or "requirement"),
+                        "revision": revision,
+                        "content": str(requirement.get("text") or "") + "\n" +
+                                   "\n".join("- " + row for row in acceptance)})
+    if commits:
+        sources.append({"kind": "commits", "identity": "review-range",
+                        "revision": revision,
+                        "content": "\n".join(
+                            row["subject"] + ("\n" + row["body"]
+                                              if row["body"] else "")
+                            for row in commits)})
+    if changelogs:
+        content = []
+        for name in changelogs:
+            try:
+                content.append(open(os.path.join(ws, name), encoding="utf-8").read(
+                    64 * 1024))
+            except OSError:
+                pass
+        sources.append({"kind": "changelog", "identity": ",".join(changelogs),
+                        "revision": revision, "content": "\n".join(content),
+                        "accessible": bool(content)})
+    if contracts:
+        sources.append({"kind": "repository_contracts",
+                        "identity": "declared-contracts", "revision": revision,
+                        "content": "\n".join(contracts)})
+    canonical = review_dor.discover(sources, target_revision=revision)
+    legacy["canonical"] = canonical
+    legacy["sources"] = canonical["sources"]
+    legacy["criteria"] = canonical["criteria"]
+    legacy["items"] = canonical["items"]
+    legacy["clarifications"] = canonical["clarifications"]
+    legacy["approvable"] = canonical["approvable"]
+    legacy["fingerprint"] = canonical["fingerprint"]
+    return legacy
 
 
 def _directive_lens_ids(directives: list[dict], catalog: dict) -> dict[str, list[str]]:
@@ -2004,6 +2083,164 @@ def evaluate_review_requirements(dor: dict, diff: dict,
                    "pass" if rows else "not_available"),
         "counts": counts, "criteria": rows,
     }
+
+
+def production_validation_projection(execution: dict | None) -> dict:
+    """Project validation without trusting the old boolean sandbox claim."""
+    row = copy.deepcopy(execution) if isinstance(execution, dict) else {}
+    dynamic = row.get("dynamic_validation") \
+        if isinstance(row.get("dynamic_validation"), dict) else {}
+    sandbox = dynamic.get("sandbox") \
+        if isinstance(dynamic.get("sandbox"), dict) else {}
+    binding = dynamic.get("sandbox_binding") \
+        if isinstance(dynamic.get("sandbox_binding"), dict) else None
+    valid = binding if binding and binding.get("schema") == \
+        "taskplane.review-sandbox-binding/v1" and \
+        binding.get("push_disabled") is True and \
+        str(binding.get("root_fingerprint") or "") else None
+    status = str(dynamic.get("status") or "not_selected")
+    if status == "executed" and valid is None:
+        status = "unverified"
+    return {
+        "status": status, "selection": str(row.get("selection") or "static"),
+        "dynamic_validation": copy.deepcopy(dynamic),
+        "functionality_render": copy.deepcopy(
+            row.get("functionality_render") or {}),
+        "sandbox_binding": copy.deepcopy(valid),
+        "legacy_push_disabled_claim": sandbox.get("push_disabled") is True,
+    }
+
+
+def production_review_model(state: dict, revision: dict, *, dor: dict,
+                            requirements_validation: dict) -> dict:
+    """Build the immutable model shared by production artifact/render paths."""
+    import review_artifacts
+    completeness = revision.get("completeness") \
+        if isinstance(revision.get("completeness"), dict) else {}
+    gaps = revision.get("gaps") if isinstance(revision.get("gaps"), list) else []
+    complete = revision.get("disposition") == "canonical" and \
+        completeness.get("complete") is True and not gaps
+    dor_row = copy.deepcopy(dor) if isinstance(dor, dict) else {}
+    if isinstance(dor_row.get("canonical"), dict):
+        dor_row = copy.deepcopy(dor_row["canonical"])
+    criteria = []
+    for raw in (requirements_validation or {}).get("criteria") or []:
+        status = str(raw.get("status") or raw.get("verdict") or "unproven")
+        criteria.append({
+            "id": str(raw.get("id") or raw.get("criterion_id") or "criterion"),
+            "text": str(raw.get("criterion") or raw.get("text") or ""),
+            "verdict": {"met": "pass", "not_met": "fail",
+                        "cannot_verify": "unproven"}.get(status, status),
+            "rationale": str(raw.get("evidence") or raw.get("rationale") or ""),
+            "evidence": copy.deepcopy(raw.get("evidence_refs") or []),
+            "verification": str(raw.get("validation_mode") or "review"),
+            "responsible": "review-kernel",
+        })
+    if not criteria:
+        criteria = [{"id": str(raw.get("id") or "criterion"),
+                     "text": str(raw.get("text") or ""),
+                     "verdict": "unproven",
+                     "rationale": "No criterion judgment was recorded.",
+                     "evidence": [], "verification": "review",
+                     "responsible": "review-kernel"}
+                    for raw in dor_row.get("criteria") or []]
+    gap_ids = {str(row.get("slot_id") or "") for row in gaps
+               if isinstance(row, dict)}
+    slots = [{"slot_id": str(raw.get("slot_id") or ""),
+              "lens_ids": list(raw.get("lens_ids") or []),
+              "status": "missing" if str(raw.get("slot_id") or "") in gap_ids
+                        else "valid", "result_fingerprint": None}
+             for raw in state.get("slots") or []]
+    consent = copy.deepcopy((state.get("review_session") or {}).get("consent"))
+    if consent is None:
+        consent = copy.deepcopy((state.get("review_execution") or {}).get(
+            "consent"))
+    validation_status = str((requirements_validation or {}).get("status") or
+                            "unproven").lower().replace("_", "-")
+    criteria_proven = validation_status in {"pass", "passed", "complete"} and all(
+        row["verdict"] in {"pass", "not-applicable"} for row in criteria)
+    approval_enabled = complete and criteria_proven and \
+        (revision.get("approval") or {}).get("enabled") is True
+    if not complete:
+        gate_reason = "review collection is incomplete"
+    elif not criteria_proven:
+        gate_reason = "acceptance criteria are failed or unproven"
+    else:
+        gate_reason = "human disposition"
+    return {
+        "schema": review_artifacts.ARTIFACT_MODEL_SCHEMA,
+        "revision": {"id": "revision-" + str(
+                         revision.get("canonical_revision") or 0),
+                     "fingerprint": str(
+                         revision.get("findings_fingerprint") or ""),
+                     "target_revision": str(
+                         (state.get("target") or {}).get("head") or ""),
+                     "disposition": "canonical" if complete else "provisional",
+                     "status": "complete" if complete else "incomplete",
+                     "supersedes": revision.get("supersedes_provisional")},
+        "dor": {"status": "ready" if dor_row.get("approvable") is True else
+                str(dor_row.get("status") or "degraded"),
+                "sources": list(dor_row.get("sources") or []),
+                "objectives": [x.get("text") for x in dor_row.get("items") or []
+                               if x.get("classification") == "objective"],
+                "clarifications": list(dor_row.get("clarifications") or [])},
+        "criteria": criteria, "slots": slots,
+        "findings": copy.deepcopy(revision.get("findings") or []),
+        "validation": production_validation_projection(
+            state.get("review_execution")),
+        "collection": {"status": "complete" if complete else "incomplete",
+                       "expected": int(completeness.get("expected") or len(slots)),
+                       "collected": int(completeness.get("collected") or 0),
+                       "gaps": copy.deepcopy(gaps)},
+        "provenance": {"target_fingerprint": str(
+                           revision.get("target_fingerprint") or ""),
+                       "context_fingerprint": str(
+                           revision.get("context_fingerprint") or ""),
+                       "run_id": str(state.get("run_id") or "")},
+        "gate": {"status": "awaiting-human" if approval_enabled else "blocked",
+                 "approval_enabled": approval_enabled,
+                 "reason": gate_reason,
+                 "actions": ["approve", "request-changes"]
+                            if approval_enabled else [],
+                 "consent": consent},
+    }
+
+
+def publish_production_review(root: str, state: dict, revision: dict, *,
+                              dor: dict, requirements_validation: dict,
+                              host: str = "codex") -> dict:
+    """Publish lossless files and bounded inline pages from the same model."""
+    import dashboard
+    import review_artifacts
+    model = production_review_model(
+        state, revision, dor=dor,
+        requirements_validation=requirements_validation)
+    try:
+        publication = review_artifacts.publish_revision_artifacts(root, model)
+    except Exception as exc:
+        publication = {"status": "unavailable", "reason": str(exc)}
+    if publication.get("status") != "published":
+        return {"status": "incomplete", "model": model,
+                "publication": publication, "inline_pages": [],
+                "failure": {
+                    "schema": "taskplane.review-session-failure/v1",
+                    "code": "artifact_write_failure",
+                    "detail": str(publication.get("reason") or
+                                  "artifact publication unavailable")[:1000],
+                    "action": "Retry the artifact transaction from the retained revision.",
+                }}
+    try:
+        pages = dashboard.render_review_model_paged(model, host=host)
+    except Exception as exc:
+        return {"status": "incomplete", "model": model,
+                "publication": publication, "inline_pages": [],
+                "failure": {
+                    "schema": "taskplane.review-session-failure/v1",
+                    "code": "renderer_failure", "detail": str(exc)[:1000],
+                    "action": "Retry the renderer; retained review evidence is unchanged.",
+                }}
+    return {"status": "published", "model": model,
+            "publication": publication, "inline_pages": pages}
 
 
 def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
@@ -2135,8 +2372,19 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         if (routing.get("context") or {}).get("status") == "mapper_unavailable":
             raise ReviewKernelError("mapper_unavailable")
         catalog = lensmod.load_catalog()
-        requested = _directive_lens_ids(
-            dor.get("review_directives") or [], catalog)
+        canonical_dor = dor.get("canonical") \
+            if isinstance(dor.get("canonical"), dict) else dor
+        directive_rows = list(dor.get("review_directives") or [])
+        canonical_rows = list(canonical_dor.get("review_directives") or [])
+        seen_directives = {(str(row.get("text") or ""),
+                            str(row.get("source_ref") or row.get("source") or ""))
+                           for row in directive_rows}
+        directive_rows.extend(row for row in canonical_rows
+                              if (str(row.get("text") or ""),
+                                  str(row.get("source_ref") or
+                                      row.get("source") or ""))
+                              not in seen_directives)
+        requested = _directive_lens_ids(directive_rows, catalog)
         for entry in routing.get("lenses") or []:
             lid = str(entry.get("id") or "")
             if lid not in requested:
@@ -2262,6 +2510,27 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                                run_id=run_id, runnability=runnability)
                            if stage == "review" and task_type == "review"
                            else None)
+    review_session = None
+    if execution_preflight:
+        import review_session
+        session_target_fingerprint = str(target.get("fingerprint") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", session_target_fingerprint):
+            # Compatibility for pre-canonical callers: bind their opaque
+            # identity rather than weakening the session schema.
+            session_target_fingerprint = hashlib.sha256(
+                session_target_fingerprint.encode("utf-8")).hexdigest()
+        review_session = review_session.create_session(
+            run_id=run_id,
+            target={"fingerprint": session_target_fingerprint,
+                    "revision": str(target.get("head") or "unknown")},
+            available_actions=[
+                {"id": "collection", "non_destructive": True},
+                {"id": "mechanical_repair", "non_destructive": True},
+                {"id": "affected_retry", "non_destructive": True},
+                {"id": "artifact_publication", "non_destructive": True},
+                {"id": "dynamic_validation", "non_destructive": True},
+                {"id": "inline_render", "non_destructive": True},
+            ])
     opening_status = "needs_user" if execution_preflight else "ready"
     manifest = _manifest({
         "schema": "taskplane.review-start-manifest/v2",
@@ -2277,6 +2546,10 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "slot_conservation": slot_conservation,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
+        **({"review_session": {"schema": review_session["schema"],
+                               "status": review_session["status"],
+                               "run_id": run_id}}
+           if review_session else {}),
         # A pending human execution-mode choice is a real dispatch boundary.
         # Keep the sealed leases in private run state, but expose no slot that
         # a host could dispatch until configure_review_execution records the
@@ -2295,6 +2568,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "slot_conservation": slot_conservation,
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
+        **({"review_session": review_session} if review_session else {}),
     })
     tp.trace(ws, "review_kernel_started", stage=stage,
              run_id=run_id,
@@ -2334,11 +2608,22 @@ def configure_review_execution(ws: str, *, selection: str,
     configured = review_execution_preflight(
         selection=selection, decided_by=by, run_id=state.get("run_id"),
         approval_receipt=approval_receipt)
+    session = state.get("review_session")
+    if isinstance(session, dict) and session.get("status") == "awaiting_consent":
+        import review_session
+        session = review_session.record_consent(
+            session, response=selection,
+            actor=str(configured.get("decided_by") or by or "human"))
     manifest = dict(state.get("manifest") or {})
     manifest["status"] = "ready"
     manifest["slots"] = list(state.get("dispatch_slots") or [])
     manifest["review_execution"] = configured
+    if isinstance(session, dict):
+        manifest["review_session"] = {
+            "schema": session["schema"], "status": session["status"],
+            "run_id": session["run_id"], "consent": session.get("consent")}
     state = dict(state, status="ready", review_execution=configured,
+                 review_session=session,
                  manifest=_manifest(manifest))
     _save_state(ws, state)
     tp.trace(ws, "review_execution_selected", run_id=state["run_id"],
@@ -3802,6 +4087,62 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
     return manifest
 
 
+def _consume_review_authority(state: dict, action: str, fact: str) -> None:
+    """Consume canonical consent for routine production review actions."""
+    session = state.get("review_session")
+    if not isinstance(session, dict):
+        return
+    if session.get("status") not in {"active", "incomplete", "unavailable"} or \
+            not session.get("consent"):
+        raise ReviewKernelError(
+            f"review session has no active authority for {action}")
+    import review_session
+    gate = review_session.request_authority(
+        session, action=action, fact=fact)
+    if gate is not None:
+        raise ReviewKernelError(
+            f"routine review action unexpectedly requires authority: {action}")
+
+
+def _persist_review_publication_failure(
+        ws: str, state: dict, revision: dict, output: dict, *,
+        requirements_validation: dict) -> dict:
+    """Retain review truth and expose a retryable renderer/artifact state."""
+    failure = copy.deepcopy(output.get("failure") or {})
+    manifest = _manifest({
+        "schema": "taskplane.review-collect-manifest/v3",
+        "status": "incomplete", "run_id": state.get("run_id"),
+        "target_fingerprint": revision.get("target_fingerprint"),
+        "context_fingerprint": revision.get("context_fingerprint"),
+        "canonical_revision": revision.get("canonical_revision"),
+        "findings_fingerprint": revision.get("findings_fingerprint"),
+        "findings": _portable_ref(revision.get("artifact") or {}),
+        "artifact_set": copy.deepcopy(output.get("publication") or {}),
+        "inline_page_count": len(output.get("inline_pages") or []),
+        "failure": failure,
+        "approval": {"enabled": False, "reason": failure.get("code")},
+        "compatibility": {
+            "schema": "taskplane.review-collection-compatibility/v1",
+            "invalid_slot_behavior": "provisional-repair",
+        },
+        "next_action": failure.get("action") or
+                       "Retry publication from the retained revision.",
+    })
+    session = state.get("review_session")
+    if isinstance(session, dict) and failure.get("code"):
+        import review_session
+        session = review_session.apply_failure(
+            session, kind=str(failure["code"]),
+            detail=failure.get("detail"))
+    _save_state(ws, dict(
+        state, status="ready", revision=revision, production_review=output,
+        requirements_validation=copy.deepcopy(requirements_validation),
+        review_session=session, manifest=manifest))
+    tp.trace(ws, "review_publication_incomplete", run_id=state.get("run_id"),
+             failure_code=failure.get("code"))
+    return manifest
+
+
 def _collect_review_transaction(
         ws: str, *, result_refs: Iterable[dict] | None,
         publish: bool, run_id: str) -> dict:
@@ -3809,6 +4150,8 @@ def _collect_review_transaction(
     import review_evidence as evidence
     with tp.file_lock(_collection_lock_path(ws)):
         state = _load_state(ws, run_id)
+        _consume_review_authority(state, "collection",
+                                  "collect the sealed producer outputs")
         store = evidence.ArtifactStore(ws)
         envelope = store.read(state["envelope"])
         if state.get("status") in {
@@ -3858,6 +4201,9 @@ def _collect_review_transaction(
                 _release_slot_contracts(ws, state)
         leases = [row["lease"] for row in state.get("slots") or []]
         if repairs:
+            _consume_review_authority(
+                state, "mechanical_repair",
+                "retain valid outputs and repair only named producer slots")
             collected = evidence.collect_partial_slot_results(
                 store, leases, refs, gaps=repairs)
             revision, prior = _revision_record(
@@ -3870,6 +4216,32 @@ def _collect_review_transaction(
                     "incomplete collection produced a canonical revision")
             import runtime_eval
             projection = runtime_eval.review_revision_projection(revision)
+            provisional_dor = ((envelope.get("change") or {}).get("dor") or {})
+            envelope_diff = envelope.get("diff") or {}
+            provisional_diff_ref = envelope_diff.get("artifact")
+            provisional_diff = (store.read(provisional_diff_ref)
+                                if isinstance(provisional_diff_ref, dict) else
+                                {"files": envelope_diff.get("files") or [],
+                                 "patch": ""})
+            provisional_requirements = evaluate_review_requirements(
+                provisional_dor, provisional_diff, revision["findings"],
+                state.get("review_execution") or {})
+            _consume_review_authority(
+                state, "artifact_publication",
+                "publish lossless artifacts for the retained provisional revision")
+            if "inline_render" in ((state.get("review_session") or {}).get(
+                    "consent") or {}).get("actions", []):
+                _consume_review_authority(
+                    state, "inline_render",
+                    "render bounded pages from the retained provisional revision")
+            canonical_output = publish_production_review(
+                os.path.abspath(os.path.join(_public_root(ws), "artifacts")),
+                state, revision, dor=provisional_dor,
+                requirements_validation=provisional_requirements)
+            if canonical_output.get("status") == "incomplete":
+                return _persist_review_publication_failure(
+                    ws, state, revision, canonical_output,
+                    requirements_validation=provisional_requirements)
             expected_ids = [str(row.get("slot_id") or "")
                             for row in state.get("slots") or []]
             conservation = {
@@ -3904,7 +4276,14 @@ def _collect_review_transaction(
                 "completeness": copy.deepcopy(revision["completeness"]),
                 "approval": copy.deepcopy(revision["approval"]),
                 "machine_projection": projection,
+                "artifact_set": copy.deepcopy(
+                    canonical_output["publication"]),
+                "inline_page_count": len(canonical_output["inline_pages"]),
                 "slot_conservation": conservation,
+                "compatibility": {
+                    "schema": "taskplane.review-collection-compatibility/v1",
+                    "invalid_slot_behavior": "provisional-repair",
+                },
                 "counters": counters,
                 "next_action": "repair only the named producer slots, then "
                                "retry review collect once",
@@ -3917,6 +4296,7 @@ def _collect_review_transaction(
             _save_state(ws, dict(
                 state, status="ready", provisional_revision=revision,
                 provisional_history=history, provisional_manifest=manifest,
+                production_review=canonical_output,
                 result_validations=result_validations,
                 slot_conservation=conservation))
             tp.trace(
@@ -3927,6 +4307,9 @@ def _collect_review_transaction(
             return manifest
         promotions = _light_sweep_promotions(store, state, refs)
         if promotions:
+            _consume_review_authority(
+                state, "affected_retry",
+                "dispatch only lenses promoted by high-severity sweep evidence")
             promoted_internal, promoted_manifest = _promoted_slot_plan(
                 store, state, promotions)
             for slot in promoted_internal:
@@ -4040,6 +4423,22 @@ def _collect_review_transaction(
         requirements_validation = evaluate_review_requirements(
             dor, diff_record, revision["findings"],
             state.get("review_execution") or {})
+        _consume_review_authority(
+            state, "artifact_publication",
+            "publish lossless artifacts for the canonical revision")
+        if "inline_render" in ((state.get("review_session") or {}).get(
+                "consent") or {}).get("actions", []):
+            _consume_review_authority(
+                state, "inline_render",
+                "render bounded pages from the canonical revision")
+        canonical_output = publish_production_review(
+            os.path.abspath(os.path.join(_public_root(ws), "artifacts")),
+            state, revision, dor=dor,
+            requirements_validation=requirements_validation)
+        if canonical_output.get("status") == "incomplete":
+            return _persist_review_publication_failure(
+                ws, state, revision, canonical_output,
+                requirements_validation=requirements_validation)
         portable_validations = [
             _portable_ref(ref) for ref in result_validations]
         body = {"meta": {**identity, "lens_coverage": decision,
@@ -4069,11 +4468,14 @@ def _collect_review_transaction(
             "result_validations": portable_validations,
             "report": None, "projections": [],
             "published": None, "counters": counters,
+            "artifact_set": copy.deepcopy(canonical_output["publication"]),
+            "inline_page_count": len(canonical_output["inline_pages"]),
             "slot_conservation": conservation,
         })
         _collection_fault("post_manifest")
         prepared = dict(
             state, status="prepared", revision=revision,
+            production_review=canonical_output,
             projections=[], manifest=manifest,
             counters=manifest["counters"], lens_results=lens_results,
             slot_conservation=conservation,
