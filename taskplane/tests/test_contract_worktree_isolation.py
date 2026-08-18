@@ -16,7 +16,8 @@ import tp as cli  # noqa: E402
 
 def _git(cwd: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", *args], cwd=cwd, check=True, text=True,
+        ["git", *args], cwd=cwd, check=True, text=True, encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return result.stdout.strip()
 

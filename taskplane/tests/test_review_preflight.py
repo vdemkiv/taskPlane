@@ -514,7 +514,8 @@ def test_production_validation_blocks_direct_and_descendant_explicit_pushes(
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ws, check=True,
-        stdout=subprocess.PIPE, text=True).stdout.strip()
+        stdout=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace").stdout.strip()
     opened = review.start_review(
         str(ws), target={"fingerprint": "target-1", "head": head},
         graph={"meta": {"scanned_head": head,
@@ -548,7 +549,8 @@ def test_production_validation_blocks_direct_and_descendant_explicit_pushes(
     for destination in (direct, descendant):
         refs = subprocess.run(
             ["git", "show-ref"], cwd=destination, check=False,
-            stdout=subprocess.PIPE, text=True).stdout
+            stdout=subprocess.PIPE, text=True, encoding="utf-8",
+            errors="replace").stdout
         assert refs == ""
 
 

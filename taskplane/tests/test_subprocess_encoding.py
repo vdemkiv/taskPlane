@@ -29,7 +29,9 @@ import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
-SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+SKIP_DIRS = {
+    ".git", ".tp-work", "__pycache__", "node_modules", ".venv", "venv",
+}
 RUNNERS = {"run", "Popen", "check_output", "call", "check_call"}
 
 

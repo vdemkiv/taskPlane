@@ -73,6 +73,33 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(commands)
         self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in command
                             for command in commands))
+        self.assertTrue(all('[ -f ".taskplane/codex-hook.py" ]' in command
+                            for command in commands))
+        self.assertTrue(all("PLUGIN_ROOT" in command for command in commands))
+
+    def test_repository_hook_uses_plugin_when_worktree_runner_is_missing(self):
+        manifest = json.loads((ROOT / ".codex" / "hooks.json").read_text(
+            encoding="utf-8"))
+        command = manifest["hooks"]["Stop"][0]["hooks"][0]["command"]
+        with tempfile.TemporaryDirectory(prefix="tp-worktree-hook-") as ws:
+            plugin = Path(ws, "plugin")
+            engine = plugin / "taskplane" / "tp.py"
+            engine.parent.mkdir(parents=True)
+            marker = Path(ws, "called.json")
+            engine.write_text(
+                "import json, os, sys\n"
+                "with open(os.environ['TP_MARKER'], 'w', encoding='utf-8') as f:\n"
+                "    json.dump({'argv': sys.argv[1:], "
+                "'path': os.environ.get('TASKPLANE_HOOK_PATH')}, f)\n",
+                encoding="utf-8")
+            result = subprocess.run(
+                command, cwd=ws, shell=True, text=True, capture_output=True,
+                env={**os.environ, "PLUGIN_ROOT": str(plugin),
+                     "TP_MARKER": str(marker)}, encoding="utf-8",
+                errors="replace")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), {
+                "argv": ["session-verify"], "path": "bridge"})
 
     def test_primary_skills_prefer_workspace_launcher_for_version_refreshes(self):
         skills = (
@@ -111,6 +138,9 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in
                             hook.get("command", "") for hook in hooks))
         self.assertTrue(all('TASKPLANE_HOOK_PATH=bridge' in
+                            hook.get("commandWindows", "")
+                            for hook in hooks))
+        self.assertTrue(all('if exist ".taskplane\\codex-hook.py"' in
                             hook.get("commandWindows", "")
                             for hook in hooks))
         native = json.loads((ROOT / "hooks" / "hooks.json").read_text(

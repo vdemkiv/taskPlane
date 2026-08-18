@@ -417,13 +417,18 @@ def _codex_hook_rows() -> dict:
     for rows in generated.values():
         for row in rows:
             for hook in row.get("hooks") or []:
-                action = _codex_hook_action(hook.get("command"))
-                hook["command"] = (
-                    f'TASKPLANE_HOOK_PATH=bridge python3 '
-                    f'"{_CODEX_HOOK_MARKER}" {action}')
-                hook["commandWindows"] = (
-                    f'set "TASKPLANE_HOOK_PATH=bridge" & py -3 '
-                    f'".taskplane\\codex-hook.py" {action}')
+                _codex_hook_action(hook.get("command"))
+                # Keep the bundled missing-runner fallback. A Codex-managed
+                # worktree contains the tracked hook configuration but not
+                # the ignored local bridge, and the originating worktree may
+                # be removed while its task is still open.
+                hook["command"] = str(hook.get("command") or "").replace(
+                    "TASKPLANE_HOOK_PATH=native",
+                    "TASKPLANE_HOOK_PATH=bridge")
+                hook["commandWindows"] = str(
+                    hook.get("commandWindows") or "").replace(
+                        "TASKPLANE_HOOK_PATH=native",
+                        "TASKPLANE_HOOK_PATH=bridge")
     return generated
 
 
