@@ -12,6 +12,7 @@ import json
 from typing import Callable, Mapping, Protocol
 
 from taskplane.command_runtime import CommandRuntime, TERMINAL_STATES
+from taskplane.review_session import session_transport_binding
 
 
 SUPPORTED_HOSTS = frozenset({"claude", "codex"})
@@ -93,16 +94,49 @@ class CommandAdapter:
 
     def launch(self, command: object, *, cwd: str,
                deadline: float | None = None,
-               wave_id: str | None = None) -> str:
+               wave_id: str | None = None,
+               review_session: Mapping | None = None) -> str:
         launched = self._launcher(command, cwd)
         if not isinstance(launched, HostLaunch) or not launched.binding:
             raise ValueError("host launch must return a non-empty binding")
         handle = self.runtime.create(
             command_fingerprint=_fingerprint_command(command),
-            binding=launched.binding, deadline=deadline, wave_id=wave_id)
+            binding=launched.binding, deadline=deadline, wave_id=wave_id,
+            review_session=review_session)
         self._bindings[handle] = dict(launched.binding)
         self.runtime.transition(handle, "running")
         return handle
+
+    def launch_review_validation(self, command: object, *, cwd: str,
+                                 session: Mapping,
+                                 sandbox: Mapping) -> str:
+        """Launch only inside a disposable, push-disabled review copy."""
+        if sandbox.get("disposable") is not True or \
+                sandbox.get("push_disabled") is not True or \
+                not str(sandbox.get("sandbox_id") or "").strip():
+            raise ValueError(
+                "review validation requires a disposable push-disabled sandbox")
+        return self.launch(
+            command, cwd=cwd,
+            review_session=session_transport_binding(session))
+
+    def wait_review_event(self, handle: str, *, consumer: str,
+                          interrupted: Callable[[], bool] | None = None,
+                          timeout: float | None = None) -> dict | None:
+        """Return a canonical event plus explicitly non-authoritative host data."""
+        event = self.wait_next(
+            handle, consumer=consumer, interrupted=interrupted,
+            timeout=timeout)
+        if event is None:
+            return None
+        canonical = {key: event.get(key) for key in (
+            "schema", "revision", "state", "reason", "exit_code",
+            "output_delta", "artifact", "review_session")}
+        return {
+            "schema": "taskplane.review-host-event/v1",
+            "transport": {"host": self.host},
+            "event": canonical,
+        }
 
     def notify(self, handle: str, event: Mapping) -> dict:
         """Ingest one native notification into the canonical lifecycle."""

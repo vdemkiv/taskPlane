@@ -43,6 +43,7 @@ import retro as retro_engine
 import requirements as reqs
 import review_retry
 import runtime_eval
+import review_session as review_session_engine
 import storage as runtime_storage
 import taskplane_lite as tp
 import yield_meter
@@ -60,6 +61,7 @@ EVALUATE_ROUTE_STAGE = "build"
 
 _review_kernel_binding_key = review_retry.binding_key
 review_kernel_binding = review_retry.binding
+review_session_authority_gate = review_session_engine.request_authority
 
 def _state_dir(ws: str) -> str:
     """Loop coordination state. v1.5.1: state is PER-USER even in team/repo

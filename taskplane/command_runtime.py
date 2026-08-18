@@ -213,9 +213,19 @@ class CommandRuntime:
         _atomic_json(self._path(handle), snapshot)
 
     def create(self, *, command_fingerprint: str, binding: Mapping | None,
-               deadline: float | None = None, wave_id: str | None = None) -> str:
+               deadline: float | None = None, wave_id: str | None = None,
+               review_session: Mapping | None = None) -> str:
         handle = secrets.token_hex(16)
         now = float(self._clock())
+        if review_session is not None:
+            review_session = dict(review_session)
+            required = {"schema", "run_id", "target_fingerprint",
+                        "consent_fingerprint"}
+            if set(review_session) != required or review_session.get(
+                    "schema") != "taskplane.review-session-binding/v1" or any(
+                    not str(review_session.get(key) or "").strip()
+                    for key in required):
+                raise ValueError("review session binding is invalid")
         snapshot = {
             "schema": SCHEMA,
             "handle": handle,
@@ -229,6 +239,8 @@ class CommandRuntime:
             "updated_at": now,
             "deadline": deadline,
             "wave_id": wave_id,
+            **({"review_session": review_session}
+               if review_session is not None else {}),
             "exit_code": None,
             "reason": None,
             "events": [],
@@ -342,6 +354,8 @@ class CommandRuntime:
             "delivery_key": _canonical_digest({
                 "handle": snapshot["handle"], "revision": revision,
             }),
+            **({"review_session": dict(snapshot["review_session"])}
+               if snapshot.get("review_session") else {}),
         }
 
     def append_output(self, handle: str, output: str) -> dict:
