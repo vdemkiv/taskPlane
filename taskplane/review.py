@@ -23,6 +23,7 @@ document that is already on disk next to them.
 import copy
 import glob
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -94,10 +95,105 @@ _REVIEW_EXECUTION_RECEIPT_SCHEMA = \
     "taskplane.review-execution-receipt/v1"
 _REVIEW_HOST_ACTION_AUTHORITY = object()
 _REVIEW_HOST_EXECUTION_AUTHORITY = object()
+_NATIVE_APPROVAL_SCHEMA = "taskplane.native-approval-receipt/v1"
 
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
+
+
+def native_approval_decision(*, decision_id: str, kind: str, reason: str,
+                             target: str, revision: str,
+                             evidence: list, consequences: list, owner: str,
+                             approvable: bool, actions: list[dict]) -> dict:
+    """Build complete context while bounding an inline card to two actions."""
+    if not all(str(value or "").strip() for value in
+               (decision_id, kind, reason, target, revision, owner)):
+        raise ReviewKernelError("native approval decision is incomplete")
+    primary = []
+    for raw in actions if isinstance(actions, list) else []:
+        if isinstance(raw, dict) and str(raw.get("id") or "").strip():
+            primary.append({"id": str(raw["id"]),
+                            "label": str(raw.get("label") or raw["id"])})
+    row = {
+        "schema": "taskplane.native-approval-decision/v1",
+        "decision_id": str(decision_id), "kind": str(kind),
+        "reason": str(reason), "target": str(target),
+        "revision": str(revision), "evidence": list(evidence or []),
+        "consequences": list(consequences or []), "owner": str(owner),
+        "approvable": bool(approvable), "actions": primary[:2],
+        "detail_action": {"id": "view-details", "authoritative": False},
+    }
+    canonical = {key: row[key] for key in row if key != "detail_action"}
+    row["fingerprint"] = hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return row
+
+
+class NativeApprovalLedger:
+    """Issue and consume actor/decision/revision-bound receipts once."""
+
+    def __init__(self, secret: bytes, *, ttl_seconds: int = 900) -> None:
+        if not isinstance(secret, bytes) or len(secret) < 16:
+            raise ValueError("approval authority must be at least 16 bytes")
+        self._secret = secret
+        self._ttl = max(1, int(ttl_seconds))
+        self._consumed: set[str] = set()
+
+    def _signature(self, receipt: dict) -> str:
+        unsigned = {key: receipt[key] for key in receipt if key != "signature"}
+        material = json.dumps(unsigned, sort_keys=True,
+                              separators=(",", ":")).encode()
+        return hmac.new(self._secret, material, hashlib.sha256).hexdigest()
+
+    def issue(self, decision: dict, *, action: str, actor: str,
+              authenticated: bool, nonce: str, now: int) -> dict:
+        if not authenticated or not str(actor or "").strip():
+            raise ReviewKernelError("native approval actor is not authenticated")
+        if not decision.get("approvable"):
+            raise ReviewKernelError("native approval decision is disabled")
+        if action not in {row.get("id") for row in decision.get("actions") or []}:
+            raise ReviewKernelError("native approval action is not offered")
+        if not str(nonce or "").strip():
+            raise ReviewKernelError("native approval nonce is required")
+        receipt = {
+            "schema": _NATIVE_APPROVAL_SCHEMA,
+            "receipt_id": hashlib.sha256(
+                f"{decision['decision_id']}:{actor}:{nonce}".encode()).hexdigest(),
+            "decision_id": decision["decision_id"],
+            "decision_fingerprint": decision["fingerprint"],
+            "actor": str(actor), "authenticated": True,
+            "target": decision["target"], "revision": decision["revision"],
+            "action": str(action), "nonce": str(nonce),
+            "issued_at": int(now), "expires_at": int(now) + self._ttl,
+        }
+        receipt["signature"] = self._signature(receipt)
+        return receipt
+
+    def consume(self, receipt: dict, decision: dict, *, now: int) -> dict:
+        if not isinstance(receipt, dict) or \
+                receipt.get("schema") != _NATIVE_APPROVAL_SCHEMA:
+            raise ReviewKernelError("native approval receipt is invalid")
+        if not hmac.compare_digest(str(receipt.get("signature") or ""),
+                                   self._signature(receipt)):
+            raise ReviewKernelError("native approval receipt is unauthenticated")
+        bindings = (("decision_id", "decision_id"),
+                    ("decision_fingerprint", "fingerprint"),
+                    ("target", "target"), ("revision", "revision"))
+        if any(receipt.get(left) != decision.get(right)
+               for left, right in bindings):
+            raise ReviewKernelError("native approval receipt binding is stale")
+        if receipt.get("authenticated") is not True or \
+                int(receipt.get("expires_at") or 0) < int(now):
+            raise ReviewKernelError("native approval receipt is expired")
+        receipt_id = str(receipt.get("receipt_id") or "")
+        if receipt_id in self._consumed:
+            return {"advanced": False, "status": "duplicate",
+                    "receipt_id": receipt_id}
+        self._consumed.add(receipt_id)
+        return {"advanced": True, "status": "accepted",
+                "receipt_id": receipt_id, "actor": receipt["actor"],
+                "action": receipt["action"]}
 
 
 class ReviewSlotValidationErrors(review_evidence_runtime.ProvenanceError):
