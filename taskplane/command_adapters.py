@@ -12,9 +12,16 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 from typing import Callable, Mapping, Protocol
+
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - Windows fail-closed path
+    _resource = None
 
 from taskplane.command_runtime import CommandRuntime, TERMINAL_STATES
 from taskplane.review_session import (
@@ -70,6 +77,38 @@ _SURFACE_ENV = {
 }
 
 _STARTUP_TIMEOUT_SECONDS = 0.15
+_TEARDOWN_GRACE_SECONDS = 0.5
+_PREVIEW_PROCESSES: dict[str, list[object]] = {}
+_PREVIEW_PROCESS_LOCK = threading.Lock()
+
+
+def _register_preview_process(preview_id: str, process: object) -> None:
+    with _PREVIEW_PROCESS_LOCK:
+        _PREVIEW_PROCESSES.setdefault(preview_id, []).append(process)
+
+
+def teardown_preview_processes(preview_id: str) -> bool:
+    """Terminate and verify every registered preview process group."""
+    with _PREVIEW_PROCESS_LOCK:
+        processes = _PREVIEW_PROCESSES.pop(preview_id, [])
+    success = True
+    for process in processes:
+        if process.poll() is not None:
+            continue
+        try:
+            os.killpg(int(process.pid), signal.SIGTERM)
+            process.wait(timeout=_TEARDOWN_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(int(process.pid), signal.SIGKILL)
+                process.wait(timeout=_TEARDOWN_GRACE_SECONDS)
+            except (OSError, subprocess.SubprocessError):
+                success = False
+        except (OSError, subprocess.SubprocessError, ValueError):
+            success = False
+        if process.poll() is None:
+            success = False
+    return success
 
 
 def _require_live_startup(process, *, label: str) -> None:
@@ -107,6 +146,7 @@ def native_surface_transport(surface: str, sandbox: str,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, start_new_session=True)
     _require_live_startup(process, label=f"native {surface} transport")
+    _register_preview_process(str(preview["preview_id"]), process)
     return {"schema": "taskplane.host-preview-surface/v1",
             "surface": surface, "binding": f"pid:{process.pid}"}
 
@@ -128,6 +168,21 @@ def os_preview_isolation_launcher(command: object, cwd: str,
         raise ValueError("preview sandbox contains repository remotes")
     if sys.platform != "darwin" or not os.path.isfile("/usr/bin/sandbox-exec"):
         raise OSError("complete preview process-tree isolation is unavailable")
+    limits = dict(policy.get("limits") or {})
+    if _resource is None or not hasattr(_resource, "RLIMIT_CPU") or not hasattr(
+            _resource, "RLIMIT_AS"):
+        raise OSError("preview CPU/memory enforcement is unavailable")
+    try:
+        cpu_limit = int(limits["cpu_seconds"])
+        memory_limit = int(limits["memory_bytes"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("preview CPU/memory limits are incomplete") from exc
+    if cpu_limit <= 0 or memory_limit <= 0:
+        raise ValueError("preview CPU/memory limits are invalid")
+
+    def apply_resource_limits():
+        _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+        _resource.setrlimit(_resource.RLIMIT_AS, (memory_limit, memory_limit))
     escaped = str(root).replace("\\", "\\\\").replace('"', '\\"')
     profile = " ".join((("(version 1)"), "(deny default)",
                         '(import "system.sb")', "(allow process*)",
@@ -137,11 +192,20 @@ def os_preview_isolation_launcher(command: object, cwd: str,
     process = subprocess.Popen(
         ["/usr/bin/sandbox-exec", "-p", profile, "--", *command], cwd=str(root),
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, start_new_session=True)
+        stderr=subprocess.STDOUT, start_new_session=True,
+        preexec_fn=apply_resource_limits)
     # The receipt below describes observed enforcement, not policy intent.
     # Seatbelt failures and commands that immediately die are rejected before
     # the caller can persist a running handle or open a host surface.
     _require_live_startup(process, label="preview sandbox")
+    preview_id = str(policy.get("preview_id") or "")
+    if not preview_id:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        raise ValueError("preview isolation policy lacks preview identity")
+    _register_preview_process(preview_id, process)
     fingerprint = hashlib.sha256(json.dumps(
         dict(policy), sort_keys=True, separators=(",", ":"))
         .encode("utf-8")).hexdigest()
@@ -151,6 +215,8 @@ def os_preview_isolation_launcher(command: object, cwd: str,
                           "network": "denied", "scope": "complete-process-tree",
                           "push": "denied", "filesystem": "sandbox-only",
                           "source": "immutable", "remotes": "disabled",
+                          "cpu": "rlimit-enforced",
+                          "memory": "rlimit-enforced",
                           "mechanism": "macos-seatbelt",
                           "policy_fingerprint": fingerprint})
 
@@ -304,6 +370,7 @@ class CommandAdapter:
             "push": "deny", "filesystem": "sandbox-only",
             "source": "immutable", "remotes": "disabled",
             "sandbox_id": preview.get("sandbox_id"),
+            "preview_id": preview.get("preview_id"),
             "limits": dict(preview.get("limits") or {}),
         }
         policy_fingerprint = hashlib.sha256(
@@ -322,6 +389,8 @@ class CommandAdapter:
                 isolation.get("filesystem") != "sandbox-only" or
                 isolation.get("source") != "immutable" or
                 isolation.get("remotes") != "disabled" or
+                isolation.get("cpu") != "rlimit-enforced" or
+                isolation.get("memory") != "rlimit-enforced" or
                 isolation.get("policy_fingerprint") != policy_fingerprint or
                 not str(isolation.get("mechanism") or "").strip()):
             raise ValueError("preview isolation receipt is invalid")

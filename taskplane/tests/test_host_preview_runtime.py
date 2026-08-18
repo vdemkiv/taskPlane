@@ -1,11 +1,15 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
+import time
 
 import pytest
 
 from taskplane.command_adapters import (
-    CommandAdapter, HostLaunch, os_preview_isolation_launcher,
+    CommandAdapter, HostLaunch, _register_preview_process,
+    os_preview_isolation_launcher, teardown_preview_processes,
 )
 from taskplane.command_runtime import CommandRuntime
 from taskplane.preview_runtime import (
@@ -52,6 +56,7 @@ def receipt(policy, **changes):
              "network": "denied", "scope": "complete-process-tree",
              "push": "denied", "filesystem": "sandbox-only",
              "source": "immutable", "remotes": "disabled",
+             "cpu": "rlimit-enforced", "memory": "rlimit-enforced",
              "mechanism": "host-process-sandbox",
              "policy_fingerprint": hashlib.sha256(json.dumps(
                  policy, sort_keys=True, separators=(",", ":"))
@@ -229,6 +234,7 @@ def test_production_entry_invokes_native_surface_and_os_isolation(
         limits={"lifetime_seconds": 60, "cpu_seconds": 10,
                 "memory_bytes": 1_000_000})
     assert result["flow"] == flow and result["preview"]["state"] == "open"
+    assert result["preview"]["command_lifecycle"]["process_group_binding"]
     assert calls[0][0][0] == "/usr/bin/sandbox-exec"
     assert calls[1][0][0:2] == ["native-side-panel", "open"]
     assert calls[1][0][-2:] == ["--preview-id", result["preview"]["preview_id"]]
@@ -279,7 +285,8 @@ def test_os_isolation_never_receipts_early_exit(tmp_path, monkeypatch,
     policy = {"network": "deny", "scope": "complete-process-tree",
               "push": "deny", "filesystem": "sandbox-only",
               "source": "immutable", "remotes": "disabled",
-              "sandbox_id": "pin", "limits": {}}
+              "sandbox_id": "pin", "preview_id": "preview-a",
+              "limits": {"cpu_seconds": 1, "memory_bytes": 10_000_000}}
     with pytest.raises(OSError, match=match):
         os_preview_isolation_launcher(["/usr/bin/true"], str(root), policy)
 
@@ -302,7 +309,8 @@ def test_os_isolation_receipts_only_long_lived_startup(tmp_path, monkeypatch):
     policy = {"network": "deny", "scope": "complete-process-tree",
               "push": "deny", "filesystem": "sandbox-only",
               "source": "immutable", "remotes": "disabled",
-              "sandbox_id": "pin", "limits": {}}
+              "sandbox_id": "pin", "preview_id": "preview-b",
+              "limits": {"cpu_seconds": 1, "memory_bytes": 10_000_000}}
     launched = os_preview_isolation_launcher(
         ["python3", "-m", "http.server"], str(root), policy)
     assert launched.binding["pid"] == 56
@@ -347,3 +355,87 @@ def test_production_startup_failure_is_durable_and_surface_never_opens(
     audit = json.loads((state / "previews" / "audit.json").read_text())
     assert any("sandbox_apply" in row["detail"] for row in audit)
     assert audit[-1]["outcome"] == "unavailable"
+
+
+def test_close_kills_all_real_preview_process_groups_before_removal(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    runtime = PreviewRuntime(tmp_path / "state", workspace=source,
+                             authorization="a",
+                             process_teardown=teardown_preview_processes)
+    preview = runtime.register(
+        flow="build", target="pin", revision=1, source_root=source,
+        authorization="a", capabilities=capabilities(
+            sandbox=True, browser=True), limits={"lifetime_seconds": 60,
+            "cpu_seconds": 2, "memory_bytes": 50_000_000},
+        network_allowlist=[])
+    processes = [subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True) for _ in range(2)]
+    for process in processes:
+        _register_preview_process(preview["preview_id"], process)
+    closed = runtime.close(preview["preview_id"])
+    assert closed["outcome"] == "succeeded"
+    assert closed["teardown"]["processes_stopped"] is True
+    assert all(process.poll() is not None for process in processes)
+    assert not runtime._path(preview["preview_id"]).parent.joinpath(
+        "sandbox").exists()
+
+
+def test_deadline_automatically_kills_real_process_tree(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.txt").write_text("pinned")
+    runtime = PreviewRuntime(tmp_path / "state", workspace=source,
+                             authorization="a", surface_transport=surface([]),
+                             process_teardown=teardown_preview_processes)
+    preview = runtime.register(
+        flow="design", target="pin", revision=1, source_root=source,
+        authorization="a", capabilities=capabilities(
+            sandbox=True, side_panel=True), limits={"lifetime_seconds": 1,
+            "cpu_seconds": 2, "memory_bytes": 50_000_000},
+        network_allowlist=[])
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True)
+    _register_preview_process(preview["preview_id"], process)
+    runtime.open(preview["preview_id"])
+    runtime.arm_deadline(preview["preview_id"])
+    deadline = time.monotonic() + 3
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert process.poll() is not None
+    assert runtime._load(preview["preview_id"])["outcome"] == "timed_out"
+
+
+def test_resource_limit_enforcement_fails_closed_when_unsupported(
+        tmp_path, monkeypatch):
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
+    monkeypatch.setattr("taskplane.command_adapters.os.path.isfile",
+                        lambda path: path == "/usr/bin/sandbox-exec")
+    monkeypatch.setattr("taskplane.command_adapters._resource", None)
+    policy = {"network": "deny", "scope": "complete-process-tree",
+              "push": "deny", "filesystem": "sandbox-only",
+              "source": "immutable", "remotes": "disabled",
+              "sandbox_id": "pin", "preview_id": "preview-c",
+              "limits": {"cpu_seconds": 1, "memory_bytes": 10_000_000}}
+    with pytest.raises(OSError, match="CPU/memory enforcement is unavailable"):
+        os_preview_isolation_launcher(["sleep", "30"], str(root), policy)
+
+
+def test_failed_process_teardown_never_reports_success(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    runtime = PreviewRuntime(tmp_path / "state", workspace=source,
+                             authorization="a", process_teardown=lambda _id: False)
+    preview = runtime.register(
+        flow="build", target="pin", revision=1, source_root=source,
+        authorization="a", capabilities=capabilities(sandbox=True, browser=True),
+        limits={"lifetime_seconds": 60, "cpu_seconds": 2,
+                "memory_bytes": 50_000_000}, network_allowlist=[])
+    closed = runtime.close(preview["preview_id"])
+    assert closed["state"] == "failed"
+    assert closed["outcome"] == "teardown_failed"
+    assert closed["teardown"]["processes_stopped"] is False

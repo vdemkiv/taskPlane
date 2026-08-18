@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import threading
 import time
 from typing import Callable, Mapping, Protocol
 
@@ -84,7 +85,8 @@ class PreviewRuntime:
 
     def __init__(self, root: str | Path, *, workspace: str | Path,
                  authorization: str, clock: Callable[[], float] | None = None,
-                 surface_transport: SurfaceTransport | None = None):
+                 surface_transport: SurfaceTransport | None = None,
+                 process_teardown: Callable[[str], bool] | None = None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.workspace = Path(workspace).resolve()
@@ -93,6 +95,7 @@ class PreviewRuntime:
         self._authorization = _digest(str(authorization))
         self._clock = clock or time.time
         self._surface_transport = surface_transport
+        self._process_teardown = process_teardown
         self._audit_path = self.root / "audit.json"
 
     def _audit(self, *, preview_id: str | None, outcome: str,
@@ -312,6 +315,19 @@ class PreviewRuntime:
         self._save(preview)
         return evidence
 
+    def bind_command(self, preview_id: str, *, handle: str,
+                     binding_digest: str) -> dict:
+        """Durably bind the isolated command lifecycle to this preview."""
+        preview = self._load(preview_id)
+        if preview["state"] != "registered" or not handle or not binding_digest:
+            raise PreviewError("preview command lifecycle binding is invalid")
+        preview["command_lifecycle"] = {
+            "handle_fingerprint": _digest(handle),
+            "process_group_binding": str(binding_digest),
+            "bound_at": float(self._clock()),
+        }
+        return self._save(preview)
+
     def record_stage(self, preview_id: str, *, stage: str, outcome: str,
                      detail: str = "") -> dict:
         """Seal a bounded operational receipt without changing workflow truth."""
@@ -340,10 +356,13 @@ class PreviewRuntime:
         sandbox = self._path(preview["preview_id"]).parent / "sandbox"
         # The runtime creates an empty registration scope; process-tree cleanup
         # is delegated to the isolation launcher before this bounded removal.
+        processes_stopped = (self._process_teardown is None or
+                             self._process_teardown(preview["preview_id"]))
         removed = False
         try:
-            shutil.rmtree(sandbox)
-            removed = True
+            if processes_stopped:
+                shutil.rmtree(sandbox)
+                removed = True
         except OSError:
             removed = False
         preview["teardown"] = {
@@ -351,7 +370,22 @@ class PreviewRuntime:
             "outcome": "succeeded" if removed else "failed",
             "at": float(self._clock()),
             "trigger": outcome,
+            "processes_stopped": processes_stopped,
         }
+
+    def expire(self, preview_id: str) -> dict:
+        """Deadline callback: fail and reap a still-live preview."""
+        preview = self._load(preview_id)
+        if preview["state"] in {"registered", "open"}:
+            return self.record_outcome(preview_id, "timed_out")
+        return preview
+
+    def arm_deadline(self, preview_id: str) -> None:
+        preview = self._load(preview_id)
+        remaining = max(0.0, float(preview["deadline"]) - float(self._clock()))
+        timer = threading.Timer(remaining, self.expire, args=(preview_id,))
+        timer.daemon = True
+        timer.start()
 
     def record_outcome(self, preview_id: str, outcome: str) -> dict:
         if outcome not in TERMINAL_OUTCOMES:
@@ -393,7 +427,7 @@ def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
     """Production entry point shared by design, build, and dynamic review."""
     from taskplane.command_adapters import (
         CommandAdapter, native_surface_transport,
-        os_preview_isolation_launcher,
+        os_preview_isolation_launcher, teardown_preview_processes,
     )
     from taskplane.command_runtime import CommandRuntime
 
@@ -401,7 +435,8 @@ def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
     preview_runtime = PreviewRuntime(
         root / "previews", workspace=source_root,
         authorization=authorization,
-        surface_transport=native_surface_transport)
+        surface_transport=native_surface_transport,
+        process_teardown=teardown_preview_processes)
     preview = preview_runtime.register(
         flow=flow, target=target, revision=revision, source_root=source_root,
         authorization=authorization, capabilities=capabilities, limits=limits,
@@ -418,6 +453,9 @@ def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
     try:
         handle = adapter.launch_preview(command, cwd=str(sandbox),
                                         preview=preview)
+        preview_runtime.bind_command(
+            preview["preview_id"], handle=handle,
+            binding_digest=command_runtime.snapshot(handle)["binding_digest"])
         opened = preview_runtime.open(preview["preview_id"])
     except Exception as exc:
         preview_runtime.record_stage(
@@ -427,6 +465,7 @@ def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
         raise
     if opened["state"] != "open":
         raise PreviewDenied(opened["outcome"], "native preview did not open")
+    preview_runtime.arm_deadline(preview["preview_id"])
     return {"schema": "taskplane.working-preview-launch/v1",
             "flow": flow, "preview": opened, "command_handle": handle}
 
