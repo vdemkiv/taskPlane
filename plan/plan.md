@@ -1,118 +1,93 @@
-# R-0008 plan — size-safe ReviewKernel dispatch
+# R-0010 plan — structured criteria and process-tree no-push closure
 
-This plan realizes the approved reference-first Design Contract in
-`design/contract.json` (SHA-256
-`3f0b049b1a179ab580e7c41d632714991e15d0874ab1950647805d0d15b9a046`).
-Its graph baseline fingerprint
-`5e86f66a9adfcd871703b3fa175325ec890d93843b305c8636a9560d83f1fcd5`
-matches the single bounded impact projection. The prior R-0007 plan is
-preserved unchanged in `plan/r0007-plan.pre-r0008.md` and
-`plan/r0007-tasks.pre-r0008.json`; the older R-0006 artifacts also remain
-untouched.
+R-0010 is intentionally limited to the blockers confirmed by engineering
+decision 0046 plus the amended worktree-lifecycle isolation defect: structured
+acceptance supplied outside `requirement.text` is lost before canonical DoR, a
+validation descendant can push to an explicit URL with `--no-verify`, and a
+contract bound to worktree A can intercept lifecycle events belonging to
+worktree B. The preceding focused R-0009 correction plan is
+preserved unchanged in
+`plan/r0009-focused-correction-plan.pre-r0010.md` and
+`plan/r0009-focused-correction-tasks.pre-r0010.json`.
 
-## Impact and design fidelity
+## Bounded impact and graph contract
 
-The required one-time graph projection covered all seven designed local
-surfaces with local depth 3, `contract-only` boundaries, contract depth 1, and
-requirement depth 1. It returned 30 impacted nodes and no unknown modules. The
-gate's graph-coverage interface uses `new_modules` as its explicit declaration
-of approved graph nodes even when those nodes already exist, so the tasks list
-every exact `graph.proposed_modules` value there; this is coverage metadata,
-not a claim that existing files or contracts are newly created. The original
-three tasks collectively cover every approved module, all 13 proposed edges,
-all four exact contracts, the depth policy, and all 12 acceptance criteria
-verbatim. The approved security/integrity amendment adds one bounded final
-task without reopening or invalidating credited work.
+The single required impact projection for the amendment confirmed
+`taskplane/tp.py` and `taskplane/taskplane_lite.py` as the exact lifecycle
+owners. It returned 30 impacted nodes, no unknown modules, and the current
+graph fingerprint
+`cadabcfd487b979671df0220062d0bd0fe3c7dbd2b5565f0620e0cd8c2761667`
+at HEAD `33d1ee985f4319cc48b6d79700a1caf05c16c585`. Every task retains the typed
+policy: local depth 3, `contract-only` boundaries, contract depth 1, and
+requirement depth 1.
 
-## Risk-first delivery
+The plan declares two exact contracts:
+`contract:review-dor-evidence` and
+`contract:review-validation-sandbox`. Its eight exact edges bind canonical
+DoR production/consumption, sandbox production/consumption, and focused test
+validation through those boundaries. The amendment introduces no third
+cross-boundary contract or invented edge: it tightens lifecycle ownership
+inside the existing Taskplane control plane. Explicit graph-node declarations
+cover all nine owning modules, `taskplane/tests`, and both contracts.
 
-1. **Reference-first projection.** Extend the incumbent evidence authority,
-   not a parallel store. Add v2 target/revision-bound immutable section
-   references and deterministic v3 scoped views. Reserve the complete inline
-   identity spine and omission manifest before lens-relevant content; emit
-   exact canonical JSON only when it fits, otherwise one verified reference.
-   Fail `review_scoped_view_budget_impossible` rather than truncate provenance
-   or drop a lens. Focused tests cover the 16,384-byte edge, 4–8 MiB input,
-   100 input permutations, per-lens pressure, deduplication, aggregate bounds,
-   and the seven reference rejection classes.
-2. **Slot conservation and collection integrity.** Prepare and verify every
-   routed slot, then enforce non-zero `selected == prepared == dispatched ==
-   collected`. Bind view, reference manifest, lease, target, producer,
-   revision, lens, and slot through dispatch and collection. Any preparation
-   or provenance mismatch returns a named fail-closed error before producer
-   execution or canonical publication. The evidence, runtime-evaluation, and
-   loop consumers may project machine-owned facts but may not remap them.
-3. **Dashboard independence and compatibility.** Render only sealed canonical
-   collection/gate state. Vary dashboard size and pagination without changing
-   routing, leases, results, findings, or gate fingerprints. Golden fitting
-   fixtures must retain equivalent routing, evidence semantics, findings, and
-   gates through v3.
-4. **Inline integrity and untrusted-evidence guard.** Preserve t1/t2 as passed
-   and credit the completed t3 dashboard behavior, then make one bounded pass
-   over `review.py` and `review_evidence.py`. Canonically verify that
-   `inline_sections`, referenced sections, and omission inventory are complete
-   and pairwise disjoint for the pinned envelope; reject duplicates, gaps,
-   undeclared sections, or contradictory omission state before dispatch and
-   collection. Treat PR-controlled diff, requirement, and change evidence as
-   untrusted data behind a mandatory delimiter. Deterministically detect,
-   obstruct, and flag prompt-injection attempts without treating the embedded
-   text as reviewer instructions. The flag is safe provenance/evidence, never
-   permission to silently discard the underlying code-review data.
+## Delivery
 
-The order is deliberately serial: collection cannot safely consume references
-until the projector/verifier contract is deterministic, and dashboard
-independence cannot be proven until canonical slot conservation is sealed.
-Implementation-file scopes remain tight; the exact `taskplane/tests` graph
-module is assigned to the final compatibility task for mechanical Design
-coverage, and the serial dependencies prevent its shared test surface from
-creating concurrent edits.
+The three implementation tasks are scope-disjoint and can run concurrently in
+isolated worktrees. A small test-only task joins the first two because AC9
+requires one proof that those R-0009 corrections compose without changing
+R-0009. Taskplane's exact-file scopes keep the lifecycle regression separate
+from that compatibility task.
 
-## Runnable validation map
+1. **Canonical structured criteria.** Admit the existing structured criteria
+   field as a first-class canonical DoR source even when `requirement.text` is
+   empty or unrelated. Preserve source order and authoritative source/target/
+   revision provenance; assign deterministic identities; deduplicate only true
+   semantic duplicates; reject empty or malformed entries fail-closed; and
+   carry the same records through ledger, approval evidence, JSON, Markdown,
+   HTML, and inline projections. A failed, unproven, or unsupported entry must
+   block approval exactly like a text-extracted criterion.
+2. **Process-tree no-push isolation.** Establish isolation before launch and
+   bind it to validation run, sandbox root, cwd, environment, executable, and
+   descendants. Enforce remote-write denial below Git command spelling so an
+   explicit URL/refspec, `--no-verify`, alternate configuration, hook override,
+   shell/package wrapper, child, or grandchild cannot bypass it. Verify the
+   isolated destination and reviewed checkout before/after. Missing, tampered,
+   escaped, or unverifiable isolation blocks execution and cannot record pass,
+   while ordinary reads, builds, tests, and disposable local writes continue.
+3. **R-0009 compatibility verification.** Run one bounded integration selector
+   covering the new cross-contract fixture plus the existing production,
+   routing, and session regressions. Audit the selected tests for removal,
+   skip, xfail, loosened floors, or reclassification. This task changes tests
+   only and depends on both implementations.
+4. **Exact-worktree lifecycle isolation.** Resolve and bind contract lookup,
+   lifecycle interception, processed-event identity, and duplicate-delivery
+   keys to the exact canonical workspace/worktree plus task lifecycle id—not a
+   repository family, shared Git directory, host event shape, or path prefix.
+   With A governed, `create_thread` and unrelated work in sibling worktree B
+   must proceed under B's own state while A remains governed. Re-delivering the
+   same event for A stays idempotent; an identical-shaped event for B is
+   independent. Tests cover sibling worktrees, shared `.git` metadata,
+   path-prefix collisions, duplicate delivery in A, and identical host events
+   across A/B without clearing or weakening either contract.
 
-| Focus | Acceptance coverage | Command |
+## Exact non-functional requirements
+
+- **security**: The no-push policy is enforced at the real validation process-tree boundary and cannot be bypassed by explicit URLs, --no-verify, Git configuration, hooks, wrappers, or descendants; inability to prove isolation blocks execution.
+- **architecture**: Structured acceptance is one canonical input to DoR, ledger, projections, and approval; validation isolation is one host-neutral process-tree contract; lifecycle governance is scoped by exact resolved worktree and task identity rather than repository family.
+- **data-safety**: Neither the reviewed checkout nor any local or remote Git destination may change during disposable validation, and structured criteria/evidence cannot be silently dropped, duplicated, or reordered.
+- **sre**: Isolation establishment, blocked attempts, and criterion-propagation failures produce stable actionable states with bounded execution and no partial or false-success record.
+- **integrability**: Existing R-0009 consumers remain compatible, and multiple Codex tasks may work concurrently in separate worktrees of one repository without clearing or weakening each other's contracts.
+
+## Runnable validation
+
+| Task | Criteria | Command |
 |---|---|---|
-| Reference-first bounds, determinism, relevance, deduplication, reference safety | 7 criteria | `python3 -m pytest -q taskplane/tests/test_review_reference_first_projection.py` |
-| Large/small slot parity, zero-slot prevention, collection tamper matrix | 3 criteria | `python3 -m pytest -q taskplane/tests/test_review_slot_conservation.py` |
-| Dashboard metamorphism and fitting-review compatibility | 2 criteria | `python3 -m pytest -q taskplane/tests/test_review_dashboard_independence.py` |
-| Inline completeness/disjointness/omissions and untrusted-evidence injection defense | Approved amendment | `python3 -m pytest -q taskplane/tests/test_review_inline_integrity.py taskplane/tests/test_review_untrusted_evidence.py` |
+| Canonical structured criteria | AC1–AC4 | `python3 -m pytest -q taskplane/tests/test_review_structured_criteria.py` |
+| Process-tree no-push isolation | AC5–AC8 | `python3 -m pytest -q taskplane/tests/test_review_process_tree_isolation.py` |
+| R-0009 compatibility | AC9 | `python3 -m pytest -q taskplane/tests/test_r0010_r0009_compatibility.py taskplane/tests/test_review_production_integration.py taskplane/tests/test_review_routing.py taskplane/tests/test_review_session.py` |
+| Exact-worktree lifecycle isolation | AC10–AC11 | `python3 -m pytest -q taskplane/tests/test_contract_worktree_isolation.py` |
 
-The integrity suite independently tampers view, manifest, lease, target,
-producer, revision, and slot. The reference suite rejects missing, stale,
-mismatched, unauthorized, traversal, symlink-escape, and mutated artifacts at
-both preparation and collection boundaries. Diagnostics contain only safe
-digests/counts—never paths, source text, credentials, or secrets.
-
-The amendment tests cover missing, duplicated, intersecting, reordered, and
-undeclared inline/reference/omission identities; canonical byte/fingerprint
-verification; delimiter presence at every producer boundary; benign text that
-resembles instructions; direct and obfuscated override/exfiltration attempts;
-and fail-closed detect/obstruct/flag behavior that preserves safe evidence for
-the collector.
-
-## Risks and controls
-
-- **Mandatory provenance exceeds the budget.** Reserve and measure the spine
-  first; fail explicitly rather than truncate JSON or erase selected work.
-- **Reference substitution or escape.** Resolve from kind/fingerprint inside
-  the canonical store, reject symlinks/aliases/traversal and authorization
-  mismatch, then verify digest, byte length, semantic fingerprint, target, and
-  revision before returning the named section.
-- **Evidence multiplies by lens count.** Store once per unique digest and cap
-  aggregate inline bytes at `16,384 × prepared slots`.
-- **Collection publishes mixed provenance.** Re-resolve references and compare
-  every identity before canonical publication; any mismatch fails closed.
-- **Presentation affects semantics.** Keep dashboard pagination downstream of
-  the sealed collection and gate fingerprint, with no routing input edge.
-- **PR-controlled evidence impersonates control instructions.** Delimit every
-  untrusted evidence class, interpret it only as review data, detect and
-  obstruct override/exfiltration patterns, and emit a bounded safe flag for
-  canonical collection.
-
-## Rollout and rollback
-
-Roll out behind `TASKPLANE_REFERENCE_FIRST_VIEWS`: first compare fitting-review
-parity, then make v3 authoritative while retaining v2 readers for active
-leases. Rollback disables new v3 preparation but continues collecting already
-issued v3 leases. Immutable artifacts need no migration or deletion. Retrying
-rebuilds views from the pinned canonical envelope without re-deriving review
-facts.
+No additional product feature, broad cleanup, artifact redesign, routing change, or
+host-specific review authority is authorized. Rollback disables the corrected
+paths for new reviews only and returns to the existing R-0009 implementation;
+it never rewrites review evidence, criteria, sandbox records, or test history.

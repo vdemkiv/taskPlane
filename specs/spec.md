@@ -1,144 +1,142 @@
-# Specification — size-safe ReviewKernel dispatch for large reviews
+# Specification — close R-0009 final approval blockers
 
 ## Problem
 
-ReviewKernel currently allows a canonical review artifact or dashboard to make
-a scoped lens view exceed an internal byte limit. The review can then stop
-before dispatch with zero lens slots. Larger reviews naturally create larger
-artifacts; artifact size is not a valid reason to omit applicable review.
+R-0009 is implemented but cannot reach truthful final approval while two
+confirmed gaps remain: structured acceptance criteria supplied separately from
+`requirement.text` can disappear from canonical DoR and the criterion ledger,
+and disposable dynamic validation can bypass its push-disabled claim by using
+an explicit remote URL with `git push --no-verify`.
 
 ## Users and context
 
-Engineers reviewing large pull requests, repositories, evidence sets, and
-dashboards need every applicable lens to run with bounded model context while
-retaining immutable identity and provenance for the canonical input judged.
+This focused follow-up serves engineers completing the approved R-0009
+host-parity governed PR review. It preserves R-0009's scope and behavior and
+closes only the two blockers independently observed at final evaluation.
 
 ## In scope
 
-- Decouple canonical review-artifact and dashboard size from leased-view size.
-- Bound scoped views with summaries and verified references to large evidence.
-- Preserve mandatory target, run, revision, routing, lens, slot, lease,
-  producer-contract, provenance, integrity, and authorization data.
-- Fail closed when required referenced content cannot be resolved or verified.
-- Prevent size-related preprocessing from silently yielding zero slots.
-- Cover large envelopes, evidence, dashboards, bounded views, reference
-  integrity, dispatch counts, and canonical collection with regressions.
-- Keep dashboard rendering faithful without treating dashboard bytes as lens
-  input or review authority.
+- Preserve structured acceptance criteria supplied outside `requirement.text`
+  through canonical DoR extraction, criterion-ledger generation, evidence
+  evaluation, rendered results, and approval gating.
+- Enforce the disposable validation sandbox's no-push boundary for the real
+  validation process tree, including explicit remote URLs and `--no-verify`.
+- Add focused positive, negative, and end-to-end regression evidence for these
+  two conditions.
 
 ## Out of scope
 
-- Removing context limits or sending the full dashboard/artifact to each lens.
-- Weakening applicability, security/architecture floors, lease isolation,
-  producer validation, collection, graph semantics, or human gates.
-- Treating dashboard HTML as canonical evidence or routing authority.
-- Unverified filesystem/network/model-authored references or mutable aliases.
-- Truncating mandatory provenance, silently dropping selected evidence, or
-  converting unresolved evidence into empty, zero, or pass.
-- Lens-catalog and dashboard visual redesign; unrelated review behavior.
-- Version, release, marketplace, publication, tag, or push work.
+- Any new R-0009 feature, workflow, UI, artifact format, lens, approval rule,
+  DoR source, or dynamic-validation capability.
+- Changing acceptance-criterion meaning, inventing criteria, or accepting
+  malformed/unauthorized criteria.
+- Editing or pushing the reviewed PR, enabling network publication, or
+  weakening disposable-copy isolation.
+- Refactoring unrelated review, collection, dashboard, command-runtime, host-
+  adapter, workflow, lens, graph, release, or marketplace behavior.
+- Reopening passed R-0009 acceptance criteria or broadening its implementation
+  surface beyond what these two blockers require.
 
 ## Acceptance criteria
 
-1. **Large artifacts do not block dispatch.** A canonical envelope, evidence
-   set, or dashboard larger than the scoped-view budget still dispatches every
-   routed slot. **Verify:** below-limit and substantially above-16-KiB fixtures
-   produce identical selected-lens and dispatched-slot sets.
+1. **Structured criteria survive canonical DoR.** When a review request carries
+   valid structured acceptance criteria outside `requirement.text`, canonical
+   DoR contains every criterion exactly once, in source order, with its source
+   identity and target/revision provenance. **Verify:** a fixture with empty or
+   unrelated `requirement.text` and multiple structured criteria asserts exact
+   canonical DoR equality and provenance.
 
-2. **Every view stays bounded.** Serialized bytes delivered to each producer
-   never exceed its configured view budget. **Verify:** budget-minus-one,
-   exact-budget, budget-plus-one, and multi-megabyte inputs.
+2. **Structured criteria reach the criterion ledger and outputs.** Every
+   structured criterion preserved by DoR appears exactly once in the canonical
+   criterion ledger and in the approval evidence consumed by JSON, Markdown,
+   HTML, and inline projections. **Verify:** a review using only structured
+   criteria round-trips through all projections with matching criterion ids,
+   text, status, evidence, and counts.
 
-3. **Identity/provenance stay inline.** Each view retains target fingerprint,
-   run/review id, canonical revision, routing id, lens/slot/lease ids, schema
-   and producer contract, plus reference provenance/integrity metadata. None
-   may be truncated or replaced by prose. **Verify:** schema assertions at all
-   boundaries and rejection of every missing/altered mandatory field.
+3. **Approval cannot lose structured criteria.** A structured criterion that
+   is failed, unproven, or missing valid evidence prevents approval under the
+   same rules as a criterion extracted from `requirement.text`; a passing
+   criterion permits approval only when every other R-0009 gate is satisfied.
+   **Verify:** pass, fail, unproven, and missing-evidence fixtures assert the
+   corresponding canonical gate reason and no false approval.
 
-4. **Overflow uses verified references.** Non-fitting content is stored once
-   and represented by a stable reference with content digest, revision binding,
-   media/schema type, length, and authorized resolver data. **Verify:** resolved
-   bytes and digest for large diff, graph, DoR, dynamic-validation, and prior-
-   findings evidence match the canonical source without per-lens duplication.
+4. **Mixed sources remain deterministic.** When the same criterion is present
+   in structured input and `requirement.text`, it is represented once without
+   losing authoritative source provenance; distinct criteria from both sources
+   are preserved. **Verify:** duplicate, reordered, distinct, empty-text, and
+   malformed structured-input fixtures assert deterministic identity, order,
+   provenance, and fail-closed rejection where appropriate.
 
-5. **References fail closed.** Missing, unreadable, stale-revision,
-   digest-mismatched, wrong-target, unauthorized, traversal, symlink-escape,
-   and post-lease-mutated references cannot dispatch or collect as valid.
-   **Verify:** each negative fixture yields no valid result/pass and names the
-   affected slot plus a safe recovery action.
+5. **Explicit-URL push is blocked.** From a registered disposable dynamic-
+   validation sandbox, `git push --no-verify <explicit-url> <refspec>` cannot
+   transmit repository data or update any local or remote destination, even
+   when it bypasses configured remotes and hooks. **Verify:** an isolated bare
+   destination reachable by explicit URL remains byte/ref unchanged and the
+   command returns a stable blocked result.
 
-6. **No silent zero-slot outcome.** If routing selects at least one lens,
-   preprocessing either materializes exactly those leased slots or stops in an
-   explicit non-success state naming stage and lens. Size must never produce a
-   completed zero-slot review. **Verify:** mutation/failure injection proves
-   `selected > 0` implies `dispatched == selected`, except for a named
-   fail-closed terminal error that cannot be reported as completion.
+6. **The entire validation process tree inherits the boundary.** Direct
+   validation commands and their child, grandchild, shell, package-script, and
+   executable-wrapper processes cannot push with explicit URLs, alternate Git
+   config, `--no-verify`, or hook overrides. **Verify:** process-tree fixtures
+   attempt each form and assert no destination mutation, with the responsible
+   validation run/sandbox identified.
 
-7. **Dashboard is presentation-only.** Dashboard size, pagination, and inline
-   rendering cannot affect routing, leasing, view construction, dispatch, or
-   collection. **Verify:** small and large/paged dashboards from one canonical
-   review retain equal revision, routing, slot, finding, and gate values.
+7. **The boundary is fail closed and truthful.** If no-push isolation cannot be
+   established or verified before execution, dynamic validation does not run
+   and cannot be recorded as executed/pass. A blocked push is reported as an
+   isolation enforcement event, not as a product build/test failure.
+   **Verify:** unavailable, tampered, escaped-working-directory, and blocked-
+   attempt fixtures assert named non-success states, intact source/remote refs,
+   and no false dynamic evidence.
 
-8. **Selection is deterministic.** A pinned target, revision, routing decision,
-   lens, and budget produce byte-stable summaries/references despite input
-   ordering. **Verify:** repeated and permuted runs produce identical view
-   fingerprints and reference manifests.
+8. **Permitted validation remains usable.** Normal read-only builds, tests,
+   dependency reads, and local disposable-file writes continue to work inside
+   the registered sandbox, while the original checkout and remotes remain
+   unchanged. **Verify:** the focused R-0009 dynamic scenario passes its real
+   checks, records process-tree isolation evidence, and proves source and
+   destination refs are unchanged before and after.
 
-9. **Useful context survives pressure.** After mandatory fields are reserved,
-   deterministic lens relevance—not first-N truncation—selects summaries and
-   references; omitted optional material is inventoried. **Verify:** a large
-   mixed fixture gives every lens required evidence classes plus an explicit
-   referenced/omitted manifest.
-
-10. **Collection verifies the dispatched contract.** Results with a different
-    view fingerprint, reference manifest, lease, target, producer, or revision
-    are rejected. **Verify:** copied, wrong-view/reference/revision/slot,
-    stale-lease, and valid-large-review fixtures.
-
-11. **Small reviews stay compatible.** Existing fitting reviews retain routing,
-    evidence, schema, findings, and gate behavior. **Verify:** golden fixtures
-    remain unchanged or use an explicit compatible schema migration, with no
-    weakened assertions.
-
-12. **Resource use stays bounded.** Preparation does not copy full canonical
-    payloads per slot or scale model input with dashboard size. **Verify:** a
-    many-lens multi-megabyte fixture has one governed copy per unique overflow
-    artifact, bounded diagnostics, per-view bytes within budget, and aggregate
-    inline bytes bounded by the sum of slot budgets.
+9. **No R-0009 regression.** Existing R-0009 cross-host, DoR, criterion,
+   partial-collection, repair, inline, artifact, large-review, and sandbox
+   behavior remains unchanged except for closing these blockers. **Verify:**
+   the focused new tests and complete R-0009 regression suite pass without
+   removed, skipped, xfailed, loosened, or reclassified assertions.
 
 ## Non-functional requirements
 
-- `security`: Only authorized, target-bound, digest-verified references cross
-  the boundary; traversal, symlink escape, mutable aliases, and secret-bearing
-  diagnostics fail closed.
-- `architecture`: Canonical state, dashboard projection, bounded views, and
-  referenced evidence have separate responsibilities under one ReviewKernel
-  authority for routing, leases, provenance, and collection.
-- `data-safety`: Evidence is revision-immutable, stored once, integrity checked
-  before dispatch/collection, and never silently dropped or overwritten.
-- `sre`: Large inputs complete with bounded behavior or a named fail-closed
-  error; selected work cannot disappear into false zero-slot completion.
-- `integrability`: View/reference schema changes are versioned and remain
-  compatible with shipped adapters, fitting reviews, and canonical collection.
-- `performance`: Processing/storage scale with unique evidence plus configured
-  slot budgets, not dashboard size multiplied by lens count.
-- `privacy-compliance`: References and diagnostics expose minimum metadata and
-  exclude personal absolute paths, credentials, secrets, and unrelated data.
+- `security`: The no-push policy is enforced at the real validation process-
+  tree boundary and cannot be bypassed by explicit URLs, `--no-verify`, Git
+  configuration, hooks, wrappers, or descendant processes; failure to prove
+  isolation blocks execution.
+- `architecture`: Structured acceptance is one canonical input to DoR, ledger,
+  projections, and approval, and validation isolation is one host-neutral
+  process-tree contract rather than host-, command-, or remote-name checks.
+- `data-safety`: Neither the reviewed checkout nor any local/remote Git
+  destination may change during disposable validation; structured criteria and
+  evidence cannot be silently dropped, duplicated, or reordered.
+- `sre`: Isolation establishment, blocked attempts, and criterion-propagation
+  failures produce stable actionable states with bounded execution and no
+  partial or false-success record.
+- `integrability`: Existing R-0009 request, DoR, ledger, result, artifact, and
+  sandbox consumers remain compatible; structured inputs use their existing
+  contract rather than a new parallel representation.
 
 ## Contract handoff
 
-- `scope_paths`: `taskplane/review.py`, `taskplane/review_evidence.py`,
-  `taskplane/evidence.py`, `taskplane/runtime_eval.py`, `taskplane/loop.py`,
-  `taskplane/dashboard.py`, `taskplane/tests/**`, `specs/spec.md`.
-- `out_of_scope`: catalog/applicability redesign, graph semantics, dashboard
-  visual redesign, removal of limits, unverified external transports, release
-  work, and unrelated review/evaluation behavior.
+- `scope_paths`:
+  - `taskplane/review.py`
+  - `taskplane/review_dor.py`
+  - `taskplane/review_evidence.py`
+  - `taskplane/tests/**`
+  - `specs/spec.md`
+- `out_of_scope`: every R-0009 behavior except structured-criterion continuity
+  and real process-tree no-push enforcement for disposable validation.
 - `dod.test_command`: `python3 -m pytest taskplane/tests -q`
-- dependencies: none.
-- contracts: `contract:review-kernel-slot`,
-  `contract:review-kernel-scoped-view`,
-  `contract:review-kernel-evidence-reference`,
-  `contract:review-dashboard-projection`.
+- dependency/change context: `R-0009`.
+- contracts:
+  - `contract:review-dor-evidence`
+  - `contract:review-validation-sandbox`
 
-This security-sensitive cross-module protocol change requires Design before
-Build. There are no blocking Product questions.
+This is a narrow security and canonical-evidence correction. It does not add a
+new product workflow or reopen the approved R-0009 design beyond the two named
+blockers. There are no blocking Product questions.

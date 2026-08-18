@@ -1,175 +1,31 @@
 {
   "tasks": [
     {
-      "id": "t1-close-sandbox-push-bypasses",
-      "title": "Bind disposable validation to a verified push-disabled sandbox",
-      "scope": [
-        "taskplane/command_adapters.py",
-        "taskplane/command_runtime.py",
-        "taskplane/review_session.py",
-        "taskplane/tests/test_review_sandbox_security.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_sandbox_security.py",
-      "req": "R-0009",
-      "deps": [],
-      "type": "security",
-      "contracts": [
-        "contract:review-host-adapter",
-        "contract:review-human-consent"
-      ],
-      "new_modules": [
-        "taskplane/command_adapters.py",
-        "taskplane/command_runtime.py",
-        "taskplane/review_session.py",
-        "contract:review-host-adapter",
-        "contract:review-human-consent"
-      ],
-      "design_edges": [
-        "taskplane/review_session.py->contract:review-human-consent:provides",
-        "taskplane/review_session.py->contract:review-host-adapter:consumes",
-        "taskplane/command_adapters.py->contract:review-host-adapter:provides",
-        "taskplane/command_runtime.py->contract:review-host-adapter:consumes"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC15: Broken-build dynamic validation operates only in a disposable review copy: the pinned checkout/ref and remote remain unchanged, no push occurs, sandbox delta is evidence, and final output distinguishes submitted-PR from sandbox outcomes."
-      ]
-    },
-    {
-      "id": "t2-confine-artifact-publication",
-      "title": "Confine artifact roots and return stable unavailable results for unsafe paths",
-      "scope": [
-        "taskplane/review_artifacts.py",
-        "taskplane/tests/test_review_artifact_confinement.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_artifact_confinement.py",
-      "req": "R-0009",
-      "deps": [],
-      "type": "security",
-      "contracts": [
-        "contract:review-artifact-set"
-      ],
-      "new_modules": [
-        "taskplane/review_artifacts.py",
-        "contract:review-artifact-set"
-      ],
-      "design_edges": [
-        "taskplane/review_artifacts.py->contract:review-artifact-set:provides"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC12: Publishing a provisional or canonical revision automatically writes JSON, Markdown, and HTML containing complete DoR, criterion evidence, slot/lens status, all findings, dynamic evidence, collection/provenance, and gate state; a 120-finding round trip proves semantic equality and identical counts without a prompt."
-      ]
-    },
-    {
-      "id": "t3-repair-summary-or-rerun-affected-slot",
-      "title": "Make leased producer-summary repair collectable or rerun only the affected slot",
-      "scope": [
-        "taskplane/review_recovery.py",
-        "taskplane/review_evidence.py",
-        "taskplane/tests/test_review_summary_recovery.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_summary_recovery.py",
-      "req": "R-0009",
-      "deps": [],
-      "type": "integration",
-      "contracts": [
-        "contract:review-kernel-slot",
-        "contract:review-kernel-partial-revision",
-        "contract:review-kernel-mechanical-repair"
-      ],
-      "new_modules": [
-        "taskplane/review_recovery.py",
-        "taskplane/review_evidence.py",
-        "contract:review-kernel-slot",
-        "contract:review-kernel-partial-revision",
-        "contract:review-kernel-mechanical-repair"
-      ],
-      "design_edges": [
-        "taskplane/review_evidence.py->contract:review-kernel-partial-revision:provides",
-        "taskplane/review_recovery.py->contract:review-kernel-mechanical-repair:provides",
-        "taskplane/review_recovery.py->contract:review-kernel-slot:consumes"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC9: The observed valid fail/one-finding frontend result with unresolved free-form declaration identity is mechanically repaired from leased authority and collected without substantive rerun; changed findings, evidence, target, producer, slot, or unverifiable identity cannot be repaired and rerun only the affected slot.",
-        "AC10: Mixed-result retries invoke only affected producers; valid slots are neither re-reviewed nor rewritten, collection is idempotent, and final canonical output contains no duplicated findings."
-      ]
-    },
-    {
-      "id": "t4-wire-canonical-production-review",
-      "title": "Compose DoR, session, recovery, artifacts, and bounded inline pages into the production transaction",
+      "id": "t1-canonical-structured-criteria",
+      "title": "Carry structured criteria through canonical DoR, ledger, evidence, projections, and approval",
       "scope": [
         "taskplane/review.py",
-        "taskplane/loop.py",
-        "taskplane/evidence.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/dashboard.py",
-        "taskplane/tests",
-        "taskplane/tests/test_review_production_integration.py",
-        "taskplane/tests/test_review_routing.py",
-        "taskplane/tests/test_review_session.py"
+        "taskplane/review_dor.py",
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_review_structured_criteria.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_review_production_integration.py",
-      "req": "R-0009",
-      "deps": [
-        "t1-close-sandbox-push-bypasses",
-        "t2-confine-artifact-publication",
-        "t3-repair-summary-or-rerun-affected-slot"
-      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_structured_criteria.py",
+      "req": "R-0010",
+      "deps": [],
       "type": "architecture",
       "contracts": [
-        "contract:review-kernel-slot",
-        "contract:review-kernel-partial-revision",
-        "contract:review-kernel-mechanical-repair",
-        "contract:review-dor-evidence",
-        "contract:review-host-adapter",
-        "contract:review-human-consent",
-        "contract:review-inline-presentation",
-        "contract:review-artifact-set"
+        "contract:review-dor-evidence"
       ],
       "new_modules": [
         "taskplane/review.py",
-        "taskplane/evidence.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/dashboard.py",
-        "taskplane/loop.py",
-        "workflows",
-        "skills",
-        "agents",
-        "lenses",
-        "taskplane/tests",
         "taskplane/review_dor.py",
-        "contract:review-dor-evidence",
-        "contract:review-inline-presentation"
+        "taskplane/review_evidence.py",
+        "contract:review-dor-evidence"
       ],
       "design_edges": [
         "taskplane/review_dor.py->contract:review-dor-evidence:provides",
-        "taskplane/review.py->contract:review-kernel-slot:provides",
-        "taskplane/dashboard.py->contract:review-inline-presentation:provides",
-        "taskplane/dashboard.py->contract:review-artifact-set:consumes",
-        "taskplane/evidence.py->contract:review-dor-evidence:consumes",
-        "taskplane/runtime_eval.py->contract:review-kernel-partial-revision:consumes",
-        "taskplane/loop.py->contract:review-human-consent:consumes",
-        "taskplane/tests->contract:review-host-adapter:validates",
-        "taskplane/tests->contract:review-kernel-mechanical-repair:validates",
-        "taskplane/tests->contract:review-artifact-set:validates",
-        "taskplane/tests->contract:review-inline-presentation:validates"
+        "taskplane/review.py->contract:review-dor-evidence:consumes",
+        "taskplane/review_evidence.py->contract:review-dor-evidence:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -178,18 +34,118 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC1: The same pinned PR, requirements, options, and deterministic lens fixtures on Claude and Codex produce semantically equivalent DoR, routing, leases, validation, findings, collection, gate, and JSON/Markdown/HTML results, with only transport metadata differing.",
-        "AC2: Fixtures for PR title/body/comments, commits, changelog, linked issue/spec/acceptance text, and repository contracts prove every available source is checked before routing with identity and revision provenance; missing, inaccessible, contradictory, and stale sources are explicit.",
-        "AC3: Paraphrase, bullet, prose, commit, changelog, comment, conflict, and non-requirement fixtures are dynamically classified as objective, acceptance criterion, review directive, constraint, or context; one clarification occurs only when ambiguity materially changes review.",
-        "AC4: Every extracted criterion is rendered as pass, fail, unproven, or not-applicable with rationale, evidence reference, verification method, and responsible lens/step; unproven or unjustified not-applicable prevents approval.",
-        "AC5: Semantic variants of security, bugs, usability, scale performance, quality, and architecture directives route applicable catalog lenses separately from feature acceptance criteria and do not silently suppress executable validation.",
-        "AC6: One complete-review choice covering all then-known non-destructive options reaches the final human gate without repeated render, dynamic, collection, repair, retry, or artifact approvals, and free-form equivalent consent works without an exact phrase.",
-        "AC7: A new approval is requested only for changed target/scope, newly destructive/external action, permission/credential escalation, unsafe operation, irreconcilable requirement ambiguity, or final disposition, and names the new fact and authority needed.",
-        "AC8: With zero, one, several, or all invalid/missing slots, valid findings remain in an immutable provisional revision with per-slot reasons, explicit incompleteness, disabled approval, stable provenance, and later supersession into a canonical revision.",
-        "AC11: On both hosts, inline interaction tests prove target/revision, DoR status/sources, expandable criterion evidence, lens status, severity/lens/file findings with rationale/action, dynamic evidence, provisional gaps, provenance, gate reason, filtering, keyboard navigation, and action receipts; approval controls are enabled only for complete approvable revisions.",
-        "AC13: Reviews at least as large as 126 KiB Markdown and 342 KiB HTML plus multi-megabyte fixtures dispatch every selected slot, retain every finding in exports, render inline by bounded pages/references, and preserve one revision/provenance across pages without making dashboard bytes producer input.",
-        "AC14: Host limitation, unavailable dynamic check, invalid reference, renderer failure, artifact-write failure, and unrepaired-slot injection produce stable actionable non-success states and never zero findings, declined-user-choice, completed review, or pass.",
-        "AC16: Existing complete small-review goldens retain routing, findings, gates, and artifact consumers unchanged or through an explicit versioned migration, with no test removal, skip, xfail, lowered floor, or weakened governance assertion."
+        "AC1: With empty or unrelated requirement.text, multiple valid structured criteria appear exactly once and in source order in canonical DoR with source identity and target/revision provenance.",
+        "AC2: A review using only structured criteria round-trips every criterion exactly once through the canonical ledger, approval evidence, JSON, Markdown, HTML, and inline projections with matching ids, text, status, evidence, and counts.",
+        "AC3: A structured criterion that is failed, unproven, or missing valid evidence prevents approval exactly like a text-extracted criterion; pass permits approval only when every other R-0009 gate is satisfied.",
+        "AC4: Duplicate, reordered, distinct, empty-text, and malformed mixed-source fixtures prove deterministic identity, order, authoritative provenance, deduplication, and fail-closed rejection without losing distinct criteria."
+      ]
+    },
+    {
+      "id": "t2-process-tree-no-push-isolation",
+      "title": "Enforce explicit-URL and descendant-process no-push isolation at the validation boundary",
+      "scope": [
+        "taskplane/command_adapters.py",
+        "taskplane/command_runtime.py",
+        "taskplane/review_session.py",
+        "taskplane/tests/test_review_process_tree_isolation.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_process_tree_isolation.py",
+      "req": "R-0010",
+      "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:review-validation-sandbox"
+      ],
+      "new_modules": [
+        "taskplane/command_adapters.py",
+        "taskplane/command_runtime.py",
+        "taskplane/review_session.py",
+        "contract:review-validation-sandbox"
+      ],
+      "design_edges": [
+        "taskplane/command_adapters.py->contract:review-validation-sandbox:provides",
+        "taskplane/command_runtime.py->contract:review-validation-sandbox:consumes",
+        "taskplane/review_session.py->contract:review-validation-sandbox:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC5: From a registered validation sandbox, git push --no-verify to an explicit URL and refspec returns a stable blocked result and leaves the isolated bare destination bytes and refs unchanged.",
+        "AC6: Direct commands plus child, grandchild, shell, package-script, and executable-wrapper processes cannot push via explicit URLs, alternate Git config, --no-verify, or hook overrides, and every block identifies its validation run and sandbox.",
+        "AC7: If no-push isolation is unavailable, tampered, or unverifiable, or command cwd escapes the sandbox, dynamic validation does not run and cannot be recorded executed/pass; reviewed checkout and destination refs remain intact.",
+        "AC8: Normal read-only builds, tests, dependency reads, and disposable local writes still work in the sandbox; the focused R-0009 dynamic scenario records process-tree isolation evidence and proves original checkout and destination refs unchanged."
+      ]
+    },
+    {
+      "id": "t4-exact-worktree-lifecycle-isolation",
+      "title": "Bind lifecycle interception and deduplication to the exact resolved worktree and task identity",
+      "scope": [
+        "taskplane/tp.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tests/test_contract_worktree_isolation.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_contract_worktree_isolation.py",
+      "req": "R-0010",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:review-dor-evidence",
+        "contract:review-validation-sandbox"
+      ],
+      "new_modules": [
+        "taskplane/tp.py",
+        "taskplane/taskplane_lite.py"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC10: With a contract active in worktree A, creating a Codex task or running unrelated work bound to worktree B of the same repository is not blocked, replayed, or marked already processed by A; A remains governed and B receives only its own contract.",
+        "AC11: Lifecycle deduplication keys include the exact resolved workspace/worktree and task lifecycle identity, so duplicate delivery in one task remains idempotent while identical host event shapes in separate worktrees proceed independently."
+      ]
+    },
+    {
+      "id": "t3-r0009-compatibility-verification",
+      "title": "Verify both blockers together without changing any other R-0009 behavior",
+      "scope": [
+        "taskplane/tests",
+        "taskplane/tests/test_r0010_r0009_compatibility.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0010_r0009_compatibility.py taskplane/tests/test_review_production_integration.py taskplane/tests/test_review_routing.py taskplane/tests/test_review_session.py",
+      "req": "R-0010",
+      "deps": [
+        "t1-canonical-structured-criteria",
+        "t2-process-tree-no-push-isolation",
+        "t4-exact-worktree-lifecycle-isolation"
+      ],
+      "type": "validation",
+      "contracts": [
+        "contract:review-dor-evidence",
+        "contract:review-validation-sandbox"
+      ],
+      "new_modules": [
+        "taskplane/tests"
+      ],
+      "design_edges": [
+        "taskplane/tests->contract:review-dor-evidence:validates",
+        "taskplane/tests->contract:review-validation-sandbox:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC9: Focused tests and the complete R-0009 regression suite pass with no removed, skipped, xfailed, loosened, or reclassified assertion and no change to other R-0009 behavior."
       ]
     }
   ]
