@@ -30,6 +30,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import sys
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -823,7 +824,8 @@ def prepare_review_validation_sandbox(ws: str, *,
 def run_review_validation_command(ws: str, *, command: list[str],
                                   cwd: str = ".",
                                   run_id: str | None = None,
-                                  timeout: int = 600) -> dict:
+                                  timeout: int = 600,
+                                  isolation_launcher: Callable | None = None) -> dict:
     """Execute argv directly inside the registered validation sandbox."""
     state = _load_state(ws, run_id)
     sandbox = state.get("validation_sandbox") or {}
@@ -837,25 +839,60 @@ def run_review_validation_command(ws: str, *, command: list[str],
     argv = [str(item) for item in command if str(item)]
     if not argv or any("\x00" in item for item in argv):
         raise ReviewKernelError("validation command argv is empty or invalid")
+    summary = " ".join(argv)[:80]
+    # Defence in depth for an immediately visible push.  This is not the
+    # security boundary: opaque interpreters and all descendants are confined
+    # by the process-tree launcher below.
+    from taskplane.command_adapters import CommandAdapter
     try:
-        result = subprocess.run(
-            argv, cwd=workdir, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, timeout=max(1, min(int(timeout), 1800)),
-            check=False)
+        CommandAdapter._validate_push_disabled_command(argv)
+    except ValueError as exc:
+        recorded = record_review_execution(
+            ws, kind="dynamic_validation", status="failed",
+            detail={"summary": summary, "reason_code": "push_blocked",
+                    "isolation": "not-launched", "reason": str(exc)},
+            run_id=run_id)
+        return {"status": "failed", "exit_code": None,
+                "reason_code": "push_blocked", "reason": str(exc),
+                "review_execution": recorded}
+
+    launcher = isolation_launcher or _run_review_process_tree_isolated
+    try:
+        result, isolation = launcher(
+            argv, workdir, max(1, min(int(timeout), 1800)))
     except (OSError, subprocess.TimeoutExpired) as exc:
         recorded = record_review_execution(
             ws, kind="dynamic_validation", status="failed",
-            detail={"summary": argv[0]}, run_id=run_id)
+            detail={"summary": summary,
+                    "reason_code": "process_tree_isolation_unavailable",
+                    "reason": str(exc)}, run_id=run_id)
         return {"status": "failed", "exit_code": None,
+                "reason_code": "process_tree_isolation_unavailable",
                 "reason": str(exc), "review_execution": recorded}
+    isolation = dict(isolation or {})
+    if isolation.get("schema") != \
+            "taskplane.review-isolation-receipt/v1" or \
+            isolation.get("scope") != "complete-process-tree" or \
+            isolation.get("network") != "denied" or \
+            not str(isolation.get("mechanism") or "").strip():
+        recorded = record_review_execution(
+            ws, kind="dynamic_validation", status="failed",
+            detail={"summary": summary,
+                    "reason_code": "process_tree_isolation_unverified"},
+            run_id=run_id)
+        return {"status": "failed", "exit_code": None,
+                "reason_code": "process_tree_isolation_unverified",
+                "reason": "process-tree isolation receipt is incomplete",
+                "review_execution": recorded}
     output = bytes(result.stdout or b"")
-    summary = " ".join(argv)[:80]
     if result.returncode:
         recorded = record_review_execution(
             ws, kind="dynamic_validation", status="failed",
-            detail={"summary": summary}, run_id=run_id)
+            detail={"summary": summary, "isolation": isolation},
+            run_id=run_id)
         return {"status": "failed", "exit_code": result.returncode,
                 "output": output[-4000:].decode("utf-8", errors="replace"),
+                "isolation": isolation,
                 "review_execution": recorded}
     execution = (state.get("review_execution") or {}).get(
         "dynamic_validation") or {}
@@ -882,7 +919,41 @@ def run_review_validation_command(ws: str, *, command: list[str],
         approval_receipt=receipt)
     return {"status": "executed", "exit_code": 0,
             "output": output[-4000:].decode("utf-8", errors="replace"),
+            "isolation": isolation,
             "review_execution": recorded}
+
+
+def _run_review_process_tree_isolated(argv: list[str], cwd: str,
+                                      timeout: int):
+    """Run a validation command behind an OS-enforced descendant boundary.
+
+    macOS Seatbelt policy is inherited by every child process.  Other hosts
+    must inject an equivalent launcher; silently falling back to ordinary
+    ``subprocess.run`` would turn a manifest claim into fake isolation.
+    """
+    if sys.platform == "darwin" and os.path.isfile("/usr/bin/sandbox-exec"):
+        escaped = cwd.replace("\\", "\\\\").replace('"', '\\"')
+        profile = " ".join((
+            "(version 1)", "(deny default)", '(import "system.sb")',
+            "(allow process*)", "(allow file-read*)",
+            f'(allow file-write* (subpath "{escaped}"))',
+            "(deny network*)",
+        ))
+        result = subprocess.run(
+            ["/usr/bin/sandbox-exec", "-p", profile, "--", *argv], cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
+            check=False)
+        if b"sandbox_apply: Operation not permitted" in bytes(
+                result.stdout or b""):
+            raise OSError(
+                "complete process-tree isolation cannot be nested on this host")
+        return result, {
+                "schema": "taskplane.review-isolation-receipt/v1",
+                "scope": "complete-process-tree", "network": "denied",
+                "filesystem_writes": "validation-sandbox-only",
+                "mechanism": "macos-seatbelt",
+        }
+    raise OSError("complete process-tree isolation is unavailable on this host")
 
 
 def _semantic_words(value: object) -> set[str]:
