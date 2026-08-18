@@ -7,10 +7,24 @@ opaque Taskplane handles and canonical command events.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ctypes
+import ctypes.util
 import hashlib
 import json
 import os
+from pathlib import Path
+import shlex
+import signal
+import subprocess
+import sys
+import threading
+import time
 from typing import Callable, Mapping, Protocol
+
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - Windows fail-closed path
+    _resource = None
 
 from taskplane.command_runtime import CommandRuntime, TERMINAL_STATES
 from taskplane.review_session import (
@@ -57,6 +71,238 @@ class HostLaunch:
 
     binding: Mapping[str, object]
     isolation: Mapping[str, object] | None = None
+
+
+_SURFACE_ENV = {
+    "side_panel": "TASKPLANE_SIDE_PANEL_COMMAND",
+    "browser": "TASKPLANE_BROWSER_COMMAND",
+    "hosting": "TASKPLANE_HOSTING_COMMAND",
+}
+
+_STARTUP_TIMEOUT_SECONDS = 0.15
+_TEARDOWN_GRACE_SECONDS = 0.5
+_PREVIEW_PROCESSES: dict[str, list[object]] = {}
+_PREVIEW_PROCESS_LOCK = threading.Lock()
+
+
+def _pid_start_identity(pid: int) -> str:
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.is_file():
+        fields = proc_stat.read_text(encoding="utf-8").split()
+        if len(fields) > 21:
+            return f"linux-proc:{fields[21]}"
+    if sys.platform == "darwin":
+        library = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
+        libproc = ctypes.CDLL(library, use_errno=True)
+        buffer = ctypes.create_string_buffer(256)
+        size = int(libproc.proc_pidinfo(
+            int(pid), 3, 0, ctypes.byref(buffer), ctypes.sizeof(buffer)))
+        # proc_bsdinfo's immutable pbi_start_tvsec/usec occupy bytes
+        # 120..135. Hashing the full struct would include mutable status and
+        # create false PID-reuse alarms during ordinary lifecycle changes.
+        if size >= 136:
+            return "darwin-start:" + buffer.raw[120:136].hex()
+    raise OSError("preview process start identity is unavailable")
+
+
+def _process_identity(process: object, *, role: str,
+                      generation: int = 1) -> dict:
+    pid = int(process.pid)
+    pgid = int(os.getpgid(pid))
+    started = _pid_start_identity(pid)
+    return {"schema": "taskplane.preview-process-ownership/v1",
+            "pid": pid, "pgid": pgid, "started": started,
+            "role": role, "generation": int(generation)}
+
+
+def _register_preview_process(preview_id: str, process: object, *,
+                              role: str = "preview-command") -> dict:
+    ownership = _process_identity(process, role=role)
+    with _PREVIEW_PROCESS_LOCK:
+        _PREVIEW_PROCESSES.setdefault(preview_id, []).append(process)
+    return ownership
+
+
+def _ownership_status(row: Mapping[str, object]) -> str:
+    """Return live, absent, or unverifiable without signalling anything."""
+    try:
+        if row.get("schema") != "taskplane.preview-process-ownership/v1" or \
+                str(row.get("role")) not in {"preview-command", "host-surface"} or \
+                int(row.get("generation", 0)) <= 0:
+            return "unverifiable"
+        pid, pgid = int(row["pid"]), int(row["pgid"])
+        if os.getpgid(pid) != pgid:
+            return "unverifiable"
+        started = _pid_start_identity(pid)
+        return "live" if started and started == row.get("started") else "unverifiable"
+    except ProcessLookupError:
+        return "absent"
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return "unverifiable"
+
+
+def teardown_preview_processes(preview_id: str,
+                               ownership: object = None) -> bool:
+    """Rehydrate ownership and terminate only identity-verified process groups."""
+    if not isinstance(ownership, list) or not ownership:
+        return False
+    with _PREVIEW_PROCESS_LOCK:
+        processes = _PREVIEW_PROCESSES.pop(preview_id, [])
+    cached = {int(process.pid): process for process in processes}
+    for row in ownership:
+        if not isinstance(row, Mapping):
+            return False
+        status = _ownership_status(row)
+        if status == "absent":
+            continue
+        if status != "live":
+            return False
+        pid, pgid = int(row["pid"]), int(row["pgid"])
+        process = cached.get(pid)
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            return False
+        if process is not None:
+            try:
+                process.wait(timeout=_TEARDOWN_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            deadline = time.monotonic() + _TEARDOWN_GRACE_SECONDS
+            while (_ownership_status(row) == "live" and
+                   time.monotonic() < deadline):
+                time.sleep(0.01)
+        if _ownership_status(row) == "live":
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                return False
+            deadline = time.monotonic() + _TEARDOWN_GRACE_SECONDS
+            while _ownership_status(row) == "live" and time.monotonic() < deadline:
+                time.sleep(0.01)
+        if process is not None and process.poll() is None:
+            try:
+                process.wait(timeout=0)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        if _ownership_status(row) != "absent":
+            return False
+    return True
+
+
+def _require_live_startup(process, *, label: str) -> None:
+    """Prove a child survived its bounded startup window before receipting it."""
+    try:
+        returncode = process.wait(timeout=_STARTUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return
+    output = b""
+    try:
+        captured = process.communicate(timeout=0)[0]
+        output = bytes(captured or b"")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    detail = output[-512:].decode("utf-8", errors="replace").strip()
+    if "sandbox_apply" in detail:
+        raise OSError(f"{label} could not apply isolation: {detail}")
+    suffix = f": {detail}" if detail else ""
+    raise OSError(f"{label} exited during startup ({returncode}){suffix}")
+
+
+def native_surface_transport(surface: str, sandbox: str,
+                             preview: Mapping[str, object]) -> Mapping[str, object]:
+    """Invoke the configured host-native surface bridge without a shell."""
+    env_name = _SURFACE_ENV.get(surface)
+    configured = os.environ.get(env_name or "", "").strip()
+    if not configured:
+        raise OSError(f"native {surface} transport is unavailable")
+    argv = shlex.split(configured)
+    if not argv:
+        raise OSError(f"native {surface} transport is invalid")
+    process = subprocess.Popen(
+        [*argv, "--workspace", sandbox, "--preview-id",
+         str(preview["preview_id"])], cwd=sandbox,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+    _require_live_startup(process, label=f"native {surface} transport")
+    ownership = _register_preview_process(
+        str(preview["preview_id"]), process, role="host-surface")
+    return {"schema": "taskplane.host-preview-surface/v1",
+            "surface": surface, "binding": f"pid:{process.pid}",
+            "process_ownership": ownership}
+
+
+def os_preview_isolation_launcher(command: object, cwd: str,
+                                  policy: Mapping[str, object]) -> HostLaunch:
+    """Launch a complete descendant tree under an OS-enforced preview policy."""
+    if not isinstance(command, (list, tuple)) or not command:
+        raise ValueError("preview isolation requires direct argv")
+    root = Path(cwd).resolve()
+    if (policy.get("network"), policy.get("scope"), policy.get("push"),
+            policy.get("filesystem"), policy.get("source"),
+            policy.get("remotes")) != (
+                "deny", "complete-process-tree", "deny", "sandbox-only",
+                "immutable", "disabled"):
+        raise ValueError("preview isolation policy is incomplete")
+    # Remote disabling is physical, not a promise in a receipt.
+    if (root / ".git").exists():
+        raise ValueError("preview sandbox contains repository remotes")
+    if sys.platform != "darwin" or not os.path.isfile("/usr/bin/sandbox-exec"):
+        raise OSError("complete preview process-tree isolation is unavailable")
+    limits = dict(policy.get("limits") or {})
+    if _resource is None or not hasattr(_resource, "RLIMIT_CPU") or not hasattr(
+            _resource, "RLIMIT_AS"):
+        raise OSError("preview CPU/memory enforcement is unavailable")
+    try:
+        cpu_limit = int(limits["cpu_seconds"])
+        memory_limit = int(limits["memory_bytes"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("preview CPU/memory limits are incomplete") from exc
+    if cpu_limit <= 0 or memory_limit <= 0:
+        raise ValueError("preview CPU/memory limits are invalid")
+
+    def apply_resource_limits():
+        _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+        _resource.setrlimit(_resource.RLIMIT_AS, (memory_limit, memory_limit))
+    escaped = str(root).replace("\\", "\\\\").replace('"', '\\"')
+    profile = " ".join((("(version 1)"), "(deny default)",
+                        '(import "system.sb")', "(allow process*)",
+                        "(allow file-read*)",
+                        f'(allow file-write* (subpath "{escaped}"))',
+                        "(deny network*)"))
+    process = subprocess.Popen(
+        ["/usr/bin/sandbox-exec", "-p", profile, "--", *command], cwd=str(root),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, start_new_session=True,
+        preexec_fn=apply_resource_limits)
+    # The receipt below describes observed enforcement, not policy intent.
+    # Seatbelt failures and commands that immediately die are rejected before
+    # the caller can persist a running handle or open a host surface.
+    _require_live_startup(process, label="preview sandbox")
+    preview_id = str(policy.get("preview_id") or "")
+    if not preview_id:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        raise ValueError("preview isolation policy lacks preview identity")
+    ownership = _register_preview_process(
+        preview_id, process, role="preview-command")
+    fingerprint = hashlib.sha256(json.dumps(
+        dict(policy), sort_keys=True, separators=(",", ":"))
+        .encode("utf-8")).hexdigest()
+    return HostLaunch(binding={"pid": process.pid, "process_group": process.pid},
+                      isolation={
+                          "schema": "taskplane.preview-isolation-receipt/v1",
+                          "network": "denied", "scope": "complete-process-tree",
+                          "push": "denied", "filesystem": "sandbox-only",
+                          "source": "immutable", "remotes": "disabled",
+                          "cpu": "rlimit-enforced",
+                          "memory": "rlimit-enforced",
+                          "process_ownership": ownership,
+                          "mechanism": "macos-seatbelt",
+                          "policy_fingerprint": fingerprint})
 
 
 _STATUS_MAP = {
@@ -118,6 +364,7 @@ class CommandAdapter:
         self._canceller = canceller
         self._review_isolation_launcher = review_isolation_launcher
         self._bindings: dict[str, Mapping[str, object]] = {}
+        self._preview_ownership: dict[str, dict] = {}
 
     def launch(self, command: object, *, cwd: str,
                deadline: float | None = None,
@@ -134,6 +381,13 @@ class CommandAdapter:
         self._bindings[handle] = dict(launched.binding)
         self.runtime.transition(handle, "running")
         return handle
+
+    def preview_process_ownership(self, handle: str) -> dict:
+        """Return verified ownership for durable preview binding."""
+        row = dict(self._preview_ownership.get(handle) or {})
+        if row.get("schema") != "taskplane.preview-process-ownership/v1":
+            raise ValueError("preview process ownership is unavailable")
+        return row
 
     def launch_review_validation(self, command: object, *, cwd: str,
                                  session: Mapping,
@@ -179,6 +433,66 @@ class CommandAdapter:
             review_session=session_transport_binding(session),
             review_sandbox=sandbox_binding)
         self._bindings[handle] = dict(launched.binding)
+        self.runtime.transition(handle, "running")
+        return handle
+
+    def launch_preview(self, command: object, *, cwd: str,
+                       preview: Mapping) -> str:
+        """Launch a registered preview using the verified isolation boundary.
+
+        Preview commands share review validation's direct-argv/no-push rules,
+        but additionally carry the preview pin in every durable event.
+        """
+        if self._review_isolation_launcher is None:
+            raise ValueError("preview requires verified process-tree isolation")
+        if preview.get("schema") != "taskplane.host-preview/v1" or \
+                preview.get("state") not in {"registered", "open"} or \
+                preview.get("push_disabled") is not True or \
+                (preview.get("network") or {}).get("mode") != "deny":
+            raise ValueError("preview registration is not executable")
+        self._validate_push_disabled_command(command)
+        workdir = os.path.realpath(cwd)
+        workdir_fingerprint = hashlib.sha256(
+            workdir.encode("utf-8")).hexdigest()
+        if workdir_fingerprint != preview.get("sandbox_id"):
+            raise ValueError("preview command cwd escapes registered sandbox")
+        policy = {
+            "schema": "taskplane.preview-isolation-policy/v1",
+            "network": "deny", "scope": "complete-process-tree",
+            "push": "deny", "filesystem": "sandbox-only",
+            "source": "immutable", "remotes": "disabled",
+            "sandbox_id": preview.get("sandbox_id"),
+            "preview_id": preview.get("preview_id"),
+            "limits": dict(preview.get("limits") or {}),
+        }
+        policy_fingerprint = hashlib.sha256(
+            json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")).hexdigest()
+        launched = self._review_isolation_launcher(command, workdir, policy)
+        if not isinstance(launched, HostLaunch) or not launched.binding:
+            raise ValueError("isolated preview launch returned no binding")
+        isolation = dict(launched.isolation or {})
+        if (isolation.get("schema") not in {
+                "taskplane.preview-isolation-receipt/v1",
+                "taskplane.review-isolation-receipt/v1"} or
+                isolation.get("network") != "denied" or
+                isolation.get("scope") != "complete-process-tree" or
+                isolation.get("push") != "denied" or
+                isolation.get("filesystem") != "sandbox-only" or
+                isolation.get("source") != "immutable" or
+                isolation.get("remotes") != "disabled" or
+                isolation.get("cpu") != "rlimit-enforced" or
+                isolation.get("memory") != "rlimit-enforced" or
+                isolation.get("policy_fingerprint") != policy_fingerprint or
+                not str(isolation.get("mechanism") or "").strip()):
+            raise ValueError("preview isolation receipt is invalid")
+        handle = self.runtime.create(
+            command_fingerprint=_fingerprint_command(command),
+            binding=launched.binding, deadline=preview.get("deadline"),
+            preview=preview)
+        self._bindings[handle] = dict(launched.binding)
+        self._preview_ownership[handle] = dict(
+            isolation.get("process_ownership") or {})
         self.runtime.transition(handle, "running")
         return handle
 
