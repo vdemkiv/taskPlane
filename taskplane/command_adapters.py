@@ -7,6 +7,8 @@ opaque Taskplane handles and canonical command events.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ctypes
+import ctypes.util
 import hashlib
 import json
 import os
@@ -16,6 +18,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from typing import Callable, Mapping, Protocol
 
 try:
@@ -82,33 +85,110 @@ _PREVIEW_PROCESSES: dict[str, list[object]] = {}
 _PREVIEW_PROCESS_LOCK = threading.Lock()
 
 
-def _register_preview_process(preview_id: str, process: object) -> None:
+def _pid_start_identity(pid: int) -> str:
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.is_file():
+        fields = proc_stat.read_text(encoding="utf-8").split()
+        if len(fields) > 21:
+            return f"linux-proc:{fields[21]}"
+    if sys.platform == "darwin":
+        library = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
+        libproc = ctypes.CDLL(library, use_errno=True)
+        buffer = ctypes.create_string_buffer(256)
+        size = int(libproc.proc_pidinfo(
+            int(pid), 3, 0, ctypes.byref(buffer), ctypes.sizeof(buffer)))
+        # proc_bsdinfo's immutable pbi_start_tvsec/usec occupy bytes
+        # 120..135. Hashing the full struct would include mutable status and
+        # create false PID-reuse alarms during ordinary lifecycle changes.
+        if size >= 136:
+            return "darwin-start:" + buffer.raw[120:136].hex()
+    raise OSError("preview process start identity is unavailable")
+
+
+def _process_identity(process: object, *, role: str,
+                      generation: int = 1) -> dict:
+    pid = int(process.pid)
+    pgid = int(os.getpgid(pid))
+    started = _pid_start_identity(pid)
+    return {"schema": "taskplane.preview-process-ownership/v1",
+            "pid": pid, "pgid": pgid, "started": started,
+            "role": role, "generation": int(generation)}
+
+
+def _register_preview_process(preview_id: str, process: object, *,
+                              role: str = "preview-command") -> dict:
+    ownership = _process_identity(process, role=role)
     with _PREVIEW_PROCESS_LOCK:
         _PREVIEW_PROCESSES.setdefault(preview_id, []).append(process)
+    return ownership
 
 
-def teardown_preview_processes(preview_id: str) -> bool:
-    """Terminate and verify every registered preview process group."""
+def _ownership_status(row: Mapping[str, object]) -> str:
+    """Return live, absent, or unverifiable without signalling anything."""
+    try:
+        if row.get("schema") != "taskplane.preview-process-ownership/v1" or \
+                str(row.get("role")) not in {"preview-command", "host-surface"} or \
+                int(row.get("generation", 0)) <= 0:
+            return "unverifiable"
+        pid, pgid = int(row["pid"]), int(row["pgid"])
+        if os.getpgid(pid) != pgid:
+            return "unverifiable"
+        started = _pid_start_identity(pid)
+        return "live" if started and started == row.get("started") else "unverifiable"
+    except ProcessLookupError:
+        return "absent"
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return "unverifiable"
+
+
+def teardown_preview_processes(preview_id: str,
+                               ownership: object = None) -> bool:
+    """Rehydrate ownership and terminate only identity-verified process groups."""
+    if not isinstance(ownership, list) or not ownership:
+        return False
     with _PREVIEW_PROCESS_LOCK:
         processes = _PREVIEW_PROCESSES.pop(preview_id, [])
-    success = True
-    for process in processes:
-        if process.poll() is not None:
+    cached = {int(process.pid): process for process in processes}
+    for row in ownership:
+        if not isinstance(row, Mapping):
+            return False
+        status = _ownership_status(row)
+        if status == "absent":
             continue
+        if status != "live":
+            return False
+        pid, pgid = int(row["pid"]), int(row["pgid"])
+        process = cached.get(pid)
         try:
-            os.killpg(int(process.pid), signal.SIGTERM)
-            process.wait(timeout=_TEARDOWN_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            return False
+        if process is not None:
             try:
-                os.killpg(int(process.pid), signal.SIGKILL)
                 process.wait(timeout=_TEARDOWN_GRACE_SECONDS)
-            except (OSError, subprocess.SubprocessError):
-                success = False
-        except (OSError, subprocess.SubprocessError, ValueError):
-            success = False
-        if process.poll() is None:
-            success = False
-    return success
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            deadline = time.monotonic() + _TEARDOWN_GRACE_SECONDS
+            while (_ownership_status(row) == "live" and
+                   time.monotonic() < deadline):
+                time.sleep(0.01)
+        if _ownership_status(row) == "live":
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                return False
+            deadline = time.monotonic() + _TEARDOWN_GRACE_SECONDS
+            while _ownership_status(row) == "live" and time.monotonic() < deadline:
+                time.sleep(0.01)
+        if process is not None and process.poll() is None:
+            try:
+                process.wait(timeout=0)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        if _ownership_status(row) != "absent":
+            return False
+    return True
 
 
 def _require_live_startup(process, *, label: str) -> None:
@@ -146,9 +226,11 @@ def native_surface_transport(surface: str, sandbox: str,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, start_new_session=True)
     _require_live_startup(process, label=f"native {surface} transport")
-    _register_preview_process(str(preview["preview_id"]), process)
+    ownership = _register_preview_process(
+        str(preview["preview_id"]), process, role="host-surface")
     return {"schema": "taskplane.host-preview-surface/v1",
-            "surface": surface, "binding": f"pid:{process.pid}"}
+            "surface": surface, "binding": f"pid:{process.pid}",
+            "process_ownership": ownership}
 
 
 def os_preview_isolation_launcher(command: object, cwd: str,
@@ -205,7 +287,8 @@ def os_preview_isolation_launcher(command: object, cwd: str,
         except OSError:
             pass
         raise ValueError("preview isolation policy lacks preview identity")
-    _register_preview_process(preview_id, process)
+    ownership = _register_preview_process(
+        preview_id, process, role="preview-command")
     fingerprint = hashlib.sha256(json.dumps(
         dict(policy), sort_keys=True, separators=(",", ":"))
         .encode("utf-8")).hexdigest()
@@ -217,6 +300,7 @@ def os_preview_isolation_launcher(command: object, cwd: str,
                           "source": "immutable", "remotes": "disabled",
                           "cpu": "rlimit-enforced",
                           "memory": "rlimit-enforced",
+                          "process_ownership": ownership,
                           "mechanism": "macos-seatbelt",
                           "policy_fingerprint": fingerprint})
 
@@ -280,6 +364,7 @@ class CommandAdapter:
         self._canceller = canceller
         self._review_isolation_launcher = review_isolation_launcher
         self._bindings: dict[str, Mapping[str, object]] = {}
+        self._preview_ownership: dict[str, dict] = {}
 
     def launch(self, command: object, *, cwd: str,
                deadline: float | None = None,
@@ -296,6 +381,13 @@ class CommandAdapter:
         self._bindings[handle] = dict(launched.binding)
         self.runtime.transition(handle, "running")
         return handle
+
+    def preview_process_ownership(self, handle: str) -> dict:
+        """Return verified ownership for durable preview binding."""
+        row = dict(self._preview_ownership.get(handle) or {})
+        if row.get("schema") != "taskplane.preview-process-ownership/v1":
+            raise ValueError("preview process ownership is unavailable")
+        return row
 
     def launch_review_validation(self, command: object, *, cwd: str,
                                  session: Mapping,
@@ -399,6 +491,8 @@ class CommandAdapter:
             binding=launched.binding, deadline=preview.get("deadline"),
             preview=preview)
         self._bindings[handle] = dict(launched.binding)
+        self._preview_ownership[handle] = dict(
+            isolation.get("process_ownership") or {})
         self.runtime.transition(handle, "running")
         return handle
 

@@ -8,7 +8,7 @@ import time
 import pytest
 
 from taskplane.command_adapters import (
-    CommandAdapter, HostLaunch, _register_preview_process,
+    CommandAdapter, HostLaunch, _pid_start_identity, _register_preview_process,
     os_preview_isolation_launcher, teardown_preview_processes,
 )
 from taskplane.command_runtime import CommandRuntime
@@ -57,6 +57,10 @@ def receipt(policy, **changes):
              "push": "denied", "filesystem": "sandbox-only",
              "source": "immutable", "remotes": "disabled",
              "cpu": "rlimit-enforced", "memory": "rlimit-enforced",
+             "process_ownership": {
+                 "schema": "taskplane.preview-process-ownership/v1",
+                 "pid": 42, "pgid": 42, "started": "fixture",
+                 "role": "preview-command", "generation": 1},
              "mechanism": "host-process-sandbox",
              "policy_fingerprint": hashlib.sha256(json.dumps(
                  policy, sort_keys=True, separators=(",", ":"))
@@ -216,6 +220,12 @@ def test_production_entry_invokes_native_surface_and_os_isolation(
         return Process()
 
     monkeypatch.setattr("taskplane.command_adapters.subprocess.Popen", popen)
+    monkeypatch.setattr(
+        "taskplane.command_adapters._process_identity",
+        lambda process, role, generation=1: {
+            "schema": "taskplane.preview-process-ownership/v1",
+            "pid": process.pid, "pgid": process.pid, "started": "fixture",
+            "role": role, "generation": generation})
     monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
     original_isfile = __import__("os").path.isfile
     monkeypatch.setattr(
@@ -303,6 +313,12 @@ def test_os_isolation_receipts_only_long_lived_startup(tmp_path, monkeypatch):
 
     monkeypatch.setattr("taskplane.command_adapters.subprocess.Popen",
                         lambda *_a, **_k: Running())
+    monkeypatch.setattr(
+        "taskplane.command_adapters._process_identity",
+        lambda process, role, generation=1: {
+            "schema": "taskplane.preview-process-ownership/v1",
+            "pid": process.pid, "pgid": process.pid, "started": "fixture",
+            "role": role, "generation": generation})
     monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
     monkeypatch.setattr("taskplane.command_adapters.os.path.isfile",
                         lambda path: path == "/usr/bin/sandbox-exec")
@@ -339,6 +355,12 @@ def test_production_startup_failure_is_durable_and_surface_never_opens(
         return SandboxApplyFailure()
 
     monkeypatch.setattr("taskplane.command_adapters.subprocess.Popen", popen)
+    monkeypatch.setattr(
+        "taskplane.command_adapters._process_identity",
+        lambda process, role, generation=1: {
+            "schema": "taskplane.preview-process-ownership/v1",
+            "pid": process.pid, "pgid": process.pid, "started": "fixture",
+            "role": role, "generation": generation})
     monkeypatch.setattr("taskplane.command_adapters.sys.platform", "darwin")
     monkeypatch.setattr("taskplane.command_adapters.os.path.isfile",
                         lambda path: path == "/usr/bin/sandbox-exec")
@@ -372,8 +394,11 @@ def test_close_kills_all_real_preview_process_groups_before_removal(tmp_path):
     processes = [subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         start_new_session=True) for _ in range(2)]
-    for process in processes:
-        _register_preview_process(preview["preview_id"], process)
+    preview["process_ownership"] = [
+        _register_preview_process(preview["preview_id"], process,
+                                  role="preview-command")
+        for process in processes]
+    runtime._save(preview)
     closed = runtime.close(preview["preview_id"])
     assert closed["outcome"] == "succeeded"
     assert closed["teardown"]["processes_stopped"] is True
@@ -386,8 +411,13 @@ def test_deadline_automatically_kills_real_process_tree(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     (source / "app.txt").write_text("pinned")
+    holder = {}
+    def transport(name, cwd, preview):
+        return {"schema": "taskplane.host-preview-surface/v1",
+                "surface": name, "binding": "native:fixture",
+                "process_ownership": holder["ownership"]}
     runtime = PreviewRuntime(tmp_path / "state", workspace=source,
-                             authorization="a", surface_transport=surface([]),
+                             authorization="a", surface_transport=transport,
                              process_teardown=teardown_preview_processes)
     preview = runtime.register(
         flow="design", target="pin", revision=1, source_root=source,
@@ -398,7 +428,11 @@ def test_deadline_automatically_kills_real_process_tree(tmp_path):
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         start_new_session=True)
-    _register_preview_process(preview["preview_id"], process)
+    ownership = _register_preview_process(preview["preview_id"], process,
+                                          role="preview-command")
+    holder["ownership"] = dict(ownership, role="host-surface")
+    preview["process_ownership"] = [ownership]
+    runtime._save(preview)
     runtime.open(preview["preview_id"])
     runtime.arm_deadline(preview["preview_id"])
     deadline = time.monotonic() + 3
@@ -429,7 +463,8 @@ def test_failed_process_teardown_never_reports_success(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     runtime = PreviewRuntime(tmp_path / "state", workspace=source,
-                             authorization="a", process_teardown=lambda _id: False)
+                             authorization="a",
+                             process_teardown=lambda _id, _ownership: False)
     preview = runtime.register(
         flow="build", target="pin", revision=1, source_root=source,
         authorization="a", capabilities=capabilities(sandbox=True, browser=True),
@@ -439,3 +474,83 @@ def test_failed_process_teardown_never_reports_success(tmp_path):
     assert closed["state"] == "failed"
     assert closed["outcome"] == "teardown_failed"
     assert closed["teardown"]["processes_stopped"] is False
+
+
+def test_restart_rehydrates_ownership_and_kills_real_detached_group(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    root = tmp_path / "state"
+    runtime = PreviewRuntime(root, workspace=source, authorization="a",
+                             process_teardown=teardown_preview_processes)
+    preview = runtime.register(
+        flow="build", target="pin", revision=1, source_root=source,
+        authorization="a", capabilities=capabilities(sandbox=True, browser=True),
+        limits={"lifetime_seconds": 60, "cpu_seconds": 2,
+                "memory_bytes": 50_000_000}, network_allowlist=[])
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", "import subprocess,sys; p=subprocess.Popen("
+         "[sys.executable,'-c','import time; time.sleep(30)'],"
+         "start_new_session=True,stdout=subprocess.DEVNULL,"
+         "stderr=subprocess.DEVNULL); print(p.pid, flush=True)"],
+        stdout=subprocess.PIPE, text=True)
+    child_pid = int(launcher.communicate(timeout=2)[0].strip())
+    ownership = {"schema": "taskplane.preview-process-ownership/v1",
+                 "pid": child_pid, "pgid": child_pid,
+                 "started": _pid_start_identity(child_pid),
+                 "role": "preview-command", "generation": 1}
+    preview["process_ownership"] = [ownership]
+    runtime._save(preview)
+    # Simulate host restart: no Popen object or module registry survives.
+    import taskplane.command_adapters as adapters
+    with adapters._PREVIEW_PROCESS_LOCK:
+        adapters._PREVIEW_PROCESSES.clear()
+    restarted = PreviewRuntime(root, workspace=source, authorization="a",
+                               process_teardown=teardown_preview_processes)
+    closed = restarted.close(preview["preview_id"])
+    assert closed["outcome"] == "succeeded"
+    with pytest.raises(ProcessLookupError):
+        __import__("os").getpgid(child_pid)
+
+
+def test_pid_reuse_identity_mismatch_is_never_signalled(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    runtime = PreviewRuntime(tmp_path / "state", workspace=source,
+                             authorization="a",
+                             process_teardown=teardown_preview_processes)
+    preview = runtime.register(
+        flow="build", target="pin", revision=1, source_root=source,
+        authorization="a", capabilities=capabilities(sandbox=True, browser=True),
+        limits={"lifetime_seconds": 60, "cpu_seconds": 2,
+                "memory_bytes": 50_000_000}, network_allowlist=[])
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True)
+    preview["process_ownership"] = [{
+        "schema": "taskplane.preview-process-ownership/v1",
+        "pid": process.pid, "pgid": process.pid, "started": "reused-pid",
+        "role": "preview-command", "generation": 1}]
+    runtime._save(preview)
+    closed = runtime.close(preview["preview_id"])
+    assert closed["outcome"] == "teardown_failed"
+    assert process.poll() is None
+    __import__("os").killpg(process.pid, __import__("signal").SIGKILL)
+    process.wait(timeout=2)
+
+
+def test_missing_or_corrupt_restart_ownership_preserves_sandbox(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    runtime = PreviewRuntime(tmp_path / "state", workspace=source,
+                             authorization="a",
+                             process_teardown=teardown_preview_processes)
+    preview = runtime.register(
+        flow="build", target="pin", revision=1, source_root=source,
+        authorization="a", capabilities=capabilities(sandbox=True, browser=True),
+        limits={"lifetime_seconds": 60, "cpu_seconds": 2,
+                "memory_bytes": 50_000_000}, network_allowlist=[])
+    preview["process_ownership"] = [{"schema": "corrupt", "pid": "bad"}]
+    runtime._save(preview)
+    closed = runtime.close(preview["preview_id"])
+    assert closed["outcome"] == "teardown_failed"
+    assert runtime.sandbox_path(preview["preview_id"]).is_dir()

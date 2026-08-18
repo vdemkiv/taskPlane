@@ -86,7 +86,7 @@ class PreviewRuntime:
     def __init__(self, root: str | Path, *, workspace: str | Path,
                  authorization: str, clock: Callable[[], float] | None = None,
                  surface_transport: SurfaceTransport | None = None,
-                 process_teardown: Callable[[str], bool] | None = None):
+                 process_teardown: Callable[[str, object], bool] | None = None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.workspace = Path(workspace).resolve()
@@ -292,6 +292,13 @@ class PreviewRuntime:
         preview["state"] = "open"
         preview["outcome"] = "open"
         preview["surface_binding_fingerprint"] = _digest(result)
+        surface_ownership = result.get("process_ownership")
+        if self._process_teardown is not None and not isinstance(
+                surface_ownership, Mapping):
+            return self.record_outcome(preview_id, "unavailable")
+        if isinstance(surface_ownership, Mapping):
+            preview.setdefault("process_ownership", []).append(
+                dict(surface_ownership))
         preview["events"].append({"kind": "opened", "at": self._clock(),
                                   "surface": preview["surface"],
                                   "transport": _digest(result)})
@@ -316,16 +323,20 @@ class PreviewRuntime:
         return evidence
 
     def bind_command(self, preview_id: str, *, handle: str,
-                     binding_digest: str) -> dict:
+                     binding_digest: str, process_ownership: Mapping) -> dict:
         """Durably bind the isolated command lifecycle to this preview."""
         preview = self._load(preview_id)
-        if preview["state"] != "registered" or not handle or not binding_digest:
+        if (preview["state"] != "registered" or not handle or
+                not binding_digest or process_ownership.get("schema") !=
+                "taskplane.preview-process-ownership/v1"):
             raise PreviewError("preview command lifecycle binding is invalid")
         preview["command_lifecycle"] = {
             "handle_fingerprint": _digest(handle),
             "process_group_binding": str(binding_digest),
             "bound_at": float(self._clock()),
         }
+        preview.setdefault("process_ownership", []).append(
+            dict(process_ownership))
         return self._save(preview)
 
     def record_stage(self, preview_id: str, *, stage: str, outcome: str,
@@ -357,7 +368,9 @@ class PreviewRuntime:
         # The runtime creates an empty registration scope; process-tree cleanup
         # is delegated to the isolation launcher before this bounded removal.
         processes_stopped = (self._process_teardown is None or
-                             self._process_teardown(preview["preview_id"]))
+                             self._process_teardown(
+                                 preview["preview_id"],
+                                 preview.get("process_ownership")))
         removed = False
         try:
             if processes_stopped:
@@ -455,7 +468,8 @@ def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
                                         preview=preview)
         preview_runtime.bind_command(
             preview["preview_id"], handle=handle,
-            binding_digest=command_runtime.snapshot(handle)["binding_digest"])
+            binding_digest=command_runtime.snapshot(handle)["binding_digest"],
+            process_ownership=adapter.preview_process_ownership(handle))
         opened = preview_runtime.open(preview["preview_id"])
     except Exception as exc:
         preview_runtime.record_stage(
