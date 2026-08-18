@@ -950,6 +950,14 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             workspace or ".", files, stage=stage,
             requirement_text=requirement_text,
             content_by_file=content_by_file)
+    if stage == "review":
+        # Component routing and module routing consume the same bounded
+        # document evidence.  A component-map miss is never a reason to
+        # widen documentation to the full catalog.
+        import review_progression
+        review_progression.apply_document_signals(
+            vmap, files, content_by_file
+        )
 
     selected = []
     for lens in cat["lenses"]:
@@ -1050,6 +1058,19 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             if "component_attribution" in x}
     elif comp_info is not None and comp_info.get("miss"):
         ctxd["component_layer_failed"] = comp_info["miss"]
+    if stage == "review":
+        import review_progression
+        progressive = review_progression.initial_wave({
+            "lenses": selected,
+            "context": ctxd,
+        })
+        ctxd["review_progression"] = {
+            "schema": progressive["schema"],
+            "deep_slots": [row["slot"] for row in progressive["deep"]],
+            "sweep_count": progressive["sweep_count"],
+            "sweep_lenses": (progressive["sweep"] or {}).get("lenses", []),
+            "deferred_light": progressive["deferred_light"],
+        }
     return {"lenses": selected, "context": ctxd}
 
 
@@ -1267,6 +1288,12 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             if x.get("tier") not in ("sweep", "light", "n/a")]
     sweep = [x for x in routing["lenses"]
              if x.get("tier") in ("sweep", "light")]
+    progressive = (routing.get("context") or {}).get("review_progression")
+    if progressive is not None:
+        ordered_sweep = list(progressive.get("sweep_lenses") or [])
+        allowed_sweep = set(ordered_sweep)
+        sweep = [x for x in sweep if x.get("id") in allowed_sweep]
+        sweep.sort(key=lambda x: ordered_sweep.index(x.get("id")))
     briefs = []
     for x in deep:
         lid = x["id"]
