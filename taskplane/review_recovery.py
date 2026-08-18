@@ -366,3 +366,108 @@ def merge_findings_once(results: Iterable[Mapping]) -> list[dict]:
             seen_findings.add(fingerprint)
             merged.append(copy.deepcopy(dict(finding)))
     return merged
+
+
+def recover_summary_or_plan_retry(
+        result: Mapping, lease: Mapping, *, blocking_by_lens: Mapping,
+        attempts: Mapping, valid_results: Mapping | None = None,
+        leases: Iterable[Mapping] | None = None,
+        actor: str = "review-kernel") -> dict:
+    """Repair a purely derived summary, else rerun only its leased slot.
+
+    ``blocking_by_lens`` is computed by the canonical collector *after*
+    finding validation/adjudication.  This function does not reinterpret a
+    finding.  It may only copy those authoritative counts into the producer's
+    redundant summary fields.  Any malformed evidence, identity mismatch, or
+    other ambiguity takes the bounded affected-slot retry path.
+    """
+    slot_id = str(lease.get("slot_id") or "") if isinstance(lease, Mapping) \
+        else ""
+    try:
+        if not isinstance(result, Mapping):
+            raise RepairRejected("slot result must be an object")
+        expected = _expected_metadata(lease)
+        before = copy.deepcopy(dict(result))
+        for field, value in expected.items():
+            if before.get(field) != value:
+                raise RepairRejected(field + " conflicts with sealed lease authority")
+        rows = before.get("lens_results")
+        if not isinstance(rows, list):
+            raise RepairRejected("slot result lens_results must be a list")
+        by_lens = {}
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise RepairRejected("slot result lens verdict is invalid")
+            lens_id = str(row.get("lens") or "").strip()
+            if lens_id in by_lens or lens_id not in lease.get("lens_ids", []):
+                raise RepairRejected("slot result lens verdict is invalid")
+            if row.get("verdict") not in {"pass", "fail"} or \
+                    isinstance(row.get("blockers"), bool) or not isinstance(
+                        row.get("blockers"), int) or row["blockers"] < 0 or \
+                    not isinstance(row.get("checked_evidence"), list):
+                raise RepairRejected("slot result lens verdict is invalid")
+            by_lens[lens_id] = index
+        if set(by_lens) != set(lease.get("lens_ids") or []):
+            raise RepairRejected("slot result does not cover its leased lenses")
+        unknown = set(blocking_by_lens or {}) - set(by_lens)
+        if unknown:
+            raise RepairRejected("blocking summary cites an unleased lens")
+
+        after = copy.deepcopy(before)
+        changes = []
+        for lens_id in lease["lens_ids"]:
+            count = (blocking_by_lens or {}).get(lens_id, 0)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise RepairRejected("canonical blocker count is invalid")
+            index = by_lens[lens_id]
+            expected_verdict = "fail" if count else "pass"
+            for field, value in (("blockers", count),
+                                 ("verdict", expected_verdict)):
+                prior = after["lens_results"][index][field]
+                if prior == value:
+                    continue
+                after["lens_results"][index][field] = value
+                changes.append({
+                    "path": f"lens_results[{index}].{field}",
+                    "before": prior, "after": value,
+                    "derived_from": "canonical-blocking-findings",
+                })
+        import review_evidence
+        review_evidence.assert_summary_only_repair(before, after)
+        material = {
+            "slot_id": slot_id,
+            "before_fingerprint": _fingerprint(before),
+            "after_fingerprint": _fingerprint(after),
+            "changes": changes,
+        }
+        return {
+            "schema": "taskplane.review-summary-recovery/v1",
+            "status": "repaired" if changes else "unchanged",
+            "producer_rerun_required": False,
+            "affected_slot_ids": [],
+            "result": after,
+            "audit": {
+                "schema": "taskplane.review-summary-repair-audit/v1",
+                "actor": str(actor or "review-kernel"), **material,
+                "repair_fingerprint": _fingerprint(material),
+            },
+        }
+    except (RepairRejected, ValueError) as exc:
+        retry_leases = list(leases) if leases is not None else [lease]
+        plan = plan_affected_retries(
+            retry_leases, valid_results=valid_results or {},
+            failures=[{"slot_id": slot_id, "reason": str(exc)}],
+            attempts=attempts)
+        return {
+            "schema": "taskplane.review-summary-recovery/v1",
+            "status": plan["status"],
+            "producer_rerun_required": plan["status"] == "retry",
+            "affected_slot_ids": plan["affected_slot_ids"],
+            "result": None,
+            "retry_plan": plan,
+            "audit": {
+                "schema": "taskplane.review-summary-repair-audit/v1",
+                "actor": str(actor or "review-kernel"), "slot_id": slot_id,
+                "reason": str(exc), "changes": [],
+            },
+        }
