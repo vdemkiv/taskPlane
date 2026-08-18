@@ -37,7 +37,8 @@
       "Separate worker submissions from orchestrator validation",
       "Review code and solution designs through 26 engineering lenses",
       "Publish progress artifacts for team handoff",
-      "Show status on demand: current step, gates, and what taskplane is waiting on"
+      "Show status on demand: current step, gates, and what taskplane is waiting on",
+      "Project host-native PiP, agent fan-out, approvals, dashboards, carousels, and governed previews from canonical evidence with accessible fallbacks"
     ],
     "websiteURL": "https://github.com/vdemkiv/taskPlane",
     "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",

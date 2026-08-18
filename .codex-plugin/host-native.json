@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.host-native-package/v1",
+  "canonicalModel": "taskplane.host-surface-snapshot/v1",
+  "capabilityContract": "taskplane.host-capabilities/v1",
+  "optionalSurfaces": ["pip", "visualization", "carousel", "approval", "sandbox", "hosting", "browser", "side_panel"],
+  "fallback": "accessible_bounded",
+  "runtimeReceiptRequired": true,
+  "nativeUiIsAuthority": false
+}
