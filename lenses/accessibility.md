@@ -137,6 +137,15 @@ Examine, with file:line evidence:
    or auto-updating content lasting more than 5 seconds needs a pause/stop
    control — an autoplaying carousel with no pause is an **A** failure.
    Honouring `prefers-reduced-motion` is 2.3.3 and is **AAA** — `minor`.
+10. **Governed review widgets preserve operability under pagination.** When
+   the diff changes Taskplane review presentation, verify every <=14 KB page
+   has an accessible page identity and the same revision/provenance,
+   expandable criterion/finding rows are keyboard reachable, severity/lens/
+   file filters have names and preserve focus, and actions expose a receipt
+   plus a visible fallback when the chat bridge is unavailable. Approval must
+   be disabled for provisional, incomplete, gap-bearing, or unproven
+   revisions. A missing host event is pending; rendering it as “human
+   declined” hides the action the user still needs to take.
 
 **Blocker** = an interactive element unreachable or inoperable by keyboard; a keyboard trap (2.1.2, Level A) — it strands the user with no way out; a custom widget declaring an ARIA role whose model it does not implement (a `role="dialog"` that does not confine focus, a `role="tab"` set with no arrow-key navigation); paste or password-manager autofill blocked on a credential or one-time-code field (3.3.8, AA); an interactive element with no accessible name — normally axe-core's finding, so restate it only where the scanner could not see it (name computed at runtime, canvas/SVG control).
 **Major** = focus lost or not restored on dialog open/close or on removal of the focused node; focus indicator or control boundary below 3:1 (1.4.11); the focused element fully obscured by sticky/fixed chrome (2.4.11); tab order that contradicts the visual order (2.4.3 / 1.3.2); an accessible name that does not contain the visible label (2.5.3); a drag-only interaction with no single-pointer alternative (2.5.7); a live region that announces at the wrong moment or not at all for an async state change; a form error not programmatically associated with its field or not announced (3.3.1); auto-playing motion over 5s with no pause control (2.2.2); alt text present but carrying no information the user can act on; content unusable at 320 CSS px (1.4.10) where the diff makes that plain.

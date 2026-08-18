@@ -885,6 +885,353 @@ PAGE_BUDGET = 14000     # max UTF-8 BYTES per inline fragment (ENFORCED in
                         # further; content only ever leaves a page via an
                         # explicit '+N more' marker, never silently)
 
+# The canonical PR-review projection uses the same transport ceiling as the
+# mission-control widget, but has its own explicit name because it is a
+# contract boundary rather than a rendering convenience.  JSON/Markdown/HTML
+# artifacts remain unbounded and lossless; only these host-transport pages are
+# bounded.
+REVIEW_INLINE_PAGE_BUDGET = 14000
+_REVIEW_INLINE_MIN_BUDGET = 6000
+
+_REVIEW_INLINE_STYLE = """
+<style>
+.tpr{color-scheme:light dark;font:14px/1.45 system-ui,sans-serif;color:#222;
+max-width:940px}.tpr *{box-sizing:border-box}.tpr code,.tpr .mono{font-family:
+ui-monospace,SFMono-Regular,Menlo,monospace}.tpr header{border-bottom:1px solid
+#888;padding:0 0 10px;margin:0 0 12px}.tpr h2{font-size:17px;margin:12px 0 8px}
+.tpr h3{font-size:14px;margin:0}.tpr .muted{color:#666}.tpr .grid{display:grid;
+grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}.tpr .card{
+border:1px solid #999;border-radius:7px;padding:9px;margin:7px 0;overflow-wrap:
+anywhere}.tpr details>summary{cursor:pointer}.tpr .pill{display:inline-block;
+border:1px solid #888;border-radius:20px;padding:2px 8px;margin:2px;font-size:
+12px}.tpr label{display:inline-flex;gap:4px;align-items:center;margin:3px}.tpr
+select,.tpr button{font:inherit;border:1px solid #777;border-radius:5px;padding:
+5px 8px;background:transparent;color:inherit}.tpr button:not(:disabled){cursor:
+pointer}.tpr button:disabled{opacity:.45}.tpr :focus-visible{outline:3px solid
+#2673d9;outline-offset:2px}.tpr .sr{position:absolute;width:1px;height:1px;
+overflow:hidden;clip:rect(0,0,0,0)}@media(prefers-color-scheme:dark){.tpr{
+color:#eee}.tpr .muted{color:#bbb}}
+</style>
+""".strip()
+
+_REVIEW_INLINE_SCRIPT = """
+<script>
+function tpReviewState(root){var k='taskplane-review:'+root.dataset.modelFingerprint;
+try{return [k,JSON.parse(sessionStorage.getItem(k)||'{}')];}catch(e){return [k,{}];}}
+function tpReviewFilter(root){var s=root.querySelector('[data-filter="severity"]'),
+l=root.querySelector('[data-filter="lens"]'),f=root.querySelector('[data-filter="file"]');
+if(!s||!l||!f)return;var z=tpReviewState(root);z[1].severity=s.value;
+z[1].lens=l.value;z[1].file=f.value;try{sessionStorage.setItem(z[0],JSON.stringify(z[1]));}catch(e){}
+root.querySelectorAll('[data-finding]').forEach(function(x){var on=(!s.value||
+x.dataset.severity===s.value)&&(!l.value||x.dataset.lens===l.value)&&(!f.value||
+x.dataset.file===f.value);x.hidden=!on;});}
+function tpReviewKey(e){if(!['ArrowDown','ArrowUp','Home','End'].includes(e.key))return;
+var a=Array.from(e.currentTarget.querySelectorAll('[data-tp-focus]')).filter(
+function(x){return !x.closest('[hidden]');});
+if(!a.length)return;var i=a.indexOf(document.activeElement);if(e.key==='Home')i=0;
+else if(e.key==='End')i=a.length-1;else i=(i+(e.key==='ArrowDown'?1:-1)+a.length)%a.length;
+a[i].focus();var z=tpReviewState(e.currentTarget);z[1].focus=a[i].id||'';
+try{sessionStorage.setItem(z[0],JSON.stringify(z[1]));}catch(x){}e.preventDefault();}
+function tpReviewAction(b){if(b.disabled)return;var m=b.dataset.prompt;
+if(window.openai&&typeof window.openai.sendFollowUpMessage==='function')
+window.openai.sendFollowUpMessage({prompt:m});else if(typeof window.sendPrompt==='function')
+window.sendPrompt(m);else{var n=document.createElement('p');n.setAttribute('role','status');
+n.textContent='Reply in chat: '+m;b.parentNode.appendChild(n);}}
+document.querySelectorAll('.tpr[data-model-fingerprint]').forEach(function(root){
+var z=tpReviewState(root)[1];root.querySelectorAll('[data-filter]').forEach(function(x){
+if(z[x.dataset.filter]!==undefined)x.value=z[x.dataset.filter];});tpReviewFilter(root);
+if(z.focus){var f=document.getElementById(z.focus);if(f&&root.contains(f))f.focus();}});
+</script>
+""".strip()
+
+
+def _review_value(value, *, limit=900) -> str:
+    """Visible bounded value with an explicit lossless-artifact reference."""
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    text = str(value if value is not None else "")
+    if len(text.encode("utf-8")) <= limit:
+        return _esc(text)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    prefix = text.encode("utf-8")[:max(80, limit - 180)].decode(
+        "utf-8", "ignore")
+    return (_esc(prefix) + f'… <span class="muted">complete value in the '
+            f'JSON/Markdown/HTML artifacts · sha256:{digest}</span>')
+
+
+def _review_token(value, *, limit=160) -> str:
+    """Stable short DOM/filter token; complete values remain in artifacts."""
+    text = str(value if value is not None else "")
+    if len(text.encode("utf-8")) <= limit:
+        return text
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _review_semantic_projection(model: dict) -> dict:
+    """Remove host transport telemetry from cross-host review semantics."""
+    projected = json.loads(json.dumps(model, ensure_ascii=False))
+    provenance = projected.get("provenance") or {}
+    for key in ("host", "host_transport", "transport", "host_session_id"):
+        provenance.pop(key, None)
+    return projected
+
+
+def _review_options(rows, key: str) -> str:
+    values = sorted({_review_token(row.get(key)) for row in rows
+                     if row.get(key) is not None})
+    return '<option value="">all</option>' + "".join(
+        f'<option value="{_attr(value)}">{_esc(value)}</option>'
+        for value in values)
+
+
+def _review_approvable(model: dict) -> bool:
+    revision = model["revision"]
+    collection = model["collection"]
+    criteria_ok = bool(model["criteria"]) and all(
+        str(row.get("verdict") or "") in ("pass", "not-applicable") and
+        bool(str(row.get("rationale") or "").strip()) and
+        bool(row.get("evidence")) and
+        bool(str(row.get("verification") or
+                 row.get("validation_mode") or "").strip()) and
+        bool(str(row.get("responsible") or "").strip())
+        for row in model["criteria"])
+    slots_ok = bool(model["slots"]) and all(
+        str(row.get("status") or "") in ("valid", "done", "complete")
+        for row in model["slots"])
+    return (
+        bool(model["gate"].get("approval_enabled")) and
+        revision.get("disposition") == "canonical" and
+        revision.get("status") == "complete" and
+        collection.get("status") == "complete" and
+        not (collection.get("gaps") or []) and
+        criteria_ok and slots_ok and bool(model["gate"].get("consent")))
+
+
+def _review_receipt(model: dict, action: str) -> tuple[str, str]:
+    run_id = str(model["provenance"].get("run_id") or "unknown-run")
+    revision = model["revision"]
+    identity = str(revision.get("fingerprint") or revision.get("id") or "")
+    material = f"{run_id}|{identity}|{action}".encode("utf-8")
+    receipt = hashlib.sha256(material).hexdigest()
+    prompt = f"taskplane review action {run_id} {receipt} {action}"
+    return receipt, prompt
+
+
+def _review_page(*, title: str, body: str, model: dict, index: int,
+                 total: int, budget: int, model_fingerprint: str) -> str:
+    revision = model["revision"]
+    target = (revision.get("target_revision") or
+              model["provenance"].get("target_revision") or "unknown")
+    fingerprint = str(revision.get("fingerprint") or "")
+    nav = (f'<nav role="navigation" aria-label="Review pages" class="mono">'
+           f'page {index}/{total} · {_esc(title)}</nav>')
+    header = (
+        '<header><div class="mono">governed PR review</div>'
+        f'<h1 style="font-size:20px;margin:3px 0">{_esc(str(revision.get("id") or "review"))}</h1>'
+        f'<div class="muted">target {_esc(str(target))} · revision '
+        f'{_esc(fingerprint[:12] or "unavailable")} · '
+        f'{_esc(str(revision.get("disposition") or "unknown"))}</div>{nav}</header>')
+    page = (_REVIEW_INLINE_STYLE + '<div class="tpr" tabindex="-1" '
+            f'data-model-fingerprint="{_attr(model_fingerprint)}" '
+            'onkeydown="tpReviewKey(event)">' + header + body + '</div>'
+            + _REVIEW_INLINE_SCRIPT)
+    if len(page.encode("utf-8")) > budget:
+        raise ValueError(
+            f"review inline page '{title}' exceeds {budget} bytes; "
+            "split semantic rows before rendering")
+    return page
+
+
+def _review_pack(rows, render, *, budget: int, reserve: int = 4700) -> list[str]:
+    """Pack semantic rows without ever splitting or silently dropping one."""
+    capacity = budget - reserve
+    chunks, current, size = [], [], 0
+    for row in rows:
+        item = render(row)
+        item_size = len(item.encode("utf-8"))
+        if item_size > capacity:
+            raise ValueError(
+                "one review semantic row exceeds the inline page capacity; "
+                "store its large values in the lossless artifact and render "
+                "their explicit references")
+        if current and size + item_size > capacity:
+            chunks.append("".join(current))
+            current, size = [], 0
+        current.append(item)
+        size += item_size
+    if current:
+        chunks.append("".join(current))
+    return chunks or [""]
+
+
+def render_review_model_paged(model, *, host: str = "codex",
+                              budget: int = REVIEW_INLINE_PAGE_BUDGET) -> list:
+    """Project one canonical review model into host-neutral bounded pages.
+
+    ``host`` is transport metadata only and never enters HTML or receipt
+    identity.  The function consumes the same sanitized model published as
+    JSON/Markdown/HTML; it neither reads producer inputs nor mutates review
+    truth.  Every semantic row is rendered once, while unusually large field
+    values use an explicit digest reference to the lossless artifacts.
+    """
+    if host not in ("claude", "codex"):
+        raise ValueError("supported review host must be claude or codex")
+    if not isinstance(budget, int) or budget < _REVIEW_INLINE_MIN_BUDGET:
+        raise ValueError(
+            f"review inline page budget must be at least "
+            f"{_REVIEW_INLINE_MIN_BUDGET} bytes")
+    try:
+        from . import review_artifacts
+    except ImportError:  # dashboard is also imported as a top-level module
+        import review_artifacts
+    clean = _review_semantic_projection(
+        review_artifacts.sanitize_model(model)["model"])
+    semantic = json.dumps(clean, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8")
+    model_fingerprint = hashlib.sha256(semantic).hexdigest()
+    dor, collection, validation = (clean["dor"], clean["collection"],
+                                   clean["validation"])
+    sources = "".join(
+        '<li><b>' + _esc(str(row.get("kind") or "source")) + '</b> · ' +
+        _esc(str(row.get("status") or "unknown")) + ' · ' +
+        _review_value(row.get("identity") or "unknown", limit=300) + ' @ ' +
+        _review_value(row.get("revision") or "unknown", limit=180) +
+        ' · <code>' + _review_value(
+            row.get("provenance_ref") or row.get("provenance") or
+            "unavailable", limit=300) + '</code>' +
+        (f' · <span class="muted">{len(str(row.get("content") or "").encode("utf-8"))} '
+         'source bytes retained in artifacts</span>' if row.get("content") else '') +
+        '</li>' for row in dor.get("sources") or [])
+    gaps = collection.get("gaps") or []
+    consent = clean["gate"].get("consent")
+    consent_text = ("consent pending" if not consent else
+                    "consent recorded · " + str(
+                        consent.get("mode") if isinstance(consent, dict)
+                        else consent))
+    overview = (
+        '<section><h2>Definition of Ready</h2>'
+        f'<div class="pill">{_esc(str(dor.get("status") or "unknown"))}</div>'
+        f'<ul>{sources or "<li>No accessible DoR source recorded</li>"}</ul></section>'
+        '<section class="grid"><div class="card"><h2>Dynamic validation</h2>'
+        f'<p>{_review_value(validation)}</p></div>'
+        '<div class="card"><h2>Provisional gaps</h2>'
+        f'<p>{_review_value(gaps) if gaps else "none"}</p></div>'
+        '<div class="card"><h2>Provenance</h2>'
+        f'<p>{_review_value(clean["provenance"])}</p></div>'
+        '<div class="card"><h2>Gate reason</h2>'
+        f'<p>{_review_value(clean["gate"].get("reason") or "not recorded")}</p>'
+        f'<p class="muted">{_esc(consent_text)}</p></div></section>')
+
+    def criterion(row):
+        cid = _review_token(row.get("id") or "criterion")
+        return ('<details class="card"><summary data-tp-focus tabindex="0" '
+                f'id="tp-criterion-{_attr(cid)}">'
+                f'<b>{_esc(str(row.get("id") or "criterion"))}</b> · '
+                f'{_esc(str(row.get("verdict") or "unproven"))} · '
+                f'{_review_value(row.get("text") or row.get("criterion") or "")}'
+                '</summary><p><b>Rationale:</b> '
+                f'{_review_value(row.get("rationale"))}</p><p><b>Evidence:</b> '
+                f'{_review_value(row.get("evidence"))}</p><p><b>Verification:</b> '
+                f'{_review_value(row.get("verification") or row.get("validation_mode"))}'
+                '</p><p><b>Responsible:</b> '
+                f'{_review_value(row.get("responsible"))}</p></details>')
+
+    def slot(row):
+        sid = _review_token(row.get("slot_id") or "slot")
+        return ('<div class="card" data-tp-focus tabindex="0" '
+                f'id="tp-slot-{_attr(sid)}"><h3>'
+                f'{_esc(str(row.get("slot_id") or "slot"))}</h3><p>lenses: '
+                f'{_review_value(row.get("lens_ids") or row.get("lens"))}</p>'
+                f'<p>status: <b>{_esc(str(row.get("status") or "unknown"))}</b>'
+                f' · result {_review_value(row.get("result_fingerprint"))}</p></div>')
+
+    findings = clean["findings"]
+    filter_bar = (
+        '<div aria-label="Filter findings" class="card">'
+        '<label>severity <select data-filter="severity" '
+        'onchange="tpReviewFilter(this.closest(\'.tpr\'))">' +
+        _review_options(findings, "severity") + '</select></label>'
+        '<label>lens <select data-filter="lens" '
+        'onchange="tpReviewFilter(this.closest(\'.tpr\'))">' +
+        _review_options(findings, "lens") + '</select></label>'
+        '<label>file <select data-filter="file" '
+        'onchange="tpReviewFilter(this.closest(\'.tpr\'))">' +
+        _review_options(findings, "file") + '</select></label></div>')
+
+    def finding(row):
+        fid = str(row.get("id") or "finding")
+        dom_id = _review_token(fid)
+        severity = _review_token(row.get("severity") or "unrated")
+        lens = _review_token(row.get("lens") or "unattributed")
+        file_token = _review_token(row.get("file") or "")
+        return (
+            f'<details class="card" data-finding '
+            f'data-severity="{_attr(severity)}" '
+            f'data-lens="{_attr(lens)}" '
+            f'data-file="{_attr(file_token)}" '
+            f'><summary id="tp-{_attr(dom_id)}" data-tp-focus tabindex="0"><b>' +
+            _review_value(fid, limit=300) + '</b> · ' +
+            _esc(str(row.get("severity") or "unrated")) + ' · ' +
+            _esc(str(row.get("lens") or "unattributed")) + ' · ' +
+            _review_value(row.get("title") or row.get("issue") or "Finding") +
+            '</summary><p><code>' + _esc(str(row.get("file") or "unknown")) +
+            (':' + _esc(str(row.get("line"))) if row.get("line") else '') +
+            '</code></p><p><b>Rationale:</b> ' +
+            _review_value(row.get("rationale") or row.get("why")) +
+            '</p><p><b>Scenario:</b> ' + _review_value(row.get("scenario")) +
+            '</p><p><b>Action:</b> ' +
+            _review_value(row.get("action") or row.get("fix") or
+                          row.get("suggestion")) +
+            '</p><p><b>Evidence:</b> ' + _review_value(row.get("evidence")) +
+            '</p><p><b>Provenance:</b> ' +
+            _review_value(row.get("provenance")) + '</p></details>')
+
+    sections: list[tuple[str, str]] = [("review overview", overview)]
+    sections.extend(("Acceptance criteria", '<h2>Acceptance criteria</h2>' + body)
+                    for body in _review_pack(clean["criteria"], criterion,
+                                             budget=budget))
+    sections.extend(("Lens status", '<h2>Lens status</h2>' + body)
+                    for body in _review_pack(clean["slots"], slot,
+                                             budget=budget))
+    sections.extend(("Findings", '<h2>Findings</h2>' + filter_bar + body)
+                    for body in _review_pack(findings, finding, budget=budget,
+                                             reserve=6200))
+
+    approvable = _review_approvable(clean)
+    actions = clean["gate"].get("actions") or ["approve", "request-changes"]
+    buttons = []
+    for action in actions:
+        action = _review_token(action)
+        receipt, prompt = _review_receipt(clean, action)
+        disabled = action == "approve" and not approvable
+        buttons.append(
+            f'<button data-action="{_attr(action)}" '
+            f'{"disabled " if disabled else ""}data-receipt="{receipt}" '
+            f'data-prompt="{_attr(prompt)}" onclick="tpReviewAction(this)">'
+            f'{_esc(action.replace("-", " "))}</button>')
+    gate = ('<section><h2>Human disposition</h2><p>Gate reason: '
+            f'{_review_value(clean["gate"].get("reason"))}</p><p>' +
+            " ".join(buttons) + '</p><p class="muted">Actions carry a '
+            'session/revision/action receipt. Approval is enabled only for a '
+            'complete, gap-free, justified canonical revision.</p></section>')
+    sections.append(("human disposition", gate))
+
+    total = len(sections)
+    pages = []
+    for index, (title, body) in enumerate(sections, 1):
+        html = _review_page(title=title, body=body, model=clean, index=index,
+                            total=total, budget=budget,
+                            model_fingerprint=model_fingerprint)
+        pages.append({
+            "schema": "taskplane.review-inline-page/v1",
+            "title": title, "index": index, "total": total,
+            "html": html, "bytes": len(html.encode("utf-8")),
+            "model_fingerprint": model_fingerprint,
+            "revision_fingerprint": clean["revision"].get("fingerprint"),
+            "transport": {"host": host},
+        })
+    return pages
+
 
 def headline_findings(findings, meta=None) -> str:
     """The never-skippable text line. Key counts + tests + recommendation, so

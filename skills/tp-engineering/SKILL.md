@@ -156,6 +156,18 @@ surface. Render `visuals.final_dashboard.inline.path` inline; use its durable
 file only if the host cannot render the widget. Do not call `lens dispatch
 --dashboard`, `graph html`, `findings --paged`, route/dispatch again, or author a
 replacement visualization during the normal ReviewKernel path.
+For an R-0009 canonical revision, `review collect` also publishes one atomic
+artifact set: lossless JSON, Markdown, and HTML plus ordered inline pages whose
+UTF-8 size is at most 14,000 bytes. All formats carry the same semantic-model
+fingerprint. Deliver artifact references automatically and render every page
+in order on Claude or Codex; never inline the entire large HTML file,
+substitute a counts-only recap, or feed dashboard bytes back to a lens. Pages
+show target/revision, DoR sources, expandable criterion evidence, lens state,
+full finding rationale/action, dynamic validation, provisional gaps,
+provenance, gate reason, filters, keyboard focus, and action receipts. Approve
+stays disabled until the revision is canonical, complete, gap-free, all
+criteria are justified, and every slot is resolved. Missing consent or host
+interaction is **pending**, never a human decline.
 If collection returns a `repairs` array, dispatch every listed correction to
 its named original producer concurrently as one repair wave, wait for all of
 them, and retry `$TP review collect` once. Never retry collection after only a

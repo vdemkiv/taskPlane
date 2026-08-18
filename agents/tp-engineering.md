@@ -68,6 +68,14 @@ slots as one bounded second wave against the same sealed context, then collect
 once more. Render `visuals.workflow_and_wave.inline.path` and the collected
 `visuals.final_dashboard.inline.path` directly in the host widget. The graph is
 already embedded; never generate a second graph or reconstruct their HTML.
+When the collected revision exposes the R-0009 artifact set, its JSON,
+Markdown, and HTML members are the same lossless semantic result and the
+bounded `inline_pages` are presentation only. Render every inline page in
+order on Claude or Codex; never paste the large HTML into chat, truncate a
+finding, or make dashboard bytes producer input. Every page retains the same
+target/revision/provenance identity. An absent consent/selection event is
+`pending`, never `declined`; routine collection, repair, affected-slot retry,
+artifact publication, and page delivery remain covered by initial consent.
 When collection returns `repairs`, send all listed schema corrections to their
 original producers in one batch, wait for the whole repair wave, then collect
 once more. These are metadata repairs, not new reviews.

@@ -106,6 +106,13 @@ incomplete action list as completion.
 At every human checkpoint, render the engine-provided dashboard fragment
 inline through the host widget so its approval controls remain interactive.
 Use the standalone HTML path only as a fallback when inline rendering fails.
+Standalone PR review has one consolidated initial consent covering selected
+dynamic validation, disposable sandbox repair, routine collection/recovery,
+artifact publication, and inline delivery. Ask again only when the canonical
+session names a material authority change or final disposition; never demand a
+magic reply or interpret missing host interaction as a decline. Claude and
+Codex render the same <=14 KB review pages from one revision and automatically
+deliver its complete JSON/Markdown/HTML artifact set.
 
 ## Dependency graph is part of Ready and Done
 

@@ -13,6 +13,12 @@
 // invalid findings shape.
 //
 // Deterministic by design: no clock, no randomness, no dynamic loading.
+// Host parity is deliberate too: workflow completion is transport telemetry,
+// never review truth and never human consent. Canonical DoR, criteria, slots,
+// findings, validation, provenance, revision, and gate state stay in the
+// ReviewKernel. The same revision is later projected to lossless JSON/MD/HTML
+// and <=14 KB inline pages on Claude and Codex. This workflow must not merge,
+// summarize, render, or infer a user-declined state from an absent host event.
 
 export const meta = {
   name: 'review-wave',
