@@ -272,6 +272,7 @@ def discover(sources: Iterable[Mapping], *, target_revision: str = "") -> dict:
     clarifications = clarification_candidates[:1]
     criteria = [{"id": row["id"], "text": row["text"],
                  "source_ref": row["source_ref"],
+                 "source_identity": row["source_identity"],
                  "source_revision": row["source_revision"]}
                 for row in items
                 if row["classification"] == "acceptance-criterion"]
@@ -322,7 +323,7 @@ def criterion_result(criterion: Mapping, status: str, rationale: str,
     text = str(criterion.get("text") or criterion.get("criterion") or "").strip()
     if not text:
         raise ValueError("criterion text is required")
-    return {
+    row = {
         "id": str(criterion.get("id") or "criterion-" +
                   _fingerprint(text)[:16]),
         "criterion": text,
@@ -332,6 +333,10 @@ def criterion_result(criterion: Mapping, status: str, rationale: str,
         "verification_method": str(verification_method or "").strip(),
         "responsible": str(responsible or "").strip(),
     }
+    for key in ("source_ref", "source_identity", "source_revision"):
+        if str(criterion.get(key) or "").strip():
+            row[key] = str(criterion[key]).strip()
+    return row
 
 
 def criterion_ledger(results: Iterable[Mapping], *, revision: str) -> dict:

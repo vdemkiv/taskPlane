@@ -1790,8 +1790,56 @@ def review_dor_evidence(ws: str, target: dict, *,
                         contracts: Iterable | None = None) -> dict:
     """Discover and disposition the specification artifacts for a review."""
     requirement = requirement if isinstance(requirement, dict) else {}
-    acceptance = [str(row).strip() for row in acceptance or []
-                  if str(row).strip()]
+    revision = str(target.get("head") or target.get("revision") or "unknown")
+
+    def normalize_acceptance(*values) -> list[dict]:
+        """Normalize host criteria without discarding their identity/provenance."""
+        rows, seen = [], {}
+        for value in values:
+            if value is None:
+                continue
+            candidates = value if isinstance(value, (list, tuple)) else [value]
+            for raw in candidates:
+                if isinstance(raw, str):
+                    text = raw.strip()
+                    if not text:
+                        raise ValueError("acceptance criterion text is required")
+                    supplied_id = ""
+                    source_identity = str(requirement.get("id") or "requirement")
+                    source_revision = revision
+                elif isinstance(raw, dict):
+                    text = str(raw.get("text") or raw.get("criterion") or "").strip()
+                    if not text:
+                        raise ValueError("acceptance criterion text is required")
+                    supplied_id = str(raw.get("id") or raw.get("criterion_id") or "").strip()
+                    source_identity = str(raw.get("source_identity") or
+                                          raw.get("source") or
+                                          requirement.get("id") or
+                                          "requirement").strip()
+                    source_revision = str(raw.get("source_revision") or
+                                          raw.get("revision") or revision).strip()
+                    if not source_identity or not source_revision:
+                        raise ValueError("acceptance criterion provenance is required")
+                else:
+                    raise ValueError("acceptance criteria must be strings or objects")
+                normalized_text = " ".join(text.split())
+                key = ("id", supplied_id) if supplied_id else (
+                    "text", normalized_text.casefold())
+                if key in seen:
+                    if seen[key] != normalized_text:
+                        raise ValueError("duplicate acceptance criterion identity conflicts")
+                    continue
+                seen[key] = normalized_text
+                stable_id = supplied_id or "criterion-" + hashlib.sha256(
+                    normalized_text.encode("utf-8")).hexdigest()[:16]
+                rows.append({"id": stable_id, "text": normalized_text,
+                             "source_identity": source_identity,
+                             "source_revision": source_revision})
+        return rows
+
+    structured_acceptance = normalize_acceptance(
+        requirement.get("acceptance"), acceptance)
+    acceptance = [row["text"] for row in structured_acceptance]
     contracts = [str(row).strip() for row in contracts or []
                  if str(row).strip()]
     base = str(target.get("merge_base") or target.get("base") or "").strip()
@@ -1847,7 +1895,8 @@ def review_dor_evidence(ws: str, target: dict, *,
                   if re.search(r"(^|/)(change.?log|changes)(\.|/|$)", path,
                                flags=re.IGNORECASE)]
     explicit = bool(str(requirement.get("text") or "").strip())
-    source = "requirement" if explicit else "pr_commits" if commits else "none"
+    source = ("requirement" if explicit or structured_acceptance else
+              "pr_commits" if commits else "none")
     checks = [
         {"check": "specification artifact", "status": "found" if source != "none" else "missing",
          "detail": (str(requirement.get("id") or "explicit requirement")
@@ -1875,7 +1924,9 @@ def review_dor_evidence(ws: str, target: dict, *,
                    "degraded" if source != "none" else "not_ready"),
         "specification_source": source,
         "requirement": copy.deepcopy(requirement),
-        "acceptance": acceptance, "contracts": contracts,
+        "acceptance": acceptance,
+        "structured_acceptance": copy.deepcopy(structured_acceptance),
+        "contracts": contracts,
         "requirements": ([str(requirement.get("text"))] if explicit else
                          derived_requirements),
         "review_directives": directives,
@@ -1931,8 +1982,14 @@ def review_dor_evidence(ws: str, target: dict, *,
         sources.append({"kind": "linked_requirements",
                         "identity": str(requirement.get("id") or "requirement"),
                         "revision": revision,
-                        "content": str(requirement.get("text") or "") + "\n" +
-                                   "\n".join("- " + row for row in acceptance)})
+                        "content": str(requirement.get("text") or "")})
+    for row in structured_acceptance:
+        # One source per criterion keeps an explicit host identity stable even
+        # when the host reorders its JSON array.
+        sources.append({"kind": "linked_requirements",
+                        "identity": row["source_identity"] + ":" + row["id"],
+                        "revision": row["source_revision"],
+                        "content": "- " + row["text"]})
     if commits:
         sources.append({"kind": "commits", "identity": "review-range",
                         "revision": revision,
@@ -1956,6 +2013,16 @@ def review_dor_evidence(ws: str, target: dict, *,
                         "identity": "declared-contracts", "revision": revision,
                         "content": "\n".join(contracts)})
     canonical = review_dor.discover(sources, target_revision=revision)
+    # Structured ids are authoritative.  Discovery still owns classification
+    # and provenance references, so bind the two records rather than replacing
+    # the canonical result with host JSON.
+    by_source = {row["source_identity"] + ":" + row["id"]: row
+                 for row in structured_acceptance}
+    for row in canonical.get("criteria") or []:
+        structured = by_source.get(str(row.get("source_identity") or ""))
+        if structured:
+            row["id"] = structured["id"]
+            row["source_identity"] = structured["source_identity"]
     legacy["canonical"] = canonical
     legacy["sources"] = canonical["sources"]
     legacy["criteria"] = canonical["criteria"]
@@ -1998,15 +2065,29 @@ def evaluate_review_requirements(dor: dict, diff: dict,
                                  findings: Iterable[dict],
                                  execution: dict | None = None) -> dict:
     """Disposition each PR criterion against canonical diff and findings."""
-    criteria = [str(row).strip() for row in (dor or {}).get("acceptance") or []
-                if str(row).strip()]
+    canonical = (dor or {}).get("canonical") if isinstance(
+        (dor or {}).get("canonical"), dict) else (dor or {})
+    raw_criteria = list(canonical.get("criteria") or [])
+    if not raw_criteria:
+        raw_criteria = list((dor or {}).get("structured_acceptance") or [])
+    if not raw_criteria:
+        raw_criteria = [{"text": str(row)}
+                        for row in (dor or {}).get("acceptance") or []]
+    criteria = []
+    for raw in raw_criteria:
+        row = raw if isinstance(raw, dict) else {"text": raw}
+        text = str(row.get("text") or row.get("criterion") or "").strip()
+        if not text:
+            raise ValueError("acceptance criterion text is required")
+        criteria.append(dict(row, text=text))
     patch = str((diff or {}).get("patch") or "")
     patch_lower = patch.lower()
     files = [str(row) for row in (diff or {}).get("files") or []]
     finding_rows = list(findings or [])
     dynamic = ((execution or {}).get("dynamic_validation") or {}).get("status")
     rows = []
-    for index, criterion in enumerate(criteria, 1):
+    for index, criterion_row in enumerate(criteria, 1):
+        criterion = criterion_row["text"]
         tokens = {word for word in re.findall(r"[a-z][a-z0-9-]{2,}",
                                               criterion.lower())
                   if word not in _REQ_STOP_WORDS}
@@ -2069,7 +2150,11 @@ def evaluate_review_requirements(dor: dict, diff: dict,
         if not evidence:
             evidence.append("no implementation anchor found in the canonical diff")
         rows.append({
-            "id": f"AC-{index}", "criterion": criterion,
+            "id": str(criterion_row.get("id") or f"AC-{index}"),
+            "criterion": criterion,
+            "source_ref": str(criterion_row.get("source_ref") or ""),
+            "source_identity": str(criterion_row.get("source_identity") or ""),
+            "source_revision": str(criterion_row.get("source_revision") or ""),
             "status": status, "gate": gate, "evidence": evidence,
             "related_findings": related,
             "validation_mode": "dynamic+static" if dynamic == "executed" else "static",
@@ -2135,6 +2220,9 @@ def production_review_model(state: dict, revision: dict, *, dor: dict,
             "evidence": copy.deepcopy(raw.get("evidence_refs") or []),
             "verification": str(raw.get("validation_mode") or "review"),
             "responsible": "review-kernel",
+            "source_ref": str(raw.get("source_ref") or ""),
+            "source_identity": str(raw.get("source_identity") or ""),
+            "source_revision": str(raw.get("source_revision") or ""),
         })
     if not criteria:
         criteria = [{"id": str(raw.get("id") or "criterion"),
@@ -2275,12 +2363,15 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     dor = review_dor_evidence(
         ws, target, requirement=requirement, acceptance=acceptance,
         contracts=contracts)
-    acceptance = list(dor.get("acceptance") or [])
+    acceptance = list(dor.get("structured_acceptance") or
+                      dor.get("acceptance") or [])
     if not (requirement or {}).get("text") and dor["commits"]:
         requirement = {
             "id": "pr-commit-specification",
             "text": "\n".join(
-                list(dor.get("requirements") or []) + acceptance +
+                list(dor.get("requirements") or []) +
+                [str(row.get("text") or "") if isinstance(row, dict)
+                 else str(row) for row in acceptance] +
                 [row["text"] for row in dor.get("review_directives") or []]),
             "source": "pr_commits",
         }
