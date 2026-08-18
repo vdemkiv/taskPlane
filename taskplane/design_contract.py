@@ -206,16 +206,24 @@ def design_content_fingerprint(ws: str,
 
 
 def design_current_errors(ws: str, state: dict) -> list:
+    """Validate the approved design anchor without freezing design evidence.
+
+    Design artifacts are living model output and may be refined as the model,
+    available evidence, or host capabilities evolve.  Approval therefore no
+    longer turns their byte fingerprint into a repository-wide execution
+    lock.  The requirement identity remains immutable: changing which
+    requirement the design belongs to still requires a new loop.
+    """
     if not state.get("design_required") or not state.get("design_fingerprint"):
         return []
     contract, errors = design_contract(ws)
     if errors:
         return ["approved design is unavailable: " + e for e in errors]
-    current = design_evidence_fingerprint(ws, contract)
-    if current != state.get("design_fingerprint"):
-        return ["approved design evidence or its anchored requirement "
-                "changed after approval — return to Design and obtain a new "
-                "human approval"]
+    approved_requirement = str(state.get("requirement_id") or "").strip()
+    current_requirement = str((contract or {}).get("requirement") or "").strip()
+    if approved_requirement and current_requirement != approved_requirement:
+        return ["approved design is anchored to a different requirement — "
+                "start a new loop to re-anchor it"]
     return []
 
 

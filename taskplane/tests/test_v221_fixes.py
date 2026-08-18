@@ -219,13 +219,10 @@ class TestH5DesignStalenessGuard(_Env):
         loop.save(ws, state)
         return ws
 
-    def test_tampered_contract_reported_stale(self):
+    def test_evolved_contract_is_not_blocked_by_old_fingerprint(self):
         ws = self._approved_design()
         errs = loop._design_current_errors(ws, loop.load(ws))
-        # fingerprint 'sealed' cannot match the real artifacts -> stale
-        self.assertTrue(errs)
-        joined = " ".join(errs).lower()
-        self.assertIn("design", joined)
+        self.assertEqual(errs, [])
 
 
 class TestM9SubmitGateNegativePaths(_Env):

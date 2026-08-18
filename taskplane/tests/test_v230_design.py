@@ -221,7 +221,7 @@ class M2RequirementPinnedInApproval(_DesignEnv):
         self.assertNotEqual(
             before, dc.requirement_fingerprint(self.ws, "R-9999"))
 
-    def test_requirement_edit_after_approval_invalidates_it(self):
+    def test_requirement_edit_after_approval_does_not_freeze_design(self):
         loop.init(self.ws, "design this", spec_path="specs/x.md",
                   requirement_id=self.req["id"], design=True)
         loop.next_action(self.ws)
@@ -236,11 +236,21 @@ class M2RequirementPinnedInApproval(_DesignEnv):
         path = os.path.join(reqs.kb_dir(self.ws), self.req["file"])
         with open(path, "a", encoding="utf-8") as f:
             f.write("\n- NEW acceptance criterion sneaked in\n")
+        self.assertEqual(dc.design_current_errors(self.ws, state), [])
+
+    def test_design_cannot_reanchor_to_another_requirement(self):
+        loop.init(self.ws, "design this", spec_path="specs/x.md",
+                  requirement_id=self.req["id"], design=True)
+        loop.next_action(self.ws)
+        contract = self._base_contract(
+            graph_fp=loop.load(self.ws)["design_graph_fingerprint"])
+        contract["requirement"] = "R-9999"
+        self._write_design(contract)
+        state = loop.load(self.ws)
+        state["design_fingerprint"] = "approved"
         errors = dc.design_current_errors(self.ws, state)
         self.assertTrue(errors)
-        self.assertIn("requirement", " ".join(errors))
-        # The plan gate inherits the block — no silent traceability break.
-        self.assertTrue(dc.design_plan_errors(self.ws, state))
+        self.assertIn("different requirement", " ".join(errors))
 
     def test_index_edit_also_invalidates(self):
         contract = self._write_design(self._base_contract())
