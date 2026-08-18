@@ -75,6 +75,42 @@ class RevisionError(ValueError):
     pass
 
 
+def _summary_repair_projection(result: dict) -> dict:
+    """Remove only derived verdict/count fields from a producer result.
+
+    The remaining projection includes findings, checked evidence, lease
+    identity, and every producer-authored extension.  Equality of this
+    projection is the mechanical proof that a summary repair did not rewrite
+    review substance or provenance.
+    """
+    if not isinstance(result, dict):
+        raise ProvenanceError("slot result must be an object")
+    projected = copy.deepcopy(result)
+    rows = projected.get("lens_results")
+    if not isinstance(rows, list):
+        raise ProvenanceError("slot result lens_results must be a list")
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ProvenanceError("slot result lens verdict is invalid")
+        lens = str(row.get("lens") or "").strip()
+        checked = row.get("checked_evidence")
+        if not lens or lens in seen or not isinstance(checked, list):
+            raise ProvenanceError("slot result lens verdict is invalid")
+        seen.add(lens)
+        row.pop("verdict", None)
+        row.pop("blockers", None)
+    if not isinstance(projected.get("findings"), list):
+        raise ProvenanceError("finding schema must be a list")
+    return projected
+
+
+def assert_summary_only_repair(before: dict, after: dict) -> None:
+    """Prove that two results differ only in derived lens summaries."""
+    if _summary_repair_projection(before) != _summary_repair_projection(after):
+        raise ProvenanceError("summary repair changes review substance or provenance")
+
+
 def canonical_bytes(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
