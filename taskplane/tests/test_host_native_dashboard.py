@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from html.parser import HTMLParser
+import re
+
 import pytest
 
 from taskplane.dashboard import (
     HOST_DASHBOARD_COMPONENTS,
     carousel_pages,
     native_dashboard_projection,
+    render_native_dashboard_surface,
 )
 from taskplane.host_native import HostSurfaceSnapshot
 
@@ -30,6 +34,54 @@ def _items(n):
 
 def _semantic(projection):
     return {k: v for k, v in projection.items() if k != "presentation"}
+
+
+class _SurfaceDOM(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+        self.nodes = []
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        self.nodes.append((tag, attrs, tuple(self.stack)))
+        self.stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        self.nodes.append((tag, dict(attrs), tuple(self.stack)))
+
+    def handle_endtag(self, tag):
+        if tag in self.stack:
+            while self.stack:
+                if self.stack.pop() == tag:
+                    break
+
+    def handle_data(self, data):
+        self.text.append(data)
+
+    def matching(self, tag, **attrs):
+        return [(node_attrs, parents) for node_tag, node_attrs, parents
+                in self.nodes if node_tag == tag and all(
+                    node_attrs.get(key) == value for key, value in attrs.items())]
+
+
+def _dom(markup):
+    parser = _SurfaceDOM()
+    parser.feed(markup)
+    return parser
+
+
+def _contrast(foreground, background):
+    def luminance(color):
+        channels = [int(color[index:index + 2], 16) / 255
+                    for index in (1, 3, 5)]
+        channels = [channel / 12.92 if channel <= .04045
+                    else ((channel + .055) / 1.055) ** 2.4
+                    for channel in channels]
+        return .2126 * channels[0] + .7152 * channels[1] + .0722 * channels[2]
+    high, low = sorted((luminance(foreground), luminance(background)), reverse=True)
+    return (high + .05) / (low + .05)
 
 
 def test_codex_and_claude_project_equal_semantics_for_all_components():
@@ -76,23 +128,47 @@ def test_duplicate_or_missing_stable_identity_is_rejected():
         carousel_pages([{"id": "same"}, {"id": "same"}, {"title": "x"}])
 
 
-def test_inline_contract_is_conversational_responsive_and_accessible():
-    projected = native_dashboard_projection(_snapshot(), host="codex")
-    ui = projected["presentation"]
-    assert ui["card"] == {
-        "single_purpose": True, "max_primary_actions": 2,
-        "nested_scroll": False, "deep_navigation": False,
-        "rich_detail_surface": "fullscreen", "composer_retained": True,
-    }
-    assert ui["responsive"]["min_viewport_px"] == 320
-    assert ui["accessibility"] == {
-        "semantic_labels": True, "alt_text": True,
-        "keyboard_navigation": True, "visible_focus": True,
-        "text_scale_percent": 200, "reduced_motion": True,
-        "status_not_color_only": True, "contrast": "WCAG-AA",
-        "fonts": "system", "tokens": "host-system",
-        "themes": ["light", "dark"],
-    }
+@pytest.mark.parametrize("host", ["codex", "claude"])
+@pytest.mark.parametrize("viewport,layout", [(320, "single-column"),
+                                               (1440, "responsive-grid")])
+def test_rendered_inline_surface_is_bounded_and_retains_composer(host, viewport,
+                                                                 layout):
+    projection = native_dashboard_projection(_snapshot(), host=host)
+    markup = render_native_dashboard_surface(projection, viewport_px=viewport)
+    dom = _dom(markup)
+
+    root = dom.matching("div", **{"data-host": host})[0][0]
+    assert root["data-layout"] == layout
+    assert root["data-viewport-width"] == str(viewport)
+    assert len(dom.matching("main", **{"aria-label": "Taskplane workflow dashboard"})) == 1
+    cards = dom.matching("section")
+    assert len(cards) == len(HOST_DASHBOARD_COMPONENTS)
+    assert all(attrs.get("data-purpose") and attrs.get("aria-labelledby")
+               and parents[-1] == "main" for attrs, parents in cards)
+    composer = dom.matching("form", **{"aria-label": "Conversation composer"})
+    assert len(composer) == 1 and "main" not in composer[0][1]
+    assert "overflow:auto" not in markup and "overflow:scroll" not in markup
+    assert "grid-template-columns:1fr" in markup
+
+
+def test_rendered_actions_use_fullscreen_detail_without_deep_navigation():
+    snapshot = HostSurfaceSnapshot.create(
+        workflow_id="wf", run_id="run", target="repo", revision="abc",
+        sequence=1, stage="review", state="waiting", values={},
+        safe_actions=("approve", "decline", "inspect", "export"),
+    )
+    markup = render_native_dashboard_surface(
+        native_dashboard_projection(snapshot, host="codex"))
+    dom = _dom(markup)
+    inline_buttons = [(attrs, parents) for attrs, parents in dom.matching("button")
+                      if "nav" in parents]
+    assert len(inline_buttons) == 2
+    assert any(attrs.get("aria-controls") == "tp-fullscreen-detail"
+               for attrs, _ in inline_buttons)
+    dialog = dom.matching("dialog", id="tp-fullscreen-detail")
+    assert len(dialog) == 1
+    assert "position:fixed;inset:0;width:100vw;height:100vh" in markup
+    assert not dom.matching("a")
 
 
 def test_more_than_two_actions_moves_extras_to_fullscreen_detail():
@@ -104,3 +180,36 @@ def test_more_than_two_actions_moves_extras_to_fullscreen_detail():
     projection = native_dashboard_projection(snapshot, host="claude")
     assert projection["presentation"]["primary_actions"] == ["approve", "decline"]
     assert projection["presentation"]["detail_actions"] == ["inspect", "export"]
+
+
+@pytest.mark.parametrize("host", ["codex", "claude"])
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_rendered_surface_accessibility_is_measured(host, theme):
+    markup = render_native_dashboard_surface(
+        native_dashboard_projection(_snapshot(), host=host), viewport_px=320,
+        theme=theme, text_scale_percent=200, reduced_motion=True)
+    dom = _dom(markup)
+    root = dom.matching("div", **{"data-host": host})[0][0]
+    assert root["data-theme"] == theme
+    assert root["data-reduced-motion"] == "true"
+    assert "font-size:200%" in root["style"]
+    assert "transition:none" in root["style"]
+    assert "@media(prefers-reduced-motion:reduce)" in markup
+    assert "focus-visible" in markup and "outline:3px solid var(--tp-focus)" in markup
+
+    labelled_regions = dom.matching("main") + dom.matching("nav") \
+        + dom.matching("form") + dom.matching("dialog")
+    assert all(attrs.get("aria-label") or attrs.get("aria-labelledby")
+               for attrs, _ in labelled_regions)
+    assert all(attrs.get("alt") for attrs, _ in dom.matching("img"))
+    assert dom.matching("label", **{"for": "tp-message"})
+    assert "&#10003;" in markup and "ready" in markup
+
+    tokens = dict(re.findall(r"--tp-([a-z]+):(#[0-9a-f]{6})", root["style"]))
+    assert _contrast(tokens["text"], tokens["background"]) >= 4.5
+    assert _contrast(tokens["muted"], tokens["background"]) >= 4.5
+    assert _contrast(tokens["focus"], tokens["background"]) >= 3.0
+
+    focusable = [(tag, attrs) for tag, attrs, _ in dom.nodes
+                 if tag in {"button", "textarea"}]
+    assert focusable and all(attrs.get("tabindex") != "-1" for _, attrs in focusable)
