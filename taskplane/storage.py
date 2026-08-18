@@ -29,6 +29,35 @@ class StorageIdentityError(RuntimeError):
     pass
 
 
+def resolve_repository_family(workspace: str) -> dict:
+    """Locate the exact current worktree and its repository-family launcher.
+
+    Worktrees may be nested beneath a managed parent and may move between
+    sessions.  Resolution therefore starts from the current path on every
+    call; no checkout path is cached in canonical state.
+    """
+    current = os.path.realpath(os.path.abspath(os.path.expanduser(workspace)))
+    if not os.path.isdir(current):
+        current = os.path.dirname(current)
+    chain: list[str] = []
+    cursor = current
+    while True:
+        chain.append(cursor)
+        parent = os.path.dirname(cursor)
+        if parent == cursor:
+            break
+        cursor = parent
+    worktree = next((path for path in chain
+                     if os.path.exists(os.path.join(path, ".git"))), current)
+    launcher = next((os.path.realpath(os.path.join(path, ".taskplane",
+                                                   "codex-hook.py"))
+                     for path in chain
+                     if os.path.isfile(os.path.join(path, ".taskplane",
+                                                    "codex-hook.py"))), None)
+    return {"schema": "taskplane.repository-family/v1",
+            "worktree": worktree, "launcher": launcher}
+
+
 @dataclass(frozen=True)
 class RepositoryIdentity:
     """Stable logical repository identity plus this checkout's location."""
