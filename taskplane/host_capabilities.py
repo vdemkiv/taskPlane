@@ -19,8 +19,8 @@ from typing import Any, Mapping
 
 
 SCHEMA = "taskplane.host-capabilities/v1"
-STATUSES = frozenset(("supported", "unsupported", "unknown",
-                      "contradictory"))
+STATUSES = frozenset(("supported", "unsupported", "partial", "unknown",
+                      "stale", "contradictory", "changed"))
 CONFIDENCES = frozenset(("high", "medium", "low"))
 MAX_REASON_BYTES = 512
 RUNTIME_RECEIPT_SCHEMA = "taskplane.host-hook-receipt/v1"
@@ -135,6 +135,14 @@ _ENV_OBSERVATIONS = {
     "TASKPLANE_MODEL_SELECTION": "model_selection",
     "TASKPLANE_EFFORT_SELECTION": "effort_selection",
     "TASKPLANE_STABLE_HOOK_EVENT_ID": "stable_event_identity",
+    "TASKPLANE_NATIVE_PIP": "pip",
+    "TASKPLANE_NATIVE_VISUALIZATION": "visualization",
+    "TASKPLANE_NATIVE_CAROUSEL": "carousel",
+    "TASKPLANE_NATIVE_APPROVAL": "approval",
+    "TASKPLANE_NATIVE_SANDBOX": "sandbox",
+    "TASKPLANE_NATIVE_HOSTING": "hosting",
+    "TASKPLANE_NATIVE_BROWSER": "browser",
+    "TASKPLANE_NATIVE_SIDE_PANEL": "side_panel",
 }
 
 _STATUS_ALIASES = {
@@ -144,8 +152,106 @@ _STATUS_ALIASES = {
     "0": "unsupported", "false": "unsupported", "no": "unsupported",
     "unsupported": "unsupported", "denied": "unsupported",
     "untrusted": "unsupported", "not_loaded": "unsupported",
-    "unknown": "unknown", "contradictory": "contradictory",
+    "unknown": "unknown", "partial": "partial", "stale": "stale",
+    "contradictory": "contradictory", "changed": "changed",
+    "changed-mid-run": "changed", "changed_mid_run": "changed",
 }
+
+
+HOST_NATIVE_SURFACES = (
+    "pip", "visualization", "carousel", "approval", "sandbox", "hosting",
+    "browser", "side_panel",
+)
+SURFACE_SELECTION_SCHEMA = "taskplane.host-surface-selection/v1"
+
+
+@dataclass(frozen=True)
+class SurfaceSelection:
+    """Auditable selection for exactly one independently optional surface."""
+
+    surface: str
+    host: str
+    host_version: str | None
+    status: str
+    source: str
+    confidence: str
+    freshness: str
+    selected_surface: str
+    limitation: str | None
+    fallback: str | None
+    observed_at: str
+    reason: str
+    schema: str = SURFACE_SELECTION_SCHEMA
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "surface": self.surface,
+            "host": self.host,
+            "host_version": self.host_version,
+            "status": self.status,
+            "source": self.source,
+            "confidence": self.confidence,
+            "freshness": self.freshness,
+            "selected_surface": self.selected_surface,
+            "limitation": self.limitation,
+            "fallback": self.fallback,
+            "observed_at": self.observed_at,
+            "reason": self.reason,
+        }
+
+
+def negotiate_host_surfaces(
+        *, host: str, host_version: str | None,
+        observations: Mapping[str, Observation], observed_at: str = "",
+        surfaces: tuple[str, ...] = HOST_NATIVE_SURFACES,
+        fallback: str = "accessible_bounded") -> Mapping[str, SurfaceSelection]:
+    """Select native functionality only from fresh, explicit support.
+
+    Each capability is independent. Missing or malformed evidence is unknown;
+    partial, stale, contradictory, or changed evidence fails closed for that
+    surface only. Canonical workflow state is intentionally absent here.
+    """
+    selections: dict[str, SurfaceSelection] = {}
+    for name in surfaces:
+        row = observations.get(name)
+        if not isinstance(row, Observation):
+            row = _unknown(name, observed_at)
+        status = row.status
+        native = status == "supported"
+        freshness = (
+            "fresh" if status in {"supported", "unsupported"} else status
+        )
+        selections[name] = SurfaceSelection(
+            surface=name,
+            host=_bounded(host, 32) or "unknown",
+            host_version=_bounded(host_version, 64) or None,
+            status=status,
+            source=row.source,
+            confidence=row.confidence,
+            freshness=freshness,
+            selected_surface="native" if native else "fallback",
+            limitation=None if native else status,
+            fallback=None if native else fallback,
+            observed_at=row.observed_at or _bounded(observed_at, 64),
+            reason=row.reason,
+        )
+    return MappingProxyType(selections)
+
+
+def negotiate_snapshot_surfaces(
+        snapshot: HostCapabilitySnapshot,
+        *, surfaces: tuple[str, ...] = HOST_NATIVE_SURFACES,
+        fallback: str = "accessible_bounded") -> Mapping[str, SurfaceSelection]:
+    """Negotiate directly from a sealed host capability snapshot."""
+    return negotiate_host_surfaces(
+        host=snapshot.host,
+        host_version=snapshot.host_version,
+        observations=snapshot.capabilities,
+        observed_at=snapshot.observed_at,
+        surfaces=surfaces,
+        fallback=fallback,
+    )
 
 
 def observations_from_environment(
@@ -418,6 +524,7 @@ def probe_snapshot(
         "workflow_availability", "native_structured_output",
         "model_selection", "supported_model_aliases", "effort_selection",
         "supported_effort_values", "stable_event_identity",
+        *HOST_NATIVE_SURFACES,
     )
     for name in names:
         row = supplied.get(name)
