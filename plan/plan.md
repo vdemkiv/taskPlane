@@ -1,9 +1,9 @@
 # R-0011 plan — host-native workflow UX for Codex and Claude
 
 This plan realizes the human-approved Design Contract fingerprint
-`a1d4612d2f606932c01a36f9882b6c15fe7bb1f3a72c3246b867d55efb87bd86`.
+`153c98980cdeb87276701195112b22f2ac923bf828717501aa70ea14c8a89fe3`.
 The current contract artifact SHA-256 is
-`6b59d1dac55af786226ebf39eab2bf19769a52db405caaf0d669a4b60cb8efec`;
+`b05d264895b2b89d15bdc8fb96b44873149ab60409dacb2584f290666ad8ab4d`;
 the approved fingerprint remains the decision identity. The prior R-0010 plan
 is preserved unchanged in `plan/r0010-plan.pre-r0011.md` and
 `plan/r0010-tasks.pre-r0011.json`.
@@ -12,8 +12,8 @@ is preserved unchanged in `plan/r0010-plan.pre-r0011.md` and
 
 The required single bounded impact call covered every proposed implementation
 surface and matched the approved baseline fingerprint
-`a37ace66548f41464159678b3f8d88b315db4b63a6f488349842fdf93a92779b`
-at HEAD `383d77bd70d53d33aa2977df0720e69d085b8a08`. It returned 31 impacted
+`11db1c87480228a4a28948051a388cc6e7d9ccec958a810c770cf1cba71211e9`
+at HEAD `4e1c7e7b437777306cb034dec1f4fa775a62addc`. It returned 31 impacted
 nodes, no unknown modules, and the approved policy: local depth 3,
 `contract-only` boundaries, contract depth 1, requirement depth 1.
 
