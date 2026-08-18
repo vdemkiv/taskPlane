@@ -8,6 +8,7 @@ and returns one bounded correction before a repeated drift blocks.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -32,6 +33,43 @@ REVIEW_FACTS = (
     "output_producer_observed")
 
 TOKEN_PROJECTION_SCHEMA = "taskplane.host-token-projection/v1"
+
+
+def review_fix_convergence_projection(
+        previous_revision: dict, current_revision: dict, *, cycle: int,
+        previously_closed: set[str] | None = None,
+        history: list[dict] | None = None, max_cycles: int | None = None,
+        human_stop: bool = False, unsafe_recovery: bool = False,
+        scope_changed: bool = False, authority_changed: bool = False) -> dict:
+    """Production runtime entry point for the bounded fix-cycle policy."""
+    import review_convergence
+
+    return review_convergence.evaluate_fix_cycle(
+        previous_revision, current_revision, cycle=cycle,
+        previously_closed=previously_closed, history=history,
+        max_cycles=max_cycles, human_stop=human_stop,
+        unsafe_recovery=unsafe_recovery, scope_changed=scope_changed,
+        authority_changed=authority_changed)
+
+
+def review_outcome_with_lens_telemetry(
+        sealed_revision: dict, *, lifecycle: dict | None = None,
+        usage_by_lens: dict | None = None, enabled: bool = True) -> dict:
+    """Attach post-review metrics without allowing observation to affect review.
+
+    This is the production boundary between authoritative review state and the
+    optional telemetry projection.  Disabled telemetry performs no projection;
+    both paths return the same independent review snapshot.
+    """
+    review_snapshot = copy.deepcopy(sealed_revision)
+    telemetry = None
+    if enabled:
+        import lens_telemetry
+
+        telemetry = lens_telemetry.build_lens_telemetry(
+            review_snapshot, lifecycle=lifecycle,
+            usage_by_lens=usage_by_lens)
+    return {"review": review_snapshot, "telemetry": telemetry}
 
 
 def observed_token_projection(usage: dict | None, *, provider: str,

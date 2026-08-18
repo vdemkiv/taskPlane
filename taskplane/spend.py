@@ -222,6 +222,54 @@ def normalize_usage(usage: dict, *, provider: str) -> dict:
     }
 
 
+def provider_cost_projection(usage: dict, *, provider: str,
+                             rates_per_million: dict | None = None) -> dict:
+    """Return provider-correct normalized tokens and optional observed cost.
+
+    Rates are supplied by the caller because price tables change independently
+    of the engine.  Missing usage or a missing rate is ``unavailable`` rather
+    than a fabricated zero.  A real zero-token category does not require a
+    rate and remains distinguishable from unavailable telemetry.
+    """
+    normalized = normalize_usage(usage, provider=provider)
+    if normalized.get("available") is not True:
+        return {
+            "usage": normalized,
+            "cost": {"available": False, "usd": None,
+                     "reason": normalized.get("reason") or
+                     "usage telemetry is unavailable"},
+        }
+    rates = rates_per_million if isinstance(rates_per_million, dict) else {}
+    categories = {
+        "uncached_input": normalized["uncached_input_tokens"],
+        "cached_input": normalized["cached_input_tokens"],
+        "cache_creation": normalized["cache_creation_tokens"],
+        "output": normalized["output_tokens"],
+    }
+    missing = []
+    total = 0.0
+    for category, tokens in categories.items():
+        rate = rates.get(category)
+        valid_rate = (isinstance(rate, (int, float))
+                      and not isinstance(rate, bool) and rate >= 0)
+        if tokens and not valid_rate:
+            missing.append(category)
+        elif valid_rate:
+            total += tokens * float(rate) / 1_000_000
+    if missing:
+        return {
+            "usage": normalized,
+            "cost": {"available": False, "usd": None,
+                     "reason": "provider rates unavailable: "
+                     + ", ".join(sorted(missing))},
+        }
+    return {
+        "usage": normalized,
+        "cost": {"available": True, "usd": round(total, 12),
+                 "reason": None},
+    }
+
+
 def _row_usage(row: dict) -> tuple[dict | None, str | None]:
     """Return one usage block and a stable host identity from one JSONL row."""
     containers = []
