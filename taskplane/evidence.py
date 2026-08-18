@@ -39,6 +39,45 @@ import storage as runtime_storage
 EVIDENCE_JUDGMENT_KEYS = ("status", "verdict", "evidence", "blockers")
 
 
+def review_dor_evidence(dor: dict) -> dict:
+    """Project canonical DoR facts into empty criterion judgment slots.
+
+    This mirrors the module's evaluator-evidence rule: the engine may expose
+    what must be judged and where it came from, but may not author the verdict
+    or evidence that makes a criterion pass.
+    """
+    if not isinstance(dor, dict) or dor.get("schema") != \
+            "taskplane.review-dor-evidence/v1":
+        raise ValueError("canonical review DoR evidence is required")
+    criteria = []
+    for value in dor.get("criteria") or []:
+        criteria.append({
+            "id": str(value.get("id") or ""),
+            "criterion": str(value.get("text") or ""),
+            "source_ref": str(value.get("source_ref") or ""),
+            "source_revision": str(value.get("source_revision") or ""),
+            "status": "",
+            "rationale": "",
+            "evidence_ref": "",
+            "verification_method": "",
+            "responsible": "",
+        })
+    return {
+        "schema": "taskplane.review-dor-evidence-projection/v1",
+        "dor_fingerprint": str(dor.get("fingerprint") or ""),
+        "target_revision": str(dor.get("target_revision") or ""),
+        "source_checks": dict(dor.get("source_checks") or {}),
+        "requested_lenses": dict(dor.get("requested_lenses") or {}),
+        "executable_validation_requested": bool(
+            dor.get("executable_validation_requested")),
+        "criteria": criteria,
+        "judgment_owed": [
+            "status", "rationale", "evidence_ref", "verification_method",
+            "responsible",
+        ],
+    }
+
+
 def command_wave_evidence(state: dict) -> dict | None:
     """Project only existing runtime observations into evaluator evidence."""
     wave = state.get("command_wave") if isinstance(state, dict) else None
