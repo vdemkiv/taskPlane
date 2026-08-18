@@ -105,6 +105,58 @@ def test_setup_matrix_repairs_or_prompts_once_and_waits_without_prompt_loops():
     }
 
 
+@pytest.mark.parametrize(
+    ("check_id", "classification", "expected_status", "prompt_count"),
+    [
+        ("workspace", "self-repairable", "repaired", 0),
+        ("git", "self-repairable", "repaired", 0),
+        ("init", "self-repairable", "repaired", 0),
+        ("hook_install", "self-repairable", "repaired", 0),
+        ("repository_trust", "authority-required", "needs_authority", 1),
+        ("managed_policy", "host-policy", "waiting_host_policy", 0),
+        ("loaded_session", "external-unavailable", "waiting_external", 0),
+        ("effective_hook_path", "host-policy", "waiting_host_policy", 0),
+    ],
+)
+def test_every_onboarding_setup_check_has_bounded_recovery_and_prompt_counts(
+        check_id, classification, expected_status, prompt_count):
+    checks = [{"id": check_id, "classification": classification,
+               "detail": f"authority for {check_id}"}]
+    first = preflight.reconcile_onboarding_checks(
+        checks, repair=lambda check: True)
+    resumed = preflight.reconcile_onboarding_checks(
+        checks, repair=lambda check: True,
+        prior_prompt_ids=first["prompt_ids"])
+    assert first["checks"][0]["status"] == expected_status
+    assert len(first["actions"]) == prompt_count
+    assert resumed["actions"] == []
+    if classification == "authority-required":
+        assert first["actions"][0]["authority"] == f"authority for {check_id}"
+        assert resumed["status"] == "waiting"
+
+
+def test_onboarding_retries_failed_self_repair_after_state_changes():
+    attempts = 0
+
+    def repair(check):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("filesystem temporarily read-only")
+        return True
+
+    checks = [{"id": "init", "classification": "self-repairable"}]
+    blocked = preflight.reconcile_onboarding_checks(checks, repair=repair)
+    recovered = preflight.reconcile_onboarding_checks(
+        checks, repair=repair, prior_prompt_ids=blocked["prompt_ids"])
+    assert blocked["status"] == "waiting"
+    assert blocked["checks"][0]["status"] == "repair_failed"
+    assert blocked["actions"] == []
+    assert recovered["status"] == "ready"
+    assert recovered["checks"][0]["status"] == "repaired"
+    assert attempts == 2
+
+
 class _SequenceAcquirer:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
@@ -118,6 +170,25 @@ class _SequenceAcquirer:
         return outcome
 
     acquire_pr = acquire_repository
+
+
+def _acquired(checkout: Path, *, head="a", base="b", merge_base="c"):
+    checkout.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    return repository.AcquisitionResult(
+        checkout=str(checkout), base_ref="refs/remotes/origin/main",
+        base=base * 40, head=head * 40, merge_base=merge_base * 40,
+        changed_files=("src/changed.py",),
+        metadata={"url": "https://github.com/example/project"})
+
+
+def _repository_preflight(tmp_path, acquirer):
+    return preflight.RepositoryPreflight(
+        home=str(tmp_path / "home"),
+        tools_provider=lambda: {
+            "git": {"present": True},
+            "gh": {"present": True, "authenticated": True},
+        }, acquirer=acquirer)
 
 
 def test_repository_acquisition_uses_bounded_automatic_recovery(monkeypatch):
@@ -161,6 +232,92 @@ def test_preflight_production_path_automatically_recovers_repository(
         workspace=str(tmp_path), host={"kind": "codex"}, run_id="recover")
     assert result["status"] == "ready"
     assert acquirer.calls == 3
+
+
+def test_repository_preparation_local_fixture_pins_and_verifies_head(
+        tmp_path):
+    checkout = tmp_path / "local"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    (checkout / "tracked.txt").write_text("pinned\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=checkout, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Taskplane", "-c",
+        "user.email=taskplane@example.invalid", "commit", "-qm", "base",
+    ], cwd=checkout, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, check=True,
+        text=True, stdout=subprocess.PIPE).stdout.strip()
+
+    result = _repository_preflight(
+        tmp_path, _SequenceAcquirer([])).prepare(
+            str(checkout), workspace=str(tmp_path), host={"kind": "codex"},
+            run_id="local")
+    assert result["status"] == "ready"
+    assert result["checkout"] == str(checkout.resolve())
+    assert result["target"]["ok"] is True
+    assert result["target"]["head"] == head
+    assert result["target"]["root"] == str(checkout.resolve())
+    assert result["target"]["fingerprint"]
+
+
+def test_repository_preparation_remote_fixture_preserves_pinned_target(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
+    acquired = _acquired(tmp_path / "remote-checkout")
+    acquirer = _SequenceAcquirer([acquired])
+    result = _repository_preflight(tmp_path, acquirer).prepare(
+        "https://github.com/example/project.git", workspace=str(tmp_path),
+        host={"kind": "codex"}, run_id="remote")
+    assert result["status"] == "ready"
+    assert acquirer.calls == 1
+    assert result["target"]["target"]["kind"] == "repository"
+    assert result["target"]["head"] == acquired.head
+    assert result["target"]["base"] == acquired.base
+    assert result["target"]["merge_base"] == acquired.merge_base
+    assert result["target"]["base_ref"] == acquired.base_ref
+    assert result["target"]["changed_files"] == ["src/changed.py"]
+    assert result["target"]["fingerprint"]
+
+
+def test_repository_preparation_cached_fixture_avoids_remote_reacquisition(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
+    acquired = _acquired(tmp_path / "cached-checkout")
+    acquirer = _SequenceAcquirer([acquired])
+    engine = _repository_preflight(tmp_path, acquirer)
+    first = engine.prepare(
+        "https://github.com/example/project.git", workspace=str(tmp_path),
+        host={"kind": "codex"}, run_id="cached")
+    cached = engine.prepare(
+        "https://github.com/example/project.git", workspace=str(tmp_path),
+        host={"kind": "codex"}, run_id="cached")
+    assert first["status"] == cached["status"] == "ready"
+    assert cached["target"]["fingerprint"] == first["target"]["fingerprint"]
+    assert cached["revision"] == first["revision"]
+    assert acquirer.calls == 1
+
+
+@pytest.mark.parametrize("fixture", ["stale", "moved"])
+def test_repository_preparation_reacquires_stale_or_moved_checkout(
+        tmp_path, monkeypatch, fixture):
+    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
+    old = _acquired(tmp_path / "old-checkout")
+    replacement = _acquired(tmp_path / f"{fixture}-checkout", head="d")
+    acquirer = _SequenceAcquirer([old, replacement])
+    engine = _repository_preflight(tmp_path, acquirer)
+    first = engine.prepare(
+        "https://github.com/example/project.git", workspace=str(tmp_path),
+        host={"kind": "codex"}, run_id=fixture)
+    Path(first["checkout"]).rename(tmp_path / "relocated-outside-cache")
+    resumed = engine.prepare(
+        "https://github.com/example/project.git", workspace=str(tmp_path),
+        host={"kind": "codex"}, run_id=fixture)
+    assert resumed["status"] == "ready"
+    assert resumed["checkout"] == str((tmp_path / f"{fixture}-checkout"))
+    assert resumed["target"]["head"] == "d" * 40
+    assert resumed["target"]["fingerprint"] != first["target"]["fingerprint"]
+    assert acquirer.calls == 2
 
 
 def test_command_runtime_persists_recovery_and_detects_repeated_failure(tmp_path):
@@ -233,6 +390,18 @@ def _plugin(root: Path, version: str, *, valid=True):
     (root / "taskplane" / "tp.py").write_text("# engine\n", encoding="utf-8")
 
 
+def _worktree(root: Path, *, name="main", launcher_at_root=True):
+    worktree = root if name == "main" else root / ".tp-work" / name
+    worktree.mkdir(parents=True, exist_ok=True)
+    (worktree / ".git").write_text(
+        f"gitdir: /managed/common/worktrees/{name}\n", encoding="utf-8")
+    launcher_root = root if launcher_at_root else worktree
+    (launcher_root / ".taskplane").mkdir(parents=True, exist_ok=True)
+    launcher = launcher_root / ".taskplane" / "codex-hook.py"
+    launcher.write_text("# launcher\n", encoding="utf-8")
+    return worktree, launcher
+
+
 def test_repository_family_continuity_selects_exact_worktree_and_latest_engine(
         tmp_path):
     family = tmp_path / "family"
@@ -257,23 +426,111 @@ def test_repository_family_continuity_selects_exact_worktree_and_latest_engine(
         (family / "2.17.8" / "taskplane" / "tp.py").resolve())
 
 
-@pytest.mark.parametrize("state", ["moved", "unavailable", "policy"])
+@pytest.mark.parametrize("location", ["root", "nested", "sibling"])
+def test_repository_family_continuity_resolves_each_current_worktree_fixture(
+        tmp_path, location):
+    family = tmp_path / "family"
+    _plugin(family / "2.17.8", "2.17.8")
+    root, launcher = _worktree(tmp_path / "repo")
+    sibling, _ = _worktree(root, name="sibling")
+    if location == "root":
+        current, expected = root, root
+    elif location == "nested":
+        current = root / "src" / "nested"
+        current.mkdir(parents=True)
+        expected = root
+    else:
+        current = sibling / "src" / "nested"
+        current.mkdir(parents=True)
+        expected = sibling
+    result = repository.resolve_worktree_continuity(
+        str(current), plugin_family=str(family))
+    assert result["status"] == "ready"
+    assert result["worktree"] == str(expected.resolve())
+    assert result["launcher"] == str(launcher.resolve())
+
+
+def test_repository_family_continuity_re_resolves_moved_worktree(tmp_path):
+    family = tmp_path / "family"
+    _plugin(family / "2.17.8", "2.17.8")
+    old_root, _ = _worktree(tmp_path / "old-repo")
+    old_result = repository.resolve_worktree_continuity(
+        str(old_root), plugin_family=str(family))
+    moved_root = tmp_path / "moved-repo"
+    old_root.rename(moved_root)
+    moved_result = repository.resolve_worktree_continuity(
+        str(moved_root), plugin_family=str(family))
+    assert old_result["worktree"] == str(old_root.resolve())
+    assert moved_result["status"] == "ready"
+    assert moved_result["worktree"] == str(moved_root.resolve())
+    assert moved_result["launcher"] == str(
+        (moved_root / ".taskplane" / "codex-hook.py").resolve())
+
+
+def test_repository_family_continuity_falls_back_from_stale_engine(tmp_path):
+    family = tmp_path / "family"
+    _plugin(family / "2.17.7", "2.17.7")
+    _plugin(family / "2.17.8", "2.17.8")
+    (family / "2.17.8" / "taskplane" / "tp.py").unlink()
+    root, _ = _worktree(tmp_path / "repo")
+    result = repository.resolve_worktree_continuity(
+        str(root), plugin_family=str(family))
+    assert result["status"] == "ready"
+    assert result["engine"] == str(
+        (family / "2.17.7" / "taskplane" / "tp.py").resolve())
+
+
+def test_repository_family_continuity_new_sibling_operates_without_restart(
+        tmp_path):
+    family = tmp_path / "family"
+    _plugin(family / "2.17.8", "2.17.8")
+    root, launcher = _worktree(tmp_path / "repo")
+    sibling, _ = _worktree(root, name="created-after-session-start")
+    current = sibling / "new" / "nested"
+    current.mkdir(parents=True)
+    result = repository.resolve_worktree_continuity(
+        str(current), plugin_family=str(family))
+    assert result == {
+        "schema": "taskplane.worktree-continuity/v1",
+        "status": "ready", "reason": "continuity_verified",
+        "worktree": str(sibling.resolve()),
+        "launcher": str(launcher.resolve()),
+        "engine": str(
+            (family / "2.17.8" / "taskplane" / "tp.py").resolve()),
+    }
+
+
+def test_repository_family_continuity_reports_policy_restricted_engine_family(
+        tmp_path, monkeypatch):
+    family = tmp_path / "family"
+    family.mkdir()
+    root, launcher = _worktree(tmp_path / "repo")
+    real_listdir = repository.os.listdir
+
+    def policy_listdir(path):
+        if os.path.realpath(path) == str(family.resolve()):
+            raise PermissionError("managed plugin policy")
+        return real_listdir(path)
+
+    monkeypatch.setattr(repository.os, "listdir", policy_listdir)
+    result = repository.resolve_worktree_continuity(
+        str(root), plugin_family=str(family))
+    assert result == {
+        "schema": "taskplane.worktree-continuity/v1",
+        "status": "waiting_host_policy", "reason": "host_policy",
+        "worktree": str(root.resolve()), "launcher": str(launcher.resolve()),
+    }
+
+
+@pytest.mark.parametrize("state", ["unavailable"])
 def test_repository_family_continuity_returns_truthful_unavailable_states(
         tmp_path, state):
     workspace = tmp_path / "repo"
     workspace.mkdir()
     family = tmp_path / "family"
     family.mkdir()
-    if state == "moved":
-        family = tmp_path / "removed"
-    elif state == "policy":
-        family.chmod(0)
-    try:
-        result = repository.resolve_worktree_continuity(
-            str(workspace), plugin_family=str(family))
-    finally:
-        if state == "policy":
-            family.chmod(0o700)
+    result = repository.resolve_worktree_continuity(
+        str(workspace), plugin_family=str(family))
     assert result["status"] in {"waiting_external", "waiting_host_policy"}
     assert result["reason"] in {
         "launcher_unavailable", "engine_unavailable", "host_policy",
