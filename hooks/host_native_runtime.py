@@ -1,9 +1,9 @@
 """Package-owned discovery and recovery for optional host-native surfaces.
 
 The host UI is deliberately a projection of canonical Taskplane snapshots.
-This module is shipped through both plugin manifests and the hook manifest so
-reconnect and host-switch behavior is shared instead of being reimplemented by
-tests or individual host adapters.
+This module is shipped through Claude's plugin manifest and the shared hook
+manifest. Codex consumes the hook declaration because its marketplace manifest
+schema deliberately rejects custom runtime fields.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ SURFACE_ROLES = (
 )
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "closed"})
 _HOST_MANIFESTS = {
-    "codex": Path(".codex-plugin/plugin.json"),
     "claude": Path(".claude-plugin/plugin.json"),
 }
 
@@ -44,6 +43,8 @@ def _load_json(path: Path) -> dict:
 def discover_host_native_contract(root: Path | str, host: str) -> dict:
     """Resolve the declaration through the manifest consumed by ``host``."""
     root = Path(root).resolve()
+    if host == "codex":
+        return discover_hook_contract(root)
     try:
         manifest_path = root / _HOST_MANIFESTS[host]
     except KeyError as exc:

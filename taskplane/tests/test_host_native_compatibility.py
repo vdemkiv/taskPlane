@@ -85,9 +85,11 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
                 for hook in entry["hooks"]]
     assert any("host_native_runtime.py\" check --host claude" in command
                for command in commands)
-    codex_runtime = json.loads(
+    codex_manifest = json.loads(
         (ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
-    )["hostNativeRuntime"]
+    )
+    assert "hostNative" not in codex_manifest
+    assert "hostNativeRuntime" not in codex_manifest
 
     # Exercise the commands from a copied install layout, not the source paths
     # that authored the declarations.
@@ -96,9 +98,8 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
         shutil.copytree(ROOT / directory, installed / directory)
     commands = {
         "codex": [sys.executable,
-                  str(installed / ".codex-plugin" /
-                      codex_runtime["entrypoint"]),
-                  *codex_runtime["arguments"]],
+                  str(installed / "hooks/host_native_runtime.py"),
+                  "check", "--host", "codex"],
         "claude": [sys.executable,
                    str(installed / "hooks/host_native_runtime.py"),
                    "check", "--host", "claude"],
