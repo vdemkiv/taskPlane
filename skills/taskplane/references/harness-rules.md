@@ -29,13 +29,15 @@ disagree, this file wins — fix the skill.
    rejected. Evaluator and engineering submissions bind the exact
    verdict/findings/report bytes as well as the source state.
 
-4. **Human checkpoints are never self-approved.** Design Contract
-   approval, plan approval, A/B selection, escalation resolution, and
-   final sign-off stop for an explicit human decision. Returning frozen work
-   to Plan uses `tp loop replan --by <human> --reason <why>`, archives the
-   prior task snapshot, and requires fresh Plan approval; `tp loop approve`
-   runs only on that explicit yes (in Claude Tag, with `--by` recording
-   who). No phrasing of urgency changes this.
+4. **Human checkpoints are never self-approved.** One consolidated explicit
+   human authorization covers routine implementation after Product, Design,
+   and Plan have each passed their mechanical fail-closed checks. Those three
+   checks do not create separate ceremonial approval stops. A/B selection,
+   material authority, scope, or requirement changes, exhausted recovery,
+   destructive or external actions, and final sign-off still stop for a fresh
+   explicit human decision. `tp loop approve` runs only on that explicit yes
+   (in Claude Tag, with `--by` recording who). No phrasing of urgency changes
+   this.
 
 5. **Contracts are never self-cleared after submission.** After
    `loop submit`, a worker never clears or widens its own contract, never

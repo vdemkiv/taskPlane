@@ -27,6 +27,17 @@ EXPECTED_GATES = {
 
 
 class TestApprovedSkillFlows(unittest.TestCase):
+    def test_canonical_harness_uses_one_consolidated_authorization(self):
+        path = os.path.join(
+            ROOT, "skills", "taskplane", "references", "harness-rules.md")
+        with open(path, encoding="utf-8") as stream:
+            rules = stream.read()
+        self.assertIn("One consolidated explicit\n   human authorization", rules)
+        self.assertIn("mechanical fail-closed checks", rules)
+        self.assertIn("do not create separate ceremonial approval stops", rules)
+        self.assertNotIn("Design Contract\n   approval, plan approval", rules)
+        self.assertNotIn("requires fresh Plan approval", rules)
+
     def test_delivery_flows_finish_with_retro_after_signoff(self):
         for skill in ("tp-go", "tp-build"):
             with open(os.path.join(ROOT, "skills", skill, "flow.json"),
