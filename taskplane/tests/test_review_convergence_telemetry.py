@@ -3,13 +3,18 @@ from __future__ import annotations
 import copy
 import os
 import sys
+import tempfile
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lens_telemetry  # noqa: E402
+import loop  # noqa: E402
+import review  # noqa: E402
 import review_convergence  # noqa: E402
+import review_evidence  # noqa: E402
 import runtime_eval  # noqa: E402
 import spend  # noqa: E402
 
@@ -70,6 +75,64 @@ def test_runtime_calls_the_convergence_policy_without_changing_review_state():
     assert result["decision"] == "continue"
     assert result["findings"]["closed"] == ["a"]
     assert (previous, current) == before
+
+
+def test_real_evaluate_fail_transition_uses_progress_not_global_cycle_count():
+    ws = tempfile.mkdtemp()
+    task = {"id": "t1", "status": "built", "fix_cycles": 0,
+            "scope": ["taskplane/loop.py"], "tests": "true"}
+    loop.save(ws, {
+        "step": "evaluate", "tasks": [task], "current_task": 0,
+        "parallel": False, "submission_required": False,
+        "max_fix_cycles": 1, "goal": "g", "checkpoints": [],
+    })
+    first = revision("a", "b", evidence=1, tests=1)
+    second = revision("b", evidence=2, tests=1)
+
+    with mock.patch.object(
+            loop, "_evaluation_unavailable_errors",
+            return_value=(["product finding"], {})), mock.patch.object(
+                loop, "_canonical_evaluation_progress",
+                side_effect=[first, second]):
+        assert loop.gate(ws, "fail")["step"] == "fix"
+        state = loop.load(ws)
+        state["step"] = "evaluate"
+        loop.save(ws, state)
+        assert loop.gate(ws, "fail")["step"] == "fix"
+
+    state = loop.load(ws)
+    assert state["tasks"][0]["fix_cycles"] == 2
+    decision = state["tasks"][0]["convergence_history"][-1]
+    assert decision["decision"] == "continue"
+    assert decision["reason"] == "measurable_convergence"
+
+
+def test_real_evaluate_fail_transition_escalates_repeated_no_progress():
+    ws = tempfile.mkdtemp()
+    task = {"id": "t1", "status": "built", "fix_cycles": 0,
+            "scope": ["taskplane/loop.py"], "tests": "true"}
+    loop.save(ws, {
+        "step": "evaluate", "tasks": [task], "current_task": 0,
+        "parallel": False, "submission_required": False,
+        "max_fix_cycles": 2, "goal": "g", "checkpoints": [],
+    })
+    same = revision("a", evidence=1, tests=1)
+
+    with mock.patch.object(
+            loop, "_evaluation_unavailable_errors",
+            return_value=(["product finding"], {})), mock.patch.object(
+                loop, "_canonical_evaluation_progress",
+                side_effect=[same, same]):
+        for expected in ("fix", "escalated"):
+            assert loop.gate(ws, "fail")["step"] == expected
+            if expected != "escalated":
+                state = loop.load(ws)
+                state["step"] = "evaluate"
+                loop.save(ws, state)
+
+    decision = loop.load(ws)["tasks"][0]["convergence_history"][-1]
+    assert decision["decision"] == "escalate"
+    assert decision["reason"] in {"no_progress", "repeated_fingerprint"}
 
 
 @pytest.mark.parametrize("flag,reason", [
@@ -265,6 +328,55 @@ def test_disabled_telemetry_has_identical_review_outcome_and_no_metrics():
     assert enabled_outcome["review"] == disabled_outcome["review"] == source
     assert enabled_outcome["telemetry"] is not None
     assert disabled_outcome["telemetry"] is None
+
+
+def test_collection_telemetry_is_bound_to_current_canonical_revision():
+    ws = tempfile.mkdtemp()
+    store = review_evidence.ArtifactStore(ws)
+    canonical = sealed_review()
+    canonical.pop("sealed")
+    for index, finding in enumerate(canonical["findings"]):
+        finding.pop("id", None)
+        finding.pop("fingerprint", None)
+        finding.update({"kind": "defect", "file": "taskplane/review.py",
+                        "title": f"canonical finding {index}",
+                        "scenario": "production collector evidence"})
+    canonical.update({
+        "target_fingerprint": "t" * 64,
+        "context_fingerprint": "c" * 64,
+        "findings_fingerprint": review_evidence.content_fingerprint(
+            canonical["findings"]),
+        "canonical_revision": 1,
+    })
+    artifact = store.put("findings-revision", canonical)
+    revision_record = dict(canonical, artifact=artifact)
+    review_evidence._advance_current(
+        store, review_evidence.revision_identity(revision_record),
+        expected_current=None)
+    routing = store.put("routing-decision", {
+        "dispositions": {
+            "security": {"verdict": "deep"},
+            "architecture": {"verdict": "deep", "promotion": {}},
+            "qa": {"verdict": "light"},
+        }})
+    state = {
+        "revision": revision_record, "routing_decision": routing,
+        "lens_results": [{"lens": "security"}, {"lens": "architecture"}],
+        "manifest": {"status": "complete"}, "result_validations": [],
+    }
+
+    persisted = review._persist_current_lens_telemetry(ws, state, store)
+    report = store.read(persisted["lens_telemetry"])
+
+    assert report["source"] == {"canonical_revision": 1, "sealed": True}
+    assert report["lenses"]["security"]["routing"]["collected"] == 1
+    assert report["lenses"]["security"]["findings"]["admissible"] == 3
+    assert report["lenses"]["qa"]["routing"]["collected"] == 0
+
+    counterfeit = dict(revision_record, canonical_revision=2)
+    with pytest.raises(review_evidence.RevisionError,
+                       match="current canonical revision"):
+        review_evidence.sealed_current_revision(store, counterfeit)
 
 
 def test_spend_provider_cost_projection_preserves_provider_semantics():

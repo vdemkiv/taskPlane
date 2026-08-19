@@ -1151,6 +1151,24 @@ def revision_identity(record: dict) -> dict:
         "canonical_revision")}
 
 
+def sealed_current_revision(store: ArtifactStore, revision: dict) -> dict:
+    """Return revision substance only after the canonical pointer seals it.
+
+    ``sealed`` is deliberately derived here.  A caller-supplied flag is not
+    evidence that collection committed this exact artifact as current.
+    """
+    if not isinstance(revision, dict) or not isinstance(
+            revision.get("artifact"), dict):
+        raise RevisionError("current canonical revision artifact is missing")
+    expected = revision_identity(revision)
+    if _read_current(store) != expected:
+        raise RevisionError("revision is not the current canonical revision")
+    canonical = store.read(revision["artifact"])
+    if not isinstance(canonical, dict) or revision_identity(canonical) != expected:
+        raise RevisionError("current canonical revision artifact contradicts pointer")
+    return dict(copy.deepcopy(canonical), sealed=True)
+
+
 def _current_path(store: ArtifactStore) -> str:
     path = os.path.join(store.root, "revisions", "current.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -4422,6 +4422,59 @@ def _restore_publication(ws: str, state: dict, store, evidence) -> None:
                      state.get("prior_identity"))
 
 
+def _persist_current_lens_telemetry(ws: str, state: dict, store) -> dict:
+    """Derive and store post-review metrics from the committed revision."""
+    import lens_telemetry
+    import review_evidence as evidence
+
+    sealed = evidence.sealed_current_revision(
+        store, state.get("revision") or {})
+    decision = store.read(state["routing_decision"]).get("dispositions") or {}
+    collected = {str(row.get("lens") or "") for row in
+                 (state.get("lens_results") or []) if isinstance(row, dict)}
+    slots = []
+    lifecycle = {}
+    for lens_id, disposition in sorted(decision.items()):
+        row = disposition if isinstance(disposition, dict) else {}
+        verdict = str(row.get("verdict") or "")
+        promoted = "promotion" in row
+        was_collected = str(lens_id) in collected
+        slots.append({
+            "lens": str(lens_id), "eligible": verdict != "n/a",
+            "selected": verdict in {"deep", "light"} and not promoted,
+            "promoted": promoted, "collected": was_collected,
+        })
+        lifecycle[str(lens_id)] = {
+            "retries": 0, "repairs": 0, "latency_ms": 0,
+            "infrastructure_available": was_collected,
+            **({} if was_collected else {
+                "unavailable_reason": "lens result was not collected"}),
+        }
+    sealed["slots"] = slots
+    report = lens_telemetry.build_lens_telemetry(
+        sealed, lifecycle=lifecycle, usage_by_lens={})
+    telemetry_ref = store.put("lens-telemetry", report)
+    manifest = dict(state.get("manifest") or {})
+    manifest["lens_telemetry"] = _portable_ref(telemetry_ref)
+    return dict(state, lens_telemetry=telemetry_ref,
+                manifest=_manifest(manifest))
+
+
+def _ensure_current_lens_telemetry(ws: str, state: dict, store) -> dict:
+    """Keep telemetry observational: unavailability never changes verdict."""
+    if isinstance(state.get("lens_telemetry"), dict):
+        return state
+    try:
+        updated = _persist_current_lens_telemetry(ws, state, store)
+        _save_state(ws, updated)
+        return updated
+    except Exception as exc:  # telemetry is explicitly non-authoritative
+        tp.trace(ws, "lens_telemetry_unavailable",
+                 run_id=state.get("run_id"),
+                 error=f"{exc.__class__.__name__}: {exc}")
+        return state
+
+
 def _resume_collection(ws: str, state: dict, store) -> dict:
     """Prepare immutable projections, then publish as one recoverable unit."""
     import review_evidence as evidence
@@ -4513,6 +4566,7 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
     if state.get("status") != "complete":
         raise ReviewKernelError(
             f"review collection cannot resume from {state.get('status')}")
+    state = _ensure_current_lens_telemetry(ws, state, store)
     tp.trace(ws, "review_kernel_collected", stage=state.get("stage"),
              **identity)
     return state["manifest"]
@@ -4533,6 +4587,7 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
                     state.get("revision") or {}):
                 raise evidence.RevisionError(
                     "completed review no longer matches canonical current revision")
+            state = _ensure_current_lens_telemetry(ws, state, store)
             _reconcile_completed_collection_reservation(ws, state)
             _release_slot_contracts(ws, state)
             return state["manifest"]

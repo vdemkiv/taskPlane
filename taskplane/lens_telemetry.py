@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -18,7 +20,19 @@ def _nonnegative_int(value: Any) -> int:
 
 
 def _finding_identity(finding: dict[str, Any]) -> str:
-    return str(finding.get("fingerprint") or finding.get("id") or "").strip()
+    supplied = str(
+        finding.get("fingerprint") or finding.get("id") or "").strip()
+    if supplied:
+        return supplied
+    # Canonical producer findings predate explicit ids.  Derive a semantic
+    # identity without lens/provenance so overlap remains comparable.
+    material = {key: finding.get(key) for key in
+                ("kind", "file", "title", "scenario")}
+    if not any(value not in (None, "") for value in material.values()):
+        return ""
+    encoded = json.dumps(
+        material, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _usage_projection(raw: dict[str, Any]) -> dict[str, Any]:
