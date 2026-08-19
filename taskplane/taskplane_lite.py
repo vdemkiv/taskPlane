@@ -2711,6 +2711,41 @@ def workspace_engine_fingerprint(workspace: str) -> "str | None":
     return h.hexdigest() if found else None
 
 
+def canonical_json_bytes(value) -> bytes:
+    """Stable JSON bytes for small cross-module identity records."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+def review_execution_root_identity(workspace: str) -> dict:
+    """Return repository and exact-worktree identity without storing paths.
+
+    A hosted repository id intentionally unifies clones, while the worktree
+    fingerprint keeps their evidence distinct. A caller that reaches the
+    checkout through a symlink is rejected instead of being silently treated
+    as the canonical execution root.
+    """
+    supplied = os.path.abspath(os.path.expanduser(str(workspace or "")))
+    if not supplied or os.path.islink(supplied):
+        raise StateError(
+            "review_execution_root", "review execution root is symlinked")
+    root = _resolved_worktree(supplied)
+    if os.path.realpath(root) != root:
+        raise StateError(
+            "review_execution_root", "review worktree root is not canonical")
+    import storage as runtime_storage
+    repository = runtime_storage.resolve_repository_identity(root)
+    return {
+        "schema": "taskplane.review-execution-root/v1",
+        "repository_id": repository.repo_id,
+        "repository_kind": repository.kind,
+        "worktree_fingerprint": hashlib.sha256(
+            root.encode("utf-8")).hexdigest(),
+        "engine_fingerprint": workspace_engine_fingerprint(root)
+                              or engine_fingerprint(),
+    }
+
+
 def engine_skew_refusal(ws: str, submission, step: str = "evaluate",
                         outcome: str = "pass"):
     """A4 (R-0007, decision 0018): refuse a gate whose evidence was produced
