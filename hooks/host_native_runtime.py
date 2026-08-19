@@ -9,7 +9,9 @@ schema deliberately rejects custom runtime fields.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -18,7 +20,14 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from taskplane.host_capabilities import SurfaceSelection
+from taskplane import progress
+from taskplane.host_capabilities import (
+    Observation,
+    RUNTIME_RECEIPT_MAX_AGE_SECONDS,
+    SurfaceSelection,
+    dispatch_snapshot_from_environment,
+    progress_surface_projection,
+)
 from taskplane.host_native import HostSurfaceEvent, HostSurfaceSnapshot
 
 
@@ -31,6 +40,32 @@ TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "closed"})
 _HOST_MANIFESTS = {
     "claude": Path(".claude-plugin/plugin.json"),
 }
+
+
+def project_progress_surface(
+        workspace: str, *, host: str, host_version: str | None = None,
+        environment: Mapping[str, str] | None = None,
+        now: float | None = None) -> dict:
+    """Production output adapter for durable progress and PiP fallback."""
+    env = environment if environment is not None else os.environ
+    current = float(now if now is not None else time.time())
+    capability_snapshot = dispatch_snapshot_from_environment(
+        workspace, host=host, environment=env)
+    receipt = capability_snapshot.capabilities["pip"]
+    try:
+        observed_at = float(receipt.observed_at)
+        age = current - observed_at
+    except (TypeError, ValueError):
+        age = RUNTIME_RECEIPT_MAX_AGE_SECONDS + 1.0
+    if age < -30.0 or age > RUNTIME_RECEIPT_MAX_AGE_SECONDS:
+        receipt = Observation(
+            status="stale", source=receipt.source,
+            confidence="low", observed_at=receipt.observed_at,
+            reason="stale")
+    durable = progress.read_workspace_status(workspace, now=current)
+    return progress_surface_projection(
+        host=host, host_version=host_version or capability_snapshot.host_version,
+        pip_observation=receipt, durable_status=durable)
 
 
 def _load_json(path: Path) -> dict:
@@ -224,6 +259,12 @@ def _main(argv: list[str]) -> int:
     hook_contract = discover_hook_contract(PLUGIN_ROOT)
     if host_contract != hook_contract:
         raise ValueError("plugin and hook host-native contracts differ")
+    # Exercise the optional output surface on every adapter start. Missing or
+    # stale capability evidence intentionally produces the complete accessible
+    # fallback; it never turns native UI into workflow authority.
+    project_progress_surface(
+        os.environ.get("TASKPLANE_WORKSPACE") or os.getcwd(), host=host,
+        host_version=os.environ.get("TASKPLANE_HOST_VERSION"))
     return 0
 
 

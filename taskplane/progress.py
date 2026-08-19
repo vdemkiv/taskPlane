@@ -8,9 +8,11 @@ performs one bounded read of that snapshot and projects only persisted facts.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import statistics
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -23,6 +25,101 @@ STATES = frozenset(("executing", "tool-wait", "agent-wait", "human-wait",
 DEFAULT_MAX_BYTES = 64 * 1024
 DEFAULT_ETA_MAX_AGE_SECONDS = 300.0
 MAX_HISTORY = 32
+
+
+def snapshot_path(workspace: str, *, state_dir: str | None = None) -> str:
+    """Canonical non-authoritative progress snapshot location."""
+    directory = state_dir or os.path.join(os.path.abspath(workspace),
+                                          ".taskplane")
+    return os.path.join(directory, "progress.json")
+
+
+def _existing_snapshot(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = json.load(stream)
+        return value if isinstance(value, dict) and value.get("schema") == \
+            SNAPSHOT_SCHEMA else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _trace_state(event: str, phase: str) -> str:
+    if event in {"loop_done", "loop_complete"} or phase == "done":
+        return "complete"
+    if event in {"loop_failed", "loop_aborted"} or phase == "failed":
+        return "failed"
+    if event in {"subagent_stop", "loop_gate", "loop_resume"}:
+        return "resumed"
+    if phase in {"design_approval", "plan_approval", "selection", "signoff",
+                 "escalated"}:
+        return "human-wait"
+    if event in {"subagent_start", "loop_wave"}:
+        return "agent-wait"
+    if event in {"tool_start", "pre_tool_use"}:
+        return "tool-wait"
+    return "executing"
+
+
+def record_trace_event(workspace: str, event: str, data: Mapping[str, Any],
+                       *, observed_at: float | None = None,
+                       state_dir: str | None = None) -> dict[str, Any]:
+    """Increment the durable read model from the production audit path.
+
+    The snapshot is presentation-only and deliberately best effort. The audit
+    record remains authoritative; a malformed prior snapshot is replaced from
+    the current event rather than blocking the governed transition.
+    """
+    path = snapshot_path(workspace, state_dir=state_dir)
+    prior = _existing_snapshot(path)
+    prior_identity = prior.get("identity") if prior else {}
+    prior_active = prior.get("active") if prior else {}
+    moment = float(observed_at if observed_at is not None else time.time())
+    fallback = hashlib.sha256(os.path.realpath(workspace).encode("utf-8")) \
+        .hexdigest()[:16]
+    phase = str(data.get("step") or data.get("phase") or event)
+    identity = {
+        "workflow_id": str(data.get("workflow_id") or
+                           prior_identity.get("workflow_id") or
+                           f"workspace-{fallback}"),
+        "run_id": str(data.get("run_id") or prior_identity.get("run_id") or
+                      "active-loop"),
+        "sequence": int(prior_identity.get("sequence") or 0) + 1,
+    }
+    active = {
+        "owner": str(data.get("owner") or prior_active.get("owner") or
+                     "taskplane"),
+        "agent": str(data.get("agent_id") or data.get("agent") or
+                     data.get("task") or prior_active.get("agent") or
+                     "taskplane"),
+        "phase": phase,
+    }
+    state = _trace_state(str(event), phase)
+    focus_started = (prior.get("focus_started_at") if prior and
+                     prior_active.get("phase") == phase and
+                     prior.get("state") == state else moment)
+    token_value = data.get("observed_tokens", data.get("tokens"))
+    if isinstance(token_value, bool) or not isinstance(token_value, int) \
+            or token_value < 0:
+        token_value = prior.get("observed_tokens") if prior else None
+    value = {
+        "schema": SNAPSHOT_SCHEMA, "identity": identity, "active": active,
+        "state": state, "focus_started_at": focus_started,
+        "updated_at": moment, "observed_tokens": token_value,
+        "eta_evidence": (prior.get("eta_evidence") if prior else {
+            "comparable_key": None, "completed_durations": [],
+            "bounded_work": None, "updated_at": moment}),
+    }
+    _atomic_write(path, value)
+    return value
+
+
+def read_workspace_status(workspace: str, *, now: float | None = None,
+                          state_dir: str | None = None,
+                          max_bytes: int = DEFAULT_MAX_BYTES) -> dict[str, Any]:
+    return read_status_snapshot(
+        snapshot_path(workspace, state_dir=state_dir),
+        now=float(now if now is not None else time.time()), max_bytes=max_bytes)
 
 
 def _unavailable(reason: str) -> dict[str, Any]:

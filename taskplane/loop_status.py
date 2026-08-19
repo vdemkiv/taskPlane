@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import depgraph
+import progress
 import taskplane_lite as tp
 
 
@@ -68,10 +70,13 @@ def status(ws: str) -> dict:
         }
     if state.get("selection"):
         out["selection"] = state["selection"]
+    out["live_progress"] = progress.read_workspace_status(
+        ws, now=time.time(), state_dir=tp.tp_dir(ws))
     return out
 
 
-def user_summary(ws: str, host: str | None = None) -> dict:
+def user_summary(ws: str, host: str | None = None,
+                 now: float | None = None) -> dict:
     """Human control-plane read model over existing durable artifacts."""
     import loop
 
@@ -115,6 +120,9 @@ def user_summary(ws: str, host: str | None = None) -> dict:
             action = "Grant more actions (tp budget --grant N) or clear the contract"
             budget_blocked = True
     graph = depgraph.summary(ws)
+    live_progress = progress.read_workspace_status(
+        ws, now=float(now if now is not None else time.time()),
+        state_dir=tp.tp_dir(ws))
     host = host or ("codex" if os.environ.get("CODEX_HOME")
                     or os.environ.get("CODEX_THREAD_ID") else
                     "claude-tag" if tp.store_env() == "repo" else "claude")
@@ -140,7 +148,7 @@ def user_summary(ws: str, host: str | None = None) -> dict:
                                      "status": current.get("status")},
         "action_required": bool(action), "decision": action,
         "headline": headline, "host": host, "assurance": assurance,
-        "graph": graph,
+        "graph": graph, "live_progress": live_progress,
         "submission_pending_validation": bool(
             state.get("_submission")
             or any(task.get("_submission") for task in tasks)),

@@ -1,8 +1,10 @@
 """R-0001 t6: cheap status and lossless size-aware dashboard delivery."""
 
 import json
+import importlib.util
 import os
 import sys
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -12,8 +14,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import host_capabilities  # noqa: E402
+import loop_status  # noqa: E402
 import progress  # noqa: E402
+import taskplane_lite  # noqa: E402
 import views  # noqa: E402
+
+
+def _runtime_module():
+    path = Path(ROOT) / "hooks" / "host_native_runtime.py"
+    spec = importlib.util.spec_from_file_location("t6_host_native_runtime", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _model(findings=2):
@@ -245,3 +259,60 @@ def test_pip_projection_uses_only_durable_status_and_capability_receipt(tmp_path
     assert projection["active"]["agent"] == "executor-6"
     assert projection["state"] == "agent-wait"
     assert projection["gating"] is False
+
+
+def test_production_trace_writer_continuously_updates_progress_snapshot(tmp_path):
+    taskplane_lite.trace(
+        str(tmp_path), "loop_step", workflow_id="wf-runtime",
+        run_id="run-runtime", step="execute", agent_id="executor-6")
+
+    status = progress.read_workspace_status(str(tmp_path), now=10**12)
+
+    assert status["status"] == "available"
+    assert status["identity"]["workflow_id"] == "wf-runtime"
+    assert status["identity"]["run_id"] == "run-runtime"
+    assert status["active"] == {
+        "owner": "taskplane", "agent": "executor-6", "phase": "execute"}
+    assert status["state"] == "executing"
+
+
+def test_production_status_reads_durable_progress_without_review_recompute(tmp_path):
+    progress.record_trace_event(
+        str(tmp_path), "loop_step",
+        {"workflow_id": "wf-status", "run_id": "run-status",
+         "step": "evaluate", "agent_id": "evaluator-6"}, observed_at=100.0)
+
+    state = {"step": "evaluate", "goal": "ship", "tasks": [],
+             "current_task": 0, "max_fix_cycles": 2, "checkpoints": []}
+    with mock.patch("loop.load", return_value=state), \
+            mock.patch("depgraph.summary", return_value={"modules": 1,
+                                                         "edges": 0}):
+        summary = loop_status.user_summary(str(tmp_path), now=101.0)
+
+    assert summary["live_progress"]["status"] == "available"
+    assert summary["live_progress"]["active"]["phase"] == "evaluate"
+    assert summary["live_progress"]["state"] == "executing"
+
+
+def test_runtime_output_adapter_uses_fresh_receipt_or_accessible_fallback(tmp_path):
+    runtime = _runtime_module()
+    progress.record_trace_event(
+        str(tmp_path), "loop_step",
+        {"workflow_id": "wf-pip", "run_id": "run-pip", "step": "execute",
+         "agent_id": "executor-6"}, observed_at=100.0)
+
+    native = runtime.project_progress_surface(
+        str(tmp_path), host="codex", host_version="test",
+        environment={"TASKPLANE_NATIVE_PIP": "supported",
+                     "TASKPLANE_HOST_RECEIPT_AT": "100.0"}, now=101.0)
+    stale = runtime.project_progress_surface(
+        str(tmp_path), host="codex", host_version="test",
+        environment={"TASKPLANE_NATIVE_PIP": "supported",
+                     "TASKPLANE_HOST_RECEIPT_AT": "1.0"}, now=1000.0)
+
+    assert native["selected_surface"] == "native-pip"
+    assert native["identity"]["run_id"] == "run-pip"
+    assert native["active"]["agent"] == "executor-6"
+    assert stale["selected_surface"] == "accessible-bounded"
+    assert stale["identity"]["run_id"] == "run-pip"
+    assert stale["limitation"] == "stale"
