@@ -2836,6 +2836,47 @@ DEFAULT_MAX_ACTIONS = 60          # build contracts: hook-enforced ceiling
 DEFAULT_MAX_ACTIONS_RO = 40       # read-only review contracts
 
 
+def contract_projection(contract: dict | None) -> dict:
+    """Return the stable, display-safe view of any supported contract shape.
+
+    Enforcement contracts are intentionally not one schema: build contracts
+    carry ``coding`` while review-kernel producer contracts are minimal and
+    read-only, and a released producer may retain only identity/mode fields.
+    Status surfaces must describe those shapes without inventing authority or
+    requiring enforcement-only keys.
+    """
+    contract = contract if isinstance(contract, dict) else {}
+    coding = contract.get("coding")
+    coding = coding if isinstance(coding, dict) else {}
+    policy = coding.get("command_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    dod = coding.get("dod")
+    dod = dod if isinstance(dod, dict) else {}
+    budget = contract.get("budget")
+    budget = budget if isinstance(budget, dict) else {}
+
+    def string_list(value):
+        return [item for item in value if isinstance(item, str)] \
+            if isinstance(value, list) else []
+
+    read_only = bool(contract.get("read_only"))
+    coding_scope = string_list(coding.get("scope_paths"))
+    write_allow = string_list(contract.get("write_allow"))
+    return {
+        "mode": "read-only" if read_only else "build",
+        "read_only": read_only,
+        "scope_paths": coding_scope,
+        "display_scope": coding_scope or (write_allow if read_only else []),
+        "write_allow": write_allow,
+        "out_of_scope_paths": string_list(coding.get("out_of_scope_paths")),
+        "deny": string_list(policy.get("deny")),
+        "dod": dod,
+        "test_command": dod.get("test_command"),
+        "max_actions": budget.get("max_actions"),
+        "budget": budget,
+    }
+
+
 def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
                    tools=None, test_command=None, deny_extra=None,
                    max_actions=None, regression_gate=False,
@@ -3626,9 +3667,10 @@ def activate(workspace: str, contract: dict,
     with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(snapshot or "")
     os.replace(tmp, spath)
+    projection = contract_projection(contract)
     trace(workspace, "contract_activated", task_id=contract.get("task_id"),
           task=contract.get("task"), read_only=bool(contract.get("read_only")),
-          scope=contract.get("coding", {}).get("scope_paths"),
+          scope=projection["scope_paths"],
           write_allow=contract.get("write_allow"), snapshot=snapshot,
           slot=task_slot())
     return contract

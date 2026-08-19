@@ -21,6 +21,36 @@ import taskplane_lite  # noqa: E402
 import views  # noqa: E402
 
 
+def test_contract_projection_is_shape_safe_for_coding_read_only_review_and_released_contracts():
+    contracts = [
+        {"task_id": "coding", "coding": {
+            "scope_paths": ["src/**"],
+            "command_policy": {"deny": ["git push"]},
+            "dod": {"test_command": "pytest focused"}},
+         "budget": {"max_actions": 12}},
+        {"task_id": "read-only", "read_only": True,
+         "write_allow": ["plan/**"], "budget": {"max_actions": 7}},
+        {"task_id": "review-kernel", "task": "review lens slot security",
+         "task_slot": "review-abc", "read_only": True,
+         "write_allow": [".taskplane-review/result.json"]},
+        {"task_id": "released", "task": "released producer",
+         "read_only": True},
+    ]
+
+    projected = [taskplane_lite.contract_projection(c) for c in contracts]
+
+    assert projected[0]["scope_paths"] == ["src/**"]
+    assert projected[0]["deny"] == ["git push"]
+    assert projected[0]["test_command"] == "pytest focused"
+    assert projected[0]["max_actions"] == 12
+    assert projected[1]["scope_paths"] == []
+    assert projected[1]["display_scope"] == ["plan/**"]
+    assert projected[2]["display_scope"] == [".taskplane-review/result.json"]
+    assert projected[3]["scope_paths"] == []
+    assert all(item["mode"] == expected for item, expected in zip(
+        projected, ("build", "read-only", "read-only", "read-only")))
+
+
 def _runtime_module():
     path = Path(ROOT) / "hooks" / "host_native_runtime.py"
     spec = importlib.util.spec_from_file_location("t6_host_native_runtime", path)

@@ -300,6 +300,40 @@ class TestBudgetExhaustionDisclosure(unittest.TestCase):
                          dashboard.headline_loop(self.ws))
 
 
+class TestContractShapeProjection(unittest.TestCase):
+    def test_contract_projection_is_shape_safe_across_supported_contract_shapes(self):
+        tmp = tempfile.mkdtemp()
+        ws = _loop_ws(tmp, step="execute", n_tasks=1)
+        state = loop.load(ws)
+        state["tasks"] = []
+        loop.save(ws, state)
+        contracts = [
+            {"task_id": "coding", "coding": {
+                "scope_paths": ["src/**"],
+                "command_policy": {"deny": ["git push"]}, "dod": {}},
+             "budget": {"max_actions": 8}},
+            {"task_id": "read-only", "read_only": True,
+             "write_allow": ["plan/**"]},
+            {"task_id": "review-kernel", "read_only": True,
+             "write_allow": [".review/result.json"]},
+            {"task_id": "released", "read_only": True},
+        ]
+        for contract in contracts:
+            with self.subTest(task_id=contract["task_id"]):
+                with open(os.path.join(tp.tp_dir(ws),
+                                       "active_contract.json"), "w",
+                          encoding="utf-8") as f:
+                    json.dump(contract, f)
+                rendered = dashboard.render(ws)
+                full = open(rendered, encoding="utf-8").read()
+                widget = dashboard.widget(ws)
+                self.assertIn(contract["task_id"], full)
+                expected_scope = ((contract.get("coding") or {}).get(
+                    "scope_paths") or contract.get("write_allow") or [])
+                for scope in expected_scope:
+                    self.assertIn(scope, widget)
+
+
 # ------------------------------------------ H1: no fake success w/o bridge
 
 class TestStaticFallbackButtons(unittest.TestCase):

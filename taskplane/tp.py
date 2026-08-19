@@ -809,13 +809,14 @@ def cmd_new(a) -> int:
               f"{(_tgt_rec.get('base') or '(no base)')[:12]} — "
               f"fingerprint {_tgt_rec['fingerprint']}")
 
-    mode = "READ-ONLY review" if c.get("read_only") else "build"
+    projection = tp.contract_projection(c)
+    mode = "READ-ONLY review" if projection["read_only"] else "build"
     print(f"taskplane: contract {c['task_id']} active ({mode}).")
     if c.get("read_only"):
         print(f"  writable  : {c.get('write_allow') or '(nothing — reads only)'}")
-    print(f"  scope     : {c['coding']['scope_paths'] or '(any — set --scope!)'}")
-    print(f"  deny cmds : {c['coding']['command_policy']['deny']}")
-    print(f"  tests     : {c['coding']['dod']['test_command'] or '(none)'}")
+    print(f"  scope     : {projection['display_scope'] or '(any — set --scope!)'}")
+    print(f"  deny cmds : {projection['deny']}")
+    print(f"  tests     : {projection['test_command'] or '(none)'}")
     snap_disp = snapshot[:12] if snapshot else "NONE (git commit first)"
     print(f"  snapshot  : {snap_disp}")
     if not snapshot:
@@ -2033,22 +2034,22 @@ def cmd_status(a) -> int:
                          "below"),
         }, indent=2))
         return 0
-    coding = c.get("coding") or {}
-    budget = c.get("budget") or {}
+    projection = tp.contract_projection(c)
+    budget = projection["budget"]
     print(json.dumps({
         "active_contract": "active",
         "task_id": c.get("task_id"), "task": c.get("task"),
         "read_only": bool(c.get("read_only")),
         "write_allow": c.get("write_allow") or [],
-        "scope_paths": coding.get("scope_paths") or [],
-        "out_of_scope_paths": coding.get("out_of_scope_paths") or [],
-        "deny": (coding.get("command_policy") or {}).get("deny") or [],
+        "scope_paths": projection["scope_paths"],
+        "out_of_scope_paths": projection["out_of_scope_paths"],
+        "deny": projection["deny"],
         "allowed_tools": c.get("allowed_tools") or "(any)",
         "max_actions": budget.get("max_actions"),
         "budget_ceiling_usd": budget.get("max_cost_usd", "(action-metered; "
                                           "no dollar ceiling set)"),
         "budget_note": budget.get("note"),
-        "dod": coding.get("dod") or {},
+        "dod": projection["dod"],
         "loop": _loop_status_snapshot(ws),
     }, indent=2))
     return 0
@@ -2132,8 +2133,9 @@ def cmd_dod(a) -> int:
             print("  ! " + n)
         return 1
     changed = tp.changed_files(ws, snapshot) if snapshot else []
+    projection = tp.contract_projection(c)
     print("taskplane DoD: PASS ✅ (diff in scope"
-          + (", tests pass" if c["coding"]["dod"].get("test_command") else "")
+          + (", tests pass" if projection["test_command"] else "")
           + ")")
     # D-0008: a PASS that nobody executed must say so at the moment it is
     # read, not only in the trace.
