@@ -3993,6 +3993,13 @@ def _read_slot_output(ws: str, store,
         raise evidence.ProvenanceError("finding schema must be a list")
     findings = [_validate_finding(item, lease["lens_ids"]) for item in findings]
     findings, notes = _adjudicate_findings(ws, store, brief, findings)
+    blocking_by_lens = blocking_findings_by_lens(findings)
+    for lens_id, count in blocking_by_lens.items():
+        summary = by_lens[lens_id]
+        if summary["verdict"] != "fail" or summary["blockers"] != count:
+            raise evidence.ProvenanceError(
+                "blocking finding contradicts producer verdict/count summary: "
+                + lens_id)
     import review_repair
     repair_input = copy.deepcopy(row)
     # A failed verdict may omit checked_evidence in the producer schema.
