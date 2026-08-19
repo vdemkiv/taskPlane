@@ -1923,6 +1923,46 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
     return errors
 
 
+@contextlib.contextmanager
+def _claimed_execute_suite_binding():
+    """Run parallel EXECUTE suites from the claimed checkout namespace.
+
+    The orchestrator engine may be older than a task branch that changes the
+    engine itself. ``taskplane_lite.run_suite_command`` deliberately injects
+    the orchestrator's module namespace for ordinary validation, which made
+    an EXECUTE gate test stale engine bytes even though its cwd was the task
+    worktree. A wave gate instead needs the same plain command semantics the
+    executor used in that exact checkout. Force a fresh run so an earlier
+    validator-namespace cache record cannot substitute for that evidence.
+    """
+    import subprocess
+
+    original_runner = tp.run_suite_command
+    original_lookup = tp.suite_cache_lookup
+
+    def run_claimed(workspace, command, *, env=None, timeout=600):
+        shell = not isinstance(command, (list, tuple))
+        return subprocess.run(
+            command if shell else list(command),
+            cwd=workspace,
+            shell=shell,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    tp.run_suite_command = run_claimed
+    tp.suite_cache_lookup = lambda workspace, command, env: None
+    try:
+        yield
+    finally:
+        tp.run_suite_command = original_runner
+        tp.suite_cache_lookup = original_lookup
+
+
 def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
                                 verdict: dict) -> list:
     """Static DoD evidence check, safe to compose with runtime guidance."""
@@ -2740,8 +2780,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         # destroy the work. Commit first, then gate.
         wt = wt_precheck.get("workspace")
         if outcome == "pass":
-            dod_errors = _task_dod_errors(
-                wt or ws, state, wt_precheck, tp.snapshot_ref(wt or ws))
+            with _claimed_execute_suite_binding():
+                dod_errors = _task_dod_errors(
+                    wt or ws, state, wt_precheck, tp.snapshot_ref(wt or ws))
             if dod_errors:
                 tp.trace(ws, "loop_gate_blocked", step=step, task=task_id,
                          reason="dod", errors=dod_errors)
