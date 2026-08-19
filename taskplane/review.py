@@ -1188,6 +1188,8 @@ def review_slot_resume_identity(*, lease: dict, result_schema: dict,
         "lease_fingerprint": lease.get("lease_fingerprint"),
         "slot_id": lease.get("slot_id"),
         "canonical_revision": lease.get("canonical_revision"),
+        "execution_binding": (lease.get("execution_binding") or {}).get(
+            "binding_fingerprint"),
         "result_schema_sha256": hashlib.sha256(
             evaluation_output.canonical_bytes(result_schema)).hexdigest(),
         "producer_contract": {
@@ -1690,7 +1692,8 @@ def _lens_untrusted_evidence_instruction() -> str:
 
 def _create_verified_v3_lease(store, envelope_ref: dict, view_ref: dict, *,
                               slot_id: str, lens_ids,
-                              canonical_revision: int) -> dict:
+                              canonical_revision: int,
+                              run_id: str | None = None) -> dict:
     """Mint a lease only after its bounded v3 view resolves fail-closed."""
     import review_evidence as evidence
 
@@ -1715,7 +1718,14 @@ def _create_verified_v3_lease(store, envelope_ref: dict, view_ref: dict, *,
         "canonical_revision": int(canonical_revision),
     }
     fingerprint = evidence.content_fingerprint(base)
-    return store.put("lease", dict(base, lease_fingerprint=fingerprint),
+    payload = dict(base, lease_fingerprint=fingerprint)
+    if run_id is not None:
+        envelope = store.read(envelope_ref)
+        payload["execution_binding"] = evidence.create_execution_binding(
+            store.workspace, target=envelope.get("target") or {},
+            run_id=run_id, lens_ids=lenses, slot_id=slot_id,
+            lease_fingerprint=fingerprint, producer=view["producer"])
+    return store.put("lease", payload,
                      fingerprint=fingerprint)
 
 
@@ -1767,7 +1777,9 @@ def _collect_verified_slot_results(store, lease_refs, result_refs) -> dict:
         for field in ("slot_id", "lens_ids", "target_fingerprint",
                       "context_fingerprint", "view_fingerprint",
                       "reference_manifest_fingerprint", "producer",
-                      "canonical_revision"):
+                      "canonical_revision", "execution_binding"):
+            if field not in lease:
+                continue
             if result.get(field) != lease.get(field):
                 raise evidence.ProvenanceError(
                     f"result {field} does not match lease")
@@ -1776,7 +1788,9 @@ def _collect_verified_slot_results(store, lease_refs, result_refs) -> dict:
 
 def _slot_plan(store, envelope_ref: dict, routing: dict,
                decision: dict, *, base: str, runnability: dict,
-               stage: str, settled_ref: dict | None = None) -> tuple[list, list]:
+               stage: str, settled_ref: dict | None = None,
+               run_id: str | None = None,
+               canonical_revision: int | None = None) -> tuple[list, list]:
     """Allocate exact deep slots plus at most one bounded light sweep."""
     import lens as lensmod
     import review_evidence as evidence
@@ -1789,7 +1803,8 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     entries = [(f"deep.{lid}", [lid]) for lid in deep]
     if light:
         entries.append(("light-sweep", light))
-    revision = evidence.next_revision(store)
+    revision = (evidence.next_revision(store) if canonical_revision is None
+                else int(canonical_revision))
     full_briefs = {row["id"]: row for row in full.get("deep") or []}
     if full.get("sweep"):
         full_briefs["light-sweep"] = full["sweep"]
@@ -1804,7 +1819,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             routing_fingerprint=routing_fingerprint, producer=RESULT_AUTHOR)
         lease_ref = _create_verified_v3_lease(
             store, envelope_ref, view_ref, slot_id=slot_id,
-            lens_ids=lens_ids, canonical_revision=revision)
+            lens_ids=lens_ids, canonical_revision=revision, run_id=run_id)
         source = full_briefs.get(
             "light-sweep" if slot_id == "light-sweep" else lens_ids[0]) or {}
         required_references = list(source.get("language_references") or [])
@@ -1939,18 +1954,28 @@ def _promoted_slot_plan(store, state: dict, promotions: dict[str, list[dict]]) \
         store, state["envelope"], routing, decision,
         base=str((routing.get("context") or {}).get("base") or "HEAD"),
         runnability=runnability, stage=state.get("stage") or "review",
-        settled_ref=settled_ref)
+        settled_ref=settled_ref, run_id=state.get("run_id"))
 
 
 def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
-        -> dict[str, list[dict]]:
-    """Return light lenses whose validated sweep output contains high risk."""
+        -> dict:
+    """Normalize high-risk sweep output into promotions and rejections.
+
+    The sweep is untrusted producer evidence even after lease validation.  It
+    therefore crosses the same deterministic promotion boundary as every
+    other progressive-review concern: duplicates/replays are idempotent and
+    cross-charter risks are explicitly rejected instead of becoming repeated
+    trigger rows for a deep slot.
+    """
     import loop
+    import review_progression
 
     if state.get("adaptive_wave"):
-        return {}
+        return {"promotions": {}, "rejections": copy.deepcopy(
+            state.get("promotion_rejections") or [])}
     decision = store.read(state["routing_decision"])["dispositions"]
-    promotions: dict[str, list[dict]] = {}
+    concerns = []
+    source_by_id = {}
     for ref in refs:
         result = store.read(ref)
         if result.get("slot_id") != "light-sweep":
@@ -1962,16 +1987,40 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
             if loop.normalize_severity(finding.get("severity")) not in \
                     ADAPTIVE_PROMOTION_SEVERITIES:
                 continue
-            triggers = promotions.setdefault(lens_id, [])
-            if len(triggers) >= 5:
-                continue
-            triggers.append({
+            concern_id = review_evidence_runtime.content_fingerprint(finding)
+            claim = finding.get("claim") if isinstance(
+                finding.get("claim"), dict) else {}
+            source_by_id.setdefault(concern_id, {
                 "severity": str(finding.get("severity") or ""),
                 "title": str(finding.get("title") or "")[:200],
                 "file": str(finding.get("file") or "")[:300],
                 "line": int(finding.get("line") or 1),
+                "concern_id": concern_id,
             })
-    return promotions
+            concerns.append({
+                "id": concern_id,
+                "severity": loop.normalize_severity(
+                    finding.get("severity")),
+                "lens": lens_id,
+                "evidence_ref": (f"{str(finding.get('file') or '')[:300]}:"
+                                 f"{int(finding.get('line') or 1)}"),
+                "rationale": str(
+                    finding.get("scenario") or finding.get("title") or ""),
+                "trigger": str(claim.get("trigger") or ""),
+            })
+    resolved = review_progression.resolve_sweep_concerns(concerns)
+    promotions: dict[str, list[dict]] = {}
+    for promotion in resolved["promotions"]:
+        trigger = copy.deepcopy(source_by_id[promotion["concern_id"]])
+        trigger.update({
+            "fingerprint": promotion["fingerprint"],
+            "evidence_ref": promotion["evidence_ref"],
+            "rationale": promotion["rationale"],
+            "trigger": promotion["trigger"],
+        })
+        promotions.setdefault(promotion["lens"], []).append(trigger)
+    return {"promotions": promotions,
+            "rejections": copy.deepcopy(resolved["rejections"])}
 
 
 def _prepare_slot_result_dirs(ws: str, slots: Iterable[dict]) -> None:
@@ -2484,7 +2533,9 @@ def production_review_model(state: dict, revision: dict, *, dor: dict,
     approval_enabled = complete and criteria_proven and \
         (revision.get("approval") or {}).get("enabled") is True
     if not complete:
-        gate_reason = "review collection is incomplete"
+        gate_reason = ("severe harm requires changes before completion"
+                       if revision.get("recommendation") == "request-changes"
+                       else "review collection is incomplete")
     elif not criteria_proven:
         gate_reason = "acceptance criteria are failed or unproven"
     else:
@@ -2519,11 +2570,16 @@ def production_review_model(state: dict, revision: dict, *, dor: dict,
                        "context_fingerprint": str(
                            revision.get("context_fingerprint") or ""),
                        "run_id": str(state.get("run_id") or "")},
-        "gate": {"status": "awaiting-human" if approval_enabled else "blocked",
+        "gate": {"status": ("awaiting-human" if approval_enabled else
+                             "request-changes" if revision.get(
+                                 "recommendation") == "request-changes" else
+                             "blocked"),
                  "approval_enabled": approval_enabled,
                  "reason": gate_reason,
-                 "actions": ["approve", "request-changes"]
-                            if approval_enabled else [],
+                 "actions": (["approve", "request-changes"]
+                             if approval_enabled else
+                             ["request-changes"] if revision.get(
+                                 "recommendation") == "request-changes" else []),
                  "consent": consent},
     }
 
@@ -2797,9 +2853,13 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                 "routing_input": _portable_ref(routing_input_ref),
                 "routing_decision": _portable_ref(decision_ref),
                 "settled_findings": _portable_ref(settled_ref)})
+    revision = evidence.next_revision(store)
+    run_id = _run_id(stage, _target_run_fingerprint(target),
+                     envelope_ref["fingerprint"], revision)
     internal_slots, slots = _slot_plan(
         store, envelope_ref, routing, decision, base=base,
-        runnability=runnability, stage=stage, settled_ref=settled_ref)
+        runnability=runnability, stage=stage, settled_ref=settled_ref,
+        run_id=run_id, canonical_revision=revision)
     _prepare_slot_result_dirs(ws, internal_slots)
     counters.update({
         "dispatched_agent_count": len(slots), "envelope_count": 1,
@@ -2809,11 +2869,6 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     counts = {tier: sum(1 for row in decision.values()
                         if row["verdict"] == tier)
               for tier in ("deep", "light", "n/a")}
-    revision = (internal_slots[0]["lease"] and
-                store.read(internal_slots[0]["lease"])["canonical_revision"]
-                if internal_slots else evidence.next_revision(store))
-    run_id = _run_id(stage, _target_run_fingerprint(target),
-                     envelope_ref["fingerprint"], revision)
     for slot in internal_slots:
         slot["run_id"] = run_id
     slot_ids = sorted(row["slot_id"] for row in internal_slots)
@@ -3089,6 +3144,16 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
     state, slot = candidates[0]
     store = __import__("review_evidence").ArtifactStore(ws)
     lease = store.read(slot["lease"])
+    if lease.get("execution_binding") is not None:
+        envelope = store.read(slot["envelope"])
+        review_evidence_runtime.verify_execution_binding(
+            ws, lease["execution_binding"],
+            target=envelope.get("target") or {},
+            run_id=str(slot.get("run_id") or ""),
+            lens_ids=lease.get("lens_ids") or [],
+            slot_id=str(lease.get("slot_id") or ""),
+            lease_fingerprint=str(lease.get("lease_fingerprint") or ""),
+            producer=str(lease.get("producer") or ""))
     view = _verify_v3_view(store, slot["envelope"], slot["view"])
     for field in ("slot_id", "lens_ids", "target_fingerprint",
                   "context_fingerprint", "view_fingerprint",
@@ -3875,6 +3940,16 @@ def _read_slot_output(ws: str, store,
     if not isinstance(row, dict):
         raise evidence.ProvenanceError("missing slot result: " + slot["slot_id"])
     lease = store.read(slot["lease"])
+    if lease.get("execution_binding") is not None:
+        envelope = store.read(slot["envelope"])
+        evidence.verify_execution_binding(
+            ws, lease["execution_binding"],
+            target=envelope.get("target") or {},
+            run_id=str(slot.get("run_id") or ""),
+            lens_ids=lease.get("lens_ids") or [],
+            slot_id=str(lease.get("slot_id") or ""),
+            lease_fingerprint=str(lease.get("lease_fingerprint") or ""),
+            producer=str(lease.get("producer") or ""))
     for field in ("lease_fingerprint", "slot_id", "lens_ids",
                   "target_fingerprint", "context_fingerprint",
                   "view_fingerprint", "canonical_revision"):
@@ -3918,15 +3993,27 @@ def _read_slot_output(ws: str, store,
         raise evidence.ProvenanceError("finding schema must be a list")
     findings = [_validate_finding(item, lease["lens_ids"]) for item in findings]
     findings, notes = _adjudicate_findings(ws, store, brief, findings)
-    blocking = blocking_findings_by_lens(findings)
-    for lens_id in lease["lens_ids"]:
-        expected_blockers = blocking.get(lens_id, 0)
-        expected_verdict = "fail" if expected_blockers else "pass"
-        summary = by_lens[lens_id]
-        if summary["blockers"] != expected_blockers or \
-                summary["verdict"] != expected_verdict:
-            raise evidence.ProvenanceError(
-                "blocking finding contradicts lens verdict summary: " + lens_id)
+    import review_repair
+    repair_input = copy.deepcopy(row)
+    # A failed verdict may omit checked_evidence in the producer schema.
+    # Canonical validation above has already proved that this means the empty
+    # list; make that schema normalization explicit before the equivalence
+    # guard evaluates the redundant verdict/count summary.
+    repair_input["lens_results"] = [
+        copy.deepcopy(by_lens[lid]) for lid in sorted(by_lens)]
+    recovery = review_repair.normalize_slot_result(
+        repair_input, lease, canonical_findings=findings)
+    if recovery.get("status") == "retry":
+        reason = ((recovery.get("retry_plan") or {}).get("producer_calls") or
+                  [{}])[0].get("reason") or "substantive slot result defect"
+        raise evidence.ProvenanceError(str(reason))
+    normalized_result = recovery["result"]
+    for verdict in normalized_result["lens_results"]:
+        lens_id = str(verdict["lens"])
+        by_lens[lens_id].update({
+            "verdict": verdict["verdict"],
+            "blockers": verdict["blockers"],
+        })
     trust = _host_receipt_trust(ws, slot, lease, raw_result)
     ref = evidence.write_slot_result(
         store, slot["lease"], authored_slot=row["slot_id"],
@@ -3934,7 +4021,9 @@ def _read_slot_output(ws: str, store,
         notes=notes,
         authored_by=row["authored_by"],
         references_applied=expected_references,
-        source=slot["result_path"])
+        source=slot["result_path"],
+        lens_results=[by_lens[lid] for lid in sorted(by_lens)],
+        repair_audit=recovery["audit"])
     canonical = store.read(ref)
     canonical.update({key: lease[key] for key in (
         "reference_manifest_fingerprint", "routing_fingerprint", "producer")})
@@ -3952,11 +4041,44 @@ def _read_slot_output(ws: str, store,
         "result_bytes": len(raw_result),
         "result_fingerprint": ref["fingerprint"],
         "checks": ["sealed-path", "lease-identity", "canonical-schema",
-                   "lens-coverage", "finding-verdict-consistency"],
+                   "lens-coverage", "finding-verdict-consistency",
+                   "metadata-equivalence", "execution-binding"],
+        "repair": copy.deepcopy(recovery["audit"]),
         **trust,
     })
     return (ref, [by_lens[lid] for lid in sorted(by_lens)],
             validation_ref)
+
+
+def severe_harm_triggers(findings: Iterable[dict]) -> list[dict]:
+    """Return admissible findings that justify immediate request-changes."""
+    triggers = []
+    for finding in findings or []:
+        if not isinstance(finding, dict) or str(
+                finding.get("status") or "").lower() in {
+                    "invalid", "invalidated", "rejected"}:
+            continue
+        severity = str(finding.get("severity") or "").lower()
+        text = " ".join(str(finding.get(key) or "") for key in (
+            "title", "scenario", "fix", "class")).lower()
+        security = finding.get("vulnerability") is True or \
+            (str(finding.get("lens") or "").lower() == "security" and
+             "vulnerab" in text)
+        harmful = finding.get("harmful") is True or \
+            any(word in text for word in (
+                "destructive", "deletes user data", "data loss", "harmful"))
+        if severity not in {"blocker", "high"} and not security and not harmful:
+            continue
+        triggers.append({
+            "finding_fingerprint": review_evidence_runtime.content_fingerprint(
+                finding),
+            "lens": str(finding.get("lens") or ""),
+            "severity": severity,
+            "reason": ("security-vulnerability" if security else
+                       "harmful-or-destructive" if harmful else
+                       "severe-finding"),
+        })
+    return sorted(triggers, key=lambda row: row["finding_fingerprint"])
 
 
 def build_review_revision(store, envelope_ref: dict, collected: dict, *,
@@ -3999,12 +4121,25 @@ def build_review_revision(store, envelope_ref: dict, collected: dict, *,
     gaps = copy.deepcopy(collected.get("gaps") or [])
     is_complete = completeness.get("complete") is True and not gaps
     disposition = "canonical" if is_complete else "provisional"
+    invalid_states = {"invalid", "invalidated", "rejected"}
+    invalidated_findings = [copy.deepcopy(row) for row in attributed
+                            if str(row.get("status") or "").lower()
+                            in invalid_states]
+    canonical_findings = semantic_deduplicate_findings(
+        row for row in attributed
+        if str(row.get("status") or "").lower() not in invalid_states)
+    severe = severe_harm_triggers(canonical_findings)
+    recommendation = ("request-changes" if severe else
+                      "complete" if is_complete else "incomplete")
     material = {
         "result_fingerprints": collected.get("result_fingerprints") or [],
-        "findings": semantic_deduplicate_findings(attributed),
+        "findings": canonical_findings,
         "disposition": disposition,
         "completeness": completeness,
         "gaps": gaps,
+        "recommendation": recommendation,
+        "severe_harm_triggers": severe,
+        "invalidated_findings": invalidated_findings,
     }
     if notes:
         material["notes"] = notes
@@ -4035,6 +4170,9 @@ def build_review_revision(store, envelope_ref: dict, collected: dict, *,
         "findings": copy.deepcopy(material["findings"]),
         "completeness": completeness,
         "gaps": gaps,
+        "recommendation": recommendation,
+        "severe_harm_triggers": copy.deepcopy(severe),
+        "invalidated_findings": copy.deepcopy(invalidated_findings),
         "approval": ({"enabled": True, "reason": "review evidence is complete"}
                      if is_complete else
                      {"enabled": False,
@@ -4600,6 +4738,9 @@ def _collect_review_transaction(
                 "gaps": copy.deepcopy(collected["gaps"]),
                 "completeness": copy.deepcopy(revision["completeness"]),
                 "approval": copy.deepcopy(revision["approval"]),
+                "recommendation": revision.get("recommendation"),
+                "severe_harm_triggers": copy.deepcopy(
+                    revision.get("severe_harm_triggers") or []),
                 "machine_projection": projection,
                 "artifact_set": copy.deepcopy(
                     canonical_output["publication"]),
@@ -4630,7 +4771,9 @@ def _collect_review_transaction(
                 gap_slots=len(collected["gaps"]),
                 findings=len(revision["findings"]), approval_enabled=False)
             return manifest
-        promotions = _light_sweep_promotions(store, state, refs)
+        promotion_resolution = _light_sweep_promotions(store, state, refs)
+        promotions = promotion_resolution["promotions"]
+        promotion_rejections = promotion_resolution["rejections"]
         if promotions:
             _consume_review_authority(
                 state, "affected_retry",
@@ -4673,6 +4816,8 @@ def _collect_review_transaction(
                 "context_fingerprint": state["envelope"]["fingerprint"],
                 "routing_decision": _portable_ref(effective_ref),
                 "promotions": copy.deepcopy(promotions),
+                "promotion_rejections": copy.deepcopy(
+                    promotion_rejections),
                 "slots": promoted_manifest, "counters": counters,
                 "next_action": "dispatch every promoted deep slot in one wave, "
                                "then retry review collect once",
@@ -4682,6 +4827,7 @@ def _collect_review_transaction(
                 slots=list(state.get("slots") or []) + promoted_internal,
                 dispatch_slots=promoted_manifest,
                 routing_decision=effective_ref,
+                promotion_rejections=copy.deepcopy(promotion_rejections),
                 adaptive_wave={"status": "dispatched", "wave": 2,
                                "promotions": copy.deepcopy(promotions)},
                 manifest=manifest, counters=counters)
@@ -4692,6 +4838,7 @@ def _collect_review_transaction(
         conservation = None
         if leases:
             collected = _collect_verified_slot_results(store, leases, refs)
+            evidence.require_approvable_collection(collected)
             slot_ids = [str(row.get("slot_id") or "")
                         for row in state.get("slots") or []]
             conservation = _slot_conservation_record(
@@ -4770,7 +4917,9 @@ def _collect_review_transaction(
                          "target": identity["target_fingerprint"],
                          "dor_evidence": dor,
                          "requirements_validation": requirements_validation,
-                         "result_validations": portable_validations},
+                         "result_validations": portable_validations,
+                         "promotion_rejections": copy.deepcopy(
+                             promotion_rejections)},
                 "findings": revision["findings"],
                 "notes": revision.get("notes") or []}
         lines = ["# Engineering review", "",
@@ -4796,6 +4945,7 @@ def _collect_review_transaction(
             "artifact_set": copy.deepcopy(canonical_output["publication"]),
             "inline_page_count": len(canonical_output["inline_pages"]),
             "slot_conservation": conservation,
+            "promotion_rejections": copy.deepcopy(promotion_rejections),
         })
         _collection_fault("post_manifest")
         prepared = dict(
@@ -4805,6 +4955,7 @@ def _collect_review_transaction(
             counters=manifest["counters"], lens_results=lens_results,
             slot_conservation=conservation,
             result_validations=result_validations,
+            promotion_rejections=copy.deepcopy(promotion_rejections),
             prior_identity=prior, publication_body=body,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.

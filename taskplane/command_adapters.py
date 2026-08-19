@@ -578,7 +578,27 @@ class CommandAdapter:
             if binding is None:
                 self.runtime.reconnect(handle, binding=None)
             else:
-                native_event = self._native_wait(binding, timeout, interrupted)
+                try:
+                    native_event = self._native_wait(
+                        binding, timeout, interrupted)
+                except OSError as exc:
+                    consolidated = os.environ.get(
+                        "TASKPLANE_CONSOLIDATED_FLOW", "").strip().lower() in {
+                            "1", "true", "yes", "on"}
+                    if not consolidated:
+                        raise
+                    decision = self.runtime.record_recovery(
+                        handle, failure_class="transient",
+                        detail=f"{exc.__class__.__name__}: {exc}")
+                    if decision["status"] == "recover":
+                        return None
+                    self.runtime.transition(
+                        handle, "input_required",
+                        reason=("automatic command recovery stopped: "
+                                f"{decision['reason']}"))
+                    return self._receive(
+                        handle, consumer,
+                        self.runtime.pending(handle, consumer=consumer))
                 if native_event is not None:
                     self.notify(handle, native_event)
             return self._receive(
