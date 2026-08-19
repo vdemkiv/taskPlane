@@ -156,18 +156,20 @@ class TestTagSkill(unittest.TestCase):
         self.assertEqual(flow["schema"], "taskplane.skill-flow/v1")
         self.assertEqual(
             [node["id"] for node in flow["nodes"]],
-            ["thread", "store", "loop", "work", "dashboard", "reply",
-             "approve", "persist"])
+            ["thread", "store", "loop", "authorization", "work",
+             "dashboard", "signoff", "persist"])
         self.assertEqual(
             flow["edges"],
-            [["thread", "store"], ["store", "loop"], ["loop", "work"],
-             ["work", "dashboard"], ["dashboard", "reply"],
-             ["reply", "approve"], ["approve", "persist"]])
+            [["thread", "store"], ["store", "loop"],
+             ["loop", "authorization"], ["authorization", "work"],
+             ["work", "dashboard"], ["dashboard", "signoff"],
+             ["signoff", "persist"]])
         self.assertEqual(flow["invariants"]["store"],
                          "TASKPLANE_STORE=repo")
         self.assertEqual(flow["invariants"]["dashboard"],
                          ".taskplane/dashboard.html")
-        self.assertEqual(flow["invariants"]["approval_requires"], "--by")
+        self.assertEqual(flow["invariants"]["approval_requires"],
+                         "attributed host event")
         self.assertFalse(flow["invariants"]["self_approval"])
 
 

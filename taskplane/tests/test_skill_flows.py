@@ -14,7 +14,7 @@ SKILLS = ("taskplane", "tp-go", "tp-build", "tp-design", "tp-engineering",
           "tp-product", "tp-status", "tp-northstar", "tp-help", "tp-tag")
 EXPECTED_GATES = {
     "taskplane": {"signoff"},
-    "tp-go": {"design_approval", "plan_approval", "signoff"},
+    "tp-go": {"authorization", "signoff"},
     "tp-build": {"design_approval", "plan_approval", "selection", "signoff"},
     "tp-design": {"approval"},
     "tp-engineering": {"signoff"},
@@ -22,7 +22,7 @@ EXPECTED_GATES = {
     "tp-status": set(),
     "tp-northstar": set(),
     "tp-help": set(),
-    "tp-tag": {"reply"},
+    "tp-tag": {"authorization", "signoff"},
 }
 
 
