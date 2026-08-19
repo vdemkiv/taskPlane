@@ -1064,6 +1064,23 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             "lenses": selected,
             "context": ctxd,
         })
+        # The canonical ReviewKernel builds its routing decision directly
+        # from this complete catalog map.  Therefore the bounded sweep must
+        # be reflected in the dispositions themselves, not only copied into
+        # context metadata for the legacy brief dispatcher.  Retain every
+        # overflow lens as an explained n/a so coverage remains complete
+        # without allocating a second/unbounded light wave.
+        by_id = {str(row.get("id") or ""): row for row in selected}
+        for lens_id in progressive["deferred_light"]:
+            entry = by_id[lens_id]
+            prior = str(entry.get("verdict") or entry.get("tier") or "light")
+            entry["tier"] = entry["verdict"] = "n/a"
+            entry["mode"] = "none"
+            entry["negative_evidence"] = [
+                "deferred by bounded progressive review sweep "
+                f"(limit {review_progression.DEFAULT_SWEEP_LIMIT}; "
+                f"initial verdict '{prior}')"
+            ]
         ctxd["review_progression"] = {
             "schema": progressive["schema"],
             "deep_slots": [row["slot"] for row in progressive["deep"]],
