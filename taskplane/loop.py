@@ -3747,6 +3747,16 @@ def select(ws: str, choice: str, note: str = "") -> dict:
         # Revision validation and state mutation share one lock. A checkout
         # change can no longer land between validation and persistence.
         current_revision = tp.git_head(ws)
+        # Pre-consolidation loops can resume at an already-open selection
+        # gate without the later authority_target_revision/baseline fields.
+        # There is no historical revision to reconstruct in that legacy
+        # shape, so migrate it once to the revision observed under this same
+        # lock. Current governed loops retain their persisted revision and
+        # still fail closed on stale checkout changes; the revision fence
+        # below protects both shapes through commit.
+        if not expected_revision:
+            expected_revision = current_revision
+            state["authority_target_revision"] = current_revision
         boundary = authority_engine.build_selection(
             variants, selected=choice.strip(), revision=current_revision,
             expected_revision=expected_revision)

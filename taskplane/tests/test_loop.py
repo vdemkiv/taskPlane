@@ -109,7 +109,10 @@ def write_kernel_results(ws):
             "schema": "taskplane.lens-slot-output/v2",
             "authored_by": "lens-slot",
             "lens_results": [
-                {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                {"lens": lens_id, "verdict": "pass", "blockers": 0,
+                 "checked_evidence": [{
+                     "file": "src/todo/a.py", "line": 1,
+                     "claim": "declared happy-path fixture inspected"}]}
                 for lens_id in lease["lens_ids"]
             ],
             "findings": [],
@@ -1001,6 +1004,17 @@ def _scrub(obj):
     """Wall-clock stamps are the only legitimate run-to-run difference when
     the same workspace bytes are gated twice; everything else must match."""
     if isinstance(obj, dict):
+        # Progress is an observational projection over the audit stream, not
+        # gate state. Replaying the same gate necessarily samples a different
+        # elapsed value; the dashboard delivery digests then differ only
+        # because that sampled projection is rendered into its payload. The
+        # progress/delivery contracts have their own exact tests, while this
+        # differential proves the engine-skew precheck changes no workflow
+        # outcome.
+        if obj.get("schema") == "taskplane.status-progress/v1":
+            return "<live-progress>"
+        if obj.get("schema") == "taskplane.dashboard-delivery/v1":
+            return "<dashboard-delivery>"
         return {k: ("<t>" if k.endswith("_at") or k in _VOLATILE
                     else _scrub(v)) for k, v in obj.items()}
     if isinstance(obj, list):
