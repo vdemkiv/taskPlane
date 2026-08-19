@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import hashlib
+import copy
 import sys
 
 import pytest
@@ -13,25 +13,17 @@ import loop  # noqa: E402
 import review_dor  # noqa: E402
 
 
-_HOST_TEST_RSA_D = 6823042715679351083095921040778188895872029884421244949269988974576507253038044146378477372342246210959297444144089579964159423217760131668815144481868508403260214118920313305568905313649237419969142174143627567173541565805088866155552644855499639621046237170308214855487039261112453145693667417667351020629203737779339580396289662245684798103240561898313091319389365569497226323929678057980844655382019396861603106635705427016020203819737718570724027601086757012959784691684081215075599906436916767911477763454539954672180937575722053538914533160265615333236791531889594908609974389717764708454932691833138418840593
-
-
-def host_receipt(event, *, actor="user-7", thread="thread-9",
-                 revision="r1", event_id="event-1"):
-    receipt = {
-        "schema": authority.HOST_INPUT_RECEIPT_SCHEMA,
+def host_event(event, *, actor="user-7", thread="thread-9",
+               revision="r1", event_ref="event-1"):
+    """Fake the trusted local host/session adapter without cryptography."""
+    return {
+        "schema": authority.HOST_SESSION_EVENT_SCHEMA,
         "event_fingerprint": authority._fingerprint(
             authority._host_event_payload(event)),
-        "event_id": event_id, "actor": actor, "thread": thread,
-        "revision": revision, "authenticated": True,
+        "event_ref": event_ref, "actor": actor, "thread": thread,
+        "revision": revision, "target": {"revision": revision},
+        "source": "test-host-session",
     }
-    digest = hashlib.sha256(authority._canonical_bytes(receipt)).digest()
-    tail = authority._SHA256_DIGEST_INFO + digest
-    size = (authority._HOST_RECEIPT_RSA_N.bit_length() + 7) // 8
-    encoded = b"\x00\x01" + b"\xff" * (size - len(tail) - 3) + b"\x00" + tail
-    signature = pow(int.from_bytes(encoded, "big"), _HOST_TEST_RSA_D,
-                    authority._HOST_RECEIPT_RSA_N).to_bytes(size, "big")
-    return {**receipt, "signature": signature.hex()}
 
 
 BASE = {
@@ -352,7 +344,7 @@ def test_host_input_calls_production_human_decision_boundary(monkeypatch):
         "response": {"decision": "approve"},
         "fact": "remove generated cache", "consequence": "irreversible",
     }
-    signed = host_receipt(event, event_id="decision-1")
+    observed = host_event(event, event_ref="decision-1")
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
@@ -360,18 +352,25 @@ def test_host_input_calls_production_human_decision_boundary(monkeypatch):
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
     result = loop.handle_host_input(
-        "/repo", event, host_receipt=signed)
+        "/repo", event, host_event=observed)
 
     assert result["authorized"] is True
 
 
 def test_host_input_calls_production_preview_persistence(monkeypatch):
-    state = {"requirement_id": "R-1", "authority_target_revision": "r1"}
+    state = {"requirement_id": "R-1", "authority_target_revision": "r1",
+             "authority_receipt": {"actor": "user-7",
+                                   "thread": "thread-9"}}
     event = {
         "type": "preview_feedback", "text": "increase spacing",
         "change_kind": "cosmetic",
+        # These body labels are intentionally inert. Attribution comes from
+        # the separate trusted-session observation below.
+        "actor": "body-admin", "thread": "body-thread",
+        "revision": "body-revision", "event_id": "body-event",
+        "authenticated": False,
     }
-    signed = host_receipt(event, event_id="preview-1")
+    observed = host_event(event, event_ref="preview-1")
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
@@ -380,14 +379,17 @@ def test_host_input_calls_production_preview_persistence(monkeypatch):
     monkeypatch.setattr(loop, "mutate", fake_mutate)
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
     result = loop.handle_host_input(
-        "/repo", event, host_receipt=signed)
+        "/repo", event, host_event=observed)
 
     assert result["accepted"] is True
+    assert result["actor"] == "user-7"
     assert state["preview_changes"][0]["fingerprint"] == result["fingerprint"]
-    assert list(state["consumed_host_events"]) == ["preview-1"]
+    event_id = authority.HostSessionAdapter().observe(event, observed)["event_id"]
+    assert event_id != event["event_id"]
+    assert list(state["consumed_host_events"]) == [event_id]
 
 
-def test_host_input_rejects_caller_asserted_identity_without_engine_receipt(
+def test_host_input_rejects_caller_asserted_identity_without_host_observation(
         monkeypatch):
     state = {}
 
@@ -403,34 +405,37 @@ def test_host_input_rejects_caller_asserted_identity_without_engine_receipt(
     })
 
     assert result["accepted"] is False
-    assert "host_receipt_required" in result["reasons"]
+    assert "host_session_event_required" in result["reasons"]
 
 
-def test_host_input_rejects_forged_receipt_identity_and_event():
+def test_host_session_observation_binds_identity_target_and_event():
     event = {"type": "preview_feedback", "text": "increase spacing",
              "change_kind": "cosmetic"}
-    receipt = host_receipt(event, event_id="preview-1")
+    observed = host_event(event, event_ref="preview-1")
 
-    forged_identity = {**receipt, "actor": "admin"}
-    verifier = authority.HostInputVerifier()
-    identity = verifier.verify(event, forged_identity)
-    changed_event = verifier.verify(
-        {**event, "text": "expand scope"}, receipt)
+    adapter = authority.HostSessionAdapter()
+    identity = adapter.observe(
+        event, observed, expected_actor="admin", expected_thread="thread-9",
+        expected_revision="r1", expected_target={"revision": "r1"})
+    changed_event = adapter.observe(
+        {**event, "text": "expand scope"}, observed,
+        expected_actor="user-7", expected_thread="thread-9",
+        expected_revision="r1", expected_target={"revision": "r1"})
 
-    assert identity["authenticated"] is False
-    assert "host_receipt_unauthenticated" in identity["reasons"]
-    assert changed_event["authenticated"] is False
+    assert identity["attributed"] is False
+    assert "wrong_actor" in identity["reasons"]
+    assert changed_event["attributed"] is False
     assert "host_event_mismatch" in changed_event["reasons"]
 
 
-def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
+def test_human_session_event_is_consumed_atomically_and_cannot_replay(
         monkeypatch):
     event = {
         "type": "human_decision", "reason": "destructive",
         "response": {"decision": "approve"},
         "fact": "remove generated cache", "consequence": "irreversible",
     }
-    receipt = host_receipt(event, event_id="decision-1")
+    observed = host_event(event, event_ref="decision-1")
     packet, approval = approved_packet()
     state = {"authority_packet": packet, "authority_receipt": approval,
              "authority_target_revision": "r1",
@@ -442,21 +447,24 @@ def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
 
-    first = loop.handle_host_input("/repo", event, host_receipt=receipt)
-    replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    first = loop.handle_host_input("/repo", event, host_event=observed)
+    replay = loop.handle_host_input("/repo", event, host_event=observed)
 
     assert first["authorized"] is True
     assert replay["authorized"] is False
     assert "replayed_decision" in replay["reasons"]
-    assert list(state["consumed_host_decisions"]) == ["decision-1"]
+    event_id = authority.HostSessionAdapter().observe(event, observed)["event_id"]
+    assert list(state["consumed_host_decisions"]) == [event_id]
 
 
-def test_preview_receipt_rejects_stale_revision_and_replay_atomically(
+def test_preview_session_event_rejects_stale_revision_and_replay_atomically(
         monkeypatch):
     event = {"type": "preview_feedback", "text": "increase spacing",
              "change_kind": "cosmetic"}
-    receipt = host_receipt(event, event_id="preview-1")
+    observed = host_event(event, event_ref="preview-1")
     state = {"requirement_id": "R-1", "authority_target_revision": "r2",
+             "authority_receipt": {"actor": "user-7",
+                                   "thread": "thread-9"},
              "consumed_host_events": {}}
 
     @loop.contextlib.contextmanager
@@ -466,20 +474,21 @@ def test_preview_receipt_rejects_stale_revision_and_replay_atomically(
     monkeypatch.setattr(loop, "mutate", fake_mutate)
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
 
-    stale = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    stale = loop.handle_host_input("/repo", event, host_event=observed)
     state["authority_target_revision"] = "r1"
-    accepted = loop.handle_host_input("/repo", event, host_receipt=receipt)
-    replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    accepted = loop.handle_host_input("/repo", event, host_event=observed)
+    replay = loop.handle_host_input("/repo", event, host_event=observed)
 
     assert stale["accepted"] is False
     assert "wrong_revision" in stale["reasons"]
     assert accepted["accepted"] is True
     assert replay["accepted"] is False
     assert "replayed_event" in replay["reasons"]
-    assert list(state["consumed_host_events"]) == ["preview-1"]
+    event_id = authority.HostSessionAdapter().observe(event, observed)["event_id"]
+    assert list(state["consumed_host_events"]) == [event_id]
 
 
-def test_workspace_state_cannot_disclose_or_mint_host_signing_authority(
+def test_workspace_state_needs_no_host_signing_authority(
         monkeypatch):
     saved = {}
     monkeypatch.setattr(loop, "load", lambda ws: None)
@@ -493,8 +502,11 @@ def test_workspace_state_cannot_disclose_or_mint_host_signing_authority(
     assert "host_input_secret" not in result
 
 
-def test_production_has_no_signer_or_key_path():
+def test_production_has_no_crypto_signer_verifier_or_key_path():
     assert not hasattr(authority, "HostInputAuthority")
+    assert not hasattr(authority, "HostInputVerifier")
+    assert not hasattr(authority, "_HOST_RECEIPT_RSA_N")
+    assert not hasattr(authority, "_host_receipt_signature_valid")
     assert not hasattr(loop, "_host_input_signing_key")
     assert not hasattr(loop, "_host_input_key_path")
 
@@ -510,14 +522,22 @@ def test_reconciliation_rejects_symlink_substitution(monkeypatch, tmp_path):
     monkeypatch.setattr(loop.tp, "tp_dir", lambda ws: str(trace_root))
     monkeypatch.setattr(loop.tp, "trace_paths", lambda ws: [str(linked)])
 
+    before = outside.read_text(encoding="utf-8")
     assert loop._trace_effect_seen("/workspace", "selection:r1:a") is False
+    with pytest.raises(OSError):
+        loop._append_authority_trace(
+            "/workspace", "loop_select",
+            {"authority_effect_id": "selection:r1:a"})
+    assert outside.read_text(encoding="utf-8") == before
 
 
 def test_preview_replay_reconciles_failed_durable_trace_effect(monkeypatch):
     event = {"type": "preview_feedback", "text": "increase spacing",
              "change_kind": "cosmetic"}
-    receipt = host_receipt(event, event_id="preview-reconcile")
-    state = {"requirement_id": "R-1", "authority_target_revision": "r1"}
+    observed_event = host_event(event, event_ref="preview-reconcile")
+    state = {"requirement_id": "R-1", "authority_target_revision": "r1",
+             "authority_receipt": {"actor": "user-7",
+                                   "thread": "thread-9"}}
     observed = set()
     attempts = []
 
@@ -525,7 +545,7 @@ def test_preview_replay_reconciles_failed_durable_trace_effect(monkeypatch):
     def fake_mutate(ws):
         yield state
 
-    def flaky_trace(ws, event_name, **data):
+    def flaky_trace(ws, event_name, data):
         attempts.append(data["authority_effect_id"])
         if len(attempts) == 1:
             raise OSError("trace temporarily unavailable")
@@ -534,17 +554,19 @@ def test_preview_replay_reconciles_failed_durable_trace_effect(monkeypatch):
     monkeypatch.setattr(loop, "mutate", fake_mutate)
     monkeypatch.setattr(loop, "_trace_effect_seen",
                         lambda ws, effect_id: effect_id in observed)
-    monkeypatch.setattr(loop.tp, "trace", flaky_trace)
+    monkeypatch.setattr(loop, "_append_authority_trace", flaky_trace)
 
-    accepted = loop.handle_host_input("/repo", event, host_receipt=receipt)
-    replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    accepted = loop.handle_host_input("/repo", event, host_event=observed_event)
+    replay = loop.handle_host_input("/repo", event, host_event=observed_event)
 
+    event_id = authority.HostSessionAdapter().observe(
+        event, observed_event)["event_id"]
     effect = state["authority_effect_outbox"][
-        "preview:preview-reconcile"]
+        f"preview:{event_id}"]
     assert accepted["accepted"] is True
     assert replay["accepted"] is False
     assert replay["reasons"] == ["replayed_event"]
-    assert attempts == ["preview:preview-reconcile"] * 2
+    assert attempts == [f"preview:{event_id}"] * 2
     assert effect["status"] == "delivered"
 
 
@@ -566,8 +588,8 @@ def test_selection_replay_reconciles_failed_kb_effect_once(monkeypatch):
     monkeypatch.setattr(loop.tp, "git_head", lambda ws: "r1")
     monkeypatch.setattr(loop, "_trace_effect_seen",
                         lambda ws, effect_id: effect_id in traced)
-    monkeypatch.setattr(loop.tp, "trace",
-                        lambda ws, event, **data:
+    monkeypatch.setattr(loop, "_append_authority_trace",
+                        lambda ws, event, data:
                         traced.add(data["authority_effect_id"]))
     monkeypatch.setattr(loop, "_kb_effect_seen",
                         lambda ws, effect_id: effect_id in decisions)
@@ -593,6 +615,69 @@ def test_selection_replay_reconciles_failed_kb_effect_once(monkeypatch):
     assert state["authority_effect_outbox"][effect_id]["status"] == "delivered"
 
 
+def test_loop_load_generally_flushes_pending_authority_outbox(monkeypatch):
+    effect_id = "selection:r1:a"
+    state = {"step": "em", "authority_effect_outbox": {
+        effect_id: {
+            "status": "pending",
+            "trace": {"delivered": False, "event": "loop_select",
+                      "data": {"choice": "a"}},
+            "kb": None,
+        }}}
+    observed = set()
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "_load_raw", lambda ws: state)
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_trace_effect_seen",
+                        lambda ws, wanted: wanted in observed)
+    monkeypatch.setattr(
+        loop, "_append_authority_trace",
+        lambda ws, event, data: observed.add(data["authority_effect_id"]))
+
+    loaded = loop.load("/repo")
+
+    assert loaded["step"] == "em"
+    assert state["authority_effect_outbox"][effect_id]["status"] == "delivered"
+
+
+def test_selection_revision_fence_rolls_back_post_commit_git_change(
+        monkeypatch, tmp_path):
+    original = {"step": "selection", "goal": "choose", "baseline": "r1",
+                "authority_target_revision": "r1", "tasks": [
+                    {"id": "a", "variant": "A", "scope": []},
+                    {"id": "b", "variant": "B", "scope": []},
+                ]}
+    stored = copy.deepcopy(original)
+    heads = iter(["r1", "r1", "r2"])
+
+    @loop.contextlib.contextmanager
+    def fake_lock(path):
+        yield
+
+    def fake_save(ws, state):
+        stored.clear()
+        stored.update(copy.deepcopy(state))
+
+    monkeypatch.setattr(loop, "reconcile_authority_effects",
+                        lambda ws: {"delivered": 0, "pending": 0})
+    monkeypatch.setattr(loop, "_state_dir", lambda ws: str(tmp_path))
+    monkeypatch.setattr(loop, "_load_raw", lambda ws: copy.deepcopy(stored))
+    monkeypatch.setattr(loop, "save", fake_save)
+    monkeypatch.setattr(loop.tp, "file_lock", fake_lock)
+    monkeypatch.setattr(loop.tp, "git_head", lambda ws: next(heads))
+
+    result = loop.select("/repo", "a")
+
+    assert "during the locked selection commit" in result["error"]
+    assert result["expected_revision"] == "r1"
+    assert result["actual_revision"] == "r2"
+    assert stored == original
+
+
 def test_select_rejects_stale_checkout_and_resumed_current_selection(
         monkeypatch):
     base = {"step": "selection", "goal": "choose", "baseline": "r1",
@@ -601,6 +686,14 @@ def test_select_rejects_stale_checkout_and_resumed_current_selection(
                 {"id": "b", "variant": "B", "scope": []},
             ]}
     monkeypatch.setattr(loop, "load", lambda ws: dict(base))
+    monkeypatch.setattr(loop, "reconcile_authority_effects",
+                        lambda ws: {"delivered": 0, "pending": 0})
+
+    @loop.contextlib.contextmanager
+    def stale_mutate(ws):
+        yield dict(base)
+
+    monkeypatch.setattr(loop, "mutate", stale_mutate)
     monkeypatch.setattr(loop.tp, "git_head", lambda ws: "r2")
     stale = loop.select("/repo", "a")
     assert "stale" in stale["error"].lower()

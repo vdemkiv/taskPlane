@@ -2,13 +2,12 @@
 
 The packet is deliberately a pure value.  Hosts may present it differently,
 but a stage derives authority only from the approved semantic envelope and an
-authenticated actor/thread-bound receipt.  Fingerprint drift is evidence
+attributable actor/thread-bound receipt.  Fingerprint drift is evidence
 staleness; it is never, by itself, a request for more human authority.
 """
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 from collections.abc import Mapping, Sequence
 
@@ -18,7 +17,7 @@ RECEIPT_SCHEMA = "taskplane.authorization-receipt/v1"
 DERIVATION_SCHEMA = "taskplane.authorization-derivation/v1"
 DECISION_SCHEMA = "taskplane.human-decision/v1"
 CHANGE_SCHEMA = "taskplane.attributable-change/v1"
-HOST_INPUT_RECEIPT_SCHEMA = "taskplane.host-input-receipt/v1"
+HOST_SESSION_EVENT_SCHEMA = "taskplane.host-session-event/v1"
 
 ROUTINE_FLOWS = (
     "facade", "delivery", "product", "design", "build", "engineering",
@@ -69,7 +68,7 @@ def _fingerprint(value: object) -> str:
 
 
 def _host_event_payload(event: Mapping) -> dict:
-    """Canonical non-authority event body bound by a trusted host receipt."""
+    """Canonical event body bound to a trusted local host-session event."""
     allowed = ("type", "text", "change_kind", "reason", "response", "fact",
                "consequence")
     payload = {key: _plain(event[key]) for key in allowed if key in event}
@@ -79,66 +78,68 @@ def _host_event_payload(event: Mapping) -> dict:
     return payload
 
 
-_HOST_RECEIPT_RSA_N = int(
-    "2755070703043514567837450338864977453983335217863375313393347508867998"
-    "8653606130385459860851556870701927819635677964252617671428447820199573"
-    "5891145625961267505292290879320152248587133816351974857532220613567616"
-    "4442576590974819685291497203942545700267055896278182985594923471809590"
-    "1348806834409386751189663841627023762916628072701707507494690688456557"
-    "6020485684414216971381181957259990629280647142016116688515243136515996"
-    "9619352225257173199336520417967382269653847072571466571530171225163005"
-    "2133153064061413150938446572227240517779658235163179907488568403155154"
-    "731860395743276319730653002263913812036871800261560339749")
-_HOST_RECEIPT_RSA_E = 65537
-_SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+class HostSessionAdapter:
+    """Bind one event observed by the trusted local host/session adapter.
 
+    Taskplane deliberately has no signing or verification machinery here.
+    Its deployment boundary is one trusted Codex/Claude session on a local
+    machine or private sandbox.  The separate ``host_event`` mapping is
+    adapter attribution, while identity labels embedded in ``event`` remain
+    inert.  The engine derives the durable event id from every binding so a
+    repeated adapter observation is consumed as the same event.
+    """
 
-def _host_receipt_signature_valid(receipt: Mapping) -> bool:
-    """Verify a host-issued RSA/SHA-256 receipt; no signing API exists here."""
-    try:
-        signature = bytes.fromhex(str(receipt.get("signature") or ""))
-    except ValueError:
-        return False
-    size = (_HOST_RECEIPT_RSA_N.bit_length() + 7) // 8
-    if len(signature) != size:
-        return False
-    signature_value = int.from_bytes(signature, "big")
-    if signature_value >= _HOST_RECEIPT_RSA_N:
-        return False
-    value = pow(signature_value, _HOST_RECEIPT_RSA_E,
-                _HOST_RECEIPT_RSA_N).to_bytes(size, "big")
-    unsigned = {key: receipt[key] for key in receipt if key != "signature"}
-    digest = hashlib.sha256(_canonical_bytes(unsigned)).digest()
-    tail = _SHA256_DIGEST_INFO + digest
-    expected = b"\x00\x01" + b"\xff" * (size - len(tail) - 3) + b"\x00" + tail
-    return hmac.compare_digest(value, expected)
-
-
-class HostInputVerifier:
-    """Consume-only verifier for receipts signed by the privileged host."""
-
-    def verify(self, event: Mapping, receipt: object) -> dict:
+    def observe(self, event: Mapping, host_event: object, *,
+                expected_actor: str = "", expected_thread: str = "",
+                expected_revision: str = "",
+                expected_target: Mapping | None = None) -> dict:
         reasons = []
-        if not isinstance(receipt, Mapping) or \
-                receipt.get("schema") != HOST_INPUT_RECEIPT_SCHEMA:
-            return {"authenticated": False,
-                    "reasons": ["host_receipt_required"]}
-        if not _host_receipt_signature_valid(receipt):
-            reasons.append("host_receipt_unauthenticated")
-        if receipt.get("event_fingerprint") != _fingerprint(
+        if not isinstance(host_event, Mapping) or \
+                host_event.get("schema") != HOST_SESSION_EVENT_SCHEMA:
+            return {"attributed": False,
+                    "reasons": ["host_session_event_required"]}
+        if host_event.get("event_fingerprint") != _fingerprint(
                 _host_event_payload(event)):
             reasons.append("host_event_mismatch")
-        for field in ("actor", "thread", "revision", "event_id"):
-            if not str(receipt.get(field) or "").strip():
-                reasons.append(f"host_receipt_missing_{field}")
-        if receipt.get("authenticated") is not True:
-            reasons.append("host_receipt_unauthenticated")
+        for field in ("actor", "thread", "revision", "event_ref", "source"):
+            if not str(host_event.get(field) or "").strip():
+                reasons.append(f"host_event_missing_{field}")
+        target = host_event.get("target")
+        if not isinstance(target, Mapping):
+            reasons.append("host_event_missing_target")
+            target = {}
+        try:
+            target_value = _plain(target)
+        except ValueError:
+            reasons.append("host_event_invalid_target")
+            target_value = {}
+        actor = str(host_event.get("actor") or "")
+        thread = str(host_event.get("thread") or "")
+        revision = str(host_event.get("revision") or "")
+        if expected_actor and actor != str(expected_actor):
+            reasons.append("wrong_actor")
+        if expected_thread and thread != str(expected_thread):
+            reasons.append("wrong_thread")
+        if expected_revision and revision != str(expected_revision):
+            reasons.append("wrong_revision")
+        if expected_target is not None and target_value != \
+                _plain(expected_target):
+            reasons.append("wrong_target")
+        event_identity = {
+            "schema": "taskplane.host-session-event-identity/v1",
+            "source": str(host_event.get("source") or ""),
+            "event_ref": str(host_event.get("event_ref") or ""),
+            "actor": actor, "thread": thread, "revision": revision,
+            "target": target_value,
+            "event_fingerprint": str(
+                host_event.get("event_fingerprint") or ""),
+        }
         return {
-            "authenticated": not reasons, "reasons": sorted(set(reasons)),
-            "actor": str(receipt.get("actor") or ""),
-            "thread": str(receipt.get("thread") or ""),
-            "revision": str(receipt.get("revision") or ""),
-            "event_id": str(receipt.get("event_id") or ""),
+            "attributed": not reasons, "reasons": sorted(set(reasons)),
+            "actor": actor, "thread": thread, "revision": revision,
+            "target": target_value, "event_id": _fingerprint(event_identity),
+            "source": str(host_event.get("source") or ""),
+            "event_ref": str(host_event.get("event_ref") or ""),
         }
 
 

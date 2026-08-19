@@ -2222,9 +2222,9 @@ def cmd_loop(a) -> int:
         # adapters from reimplementing receipt or target checks.
         out = loopmod.authorize_routine_flow(ws, a.flow)
     elif action == "host-input":
-        # The event body is untrusted stdin. Authentication travels in a
-        # separately injected, engine-signed host receipt; actor/thread/
-        # revision/boolean claims in the body are never authority.
+        # Taskplane runs inside one trusted local Codex/Claude session.  Its
+        # host adapter supplies separate session attribution; actor/thread/
+        # revision/boolean labels in the event body are never authority.
         try:
             event = json.load(sys.stdin)
         except (json.JSONDecodeError, UnicodeError) as exc:
@@ -2233,15 +2233,15 @@ def cmd_loop(a) -> int:
             if not isinstance(event, dict):
                 out = {"error": "host event must be a JSON object"}
             else:
-                raw_receipt = os.environ.get(
-                    "TASKPLANE_HOST_INPUT_RECEIPT", "")
+                raw_host_event = os.environ.get(
+                    "TASKPLANE_HOST_SESSION_EVENT", "")
                 try:
-                    host_receipt = json.loads(raw_receipt) \
-                        if raw_receipt else None
+                    host_event = json.loads(raw_host_event) \
+                        if raw_host_event else None
                 except json.JSONDecodeError:
-                    host_receipt = None
+                    host_event = None
                 out = loopmod.handle_host_input(
-                    ws, event, host_receipt=host_receipt)
+                    ws, event, host_event=host_event)
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
@@ -5652,8 +5652,8 @@ def main(argv=None) -> int:
         "flow", help="routine flow identity (facade, delivery, product, "
         "design, build, engineering, status, help, north_star or tag_slack)")
     lsub.add_parser(
-        "host-input", help="consume one authenticated host event JSON object "
-        "from stdin through the governed human-input boundary")
+        "host-input", help="consume one trusted-session host event JSON "
+        "object from stdin through the governed human-input boundary")
     lsub.add_parser("status", help="show the loop's stage, tasks and gates")
     lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "

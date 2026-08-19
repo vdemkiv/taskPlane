@@ -8,7 +8,7 @@ import sys
 import authority
 import loop
 import tp
-from taskplane.tests.test_consolidated_authority import host_receipt
+from taskplane.tests.test_consolidated_authority import host_event
 
 
 def test_loop_authorize_dispatches_every_routine_flow(monkeypatch, capsys):
@@ -33,8 +33,8 @@ def test_loop_host_input_dispatches_bound_human_decision(monkeypatch,
                                                          capsys):
     captured = {}
 
-    def fake_handle(ws, event, *, host_receipt):
-        captured.update(ws=ws, event=event, host_receipt=host_receipt)
+    def fake_handle(ws, event, *, host_event):
+        captured.update(ws=ws, event=event, host_event=host_event)
         return {"authorized": True}
 
     event = {
@@ -48,17 +48,17 @@ def test_loop_host_input_dispatches_bound_human_decision(monkeypatch,
         "consequence": "cannot be restored",
         "authenticated": True,
     }
-    host_receipt = {"schema": "taskplane.host-input-receipt/v1",
-                    "signature": "trusted"}
+    observed = {"schema": "taskplane.host-session-event/v1",
+                "source": "test-host-session"}
     monkeypatch.setattr(loop, "handle_host_input", fake_handle)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
-    monkeypatch.setenv("TASKPLANE_HOST_INPUT_RECEIPT",
-                       json.dumps(host_receipt))
+    monkeypatch.setenv("TASKPLANE_HOST_SESSION_EVENT",
+                       json.dumps(observed))
 
     assert tp.main(["loop", "--workspace", "/repo", "host-input"]) == 0
     assert json.loads(capsys.readouterr().out) == {"authorized": True}
     assert captured == {"ws": "/repo", "event": event,
-                        "host_receipt": host_receipt}
+                        "host_event": observed}
 
 
 def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
@@ -82,10 +82,10 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
         "actor": "user-7", "authenticated": True,
         "change_kind": "cosmetic",
     }
-    preview_receipt = host_receipt(preview, event_id="preview-1")
+    preview_observation = host_event(preview, event_ref="preview-1")
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(preview)))
-    monkeypatch.setenv("TASKPLANE_HOST_INPUT_RECEIPT",
-                       json.dumps(preview_receipt))
+    monkeypatch.setenv("TASKPLANE_HOST_SESSION_EVENT",
+                       json.dumps(preview_observation))
     assert tp.main(["loop", "--workspace", str(tmp_path),
                     "host-input"]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -103,21 +103,20 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
             ("actor", "other", "wrong_actor"),
             ("thread", "other", "wrong_thread"),
             ("revision", "old", "wrong_revision"),
-            ("authenticated", False, "host_receipt_unauthenticated")):
+            ("target", {"revision": "old"}, "wrong_target")):
         event = {**decision, field: value}
-        # Trusted receipt identity is independent of caller body claims. A
-        # receipt for the wrong identity/revision must fail the loop binding.
+        # Trusted session metadata, not caller body labels, supplies identity.
         receipt_actor = value if field == "actor" else "user-7"
         receipt_thread = value if field == "thread" else "thread-9"
         receipt_revision = value if field == "revision" else "r1"
-        receipt = host_receipt(
+        observed = host_event(
             event, actor=receipt_actor, thread=receipt_thread,
-            revision=receipt_revision, event_id=f"decision-{field}")
-        if field == "authenticated":
-            receipt["authenticated"] = False
+            revision=receipt_revision, event_ref=f"decision-{field}")
+        if field == "target":
+            observed["target"] = value
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
-        monkeypatch.setenv("TASKPLANE_HOST_INPUT_RECEIPT",
-                           json.dumps(receipt))
+        monkeypatch.setenv("TASKPLANE_HOST_SESSION_EVENT",
+                           json.dumps(observed))
         assert tp.main(["loop", "--workspace", str(tmp_path),
                         "host-input"]) == 0
         result = json.loads(capsys.readouterr().out)
@@ -125,15 +124,15 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
         assert reason in result["reasons"]
 
 
-def test_loop_host_input_rejects_forgeable_stdin_identity(monkeypatch,
-                                                          capsys):
+def test_loop_host_input_rejects_body_identity_without_session_observation(
+        monkeypatch, capsys):
     event = {
         "type": "human_decision", "reason": "final_signoff",
         "response": {"decision": "approve", "authenticated": True},
         "actor": "admin", "thread": "trusted", "revision": "r1",
         "authenticated": True, "consumed": False,
     }
-    monkeypatch.delenv("TASKPLANE_HOST_INPUT_RECEIPT", raising=False)
+    monkeypatch.delenv("TASKPLANE_HOST_SESSION_EVENT", raising=False)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
 
     @loop.contextlib.contextmanager
@@ -145,7 +144,7 @@ def test_loop_host_input_rejects_forgeable_stdin_identity(monkeypatch,
     assert tp.main(["loop", "--workspace", "/repo", "host-input"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["authorized"] is False
-    assert result["reasons"] == ["host_receipt_required"]
+    assert result["reasons"] == ["host_session_event_required"]
 
 
 def test_loop_host_input_rejects_non_object_event(monkeypatch, capsys):

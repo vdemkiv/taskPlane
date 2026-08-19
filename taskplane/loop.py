@@ -205,6 +205,37 @@ def _trace_effect_seen(ws: str, effect_id: str) -> bool:
     return False
 
 
+def _append_authority_trace(ws: str, event: str, data: dict) -> None:
+    """Append one authority trace without following directory/file links."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise OSError("symlink-safe authority trace append is unavailable")
+    directory = os.path.abspath(tp.tp_dir(ws))
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode):
+        raise OSError("authority trace directory is not a real directory")
+    dir_fd = os.open(directory, os.O_RDONLY | directory_flag | nofollow)
+    trace_fd = None
+    try:
+        trace_fd = os.open(
+            "trace.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow,
+            0o600, dir_fd=dir_fd)
+        current = os.fstat(trace_fd)
+        if not stat.S_ISREG(current.st_mode):
+            raise OSError("authority trace target is not a regular file")
+        record = {"event": event, "ts": time.time(), **data}
+        raw = (json.dumps(record, default=str) + "\n").encode("utf-8")
+        written = os.write(trace_fd, raw)
+        if written != len(raw):
+            raise OSError("authority trace append was incomplete")
+        os.fsync(trace_fd)
+    finally:
+        if trace_fd is not None:
+            os.close(trace_fd)
+        os.close(dir_fd)
+
+
 def _kb_effect_seen(ws: str, effect_id: str) -> bool:
     try:
         return any((row.get("links") or {}).get("authority_effect") == effect_id
@@ -240,10 +271,11 @@ def reconcile_authority_effects(ws: str) -> dict:
             try:
                 if not trace_effect.get("delivered"):
                     if not _trace_effect_seen(ws, effect_id):
-                        tp.trace(ws, str(trace_effect.get("event") or
-                                         "authority_effect"),
-                                 **dict(trace_effect.get("data") or {}),
-                                 authority_effect_id=effect_id)
+                        _append_authority_trace(
+                            ws, str(trace_effect.get("event") or
+                                    "authority_effect"),
+                            {**dict(trace_effect.get("data") or {}),
+                             "authority_effect_id": effect_id})
                     trace_effect["delivered"] = _trace_effect_seen(ws, effect_id)
                 kb_effect = row.get("kb")
                 if trace_effect.get("delivered") and kb_effect and not \
@@ -269,9 +301,34 @@ def reconcile_authority_effects(ws: str) -> dict:
     return {"delivered": delivered, "pending": pending}
 
 
+def _host_session_envelope(state: dict, event: dict,
+                           host_event: object | None) -> dict:
+    """Bind trusted-session attribution to the loop's current target."""
+    expected_revision = str(state.get("authority_target_revision") or
+                            state.get("baseline") or "")
+    receipt = state.get("authority_receipt") or {}
+    envelope = authority_engine.HostSessionAdapter().observe(
+        event, host_event,
+        expected_actor=str(receipt.get("actor") or ""),
+        expected_thread=str(receipt.get("thread") or ""),
+        expected_revision=expected_revision,
+        expected_target={"revision": expected_revision})
+    if envelope.get("attributed") and not all((
+            str(receipt.get("actor") or "").strip(),
+            str(receipt.get("thread") or "").strip(), expected_revision)):
+        return {**envelope, "attributed": False,
+                "reasons": ["current_authority_unbound"]}
+    return envelope
+
+
 def handle_host_input(ws: str, event: dict,
-                      host_receipt: object | None = None) -> dict:
-    """Consume a host-authenticated event; raw caller identity is inert."""
+                      host_event: object | None = None) -> dict:
+    """Consume one trusted local host/session event.
+
+    The supported deployment is a single trusted Codex/Claude session.  The
+    separate adapter observation supplies attribution; labels in the event
+    body do not.  Stale and replay checks remain mechanical and atomic.
+    """
     if not isinstance(event, dict):
         return {"error": "host event must be a mapping"}
     reconcile_authority_effects(ws)
@@ -280,9 +337,8 @@ def handle_host_input(ws: str, event: dict,
         with mutate(ws) as state:
             if state is None:
                 return {"error": "no active loop"}
-            verifier = authority_engine.HostInputVerifier()
-            envelope = verifier.verify(event, host_receipt)
-            if not envelope["authenticated"]:
+            envelope = _host_session_envelope(state, event, host_event)
+            if not envelope["attributed"]:
                 return {"accepted": False, "reasons": envelope["reasons"]}
             expected_revision = str(state.get("authority_target_revision") or
                                     state.get("baseline") or "")
@@ -304,7 +360,8 @@ def handle_host_input(ws: str, event: dict,
             consumed[event_id] = {
                 "actor": envelope["actor"], "thread": envelope["thread"],
                 "revision": envelope["revision"],
-                "receipt": str((host_receipt or {}).get("signature") or ""),
+                "target": envelope["target"], "source": envelope["source"],
+                "event_ref": envelope["event_ref"],
             }
             _enqueue_authority_effect(
                 state, f"preview:{event_id}", trace_event="preview_change",
@@ -319,9 +376,8 @@ def handle_host_input(ws: str, event: dict,
         with mutate(ws) as state:
             if state is None:
                 return {"error": "no active loop"}
-            verifier = authority_engine.HostInputVerifier()
-            envelope = verifier.verify(event, host_receipt)
-            if not envelope["authenticated"]:
+            envelope = _host_session_envelope(state, event, host_event)
+            if not envelope["attributed"]:
                 return {"authorized": False, "human_required": True,
                         "reasons": envelope["reasons"]}
             decision_id = envelope["event_id"]
@@ -341,7 +397,9 @@ def handle_host_input(ws: str, event: dict,
                     "actor": envelope["actor"],
                     "thread": envelope["thread"],
                     "revision": envelope["revision"],
-                    "receipt": str((host_receipt or {}).get("signature") or ""),
+                    "target": envelope["target"],
+                    "source": envelope["source"],
+                    "event_ref": envelope["event_ref"],
                 }
             return result
     return {"error": "host event type must be preview_feedback|human_decision"}
@@ -613,7 +671,7 @@ def _legacy_loop_path(ws: str) -> str:
     return os.path.join(tp.tp_dir(ws), LOOP_FILE)
 
 
-def load(ws: str) -> dict | None:
+def _load_raw(ws: str) -> dict | None:
     p = _loop_path(ws)
     if not os.path.exists(p):
         p = _legacy_loop_path(ws)          # pre-spec state, read once
@@ -623,6 +681,17 @@ def load(ws: str) -> dict | None:
     # file and a remedy (tp.StateError) — never a bare JSONDecodeError
     # traceback, and never a silent default that would mask the corruption.
     return tp.load_json(p, what="loop state file")
+
+
+def load(ws: str) -> dict | None:
+    """Load loop state and flush any crash-surviving authority outbox."""
+    state = _load_raw(ws)
+    if state is not None and any(
+            row.get("status") != "delivered" for row in
+            (state.get("authority_effect_outbox") or {}).values()):
+        reconcile_authority_effects(ws)
+        state = _load_raw(ws)
+    return state
 
 
 def save(ws: str, state: dict) -> None:
@@ -660,10 +729,30 @@ def mutate(ws: str):
     """
     os.makedirs(_state_dir(ws), exist_ok=True)
     with tp.file_lock(_loop_path(ws)):
-        st = load(ws)
+        st = _load_raw(ws)
+        original = (json.loads(json.dumps(st)) if st is not None else None)
         yield st
         if st is not None:
-            save(ws, st)
+            fence = st.pop("_authority_revision_fence", None)
+            if fence:
+                before = tp.git_head(ws)
+                if before != fence:
+                    st.clear()
+                    st.update(original or {})
+                    st["_revision_fence_failed"] = {
+                        "expected": str(fence), "actual": str(before)}
+                    return
+                save(ws, st)
+                after = tp.git_head(ws)
+                if after != fence:
+                    if original is not None:
+                        save(ws, original)
+                    st.clear()
+                    st.update(original or {})
+                    st["_revision_fence_failed"] = {
+                        "expected": str(fence), "actual": str(after)}
+            else:
+                save(ws, st)
 
 
 TERMINAL_STEPS = ("done", "failed")
@@ -3477,6 +3566,7 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                     "variants": [{"id": t["id"],
                                   "variant": t.get("variant")}
                                  for t in variants]}
+        state["_authority_revision_fence"] = current_revision
         if choice.strip().lower() == "hybrid":
             state["selection"] = {"choice": "hybrid", "note": note,
                                   "revision": current_revision}
@@ -3550,6 +3640,16 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                 "tags": ["ab-selection"], "context_files": context_files,
                 "links": {"loop": "selection"},
             })
+    state.pop("_authority_revision_fence", None)  # fake/test mutate adapters
+    fence_failure = state.pop("_revision_fence_failed", None)
+    if fence_failure:
+        return {
+            "error": "A/B selection is stale — the checkout revision changed "
+                     "during the locked selection commit; no authority "
+                     "transition was persisted",
+            "expected_revision": fence_failure["expected"],
+            "actual_revision": fence_failure["actual"],
+        }
     effects = reconcile_authority_effects(ws)
     return {"step": state["step"], "selection": selection,
             "instruction": instruction, "status": status(ws),
