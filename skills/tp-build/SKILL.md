@@ -14,10 +14,12 @@ design. tp-build inverts that: **refine before you plan, see before you
 sign, and when the design space is wide, build it twice and choose.**
 
 `flow.json` is the approved feature graph: **idea → complete requirement →
-conditional Design → Design approval → graph-aware Plan → Plan approval → one
-build or A/B variants → selection when used → Evaluate → Engineering review →
-feature sign-off → Retro + graph true-up**. Every gate in that graph is a real
-human stop; Retro is an automatic engine stage after the final approval.
+conditional Design → graph-aware Plan → consolidated pre-implementation
+authorization → one build or A/B variants → selection when used → Evaluate →
+Engineering review → feature sign-off → Retro + graph true-up**. Product,
+Design, and Plan complete through mechanical fail-closed checks; the
+consolidated authorization, A/B selection when used, and final sign-off are
+the human stops. Retro is automatic after final approval.
 
 When the goal names a local path, repository URL, ref, or pull request, first
 run `$TP repository prepare <target>`. Continue Build in the returned managed
@@ -65,8 +67,8 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    maintains the product↔engineering graph mechanically: at the plan gate
    each task's requirement is linked to the modules its scope intends to
    touch (`planned` edges) and the task is annotated with its blast radius
-   plus any OTHER requirements whose surface it overlaps — the human
-   approves the plan seeing both, and the executor's contract briefing
+   plus any OTHER requirements whose surface it overlaps — the consolidated
+   authorization packet presents the plan with both, and the executor's contract briefing
    carries them. New modules must be declared, and distributed work must
    name its contract boundary. Before engineering review the links are
    TRUED-UP to what the build actually changed (`realizes` edges) and the graph is
@@ -87,7 +89,7 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
 5. **Settle the HOW when complexity earns it.** Add `--design` before Plan
    when the feature crosses modules/services, changes an API/event/data/runtime
    contract, has meaningful alternatives, is costly to reverse, or carries
-   migration/security/operational risk. This produces an approved Design
+   migration/security/operational risk. This produces a mechanically complete Design
    Contract: alternatives, selected approach, proposed graph overlay, named
    contracts, bounded depth, Design DoR/DoD, acceptance-to-validation map,
    failure/rollout evidence, and a conditional technical visual. Small,
@@ -96,7 +98,7 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    technical HOW; the mock makes user-facing behavior inspectable.
 6. **Loop, governed.** Continue the loop already initialized in step 2; do
    not initialize a second loop. Drive as in `/tp-go`: Product → optional
-   design → human Design approval → plan → human approval → contracted build (TDD, budgets)
+   design → plan → consolidated human authorization → contracted build (TDD, budgets)
    → evaluate → selective engineering review → visual sign-off.
    Apply the mandatory native-dispatch rule above to every emitted role and
    wait for each result before the orchestrator advances it.
@@ -130,6 +132,7 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    and commit the KB — the next feature starts smarter, and its contracts
    inherit an accurate map of who owns what.
 
-Human gates are non-negotiable: Design approval when used, plan approval,
-(selection if A/B), final sign-off with the feature rendered — never a diff
-alone.
+Human gates are non-negotiable: consolidated pre-implementation authorization,
+selection if A/B, and final sign-off with the feature rendered — never a diff
+alone. Product, Design, and Plan remain mechanical fail-closed checks rather
+than separate ceremonial approval stops.
