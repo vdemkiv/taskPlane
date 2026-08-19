@@ -4057,14 +4057,13 @@ _with_dashboard = loop_status.with_dashboard
 
 
 def _with_dispatch_dashboard(fn):
-    """Refresh durable dashboard artifacts without leaking their receipt.
+    """Refresh durable artifacts and return their stable delivery contract.
 
     ``next_action`` is serialized into Task-path and workflow prompts.  The
-    delivery receipt contains hashes and byte counts for a dashboard rendered
-    from host-specific dispatch observations, so including it makes two
-    otherwise identical emissions differ merely because one was produced
-    after the other.  Keep publishing the durable artifacts, but return only
-    the stable dashboard pointer that dispatch consumers need.
+    receipt's hashes and byte counts include host-specific dispatch
+    observations, so they differ when otherwise identical emissions occur in
+    sequence.  The selected mode and artifact locations are semantic output,
+    however: retain them and remove only those volatile content measurements.
     """
     wrapped = _with_dashboard(fn)
 
@@ -4073,7 +4072,27 @@ def _with_dispatch_dashboard(fn):
         if isinstance(result, dict):
             dashboard = result.get("dashboard")
             if isinstance(dashboard, dict):
-                dashboard.pop("delivery", None)
+                delivery = dashboard.get("delivery")
+                if isinstance(delivery, dict):
+                    stable = {key: value for key, value in delivery.items()
+                              if key not in {"semantic_bytes",
+                                             "semantic_sha256"}}
+                    artifacts = stable.get("artifacts")
+                    if isinstance(artifacts, dict):
+                        stable["artifacts"] = {
+                            name: ({key: value for key, value in receipt.items()
+                                    if key not in {"bytes", "sha256"}}
+                                   if isinstance(receipt, dict) else receipt)
+                            for name, receipt in artifacts.items()
+                        }
+                    inline = stable.get("inline")
+                    if isinstance(inline, dict):
+                        stable["inline"] = {
+                            key: value for key, value in inline.items()
+                            if key not in {"bytes", "sha256",
+                                           "semantic_bytes"}
+                        }
+                    dashboard["delivery"] = stable
         return result
 
     dispatch_wrapped.__name__ = fn.__name__

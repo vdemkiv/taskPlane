@@ -402,6 +402,22 @@ class TestStageTaskPathByteIdentity:
             for key in ("dispatch_path", "workflow", "reason"):
                 assert key not in payload, (stage, key)
 
+    def test_next_action_preserves_stable_delivery_contract(self, rails):
+        """Production next_action exposes how and where complete evidence
+        was delivered without embedding host/sequence-dependent receipts."""
+        for stage in ("evaluate", "fix"):
+            delivery = json.loads(
+                rails["caps"][stage]["bare"])["dashboard"]["delivery"]
+            assert delivery["mode"] in {"inline", "complete-markdown"}
+            for artifact in ("json", "markdown"):
+                receipt = delivery["artifacts"][artifact]
+                assert receipt["status"] == "available"
+                assert receipt["path"]
+                assert "bytes" not in receipt
+                assert "sha256" not in receipt
+            assert "semantic_bytes" not in delivery
+            assert "semantic_sha256" not in delivery
+
     def test_codex_env_gets_task_bytes_even_when_opted_in(self, rails):
         """CODEX_HOME + TASKPLANE_WORKFLOWS=1: Codex always wins — stdout
         is byte-identical to the bare Task path (execute/evaluate/fix all
