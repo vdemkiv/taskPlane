@@ -41,6 +41,7 @@ import kb
 import lens as lens_router
 import loop_status
 import loop_recovery
+import progress as progress_engine
 import retro as retro_engine
 import requirements as reqs
 import review_retry
@@ -568,9 +569,7 @@ STEP_ROLE = {
     "fix": "tp-fixer",
     "em": "tp-engineering",
 }
-HUMAN_STEPS = {"design_approval", "plan_approval", "selection",
-               "signoff", "escalated",
-               "done", "failed"}
+HUMAN_STEPS = progress_engine.HUMAN_STEPS
 
 COMMAND_WAVE_SCHEMA = command_wave.COMMAND_WAVE_SCHEMA
 command_wave_create = command_wave.create
@@ -588,159 +587,12 @@ SETTLED = {"passed", "not_selected", "reference", "skipped",
 # task but does NOT satisfy its dependents (they cascade-skip).
 DEP_SATISFIED = {"passed", "done", "external"}
 
-# The canonical governance rail — (step, label). This is the SINGLE source a
-# view renders its timeline from; the engine owns the machine, so a dashboard
-# must derive its pipeline from here (via display_pipeline) rather than
-# re-encode it and drift. is-human comes from HUMAN_STEPS, role from STEP_ROLE.
-PIPELINE = [
-    ("pm", "PM"), ("design", "Design"),
-    ("design_approval", "Approve design"),
-    ("plan", "Plan"), ("plan_approval", "Approve"),
-    ("execute", "Execute"), ("evaluate", "Evaluate"), ("fix", "Fix"),
-    ("em", "EM"), ("signoff", "Sign-off"),
-    ("retro", "Retro + graph true-up"), ("done", "Done"),
-]
-# The A/B selection gate is spliced in before 'em', but only for an A/B loop
-# that hasn't selected yet — one place owns that rule (display_pipeline).
-SELECTION_STEP = ("selection", "Select")
-
-_NATIVE_TERMINAL_STATES = frozenset(
-    {"completed", "complete", "done", "cancelled", "failed", "failure"})
-
-
-class NativeProgressSession:
-    """One presentation-only PiP lifecycle over canonical snapshots."""
-
-    def __init__(self) -> None:
-        self.identity = None
-        self.last_sequence = -1
-        self.last_fingerprint = None
-        self.opened = False
-        self.closed = False
-
-    def publish(self, snapshot: object) -> dict:
-        identity = (snapshot.workflow_id, snapshot.run_id, snapshot.revision)
-        if self.identity is not None and identity != self.identity:
-            raise ValueError("progress session identity changed")
-        if snapshot.sequence < self.last_sequence:
-            raise ValueError("progress sequence moved backwards")
-        if (snapshot.sequence == self.last_sequence and
-                snapshot.fingerprint == self.last_fingerprint):
-            return self._result(snapshot, "duplicate")
-        if snapshot.sequence == self.last_sequence:
-            raise ValueError("progress sequence conflicts with prior snapshot")
-        if self.closed:
-            raise ValueError("progress session is closed")
-        self.identity = identity
-        self.last_sequence = snapshot.sequence
-        self.last_fingerprint = snapshot.fingerprint
-        terminal = snapshot.state.lower() in _NATIVE_TERMINAL_STATES
-        persistent = bool(snapshot.values.get("persistent", True))
-        if terminal and not self.opened:
-            transition = "none"
-            self.closed = True
-        elif not persistent and not self.opened:
-            transition = "none"
-        elif not self.opened:
-            self.opened = True
-            transition = "open"
-        elif terminal:
-            self.closed = True
-            transition = "close"
-        else:
-            transition = "update"
-        return self._result(snapshot, transition)
-
-    def _result(self, snapshot: object, transition: str) -> dict:
-        values = snapshot.to_dict()["values"]
-        return {
-            "schema": "taskplane.host-progress-session/v1",
-            "transition": transition, "workflow_id": snapshot.workflow_id,
-            "run_id": snapshot.run_id, "revision": snapshot.revision,
-            "sequence": snapshot.sequence, "stage": snapshot.stage,
-            "state": snapshot.state, "active_work": values.get("active_work"),
-            "completed_work": values.get("completed_work"),
-            "attention": values.get("attention", []),
-            "last_update": values.get("last_update", snapshot.sequence),
-            "tokens": values.get("tokens"),
-        }
-
-
-def project_agent_topology(events: list[dict]) -> dict:
-    """Fold canonical dispatch events into a stable, phantom-free graph."""
-    nodes, order, edges, edge_keys = {}, [], [], set()
-    immutable = ("task_id", "slot_id", "role", "scope", "wave")
-    for event in events if isinstance(events, list) else []:
-        if not isinstance(event, dict):
-            continue
-        agent_id = str(event.get("agent_id") or "").strip()
-        task_id = str(event.get("task_id") or "").strip()
-        slot_id = str(event.get("slot_id") or "").strip()
-        if not (agent_id and task_id and slot_id):
-            continue
-        normalized = {
-            "agent_id": agent_id, "task_id": task_id, "slot_id": slot_id,
-            "role": str(event.get("role") or "unknown"),
-            "scope": list(event.get("scope") or []),
-            "wave": str(event.get("wave") or ""),
-            "state": str(event.get("state") or "unknown"),
-            "attention": list(event.get("attention") or []),
-            "outcome": event.get("outcome"),
-        }
-        prior = nodes.get(agent_id)
-        if prior:
-            if any(prior[key] != normalized[key] for key in immutable):
-                raise ValueError(f"agent identity changed: {agent_id}")
-            prior.update({key: normalized[key]
-                          for key in ("state", "attention", "outcome")})
-        else:
-            nodes[agent_id] = normalized
-            order.append(agent_id)
-        for source, relationship in (
-                [(str(event.get("retry_of") or ""), "retry")] +
-                [(str(item), "dependency")
-                 for item in event.get("depends_on") or []]):
-            if not source:
-                continue
-            key = (source, agent_id, relationship)
-            if key not in edge_keys:
-                edges.append({"from": source, "to": agent_id,
-                              "relationship": relationship})
-                edge_keys.add(key)
-    edges = [row for row in edges
-             if row["from"] in nodes and row["to"] in nodes]
-    return {"schema": "taskplane.host-agent-topology/v1",
-            "nodes": [nodes[key] for key in order], "edges": edges}
-
-
-def splice_selection(rail: list, state: dict | None) -> list:
-    """Insert the A/B 'selection' gate before 'em' when the loop is an A/B
-    round that hasn't selected yet. `rail` is any list whose items' [0] is a
-    step id (with or without label/flag). Returns a NEW list. This is the ONE
-    place the splice rule lives, so render()'s full rail and widget()'s
-    collapsed spine can't disagree."""
-    if not (state and state.get("ab") and not state.get("selection")):
-        return list(rail)
-    ids = [r[0] for r in rail]
-    i = ids.index("em") if "em" in ids else len(rail)
-    sel = (SELECTION_STEP[0], SELECTION_STEP[1], True)
-    return list(rail[:i]) + [sel] + list(rail[i:])
-
-
-def display_pipeline(state: dict | None = None) -> list:
-    """The ordered rail a view should render: list of (step, label, is_human).
-    Both dashboard.render() and dashboard.widget() derive from the engine
-    (this + splice_selection), so the timeline and the human-gate set can't
-    drift between the two renderers or from the engine."""
-    rows = list(PIPELINE)
-    if not (state and state.get("design_required")):
-        rows = [row for row in rows
-                if row[0] not in ("design", "design_approval")]
-    elif state.get("design_only"):
-        rows = [row for row in rows
-                if row[0] in ("pm", "design", "design_approval", "done")]
-    rail = [(s, lbl, s in HUMAN_STEPS) for s, lbl in rows]
-    return splice_selection(rail, state)
+PIPELINE = progress_engine.PIPELINE
+SELECTION_STEP = progress_engine.SELECTION_STEP
+NativeProgressSession = progress_engine.NativeProgressSession
+project_agent_topology = progress_engine.project_agent_topology
+splice_selection = progress_engine.splice_selection
+display_pipeline = progress_engine.display_pipeline
 
 
 def _next_unsettled_index(state: dict, after: int):

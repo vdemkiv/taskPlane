@@ -247,7 +247,8 @@ def test_repository_preparation_local_fixture_pins_and_verifies_head(
     ], cwd=checkout, check=True)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=checkout, check=True,
-        text=True, stdout=subprocess.PIPE).stdout.strip()
+        text=True, stdout=subprocess.PIPE, encoding="utf-8",
+        errors="replace").stdout.strip()
 
     result = _repository_preflight(
         tmp_path, _SequenceAcquirer([])).prepare(
