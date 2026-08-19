@@ -244,7 +244,8 @@ class Ctx:
     """
 
     __slots__ = ("workspace", "files", "requirement_text", "graph", "stage",
-                 "fixture_exempt", "_contents", "_content_by_file")
+                 "fixture_exempt", "_contents", "_content_by_file",
+                 "_review_risk")
 
     def __init__(self, workspace, files, requirement_text, graph, stage,
                  content_by_file=None):
@@ -263,6 +264,7 @@ class Ctx:
              if str(path).replace(os.sep, "/") in self.files}
             if isinstance(content_by_file, dict) else None)
         self._contents = None
+        self._review_risk = None
 
     def is_discounted(self, path: str) -> bool:
         """True when the D-0002 fixture discount APPLIES to `path`: it is
@@ -1157,19 +1159,120 @@ def _apply_floors(vmap: dict, ctx: Ctx) -> dict:
             if f:
                 _promote(arch, "floor: architecture promoted to light — "
                          f"code change ({f})", to="light")
-    # R-0001 engineering review: these four judgments are never delegated to
-    # a light sweep or replaced by cache/provisional output.  Apply this last
-    # so its stronger stage floor remains the canonical recorded reason.
+    # R-0001 engineering review: deep floors scale with attributable risk.
+    # Apply this last so the stage floor remains the canonical recorded
+    # reason and cannot be budgeted away.
     if ctx.stage == "review":
-        for lens_id in ("architecture", "code-quality", "security", "qa"):
+        risk = _review_risk_profile(vmap, ctx)
+        for lens_id in risk["required_deep_lenses"]:
             entry = vmap.get(lens_id)
             if entry is not None:
                 _promote(
                     entry,
-                    f"mandatory review floor: {lens_id} always runs deep",
+                    f"{risk['floor_prefix']}: {lens_id} runs deep — "
+                    f"{risk['reason']}",
                     to="deep",
                 )
+                entry["review_risk_class"] = risk["class"]
+                entry["review_risk_reason"] = risk["reason"]
+                entry["review_required_deep"] = True
     return vmap
+
+
+_REVIEW_FLOORS = ("architecture", "code-quality", "security", "qa")
+_DOC_RISK_PRIORITY = (
+    "security", "privacy-compliance", "sre", "integrability",
+    "accessibility", "product", "tech-writer",
+)
+
+
+def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
+    """Classify review depth once per immutable routing context.
+
+    Trivial documentation and one-file low-risk code receive one attributable
+    deep slot.  Mixed, unmapped, substantive, and risky changes retain the
+    four engineering floors.  The cached result also makes repeated floor
+    application idempotent: stage-created deep verdicts never reclassify their
+    own input as substantive.
+    """
+    if ctx._review_risk is not None:
+        return ctx._review_risk
+
+    code_ext = load_catalog().get("code_extensions") or []
+    code_files = [path for path in ctx.files if _is_code(path, code_ext)]
+    doc_files = [
+        path for path in ctx.files
+        if path.lower().endswith((".md", ".mdx", ".rst", ".txt", ".adoc"))
+        or os.path.basename(path).lower().startswith(
+            ("readme", "changelog", "changes", "release-notes")
+        )
+    ]
+    non_doc_files = [path for path in ctx.files if path not in doc_files]
+    available_content = {path for path, _ in ctx.contents()}
+    missing_code_content = [path for path in code_files
+                            if path not in available_content]
+    significant = _structurally_significant(ctx)
+    security_reason = _security_floor_reason(ctx)
+
+    risk_class = "substantive-risky"
+    reason = "substantive or risky review change"
+    required = _REVIEW_FLOORS
+    floor_prefix = "mandatory review floor"
+
+    if not ctx.files:
+        reason = "empty or missing change mapping"
+    elif code_files and doc_files:
+        reason = "mixed code and documentation change"
+    elif code_files and len(non_doc_files) != len(code_files):
+        reason = "mixed code and non-document change"
+    elif missing_code_content:
+        reason = "code content unavailable for risk classification"
+    elif significant:
+        reason = significant
+    elif security_reason:
+        reason = security_reason
+    elif any(_verdict_rank(row.get("verdict")) >= _VERDICT_ORDER["deep"]
+             for row in vmap.values()):
+        reason = "signal engine classified at least one lens deep"
+    elif code_files and len(code_files) > 1:
+        reason = "multi-file code change"
+    elif code_files:
+        risk_class = "simple-low-risk"
+        reason = f"single mapped low-risk code file: {code_files[0]}"
+        ranked = sorted(
+            (lens_id for lens_id in _REVIEW_FLOORS if lens_id in vmap),
+            key=lambda lens_id: (
+                -float(vmap[lens_id].get("score") or 0),
+                _REVIEW_FLOORS.index(lens_id),
+            ),
+        )
+        required = (ranked[0] if ranked else "code-quality",)
+        floor_prefix = "risk-selected review floor"
+    elif doc_files and len(doc_files) == len(ctx.files):
+        import review_progression
+        signals = review_progression.document_lens_signals(
+            ctx.files,
+            {path: text for path, text in ctx.contents()},
+        )
+        selected = next(
+            (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
+             and lens_id in vmap),
+            "tech-writer",
+        )
+        risk_class = "documentation-only"
+        reason = f"documentation evidence selected {selected}"
+        required = (selected,)
+        floor_prefix = "risk-selected review floor"
+    else:
+        reason = "unclassified or missing module mapping"
+
+    ctx._review_risk = {
+        "class": risk_class,
+        "reason": reason,
+        "required_deep_lenses": tuple(required),
+        "floor_prefix": floor_prefix,
+    }
+    return ctx._review_risk
 
 
 # ------------------------------------------------------------------- budget

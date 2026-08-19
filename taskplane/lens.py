@@ -1027,6 +1027,10 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             entry["negative_evidence"] = negative
         if floored:
             entry["floor"] = v["floor"]
+        for key in ("review_risk_class", "review_risk_reason",
+                    "review_required_deep"):
+            if key in v:
+                entry[key] = v[key]
         if proposed is not None and verdict != "n/a" and lid in proposed:
             # contract:lens-brief ADDITIVE key — which component(s)
             # contributed this routed lens (component path only).
@@ -1060,6 +1064,16 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
         ctxd["component_layer_failed"] = comp_info["miss"]
     if stage == "review":
         import review_progression
+        required_rows = [row for row in selected
+                         if row.get("review_required_deep")]
+        if required_rows:
+            ctxd["review_risk"] = {
+                "class": required_rows[0]["review_risk_class"],
+                "reason": required_rows[0]["review_risk_reason"],
+                "required_deep_lenses": sorted(
+                    row["id"] for row in required_rows
+                ),
+            }
         progressive = review_progression.initial_wave({
             "lenses": selected,
             "context": ctxd,

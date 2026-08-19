@@ -19,34 +19,57 @@ def _review_route(files, content=None):
     )
 
 
-def test_review_floors_are_always_deep_and_conserved_across_required_matrix():
+def test_review_floors_scale_with_attributable_risk_across_required_matrix():
     fixtures = {
-        "code": (["src/widget.py"], {"src/widget.py": "def widget(): pass"}),
-        "docs": (["docs/api.md"], {"docs/api.md": "# API\nAuthentication contract"}),
-        "mixed": (["src/widget.py", "docs/runbook.md"], {}),
-        "small": (["src/tiny.py"], {"src/tiny.py": "x = 1"}),
-        "large": ([f"src/module_{i}.py" for i in range(12)], {}),
-        "mapping-gap": (["unknown/no-module-map.py"], {}),
+        "docs": (["docs/changelog.md"], {"docs/changelog.md": "Fix typo."},
+                 "documentation-only", {"tech-writer"}),
+        "simple": (["src/tiny.py"], {"src/tiny.py": "x = 1"},
+                   "simple-low-risk", {"code-quality"}),
+        "substantive": (["src/widget.py"],
+                        {"src/widget.py": "def widget():\n    return build_widget()"},
+                        "substantive-risky", FLOORS),
+        "risky": (["src/auth.py"], {"src/auth.py": "authorize(user)"},
+                  "substantive-risky", FLOORS),
+        "mixed": (["src/widget.py", "docs/runbook.md"],
+                  {"src/widget.py": "x = 1", "docs/runbook.md": "recovery"},
+                  "substantive-risky", FLOORS),
+        "mapping-gap": (["unknown/no-module-map.py"], {},
+                        "substantive-risky", FLOORS),
     }
-    for name, (files, content) in fixtures.items():
+    for name, (files, content, risk_class, expected) in fixtures.items():
         routed = _review_route(files, content)
         by_id = {row["id"]: row for row in routed["lenses"]}
-        assert {lid for lid in FLOORS if by_id[lid]["tier"] == "deep"} == FLOORS
-        assert all(by_id[lid]["floor"].startswith("mandatory review floor:") for lid in FLOORS)
+        assert routed["context"]["review_risk"]["class"] == risk_class, name
+        assert set(routed["context"]["review_risk"]["required_deep_lenses"]) == expected
         plan = progression.initial_wave(routed)
         slots = [row["slot"] for row in plan["deep"]]
-        assert {f"lens-{lid}" for lid in FLOORS} <= set(slots), name
+        assert {row["lens"] for row in plan["deep"]} == expected, name
         assert len(slots) == len(set(slots)), name
+        assert plan["sweep_count"] <= 1
+
+
+def test_document_risk_signal_selects_an_attributable_single_deep_lens():
+    routed = _review_route(
+        ["docs/security.md"],
+        {"docs/security.md": "OAuth token permission guidance"},
+    )
+    plan = progression.initial_wave(routed)
+    assert routed["context"]["review_risk"]["class"] == "documentation-only"
+    assert [row["lens"] for row in plan["deep"]] == ["security"]
+    security = next(row for row in routed["lenses"] if row["id"] == "security")
+    assert security["floor"].startswith("risk-selected review floor:")
+    assert "documentation evidence selected security" in security["floor"]
 
 
 def test_review_floors_survive_cache_and_early_provisional_inputs():
     routed = _review_route(["src/auth.py"], {"src/auth.py": "authorize(user)"})
+    required = set(routed["context"]["review_risk"]["required_deep_lenses"])
     for row in routed["lenses"]:
-        if row["id"] in FLOORS:
+        if row["id"] in required:
             row["tier"] = row["verdict"] = "light"
     plan = progression.initial_wave(routed)
-    assert {row["lens"] for row in plan["deep"]} >= FLOORS
-    assert not (FLOORS & set((plan["sweep"] or {}).get("lenses", [])))
+    assert {row["lens"] for row in plan["deep"]} >= required
+    assert not (required & set((plan["sweep"] or {}).get("lenses", [])))
 
 
 def test_initial_wave_has_deep_slots_and_at_most_one_bounded_sweep():
@@ -54,7 +77,9 @@ def test_initial_wave_has_deep_slots_and_at_most_one_bounded_sweep():
         ["docs/api.md"], {"docs/api.md": "API token security migration guide"}
     )
     plan = progression.initial_wave(routed, sweep_limit=8)
-    assert FLOORS <= {slot["lens"] for slot in plan["deep"]}
+    required = set(routed["context"]["review_risk"]["required_deep_lenses"])
+    assert required == {"security"}
+    assert required == {slot["lens"] for slot in plan["deep"]}
     assert plan["sweep"] is None or plan["sweep"]["slot"] == "lens-sweep"
     assert len(plan["sweep"]["lenses"] if plan["sweep"] else []) <= 8
     assert len({slot["slot"] for slot in plan["deep"]}) == len(plan["deep"])
@@ -66,7 +91,8 @@ def test_production_dispatch_consumes_the_bounded_progressive_wave():
     )
     dispatch = lens.dispatch_briefs(routed)
     expected = routed["context"]["review_progression"]["sweep_lenses"]
-    assert len(dispatch["deep"]) >= 4
+    required = routed["context"]["review_risk"]["required_deep_lenses"]
+    assert {row["id"] for row in dispatch["deep"]} >= set(required)
     assert dispatch["sweep"] is None or dispatch["sweep"]["ids"] == expected
     assert len(expected) <= progression.DEFAULT_SWEEP_LIMIT
 
