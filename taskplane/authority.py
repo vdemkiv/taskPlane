@@ -18,6 +18,13 @@ DERIVATION_SCHEMA = "taskplane.authorization-derivation/v1"
 DECISION_SCHEMA = "taskplane.human-decision/v1"
 CHANGE_SCHEMA = "taskplane.attributable-change/v1"
 HOST_SESSION_EVENT_SCHEMA = "taskplane.host-session-event/v1"
+PREVIEW_CHANGE_KINDS = frozenset({
+    "cosmetic", "behavioral", "acceptance", "scope", "authority",
+})
+MATERIAL_PREVIEW_CHANGE_KINDS = frozenset({
+    "acceptance", "scope", "authority",
+})
+MAX_PREVIEW_FEEDBACK_BYTES = 4096
 
 ROUTINE_FLOWS = (
     "facade", "delivery", "product", "design", "build", "engineering",
@@ -65,6 +72,12 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def attribution_reference(actor: str, thread: str) -> str:
+    """Return a stable indirect reference for retained attribution history."""
+    return _fingerprint({"actor": str(actor or "").strip(),
+                         "thread": str(thread or "").strip()})
 
 
 def _host_event_payload(event: Mapping) -> dict:
@@ -345,11 +358,25 @@ def decision_input(reason: str, response: object, *, fact: str,
     makes timeout, free-form ambiguity, stale revisions and replay ordinary
     fail-closed states rather than inferred consent.
     """
+    normalized = str(reason or "").strip().lower().replace("-", "_")
     boundary = human_boundary(reason, fact=fact, consequence=consequence)
     reasons = []
     if not boundary["human_required"]:
-        return {"schema": DECISION_SCHEMA, "authorized": True,
-                "human_required": False, "reasons": []}
+        # ``decision_input`` is exclusively the human-owned boundary. Routine
+        # work is authorized by derive(); an unknown/misspelled reason here
+        # must never silently become routine authority.
+        boundary = {
+            "human_required": True, "reason": "unsafe_or_ambiguous",
+            "reported_reason": normalized,
+            "new_fact": str(fact or "").strip(),
+            "consequence": str(consequence or "").strip(),
+            "authority_requested": "unsafe_or_ambiguous",
+        }
+        reasons.append("unsupported_decision_reason")
+    if not boundary.get("new_fact"):
+        reasons.append("fact_missing")
+    if not boundary.get("consequence"):
+        reasons.append("consequence_missing")
     if not isinstance(response, Mapping):
         reasons.append("missing_or_ambiguous_response")
         response = {}
@@ -399,12 +426,22 @@ def preview_change(text: str, *, actor: str, authenticated: bool,
                    requirement: str, target: Mapping, kind: str) -> dict:
     """Record preview feedback as an attributable scoped change request."""
     normalized = str(kind or "").strip().lower().replace("-", "_")
-    material = normalized in {"acceptance", "scope", "authority"}
+    known_kind = normalized in PREVIEW_CHANGE_KINDS
+    # Unknown classification is material until a supported scope is named;
+    # this prevents a typo from quietly becoming in-contract feedback.
+    material = (not known_kind or
+                normalized in MATERIAL_PREVIEW_CHANGE_KINDS)
     reasons = []
     if not authenticated or not str(actor or "").strip():
         reasons.append("unauthenticated")
     if not str(text or "").strip():
         reasons.append("feedback_missing")
+    if not normalized:
+        reasons.append("change_kind_missing")
+    elif not known_kind:
+        reasons.append("unsupported_change_kind")
+    if len(str(text or "").encode("utf-8")) > MAX_PREVIEW_FEEDBACK_BYTES:
+        reasons.append("feedback_too_large")
     payload = {
         "schema": CHANGE_SCHEMA, "actor": str(actor or "").strip(),
         "requirement": str(requirement or "").strip(),
