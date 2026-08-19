@@ -2,6 +2,7 @@ import copy
 
 import lens
 import lens_signals
+import review
 import review_progression as progression
 
 
@@ -68,6 +69,31 @@ def test_production_dispatch_consumes_the_bounded_progressive_wave():
     assert len(dispatch["deep"]) >= 4
     assert dispatch["sweep"] is None or dispatch["sweep"]["ids"] == expected
     assert len(expected) <= progression.DEFAULT_SWEEP_LIMIT
+
+
+def test_canonical_review_kernel_decision_allocates_only_bounded_sweep():
+    files = [
+        "src/auth.py", "db/schema.sql", "ops/runbook.md", "ui/page.tsx",
+        "mobile/app.swift", "docs/privacy.md", "infra/deploy.yaml",
+    ]
+    routed = _review_route(files)
+    decision = review._routing_decision(routed, lens.load_catalog())
+    selected = sorted(
+        lens_id for lens_id, row in decision.items()
+        if row["verdict"] == "light"
+    )
+    bounded = sorted(
+        routed["context"]["review_progression"]["sweep_lenses"]
+    )
+    assert selected == bounded
+    assert len(selected) == progression.DEFAULT_SWEEP_LIMIT
+    deferred = routed["context"]["review_progression"]["deferred_light"]
+    assert deferred
+    for lens_id in deferred:
+        assert decision[lens_id]["verdict"] == "n/a"
+        assert decision[lens_id]["negative_evidence"][0].startswith(
+            "deferred by bounded progressive review sweep"
+        )
 
 
 def test_production_dispatch_consumes_early_blocker_and_promotes_deep_slot():
