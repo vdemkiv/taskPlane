@@ -4054,8 +4054,36 @@ status = loop_status.status
 user_summary = loop_status.user_summary
 _publish_artifacts = loop_status.publish_artifacts
 _with_dashboard = loop_status.with_dashboard
+
+
+def _with_dispatch_dashboard(fn):
+    """Refresh durable dashboard artifacts without leaking their receipt.
+
+    ``next_action`` is serialized into Task-path and workflow prompts.  The
+    delivery receipt contains hashes and byte counts for a dashboard rendered
+    from host-specific dispatch observations, so including it makes two
+    otherwise identical emissions differ merely because one was produced
+    after the other.  Keep publishing the durable artifacts, but return only
+    the stable dashboard pointer that dispatch consumers need.
+    """
+    wrapped = _with_dashboard(fn)
+
+    def dispatch_wrapped(ws, *args, **kwargs):
+        result = wrapped(ws, *args, **kwargs)
+        if isinstance(result, dict):
+            dashboard = result.get("dashboard")
+            if isinstance(dashboard, dict):
+                dashboard.pop("delivery", None)
+        return result
+
+    dispatch_wrapped.__name__ = fn.__name__
+    dispatch_wrapped.__doc__ = fn.__doc__
+    dispatch_wrapped.__wrapped__ = fn
+    return dispatch_wrapped
+
+
 gate = _with_dashboard(gate)
 submit = _with_dashboard(submit)
-next_action = _with_dashboard(next_action)
+next_action = _with_dispatch_dashboard(next_action)
 approve = _with_dashboard(approve)
 retro = _with_dashboard(retro)
