@@ -881,13 +881,10 @@ def _assemble_components(workspace, files, cat, *, stage, requirement_text,
                                          target=lens_signals.DEEP_TARGET,
                                          ctx=ctx)
         # Review floors can add a lens after component candidates are
-        # assembled.  They are still caused by this component-scoped review,
-        # so retain the brief contract's attribution instead of emitting an
-        # unattributed mandatory slot.
-        touched_ids = sorted(touched)
-        for lid, verdict in vmap.items():
-            if "floor" in verdict and lid not in proposed:
-                proposed[lid] = list(touched_ids)
+        # assembled.  A floor is a whole-review guardrail, not a proposal
+        # made by the touched component, so it must remain unattributed.
+        # Claiming component attribution here makes the route lie about the
+        # cached proposal and breaks the component/floor conservation rule.
         return vmap, proposed, {"components": sorted(touched)}
     except Exception as exc:
         return None, None, {"miss": str(exc)}

@@ -881,15 +881,20 @@ class TestComponentFailOpen(_WebshopBase):
 
 class TestComponentAttributionOnBriefs(_WebshopBase):
     def test_briefs_and_routing_decision_carry_attribution(self):
-        # contract:lens-brief ADDITIVE key: deep briefs and the
-        # routing_decision entries name the contributing component(s) —
-        # this is how meta.component_attribution reaches findings meta.
+        # contract:lens-brief ADDITIVE key: briefs proposed by the component
+        # and their routing_decision entries name that contributor. Global
+        # review floors remain deliberately unattributed: they were selected
+        # by governance, not by the component's cached proposal.
         r = self.route(RENDER_DIFF)
         d = lens.dispatch_briefs(r, base="HEAD")
         self.assertTrue(d["deep"])
         for b in d["deep"]:
-            self.assertEqual(b["component_attribution"],
-                             ["shop/webapp::renderer"], b["id"])
+            routed = next(x for x in r["lenses"] if x["id"] == b["id"])
+            if "floor" in routed and "component_attribution" not in routed:
+                self.assertNotIn("component_attribution", b, b["id"])
+            else:
+                self.assertEqual(b["component_attribution"],
+                                 ["shop/webapp::renderer"], b["id"])
             # the rest of the brief contract is unchanged
             self.assertEqual(b["task_slot"], f"lens-{b['id']}")
             self.assertTrue(b["contract"]["read_only"])

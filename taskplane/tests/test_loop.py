@@ -715,6 +715,60 @@ class TestParallelExecution(unittest.TestCase):
         # the MAIN workspace is not governed by this worker's contract
         self.assertIsNone(tpl.load_active(ws))
 
+    def test_evaluator_evidence_binds_claimed_worktree_from_either_checkout(self):
+        """The evaluator may launch through the primary bridge or in the
+        claimed worker, but both paths must cite and describe worker bytes."""
+        ws = self._ws()
+        agent_ws = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
+                        "tp/t1-evidence"], cwd=ws, check=True)
+        loop.claim(ws, "t1", agent_ws)
+        changed = os.path.join(agent_ws, "src", "a", "evidence.py")
+        with open(changed, "w", encoding="utf-8") as stream:
+            stream.write("worker_only = True\n")
+
+        state = loop.load(ws)
+        state["current_task"] = 0
+        state["step"] = "evaluate"
+        state["graph_governance"] = False
+        env = {key: value for key, value in os.environ.items()
+               if key != "TASKPLANE_TASK"}
+        state["_suite_evidence"] = {"t1": {
+            "schema": "taskplane.suite-evidence/v1",
+            "command": "true",
+            "key": tp._suite_cache_key(agent_ws, "true", env),
+            "returncode": 0,
+            "tail": "",
+            "duration_s": 0.01,
+            "source": "execute-gate",
+        }}
+        loop.save(ws, state)
+
+        cli = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "tp.py")
+
+        def evidence(cwd, write=False):
+            command = [sys.executable, cli, "loop", "evidence",
+                       "--task", "t1"]
+            if write:
+                command.append("--write")
+            result = subprocess.run(
+                command, cwd=cwd, check=True, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return json.loads(result.stdout)
+
+        through_primary = evidence(ws, write=True)
+        from_worker = evidence(agent_ws)
+        for bundle in (through_primary, from_worker):
+            self.assertNotIn("error", bundle)
+            self.assertTrue(bundle["suite"]["cited"])
+            self.assertEqual(bundle["suite"]["source"], "execute-gate")
+            self.assertIn("src/a/evidence.py", bundle["diff"]["files"])
+        self.assertTrue(os.path.exists(os.path.join(
+            agent_ws, ".eval", "verdict.json")))
+        self.assertFalse(os.path.exists(os.path.join(
+            ws, ".eval", "verdict.json")))
+
     def test_parallel_gates_flow_to_evaluate_then_next_wave(self):
         ws = self._ws()
         for tid in ("t1", "t2"):
