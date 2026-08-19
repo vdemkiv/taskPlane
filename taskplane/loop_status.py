@@ -11,7 +11,6 @@ import json
 import os
 import time
 
-import depgraph
 import progress
 import taskplane_lite as tp
 
@@ -119,7 +118,6 @@ def user_summary(ws: str, host: str | None = None,
                 and not action:
             action = "Grant more actions (tp budget --grant N) or clear the contract"
             budget_blocked = True
-    graph = depgraph.summary(ws)
     live_progress = progress.read_workspace_status(
         ws, now=float(now if now is not None else time.time()),
         state_dir=tp.tp_dir(ws))
@@ -148,7 +146,7 @@ def user_summary(ws: str, host: str | None = None,
                                      "status": current.get("status")},
         "action_required": bool(action), "decision": action,
         "headline": headline, "host": host, "assurance": assurance,
-        "graph": graph, "live_progress": live_progress,
+        "live_progress": live_progress,
         "submission_pending_validation": bool(
             state.get("_submission")
             or any(task.get("_submission") for task in tasks)),

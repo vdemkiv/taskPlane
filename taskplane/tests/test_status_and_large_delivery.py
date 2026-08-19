@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import host_capabilities  # noqa: E402
 import loop_status  # noqa: E402
 import progress  # noqa: E402
+import review  # noqa: E402
 import taskplane_lite  # noqa: E402
 import views  # noqa: E402
 
@@ -285,8 +286,10 @@ def test_production_status_reads_durable_progress_without_review_recompute(tmp_p
     state = {"step": "evaluate", "goal": "ship", "tasks": [],
              "current_task": 0, "max_fix_cycles": 2, "checkpoints": []}
     with mock.patch("loop.load", return_value=state), \
-            mock.patch("depgraph.summary", return_value={"modules": 1,
-                                                         "edges": 0}):
+            mock.patch("depgraph.summary", side_effect=AssertionError(
+                "status recomputed dependency graph")), \
+            mock.patch("review.collect_review", side_effect=AssertionError(
+                "status recomputed review kernel")):
         summary = loop_status.user_summary(str(tmp_path), now=101.0)
 
     assert summary["live_progress"]["status"] == "available"
