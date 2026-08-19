@@ -8,6 +8,7 @@ import subprocess
 import uuid
 
 import repository
+import recovery
 import run_store
 import storage
 import taskplane_lite as tp
@@ -19,6 +20,60 @@ class PreflightError(RuntimeError):
 
 
 _BOOTSTRAP_SCHEMA = "taskplane.preflight-bootstrap/v1"
+
+
+def reconcile_onboarding_checks(checks: list[dict], *, repair,
+                                prior_prompt_ids=()) -> dict:
+    """Apply the canonical setup matrix without creating prompt loops.
+
+    The caller supplies the actual repair boundary.  Host-policy and external
+    states are observations, not approval questions; an authority-required
+    check creates one attributable action until its state changes.
+    """
+    prompted = {str(value) for value in prior_prompt_ids}
+    rows: list[dict] = []
+    actions: list[dict] = []
+    for raw in checks:
+        check = recovery.validate_setup_check(raw)
+        check_id = check["id"]
+        classification = check["classification"]
+        if classification == "self-repairable":
+            try:
+                repaired = repair(dict(check)) is True
+            except (OSError, RuntimeError, ValueError) as exc:
+                rows.append({**check, "status": "repair_failed",
+                             "reason": str(exc)[:400]})
+            else:
+                rows.append({**check, "status": "repaired" if repaired else
+                             "repair_failed"})
+        elif classification == "authority-required":
+            rows.append({**check, "status": "needs_authority"})
+            if check_id not in prompted:
+                actions.append({
+                    "schema": "taskplane.setup-authority-action/v1",
+                    "id": check_id,
+                    "authority": check.get("detail") or check_id,
+                })
+                prompted.add(check_id)
+        elif classification == "host-policy":
+            rows.append({**check, "status": "waiting_host_policy"})
+        else:
+            rows.append({**check, "status": "waiting_external"})
+    if actions:
+        status = "needs_user"
+    elif any(row["status"] in {"repair_failed", "waiting_host_policy",
+                               "waiting_external", "needs_authority"}
+             for row in rows):
+        status = "waiting"
+    else:
+        status = "ready"
+    return {
+        "schema": "taskplane.onboarding-recovery/v1",
+        "status": status,
+        "checks": rows,
+        "actions": actions,
+        "prompt_ids": sorted(prompted),
+    }
 
 
 def new_run_id() -> str:
@@ -187,6 +242,22 @@ class RepositoryPreflight:
                 "status": "needs_user", "action": action,
                 "revision": updated["revision"]}
 
+    def _waiting(self, run_id: str, manifest: dict, *, reason: str,
+                 detail: str, recovery_record: dict | None = None) -> dict:
+        preflight_state = {"status": "waiting", "reason": str(reason),
+                           "detail": str(detail)[:1600],
+                           "pending_action": None}
+        if recovery_record is not None:
+            preflight_state["recovery"] = dict(recovery_record)
+        updated = self.store.commit(
+            run_id, expected_revision=int(manifest["revision"]),
+            changes={"status": "waiting_external",
+                     "preflight": preflight_state})
+        return {"schema": "taskplane.preflight/v1", "run_id": run_id,
+                "status": "waiting", "reason": str(reason),
+                "detail": str(detail)[:1600],
+                "revision": updated["revision"]}
+
     def prepare(self, spec: str, *, workspace: str, host: dict,
                 run_id: str | None = None) -> dict:
         run = str(run_id or uuid.uuid4().hex)
@@ -257,12 +328,35 @@ class RepositoryPreflight:
                             "taskPlane will resume this same run."),
                     detail="gh is not authenticated",
                     command_argv=["gh", "auth", "login", "--web"]))
-            try:
+            def acquire():
                 if parsed.get("kind") == "pr":
-                    acquired = self.acquirer.acquire_pr(identity, parsed)
+                    return self.acquirer.acquire_pr(identity, parsed)
+                return self.acquirer.acquire_repository(identity, parsed)
+
+            consolidated = os.environ.get("TASKPLANE_CONSOLIDATED_FLOW", "") \
+                .strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                if consolidated:
+                    preparation = repository.acquire_with_recovery(acquire)
+                    if preparation["status"] == "ready":
+                        acquired = preparation["value"]
+                    elif preparation["status"] == "needs_user":
+                        command = (["gh", "auth", "login", "--web"]
+                                   if gh.get("present") else [])
+                        return self._needs_user(run, manifest, self._action(
+                            run, kind="authenticate_repository",
+                            prompt=("Repository authentication is required. "
+                                    "Sign in or authorize access, then "
+                                    "taskPlane will resume this same run."),
+                            detail=preparation["detail"], command_argv=command,
+                            choices=("approve", "retry", "cancel")))
+                    else:
+                        return self._waiting(
+                            run, manifest, reason=preparation["reason"],
+                            detail=preparation["detail"],
+                            recovery_record=preparation.get("recovery"))
                 else:
-                    acquired = self.acquirer.acquire_repository(
-                        identity, parsed)
+                    acquired = acquire()
             except repository.RepositoryAcquisitionError as exc:
                 if exc.kind == "authentication":
                     command = (["gh", "auth", "login", "--web"]

@@ -2,7 +2,7 @@
 
 The packet is deliberately a pure value.  Hosts may present it differently,
 but a stage derives authority only from the approved semantic envelope and an
-authenticated actor/thread-bound receipt.  Fingerprint drift is evidence
+attributable actor/thread-bound receipt.  Fingerprint drift is evidence
 staleness; it is never, by itself, a request for more human authority.
 """
 from __future__ import annotations
@@ -17,6 +17,13 @@ RECEIPT_SCHEMA = "taskplane.authorization-receipt/v1"
 DERIVATION_SCHEMA = "taskplane.authorization-derivation/v1"
 DECISION_SCHEMA = "taskplane.human-decision/v1"
 CHANGE_SCHEMA = "taskplane.attributable-change/v1"
+HOST_SESSION_EVENT_SCHEMA = "taskplane.host-session-event/v1"
+PREVIEW_CHANGE_KINDS = frozenset({
+    "cosmetic", "behavioral", "acceptance", "scope", "authority",
+})
+MATERIAL_PREVIEW_CHANGE_KINDS = frozenset({
+    "acceptance", "scope", "authority",
+})
 
 ROUTINE_FLOWS = (
     "facade", "delivery", "product", "design", "build", "engineering",
@@ -64,6 +71,82 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _host_event_payload(event: Mapping) -> dict:
+    """Canonical event body bound to a trusted local host-session event."""
+    allowed = ("type", "text", "change_kind", "reason", "response", "fact",
+               "consequence")
+    payload = {key: _plain(event[key]) for key in allowed if key in event}
+    response = payload.get("response")
+    if isinstance(response, dict):
+        response.pop("authenticated", None)
+    return payload
+
+
+class HostSessionAdapter:
+    """Bind one event observed by the trusted local host/session adapter.
+
+    Taskplane deliberately has no signing or verification machinery here.
+    Its deployment boundary is one trusted Codex/Claude session on a local
+    machine or private sandbox.  The separate ``host_event`` mapping is
+    adapter attribution, while identity labels embedded in ``event`` remain
+    inert.  The engine derives the durable event id from every binding so a
+    repeated adapter observation is consumed as the same event.
+    """
+
+    def observe(self, event: Mapping, host_event: object, *,
+                expected_actor: str = "", expected_thread: str = "",
+                expected_revision: str = "",
+                expected_target: Mapping | None = None) -> dict:
+        reasons = []
+        if not isinstance(host_event, Mapping) or \
+                host_event.get("schema") != HOST_SESSION_EVENT_SCHEMA:
+            return {"attributed": False,
+                    "reasons": ["host_session_event_required"]}
+        if host_event.get("event_fingerprint") != _fingerprint(
+                _host_event_payload(event)):
+            reasons.append("host_event_mismatch")
+        for field in ("actor", "thread", "revision", "event_ref", "source"):
+            if not str(host_event.get(field) or "").strip():
+                reasons.append(f"host_event_missing_{field}")
+        target = host_event.get("target")
+        if not isinstance(target, Mapping):
+            reasons.append("host_event_missing_target")
+            target = {}
+        try:
+            target_value = _plain(target)
+        except ValueError:
+            reasons.append("host_event_invalid_target")
+            target_value = {}
+        actor = str(host_event.get("actor") or "")
+        thread = str(host_event.get("thread") or "")
+        revision = str(host_event.get("revision") or "")
+        if expected_actor and actor != str(expected_actor):
+            reasons.append("wrong_actor")
+        if expected_thread and thread != str(expected_thread):
+            reasons.append("wrong_thread")
+        if expected_revision and revision != str(expected_revision):
+            reasons.append("wrong_revision")
+        if expected_target is not None and target_value != \
+                _plain(expected_target):
+            reasons.append("wrong_target")
+        event_identity = {
+            "schema": "taskplane.host-session-event-identity/v1",
+            "source": str(host_event.get("source") or ""),
+            "event_ref": str(host_event.get("event_ref") or ""),
+            "actor": actor, "thread": thread, "revision": revision,
+            "target": target_value,
+            "event_fingerprint": str(
+                host_event.get("event_fingerprint") or ""),
+        }
+        return {
+            "attributed": not reasons, "reasons": sorted(set(reasons)),
+            "actor": actor, "thread": thread, "revision": revision,
+            "target": target_value, "event_id": _fingerprint(event_identity),
+            "source": str(host_event.get("source") or ""),
+            "event_ref": str(host_event.get("event_ref") or ""),
+        }
 
 
 def _plain(value: object) -> object:
@@ -268,11 +351,25 @@ def decision_input(reason: str, response: object, *, fact: str,
     makes timeout, free-form ambiguity, stale revisions and replay ordinary
     fail-closed states rather than inferred consent.
     """
+    normalized = str(reason or "").strip().lower().replace("-", "_")
     boundary = human_boundary(reason, fact=fact, consequence=consequence)
     reasons = []
     if not boundary["human_required"]:
-        return {"schema": DECISION_SCHEMA, "authorized": True,
-                "human_required": False, "reasons": []}
+        # ``decision_input`` is exclusively the human-owned boundary. Routine
+        # work is authorized by derive(); an unknown/misspelled reason here
+        # must never silently become routine authority.
+        boundary = {
+            "human_required": True, "reason": "unsafe_or_ambiguous",
+            "reported_reason": normalized,
+            "new_fact": str(fact or "").strip(),
+            "consequence": str(consequence or "").strip(),
+            "authority_requested": "unsafe_or_ambiguous",
+        }
+        reasons.append("unsupported_decision_reason")
+    if not boundary.get("new_fact"):
+        reasons.append("fact_missing")
+    if not boundary.get("consequence"):
+        reasons.append("consequence_missing")
     if not isinstance(response, Mapping):
         reasons.append("missing_or_ambiguous_response")
         response = {}
@@ -322,12 +419,20 @@ def preview_change(text: str, *, actor: str, authenticated: bool,
                    requirement: str, target: Mapping, kind: str) -> dict:
     """Record preview feedback as an attributable scoped change request."""
     normalized = str(kind or "").strip().lower().replace("-", "_")
-    material = normalized in {"acceptance", "scope", "authority"}
+    known_kind = normalized in PREVIEW_CHANGE_KINDS
+    # Unknown classification is material until a supported scope is named;
+    # this prevents a typo from quietly becoming in-contract feedback.
+    material = (not known_kind or
+                normalized in MATERIAL_PREVIEW_CHANGE_KINDS)
     reasons = []
     if not authenticated or not str(actor or "").strip():
         reasons.append("unauthenticated")
     if not str(text or "").strip():
         reasons.append("feedback_missing")
+    if not normalized:
+        reasons.append("change_kind_missing")
+    elif not known_kind:
+        reasons.append("unsupported_change_kind")
     payload = {
         "schema": CHANGE_SCHEMA, "actor": str(actor or "").strip(),
         "requirement": str(requirement or "").strip(),

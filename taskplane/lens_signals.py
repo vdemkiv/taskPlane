@@ -1157,6 +1157,18 @@ def _apply_floors(vmap: dict, ctx: Ctx) -> dict:
             if f:
                 _promote(arch, "floor: architecture promoted to light — "
                          f"code change ({f})", to="light")
+    # R-0001 engineering review: these four judgments are never delegated to
+    # a light sweep or replaced by cache/provisional output.  Apply this last
+    # so its stronger stage floor remains the canonical recorded reason.
+    if ctx.stage == "review":
+        for lens_id in ("architecture", "code-quality", "security", "qa"):
+            entry = vmap.get(lens_id)
+            if entry is not None:
+                _promote(
+                    entry,
+                    f"mandatory review floor: {lens_id} always runs deep",
+                    to="deep",
+                )
     return vmap
 
 
@@ -1202,6 +1214,11 @@ def route_verdicts(workspace, files, stage=None, requirement_text=None,
                    graph=graph, stage=stage,
                    content_by_file=content_by_file)
     vmap = verdicts([l["id"] for l in cat["lenses"]], ctx, floors=False)
+    if stage == "review":
+        # Evidence-aware documentation routing is bounded and independent of
+        # code-module mapping; uncertainty cannot widen to the full catalog.
+        import review_progression
+        review_progression.apply_document_signals(vmap, files, content_by_file)
     return apply_budget(vmap, cap=DEEP_CAP, target=DEEP_TARGET, ctx=ctx)
 
 
