@@ -1225,6 +1225,21 @@ def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
         reason = "mixed code and documentation change"
     elif code_files and len(non_doc_files) != len(code_files):
         reason = "mixed code and non-document change"
+    elif doc_files and len(doc_files) == len(ctx.files):
+        import review_progression
+        signals = review_progression.document_lens_signals(
+            ctx.files,
+            {path: text for path, text in ctx.contents()},
+        )
+        selected = next(
+            (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
+             and lens_id in vmap),
+            "tech-writer",
+        )
+        risk_class = "documentation-only"
+        reason = f"documentation evidence selected {selected}"
+        required = (selected,)
+        floor_prefix = "risk-selected review floor"
     elif missing_code_content:
         reason = "code content unavailable for risk classification"
     elif significant:
@@ -1247,21 +1262,6 @@ def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
             ),
         )
         required = (ranked[0] if ranked else "code-quality",)
-        floor_prefix = "risk-selected review floor"
-    elif doc_files and len(doc_files) == len(ctx.files):
-        import review_progression
-        signals = review_progression.document_lens_signals(
-            ctx.files,
-            {path: text for path, text in ctx.contents()},
-        )
-        selected = next(
-            (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
-             and lens_id in vmap),
-            "tech-writer",
-        )
-        risk_class = "documentation-only"
-        reason = f"documentation evidence selected {selected}"
-        required = (selected,)
         floor_prefix = "risk-selected review floor"
     else:
         reason = "unclassified or missing module mapping"
