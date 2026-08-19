@@ -518,6 +518,13 @@ class TestAttestationWarning(unittest.TestCase):
         loop.init(ws, "g", spec_path="s", checkpoints=[])
         st = loop.load(ws)
         st["step"] = "signoff"
+        st["signoff_evidence"] = {
+            "schema": "taskplane.signoff-evidence/v1",
+            "integration_revision": tp.git_head(ws),
+            "dod": {"passed": True, "errors": [], "notices": [],
+                    "scope": [], "baseline": None},
+            "notices": [],
+        }
         loop.save(ws, st)
         orig = loop._signoff_dod
         loop._signoff_dod = lambda w, s: {"passed": True, "errors": [],
@@ -837,15 +844,23 @@ class TestDesignWiringHooks(unittest.TestCase):
     def _signoff_ws(self):
         ws = git_ws([TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=[])
-        st = loop.load(ws)
-        st["step"] = "signoff"
-        loop.save(ws, st)
         d = os.path.join(ws, ".em-review")
         os.makedirs(d, exist_ok=True)
+        meta = {"design": {"accepted_drift": [
+            {"drift": "renamed module", "reason": "clearer",
+             "accepted_by": "Dana"}]}}
         with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
-            json.dump({"meta": {"design": {"accepted_drift": [
-                {"drift": "renamed module", "reason": "clearer",
-                 "accepted_by": "Dana"}]}}, "findings": []}, f)
+            json.dump({"meta": meta, "findings": []}, f)
+        st = loop.load(ws)
+        st["step"] = "signoff"
+        st["signoff_evidence"] = {
+            "schema": "taskplane.signoff-evidence/v1",
+            "integration_revision": tp.git_head(ws),
+            "dod": {"passed": True, "errors": [], "notices": [],
+                    "scope": [], "baseline": None},
+            "notices": dc.design_review_notices(meta),
+        }
+        loop.save(ws, st)
         return ws
 
     def test_signoff_payload_includes_design_review_notices(self):

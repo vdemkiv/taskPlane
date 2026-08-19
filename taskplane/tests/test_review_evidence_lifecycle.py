@@ -336,7 +336,7 @@ def test_real_collector_consumes_repair_and_exact_execution_binding():
                 lens_ids=lease["lens_ids"], slot_id=lease["slot_id"],
                 lease_fingerprint=lease["lease_fingerprint"],
                 producer=lease["producer"])
-        fixture._write_slot_results(findings=lambda lease: [{
+        fixture._write_slot_results(verdict="fail", findings=lambda lease: [{
             **_finding(severity="high", lens=lease["lens_ids"][0]),
             "claim": {"trigger": "exercise the changed review collector",
                       "outcome": "the evidence lifecycle is broken",
