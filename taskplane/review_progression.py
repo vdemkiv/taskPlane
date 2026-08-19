@@ -1,7 +1,7 @@
 """Deterministic risk-first engineering-review progression.
 
 This module owns the additive ``contract:review-risk-progression`` surface:
-the four non-negotiable deep floors, a single bounded light sweep, and
+risk-scaled attributable deep floors, a single bounded light sweep, and
 evidence-bound promotion or rejection of sweep concerns.  It is deliberately
 pure and synchronous; persistence and dispatch remain ReviewKernel owners.
 """
@@ -108,12 +108,19 @@ def initial_wave(routing: dict, *, sweep_limit: int = DEFAULT_SWEEP_LIMIT) -> di
     if not isinstance(sweep_limit, int) or sweep_limit < 0:
         raise ValueError("sweep_limit must be a non-negative integer")
     rows = {str(row["id"]): row for row in routing.get("lenses") or []}
-    missing = sorted(set(MANDATORY_DEEP_FLOORS) - set(rows))
+    risk = routing.get("context", {}).get("review_risk") or {}
+    required = tuple(risk.get("required_deep_lenses") or ())
+    if not required:
+        required = tuple(
+            lens_id for lens_id, row in rows.items()
+            if row.get("review_required_deep")
+        ) or MANDATORY_DEEP_FLOORS
+    missing = sorted(set(required) - set(rows))
     if missing:
         raise ValueError("routing missing mandatory review floor(s): " + ", ".join(missing))
     deep_ids = sorted(
         lens_id for lens_id, row in rows.items()
-        if row.get("tier") == "deep" or lens_id in MANDATORY_DEEP_FLOORS
+        if row.get("tier") == "deep" or lens_id in required
     )
     all_light = sorted(
         (lens_id for lens_id, row in rows.items()
