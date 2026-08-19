@@ -52,7 +52,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BRIEFS = os.path.join(HERE, "fixtures", "briefs")
 WORKSPACE = os.path.join(BRIEFS, "workspace")
 DETECTORS = os.path.join(HERE, "fixtures", "detectors")
-PLUGIN_ROOT = os.path.dirname(os.path.dirname(HERE))
+# The checkout-bound gate deliberately imports the engine from the
+# orchestrator checkout while collecting this test from the task checkout.
+# Scrub the root that actually authored role_instructions, not the root that
+# happens to contain this test file.
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(tp.__file__)))
 SHARED_CONTEXT_PATHS = {
     "diff.patch": ".em-review/context/diff.patch",
 }
