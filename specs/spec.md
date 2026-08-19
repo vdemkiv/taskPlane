@@ -1,252 +1,343 @@
-# Specification — progressive, convergent engineering review
+# Specification — consolidated governed delivery and convergent review
 
 ## Problem
 
-Taskplane engineering review currently pays exhaustive-review cost before it
-can return an obvious request-changes decision, repeats some non-substantive
-work, and treats infrastructure, workspace identity, documentation routing,
-and fix-cycle limits too coarsely. The accepted retrospective requires faster
-truthful feedback without weakening evidence, slot conservation, lens floors,
-or the human approval boundary.
+Taskplane currently asks for too many routine approvals and can interrupt
+otherwise recoverable work, while engineering review still needs the accepted
+risk-first, evidence-complete efficiency controls. Users need one attributable
+authorization that carries bounded work end to end, automatic mechanical gates
+and recovery, and human attention reserved for genuinely new authority,
+selection, escalation, irreversible action, or final sign-off.
 
 ## Users and context
 
-Engineers use Taskplane to judge implementation quality, repair review defects,
-and decide whether work is approvable. They need high-risk evidence first,
-early actionable request-changes output, deterministic recovery from mechanical
-producer defects, and measurable lens value. This requirement follows R-0011's
-accepted retrospective and changes review execution policy only; it does not
-change product requirements, lens charters, or final approval authority.
+Engineers use the Taskplane facade, governed delivery, Product, Design, Build,
+engineering review, Status, Help/onboarding, Product's strategic advisory, and
+Claude-tag/Slack entry points. This amendment consolidates attributable human
+feedback from all ten flows into R-0001 while preserving its progressive-review
+requirements: exact evidence/worktree binding, evaluator-outage caching,
+documentation-aware routing, early provisional revisions, convergence-based
+fixing, per-lens telemetry, complete evidence, and full conservation before
+approval.
 
 ## In scope
 
-- Progressive risk-first review: catalog-declared mandatory deep floors, the
-  initially applicable deep lenses, and at most one bounded light sweep.
-- Evidence-triggered promotion of relevant light-sweep concerns into named deep
-  lenses without exhaustive up-front dispatch.
-- Early canonical provisional request-changes revisions once admissible
-  blocking evidence exists, with every undispatched, running, missing, invalid,
-  or infrastructure-blocked slot represented as an explicit gap.
-- Full selected/prepared/dispatched/produced/collected slot conservation and
-  complete required evidence before approval can become available.
-- Deterministic normalization of producer summary/count/verdict metadata and
-  audited metadata-only repair that never changes substantive findings.
-- Reuse of evaluator-infrastructure failure evidence only for the same engine
-  identity and exact worktree/root context, with safe invalidation.
-- Exact binding of every review/evaluation artifact to repository identity,
-  worktree root, target/revision, engine identity, run, lease, slot, and
-  producer.
-- Documentation-aware lens routing that recognizes documentation evidence and
-  does not widen to a module-level full-catalog review merely because code-
-  module mapping is unavailable or inapplicable.
-- Convergence-based fix continuation/escalation rather than one global two-
-  cycle limit, while preserving bounded, observable, human-governed recovery.
-- Per-lens telemetry for quality, unique value, latency, cost, overlap, false-
-  positive outcomes, retries, and infrastructure unavailability.
+- One consolidated, attributable pre-implementation authorization packet for
+  accepted requirements, conditional design, plan, dynamic validation,
+  ordinary sandbox work, routine fixes/recovery, evaluation, collection,
+  artifact delivery, and bounded end-to-end execution.
+- Mechanical Product, Design, and Plan gates that auto-advance when their
+  contracts, graph checks, acceptance mapping, and required lenses pass.
+- A closed set of events that return to a human: consolidated authorization,
+  explicit A/B selection, exhausted/non-convergent recovery or replan,
+  material scope/authority change, destructive/irreversible or new external
+  authority, changed acceptance criteria or weakened gate, and final sign-off.
+- Automatic repository preparation, bounded routine recovery, phase ownership,
+  isolated parallel execution, status telemetry, onboarding repair, and
+  attributed thread continuation across Codex, Claude, and Slack-capable flows.
+- Progressive risk-first engineering review with four explicit deep floors,
+  one light sweep, evidence-triggered deep promotions, early provisional
+  request-changes, metadata-only repair, affected-slot retry, exact evidence
+  binding, outage caching, documentation-aware routing, convergence policy,
+  and per-lens efficiency/quality telemetry.
+- Small inline dashboards and complete Markdown delivery for very large
+  dashboards, with JSON as machine authority and HTML optional/nonblocking.
 
 ## Out of scope
 
-- Changing the 26-lens catalog, lens ownership boundaries, finding severity
-  definitions, or catalog-declared mandatory floors.
-- Removing the light sweep, running more than one light sweep per canonical
-  review, or promoting a lens without attributable evidence.
-- Allowing provisional output, partial collection, a blocker alone, or a
-  request-changes recommendation to become approval/pass.
-- Dropping valid findings/evidence because an early revision was published,
-  silently excluding selected slots, or relaxing lease/producer/schema checks.
-- Substantively rewriting a producer's verdict, finding, severity, rationale,
-  evidence, or action under the label of normalization or repair.
-- Sharing cached evaluator failures across mismatched engines, worktrees,
-  targets, capabilities, or expired evidence windows.
-- Treating missing module mapping as proof that every lens is applicable, or
-  treating documentation-only change as no review needed.
-- Unlimited fix loops, silent retry, automatic human decisions, or a fixed
-  numeric cycle limit that ignores convergence evidence.
-- Using telemetry alone to suppress mandatory review, grade an individual
-  worker, or overwrite canonical findings.
-- Redesigning Product/Design/Build flows, dashboards, host-native UI, release,
-  marketplace, dependency graph, or repository storage generally.
+- Silence, inferred intent, or prior unrelated approval granting new authority.
+- Auto-approving final sign-off, A/B selection, material scope/authority
+  change, destructive/irreversible action, external credentials/publication/
+  spend, changed acceptance criteria, or gate-weakening recovery.
+- Weakening orchestrator-only gates, evidence-bound submissions, isolated
+  worktrees, acceptance evidence, slot conservation, or audit attribution.
+- Asking users to choose Product/Design/Engineering personas or exposing
+  north-star as a separate required user flow.
+- Unbounded recovery loops, global silent failure, fabricated progress/tokens/
+  ETA, or treating unavailable telemetry as zero.
+- Removing mandatory review floors, allowing a light sweep to substitute for a
+  required deep judgment, or requiring exhaustive collection before a truthful
+  provisional request-changes revision.
+- Dropping valid evidence/findings during early publication, normalization,
+  repair, retry, cache reuse, supersession, or large-dashboard delivery.
+- Broad product-feature changes, lens-catalog/charter changes, dependency-graph
+  redesign, model/billing redesign, or release/marketplace publication.
 
 ## Acceptance criteria
 
-1. **Mandatory floors always run.** Every engineering review dispatches every
-   catalog-declared mandatory deep floor applicable to the stage, regardless of
-   diff size, early blockers, documentation-only scope, cached failures, or
-   provisional publication. **Verify:** code, docs-only, mixed, empty-map,
-   high-risk, low-risk, and early-blocker fixtures assert the exact mandatory
-   floor slots are selected and conserved.
+1. **One authorization covers routine end-to-end work.** A consolidated packet
+   identifies the requirement, conditional design/plan, target and scope,
+   acceptance criteria, dynamic-validation intent, ordinary sandbox authority,
+   routine fix/recovery policy, evaluation/collection, artifact delivery, and
+   execution bounds. One attributable approval authorizes those unchanged
+   activities through final-signoff readiness. **Verify:** all ten flow fixtures
+   complete routine stages without another approval and retain one receipt plus
+   stage-by-stage authority derivation.
 
-2. **Initial review is progressive and bounded.** The first wave contains the
-   mandatory floors, other deep lenses selected from current evidence, and at
-   most one bounded light sweep; it does not dispatch every catalog lens merely
-   to establish that most are not applicable. **Verify:** representative small,
-   large, code, configuration, and documentation changes assert initial slot
-   membership, one-or-zero light sweeps, and machine-readable n/a evidence.
+2. **Mechanical definition gates auto-advance.** Product, Design, and Plan
+   stages automatically complete/score/check and advance when their contracts,
+   graph checks, acceptance mapping, required design/review lenses, and evidence
+   pass. They do not request separate Product, Design, or Plan approval.
+   **Verify:** pass/fail fixtures assert automatic advance only on complete
+   evidence and a named non-human blocker when mechanical checks fail.
 
-3. **Deep promotion requires attributable evidence.** A light-sweep concern
-   promotes a named lens to deep review only when the sweep supplies a
-   normalized risk/severity signal, affected evidence reference, rationale,
-   and promotion trigger within that lens's charter. Promotions are
-   deterministic and idempotent. **Verify:** high/major, low/minor, duplicate,
-   cross-charter, missing-evidence, and replay fixtures assert promoted slots
-   and trigger records.
+3. **Human-attention boundaries are closed and explicit.** A new human decision
+   occurs only for initial consolidated authorization; explicit A/B selection;
+   exhausted/no-progress recovery or replan; material scope creep or major
+   authority change; destructive/irreversible action; new external system,
+   credential, publication, or spend; changed acceptance criteria; recovery
+   that weakens a gate; or final sign-off. **Verify:** an approval trace for
+   every flow contains no other prompt and each allowed prompt names the new
+   fact, consequence, and authority requested.
 
-4. **High-risk sweep evidence is followed through.** Every admissible high or
-   major light-sweep concern is either promoted to the responsible deep lens or
-   explicitly rejected with a canonical reason proving it is duplicate,
-   out-of-charter, invalid, or already covered. **Verify:** a mixed sweep leaves
-   no unexplained high/major concern and never counts the sweep itself as the
-   required deep judgment.
+4. **Silence never expands authority.** Missing, stale, ambiguous, or
+   unauthenticated responses pause only the affected human-owned decision and
+   cannot authorize additional scope, external effects, destructive action,
+   changed criteria, weakened controls, or final approval. **Verify:** timeout,
+   replay, wrong-thread, wrong-revision, and free-form ambiguous fixtures.
 
-5. **Blocking evidence publishes early request-changes.** Once a valid blocker
-   or request-changes-level finding is canonically admissible, Taskplane may
-   publish an immutable provisional canonical revision immediately without
-   waiting for exhaustive collection. It contains the complete known evidence,
-   recommendation rationale, and current gate state. **Verify:** blocker-first,
-   blocker-late, simultaneous, duplicate, repaired, and withdrawn-invalid
-   finding fixtures assert publication timing and revision lineage.
+5. **Routine recovery is automatic and bounded.** Within authorized scope,
+   Taskplane retries or mechanically repairs transient, metadata, evaluator,
+   collection, artifact, render, and setup failures automatically two to three
+   times or while measurable convergence continues. It asks only after the
+   bounded policy is exhausted, progress stops/oscillates/worsens, safety or
+   authority changes, or replan is needed. **Verify:** one-, two-, three-,
+   converging-longer, no-progress, repeated-fingerprint, unsafe, and authority-
+   change cases assert recover/escalate behavior and reasons.
 
-6. **Early revisions expose every gap.** A provisional request-changes revision
-   enumerates every selected slot as collected, running, undispatched,
-   promoted-pending, missing, invalid, retrying, or infrastructure-unavailable,
-   with reason and recovery status. It never reports an incomplete lens set as
-   exhaustive. **Verify:** mixed lifecycle fixtures reconcile the gap manifest
-   to the selected-slot ledger exactly.
+6. **Ownership and parallelism remain governed.** Each phase has one accountable
+   owner; parallel agents/subagents run only in isolated worktrees with bounded
+   scopes, evidence-bound submissions, and orchestrator-only gates. **Verify:**
+   serial, parallel, overlapping-scope, sibling-worktree, crashed-owner, copied-
+   evidence, and attempted-worker-gate fixtures preserve ownership and isolation.
 
-7. **Approval requires full conservation.** Approval/pass is unavailable until
-   every required selected slot and promotion is prepared, dispatched,
-   produced, validated, and canonically collected exactly once, all acceptance
-   evidence is complete, and no unresolved gap remains. **Verify:** mutation
-   tests remove or duplicate one record at each lifecycle stage and assert the
-   gate remains closed; the conserved complete case alone can proceed.
+7. **Facade performs preparation automatically.** Repository acquisition,
+   managed checkout/worktree preparation, target/ref pinning, and verification
+   run without a user prompt when existing authority is sufficient. Failures
+   classify into automatic recovery or a named genuine authority/external
+   boundary. **Verify:** local, remote, cached, stale, moved, auth-required, host-
+   policy, and external-unavailable repository fixtures.
 
-8. **Early publication never loses later evidence.** Subsequent results,
-   promotions, repairs, retries, and dynamic evidence supersede the provisional
-   revision through immutable lineage while retaining every previously valid
-   finding and provenance record unless a canonical adjudication explicitly
-   invalidates it. **Verify:** multi-revision fixtures round-trip all findings,
-   gaps, adjudications, and artifact identities without duplication or loss.
+8. **Facade preserves intent and hides persona plumbing.** User intent, current
+   loop state, and authority deterministically select Product/Design/Build/
+   Engineering/Status/Help behavior; the user is never asked which persona to
+   invoke. **Verify:** ambiguous-language/state matrix routes or asks one
+   substantive clarification without exposing internal role selection.
 
-9. **Producer summaries normalize deterministically.** For the same valid slot
-   payload, summary verdict, finding counts, severity counts, and completion
-   metadata normalize to one byte-stable representation derived from the
-   canonical findings/schema invariants, independent of producer prose or
-   field order. **Verify:** permuted, omitted-summary, contradictory-summary,
-   empty, fail-with-findings, and pass-with-zero fixtures produce the expected
-   normalized metadata or a named substantive inconsistency.
+9. **Dashboard delivery is size-appropriate and complete.** Small dashboards
+   render inline. Very large dashboards automatically deliver complete Markdown
+   without truncating evidence; canonical JSON remains machine authority and
+   HTML failure/absence is optional and nonblocking. **Verify:** below/above
+   thresholds and large-finding fixtures compare semantic equality and gate
+   state across JSON, inline, Markdown, and optional HTML.
 
-10. **Mechanical repair is metadata-only.** An unresolved but authoritatively
-    derivable identity, count, summary, or schema metadata field may be repaired
-    without rerunning substantive review only when target, view, evidence,
-    findings, severities, rationale, actions, verdict substance, lease, slot,
-    and producer remain byte-equivalent. The repair records before/after,
-    derivation authority, and fingerprint proof. **Verify:** each permitted
-    metadata defect repairs once; every substantive mutation is rejected and
-    routes only the affected slot for rerun.
+10. **Design and Plan share one authorization packet.** High-impact work may
+    retain a separate Design phase, but Design and Plan are presented together
+    in the consolidated pre-implementation packet; mechanically passing stages
+    do not request another approval. Non-material evolution within accepted
+    requirements/contracts proceeds automatically. **Verify:** high/low impact,
+    material/non-material drift, contract-preserving, and contract-changing
+    scenarios assert packet contents and reauthorization boundaries.
 
-11. **Infrastructure failures are cached at the correct boundary.** A verified
-    evaluator-infrastructure failure is reused within its validity window only
-    for matching evaluator, engine fingerprint/version, host capability,
-    repository identity, and exact worktree root. Reuse produces an explicit
-    cached-unavailable record rather than another evaluator launch or a lens
-    pass/fail. **Verify:** repeated identical attempts invoke infrastructure
-    once, while changed engine, evaluator, capability, repository, worktree,
-    expiry, or repaired infrastructure invalidates the cache.
+11. **Product completes refinement automatically.** Product records and scores
+    the complete requirement and feeds it into the consolidated packet without
+    a standalone Product approval. Missing acceptance, contract, dependency,
+    or NFR evidence blocks mechanically rather than asking for ceremonial
+    approval. **Verify:** complete and gap fixtures assert score/evidence and
+    transition behavior.
 
-12. **Evidence is bound to the exact execution root.** Every producer and
-    evaluator artifact records and verifies canonical repository identity,
-    exact Git worktree root, target/base/head or equivalent revision, engine
-    fingerprint, run, lens, slot, lease, and producer. Sibling worktrees and a
-    parent/root checkout cannot substitute for each other. **Verify:** root,
-    linked-worktree, sibling, moved-root, symlink, clone, engine-skew, stale-
-    head, copied-result, and valid-resume fixtures fail or pass as expected.
+12. **North-star is conditional internal advice.** Product invokes north-star
+    internally only for strategic ambiguity, high opportunity cost,
+    irreversible direction, or an explicit request. It is advisory and never a
+    gate or separate user-facing flow. Its concise note always contains
+    alignment, leverage, reversibility, opportunity cost, coherence, sharpest
+    tension, and recommendation. **Verify:** trigger/non-trigger fixtures and
+    schema checks; absence or disagreement cannot independently block work.
 
-13. **Documentation routing is evidence-aware.** Documentation-only and mixed
-    changes route from document content, requirement/directive signals,
-    declared contracts, affected audiences, and known graph evidence. Missing
-    or inapplicable code-module mapping is recorded explicitly and does not by
-    itself widen routing to every module-level lens. **Verify:** API docs,
-    security guidance, runbook, user docs, changelog, typo-only, mixed code/docs,
-    malformed-doc, and absent-map fixtures assert relevant deep/light/n/a
-    dispositions without full-catalog fail-open widening.
+13. **Build preserves the intended selection boundary.** A single variant uses
+    consolidated authorization end to end. When A/B variants were explicitly
+    chosen, variant selection is the only ordinary mid-build human gate and
+    each variant retains isolated comparable evidence. **Verify:** single, A/B,
+    invalid variant, stale selection, and resumed selection fixtures.
 
-14. **Routing uncertainty remains safe.** When documentation evidence is
-    genuinely ambiguous or corrupt, mandatory floors remain and the review
-    records the uncertainty plus the smallest evidence-backed widened set; it
-    never equates uncertainty with no review or unconditional all-lens review.
-    **Verify:** controlled ambiguity fixtures assert monotonic, explained,
-    bounded widening and stable routing fingerprints.
+14. **Preview feedback becomes an attributable scoped change.** Human feedback
+    from a design/build preview is recorded as an attributable scoped change
+    request against the current requirement/target. Non-material in-contract
+    feedback proceeds automatically; changed acceptance, material scope, or
+    authority returns to consolidated authorization. **Verify:** cosmetic,
+    behavioral, acceptance-changing, scope-expanding, and unauthenticated input.
 
-15. **Fix cycles follow convergence, not a global count.** After each fix
-    evaluation, Taskplane records which admissible blockers/findings closed,
-    persisted, regressed, or newly appeared, plus evidence/test progress. It
-    may continue while measurable progress exists and recovery remains safe,
-    even beyond two cycles; it escalates when progress stalls, repeats, worsens,
-    exceeds a task-specific bound, crosses authority/scope, or becomes unsafe.
-    **Verify:** fast convergence, three-plus-cycle convergence, no-progress,
-    oscillation, regression, repeated-fingerprint, unsafe, scope-change, and
-    human-stop fixtures assert continue/escalate decisions and audit reasons.
+15. **Deep-review floors scale with attributable risk.** Documentation-only
+    and simple low-risk changes run exactly one risk-selected deep review lens.
+    Substantive or risky changes retain architecture, code-quality, security,
+    and QA as four mandatory deep floors. Cache, light sweep, early provisional
+    publication, or another lens cannot replace the deep slot or slots required
+    for the change's risk class. **Verify:** documentation-only, simple
+    low-risk, substantive, risky, mixed, early-blocker, and mapping-gap fixtures
+    assert exact risk classification, lens selection, and slot conservation.
 
-16. **Convergence does not weaken human authority.** No convergence score,
-    elapsed cycle count, early request-changes revision, or cached failure may
-    auto-approve, silently abandon a required slot, widen implementation scope,
-    or bypass a human decision required by the governed loop. **Verify:** gate,
-    scope, destructive-action, and final-signoff fixtures remain human-owned.
+16. **Other review is progressive.** Non-floor lenses begin through at most one
+    bounded light sweep and promote to named deep review only from attributable
+    normalized evidence within the lens charter. Every high/major concern is
+    promoted or explicitly rejected as duplicate, invalid, out-of-charter, or
+    already covered. **Verify:** severity, duplicate, replay, missing-evidence,
+    cross-charter, and mixed-sweep fixtures.
 
-17. **Per-lens telemetry is complete and comparable.** Each lens/run records
-    eligible/selected/promoted/collected status, admissible and confirmed
-    finding counts, unique findings, overlaps/duplicates, later-invalidated or
-    false-positive outcomes, retries/repairs, latency, token usage/cost when
-    available, and infrastructure unavailability, with versioned definitions
-    and denominators. **Verify:** golden arithmetic reconciles raw events to
-    aggregate metrics and distinguishes unavailable telemetry from zero.
+17. **Severe harm publishes request-changes immediately.** An admissible
+    Blocker, High, any security vulnerability, or harmful/destructive bug
+    publishes an immutable provisional request-changes revision immediately,
+    preserving complete known evidence and explicit lifecycle gaps. Exhaustive
+    collection is not required for this recommendation. **Verify:** each trigger,
+    non-trigger severities, invalidated finding, duplicate, and simultaneous
+    finding fixtures assert timing and lineage.
 
-18. **Telemetry preserves review independence.** Quality/efficiency telemetry
-    is derived from sealed canonical revisions and later adjudication, does not
-    reveal one lens's draft to another, alter the current review verdict, or
-    suppress mandatory floors. **Verify:** ordering and information-isolation
-    fixtures show identical substantive results with telemetry enabled or
-    disabled.
+18. **Approval still requires complete conservation.** Approval/pass remains
+    unavailable until every mandatory/selected/promoted slot is prepared,
+    dispatched, produced, validated, and collected exactly once, all acceptance
+    evidence is complete, and no unresolved gap remains. Request-changes may be
+    provisional; approval may not. **Verify:** remove/duplicate every lifecycle
+    record and assert only the complete conserved case is approvable.
 
-19. **Host and legacy behavior remain compatible.** Claude, Codex, managed
-    worktrees, and supported fallback paths preserve the same canonical review
-    semantics, evidence, early-revision rules, conservation gate, repair rules,
-    convergence decisions, and telemetry definitions. **Verify:** cross-host
-    golden scenarios and the existing review/loop suites pass without removed,
-    skipped, xfailed, loosened, or reclassified governance assertions.
+19. **Normalization and repair never redo substance.** Producer verdict/count/
+    severity/summary metadata normalizes deterministically from canonical
+    findings. Authoritatively derivable metadata-only defects repair
+    automatically with before/after, derivation authority, and fingerprint
+    equivalence; substantive change reruns only affected slots. **Verify:** field
+    permutation, summary contradiction, identity/count defect, and every
+    substantive mutation.
+
+20. **Exact execution-root evidence binding remains.** Every review/evaluation
+    artifact verifies repository identity, exact Git worktree root, target/base/
+    head, engine fingerprint, run, lens, slot, lease, and producer. Parent,
+    sibling, moved, symlinked, cloned, engine-skewed, stale, or copied evidence
+    cannot substitute. **Verify:** negative topology matrix and valid resume.
+
+21. **Evaluator-outage cache is exact and truthful.** A verified evaluator
+    infrastructure failure reuses only for the same evaluator, engine/version,
+    capability, repository, exact worktree, and validity window. It records
+    infrastructure unavailable—not lens pass/fail—and invalidates on any key,
+    expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count.
+
+22. **Documentation routing avoids module fail-open widening.** Documentation-
+    only and mixed changes route from document content, directives, contracts,
+    audiences, and graph evidence. Missing/inapplicable code-module mapping
+    retains the four floors and the smallest explained evidence-backed widening,
+    never unconditional all-lens or no-review. **Verify:** API/security/user docs,
+    runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases.
+
+23. **Fix policy measures convergence.** Each fix evaluation records closed,
+    persistent, regressed, and new admissible findings plus test/evidence
+    progress. Safe measurable convergence can continue beyond three cycles;
+    no-progress, repetition, oscillation, worsening, task-specific bounds,
+    unsafe recovery, scope/authority change, or human stop escalates. **Verify:**
+    convergence matrix and human-ownership assertions.
+
+24. **Per-lens telemetry is complete and independent.** Each lens records
+    eligible/selected/promoted/collected state, admissible/confirmed/unique/
+    overlap/duplicate/invalidated/false-positive findings, retry/repair,
+    latency, provider-correct tokens/cost when available, and infrastructure
+    unavailability with versioned definitions/denominators. Telemetry derives
+    from sealed revisions, does not expose drafts across lenses, alter current
+    verdicts, or suppress floors. **Verify:** golden arithmetic, unavailable-vs-
+    zero, information-isolation, and enabled/disabled equivalence fixtures.
+
+25. **Status is cheap, live, and non-gating.** Status reads durable snapshots
+    only, performs no expensive recomputation, and never blocks or gates work.
+    Picture-in-Picture continuously identifies the active agent/phase and
+    updates from durable events. **Verify:** instrumentation asserts bounded
+    reads/no graph/review recomputation and identical workflow outcome with
+    status open, closed, interrupted, or unavailable.
+
+26. **Progress telemetry is truthful.** Status shows observed tokens used,
+    elapsed time in the current focus/stage, and execution/wait/human-wait state.
+    ETA appears only from observed comparable or bounded work and includes
+    source, confidence, and update time; otherwise it says unavailable.
+    **Verify:** execution, tool wait, agent wait, human wait, resume, unknown
+    tokens, sparse history, comparable history, and stale ETA fixtures.
+
+27. **Onboarding self-repairs when authorized.** Every setup check is classified
+    self-repairable, authority-required, host-policy, or external-unavailable.
+    Self-repair executes automatically; authority-required asks once for the
+    exact authority; host-policy/external-unavailable explains and retries only
+    when state can change, without repeated prompts. **Verify:** full setup matrix
+    and prompt counts.
+
+28. **Onboarding survives sibling worktrees.** A stable repository-family hook/
+    launcher resolves the exact current worktree and latest valid engine
+    dynamically, so supported sibling worktrees operate without restart or a
+    new Taskplane task. **Verify:** root, nested, sibling, newly created, moved,
+    stale-engine, unavailable-engine, and policy-restricted worktree fixtures.
+
+29. **Thread approval is attributable and sufficient.** In Claude-tag/Slack
+    contexts, one attributed approval in the bound thread authorizes the same
+    routine continuation as the consolidated packet; wrong thread, actor,
+    revision, replay, or ambiguous reply cannot authorize. **Verify:** receipt
+    matrix and one-routine-approval trace.
+
+30. **Thread delivery preserves complete evidence.** A concise summary leads,
+    but the complete evidence set is attached or linked and remains canonical.
+    Missing native controls degrade to an accessible thread summary, complete
+    Markdown/artifacts, and canonical actions through attributed replies;
+    unavailable controls are never interpreted as decline. Automatic retry/
+    recovery precedes any user prompt. **Verify:** native, missing-control,
+    attachment/link failure, large artifact, retry success/exhaustion, and
+    accessibility fixtures.
+
+31. **Evidence remains lossless across all recovery and delivery.** Provisional
+    publication, promotion, normalization, repair, retry, cache reuse,
+    supersession, dashboard-size fallback, and thread delivery never drop or
+    duplicate valid findings, criteria, gaps, provenance, telemetry, or artifact
+    identity. **Verify:** an end-to-end multi-revision large-review round trip
+    reconciles canonical JSON, complete Markdown, optional HTML, and thread links.
+
+32. **Cross-host and legacy semantics remain compatible.** Codex, Claude,
+    Slack-capable entry, managed worktrees, and supported fallbacks preserve the
+    same authorization, recovery, gate, review, evidence, convergence, status,
+    and telemetry semantics. **Verify:** golden cross-host scenarios and existing
+    suites pass without removed, skipped, xfailed, loosened, or reclassified
+    governance assertions.
 
 ## Non-functional requirements
 
-- `security`: Evidence, normalization, repair, caching, routing, and telemetry
-  remain target/run/lease/producer bound and fail closed; cached failures or
-  metadata repair cannot forge substantive review, cross worktree boundaries,
-  expose secrets, or enable approval.
-- `architecture`: One canonical slot ledger, immutable revision lineage,
-  evidence-binding model, normalization contract, routing record, convergence
-  record, and telemetry schema serve all hosts and worktrees without parallel
-  review authorities.
-- `data-safety`: Valid evidence and findings survive provisional publication,
-  retry, repair, and supersession losslessly; exact-root validation prevents
-  copied, stale, sibling-worktree, or engine-skew evidence from being accepted.
-- `sre`: Progressive waves, promotions, retries, cache validity, and convergence
-  have bounded deterministic states, actionable diagnostics, explicit expiry,
-  and no infinite review/fix loop or repeated known infrastructure launch.
-- `integrability`: Changed review, revision, repair, routing, evidence-binding,
-  convergence, and telemetry contracts are versioned and remain compatible
-  across Claude, Codex, existing artifacts, and supported legacy consumers.
-- `scalability`: Initial dispatch scales with risk and evidence rather than the
-  full lens catalog; revisions and telemetry remain bounded/indexable across
-  large reviews, many slots, promotions, and fix cycles without losing detail.
-- `cost-finops`: Per-lens latency/token/cost and avoided launches are measured
-  with provider-correct availability; cached infrastructure failures,
-  progressive dispatch, and affected-slot repair avoid redundant model spend.
-- `privacy-compliance`: Evidence paths, worktree identities, diagnostics,
-  caches, and telemetry retain minimum audit identifiers while redacting
-  personal absolute paths, credentials, secrets, prompts, and unrelated data.
+- `security`: Authorization is attributable, target/revision/scope bound and
+  least-privilege; silence, stale receipts, UI absence, cache, repair, recovery,
+  or telemetry cannot expand authority, cross worktrees, forge evidence, weaken
+  a gate, expose secrets, or authorize destructive/external action.
+- `architecture`: One canonical authorization packet, authority ledger,
+  mechanical-gate model, recovery/convergence record, slot ledger, evidence
+  binding, status snapshot, and audit stream serve every host/flow; adapters and
+  UI never create parallel truth.
+- `data-safety`: Valid requirements, designs, plans, evidence, findings,
+  criteria, gaps, telemetry, artifacts, receipts, and revisions survive
+  automation, repair, retry, caching, supersession, and fallback losslessly.
+- `sre`: Preparation, gates, recovery, review waves, promotions, caches, status,
+  onboarding, rendering, attachments, and thread actions have deterministic
+  bounded states, 2–3 routine retries or convergence logic, expiry, idempotency,
+  actionable diagnostics, and no infinite/prompt loop.
+- `integrability`: Authorization, recovery, review, status, onboarding,
+  north-star-note, Markdown delivery, and thread-continuation contracts are
+  versioned and semantically portable across Codex, Claude, Slack, worktrees,
+  and supported legacy consumers.
+- `scalability`: Progressive review scales with attributable risk rather than
+  catalog size; durable status reads stay cheap; large dashboards/artifacts,
+  agent waves, revisions, and telemetry remain complete and bounded/indexable.
+- `cost-finops`: Automatic recovery avoids redundant user/model turns;
+  evaluator cache, metadata repair, progressive dispatch, affected-slot retry,
+  durable status, and provider-correct per-lens telemetry bound wasted spend;
+  new external spend always requires human authority.
+- `privacy-compliance`: Receipts, thread records, evidence paths, worktree
+  identity, status, caches, telemetry, and artifacts retain minimum audit data
+  while redacting credentials, secrets, personal paths, prompts, and unrelated
+  conversation/repository content.
+- `accessibility`: Inline/status/thread fallbacks and approval packets are
+  keyboard operable, semantically labeled, readable without color, responsive,
+  and provide complete Markdown when native visualization is unavailable.
 
 ## Contract handoff
 
 - `scope_paths`:
+  - `taskplane/tp.py`
+  - `taskplane/loop.py`
   - `taskplane/review.py`
   - `taskplane/review_evidence.py`
   - `taskplane/review_dor.py`
@@ -255,33 +346,47 @@ change product requirements, lens charters, or final approval authority.
   - `taskplane/views.py`
   - `taskplane/runtime_eval.py`
   - `taskplane/taskplane_lite.py`
-  - `taskplane/loop.py`
   - `taskplane/spend.py`
   - `taskplane/dashboard.py`
-  - `agents/tp-engineering.md`
-  - `agents/tp-lens.md`
-  - `skills/tp-engineering/**`
-  - `skills/tp-go/**`
-  - `docs/routing-and-flows.md`
-  - `docs/authority-matrix.md`
-  - `docs/storage-and-repositories.md`
-  - `docs/retrospective-2026-08-15-evaluation-loop.md`
+  - `taskplane/command_runtime.py`
+  - `taskplane/command_adapters.py`
+  - `taskplane/host_capabilities.py`
+  - `taskplane/preflight.py`
+  - `taskplane/repository.py`
+  - `taskplane/storage.py`
+  - `agents/**`
+  - `skills/**`
+  - `workflows/**`
+  - `hooks/**`
+  - `.codex-plugin/**`
+  - `.claude-plugin/**`
+  - `docs/**`
   - `taskplane/tests/**`
   - `specs/spec.md`
-- `out_of_scope`: lens-catalog/charter changes, product/design/build workflow
-  redesign, graph redesign, host-native UI, release/marketplace work, automatic
-  approval, unlimited fixing, and any evidence/control weakening.
-- `dod.test_command`: `python3 -m pytest taskplane/tests -q`
+- `out_of_scope`: feature/lens-catalog/graph/model/billing redesign, release or
+  marketplace publication, automatic final/A-B/destructive/external approval,
+  evidence weakening, unlimited recovery, and unrelated product behavior.
+- `dod.test_command`: `python3 -m pytest -q taskplane/tests/test_requirements.py`
 - dependency: `R-0011`.
-- contracts:
+- existing changed contracts preserved:
   - `contract:review-kernel-slot`
   - `contract:review-kernel-partial-revision`
   - `contract:review-kernel-mechanical-repair`
+- existing provided contracts preserved:
   - `contract:review-risk-progression`
   - `contract:review-evidence-binding`
   - `contract:evaluator-infrastructure-health`
   - `contract:review-fix-convergence`
   - `contract:lens-quality-telemetry`
+- added/changed contract intent:
+  - `contract:consolidated-authorization`
+  - `contract:automatic-recovery`
+  - `contract:status-progress-telemetry`
+  - `contract:onboarding-worktree-continuity`
+  - `contract:product-internal-north-star`
+  - `contract:large-markdown-delivery`
+  - `contract:attributed-thread-continuation`
 
-This is a cross-module review-policy and evidence-contract change. It requires
-Design before Build. There are no blocking Product questions.
+This remains bounded to Taskplane control-plane/workflow UX and engineering-
+review efficiency. It is a material cross-flow authority-contract amendment
+and requires Design before Build. There are no blocking Product questions.

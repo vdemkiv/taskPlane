@@ -1,82 +1,37 @@
 {
   "tasks": [
     {
-      "id": "t1-canonical-host-surface-model",
-      "title": "Define the canonical host-surface model, capability negotiation, and bounded fallback",
+      "id": "t1-authority-and-mechanical-gates",
       "scope": [
-        "taskplane/host_native.py",
-        "taskplane/host_capabilities.py",
-        "taskplane/tests/test_host_native_capabilities.py"
+        "taskplane/authority.py",
+        "taskplane/loop.py",
+        "taskplane/review_dor.py",
+        "taskplane/tp.py",
+        "taskplane/tests/test_consolidated_authority.py",
+        "taskplane/tests/test_consolidated_authority_cli.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_capabilities.py",
-      "req": "R-0011",
+      "tests": "python3 -m pytest -q taskplane/tests/test_consolidated_authority.py taskplane/tests/test_consolidated_authority_cli.py",
+      "req": "R-0001",
       "deps": [],
-      "type": "architecture",
+      "type": "security",
       "contracts": [
-        "contract:host-native-progress",
-        "contract:host-native-visualization",
-        "contract:host-native-approval",
-        "contract:host-capability-negotiation"
+        "contract:consolidated-authorization",
+        "contract:product-internal-north-star",
+        "contract:review-fix-convergence"
       ],
       "new_modules": [
-        "taskplane/host_native.py",
-        "taskplane/host_capabilities.py",
-        "contract:host-native-progress",
-        "contract:host-native-visualization",
-        "contract:host-native-approval",
-        "contract:host-capability-negotiation"
-      ],
-      "design_edges": [
-        "taskplane/host_capabilities.py->contract:host-capability-negotiation:provides",
-        "taskplane/host_native.py->contract:host-native-progress:provides",
-        "taskplane/host_native.py->contract:host-native-visualization:provides",
-        "taskplane/host_native.py->contract:host-native-approval:provides",
-        "taskplane/host_native.py->contract:host-capability-negotiation:consumes"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC11: Supported, unsupported, partial, unknown, stale, contradictory, and changed-mid-run capability profiles record host/version, source/confidence, selected surface, limitations, and fallback and select deterministic behavior without false support.",
-        "AC12: Disabling PiP, visualization, carousel, approval, sandbox, hosting, browser, and side-panel capabilities independently preserves canonical values, evidence, audit, gates, and reachable safe actions in an accessible bounded fallback that names unavailable rather than user-declined."
-      ]
-    },
-    {
-      "id": "t2-live-workflow-fanout-and-approvals",
-      "title": "Publish truthful PiP, agent topology, and authoritative native approval receipts",
-      "scope": [
+        "taskplane/authority.py",
         "taskplane/loop.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/review.py",
-        "workflows/**",
-        "taskplane/tests/test_host_native_workflow.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_workflow.py",
-      "req": "R-0011",
-      "deps": [
-        "t1-canonical-host-surface-model"
-      ],
-      "type": "integration",
-      "contracts": [
-        "contract:host-native-progress",
-        "contract:host-native-visualization",
-        "contract:host-native-approval",
-        "contract:host-capability-negotiation"
-      ],
-      "new_modules": [
-        "taskplane/loop.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/review.py",
-        "workflows"
+        "taskplane/review_dor.py",
+        "taskplane/tp.py",
+        "taskplane/tests/test_consolidated_authority_cli.py",
+        "contract:consolidated-authorization",
+        "contract:product-internal-north-star"
       ],
       "design_edges": [
-        "taskplane/loop.py->contract:host-native-progress:consumes",
-        "taskplane/runtime_eval.py->contract:host-native-progress:consumes",
-        "taskplane/review.py->contract:host-native-approval:consumes",
-        "workflows->contract:host-native-visualization:consumes"
+        "taskplane/authority.py->contract:consolidated-authorization:provides",
+        "taskplane/review_dor.py->contract:product-internal-north-star:provides",
+        "taskplane/loop.py->contract:review-fix-convergence:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -85,80 +40,157 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC1: On every host profile supporting persistent PiP, one active workflow opens one session showing workflow identity, stage, active/completed work, attention, and last update; ordered changes are reflected and the session closes automatically on completion, cancellation, or failure, while completed static work never opens PiP.",
-        "AC2: Complete, incremental, delayed, absent, malformed, and cross-provider usage fixtures show observed raw/effective tokens with scope/source or explicit partial/unavailable status, reconcile to the canonical token record, and never fabricate zero or estimates.",
-        "AC3: Serial, parallel, mixed-wave, retry, cancellation, failure, and resume fixtures visualize every dispatched agent with stable task/slot identity, role, scope, relationship, state, attention, and outcome matching the canonical audit record without duplicates or phantoms.",
-        "AC4: Plan, design, dynamic-validation, review, and signoff approval fixtures show the exact decision, reason, target/revision, relevant evidence, consequences, owner, and approvability, with at most two primary inline actions and richer content moved to detail/fullscreen.",
-        "AC5: A native approval advances state exactly once only when an authenticated human receipt is bound to the current decision, actor, target, and revision; stale, duplicate, replayed, disabled, unauthenticated, wrong-revision, or presentation-only actions cannot advance."
-      ]
+        "One authorization covers routine end-to-end work.** A consolidated packet identifies the requirement, conditional design/plan, target and scope, acceptance criteria, dynamic-validation intent, ordinary sandbox authority, routine fix/recovery policy, evaluation/collection, artifact delivery, and execution bounds. One attributable approval authorizes those unchanged activities through final-signoff readiness. **Verify:** all ten flow fixtures complete routine stages without another approval and retain one receipt plus stage-by-stage authority derivation.",
+        "Mechanical definition gates auto-advance.** Product, Design, and Plan stages automatically complete/score/check and advance when their contracts, graph checks, acceptance mapping, required design/review lenses, and evidence pass. They do not request separate Product, Design, or Plan approval. **Verify:** pass/fail fixtures assert automatic advance only on complete evidence and a named non-human blocker when mechanical checks fail.",
+        "Human-attention boundaries are closed and explicit.** A new human decision occurs only for initial consolidated authorization; explicit A/B selection; exhausted/no-progress recovery or replan; material scope creep or major authority change; destructive/irreversible action; new external system, credential, publication, or spend; changed acceptance criteria; recovery that weakens a gate; or final sign-off. **Verify:** an approval trace for every flow contains no other prompt and each allowed prompt names the new fact, consequence, and authority requested.",
+        "Silence never expands authority.** Missing, stale, ambiguous, or unauthenticated responses pause only the affected human-owned decision and cannot authorize additional scope, external effects, destructive action, changed criteria, weakened controls, or final approval. **Verify:** timeout, replay, wrong-thread, wrong-revision, and free-form ambiguous fixtures.",
+        "Design and Plan share one authorization packet.** High-impact work may retain a separate Design phase, but Design and Plan are presented together in the consolidated pre-implementation packet; mechanically passing stages do not request another approval. Non-material evolution within accepted requirements/contracts proceeds automatically. **Verify:** high/low impact, material/non-material drift, contract-preserving, and contract-changing scenarios assert packet contents and reauthorization boundaries.",
+        "Product completes refinement automatically.** Product records and scores the complete requirement and feeds it into the consolidated packet without a standalone Product approval. Missing acceptance, contract, dependency, or NFR evidence blocks mechanically rather than asking for ceremonial approval. **Verify:** complete and gap fixtures assert score/evidence and transition behavior.",
+        "North-star is conditional internal advice.** Product invokes north-star internally only for strategic ambiguity, high opportunity cost, irreversible direction, or an explicit request. It is advisory and never a gate or separate user-facing flow. Its concise note always contains alignment, leverage, reversibility, opportunity cost, coherence, sharpest tension, and recommendation. **Verify:** trigger/non-trigger fixtures and schema checks; absence or disagreement cannot independently block work.",
+        "Build preserves the intended selection boundary.** A single variant uses consolidated authorization end to end. When A/B variants were explicitly chosen, variant selection is the only ordinary mid-build human gate and each variant retains isolated comparable evidence. **Verify:** single, A/B, invalid variant, stale selection, and resumed selection fixtures.",
+        "Preview feedback becomes an attributable scoped change.** Human feedback from a design/build preview is recorded as an attributable scoped change request against the current requirement/target. Non-material in-contract feedback proceeds automatically; changed acceptance, material scope, or authority returns to consolidated authorization. **Verify:** cosmetic, behavioral, acceptance-changing, scope-expanding, and unauthenticated input."
+      ],
+      "status": "passed"
     },
     {
-      "id": "t3-native-dashboard-carousel-and-a11y",
-      "title": "Project native dashboard components with deterministic carousels and accessible conversational layouts",
+      "id": "t2-recovery-repository-and-onboarding",
       "scope": [
-        "taskplane/dashboard.py",
-        "taskplane/tests/test_host_native_dashboard.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_dashboard.py",
-      "req": "R-0011",
-      "deps": [
-        "t1-canonical-host-surface-model"
-      ],
-      "type": "frontend",
-      "contracts": [
-        "contract:host-native-dashboard",
-        "contract:host-capability-negotiation"
-      ],
-      "new_modules": [
-        "taskplane/dashboard.py",
-        "contract:host-native-dashboard"
-      ],
-      "design_edges": [
-        "taskplane/dashboard.py->contract:host-native-dashboard:provides"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC6: Canonical workflow, DoR, dependency/impact, agents, lenses, criteria, findings, validation, artifacts, and gate snapshots project on Codex and Claude with equal values, ordering semantics, provenance, and actions despite allowed host-specific styling.",
-        "AC7: Dataset fixtures containing 0, 1, 3, 8, 9, 120, and multi-page items use deterministic 3-to-8-item visually consistent carousel pages where needed, expose concise metadata plus total/current position, support navigation/filtering, and preserve every stable item identity.",
-        "AC8: Inline structure and viewport tests prove cards are single-purpose, responsive, have no nested scrolling/deep navigation, preserve the conversational composer, respect the two-primary-action limit, and use detail/fullscreen for rich multi-step exploration.",
-        "AC13: Automated accessibility, keyboard, text-scaling, reduced-motion, light/dark theme, and responsive viewport checks prove native/fallback surfaces use system tokens/fonts/layout, WCAG AA contrast, semantic labels, alt text, visible focus, and non-color status cues."
-      ]
-    },
-    {
-      "id": "t4-governed-preview-runtime",
-      "title": "Run design, build, and review previews in pinned private disposable scopes",
-      "scope": [
-        "taskplane/preview_runtime.py",
+        "taskplane/recovery.py",
+        "taskplane/preflight.py",
+        "taskplane/repository.py",
+        "taskplane/storage.py",
         "taskplane/command_runtime.py",
         "taskplane/command_adapters.py",
-        "taskplane/tests/test_host_preview_runtime.py"
+        "taskplane/tests/test_consolidated_recovery.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_preview_runtime.py",
-      "req": "R-0011",
+      "tests": "python3 -m pytest -q taskplane/tests/test_consolidated_recovery.py",
+      "req": "R-0001",
       "deps": [
-        "t1-canonical-host-surface-model"
+        "t1-authority-and-mechanical-gates"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:automatic-recovery",
+        "contract:onboarding-worktree-continuity",
+        "contract:consolidated-authorization"
+      ],
+      "new_modules": [
+        "taskplane/recovery.py",
+        "taskplane/preflight.py",
+        "taskplane/repository.py",
+        "taskplane/storage.py",
+        "taskplane/command_runtime.py",
+        "taskplane/command_adapters.py",
+        "contract:automatic-recovery",
+        "contract:onboarding-worktree-continuity"
+      ],
+      "design_edges": [
+        "taskplane/recovery.py->contract:automatic-recovery:provides",
+        "taskplane/repository.py->contract:onboarding-worktree-continuity:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Routine recovery is automatic and bounded.** Within authorized scope, Taskplane retries or mechanically repairs transient, metadata, evaluator, collection, artifact, render, and setup failures automatically two to three times or while measurable convergence continues. It asks only after the bounded policy is exhausted, progress stops/oscillates/worsens, safety or authority changes, or replan is needed. **Verify:** one-, two-, three-, converging-longer, no-progress, repeated-fingerprint, unsafe, and authority- change cases assert recover/escalate behavior and reasons.",
+        "Facade performs preparation automatically.** Repository acquisition, managed checkout/worktree preparation, target/ref pinning, and verification run without a user prompt when existing authority is sufficient. Failures classify into automatic recovery or a named genuine authority/external boundary. **Verify:** local, remote, cached, stale, moved, auth-required, host- policy, and external-unavailable repository fixtures.",
+        "Onboarding self-repairs when authorized.** Every setup check is classified self-repairable, authority-required, host-policy, or external-unavailable. Self-repair executes automatically; authority-required asks once for the exact authority; host-policy/external-unavailable explains and retries only when state can change, without repeated prompts. **Verify:** full setup matrix and prompt counts.",
+        "Onboarding survives sibling worktrees.** A stable repository-family hook/ launcher resolves the exact current worktree and latest valid engine dynamically, so supported sibling worktrees operate without restart or a new Taskplane task. **Verify:** root, nested, sibling, newly created, moved, stale-engine, unavailable-engine, and policy-restricted worktree fixtures."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t3-progressive-review-routing",
+      "scope": [
+        "taskplane/review_progression.py",
+        "taskplane/lens.py",
+        "taskplane/lens_signals.py",
+        "taskplane/review.py",
+        "taskplane/tests/test_review_progression.py",
+        "taskplane/tests/test_review_routing.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_progression.py taskplane/tests/test_review_routing.py",
+      "req": "R-0001",
+      "deps": [
+        "t1-authority-and-mechanical-gates"
+      ],
+      "type": "architecture",
+      "contracts": [
+        "contract:review-risk-progression",
+        "contract:review-kernel-slot"
+      ],
+      "new_modules": [
+        "taskplane/review_progression.py",
+        "taskplane/lens.py",
+        "taskplane/lens_signals.py",
+        "taskplane/review.py",
+        "taskplane/tests/test_review_routing.py",
+        "contract:review-risk-progression"
+      ],
+      "design_edges": [
+        "taskplane/review_progression.py->contract:review-risk-progression:provides",
+        "taskplane/lens.py->contract:review-risk-progression:consumes",
+        "taskplane/lens_signals.py->contract:review-risk-progression:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Deep-review floors scale with attributable risk.** Documentation-only and simple low-risk changes run exactly one risk-selected deep review lens. Substantive or risky changes retain architecture, code-quality, security, and QA as four mandatory deep floors. Cache, light sweep, early provisional publication, or another lens cannot replace the deep slot or slots required for the change's risk class. **Verify:** documentation-only, simple low-risk, substantive, risky, mixed, early-blocker, and mapping-gap fixtures assert exact risk classification, lens selection, and slot conservation.",
+        "Other review is progressive.** Non-floor lenses begin through at most one bounded light sweep and promote to named deep review only from attributable normalized evidence within the lens charter. Every high/major concern is promoted or explicitly rejected as duplicate, invalid, out-of-charter, or already covered. **Verify:** severity, duplicate, replay, missing-evidence, cross-charter, and mixed-sweep fixtures.",
+        "Documentation routing avoids module fail-open widening.** Documentation- only and mixed changes route from document content, directives, contracts, audiences, and graph evidence. Missing/inapplicable code-module mapping retains the four floors and the smallest explained evidence-backed widening, never unconditional all-lens or no-review. **Verify:** API/security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t4-review-evidence-revisions-and-repair",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/review_repair.py",
+        "taskplane/evaluator_health.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tests/test_review_evidence_lifecycle.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py",
+      "req": "R-0001",
+      "deps": [
+        "t1-authority-and-mechanical-gates",
+        "t3-progressive-review-routing"
       ],
       "type": "security",
       "contracts": [
-        "contract:host-preview-runtime",
-        "contract:host-capability-negotiation"
+        "contract:review-kernel-slot",
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair",
+        "contract:review-evidence-binding",
+        "contract:evaluator-infrastructure-health"
       ],
       "new_modules": [
-        "taskplane/preview_runtime.py",
-        "taskplane/command_runtime.py",
-        "taskplane/command_adapters.py",
-        "contract:host-preview-runtime"
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/review_repair.py",
+        "taskplane/evaluator_health.py",
+        "taskplane/taskplane_lite.py",
+        "contract:review-kernel-slot",
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair",
+        "contract:review-evidence-binding",
+        "contract:evaluator-infrastructure-health"
       ],
       "design_edges": [
-        "taskplane/preview_runtime.py->contract:host-preview-runtime:provides",
-        "taskplane/preview_runtime.py->contract:host-capability-negotiation:consumes",
-        "taskplane/command_runtime.py->contract:host-preview-runtime:consumes",
-        "taskplane/command_adapters.py->contract:host-preview-runtime:consumes"
+        "taskplane/review.py->contract:review-kernel-slot:provides",
+        "taskplane/review_evidence.py->contract:review-kernel-partial-revision:provides",
+        "taskplane/review_repair.py->contract:review-kernel-mechanical-repair:provides",
+        "taskplane/evaluator_health.py->contract:evaluator-infrastructure-health:provides",
+        "taskplane/taskplane_lite.py->contract:review-evidence-binding:provides",
+        "taskplane/review.py->contract:review-evidence-binding:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -167,54 +199,108 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC9: One authorized design, build, and dynamic-review scenario opens an interactive pinned working preview in the host-integrated browser or side panel where supported, records preview identity/lifecycle, and links observed behavior to canonical evidence.",
-        "AC10: Valid, unavailable, denied, build-failed, timeout, attempted-push, escaped-path, external-network, and teardown preview fixtures prove execution occurs only in a registered pinned bounded disposable scope, never pushes or changes the source checkout/remotes, and fails safely with auditable outcomes."
-      ]
+        "Severe harm publishes request-changes immediately.** An admissible Blocker, High, any security vulnerability, or harmful/destructive bug publishes an immutable provisional request-changes revision immediately, preserving complete known evidence and explicit lifecycle gaps. Exhaustive collection is not required for this recommendation. **Verify:** each trigger, non-trigger severities, invalidated finding, duplicate, and simultaneous finding fixtures assert timing and lineage.",
+        "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
+        "Normalization and repair never redo substance.** Producer verdict/count/ severity/summary metadata normalizes deterministically from canonical findings. Authoritatively derivable metadata-only defects repair automatically with before/after, derivation authority, and fingerprint equivalence; substantive change reruns only affected slots. **Verify:** field permutation, summary contradiction, identity/count defect, and every substantive mutation.",
+        "Exact execution-root evidence binding remains.** Every review/evaluation artifact verifies repository identity, exact Git worktree root, target/base/ head, engine fingerprint, run, lens, slot, lease, and producer. Parent, sibling, moved, symlinked, cloned, engine-skewed, stale, or copied evidence cannot substitute. **Verify:** negative topology matrix and valid resume.",
+        "Evaluator-outage cache is exact and truthful.** A verified evaluator infrastructure failure reuses only for the same evaluator, engine/version, capability, repository, exact worktree, and validity window. It records infrastructure unavailable—not lens pass/fail—and invalidates on any key, expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count.",
+        "Evidence remains lossless across all recovery and delivery.** Provisional publication, promotion, normalization, repair, retry, cache reuse, supersession, dashboard-size fallback, and thread delivery never drop or duplicate valid findings, criteria, gaps, provenance, telemetry, or artifact identity. **Verify:** an end-to-end multi-revision large-review round trip reconciles canonical JSON, complete Markdown, optional HTML, and thread links."
+      ],
+      "status": "passed"
     },
     {
-      "id": "t5-cross-host-packaging-and-compatibility",
-      "title": "Ship capability declarations, native guidance, and cross-host fallback compatibility",
+      "id": "t5-convergence-and-lens-telemetry",
       "scope": [
-        ".codex-plugin/**",
-        ".claude-plugin/**",
-        "skills/**",
-        "agents/**",
-        "hooks/**",
-        "docs/**",
-        "taskplane/tests",
-        "taskplane/tests/test_host_native_compatibility.py"
+        "taskplane/review_convergence.py",
+        "taskplane/lens_telemetry.py",
+        "taskplane/loop.py",
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/spend.py",
+        "taskplane/tests/test_review_convergence_telemetry.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_host_native_compatibility.py",
-      "req": "R-0011",
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_convergence_telemetry.py taskplane/tests/test_review_evidence_lifecycle.py",
+      "req": "R-0001",
       "deps": [
-        "t1-canonical-host-surface-model",
-        "t2-live-workflow-fanout-and-approvals",
-        "t3-native-dashboard-carousel-and-a11y",
-        "t4-governed-preview-runtime"
+        "t1-authority-and-mechanical-gates",
+        "t4-review-evidence-revisions-and-repair"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-evidence-binding",
+        "contract:review-fix-convergence",
+        "contract:lens-quality-telemetry"
+      ],
+      "new_modules": [
+        "taskplane/review_convergence.py",
+        "taskplane/lens_telemetry.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/spend.py",
+        "contract:review-fix-convergence",
+        "contract:lens-quality-telemetry"
+      ],
+      "design_edges": [
+        "taskplane/review_convergence.py->contract:review-fix-convergence:provides",
+        "taskplane/lens_telemetry.py->contract:lens-quality-telemetry:provides",
+        "taskplane/loop.py->contract:review-fix-convergence:consumes",
+        "taskplane/review.py->contract:review-evidence-binding:consumes",
+        "taskplane/spend.py->contract:lens-quality-telemetry:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Fix policy measures convergence.** Each fix evaluation records closed, persistent, regressed, and new admissible findings plus test/evidence progress. Safe measurable convergence can continue beyond three cycles; no-progress, repetition, oscillation, worsening, task-specific bounds, unsafe recovery, scope/authority change, or human stop escalates. **Verify:** convergence matrix and human-ownership assertions.",
+        "Per-lens telemetry is complete and independent.** Each lens records eligible/selected/promoted/collected state, admissible/confirmed/unique/ overlap/duplicate/invalidated/false-positive findings, retry/repair, latency, provider-correct tokens/cost when available, and infrastructure unavailability with versioned definitions/denominators. Telemetry derives from sealed revisions, does not expose drafts across lenses, alter current verdicts, or suppress floors. **Verify:** golden arithmetic, unavailable-vs- zero, information-isolation, and enabled/disabled equivalence fixtures."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t6-status-and-large-artifact-delivery",
+      "scope": [
+        "taskplane/progress.py",
+        "taskplane/views.py",
+        "taskplane/dashboard.py",
+        "taskplane/host_capabilities.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/loop_status.py",
+        "taskplane/tp.py",
+        "hooks/host_native_runtime.py",
+        "taskplane/tests/test_status_and_large_delivery.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_status_and_large_delivery.py taskplane/tests/test_host_native_compatibility.py",
+      "req": "R-0001",
+      "deps": [
+        "t1-authority-and-mechanical-gates",
+        "t4-review-evidence-revisions-and-repair"
       ],
       "type": "integration",
       "contracts": [
-        "contract:host-native-progress",
-        "contract:host-native-visualization",
-        "contract:host-native-approval",
-        "contract:host-native-dashboard",
-        "contract:host-preview-runtime",
-        "contract:host-capability-negotiation"
+        "contract:status-progress-telemetry",
+        "contract:large-markdown-delivery",
+        "contract:review-kernel-partial-revision"
       ],
       "new_modules": [
-        ".codex-plugin",
-        ".claude-plugin",
-        "skills",
-        "agents",
-        "hooks",
-        "docs",
-        "taskplane/tests"
+        "taskplane/progress.py",
+        "taskplane/views.py",
+        "taskplane/dashboard.py",
+        "taskplane/host_capabilities.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/loop_status.py",
+        "taskplane/tp.py",
+        "hooks/host_native_runtime.py",
+        "contract:status-progress-telemetry",
+        "contract:large-markdown-delivery"
       ],
       "design_edges": [
-        ".codex-plugin->contract:host-capability-negotiation:consumes",
-        ".claude-plugin->contract:host-capability-negotiation:consumes",
-        "taskplane/tests->contract:host-native-dashboard:validates",
-        "taskplane/tests->contract:host-preview-runtime:validates"
+        "taskplane/progress.py->contract:status-progress-telemetry:provides",
+        "taskplane/views.py->contract:large-markdown-delivery:provides",
+        "taskplane/dashboard.py->contract:review-kernel-partial-revision:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -223,9 +309,575 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC14: Concurrent update, reconnect/resume, stale UI, duplicate event, host switch, and terminal-close fixtures prove PiP, fan-out, approvals, dashboards, carousels, previews, fallbacks, and artifacts reference one workflow/run, target, revision, task/slot identity, evidence, gate state, and ordered audit history.",
-        "AC15: Existing non-native design, build, review, status, approval, and artifact golden scenarios plus the native-capability matrix pass without lost evidence, weaker gates, removed tests, skips, xfails, loosened assertions, or reclassified failures."
-      ]
+        "Dashboard delivery is size-appropriate and complete.** Small dashboards render inline. Very large dashboards automatically deliver complete Markdown without truncating evidence; canonical JSON remains machine authority and HTML failure/absence is optional and nonblocking. **Verify:** below/above thresholds and large-finding fixtures compare semantic equality and gate state across JSON, inline, Markdown, and optional HTML.",
+        "Status is cheap, live, and non-gating.** Status reads durable snapshots only, performs no expensive recomputation, and never blocks or gates work. Picture-in-Picture continuously identifies the active agent/phase and updates from durable events. **Verify:** instrumentation asserts bounded reads/no graph/review recomputation and identical workflow outcome with status open, closed, interrupted, or unavailable.",
+        "Progress telemetry is truthful.** Status shows observed tokens used, elapsed time in the current focus/stage, and execution/wait/human-wait state. ETA appears only from observed comparable or bounded work and includes source, confidence, and update time; otherwise it says unavailable. **Verify:** execution, tool wait, agent wait, human wait, resume, unknown tokens, sparse history, comparable history, and stale ETA fixtures."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t7-cross-host-flow-and-contract-integration",
+      "scope": [
+        "taskplane/tp.py",
+        "agents/**",
+        "skills/**",
+        "workflows/**",
+        "hooks/**",
+        ".codex-plugin/**",
+        ".claude-plugin/**",
+        "docs/**",
+        "taskplane/tests/test_consolidated_flow.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_consolidated_flow.py",
+      "req": "R-0001",
+      "deps": [
+        "t1-authority-and-mechanical-gates",
+        "t2-recovery-repository-and-onboarding",
+        "t3-progressive-review-routing",
+        "t4-review-evidence-revisions-and-repair",
+        "t5-convergence-and-lens-telemetry",
+        "t6-status-and-large-artifact-delivery"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair",
+        "contract:review-risk-progression",
+        "contract:review-evidence-binding",
+        "contract:evaluator-infrastructure-health",
+        "contract:review-fix-convergence",
+        "contract:lens-quality-telemetry",
+        "contract:consolidated-authorization",
+        "contract:automatic-recovery",
+        "contract:status-progress-telemetry",
+        "contract:onboarding-worktree-continuity",
+        "contract:product-internal-north-star",
+        "contract:large-markdown-delivery",
+        "contract:attributed-thread-continuation"
+      ],
+      "new_modules": [
+        "(root)",
+        "taskplane/tp.py",
+        "agents/tp-engineering.md",
+        "agents/tp-lens.md",
+        "skills/tp-engineering",
+        "skills/tp-go",
+        "docs",
+        "taskplane/tests",
+        "workflows",
+        "skills",
+        "agents",
+        "hooks",
+        ".codex-plugin",
+        ".claude-plugin",
+        "contract:attributed-thread-continuation"
+      ],
+      "design_edges": [
+        "workflows->contract:attributed-thread-continuation:provides",
+        "taskplane/tests->contract:review-risk-progression:validates",
+        "taskplane/tests->contract:review-evidence-binding:validates",
+        "taskplane/tests->contract:review-fix-convergence:validates",
+        "taskplane/tests->contract:lens-quality-telemetry:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Ownership and parallelism remain governed.** Each phase has one accountable owner; parallel agents/subagents run only in isolated worktrees with bounded scopes, evidence-bound submissions, and orchestrator-only gates. **Verify:** serial, parallel, overlapping-scope, sibling-worktree, crashed-owner, copied- evidence, and attempted-worker-gate fixtures preserve ownership and isolation.",
+        "Facade preserves intent and hides persona plumbing.** User intent, current loop state, and authority deterministically select Product/Design/Build/ Engineering/Status/Help behavior; the user is never asked which persona to invoke. **Verify:** ambiguous-language/state matrix routes or asks one substantive clarification without exposing internal role selection.",
+        "Thread approval is attributable and sufficient.** In Claude-tag/Slack contexts, one attributed approval in the bound thread authorizes the same routine continuation as the consolidated packet; wrong thread, actor, revision, replay, or ambiguous reply cannot authorize. **Verify:** receipt matrix and one-routine-approval trace.",
+        "Thread delivery preserves complete evidence.** A concise summary leads, but the complete evidence set is attached or linked and remains canonical. Missing native controls degrade to an accessible thread summary, complete Markdown/artifacts, and canonical actions through attributed replies; unavailable controls are never interpreted as decline. Automatic retry/ recovery precedes any user prompt. **Verify:** native, missing-control, attachment/link failure, large artifact, retry success/exhaustion, and accessibility fixtures."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t8-routing-cap-doc-content-and-attribution-repair",
+      "scope": [
+        "taskplane/lens.py",
+        "taskplane/lens_signals.py",
+        "taskplane/decompose.py",
+        "taskplane/tests/test_decompose.py",
+        "taskplane/tests/test_lens_route_v2.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_decompose.py::TestComponentAttributionOnBriefs::test_briefs_and_routing_decision_carry_attribution taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_deep_capped_at_8_overflow_demoted_never_dropped taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_docs_only_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_simple_low_risk_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_substantive_and_risky_changes_retain_four_mandatory_deep_floors taskplane/tests/test_lens_route_v2.py::TestCanonicalDiffContentSignals::test_untouched_markers_in_a_changed_file_do_not_route_lenses",
+      "req": "R-0001",
+      "deps": [
+        "t3-progressive-review-routing",
+        "t7-cross-host-flow-and-contract-integration"
+      ],
+      "type": "architecture",
+      "contracts": [
+        "contract:review-risk-progression",
+        "contract:review-kernel-slot"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/lens.py->contract:review-risk-progression:consumes",
+        "taskplane/lens_signals.py->contract:review-risk-progression:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Deep-review floors scale with attributable risk.** Documentation-only and simple low-risk changes run exactly one risk-selected deep review lens. Substantive or risky changes retain architecture, code-quality, security, and QA as four mandatory deep floors. Cache, light sweep, early provisional publication, or another lens cannot replace the deep slot or slots required for the change's risk class. **Verify:** documentation-only, simple low-risk, substantive, risky, mixed, early-blocker, and mapping-gap fixtures assert exact risk classification, lens selection, and slot conservation."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t9-review-blocking-summary-gap-repair",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/review_repair.py",
+        "taskplane/tests/test_review_routing.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_blocking_finding_cannot_hide_behind_pass_zero_summary taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_collection_reports_every_invalid_slot_in_one_repair_batch",
+      "req": "R-0001",
+      "deps": [
+        "t4-review-evidence-revisions-and-repair",
+        "t7-cross-host-flow-and-contract-integration"
+      ],
+      "type": "security",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/review.py->contract:review-kernel-slot:provides",
+        "taskplane/review_evidence.py->contract:review-kernel-partial-revision:provides",
+        "taskplane/review_repair.py->contract:review-kernel-mechanical-repair:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Severe harm publishes request-changes immediately.** An admissible Blocker, High, any security vulnerability, or harmful/destructive bug publishes an immutable provisional request-changes revision immediately, preserving complete known evidence and explicit lifecycle gaps. Exhaustive collection is not required for this recommendation. **Verify:** each trigger, non-trigger severities, invalidated finding, duplicate, and simultaneous finding fixtures assert timing and lineage.",
+        "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
+        "Normalization and repair never redo substance.** Producer verdict/count/ severity/summary metadata normalizes deterministically from canonical findings. Authoritatively derivable metadata-only defects repair automatically with before/after, derivation authority, and fingerprint equivalence; substantive change reruns only affected slots. **Verify:** field permutation, summary contradiction, identity/count defect, and every substantive mutation.",
+        "Evidence remains lossless across all recovery and delivery.** Provisional publication, promotion, normalization, repair, retry, cache reuse, supersession, dashboard-size fallback, and thread delivery never drop or duplicate valid findings, criteria, gaps, provenance, telemetry, or artifact identity. **Verify:** an end-to-end multi-revision large-review round trip reconciles canonical JSON, complete Markdown, optional HTML, and thread links."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t10-loop-em-progress-and-selection-determinism",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/authority.py",
+        "taskplane/progress.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_loop_context_traces.py",
+        "taskplane/tests/test_selfreview_fixes.py",
+        "taskplane/tests/test_status_and_large_delivery.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py::TestLoop::test_happy_path_to_signoff taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_equal_fingerprint_gate_is_byte_identical_to_the_pre_a4_flow taskplane/tests/test_loop_context_traces.py taskplane/tests/test_selfreview_fixes.py::TestLoopSerialSkipAndSelection::test_neither_selection_has_transition taskplane/tests/test_status_and_large_delivery.py",
+      "req": "R-0001",
+      "deps": [
+        "t1-authority-and-mechanical-gates",
+        "t6-status-and-large-artifact-delivery",
+        "t7-cross-host-flow-and-contract-integration"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:consolidated-authorization",
+        "contract:review-kernel-slot",
+        "contract:status-progress-telemetry"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/authority.py->contract:consolidated-authorization:provides",
+        "taskplane/progress.py->contract:status-progress-telemetry:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Build preserves the intended selection boundary.** A single variant uses consolidated authorization end to end. When A/B variants were explicitly chosen, variant selection is the only ordinary mid-build human gate and each variant retains isolated comparable evidence. **Verify:** single, A/B, invalid variant, stale selection, and resumed selection fixtures.",
+        "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
+        "Status is cheap, live, and non-gating.** Status reads durable snapshots only, performs no expensive recomputation, and never blocks or gates work. Picture-in-Picture continuously identifies the active agent/phase and updates from durable events. **Verify:** instrumentation asserts bounded reads/no graph/review recomputation and identical workflow outcome with status open, closed, interrupted, or unavailable.",
+        "Progress telemetry is truthful.** Status shows observed tokens used, elapsed time in the current focus/stage, and execution/wait/human-wait state. ETA appears only from observed comparable or bounded work and includes source, confidence, and update time; otherwise it says unavailable. **Verify:** execution, tool wait, agent wait, human wait, resume, unknown tokens, sparse history, comparable history, and stale ETA fixtures."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t11-delivery-and-stage-byte-parity",
+      "scope": [
+        "taskplane/tp.py",
+        "taskplane/loop.py",
+        "taskplane/lens.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/progress.py",
+        "hooks/host_native_runtime.py",
+        "workflows/execute-wave.js",
+        "workflows/evaluate-wave.js",
+        "workflows/fix-wave.js",
+        "taskplane/tests/test_dispatch_parity.py",
+        "taskplane/tests/test_stage_waves.py",
+        "taskplane/tests/fixtures/briefs/**"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_dispatch_parity.py taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity taskplane/tests/test_stage_waves.py::TestStageEmitterWorkflowPath::test_agent_prompts_are_task_path_bytes_verbatim taskplane/tests/test_stage_waves.py::TestSlotCharsetRefusalAtEmission::test_valid_ids_emit_byte_identically",
+      "req": "R-0001",
+      "deps": [
+        "t8-routing-cap-doc-content-and-attribution-repair",
+        "t10-loop-em-progress-and-selection-determinism"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:review-risk-progression",
+        "contract:status-progress-telemetry",
+        "contract:large-markdown-delivery"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/lens.py->contract:review-risk-progression:consumes",
+        "taskplane/progress.py->contract:status-progress-telemetry:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Dashboard delivery is size-appropriate and complete.** Small dashboards render inline. Very large dashboards automatically deliver complete Markdown without truncating evidence; canonical JSON remains machine authority and HTML failure/absence is optional and nonblocking. **Verify:** below/above thresholds and large-finding fixtures compare semantic equality and gate state across JSON, inline, Markdown, and optional HTML.",
+        "Thread delivery preserves complete evidence.** A concise summary leads, but the complete evidence set is attached or linked and remains canonical. Missing native controls degrade to an accessible thread summary, complete Markdown/artifacts, and canonical actions through attributed replies; unavailable controls are never interpreted as decline. Automatic retry/ recovery precedes any user prompt. **Verify:** native, missing-control, attachment/link failure, large artifact, retry success/exhaustion, and accessibility fixtures.",
+        "Cross-host and legacy semantics remain compatible.** Codex, Claude, Slack-capable entry, managed worktrees, and supported fallbacks preserve the same authorization, recovery, gate, review, evidence, convergence, status, and telemetry semantics. **Verify:** golden cross-host scenarios and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t12-consolidated-flow-golden-reconciliation",
+      "scope": [
+        "skills/taskplane/flow.json",
+        "skills/tp-go/flow.json",
+        "skills/tp-tag/flow.json",
+        "skills/taskplane/SKILL.md",
+        "skills/tp-go/SKILL.md",
+        "skills/tp-tag/SKILL.md",
+        "skills/taskplane/references/harness-rules.md",
+        "skills/tp-build/flow.json",
+        "skills/tp-build/SKILL.md",
+        "taskplane/tests/test_skill_flows.py",
+        "taskplane/tests/test_v140_tag.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_skill_flows.py::TestApprovedSkillFlows::test_all_ten_graphs_are_valid_and_documented taskplane/tests/test_v140_tag.py::TestTagSkill::test_approved_flow_contract_is_exact_and_attributable",
+      "req": "R-0001",
+      "deps": [
+        "t1-authority-and-mechanical-gates",
+        "t7-cross-host-flow-and-contract-integration"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:consolidated-authorization",
+        "contract:attributed-thread-continuation"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "One authorization covers routine end-to-end work.** A consolidated packet identifies the requirement, conditional design/plan, target and scope, acceptance criteria, dynamic-validation intent, ordinary sandbox authority, routine fix/recovery policy, evaluation/collection, artifact delivery, and execution bounds. One attributable approval authorizes those unchanged activities through final-signoff readiness. **Verify:** all ten flow fixtures complete routine stages without another approval and retain one receipt plus stage-by-stage authority derivation.",
+        "Human-attention boundaries are closed and explicit.** A new human decision occurs only for initial consolidated authorization; explicit A/B selection; exhausted/no-progress recovery or replan; material scope creep or major authority change; destructive/irreversible action; new external system, credential, publication, or spend; changed acceptance criteria; recovery that weakens a gate; or final sign-off. **Verify:** an approval trace for every flow contains no other prompt and each allowed prompt names the new fact, consequence, and authority requested.",
+        "Facade preserves intent and hides persona plumbing.** User intent, current loop state, and authority deterministically select Product/Design/Build/ Engineering/Status/Help behavior; the user is never asked which persona to invoke. **Verify:** ambiguous-language/state matrix routes or asks one substantive clarification without exposing internal role selection.",
+        "Thread approval is attributable and sufficient.** In Claude-tag/Slack contexts, one attributed approval in the bound thread authorizes the same routine continuation as the consolidated packet; wrong thread, actor, revision, replay, or ambiguous reply cannot authorize. **Verify:** receipt matrix and one-routine-approval trace.",
+        "Cross-host and legacy semantics remain compatible.** Codex, Claude, Slack-capable entry, managed worktrees, and supported fallbacks preserve the same authorization, recovery, gate, review, evidence, convergence, status, and telemetry semantics. **Verify:** golden cross-host scenarios and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t13-loop-extraction-and-utf8-mechanical-repair",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/audit.py",
+        "taskplane/authority.py",
+        "taskplane/progress.py",
+        "taskplane/tests/test_audit_extraction.py",
+        "taskplane/tests/test_consolidated_recovery.py",
+        "taskplane/tests/test_subprocess_encoding.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_audit_extraction.py::TestExtractionStructure::test_loop_shrank_by_the_moved_region taskplane/tests/test_subprocess_encoding.py::TestNoSubprocessDecodesWithTheAmbientLocale::test_every_text_mode_subprocess_names_its_encoding taskplane/tests/test_consolidated_recovery.py",
+      "req": "R-0001",
+      "deps": [
+        "t2-recovery-repository-and-onboarding",
+        "t10-loop-em-progress-and-selection-determinism",
+        "t11-delivery-and-stage-byte-parity"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:automatic-recovery",
+        "contract:consolidated-authorization",
+        "contract:status-progress-telemetry"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/authority.py->contract:consolidated-authorization:provides",
+        "taskplane/progress.py->contract:status-progress-telemetry:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Routine recovery is automatic and bounded.** Within authorized scope, Taskplane retries or mechanically repairs transient, metadata, evaluator, collection, artifact, render, and setup failures automatically two to three times or while measurable convergence continues. It asks only after the bounded policy is exhausted, progress stops/oscillates/worsens, safety or authority changes, or replan is needed. **Verify:** one-, two-, three-, converging-longer, no-progress, repeated-fingerprint, unsafe, and authority- change cases assert recover/escalate behavior and reasons.",
+        "Cross-host and legacy semantics remain compatible.** Codex, Claude, Slack-capable entry, managed worktrees, and supported fallbacks preserve the same authorization, recovery, gate, review, evidence, convergence, status, and telemetry semantics. **Verify:** golden cross-host scenarios and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t14-final-reviewkernel-and-broad-integration",
+      "scope": [
+        "taskplane/lens.py",
+        "taskplane/lens_signals.py",
+        "taskplane/decompose.py",
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/review_repair.py",
+        "taskplane/loop.py",
+        "taskplane/authority.py",
+        "taskplane/progress.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tp.py",
+        "taskplane/audit.py",
+        "hooks/host_native_runtime.py",
+        "workflows/execute-wave.js",
+        "workflows/evaluate-wave.js",
+        "workflows/fix-wave.js",
+        "skills/taskplane/flow.json",
+        "skills/tp-go/flow.json",
+        "skills/tp-tag/flow.json",
+        "skills/taskplane/SKILL.md",
+        "skills/tp-go/SKILL.md",
+        "skills/tp-tag/SKILL.md",
+        "taskplane/tests/test_decompose.py",
+        "taskplane/tests/test_lens_route_v2.py",
+        "taskplane/tests/test_review_routing.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_loop_context_traces.py",
+        "taskplane/tests/test_selfreview_fixes.py",
+        "taskplane/tests/test_status_and_large_delivery.py",
+        "taskplane/tests/test_dispatch_parity.py",
+        "taskplane/tests/test_stage_waves.py",
+        "taskplane/tests/fixtures/briefs/**",
+        "taskplane/tests/test_skill_flows.py",
+        "taskplane/tests/test_v140_tag.py",
+        "taskplane/tests/test_audit_extraction.py",
+        "taskplane/tests/test_consolidated_recovery.py",
+        "taskplane/tests/test_subprocess_encoding.py",
+        "taskplane/tests/test_consolidated_flow.py",
+        "taskplane/tests/fixtures/audit/cadence-release.json",
+        "taskplane/tests/fixtures/audit/cadence-corrupt.json",
+        "taskplane/tests/fixtures/audit/brief-due.json",
+        "taskplane/tests/fixtures/audit/brief-corrupt-git.json",
+        "evals/scenarios/tp-build.json",
+        "evals/scenarios/tp-go.json",
+        "evals/scenarios/tp-tag.json",
+        "taskplane/tests/test_review_evidence_lifecycle.py",
+        "taskplane/tests/test_v230_loop.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_decompose.py::TestComponentRouting::test_single_component_diff_routes_component_lenses taskplane/tests/test_decompose.py::TestComponentAttributionOnBriefs::test_briefs_and_routing_decision_carry_attribution taskplane/tests/test_audit_extraction.py::TestDifferentialViaLoop::test_differential_byte_identity taskplane/tests/test_audit_extraction.py::TestDifferentialViaAudit::test_differential_byte_identity taskplane/tests/test_eval_scenario.py::TestEveryEvaluatedSkillHasAScenario::test_every_scenario_fingerprint_is_current taskplane/tests/test_eval_scenario.py::TestEveryEvaluatedSkillHasAScenario::test_every_scenario_on_disk_validates taskplane/tests/test_review_evidence_lifecycle.py::test_real_collector_consumes_repair_and_exact_execution_binding taskplane/tests/test_v230_loop.py::TestAttestationWarning::test_signoff_without_by_warns_and_traces taskplane/tests/test_v230_loop.py::TestDesignWiringHooks::test_signoff_approve_includes_design_review_notices taskplane/tests/test_v230_loop.py::TestDesignWiringHooks::test_signoff_payload_includes_design_review_notices",
+      "req": "R-0001",
+      "deps": [
+        "t8-routing-cap-doc-content-and-attribution-repair",
+        "t9-review-blocking-summary-gap-repair",
+        "t10-loop-em-progress-and-selection-determinism",
+        "t11-delivery-and-stage-byte-parity",
+        "t12-consolidated-flow-golden-reconciliation",
+        "t13-loop-extraction-and-utf8-mechanical-repair"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-partial-revision",
+        "contract:review-kernel-mechanical-repair",
+        "contract:review-risk-progression",
+        "contract:review-evidence-binding",
+        "contract:evaluator-infrastructure-health",
+        "contract:review-fix-convergence",
+        "contract:lens-quality-telemetry",
+        "contract:consolidated-authorization",
+        "contract:automatic-recovery",
+        "contract:status-progress-telemetry",
+        "contract:onboarding-worktree-continuity",
+        "contract:product-internal-north-star",
+        "contract:large-markdown-delivery",
+        "contract:attributed-thread-continuation"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/tests->contract:review-risk-progression:validates",
+        "taskplane/tests->contract:review-evidence-binding:validates",
+        "taskplane/tests->contract:review-fix-convergence:validates",
+        "taskplane/tests->contract:lens-quality-telemetry:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Cross-host and legacy semantics remain compatible.** Codex, Claude, Slack-capable entry, managed worktrees, and supported fallbacks preserve the same authorization, recovery, gate, review, evidence, convergence, status, and telemetry semantics. **Verify:** golden cross-host scenarios and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions."
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "t15-risk-routing-product-design-reconciliation",
+      "scope": [
+        "specs/spec.md",
+        "design/contract.json",
+        "design/design.md",
+        "taskplane/lens.py",
+        "taskplane/lens_signals.py",
+        "taskplane/review_progression.py",
+        "taskplane/tests/test_review_progression.py",
+        "taskplane/tests/test_lens_route_v2.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_progression.py::test_review_floors_scale_with_attributable_risk_across_required_matrix taskplane/tests/test_review_progression.py::test_document_risk_signal_selects_an_attributable_single_deep_lens taskplane/tests/test_review_progression.py::test_document_malformed_absent_map_and_mixed_inputs_never_fail_open taskplane/tests/test_review_progression.py::test_missing_mapping_alone_stays_single_deep_and_only_evidenced_ambiguity_widens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_docs_only_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_simple_low_risk_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_substantive_and_risky_changes_retain_four_mandatory_deep_floors",
+      "req": "R-0001",
+      "deps": [],
+      "type": "architecture",
+      "contracts": [
+        "contract:review-risk-progression",
+        "contract:review-kernel-slot"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/review_progression.py->contract:review-risk-progression:provides",
+        "taskplane/lens.py->contract:review-risk-progression:consumes",
+        "taskplane/lens_signals.py->contract:review-risk-progression:consumes",
+        "taskplane/tests->contract:review-risk-progression:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Deep-review floors scale with attributable risk.** Documentation-only and simple low-risk changes run exactly one risk-selected deep review lens. Substantive or risky changes retain architecture, code-quality, security, and QA as four mandatory deep floors. Cache, light sweep, early provisional publication, or another lens cannot replace the deep slot or slots required for the change's risk class. **Verify:** documentation-only, simple low-risk, substantive, risky, mixed, early-blocker, and mapping-gap fixtures assert exact risk classification, lens selection, and slot conservation.",
+        "Documentation routing avoids module fail-open widening.** Documentation- only and mixed changes route from document content, directives, contracts, audiences, and graph evidence. Missing/inapplicable code-module mapping retains the four floors and the smallest explained evidence-backed widening, never unconditional all-lens or no-review. **Verify:** API/security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases."
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "t16-collector-metadata-normalization-order",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/review_repair.py",
+        "taskplane/review_recovery.py",
+        "taskplane/tests/test_review_evidence_lifecycle.py",
+        "taskplane/tests/test_review_recovery.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py::test_metadata_contradiction_repairs_from_canonical_findings_once taskplane/tests/test_review_evidence_lifecycle.py::test_real_collector_consumes_repair_and_exact_execution_binding taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun taskplane/tests/test_review_recovery.py::test_retry_plan_calls_only_affected_producers_and_preserves_valid_results",
+      "req": "R-0001",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-mechanical-repair"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/review.py->contract:review-kernel-slot:provides",
+        "taskplane/review_repair.py->contract:review-kernel-mechanical-repair:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Normalization and repair never redo substance.** Producer verdict/count/ severity/summary metadata normalizes deterministically from canonical findings. Authoritatively derivable metadata-only defects repair automatically with before/after, derivation authority, and fingerprint equivalence; substantive change reruns only affected slots. **Verify:** field permutation, summary contradiction, identity/count defect, and every substantive mutation."
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "t17-evaluator-unavailable-readiness-state",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/evaluator_health.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_remains_non_judged_and_keeps_readiness_closed taskplane/tests/test_loop.py::TestLoop::test_unavailable_warning_preserves_exact_outage_identity_without_pass_verdict",
+      "req": "R-0001",
+      "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:evaluator-infrastructure-health"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/evaluator_health.py->contract:evaluator-infrastructure-health:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
+        "Evaluator-outage cache is exact and truthful.** A verified evaluator infrastructure failure reuses only for the same evaluator, engine/version, capability, repository, exact worktree, and validity window. It records infrastructure unavailable—not lens pass/fail—and invalidates on any key, expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count."
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "t18-shape-safe-status-contract-projection",
+      "scope": [
+        "taskplane/dashboard.py",
+        "taskplane/tp.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tests/test_status_and_large_delivery.py",
+        "taskplane/tests/test_selfreview_fixes.py",
+        "taskplane/tests/test_v230_dashboard.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_status_and_large_delivery.py::test_contract_projection_is_shape_safe_for_coding_read_only_review_and_released_contracts taskplane/tests/test_selfreview_fixes.py::TestContractSchemaUnified::test_status_and_budget_survive_kernel_contract taskplane/tests/test_selfreview_fixes.py::TestContractSchemaUnified::test_status_dashboard_and_cli_survive_read_only_review_and_released_contracts taskplane/tests/test_v230_dashboard.py::TestContractShapeProjection::test_contract_projection_is_shape_safe_across_supported_contract_shapes",
+      "req": "R-0001",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:review-kernel-partial-revision",
+        "contract:status-progress-telemetry",
+        "contract:large-markdown-delivery"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/dashboard.py->contract:review-kernel-partial-revision:consumes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Dashboard delivery is size-appropriate and complete.** Small dashboards render inline. Very large dashboards automatically deliver complete Markdown without truncating evidence; canonical JSON remains machine authority and HTML failure/absence is optional and nonblocking. **Verify:** below/above thresholds and large-finding fixtures compare semantic equality and gate state across JSON, inline, Markdown, and optional HTML.",
+        "Status is cheap, live, and non-gating.** Status reads durable snapshots only, performs no expensive recomputation, and never blocks or gates work. Picture-in-Picture continuously identifies the active agent/phase and updates from durable events. **Verify:** instrumentation asserts bounded reads/no graph/review recomputation and identical workflow outcome with status open, closed, interrupted, or unavailable."
+      ],
+      "status": "pending"
     }
   ]
 }

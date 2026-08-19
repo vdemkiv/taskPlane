@@ -1,98 +1,123 @@
-# R-0011 plan — host-native workflow UX for Codex and Claude
+# R-0001 post-EM focused repair plan
 
-This plan realizes the human-approved Design Contract fingerprint
-`153c98980cdeb87276701195112b22f2ac923bf828717501aa70ea14c8a89fe3`.
-The current contract artifact SHA-256 is
-`b05d264895b2b89d15bdc8fb96b44873149ab60409dacb2584f290666ad8ab4d`;
-the approved fingerprint remains the decision identity. The prior R-0010 plan
-is preserved unchanged in `plan/r0010-plan.pre-r0011.md` and
-`plan/r0010-tasks.pre-r0011.json`.
+This authorized replan starts at the completed 14-task Engineering Manager
+request-changes checkpoint. It preserves the archived t1–t14 task history,
+worktrees, commits, submissions, and evidence, including t14's accepted
+exact-worktree and fixture corrections through commit `ac1f960`. Product and
+Design are not restarted. The only new work is four scope-disjoint tasks for
+the four reproduced EM blockers. The approved Design checkpoint fingerprint is
+`87d23fd659956c3b821790a2ecfe6fe0007ce13c5eb6e161a986102612ffe44e`;
+t15's in-place wording reconciliation is directly authorized by this EM
+replan and may not introduce a new HOW.
 
-## Graph and Design coverage
+Identity boundary: this is the 32-AC Progressive convergent engineering review
+R-0001. It does not cover or claim the separate 15-AC governed-run reliability
+and exclusive authority R-0001 from another task/store.
 
-The required single bounded impact call covered every proposed implementation
-surface and matched the approved baseline fingerprint
-`11db1c87480228a4a28948051a388cc6e7d9ccec958a810c770cf1cba71211e9`
-at HEAD `4e1c7e7b437777306cb034dec1f4fa775a62addc`. It returned 31 impacted
-nodes, no unknown modules, and the approved policy: local depth 3,
-`contract-only` boundaries, contract depth 1, requirement depth 1.
+The plan packet contains 18 coverage records: t1–t14 are explicitly
+`status: "passed"` and load as SETTLED, while only t15–t18 are
+`status: "pending"` and executable. The four repair tasks run focused declared
+tests only. There is no local full suite in this plan: after focused closure
+and independent evaluation, CI owns the single final
+`python3 -m pytest -q taskplane/tests` confirmation.
 
-The five tasks collectively declare every one of the 23 proposed graph nodes,
-all six exact contracts, all 18 proposed edges, and AC1–AC15 verbatim. The
-first task establishes the canonical schema. Dashboard, workflow/approval, and
-preview tasks then use disjoint source/test scopes and may execute in parallel
-isolated worktrees. The final host-packaging/compatibility task depends on all
-of them and owns the generic `taskplane/tests` graph node.
+## Preserved checkpoint
 
-## Risk-first delivery
+- t1–t13 remain completed exactly as archived; this replan does not reopen,
+  broaden, replace, or reschedule any of their accepted work. Their full
+  definitions are copied from the durable Taskplane snapshot and marked
+  passed solely to preserve requirement, contract, module, edge, policy, and
+  criterion coverage for Plan DoR. Execution skips them as SETTLED.
+- t14 remains completed with its exact-worktree/fixture fixes and focused
+  evidence. Its full snapshot definition is likewise marked passed for
+  coverage only. Its valid commit and evidence are part of the governed
+  primary baseline for every repair task, not work or a dependency to repeat.
+- The EM request-changes report remains the authority for the four bounded
+  defects. No unrelated cleanup, wishlist documentation, i18n,
+  retention/compaction, scalability machinery, private-key scheme, or
+  same-UID authenticated-host boundary enters this plan.
 
-1. **Canonical surface model and capability negotiation.** Add one versioned
-   snapshot/event/audit model and one serialized adapter queue. Persist each
-   canonical update before delivery; acknowledge by workflow, revision,
-   sequence, and surface; replay from the last acknowledgement. Capability
-   records include host/version, source/confidence/freshness, limitations,
-   selected surface, and explicit fallback. Unknown, stale, contradictory,
-   partial, or changed-mid-run evidence never becomes support. Fallbacks expose
-   the same values/evidence/decisions/actions and say unavailable, not declined.
-2. **Live workflow, fan-out, and approval authority.** Publish ordered stage,
-   wave, agent, token, attention, gate, and terminal events from existing
-   canonical owners. PiP opens only for live persistent work, coalesces to at
-   most four <=16 KiB updates/second without dropping attention/terminal
-   transitions, reconnects, and closes once. Token values remain observed,
-   source-attributed, partial, or unavailable. Native approval cards show the
-   complete decision with <=2 primary actions; only authenticated current
-   actor/decision/target/revision receipts advance exactly once.
-3. **Native dashboard, carousel, and accessibility.** Project workflow, DoR,
-   dependency/impact, agents, lenses, criteria, findings, validation, artifacts,
-   and gate from canonical state. Zero/one items use concise cards; 3–8 use one
-   page; 9+ use deterministic pages of eight with a final page rebalanced to
-   at least three where possible. Preserve item ids, filters, focus, totals,
-   composer access, <=14 KiB inline payloads, and lossless artifact links. Use
-   system tokens and meet WCAG AA, keyboard, 200% text, reduced motion,
-   light/dark, alt-text, semantic-label, focus, responsive, and non-color cues.
-4. **Governed working previews.** Register design/build/review previews against
-   target/revision, private authorization, sandbox/hosting identity, CPU/memory/
-   time/network policy, no-push transport, teardown deadline, and capability
-   receipt. Browser/side-panel interaction becomes canonical evidence. Denial,
-   unavailability, build failure, timeout, push, path escape, external network,
-   public exposure, or teardown failure stays bounded and cannot change source
-   checkout/remotes or synthesize success.
-5. **Cross-host packaging and compatibility.** Declare/observe capabilities in
-   the Codex and Claude packages, align hooks/skills/agents/docs with the same
-   semantics, and run cross-host/native-disabled goldens. Host styling and API
-   names may differ; canonical values, ordering, provenance, actions, audit,
-   gates, and accessible fallbacks may not. Existing non-native design, build,
-   review, status, approval, and artifact flows retain full evidence and gate
-   strength.
+## Bounded graph and contract impact
 
-## Exact non-functional requirements
+This correction reuses the single bounded graph-impact result obtained for the
+same four unchanged repair surfaces in the rejected packet; making a second
+identical call would add no planning evidence. At graph fingerprint
+`9dd9e555fb5e583431dcc1d51d203edac707682a2b4609d2d298bfa954b05e14`,
+it touched `design`, `specs`, `taskplane`, and `taskplane/tests`; reached 25
+impacted nodes; affected only `req:R-0001`; and reported no unknown modules,
+dependent requirements, policy blocks, contract-boundary violations,
+truncation, or depth truncation. The existing typed policy remains local depth
+3, `contract-only` boundaries, contract depth 1, and requirement depth 1.
+No repair task introduces a module, contract, resource, or distributed
+boundary. Across the 14 settled coverage records and four pending repairs, all
+32 acceptance criteria and every approved Design module, named contract,
+canonical edge, and impact-policy surface remain owned.
 
-- **security**: Native actions, previews, sandbox/hosting, browser interaction, and capability claims are authenticated, target-bound, least-privilege, and fail closed; UI state is not authority and previews cannot push, escape isolation, leak secrets, or become public by default.
-- **architecture**: One versioned canonical semantic model and audit stream drive all Claude/Codex native projections and fallbacks; host adapters negotiate/render capabilities without creating parallel workflow truth.
-- **accessibility**: Native and fallback surfaces meet WCAG AA, support keyboard and responsive text, retain focus/composer access, provide alt text and semantic labels, and never communicate status by color alone.
-- **integrability**: PiP, visualization, approval, dashboard, carousel, preview, and capability contracts are versioned and tolerate additive host evolution without hard-coding identical Claude/Codex APIs.
-- **privacy-compliance**: UI and preview telemetry minimize repository/user data, redact credentials, secrets, personal paths, prompts, and unrelated content, and expose preview access only to the authorized conversation/session.
-- **sre**: Every native surface has explicit open, update, attention, terminal, error, reconnect, and teardown lifecycle with bounded retries/payloads and an actionable fallback rather than stuck or false completion.
-- **scalability**: Agent waves, token events, findings, criteria, and dashboards remain responsive through bounded updates and 3-to-8-item pages; host payloads do not copy full history on every update.
-- **cost-finops**: Token reporting is source-attributed and never estimated as observed; UI update coalescing and previews have bounded resource budgets and do not trigger redundant model turns or persist hosting after completion.
+## Repair wave
 
-## Runnable validation
+All four tasks start from the current governed primary baseline containing the
+accepted t14 fixes. Their `deps` arrays are empty because the passed t14 record
+is coverage-only rather than an executable prerequisite. Their write scopes
+are disjoint, so they may run in one parallel wave. The ordering below is risk
+priority, not a new dependency.
 
-| Task | Criteria | Command |
-|---|---|---|
-| Canonical model/capabilities | AC11–AC12 | `python3 -m pytest -q taskplane/tests/test_host_native_capabilities.py` |
-| PiP/fan-out/approval | AC1–AC5 | `python3 -m pytest -q taskplane/tests/test_host_native_workflow.py` |
-| Dashboard/carousel/a11y | AC6–AC8, AC13 | `python3 -m pytest -q taskplane/tests/test_host_native_dashboard.py` |
-| Preview runtime | AC9–AC10 | `python3 -m pytest -q taskplane/tests/test_host_preview_runtime.py` |
-| Cross-host/legacy compatibility | AC14–AC15 | `python3 -m pytest -q taskplane/tests/test_host_native_compatibility.py` |
+1. **t15 — risk-routing Product/Design reconciliation.** Reconcile AC15 and
+   AC22 in-place to the already authorized risk-scaled rule and make the
+   Product wording, approved Design artifacts, runtime routing, and focused
+   fixtures agree. Documentation-only and simple low-risk changes select
+   exactly one attributable risk-selected deep lens. A missing code-module
+   mapping alone does not widen. Only evidence of genuine ambiguity,
+   corruption, mixed/substantive impact, or other material risk widens to the
+   four architecture, code-quality, security, and QA floors, and the widening
+   records its reason. The focused matrix also conserves the selected slot(s)
+   and the eight-lens cap. This is reconciliation to the approved criterion,
+   not a new product requirement or design approach. For mechanical ownership,
+   t15's `criteria` array copies the currently persisted AC15 and contradictory
+   AC22 text verbatim; AC22 is the defect input, not the intended output. The
+   task must reconcile the persisted AC22/acceptance map and Design wording to
+   the authorized rule before changing runtime behavior.
+2. **t16 — collector normalization order.** Move audited, metadata-only
+   normalization of derivable verdict/count/severity/summary contradictions
+   ahead of rejection. Record before/after values, derivation authority, and
+   fingerprint equivalence, then complete collection in that same call without
+   rerunning the producer. A substantive mutation remains a repair failure and
+   retries only the affected original producer; unrelated valid results are
+   conserved.
+3. **t17 — evaluator-unavailable readiness state.** Preserve evaluator
+   infrastructure unavailability as a distinct non-judged state with exact
+   outage identity. It cannot become a pass, mark the task passed, or open
+   readiness without independent evidence or an explicit governing policy.
+   Cache behavior stays exact and truthful across evaluator, engine/version,
+   capability, repository, worktree, validity-window, expiry, and recovery
+   changes.
+4. **t18 — shape-safe status contract projection.** Centralize the supported
+   contract projection used by dashboard and CLI/status rendering so coding,
+   read-only, review, and partially released/released contracts are handled
+   without a direct `contract['coding']` assumption. Status stays snapshot-only,
+   non-gating, and semantically consistent across JSON, inline, Markdown, and
+   optional HTML delivery.
 
-## Rollout and rollback
+Each task owns one focused `python3 -m pytest -q` command naming only its
+cluster's tests. Any new regression test named in a command is created within
+that task's declared test scope. No repair task may weaken, skip, xfail,
+remove, or reclassify an existing governance assertion.
 
-Roll out behind `TASKPLANE_HOST_NATIVE_UX`: canonical audit-only projectors,
-capability/fallback, dashboard/fan-out, PiP/tokens, approval receipts, then
-previews independently per capability. UI updates never wake the model. Retry
-each surface transition at most twice; teardown once plus one forced provider
-cleanup. Rollback disables new native sessions, closes active PiP/private
-previews, retains event/receipt readers, and routes canonical snapshots through
-legacy bounded accessible widgets/artifacts. No canonical data is migrated,
-rewritten, or deleted, and no package/Python-floor/dependency change is needed.
+## Risks and rollback
+
+The principal risk is encoding the AC15 rule in runtime while leaving AC22 or
+the approved Design prose contradictory. t15 therefore owns those artifacts
+together and must preserve one attributable deep slot for low-risk work rather
+than using a missing mapping as a proxy for substantive risk. Any four-floor
+widening needs an explicit evidence-backed reason.
+
+Collector repair is limited to authority-derivable metadata. It must not
+rewrite findings, identities, evidence, or other substance under the label of
+normalization. Evaluator outage handling must not convert operational
+availability into an engineering judgment. Contract projection must preserve
+the original status semantics rather than fabricate absent fields.
+
+Rollback is task-local: revert only the non-convergent repair while preserving
+t1–t14 and the other accepted repairs. A focused failure stays inside that
+task's bounded fix cycle. Broad compatibility is assessed once by CI after the
+four focused tasks and independent evaluations close; a CI failure is new
+integration evidence, not authority to silently widen a leaf task.
