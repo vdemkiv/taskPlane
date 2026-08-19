@@ -24,7 +24,6 @@ PREVIEW_CHANGE_KINDS = frozenset({
 MATERIAL_PREVIEW_CHANGE_KINDS = frozenset({
     "acceptance", "scope", "authority",
 })
-MAX_PREVIEW_FEEDBACK_BYTES = 4096
 
 ROUTINE_FLOWS = (
     "facade", "delivery", "product", "design", "build", "engineering",
@@ -72,12 +71,6 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
-
-
-def attribution_reference(actor: str, thread: str) -> str:
-    """Return a stable indirect reference for retained attribution history."""
-    return _fingerprint({"actor": str(actor or "").strip(),
-                         "thread": str(thread or "").strip()})
 
 
 def _host_event_payload(event: Mapping) -> dict:
@@ -440,8 +433,6 @@ def preview_change(text: str, *, actor: str, authenticated: bool,
         reasons.append("change_kind_missing")
     elif not known_kind:
         reasons.append("unsupported_change_kind")
-    if len(str(text or "").encode("utf-8")) > MAX_PREVIEW_FEEDBACK_BYTES:
-        reasons.append("feedback_too_large")
     payload = {
         "schema": CHANGE_SCHEMA, "actor": str(actor or "").strip(),
         "requirement": str(requirement or "").strip(),

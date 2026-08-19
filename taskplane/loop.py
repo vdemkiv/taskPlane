@@ -52,12 +52,6 @@ import taskplane_lite as tp
 import yield_meter
 
 LOOP_FILE = "loop.json"
-MAX_AUTHORITY_EVENT_HISTORY = 128
-AUTHORITY_HISTORY_POLICY = {
-    "max_events_per_kind": MAX_AUTHORITY_EVENT_HISTORY,
-    "max_preview_feedback_bytes": authority_engine.MAX_PREVIEW_FEEDBACK_BYTES,
-    "archive": "drop_feedback_and_direct_identity",
-}
 
 # R-0006 row 1: the EVALUATE step routes lenses with the BUILD stage
 # profile (route v2: build-profile candidates, R-0001 budget 5-7/cap-8
@@ -419,34 +413,6 @@ def _host_session_envelope(state: dict, event: dict,
     return envelope
 
 
-def _retained_preview_change(change: dict, envelope: dict) -> dict:
-    """Retain bounded feedback without duplicating raw session identity."""
-    retained = {key: value for key, value in change.items() if key != "actor"}
-    retained["actor_ref"] = authority_engine.attribution_reference(
-        envelope["actor"], envelope["thread"])
-    return retained
-
-
-def _minimize_archived_authority_history(state: dict) -> None:
-    """Drop direct identity and feedback text before forced-state archival."""
-    for change in state.get("preview_changes") or []:
-        if isinstance(change, dict):
-            change.pop("actor", None)
-            change.pop("feedback", None)
-            change["feedback_retained"] = False
-    for key in ("consumed_host_events", "consumed_host_decisions"):
-        for row in (state.get(key) or {}).values():
-            if isinstance(row, dict):
-                for field in ("actor", "thread", "event_ref"):
-                    row.pop(field, None)
-    for row in (state.get("authority_effect_outbox") or {}).values():
-        data = ((row.get("trace") or {}).get("data")
-                if isinstance(row, dict) else None)
-        if isinstance(data, dict):
-            data.pop("actor", None)
-    state["authority_history_policy"] = dict(AUTHORITY_HISTORY_POLICY)
-
-
 def handle_host_input(ws: str, event: dict,
                       host_event: object | None = None) -> dict:
     """Consume one trusted local host/session event.
@@ -480,28 +446,19 @@ def handle_host_input(ws: str, event: dict,
                 kind=str(event.get("change_kind") or ""))
             if not change["accepted"]:
                 return change
-            previews = state.get("preview_changes") or []
-            if len(consumed) >= MAX_AUTHORITY_EVENT_HISTORY or \
-                    len(previews) >= MAX_AUTHORITY_EVENT_HISTORY:
-                return {**change, "accepted": False, "material": True,
-                        "reauthorization_required": True,
-                        "reasons": ["authority_event_history_limit"]}
-            state["authority_history_policy"] = dict(AUTHORITY_HISTORY_POLICY)
-            state.setdefault("preview_changes", []).append(
-                _retained_preview_change(change, envelope))
+            state.setdefault("preview_changes", []).append(change)
             if change["reauthorization_required"]:
                 state["reauthorization_required"] = True
             consumed[event_id] = {
+                "actor": envelope["actor"], "thread": envelope["thread"],
                 "revision": envelope["revision"],
                 "target": envelope["target"], "source": envelope["source"],
+                "event_ref": envelope["event_ref"],
             }
-            actor_ref = authority_engine.attribution_reference(
-                envelope["actor"], envelope["thread"])
             _enqueue_authority_effect(
                 state, f"preview:{event_id}", trace_event="preview_change",
-                trace_data={"actor_ref": actor_ref,
-                            "kind": str(event.get("change_kind") or
-                                        ""),
+                trace_data={"actor": change["actor"],
+                            "kind": change["kind"],
                             "material": change["material"],
                             "change": change["fingerprint"]})
         effects = reconcile_authority_effects(ws)
@@ -527,15 +484,13 @@ def handle_host_input(ws: str, event: dict,
                 fact=str(event.get("fact") or ""),
                 consequence=str(event.get("consequence") or ""))
             if result["authorized"]:
-                if len(consumed) >= MAX_AUTHORITY_EVENT_HISTORY:
-                    return {**result, "authorized": False,
-                            "reasons": ["authority_event_history_limit"]}
-                state["authority_history_policy"] = dict(
-                    AUTHORITY_HISTORY_POLICY)
                 consumed[decision_id] = {
+                    "actor": envelope["actor"],
+                    "thread": envelope["thread"],
                     "revision": envelope["revision"],
                     "target": envelope["target"],
                     "source": envelope["source"],
+                    "event_ref": envelope["event_ref"],
                 }
             return result
     return {"error": "host event type must be preview_feedback|human_decision"}
@@ -915,9 +870,8 @@ def init(ws: str, goal: str, spec_path: str | None = None,
                              "(`loop resolve abort`), or re-run init with "
                              "force to archive the current state and restart.",
                     "refused": True, "step": existing.get("step")}
-        _minimize_archived_authority_history(existing)
-        save(ws, existing)
-        src = _loop_path(ws)
+        src = _loop_path(ws) if os.path.exists(_loop_path(ws)) \
+            else _legacy_loop_path(ws)
         archived_to = _loop_path(ws) + time.strftime(
             ".replaced-%Y%m%d-%H%M%S") + f".{os.getpid()}"
         os.makedirs(_state_dir(ws), exist_ok=True)
@@ -945,7 +899,6 @@ def init(ws: str, goal: str, spec_path: str | None = None,
         "consumed_host_decisions": {},
         "consumed_host_events": {},
         "authority_effect_outbox": {},
-        "authority_history_policy": dict(AUTHORITY_HISTORY_POLICY),
     }
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,

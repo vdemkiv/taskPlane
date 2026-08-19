@@ -370,16 +370,6 @@ def test_preview_feedback_rejects_missing_or_unknown_kind_as_material(
     assert reason in result["reasons"]
 
 
-def test_preview_feedback_size_is_bounded():
-    result = authority.preview_change(
-        "x" * (authority.MAX_PREVIEW_FEEDBACK_BYTES + 1),
-        actor="user-7", authenticated=True, requirement="R-1",
-        target={"revision": "r1"}, kind="cosmetic")
-
-    assert result["accepted"] is False
-    assert "feedback_too_large" in result["reasons"]
-
-
 def test_loop_preview_feedback_projects_current_requirement_and_target():
     state = {"requirement_id": "R-1", "baseline": "r1"}
     result = loop._preview_feedback(
@@ -469,14 +459,9 @@ def test_host_input_calls_production_preview_persistence(monkeypatch):
     assert result["accepted"] is True
     assert result["actor"] == "user-7"
     assert state["preview_changes"][0]["fingerprint"] == result["fingerprint"]
-    assert "actor" not in state["preview_changes"][0]
-    assert state["preview_changes"][0]["actor_ref"]
     event_id = authority.HostSessionAdapter().observe(event, observed)["event_id"]
     assert event_id != event["event_id"]
     assert list(state["consumed_host_events"]) == [event_id]
-    consumed = state["consumed_host_events"][event_id]
-    assert "actor" not in consumed
-    assert "thread" not in consumed
 
 
 def test_production_preview_rejects_missing_change_kind(monkeypatch):
@@ -498,58 +483,6 @@ def test_production_preview_rejects_missing_change_kind(monkeypatch):
     assert result["material"] is True
     assert "change_kind_missing" in result["reasons"]
     assert "preview_changes" not in state
-
-
-def test_host_input_history_is_bounded_and_fails_closed(monkeypatch):
-    state = {"requirement_id": "R-1", "authority_target_revision": "r1",
-             "authority_receipt": {"actor": "user-7",
-                                   "thread": "thread-9"},
-             "consumed_host_events": {
-                 f"event-{index}": {} for index in range(
-                     loop.MAX_AUTHORITY_EVENT_HISTORY)}}
-    event = {"type": "preview_feedback", "text": "increase spacing",
-             "change_kind": "cosmetic"}
-    observed = host_event(event, event_ref="preview-over-limit")
-
-    @loop.contextlib.contextmanager
-    def fake_mutate(ws):
-        yield state
-
-    monkeypatch.setattr(loop, "mutate", fake_mutate)
-
-    result = loop.handle_host_input("/repo", event, host_event=observed)
-
-    assert result["accepted"] is False
-    assert result["reasons"] == ["authority_event_history_limit"]
-    assert "preview_changes" not in state
-
-
-def test_forced_archive_history_drops_feedback_and_direct_identity():
-    state = {
-        "preview_changes": [{"actor": "user-7", "feedback": "private note",
-                             "fingerprint": "change-1"}],
-        "consumed_host_events": {"event-1": {
-            "actor": "user-7", "thread": "thread-9",
-            "event_ref": "message-1", "revision": "r1"}},
-        "consumed_host_decisions": {"decision-1": {
-            "actor": "user-7", "thread": "thread-9",
-            "event_ref": "message-2", "revision": "r1"}},
-        "authority_effect_outbox": {"preview:event-1": {
-            "trace": {"data": {"actor": "user-7", "change": "change-1"}}}},
-    }
-
-    loop._minimize_archived_authority_history(state)
-
-    assert state["preview_changes"] == [{
-        "fingerprint": "change-1", "feedback_retained": False}]
-    for key in ("consumed_host_events", "consumed_host_decisions"):
-        row = next(iter(state[key].values()))
-        assert "actor" not in row and "thread" not in row
-        assert "event_ref" not in row
-    trace_data = state["authority_effect_outbox"][
-        "preview:event-1"]["trace"]["data"]
-    assert "actor" not in trace_data
-    assert state["authority_history_policy"] == loop.AUTHORITY_HISTORY_POLICY
 
 
 def test_host_input_rejects_caller_asserted_identity_without_host_observation(
@@ -618,8 +551,6 @@ def test_human_session_event_is_consumed_atomically_and_cannot_replay(
     assert "replayed_decision" in replay["reasons"]
     event_id = authority.HostSessionAdapter().observe(event, observed)["event_id"]
     assert list(state["consumed_host_decisions"]) == [event_id]
-    retained = state["consumed_host_decisions"][event_id]
-    assert "actor" not in retained and "thread" not in retained
 
 
 def test_preview_session_event_rejects_stale_revision_and_replay_atomically(
