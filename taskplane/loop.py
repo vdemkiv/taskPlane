@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import secrets
 import time
 
 import authority as authority_engine
@@ -186,29 +187,54 @@ def record_preview_feedback(ws: str, text: str, *, actor: str,
         return change
 
 
-def handle_host_input(ws: str, event: dict) -> dict:
-    """Consume one authenticated host event through governed boundaries."""
+def handle_host_input(ws: str, event: dict,
+                      host_receipt: object | None = None) -> dict:
+    """Consume a host-authenticated event; raw caller identity is inert."""
     if not isinstance(event, dict):
         return {"error": "host event must be a mapping"}
     kind = str(event.get("type") or "").strip().lower()
     if kind == "preview_feedback":
-        return record_preview_feedback(
-            ws, str(event.get("text") or ""),
-            actor=str(event.get("actor") or ""),
-            authenticated=bool(event.get("authenticated")),
-            kind=str(event.get("change_kind") or "behavioral"))
-    if kind == "human_decision":
         state = load(ws)
         if state is None:
             return {"error": "no active loop"}
-        return request_human_decision(
-            state, str(event.get("reason") or "unsafe_or_ambiguous"),
-            event.get("response"), actor=str(event.get("actor") or ""),
-            thread=str(event.get("thread") or ""),
-            revision=str(event.get("revision") or ""),
-            consumed=bool(event.get("consumed")),
-            fact=str(event.get("fact") or ""),
-            consequence=str(event.get("consequence") or ""))
+        envelope = authority_engine.verify_host_input_receipt(
+            event, host_receipt, secret=str(state.get("host_input_secret") or ""))
+        if not envelope["authenticated"]:
+            return {"accepted": False, "reasons": envelope["reasons"]}
+        return record_preview_feedback(
+            ws, str(event.get("text") or ""),
+            actor=envelope["actor"], authenticated=True,
+            kind=str(event.get("change_kind") or "behavioral"))
+    if kind == "human_decision":
+        with mutate(ws) as state:
+            if state is None:
+                return {"error": "no active loop"}
+            envelope = authority_engine.verify_host_input_receipt(
+                event, host_receipt,
+                secret=str(state.get("host_input_secret") or ""))
+            if not envelope["authenticated"]:
+                return {"authorized": False, "human_required": True,
+                        "reasons": envelope["reasons"]}
+            decision_id = envelope["decision_id"]
+            consumed = state.setdefault("consumed_host_decisions", {})
+            response = event.get("response")
+            if isinstance(response, dict):
+                response = {**response, "authenticated": True}
+            result = request_human_decision(
+                state, str(event.get("reason") or "unsafe_or_ambiguous"),
+                response, actor=envelope["actor"],
+                thread=envelope["thread"], revision=envelope["revision"],
+                consumed=decision_id in consumed,
+                fact=str(event.get("fact") or ""),
+                consequence=str(event.get("consequence") or ""))
+            if result["authorized"]:
+                consumed[decision_id] = {
+                    "actor": envelope["actor"],
+                    "thread": envelope["thread"],
+                    "revision": envelope["revision"],
+                    "receipt": str((host_receipt or {}).get("signature") or ""),
+                }
+            return result
     return {"error": "host event type must be preview_feedback|human_decision"}
 
 
@@ -581,6 +607,10 @@ def init(ws: str, goal: str, spec_path: str | None = None,
                  else "plan" if spec_path else "pm"),
         "tasks": None,
         "current_task": 0,
+        # Trusted host adapters receive this engine-owned signing authority;
+        # raw CLI/stdin payloads never do.
+        "host_input_secret": secrets.token_hex(32),
+        "consumed_host_decisions": {},
     }
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,

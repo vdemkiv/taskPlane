@@ -2222,10 +2222,9 @@ def cmd_loop(a) -> int:
         # adapters from reimplementing receipt or target checks.
         out = loopmod.authorize_routine_flow(ws, a.flow)
     elif action == "host-input":
-        # Host transports provide their authenticated event envelope on
-        # stdin.  Preserve actor/thread/revision/authentication fields as a
-        # single value and let loop.handle_host_input bind them to current
-        # loop state; presentation-layer state is never authority.
+        # The event body is untrusted stdin. Authentication travels in a
+        # separately injected, engine-signed host receipt; actor/thread/
+        # revision/boolean claims in the body are never authority.
         try:
             event = json.load(sys.stdin)
         except (json.JSONDecodeError, UnicodeError) as exc:
@@ -2234,20 +2233,15 @@ def cmd_loop(a) -> int:
             if not isinstance(event, dict):
                 out = {"error": "host event must be a JSON object"}
             else:
-                # A response body cannot self-assert authentication.  Bind
-                # the decision's authentication bit to the host envelope;
-                # the canonical boundary then checks actor, thread and
-                # revision against current state.
-                if str(event.get("type") or "").strip().lower() == \
-                        "human_decision" and \
-                        isinstance(event.get("response"), dict):
-                    event = dict(event)
-                    response = dict(event["response"])
-                    response["authenticated"] = bool(
-                        event.get("authenticated")) and bool(
-                            response.get("authenticated"))
-                    event["response"] = response
-                out = loopmod.handle_host_input(ws, event)
+                raw_receipt = os.environ.get(
+                    "TASKPLANE_HOST_INPUT_RECEIPT", "")
+                try:
+                    host_receipt = json.loads(raw_receipt) \
+                        if raw_receipt else None
+                except json.JSONDecodeError:
+                    host_receipt = None
+                out = loopmod.handle_host_input(
+                    ws, event, host_receipt=host_receipt)
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":

@@ -8,6 +8,7 @@ staleness; it is never, by itself, a request for more human authority.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from collections.abc import Mapping, Sequence
 
@@ -17,6 +18,7 @@ RECEIPT_SCHEMA = "taskplane.authorization-receipt/v1"
 DERIVATION_SCHEMA = "taskplane.authorization-derivation/v1"
 DECISION_SCHEMA = "taskplane.human-decision/v1"
 CHANGE_SCHEMA = "taskplane.attributable-change/v1"
+HOST_INPUT_RECEIPT_SCHEMA = "taskplane.host-input-receipt/v1"
 
 ROUTINE_FLOWS = (
     "facade", "delivery", "product", "design", "build", "engineering",
@@ -64,6 +66,91 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _host_event_payload(event: Mapping) -> dict:
+    """Canonical non-authority event body bound by a trusted host receipt."""
+    allowed = ("type", "text", "change_kind", "reason", "response", "fact",
+               "consequence")
+    payload = {key: _plain(event[key]) for key in allowed if key in event}
+    response = payload.get("response")
+    if isinstance(response, dict):
+        response.pop("authenticated", None)
+    return payload
+
+
+def _host_receipt_signature(receipt: Mapping, secret: str) -> str:
+    unsigned = {key: receipt[key] for key in receipt if key != "signature"}
+    key = bytes.fromhex(secret)
+    if len(key) < 32:
+        raise ValueError("host input authority is invalid")
+    return hmac.new(key, _canonical_bytes(unsigned),
+                    hashlib.sha256).hexdigest()
+
+
+def issue_host_input_receipt(event: Mapping, *, secret: str, actor: str,
+                             thread: str, revision: str,
+                             decision_id: str = "") -> dict:
+    """Mint a host-authenticated envelope after the host verifies identity.
+
+    This is an engine API for trusted host adapters. The stdin dispatcher only
+    consumes receipts and never turns caller-provided booleans into one.
+    """
+    if not isinstance(event, Mapping):
+        raise ValueError("host input event must be a mapping")
+    try:
+        key = bytes.fromhex(str(secret or ""))
+    except ValueError as exc:
+        raise ValueError("host input authority is invalid") from exc
+    if len(key) < 32 or not all(str(value or "").strip() for value in (
+            actor, thread, revision)):
+        raise ValueError("host input authority and identity are required")
+    kind = str(event.get("type") or "").strip().lower()
+    decision = str(decision_id or "").strip()
+    if kind == "human_decision" and not decision:
+        raise ValueError("human decision id is required")
+    receipt = {
+        "schema": HOST_INPUT_RECEIPT_SCHEMA,
+        "event_fingerprint": _fingerprint(_host_event_payload(event)),
+        "actor": str(actor).strip(), "thread": str(thread).strip(),
+        "revision": str(revision).strip(), "authenticated": True,
+        "decision_id": decision,
+    }
+    receipt["signature"] = _host_receipt_signature(receipt, secret)
+    return receipt
+
+
+def verify_host_input_receipt(event: Mapping, receipt: object, *,
+                              secret: str) -> dict:
+    """Verify an independently authenticated host envelope."""
+    reasons = []
+    if not isinstance(receipt, Mapping) or \
+            receipt.get("schema") != HOST_INPUT_RECEIPT_SCHEMA:
+        return {"authenticated": False, "reasons": ["host_receipt_required"]}
+    try:
+        expected = _host_receipt_signature(receipt, secret)
+    except (ValueError, TypeError):
+        return {"authenticated": False, "reasons": ["host_receipt_invalid"]}
+    if not hmac.compare_digest(str(receipt.get("signature") or ""), expected):
+        reasons.append("host_receipt_unauthenticated")
+    if receipt.get("event_fingerprint") != _fingerprint(
+            _host_event_payload(event)):
+        reasons.append("host_event_mismatch")
+    for field in ("actor", "thread", "revision"):
+        if not str(receipt.get(field) or "").strip():
+            reasons.append(f"host_receipt_missing_{field}")
+    if receipt.get("authenticated") is not True:
+        reasons.append("host_receipt_unauthenticated")
+    if str(event.get("type") or "").strip().lower() == "human_decision" and \
+            not str(receipt.get("decision_id") or "").strip():
+        reasons.append("decision_id_required")
+    return {
+        "authenticated": not reasons, "reasons": sorted(set(reasons)),
+        "actor": str(receipt.get("actor") or ""),
+        "thread": str(receipt.get("thread") or ""),
+        "revision": str(receipt.get("revision") or ""),
+        "decision_id": str(receipt.get("decision_id") or ""),
+    }
 
 
 def _plain(value: object) -> object:

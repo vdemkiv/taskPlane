@@ -323,22 +323,33 @@ def test_loop_preview_feedback_projects_current_requirement_and_target():
 
 def test_host_input_calls_production_human_decision_boundary(monkeypatch):
     packet, receipt = approved_packet()
+    secret = "33" * 32
     state = {"authority_packet": packet, "authority_receipt": receipt,
-             "authority_target_revision": "r1"}
-    monkeypatch.setattr(loop, "load", lambda ws: state)
-
-    result = loop.handle_host_input("/repo", {
+             "authority_target_revision": "r1", "host_input_secret": secret}
+    event = {
         "type": "human_decision", "reason": "destructive",
-        "response": {"decision": "approve", "authenticated": True},
-        "actor": "user-7", "thread": "thread-9", "revision": "r1",
+        "response": {"decision": "approve"},
         "fact": "remove generated cache", "consequence": "irreversible",
-    })
+    }
+    host_receipt = authority.issue_host_input_receipt(
+        event, secret=secret, actor="user-7", thread="thread-9",
+        revision="r1", decision_id="decision-1")
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    result = loop.handle_host_input(
+        "/repo", event, host_receipt=host_receipt)
 
     assert result["authorized"] is True
 
 
 def test_host_input_calls_production_preview_persistence(monkeypatch):
     captured = {}
+    secret = "44" * 32
+    state = {"host_input_secret": secret}
 
     def fake_record(ws, text, *, actor, authenticated, kind):
         captured.update(ws=ws, text=text, actor=actor,
@@ -346,16 +357,86 @@ def test_host_input_calls_production_preview_persistence(monkeypatch):
         return {"accepted": True}
 
     monkeypatch.setattr(loop, "record_preview_feedback", fake_record)
-    result = loop.handle_host_input("/repo", {
+    monkeypatch.setattr(loop, "load", lambda ws: state)
+    event = {
         "type": "preview_feedback", "text": "increase spacing",
-        "actor": "user-7", "authenticated": True,
         "change_kind": "cosmetic",
-    })
+    }
+    host_receipt = authority.issue_host_input_receipt(
+        event, secret=secret, actor="user-7", thread="thread-9",
+        revision="r1")
+    result = loop.handle_host_input(
+        "/repo", event, host_receipt=host_receipt)
 
     assert result == {"accepted": True}
     assert captured == {"ws": "/repo", "text": "increase spacing",
                         "actor": "user-7", "authenticated": True,
                         "kind": "cosmetic"}
+
+
+def test_host_input_rejects_caller_asserted_identity_without_engine_receipt(
+        monkeypatch):
+    state = {"host_input_secret": "11" * 32}
+    monkeypatch.setattr(loop, "load", lambda ws: state)
+
+    result = loop.handle_host_input("/repo", {
+        "type": "preview_feedback", "text": "expand scope",
+        "actor": "admin", "authenticated": True, "change_kind": "scope",
+    })
+
+    assert result["accepted"] is False
+    assert "host_receipt_required" in result["reasons"]
+
+
+def test_host_input_rejects_forged_receipt_identity_and_event():
+    secret = "12" * 32
+    event = {"type": "preview_feedback", "text": "increase spacing",
+             "change_kind": "cosmetic"}
+    receipt = authority.issue_host_input_receipt(
+        event, secret=secret, actor="user-7", thread="thread-9",
+        revision="r1")
+
+    forged_identity = {**receipt, "actor": "admin"}
+    identity = authority.verify_host_input_receipt(
+        event, forged_identity, secret=secret)
+    changed_event = authority.verify_host_input_receipt(
+        {**event, "text": "expand scope"}, receipt, secret=secret)
+
+    assert identity["authenticated"] is False
+    assert "host_receipt_unauthenticated" in identity["reasons"]
+    assert changed_event["authenticated"] is False
+    assert "host_event_mismatch" in changed_event["reasons"]
+
+
+def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
+        monkeypatch):
+    secret = "22" * 32
+    event = {
+        "type": "human_decision", "reason": "destructive",
+        "response": {"decision": "approve"},
+        "fact": "remove generated cache", "consequence": "irreversible",
+    }
+    receipt = authority.issue_host_input_receipt(
+        event, secret=secret, actor="user-7", thread="thread-9",
+        revision="r1", decision_id="decision-1")
+    packet, approval = approved_packet()
+    state = {"authority_packet": packet, "authority_receipt": approval,
+             "authority_target_revision": "r1",
+             "host_input_secret": secret, "consumed_host_decisions": {}}
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+
+    first = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
+
+    assert first["authorized"] is True
+    assert replay["authorized"] is False
+    assert "replayed_decision" in replay["reasons"]
+    assert list(state["consumed_host_decisions"]) == ["decision-1"]
 
 
 def test_select_rejects_stale_checkout_and_resumed_current_selection(
