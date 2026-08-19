@@ -513,6 +513,29 @@ class TestRecordingOnly(unittest.TestCase):
         """One next_action: its payload and the event names it appended."""
         before = len(_events(self.ws))
         payload = module.next_action(self.ws)
+        # Live progress is a non-gating read model over the growing audit
+        # stream. Its sequence and elapsed sample are expected to advance on
+        # repeated observations, so they are not part of this differential's
+        # control-flow comparison. The dedicated status suite verifies those
+        # bytes; this suite verifies recording-only graph context cannot alter
+        # the workflow payload or emitted event names.
+        if isinstance(payload, dict):
+            payload = dict(payload)
+            dashboard = payload.get("dashboard")
+            if isinstance(dashboard, dict):
+                dashboard = dict(dashboard)
+                dashboard.pop("delivery", None)
+                payload["dashboard"] = dashboard
+            status = payload.get("status")
+            if isinstance(status, dict):
+                status = dict(status)
+                status.pop("live_progress", None)
+                dashboard = status.get("dashboard")
+                if isinstance(dashboard, dict):
+                    dashboard = dict(dashboard)
+                    dashboard.pop("delivery", None)
+                    status["dashboard"] = dashboard
+                payload["status"] = status
         return payload, _events(self.ws)[before:]
 
     def _differential(self, step, **state_kw):
