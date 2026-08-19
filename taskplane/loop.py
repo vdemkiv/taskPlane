@@ -30,6 +30,7 @@ import contextlib
 import json
 import os
 import secrets
+import stat
 import time
 
 import authority as authority_engine
@@ -187,6 +188,41 @@ def record_preview_feedback(ws: str, text: str, *, actor: str,
         return change
 
 
+def _host_input_key_path(ws: str) -> str:
+    """Private engine authority; never part of workspace/loop state."""
+    return os.path.join(tp.external_store_root(ws), "private",
+                        "host-input-authority.key")
+
+
+def _host_input_signing_key(ws: str, *, create: bool = False) -> str:
+    path = _host_input_key_path(ws)
+    parent = os.path.dirname(path)
+    if create:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        os.chmod(parent, 0o700)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                handle.write(secrets.token_hex(32))
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+            os.close(fd)
+            raise OSError("host input authority permissions are not private")
+        with os.fdopen(fd, encoding="ascii") as handle:
+            secret = handle.read().strip()
+        authority_engine.HostInputAuthority(secret)
+        return secret
+    except OSError as exc:
+        raise RuntimeError(f"host input authority is unavailable: {exc}") \
+            from exc
+
+
 def handle_host_input(ws: str, event: dict,
                       host_receipt: object | None = None) -> dict:
     """Consume a host-authenticated event; raw caller identity is inert."""
@@ -194,28 +230,61 @@ def handle_host_input(ws: str, event: dict,
         return {"error": "host event must be a mapping"}
     kind = str(event.get("type") or "").strip().lower()
     if kind == "preview_feedback":
-        state = load(ws)
-        if state is None:
-            return {"error": "no active loop"}
-        envelope = authority_engine.verify_host_input_receipt(
-            event, host_receipt, secret=str(state.get("host_input_secret") or ""))
-        if not envelope["authenticated"]:
-            return {"accepted": False, "reasons": envelope["reasons"]}
-        return record_preview_feedback(
-            ws, str(event.get("text") or ""),
-            actor=envelope["actor"], authenticated=True,
-            kind=str(event.get("change_kind") or "behavioral"))
+        with mutate(ws) as state:
+            if state is None:
+                return {"error": "no active loop"}
+            try:
+                verifier = authority_engine.HostInputAuthority(
+                    _host_input_signing_key(ws))
+            except (RuntimeError, ValueError) as exc:
+                return {"accepted": False,
+                        "reasons": ["host_receipt_authority_unavailable"],
+                        "error": str(exc)}
+            envelope = verifier.verify(event, host_receipt)
+            if not envelope["authenticated"]:
+                return {"accepted": False, "reasons": envelope["reasons"]}
+            expected_revision = str(state.get("authority_target_revision") or
+                                    state.get("baseline") or "")
+            if envelope["revision"] != expected_revision:
+                return {"accepted": False, "reasons": ["wrong_revision"]}
+            event_id = envelope["event_id"]
+            consumed = state.setdefault("consumed_host_events", {})
+            if event_id in consumed:
+                return {"accepted": False, "reasons": ["replayed_event"]}
+            change = _preview_feedback(
+                state, str(event.get("text") or ""), actor=envelope["actor"],
+                authenticated=True,
+                kind=str(event.get("change_kind") or "behavioral"))
+            if not change["accepted"]:
+                return change
+            state.setdefault("preview_changes", []).append(change)
+            if change["reauthorization_required"]:
+                state["reauthorization_required"] = True
+            consumed[event_id] = {
+                "actor": envelope["actor"], "thread": envelope["thread"],
+                "revision": envelope["revision"],
+                "receipt": str((host_receipt or {}).get("signature") or ""),
+            }
+        tp.trace(ws, "preview_change", actor=change["actor"],
+                 kind=str(event.get("change_kind") or "behavioral"),
+                 material=change["material"], change=change["fingerprint"])
+        return change
     if kind == "human_decision":
         with mutate(ws) as state:
             if state is None:
                 return {"error": "no active loop"}
-            envelope = authority_engine.verify_host_input_receipt(
-                event, host_receipt,
-                secret=str(state.get("host_input_secret") or ""))
+            try:
+                verifier = authority_engine.HostInputAuthority(
+                    _host_input_signing_key(ws))
+            except (RuntimeError, ValueError) as exc:
+                return {"authorized": False, "human_required": True,
+                        "reasons": ["host_receipt_authority_unavailable"],
+                        "error": str(exc)}
+            envelope = verifier.verify(event, host_receipt)
             if not envelope["authenticated"]:
                 return {"authorized": False, "human_required": True,
                         "reasons": envelope["reasons"]}
-            decision_id = envelope["decision_id"]
+            decision_id = envelope["event_id"]
             consumed = state.setdefault("consumed_host_decisions", {})
             response = event.get("response")
             if isinstance(response, dict):
@@ -607,11 +676,10 @@ def init(ws: str, goal: str, spec_path: str | None = None,
                  else "plan" if spec_path else "pm"),
         "tasks": None,
         "current_task": 0,
-        # Trusted host adapters receive this engine-owned signing authority;
-        # raw CLI/stdin payloads never do.
-        "host_input_secret": secrets.token_hex(32),
         "consumed_host_decisions": {},
+        "consumed_host_events": {},
     }
+    _host_input_signing_key(ws, create=True)
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,
              first_step=state["step"], max_fix_cycles=max_fix_cycles,

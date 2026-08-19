@@ -88,69 +88,70 @@ def _host_receipt_signature(receipt: Mapping, secret: str) -> str:
                     hashlib.sha256).hexdigest()
 
 
-def issue_host_input_receipt(event: Mapping, *, secret: str, actor: str,
-                             thread: str, revision: str,
-                             decision_id: str = "") -> dict:
-    """Mint a host-authenticated envelope after the host verifies identity.
+class HostInputAuthority:
+    """Receipt codec used with a key held outside workspace loop state.
 
-    This is an engine API for trusted host adapters. The stdin dispatcher only
-    consumes receipts and never turns caller-provided booleans into one.
+    Trusted host integration may receive an instance from the engine-owned
+    private issuer. Production workspace/CLI dispatch only receives receipts
+    and a verifier backed by the external key.
     """
-    if not isinstance(event, Mapping):
-        raise ValueError("host input event must be a mapping")
-    try:
-        key = bytes.fromhex(str(secret or ""))
-    except ValueError as exc:
-        raise ValueError("host input authority is invalid") from exc
-    if len(key) < 32 or not all(str(value or "").strip() for value in (
-            actor, thread, revision)):
-        raise ValueError("host input authority and identity are required")
-    kind = str(event.get("type") or "").strip().lower()
-    decision = str(decision_id or "").strip()
-    if kind == "human_decision" and not decision:
-        raise ValueError("human decision id is required")
-    receipt = {
-        "schema": HOST_INPUT_RECEIPT_SCHEMA,
-        "event_fingerprint": _fingerprint(_host_event_payload(event)),
-        "actor": str(actor).strip(), "thread": str(thread).strip(),
-        "revision": str(revision).strip(), "authenticated": True,
-        "decision_id": decision,
-    }
-    receipt["signature"] = _host_receipt_signature(receipt, secret)
-    return receipt
 
+    def __init__(self, secret: str) -> None:
+        try:
+            key = bytes.fromhex(str(secret or ""))
+        except ValueError as exc:
+            raise ValueError("host input authority is invalid") from exc
+        if len(key) < 32:
+            raise ValueError("host input authority is invalid")
+        self._secret = str(secret)
 
-def verify_host_input_receipt(event: Mapping, receipt: object, *,
-                              secret: str) -> dict:
-    """Verify an independently authenticated host envelope."""
-    reasons = []
-    if not isinstance(receipt, Mapping) or \
-            receipt.get("schema") != HOST_INPUT_RECEIPT_SCHEMA:
-        return {"authenticated": False, "reasons": ["host_receipt_required"]}
-    try:
-        expected = _host_receipt_signature(receipt, secret)
-    except (ValueError, TypeError):
-        return {"authenticated": False, "reasons": ["host_receipt_invalid"]}
-    if not hmac.compare_digest(str(receipt.get("signature") or ""), expected):
-        reasons.append("host_receipt_unauthenticated")
-    if receipt.get("event_fingerprint") != _fingerprint(
-            _host_event_payload(event)):
-        reasons.append("host_event_mismatch")
-    for field in ("actor", "thread", "revision"):
-        if not str(receipt.get(field) or "").strip():
-            reasons.append(f"host_receipt_missing_{field}")
-    if receipt.get("authenticated") is not True:
-        reasons.append("host_receipt_unauthenticated")
-    if str(event.get("type") or "").strip().lower() == "human_decision" and \
-            not str(receipt.get("decision_id") or "").strip():
-        reasons.append("decision_id_required")
-    return {
-        "authenticated": not reasons, "reasons": sorted(set(reasons)),
-        "actor": str(receipt.get("actor") or ""),
-        "thread": str(receipt.get("thread") or ""),
-        "revision": str(receipt.get("revision") or ""),
-        "decision_id": str(receipt.get("decision_id") or ""),
-    }
+    def issue(self, event: Mapping, *, actor: str, thread: str,
+              revision: str, event_id: str) -> dict:
+        if not isinstance(event, Mapping):
+            raise ValueError("host input event must be a mapping")
+        if not all(str(value or "").strip() for value in (
+                actor, thread, revision, event_id)):
+            raise ValueError("host input identity and event id are required")
+        receipt = {
+            "schema": HOST_INPUT_RECEIPT_SCHEMA,
+            "event_fingerprint": _fingerprint(_host_event_payload(event)),
+            "event_id": str(event_id).strip(),
+            "actor": str(actor).strip(), "thread": str(thread).strip(),
+            "revision": str(revision).strip(), "authenticated": True,
+        }
+        receipt["signature"] = _host_receipt_signature(
+            receipt, self._secret)
+        return receipt
+
+    def verify(self, event: Mapping, receipt: object) -> dict:
+        reasons = []
+        if not isinstance(receipt, Mapping) or \
+                receipt.get("schema") != HOST_INPUT_RECEIPT_SCHEMA:
+            return {"authenticated": False,
+                    "reasons": ["host_receipt_required"]}
+        try:
+            expected = _host_receipt_signature(receipt, self._secret)
+        except (ValueError, TypeError):
+            return {"authenticated": False,
+                    "reasons": ["host_receipt_invalid"]}
+        if not hmac.compare_digest(
+                str(receipt.get("signature") or ""), expected):
+            reasons.append("host_receipt_unauthenticated")
+        if receipt.get("event_fingerprint") != _fingerprint(
+                _host_event_payload(event)):
+            reasons.append("host_event_mismatch")
+        for field in ("actor", "thread", "revision", "event_id"):
+            if not str(receipt.get(field) or "").strip():
+                reasons.append(f"host_receipt_missing_{field}")
+        if receipt.get("authenticated") is not True:
+            reasons.append("host_receipt_unauthenticated")
+        return {
+            "authenticated": not reasons, "reasons": sorted(set(reasons)),
+            "actor": str(receipt.get("actor") or ""),
+            "thread": str(receipt.get("thread") or ""),
+            "revision": str(receipt.get("revision") or ""),
+            "event_id": str(receipt.get("event_id") or ""),
+        }
 
 
 def _plain(value: object) -> object:

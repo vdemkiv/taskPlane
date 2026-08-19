@@ -325,21 +325,22 @@ def test_host_input_calls_production_human_decision_boundary(monkeypatch):
     packet, receipt = approved_packet()
     secret = "33" * 32
     state = {"authority_packet": packet, "authority_receipt": receipt,
-             "authority_target_revision": "r1", "host_input_secret": secret}
+             "authority_target_revision": "r1"}
     event = {
         "type": "human_decision", "reason": "destructive",
         "response": {"decision": "approve"},
         "fact": "remove generated cache", "consequence": "irreversible",
     }
-    host_receipt = authority.issue_host_input_receipt(
-        event, secret=secret, actor="user-7", thread="thread-9",
-        revision="r1", decision_id="decision-1")
+    host_receipt = authority.HostInputAuthority(secret).issue(
+        event, actor="user-7", thread="thread-9", revision="r1",
+        event_id="decision-1")
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
     result = loop.handle_host_input(
         "/repo", event, host_receipt=host_receipt)
 
@@ -347,37 +348,42 @@ def test_host_input_calls_production_human_decision_boundary(monkeypatch):
 
 
 def test_host_input_calls_production_preview_persistence(monkeypatch):
-    captured = {}
     secret = "44" * 32
-    state = {"host_input_secret": secret}
-
-    def fake_record(ws, text, *, actor, authenticated, kind):
-        captured.update(ws=ws, text=text, actor=actor,
-                        authenticated=authenticated, kind=kind)
-        return {"accepted": True}
-
-    monkeypatch.setattr(loop, "record_preview_feedback", fake_record)
-    monkeypatch.setattr(loop, "load", lambda ws: state)
+    state = {"requirement_id": "R-1", "authority_target_revision": "r1"}
     event = {
         "type": "preview_feedback", "text": "increase spacing",
         "change_kind": "cosmetic",
     }
-    host_receipt = authority.issue_host_input_receipt(
-        event, secret=secret, actor="user-7", thread="thread-9",
-        revision="r1")
+    host_receipt = authority.HostInputAuthority(secret).issue(
+        event, actor="user-7", thread="thread-9", revision="r1",
+        event_id="preview-1")
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
+    monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
     result = loop.handle_host_input(
         "/repo", event, host_receipt=host_receipt)
 
-    assert result == {"accepted": True}
-    assert captured == {"ws": "/repo", "text": "increase spacing",
-                        "actor": "user-7", "authenticated": True,
-                        "kind": "cosmetic"}
+    assert result["accepted"] is True
+    assert state["preview_changes"] == [result]
+    assert list(state["consumed_host_events"]) == ["preview-1"]
 
 
 def test_host_input_rejects_caller_asserted_identity_without_engine_receipt(
         monkeypatch):
-    state = {"host_input_secret": "11" * 32}
-    monkeypatch.setattr(loop, "load", lambda ws: state)
+    state = {}
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_host_input_signing_key",
+                        lambda ws: "11" * 32)
 
     result = loop.handle_host_input("/repo", {
         "type": "preview_feedback", "text": "expand scope",
@@ -392,15 +398,15 @@ def test_host_input_rejects_forged_receipt_identity_and_event():
     secret = "12" * 32
     event = {"type": "preview_feedback", "text": "increase spacing",
              "change_kind": "cosmetic"}
-    receipt = authority.issue_host_input_receipt(
-        event, secret=secret, actor="user-7", thread="thread-9",
-        revision="r1")
+    codec = authority.HostInputAuthority(secret)
+    receipt = codec.issue(
+        event, actor="user-7", thread="thread-9", revision="r1",
+        event_id="preview-1")
 
     forged_identity = {**receipt, "actor": "admin"}
-    identity = authority.verify_host_input_receipt(
-        event, forged_identity, secret=secret)
-    changed_event = authority.verify_host_input_receipt(
-        {**event, "text": "expand scope"}, receipt, secret=secret)
+    identity = codec.verify(event, forged_identity)
+    changed_event = codec.verify(
+        {**event, "text": "expand scope"}, receipt)
 
     assert identity["authenticated"] is False
     assert "host_receipt_unauthenticated" in identity["reasons"]
@@ -416,19 +422,20 @@ def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
         "response": {"decision": "approve"},
         "fact": "remove generated cache", "consequence": "irreversible",
     }
-    receipt = authority.issue_host_input_receipt(
-        event, secret=secret, actor="user-7", thread="thread-9",
-        revision="r1", decision_id="decision-1")
+    receipt = authority.HostInputAuthority(secret).issue(
+        event, actor="user-7", thread="thread-9", revision="r1",
+        event_id="decision-1")
     packet, approval = approved_packet()
     state = {"authority_packet": packet, "authority_receipt": approval,
              "authority_target_revision": "r1",
-             "host_input_secret": secret, "consumed_host_decisions": {}}
+             "consumed_host_decisions": {}}
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
 
     first = loop.handle_host_input("/repo", event, host_receipt=receipt)
     replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
@@ -437,6 +444,72 @@ def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
     assert replay["authorized"] is False
     assert "replayed_decision" in replay["reasons"]
     assert list(state["consumed_host_decisions"]) == ["decision-1"]
+
+
+def test_preview_receipt_rejects_stale_revision_and_replay_atomically(
+        monkeypatch):
+    secret = "23" * 32
+    event = {"type": "preview_feedback", "text": "increase spacing",
+             "change_kind": "cosmetic"}
+    receipt = authority.HostInputAuthority(secret).issue(
+        event, actor="user-7", thread="thread-9", revision="r1",
+        event_id="preview-1")
+    state = {"requirement_id": "R-1", "authority_target_revision": "r2",
+             "consumed_host_events": {}}
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
+    monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
+
+    stale = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    state["authority_target_revision"] = "r1"
+    accepted = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
+
+    assert stale["accepted"] is False
+    assert "wrong_revision" in stale["reasons"]
+    assert accepted["accepted"] is True
+    assert replay["accepted"] is False
+    assert "replayed_event" in replay["reasons"]
+    assert list(state["consumed_host_events"]) == ["preview-1"]
+
+
+def test_workspace_state_cannot_disclose_or_mint_host_signing_authority(
+        monkeypatch):
+    saved = {}
+    created = []
+    monkeypatch.setattr(loop, "load", lambda ws: None)
+    monkeypatch.setattr(loop, "save", lambda ws, state: saved.update(state))
+    monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(loop, "_host_input_signing_key",
+                        lambda ws, create=False: created.append(create) or
+                        "24" * 32)
+
+    result = loop.init("/repo", "secure host input")
+
+    assert not hasattr(authority, "issue_host_input_receipt")
+    assert "host_input_secret" not in saved
+    assert "host_input_secret" not in result
+    assert created == [True]
+
+
+def test_host_signing_key_is_external_private_state(monkeypatch, tmp_path):
+    private_root = tmp_path / "engine-private"
+    monkeypatch.setattr(loop.tp, "external_store_root",
+                        lambda ws: str(private_root))
+
+    secret = loop._host_input_signing_key("/workspace", create=True)
+    path = loop._host_input_key_path("/workspace")
+
+    assert len(secret) == 64
+    assert path.startswith(str(private_root))
+    assert not path.startswith("/workspace/")
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert os.stat(os.path.dirname(path)).st_mode & 0o777 == 0o700
 
 
 def test_select_rejects_stale_checkout_and_resumed_current_selection(

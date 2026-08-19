@@ -67,29 +67,25 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
         "baseline": "r1",
         "authority_target_revision": "r1",
         "authority_receipt": {"actor": "user-7", "thread": "thread-9"},
-        "host_input_secret": "55" * 32,
     }
-    monkeypatch.setattr(loop, "load", lambda ws: state)
-    monkeypatch.setattr(loop, "record_preview_feedback",
-                        lambda ws, text, **identity: loop._preview_feedback(
-                            state, text, actor=identity["actor"],
-                            authenticated=identity["authenticated"],
-                            kind=identity["kind"]))
+    secret = "55" * 32
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
+    monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
 
     preview = {
         "type": "preview_feedback", "text": "increase spacing",
         "actor": "user-7", "authenticated": True,
         "change_kind": "cosmetic",
     }
-    preview_receipt = authority.issue_host_input_receipt(
-        preview, secret=state["host_input_secret"], actor="user-7",
-        thread="thread-9", revision="r1")
+    preview_receipt = authority.HostInputAuthority(secret).issue(
+        preview, actor="user-7", thread="thread-9", revision="r1",
+        event_id="preview-1")
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(preview)))
     monkeypatch.setenv("TASKPLANE_HOST_INPUT_RECEIPT",
                        json.dumps(preview_receipt))
@@ -117,10 +113,9 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
         receipt_actor = value if field == "actor" else "user-7"
         receipt_thread = value if field == "thread" else "thread-9"
         receipt_revision = value if field == "revision" else "r1"
-        receipt = authority.issue_host_input_receipt(
-            event, secret=state["host_input_secret"], actor=receipt_actor,
-            thread=receipt_thread, revision=receipt_revision,
-            decision_id=f"decision-{field}")
+        receipt = authority.HostInputAuthority(secret).issue(
+            event, actor=receipt_actor, thread=receipt_thread,
+            revision=receipt_revision, event_id=f"decision-{field}")
         if field == "authenticated":
             receipt["authenticated"] = False
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
@@ -146,9 +141,11 @@ def test_loop_host_input_rejects_forgeable_stdin_identity(monkeypatch,
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
-        yield {"host_input_secret": "66" * 32}
+        yield {}
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_host_input_signing_key",
+                        lambda ws: "66" * 32)
 
     assert tp.main(["loop", "--workspace", "/repo", "host-input"]) == 0
     result = json.loads(capsys.readouterr().out)
