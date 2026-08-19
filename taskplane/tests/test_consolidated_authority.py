@@ -325,6 +325,51 @@ def test_loop_human_boundary_uses_current_receipt_and_revision():
     assert result["authority_requested"] == "destructive"
 
 
+def test_human_decision_rejects_unknown_reason_even_with_approval():
+    result = authority.decision_input(
+        "destrcutive", {"decision": "approve", "authenticated": True},
+        fact="remove generated cache", consequence="cannot be restored",
+        actor="user-7", thread="thread-9", revision="r1",
+        expected_actor="user-7", expected_thread="thread-9",
+        expected_revision="r1")
+
+    assert result["authorized"] is False
+    assert result["human_required"] is True
+    assert "unsupported_decision_reason" in result["reasons"]
+
+
+@pytest.mark.parametrize("fact,consequence,reason", [
+    ("", "cannot be restored", "fact_missing"),
+    ("remove generated cache", "", "consequence_missing"),
+])
+def test_human_decision_rejects_empty_required_context(
+        fact, consequence, reason):
+    result = authority.decision_input(
+        "destructive", {"decision": "approve", "authenticated": True},
+        fact=fact, consequence=consequence, actor="user-7",
+        thread="thread-9", revision="r1", expected_actor="user-7",
+        expected_thread="thread-9", expected_revision="r1")
+
+    assert result["authorized"] is False
+    assert reason in result["reasons"]
+
+
+@pytest.mark.parametrize("kind,reason", [
+    ("", "change_kind_missing"),
+    ("scpoe", "unsupported_change_kind"),
+])
+def test_preview_feedback_rejects_missing_or_unknown_kind_as_material(
+        kind, reason):
+    result = authority.preview_change(
+        "expand it", actor="user-7", authenticated=True,
+        requirement="R-1", target={"revision": "r1"}, kind=kind)
+
+    assert result["accepted"] is False
+    assert result["material"] is True
+    assert result["reauthorization_required"] is True
+    assert reason in result["reasons"]
+
+
 def test_loop_preview_feedback_projects_current_requirement_and_target():
     state = {"requirement_id": "R-1", "baseline": "r1"}
     result = loop._preview_feedback(
@@ -357,6 +402,36 @@ def test_host_input_calls_production_human_decision_boundary(monkeypatch):
     assert result["authorized"] is True
 
 
+@pytest.mark.parametrize("reason,fact,consequence,expected", [
+    ("destrcutive", "remove cache", "cannot restore",
+     "unsupported_decision_reason"),
+    ("destructive", "", "cannot restore", "fact_missing"),
+])
+def test_production_human_decision_rejects_unknown_reason_or_empty_context(
+        monkeypatch, reason, fact, consequence, expected):
+    packet, receipt = approved_packet()
+    state = {"authority_packet": packet, "authority_receipt": receipt,
+             "authority_target_revision": "r1"}
+    event = {
+        "type": "human_decision", "reason": reason,
+        "response": {"decision": "approve"}, "fact": fact,
+        "consequence": consequence,
+    }
+    observed = host_event(event, event_ref="invalid-decision")
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+
+    result = loop.handle_host_input("/repo", event, host_event=observed)
+
+    assert result["authorized"] is False
+    assert expected in result["reasons"]
+    assert state.get("consumed_host_decisions", {}) == {}
+
+
 def test_host_input_calls_production_preview_persistence(monkeypatch):
     state = {"requirement_id": "R-1", "authority_target_revision": "r1",
              "authority_receipt": {"actor": "user-7",
@@ -387,6 +462,27 @@ def test_host_input_calls_production_preview_persistence(monkeypatch):
     event_id = authority.HostSessionAdapter().observe(event, observed)["event_id"]
     assert event_id != event["event_id"]
     assert list(state["consumed_host_events"]) == [event_id]
+
+
+def test_production_preview_rejects_missing_change_kind(monkeypatch):
+    state = {"requirement_id": "R-1", "authority_target_revision": "r1",
+             "authority_receipt": {"actor": "user-7",
+                                   "thread": "thread-9"}}
+    event = {"type": "preview_feedback", "text": "increase spacing"}
+    observed = host_event(event, event_ref="preview-missing-kind")
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+
+    result = loop.handle_host_input("/repo", event, host_event=observed)
+
+    assert result["accepted"] is False
+    assert result["material"] is True
+    assert "change_kind_missing" in result["reasons"]
+    assert "preview_changes" not in state
 
 
 def test_host_input_rejects_caller_asserted_identity_without_host_observation(

@@ -443,7 +443,7 @@ def handle_host_input(ws: str, event: dict,
             change = _preview_feedback(
                 state, str(event.get("text") or ""), actor=envelope["actor"],
                 authenticated=True,
-                kind=str(event.get("change_kind") or "behavioral"))
+                kind=str(event.get("change_kind") or ""))
             if not change["accepted"]:
                 return change
             state.setdefault("preview_changes", []).append(change)
@@ -458,8 +458,7 @@ def handle_host_input(ws: str, event: dict,
             _enqueue_authority_effect(
                 state, f"preview:{event_id}", trace_event="preview_change",
                 trace_data={"actor": change["actor"],
-                            "kind": str(event.get("change_kind") or
-                                        "behavioral"),
+                            "kind": change["kind"],
                             "material": change["material"],
                             "change": change["fingerprint"]})
         effects = reconcile_authority_effects(ws)
