@@ -79,49 +79,43 @@ def _host_event_payload(event: Mapping) -> dict:
     return payload
 
 
-def _host_receipt_signature(receipt: Mapping, secret: str) -> str:
+_HOST_RECEIPT_RSA_N = int(
+    "2755070703043514567837450338864977453983335217863375313393347508867998"
+    "8653606130385459860851556870701927819635677964252617671428447820199573"
+    "5891145625961267505292290879320152248587133816351974857532220613567616"
+    "4442576590974819685291497203942545700267055896278182985594923471809590"
+    "1348806834409386751189663841627023762916628072701707507494690688456557"
+    "6020485684414216971381181957259990629280647142016116688515243136515996"
+    "9619352225257173199336520417967382269653847072571466571530171225163005"
+    "2133153064061413150938446572227240517779658235163179907488568403155154"
+    "731860395743276319730653002263913812036871800261560339749")
+_HOST_RECEIPT_RSA_E = 65537
+_SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def _host_receipt_signature_valid(receipt: Mapping) -> bool:
+    """Verify a host-issued RSA/SHA-256 receipt; no signing API exists here."""
+    try:
+        signature = bytes.fromhex(str(receipt.get("signature") or ""))
+    except ValueError:
+        return False
+    size = (_HOST_RECEIPT_RSA_N.bit_length() + 7) // 8
+    if len(signature) != size:
+        return False
+    signature_value = int.from_bytes(signature, "big")
+    if signature_value >= _HOST_RECEIPT_RSA_N:
+        return False
+    value = pow(signature_value, _HOST_RECEIPT_RSA_E,
+                _HOST_RECEIPT_RSA_N).to_bytes(size, "big")
     unsigned = {key: receipt[key] for key in receipt if key != "signature"}
-    key = bytes.fromhex(secret)
-    if len(key) < 32:
-        raise ValueError("host input authority is invalid")
-    return hmac.new(key, _canonical_bytes(unsigned),
-                    hashlib.sha256).hexdigest()
+    digest = hashlib.sha256(_canonical_bytes(unsigned)).digest()
+    tail = _SHA256_DIGEST_INFO + digest
+    expected = b"\x00\x01" + b"\xff" * (size - len(tail) - 3) + b"\x00" + tail
+    return hmac.compare_digest(value, expected)
 
 
-class HostInputAuthority:
-    """Receipt codec used with a key held outside workspace loop state.
-
-    Trusted host integration may receive an instance from the engine-owned
-    private issuer. Production workspace/CLI dispatch only receives receipts
-    and a verifier backed by the external key.
-    """
-
-    def __init__(self, secret: str) -> None:
-        try:
-            key = bytes.fromhex(str(secret or ""))
-        except ValueError as exc:
-            raise ValueError("host input authority is invalid") from exc
-        if len(key) < 32:
-            raise ValueError("host input authority is invalid")
-        self._secret = str(secret)
-
-    def issue(self, event: Mapping, *, actor: str, thread: str,
-              revision: str, event_id: str) -> dict:
-        if not isinstance(event, Mapping):
-            raise ValueError("host input event must be a mapping")
-        if not all(str(value or "").strip() for value in (
-                actor, thread, revision, event_id)):
-            raise ValueError("host input identity and event id are required")
-        receipt = {
-            "schema": HOST_INPUT_RECEIPT_SCHEMA,
-            "event_fingerprint": _fingerprint(_host_event_payload(event)),
-            "event_id": str(event_id).strip(),
-            "actor": str(actor).strip(), "thread": str(thread).strip(),
-            "revision": str(revision).strip(), "authenticated": True,
-        }
-        receipt["signature"] = _host_receipt_signature(
-            receipt, self._secret)
-        return receipt
+class HostInputVerifier:
+    """Consume-only verifier for receipts signed by the privileged host."""
 
     def verify(self, event: Mapping, receipt: object) -> dict:
         reasons = []
@@ -129,13 +123,7 @@ class HostInputAuthority:
                 receipt.get("schema") != HOST_INPUT_RECEIPT_SCHEMA:
             return {"authenticated": False,
                     "reasons": ["host_receipt_required"]}
-        try:
-            expected = _host_receipt_signature(receipt, self._secret)
-        except (ValueError, TypeError):
-            return {"authenticated": False,
-                    "reasons": ["host_receipt_invalid"]}
-        if not hmac.compare_digest(
-                str(receipt.get("signature") or ""), expected):
+        if not _host_receipt_signature_valid(receipt):
             reasons.append("host_receipt_unauthenticated")
         if receipt.get("event_fingerprint") != _fingerprint(
                 _host_event_payload(event)):

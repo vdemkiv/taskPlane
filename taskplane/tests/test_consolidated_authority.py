@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import sys
 
 import pytest
@@ -10,6 +11,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import authority  # noqa: E402
 import loop  # noqa: E402
 import review_dor  # noqa: E402
+
+
+_HOST_TEST_RSA_D = 6823042715679351083095921040778188895872029884421244949269988974576507253038044146378477372342246210959297444144089579964159423217760131668815144481868508403260214118920313305568905313649237419969142174143627567173541565805088866155552644855499639621046237170308214855487039261112453145693667417667351020629203737779339580396289662245684798103240561898313091319389365569497226323929678057980844655382019396861603106635705427016020203819737718570724027601086757012959784691684081215075599906436916767911477763454539954672180937575722053538914533160265615333236791531889594908609974389717764708454932691833138418840593
+
+
+def host_receipt(event, *, actor="user-7", thread="thread-9",
+                 revision="r1", event_id="event-1"):
+    receipt = {
+        "schema": authority.HOST_INPUT_RECEIPT_SCHEMA,
+        "event_fingerprint": authority._fingerprint(
+            authority._host_event_payload(event)),
+        "event_id": event_id, "actor": actor, "thread": thread,
+        "revision": revision, "authenticated": True,
+    }
+    digest = hashlib.sha256(authority._canonical_bytes(receipt)).digest()
+    tail = authority._SHA256_DIGEST_INFO + digest
+    size = (authority._HOST_RECEIPT_RSA_N.bit_length() + 7) // 8
+    encoded = b"\x00\x01" + b"\xff" * (size - len(tail) - 3) + b"\x00" + tail
+    signature = pow(int.from_bytes(encoded, "big"), _HOST_TEST_RSA_D,
+                    authority._HOST_RECEIPT_RSA_N).to_bytes(size, "big")
+    return {**receipt, "signature": signature.hex()}
 
 
 BASE = {
@@ -323,7 +345,6 @@ def test_loop_preview_feedback_projects_current_requirement_and_target():
 
 def test_host_input_calls_production_human_decision_boundary(monkeypatch):
     packet, receipt = approved_packet()
-    secret = "33" * 32
     state = {"authority_packet": packet, "authority_receipt": receipt,
              "authority_target_revision": "r1"}
     event = {
@@ -331,45 +352,38 @@ def test_host_input_calls_production_human_decision_boundary(monkeypatch):
         "response": {"decision": "approve"},
         "fact": "remove generated cache", "consequence": "irreversible",
     }
-    host_receipt = authority.HostInputAuthority(secret).issue(
-        event, actor="user-7", thread="thread-9", revision="r1",
-        event_id="decision-1")
+    signed = host_receipt(event, event_id="decision-1")
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
     result = loop.handle_host_input(
-        "/repo", event, host_receipt=host_receipt)
+        "/repo", event, host_receipt=signed)
 
     assert result["authorized"] is True
 
 
 def test_host_input_calls_production_preview_persistence(monkeypatch):
-    secret = "44" * 32
     state = {"requirement_id": "R-1", "authority_target_revision": "r1"}
     event = {
         "type": "preview_feedback", "text": "increase spacing",
         "change_kind": "cosmetic",
     }
-    host_receipt = authority.HostInputAuthority(secret).issue(
-        event, actor="user-7", thread="thread-9", revision="r1",
-        event_id="preview-1")
+    signed = host_receipt(event, event_id="preview-1")
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
     result = loop.handle_host_input(
-        "/repo", event, host_receipt=host_receipt)
+        "/repo", event, host_receipt=signed)
 
     assert result["accepted"] is True
-    assert state["preview_changes"] == [result]
+    assert state["preview_changes"][0]["fingerprint"] == result["fingerprint"]
     assert list(state["consumed_host_events"]) == ["preview-1"]
 
 
@@ -382,8 +396,6 @@ def test_host_input_rejects_caller_asserted_identity_without_engine_receipt(
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop, "_host_input_signing_key",
-                        lambda ws: "11" * 32)
 
     result = loop.handle_host_input("/repo", {
         "type": "preview_feedback", "text": "expand scope",
@@ -395,17 +407,14 @@ def test_host_input_rejects_caller_asserted_identity_without_engine_receipt(
 
 
 def test_host_input_rejects_forged_receipt_identity_and_event():
-    secret = "12" * 32
     event = {"type": "preview_feedback", "text": "increase spacing",
              "change_kind": "cosmetic"}
-    codec = authority.HostInputAuthority(secret)
-    receipt = codec.issue(
-        event, actor="user-7", thread="thread-9", revision="r1",
-        event_id="preview-1")
+    receipt = host_receipt(event, event_id="preview-1")
 
     forged_identity = {**receipt, "actor": "admin"}
-    identity = codec.verify(event, forged_identity)
-    changed_event = codec.verify(
+    verifier = authority.HostInputVerifier()
+    identity = verifier.verify(event, forged_identity)
+    changed_event = verifier.verify(
         {**event, "text": "expand scope"}, receipt)
 
     assert identity["authenticated"] is False
@@ -416,15 +425,12 @@ def test_host_input_rejects_forged_receipt_identity_and_event():
 
 def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
         monkeypatch):
-    secret = "22" * 32
     event = {
         "type": "human_decision", "reason": "destructive",
         "response": {"decision": "approve"},
         "fact": "remove generated cache", "consequence": "irreversible",
     }
-    receipt = authority.HostInputAuthority(secret).issue(
-        event, actor="user-7", thread="thread-9", revision="r1",
-        event_id="decision-1")
+    receipt = host_receipt(event, event_id="decision-1")
     packet, approval = approved_packet()
     state = {"authority_packet": packet, "authority_receipt": approval,
              "authority_target_revision": "r1",
@@ -435,7 +441,6 @@ def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
 
     first = loop.handle_host_input("/repo", event, host_receipt=receipt)
     replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
@@ -448,12 +453,9 @@ def test_human_decision_receipt_is_consumed_atomically_and_cannot_replay(
 
 def test_preview_receipt_rejects_stale_revision_and_replay_atomically(
         monkeypatch):
-    secret = "23" * 32
     event = {"type": "preview_feedback", "text": "increase spacing",
              "change_kind": "cosmetic"}
-    receipt = authority.HostInputAuthority(secret).issue(
-        event, actor="user-7", thread="thread-9", revision="r1",
-        event_id="preview-1")
+    receipt = host_receipt(event, event_id="preview-1")
     state = {"requirement_id": "R-1", "authority_target_revision": "r2",
              "consumed_host_events": {}}
 
@@ -462,7 +464,6 @@ def test_preview_receipt_rejects_stale_revision_and_replay_atomically(
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
 
     stale = loop.handle_host_input("/repo", event, host_receipt=receipt)
@@ -481,35 +482,115 @@ def test_preview_receipt_rejects_stale_revision_and_replay_atomically(
 def test_workspace_state_cannot_disclose_or_mint_host_signing_authority(
         monkeypatch):
     saved = {}
-    created = []
     monkeypatch.setattr(loop, "load", lambda ws: None)
     monkeypatch.setattr(loop, "save", lambda ws, state: saved.update(state))
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
-    monkeypatch.setattr(loop, "_host_input_signing_key",
-                        lambda ws, create=False: created.append(create) or
-                        "24" * 32)
 
     result = loop.init("/repo", "secure host input")
 
     assert not hasattr(authority, "issue_host_input_receipt")
     assert "host_input_secret" not in saved
     assert "host_input_secret" not in result
-    assert created == [True]
 
 
-def test_host_signing_key_is_external_private_state(monkeypatch, tmp_path):
-    private_root = tmp_path / "engine-private"
-    monkeypatch.setattr(loop.tp, "external_store_root",
-                        lambda ws: str(private_root))
+def test_production_has_no_signer_or_key_path():
+    assert not hasattr(authority, "HostInputAuthority")
+    assert not hasattr(loop, "_host_input_signing_key")
+    assert not hasattr(loop, "_host_input_key_path")
 
-    secret = loop._host_input_signing_key("/workspace", create=True)
-    path = loop._host_input_key_path("/workspace")
 
-    assert len(secret) == 64
-    assert path.startswith(str(private_root))
-    assert not path.startswith("/workspace/")
-    assert os.stat(path).st_mode & 0o777 == 0o600
-    assert os.stat(os.path.dirname(path)).st_mode & 0o777 == 0o700
+def test_reconciliation_rejects_symlink_substitution(monkeypatch, tmp_path):
+    trace_root = tmp_path / "workspace" / ".taskplane"
+    trace_root.mkdir(parents=True)
+    outside = tmp_path / "attacker-trace.jsonl"
+    outside.write_text(
+        '{"authority_effect_id":"selection:r1:a"}\n', encoding="utf-8")
+    linked = trace_root / "trace.jsonl"
+    linked.symlink_to(outside)
+    monkeypatch.setattr(loop.tp, "tp_dir", lambda ws: str(trace_root))
+    monkeypatch.setattr(loop.tp, "trace_paths", lambda ws: [str(linked)])
+
+    assert loop._trace_effect_seen("/workspace", "selection:r1:a") is False
+
+
+def test_preview_replay_reconciles_failed_durable_trace_effect(monkeypatch):
+    event = {"type": "preview_feedback", "text": "increase spacing",
+             "change_kind": "cosmetic"}
+    receipt = host_receipt(event, event_id="preview-reconcile")
+    state = {"requirement_id": "R-1", "authority_target_revision": "r1"}
+    observed = set()
+    attempts = []
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    def flaky_trace(ws, event_name, **data):
+        attempts.append(data["authority_effect_id"])
+        if len(attempts) == 1:
+            raise OSError("trace temporarily unavailable")
+        observed.add(data["authority_effect_id"])
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop, "_trace_effect_seen",
+                        lambda ws, effect_id: effect_id in observed)
+    monkeypatch.setattr(loop.tp, "trace", flaky_trace)
+
+    accepted = loop.handle_host_input("/repo", event, host_receipt=receipt)
+    replay = loop.handle_host_input("/repo", event, host_receipt=receipt)
+
+    effect = state["authority_effect_outbox"][
+        "preview:preview-reconcile"]
+    assert accepted["accepted"] is True
+    assert replay["accepted"] is False
+    assert replay["reasons"] == ["replayed_event"]
+    assert attempts == ["preview:preview-reconcile"] * 2
+    assert effect["status"] == "delivered"
+
+
+def test_selection_replay_reconciles_failed_kb_effect_once(monkeypatch):
+    state = {"step": "selection", "goal": "choose", "baseline": "r1",
+             "authority_target_revision": "r1", "tasks": [
+                 {"id": "a", "variant": "A", "scope": ["a.py"]},
+                 {"id": "b", "variant": "B", "scope": ["b.py"]},
+             ]}
+    traced = set()
+    decisions = set()
+    kb_attempts = []
+
+    @loop.contextlib.contextmanager
+    def fake_mutate(ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", fake_mutate)
+    monkeypatch.setattr(loop.tp, "git_head", lambda ws: "r1")
+    monkeypatch.setattr(loop, "_trace_effect_seen",
+                        lambda ws, effect_id: effect_id in traced)
+    monkeypatch.setattr(loop.tp, "trace",
+                        lambda ws, event, **data:
+                        traced.add(data["authority_effect_id"]))
+    monkeypatch.setattr(loop, "_kb_effect_seen",
+                        lambda ws, effect_id: effect_id in decisions)
+
+    def flaky_kb(ws, *, links, **kwargs):
+        effect_id = links["authority_effect"]
+        kb_attempts.append(effect_id)
+        if len(kb_attempts) == 1:
+            raise OSError("KB temporarily unavailable")
+        decisions.add(effect_id)
+
+    monkeypatch.setattr(loop.kb, "record_decision", flaky_kb)
+    monkeypatch.setattr(loop, "status", lambda ws: {"step": state["step"]})
+
+    selected = loop.select("/repo", "a")
+    replay = loop.select("/repo", "a")
+
+    effect_id = "selection:r1:a"
+    assert selected["selection"]["choice"] == "a"
+    assert "selection only" in replay["error"]
+    assert kb_attempts == [effect_id, effect_id]
+    assert decisions == {effect_id}
+    assert state["authority_effect_outbox"][effect_id]["status"] == "delivered"
 
 
 def test_select_rejects_stale_checkout_and_resumed_current_selection(

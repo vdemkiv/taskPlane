@@ -8,6 +8,7 @@ import sys
 import authority
 import loop
 import tp
+from taskplane.tests.test_consolidated_authority import host_receipt
 
 
 def test_loop_authorize_dispatches_every_routine_flow(monkeypatch, capsys):
@@ -68,14 +69,12 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
         "authority_target_revision": "r1",
         "authority_receipt": {"actor": "user-7", "thread": "thread-9"},
     }
-    secret = "55" * 32
 
     @loop.contextlib.contextmanager
     def fake_mutate(ws):
         yield state
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop, "_host_input_signing_key", lambda ws: secret)
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
 
     preview = {
@@ -83,9 +82,7 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
         "actor": "user-7", "authenticated": True,
         "change_kind": "cosmetic",
     }
-    preview_receipt = authority.HostInputAuthority(secret).issue(
-        preview, actor="user-7", thread="thread-9", revision="r1",
-        event_id="preview-1")
+    preview_receipt = host_receipt(preview, event_id="preview-1")
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(preview)))
     monkeypatch.setenv("TASKPLANE_HOST_INPUT_RECEIPT",
                        json.dumps(preview_receipt))
@@ -113,7 +110,7 @@ def test_loop_host_input_uses_current_target_and_rejects_bad_identity(
         receipt_actor = value if field == "actor" else "user-7"
         receipt_thread = value if field == "thread" else "thread-9"
         receipt_revision = value if field == "revision" else "r1"
-        receipt = authority.HostInputAuthority(secret).issue(
+        receipt = host_receipt(
             event, actor=receipt_actor, thread=receipt_thread,
             revision=receipt_revision, event_id=f"decision-{field}")
         if field == "authenticated":
@@ -144,8 +141,6 @@ def test_loop_host_input_rejects_forgeable_stdin_identity(monkeypatch,
         yield {}
 
     monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop, "_host_input_signing_key",
-                        lambda ws: "66" * 32)
 
     assert tp.main(["loop", "--workspace", "/repo", "host-input"]) == 0
     result = json.loads(capsys.readouterr().out)

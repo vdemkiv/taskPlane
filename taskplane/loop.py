@@ -29,7 +29,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import secrets
 import stat
 import time
 
@@ -169,58 +168,105 @@ def request_human_decision(state: dict, reason: str, response: object, *,
         consumed=consumed)
 
 
-def record_preview_feedback(ws: str, text: str, *, actor: str,
-                            authenticated: bool, kind: str) -> dict:
-    """Persist attributable preview feedback without treating UI as authority."""
+def _trace_effect_seen(ws: str, effect_id: str) -> bool:
+    root = os.path.realpath(tp.tp_dir(ws))
+    for path in tp.trace_paths(ws):
+        fd = None
+        try:
+            absolute = os.path.abspath(path)
+            if os.path.commonpath((root, absolute)) != root:
+                continue
+            before = os.lstat(absolute)
+            if not stat.S_ISREG(before.st_mode):
+                continue
+            fd = os.open(absolute, os.O_RDONLY |
+                         getattr(os, "O_NOFOLLOW", 0))
+            after = os.fstat(fd)
+            if not stat.S_ISREG(after.st_mode) or \
+                    (before.st_dev, before.st_ino) != \
+                    (after.st_dev, after.st_ino):
+                os.close(fd)
+                fd = None
+                continue
+            with os.fdopen(fd, encoding="utf-8") as handle:
+                fd = None
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("authority_effect_id") == effect_id:
+                        return True
+        except OSError:
+            continue
+        finally:
+            if fd is not None:
+                os.close(fd)
+    return False
+
+
+def _kb_effect_seen(ws: str, effect_id: str) -> bool:
+    try:
+        return any((row.get("links") or {}).get("authority_effect") == effect_id
+                   for row in kb.list_decisions(ws))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _enqueue_authority_effect(state: dict, effect_id: str, *,
+                              trace_event: str, trace_data: dict,
+                              kb_data: dict | None = None) -> None:
+    outbox = state.setdefault("authority_effect_outbox", {})
+    outbox.setdefault(effect_id, {
+        "schema": "taskplane.authority-effect/v1", "status": "pending",
+        "trace": {"delivered": False, "event": trace_event,
+                  "data": trace_data},
+        "kb": ({"delivered": False, "data": kb_data}
+               if kb_data is not None else None),
+    })
+
+
+def reconcile_authority_effects(ws: str) -> dict:
+    """Deliver durable authority effects idempotently after state commit."""
+    delivered = pending = 0
     with mutate(ws) as state:
         if state is None:
-            return {"error": "no active loop"}
-        change = _preview_feedback(
-            state, text, actor=actor, authenticated=authenticated, kind=kind)
-        if not change["accepted"]:
-            return change
-        state.setdefault("preview_changes", []).append(change)
-        if change["reauthorization_required"]:
-            state["reauthorization_required"] = True
-        tp.trace(ws, "preview_change", actor=change["actor"], kind=kind,
-                 material=change["material"],
-                 change=change["fingerprint"])
-        return change
-
-
-def _host_input_key_path(ws: str) -> str:
-    """Private engine authority; never part of workspace/loop state."""
-    return os.path.join(tp.external_store_root(ws), "private",
-                        "host-input-authority.key")
-
-
-def _host_input_signing_key(ws: str, *, create: bool = False) -> str:
-    path = _host_input_key_path(ws)
-    parent = os.path.dirname(path)
-    if create:
-        os.makedirs(parent, mode=0o700, exist_ok=True)
-        os.chmod(parent, 0o700)
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            with os.fdopen(fd, "w", encoding="ascii") as handle:
-                handle.write(secrets.token_hex(32))
-    try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
-            os.close(fd)
-            raise OSError("host input authority permissions are not private")
-        with os.fdopen(fd, encoding="ascii") as handle:
-            secret = handle.read().strip()
-        authority_engine.HostInputAuthority(secret)
-        return secret
-    except OSError as exc:
-        raise RuntimeError(f"host input authority is unavailable: {exc}") \
-            from exc
+            return {"delivered": 0, "pending": 0}
+        for effect_id, row in (state.get("authority_effect_outbox") or {}).items():
+            if row.get("status") == "delivered":
+                delivered += 1
+                continue
+            trace_effect = row.get("trace") or {}
+            try:
+                if not trace_effect.get("delivered"):
+                    if not _trace_effect_seen(ws, effect_id):
+                        tp.trace(ws, str(trace_effect.get("event") or
+                                         "authority_effect"),
+                                 **dict(trace_effect.get("data") or {}),
+                                 authority_effect_id=effect_id)
+                    trace_effect["delivered"] = _trace_effect_seen(ws, effect_id)
+                kb_effect = row.get("kb")
+                if trace_effect.get("delivered") and kb_effect and not \
+                        kb_effect.get("delivered"):
+                    if not _kb_effect_seen(ws, effect_id):
+                        data = dict(kb_effect.get("data") or {})
+                        links = {**dict(data.pop("links", {}) or {}),
+                                 "authority_effect": effect_id}
+                        kb.record_decision(ws, links=links, **data)
+                    kb_effect["delivered"] = _kb_effect_seen(ws, effect_id)
+            except Exception as exc:  # effect remains durable for retry
+                row["last_error"] = f"{exc.__class__.__name__}: {exc}"
+            complete = bool(trace_effect.get("delivered")) and (
+                row.get("kb") is None or bool((row.get("kb") or {}).get(
+                    "delivered")))
+            if complete:
+                row["status"] = "delivered"
+                row.pop("last_error", None)
+                delivered += 1
+            else:
+                row["status"] = "pending"
+                pending += 1
+    return {"delivered": delivered, "pending": pending}
 
 
 def handle_host_input(ws: str, event: dict,
@@ -228,18 +274,13 @@ def handle_host_input(ws: str, event: dict,
     """Consume a host-authenticated event; raw caller identity is inert."""
     if not isinstance(event, dict):
         return {"error": "host event must be a mapping"}
+    reconcile_authority_effects(ws)
     kind = str(event.get("type") or "").strip().lower()
     if kind == "preview_feedback":
         with mutate(ws) as state:
             if state is None:
                 return {"error": "no active loop"}
-            try:
-                verifier = authority_engine.HostInputAuthority(
-                    _host_input_signing_key(ws))
-            except (RuntimeError, ValueError) as exc:
-                return {"accepted": False,
-                        "reasons": ["host_receipt_authority_unavailable"],
-                        "error": str(exc)}
+            verifier = authority_engine.HostInputVerifier()
             envelope = verifier.verify(event, host_receipt)
             if not envelope["authenticated"]:
                 return {"accepted": False, "reasons": envelope["reasons"]}
@@ -265,21 +306,20 @@ def handle_host_input(ws: str, event: dict,
                 "revision": envelope["revision"],
                 "receipt": str((host_receipt or {}).get("signature") or ""),
             }
-        tp.trace(ws, "preview_change", actor=change["actor"],
-                 kind=str(event.get("change_kind") or "behavioral"),
-                 material=change["material"], change=change["fingerprint"])
-        return change
+            _enqueue_authority_effect(
+                state, f"preview:{event_id}", trace_event="preview_change",
+                trace_data={"actor": change["actor"],
+                            "kind": str(event.get("change_kind") or
+                                        "behavioral"),
+                            "material": change["material"],
+                            "change": change["fingerprint"]})
+        effects = reconcile_authority_effects(ws)
+        return {**change, "effect_delivery": effects}
     if kind == "human_decision":
         with mutate(ws) as state:
             if state is None:
                 return {"error": "no active loop"}
-            try:
-                verifier = authority_engine.HostInputAuthority(
-                    _host_input_signing_key(ws))
-            except (RuntimeError, ValueError) as exc:
-                return {"authorized": False, "human_required": True,
-                        "reasons": ["host_receipt_authority_unavailable"],
-                        "error": str(exc)}
+            verifier = authority_engine.HostInputVerifier()
             envelope = verifier.verify(event, host_receipt)
             if not envelope["authenticated"]:
                 return {"authorized": False, "human_required": True,
@@ -678,8 +718,8 @@ def init(ws: str, goal: str, spec_path: str | None = None,
         "current_task": 0,
         "consumed_host_decisions": {},
         "consumed_host_events": {},
+        "authority_effect_outbox": {},
     }
-    _host_input_signing_key(ws, create=True)
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,
              first_step=state["step"], max_fix_cycles=max_fix_cycles,
@@ -3401,6 +3441,7 @@ def select(ws: str, choice: str, note: str = "") -> dict:
     step variants never have: a winner goes to the engineering review; a
     hybrid goes back to plan for the graft (both variants kept as
     reference). Recorded to the KB — the WHY outlives the losing branch."""
+    reconcile_authority_effects(ws)
     with mutate(ws) as state:
         if state is None:
             return {"error": "no active loop"}
@@ -3495,20 +3536,24 @@ def select(ws: str, choice: str, note: str = "") -> dict:
         goal = str(state.get("goal") or "")
         context_files = sorted({g for t in variants
                                 for g in t.get("scope", [])})
-    # Observable effects occur only after the locked state transition commits.
-    tp.trace(ws, "loop_select", choice=state["selection"]["choice"],
-             note=note)
-    kb.record_decision(
-        ws, f"A/B selection: {selection['choice']} — {goal[:48]}",
-        context=(f"Goal: {state['goal']}; variants: "
-                 + ", ".join(t["id"] for t in variants)),
-        decision=(note or f"Human selected {selection['choice']} "
-                          "at the selection gate."),
-        tags=["ab-selection"],
-        context_files=context_files,
-        links={"loop": "selection"})
+        effect_id = f"selection:{current_revision}:{selection['choice']}"
+        _enqueue_authority_effect(
+            state, effect_id, trace_event="loop_select",
+            trace_data={"choice": selection["choice"], "note": note},
+            kb_data={
+                "title": f"A/B selection: {selection['choice']} — {goal[:48]}",
+                "context": (f"Goal: {goal}; variants: "
+                            + ", ".join(t["id"] for t in variants)),
+                "decision": (note or
+                             f"Human selected {selection['choice']} at the "
+                             "selection gate."),
+                "tags": ["ab-selection"], "context_files": context_files,
+                "links": {"loop": "selection"},
+            })
+    effects = reconcile_authority_effects(ws)
     return {"step": state["step"], "selection": selection,
-            "instruction": instruction, "status": status(ws)}
+            "instruction": instruction, "status": status(ws),
+            "effect_delivery": effects}
 
 
 def _cascade_skip(state: dict, root_id: str) -> list:
