@@ -1157,18 +1157,6 @@ def _apply_floors(vmap: dict, ctx: Ctx) -> dict:
             if f:
                 _promote(arch, "floor: architecture promoted to light — "
                          f"code change ({f})", to="light")
-    # R-0001 engineering review: these four judgments are never delegated to
-    # a light sweep or replaced by cache/provisional output.  Apply this last
-    # so its stronger stage floor remains the canonical recorded reason.
-    if ctx.stage == "review":
-        for lens_id in ("architecture", "code-quality", "security", "qa"):
-            entry = vmap.get(lens_id)
-            if entry is not None:
-                _promote(
-                    entry,
-                    f"mandatory review floor: {lens_id} always runs deep",
-                    to="deep",
-                )
     return vmap
 
 
@@ -1179,15 +1167,20 @@ def apply_budget(verdict_map: dict, cap: int = DEEP_CAP,
     """Rank deep lenses by score (ties broken by lens id) and DEMOTE — never
     drop — everything past `cap` to light, recording the demotion in
     evidence. `target` documents the desired deep band; depth is never
-    manufactured to reach it. Floors run AFTER the budget when a ctx is
-    given, so a floor can never be budgeted away. Returns a NEW map."""
+    manufactured to reach it. Floors are applied before ranking so they
+    participate in the same hard cap as every other deep disposition; a
+    floor is ranked ahead of an equal non-floor signal but cannot expand the
+    deep set past the declared budget. Returns a NEW map."""
     out = {lid: {"verdict": v["verdict"], "score": v["score"],
                  "evidence": list(v["evidence"]),
                  "negative_evidence": list(v["negative_evidence"]),
                  **({"floor": v["floor"]} if "floor" in v else {})}
            for lid, v in verdict_map.items()}
+    if ctx is not None:
+        _apply_floors(out, ctx)
     deep = sorted((lid for lid, v in out.items() if v["verdict"] == "deep"),
-                  key=lambda lid: (-out[lid]["score"], lid))
+                  key=lambda lid: ("floor" not in out[lid],
+                                   -out[lid]["score"], lid))
     for rank, lid in enumerate(deep, start=1):
         if rank > cap:
             entry = out[lid]
@@ -1195,8 +1188,6 @@ def apply_budget(verdict_map: dict, cap: int = DEEP_CAP,
             entry["evidence"].append(
                 f"budget: demoted deep->light (rank {rank} > cap {cap}, "
                 f"score {entry['score']})")
-    if ctx is not None:
-        _apply_floors(out, ctx)
     return out
 
 
