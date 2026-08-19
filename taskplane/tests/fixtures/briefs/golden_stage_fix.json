@@ -26,6 +26,31 @@
     "write_allow": null
   },
   "dashboard": {
+    "delivery": {
+      "artifacts": {
+        "html": {
+          "path": "<WS>/.taskplane/dashboard-delivery/dashboard.html",
+          "status": "available"
+        },
+        "json": {
+          "path": "<WS>/.taskplane/dashboard-delivery/dashboard.json",
+          "status": "available"
+        },
+        "markdown": {
+          "path": "<WS>/.taskplane/dashboard-delivery/dashboard.md",
+          "status": "available"
+        }
+      },
+      "gate": {},
+      "inline": {
+        "complete": true,
+        "format": "html",
+        "path": "<WS>/.taskplane/dashboard-delivery/dashboard.inline.html"
+      },
+      "mode": "inline",
+      "schema": "taskplane.dashboard-delivery/v1",
+      "status": "published"
+    },
     "inline": {
       "path": "<WS>/.taskplane/dashboard.fragment.html"
     },
