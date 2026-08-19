@@ -1376,13 +1376,11 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         if step == "signoff":
             # Run the MECHANICAL Definition-of-Done here so the human signs off
             # seeing both the EM's read-out AND the scope-diff/lint verdict.
-            out["dod"] = _signoff_dod(ws, state)
+            out["dod"] = _signoff_gate_dod(ws, state)
             # v2.3.0 wiring: accepted design drift and hand-declared edge
             # realizations are VISIBLE at sign-off, not dead-on-pass.
-            findings, _errs = _read_json(
-                runtime_storage.review_public_path(ws, "findings.json"))
-            notices = _dc.design_review_notices(
-                (findings or {}).get("meta") or {})
+            notices = list(
+                (state.get("signoff_evidence") or {}).get("notices") or [])
             if notices:
                 out["notices"] = notices
         if step == "design_approval":
@@ -3101,14 +3099,18 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             tp.trace(ws, "review_convergence_unavailable",
                      task=(task or {}).get("id"),
                      error=f"{exc.__class__.__name__}: {exc}")
+    signoff_evidence = None
     if outcome == "pass" and step == "em":
-        review_errors = _engineering_review_errors(ws, state)
-        if review_errors:
+        signoff_evidence, signoff_errors = _signoff_evidence_binding(ws, state)
+        if signoff_errors:
             tp.trace(ws, "loop_gate_blocked", step=step,
-                     reason="engineering_review", errors=review_errors)
-            return {"error": "engineering review is incomplete — sign-off "
-                             "is not available", "step": step,
-                    "dod": {"passed": False, "errors": review_errors}}
+                     reason="terminal_signoff_evidence",
+                     errors=signoff_errors)
+            return {"error": "engineering review is incomplete or terminal "
+                             "sign-off evidence failed — the loop remains "
+                             "at engineering review",
+                    "step": step,
+                    "dod": {"passed": False, "errors": signoff_errors}}
 
     # H2 (v2.2.1): validation above ran on a snapshot and can take seconds
     # (tests, evidence, graph). Apply the transition under the state LOCK to
@@ -3325,6 +3327,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         elif step == "em":
             # The graph was true-d up before the EM brief, so its fingerprint is
             # part of the evidence being gated rather than a post-review mutation.
+            state["signoff_evidence"] = signoff_evidence
+            state["signoff_dod"] = dict(signoff_evidence["dod"])
             state["step"] = "signoff"
     if step == "em" and outcome == "pass":
         # One more COMPLETED engineering review: advance the audit cadence
@@ -3350,7 +3354,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                if outcome == "unavailable" else {})}
 
 
-def _signoff_dod(ws: str, state: dict) -> dict:
+def _compute_signoff_dod(ws: str, state: dict) -> dict:
     """Mechanical final DoD over aggregate scope, requirements, tests, graph,
     engineering evidence, and committed knowledge. Human sign-off remains."""
     scopes: list = []
@@ -3427,6 +3431,74 @@ def _signoff_dod(ws: str, state: dict) -> dict:
     # for, so it travels with the verdict instead of only into the trace.
     return {"passed": not errors, "errors": errors, "notices": notices,
             "scope": scopes, "baseline": baseline}
+
+
+def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
+    """Seal final DoD and review identity at the integrated revision.
+
+    Sign-off is a human decision over the EM-reviewed tree, not a fresh review
+    of whichever bytes happen to occupy the shared checkout later.  The EM
+    gate therefore computes the terminal mechanical verdict once and carries
+    its run-owned review identity into the human gate.
+    """
+    revision = tp.git_head(ws)
+    errors = []
+    if not revision:
+        errors.append("sign-off evidence has no integrated git revision")
+    elif tp.changed_files(ws, revision):
+        errors.append("sign-off evidence cannot bind an uncommitted product "
+                      "diff; commit the reviewed integration tree first")
+    if errors:
+        return None, errors
+    dod = _compute_signoff_dod(ws, state)
+    if not dod["passed"]:
+        return None, list(dod["errors"])
+    binding = review_kernel_binding(state, "em", _current_task(state)) or {}
+    findings, _ = _read_json(
+        runtime_storage.review_public_path(ws, "findings.json"))
+    meta = (findings or {}).get("meta") or {}
+    return {
+        "schema": "taskplane.signoff-evidence/v1",
+        "integration_revision": revision,
+        "requirement_id": state.get("requirement_id"),
+        "baseline": state.get("baseline"),
+        "review_kernel": dict(binding),
+        "review_revision": {
+            key: meta.get(key) for key in (
+                "target_fingerprint", "context_fingerprint",
+                "findings_fingerprint", "canonical_revision")
+            if meta.get(key) is not None
+        },
+        "dod": dod,
+        "notices": _dc.design_review_notices(meta),
+    }, []
+
+
+def _signoff_dod(ws: str, state: dict) -> dict:
+    """Return the EM-sealed terminal verdict; never re-read shared evidence."""
+    evidence = state.get("signoff_evidence")
+    if isinstance(evidence, dict) \
+            and evidence.get("schema") == "taskplane.signoff-evidence/v1" \
+            and evidence.get("integration_revision") \
+            and isinstance(evidence.get("dod"), dict):
+        return dict(evidence["dod"])
+    # Compatibility for callers that use this helper as the raw mechanical
+    # aggregate.  Human-gate presentation does not use this legacy fallback;
+    # next_action() surfaces a bounded-recovery marker instead.
+    return _compute_signoff_dod(ws, state)
+
+
+def _signoff_gate_dod(ws: str, state: dict) -> dict:
+    if state.get("signoff_evidence"):
+        return _signoff_dod(ws, state)
+    return {
+        "passed": False,
+        "errors": ["legacy sign-off state has no immutable integration "
+                   "evidence; approval can recover only when the current "
+                   "revision and EM evidence still agree"],
+        "notices": [], "scope": [], "baseline": state.get("baseline"),
+        "legacy_recovery": True,
+    }
 
 
 def _record_design_contracts(ws: str, state: dict, contract: dict | None) -> list:
@@ -3670,6 +3742,25 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             tags=["plan-approval"], context_files=scope,
             links={"loop": "plan"})
     elif step == "signoff":
+        if not state.get("signoff_evidence"):
+            recovered, recovery_errors = _signoff_evidence_binding(ws, state)
+            if recovery_errors:
+                tp.trace(ws, "loop_approve_blocked", gate="em_signoff",
+                         reason="legacy_evidence_unrecoverable",
+                         errors=recovery_errors, by=by)
+                return {
+                    "error": "legacy sign-off evidence cannot be recovered "
+                             "from the current integrated revision; return "
+                             "this same loop to engineering review and "
+                             "produce fresh terminal evidence",
+                    "step": "signoff",
+                    "dod": {"passed": False, "errors": recovery_errors},
+                    "recovery": "same_loop_engineering_review",
+                }
+            state["signoff_evidence"] = recovered
+            state["signoff_dod"] = dict(recovered["dod"])
+            tp.trace(ws, "legacy_signoff_evidence_recovered",
+                     revision=recovered["integration_revision"])
         dod = _signoff_dod(ws, state)
         if not dod["passed"]:
             tp.trace(ws, "loop_approve_blocked", gate="em_signoff",
@@ -3681,10 +3772,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         tp.trace(ws, "loop_approve", gate="em_signoff", final="retro", by=by)
         # v2.3.0 wiring: the sign-off payload carries the review's design
         # notices (accepted drift, declared edge realizations) when present.
-        findings, _errs = _read_json(
-            runtime_storage.review_public_path(ws, "findings.json"))
-        gate_notices = _dc.design_review_notices(
-            (findings or {}).get("meta") or {})
+        gate_notices = list(
+            (state.get("signoff_evidence") or {}).get("notices") or [])
         scope = sorted({g for t in (state.get("tasks") or [])
                         for g in t.get("scope", [])})
         kb.record_decision(

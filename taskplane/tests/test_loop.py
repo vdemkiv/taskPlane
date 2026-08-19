@@ -279,6 +279,60 @@ class TestLoop(unittest.TestCase):
         loop.retro(ws)                                         # → done
         self.assertEqual(loop.load(ws)["step"], "done")
 
+    def test_signoff_is_bound_to_em_integration_not_later_shared_bytes(self):
+        """A later commit/loop cannot make an approved EM revision fail DoD.
+
+        This is the screenshot regression: sign-off used to re-read the
+        mutable shared findings/design and current checkout, producing a
+        mixed-revision list of scope, design, graph and schema failures.
+        """
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        loop.next_action(ws); loop.gate(ws, "pass")
+        loop.next_action(ws); submit_gate(ws, "pass")
+        loop.next_action(ws); pass_eval(ws)
+        loop.next_action(ws); pass_em(ws)
+
+        sealed = loop.load(ws)["signoff_evidence"]
+        reviewed_revision = sealed["integration_revision"]
+        self.assertTrue(sealed["dod"]["passed"])
+
+        # Simulate subsequent local work and another loop replacing the
+        # legacy shared review projection with incompatible bytes.
+        open(os.path.join(ws, "README.md"), "w", encoding="utf-8").write(
+            "later unrelated loop\n")
+        subprocess.run(["git", "add", "README.md"], cwd=ws, check=True)
+        subprocess.run(["git", "commit", "-qm", "later loop"], cwd=ws,
+                       check=True)
+        with open(os.path.join(ws, ".em-review", "findings.json"), "w",
+                  encoding="utf-8") as stream:
+            json.dump({"meta": {"gate": {"verdict": "invalid"}},
+                       "findings": "wrong schema"}, stream)
+
+        action = loop.next_action(ws)
+        self.assertTrue(action["dod"]["passed"], action["dod"])
+        self.assertEqual(loop.load(ws)["signoff_evidence"]
+                         ["integration_revision"], reviewed_revision)
+        approved = loop.approve(ws, by="human")
+        self.assertEqual(approved["step"], "retro")
+
+    def test_legacy_signoff_recovery_fails_closed_without_new_loop_advice(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        state = loop.load(ws)
+        state.update({"step": "signoff", "baseline": tp.git_head(ws),
+                      "tasks": [dict(TASK, status="passed")]})
+        loop.save(ws, state)
+
+        action = loop.next_action(ws)
+        self.assertTrue(action["dod"]["legacy_recovery"])
+        self.assertNotIn("new loop", str(action).lower())
+        refused = loop.approve(ws, by="human")
+        self.assertEqual(refused["recovery"], "same_loop_engineering_review")
+        self.assertNotIn("re-anchor", str(refused).lower())
+        self.assertNotIn("new loop", str(refused).lower())
+        self.assertEqual(loop.load(ws)["step"], "signoff")
+
     def test_fail_autofix_then_escalate(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"], max_fix_cycles=2)
