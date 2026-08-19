@@ -15,15 +15,17 @@ adapts the taskplane loop to exactly those three facts.
 
 `flow.json` is the canonical graph for this skill. Follow its order exactly:
 
-**Slack thread goal → repo-persisted KB → governed loop → role dispatch +
-evidence → dashboard attached → human reply in thread → attributed approval
-→ commit KB + resume state.**
+**Slack thread goal → repo-persisted KB → governed loop → attributed
+consolidated authorization → role dispatch + evidence → dashboard attached →
+attributed final sign-off → commit KB + resume state.**
 
-Do not skip directly from work to approval, and do not synthesize the human
-reply. A request for changes is not approval: leave the loop parked at its
-human gate, report the requested change, and resume only through the governed
-role the orchestrator assigns. The `approve` node is reached only after an
-explicit approving reply and always carries `--by`.
+Do not synthesize a human reply. Product, optional Design, and Plan complete
+mechanically, then their evidence is presented once as the consolidated
+pre-implementation packet. A request for changes is not approval: leave the
+loop parked at its human gate, report the requested change, and resume only
+through the governed role the orchestrator assigns. Every human-owned decision
+is accepted only from an attributable host event bound to the current thread,
+actor, revision, and target.
 
 ## Setup (start of every Tag session)
 
@@ -63,21 +65,25 @@ trace lines into the thread at each gate so the audit survives the sandbox.
 
 ## Human gates — the one rule that is absolute
 
-At `design_approval`, `plan_approval`, and `signoff` (and A/B `selection`):
+At initial consolidated `authorization`, final `signoff`, A/B `selection`,
+material authority/scope change, exhausted recovery, and destructive or
+external action:
 
 1. Attach `.taskplane/dashboard.html` and post the gate summary to the
    thread: the decision, acceptance criteria, graph impact, and the exact
    approve/request-changes question.
 2. **STOP. Do not run `loop approve`. Wait for a human reply.**
-3. Only when a person in the thread has explicitly approved, run:
+3. Only when the host adapter reports an attributable event from a person in
+   the bound thread, run:
 
    ```bash
    tp.py loop approve --by "<their name> — '<their exact words>'"
    ```
 
-   `--by` records WHO approved into the trace and the KB decision. An
-   approve **without** `--by` in a Tag session is a self-approval — the
-   exact failure taskplane exists to prevent. If the reply is ambiguous
+   `--by` records WHO approved into the trace and the KB decision; the host
+   event supplies the authoritative actor/thread/revision/target binding. An
+   approve **without** that attribution in a Tag session is a self-approval —
+   the exact failure taskplane exists to prevent. If the reply is ambiguous
    ("looks fine I guess?"), ask again; if nobody replies, the loop stays
    parked at the gate — that is correct behavior, not a failure.
 

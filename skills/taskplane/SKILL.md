@@ -97,11 +97,16 @@ loop. In one line each: workers write their evidence, run
 host/model outage; with `--task <id>` only in a parallel EXECUTE
 wave) and stop; only the orchestrator calls the matching `$TP loop gate`;
 the engine — never worker prose — decides whether DoR/DoD evidence is
-sufficient; human checkpoints (Design
-Contract approval, plan approval, A/B selection, escalation/replan, final
+sufficient; human checkpoints (consolidated pre-implementation authorization,
+A/B selection, escalation/replan, destructive or external actions, and final
 sign-off) stop for an explicit human yes; and no worker clears its contract
 after a submission, weakens tests, silently widens scope, or treats an
 incomplete action list as completion.
+
+Product, Design, and Plan completion is mechanical; incomplete contracts,
+dependencies, acceptance mapping, NFRs, graph evidence, or required lenses
+block with a named non-human reason. Their complete evidence is presented
+together in the single consolidated pre-implementation authorization packet.
 
 At every human checkpoint, render the engine-provided dashboard fragment
 inline through the host widget so its approval controls remain interactive.

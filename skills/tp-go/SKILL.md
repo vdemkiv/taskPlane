@@ -16,10 +16,14 @@ engine on every call. Otherwise set
 pause ONLY at the human gates. Follow each step's returned `instruction`.
 
 `flow.json` is the approved end-to-end graph: **goal → Product → optional
-Design → Design approval → Plan → Plan approval → scoped Build waves →
-Evaluate → Engineering review → final sign-off → retro/graph true-up**.
-Optional branches may be skipped only when their engine condition is false;
-the three human gates may never be collapsed or self-approved.
+Design → Plan → consolidated pre-implementation authorization → scoped Build
+waves → Evaluate → Engineering review → final sign-off → retro/graph
+true-up**. Optional branches may be skipped only when their engine condition
+is false; the initial consolidated authorization and final sign-off may never
+be collapsed or self-approved. Explicit A/B selection, material
+authority/scope change, exhausted recovery, and destructive or external
+actions remain separate human-owned boundaries. Product, Design, and Plan gates are mechanical
+and block on incomplete evidence rather than asking for ceremonial approval.
 
 This is the internal delivery driver behind the user-facing `taskplane`
 facade — user phrasing like "build X" arrives via the facade and routes
@@ -140,8 +144,9 @@ explicit approval in conversation. Never run the loop silently.
    `design/contract.json` and
    `design/design.md`, compares alternatives, declares a proposed graph
    overlay with bounded contract-level boundaries, runs the mandatory
-   solution-design lens, and stops for human approval. It never changes code
-   or the as-built graph. Plan writes plan/tasks.json
+   solution-design lens, and returns its mechanically checked artifact for the
+   consolidated packet. It never changes code or the as-built graph. Plan
+   writes plan/tasks.json
    (each task: id, scope, tests as one command string (never a list), req,
    deps, contracts, `new_modules` when
    applicable, and typed `impact_policy`), execute builds TDD-first
@@ -167,17 +172,22 @@ explicit approval in conversation. Never run the loop silently.
    If a Design Contract is approved, each proposed dependency edge is copied
    into the owning task's `design_edges` as `FROM->TO:KIND`; the plan gate
    checks the complete set along with modules, contracts, depth, and criteria.
-4. **Human gates:** at `design_approval` present the selected approach,
-   alternatives, modules/edges/contracts, risks/rollout, validation map, and
-   useful visual, then WAIT for the user. At `plan_approval` present the plan
-   + refinement forecast and WAIT; at `signoff` present the engineering
-   report and WAIT. `$TP loop approve` only on their explicit yes.
+4. **Human gates:** after Product, optional Design, and Plan pass their
+   mechanical gates, present one consolidated pre-implementation packet with
+   the requirement, acceptance criteria, selected approach and alternatives,
+   modules/edges/contracts, risks/rollout, validation map, plan/refinement
+   forecast, scope, recovery policy, artifact delivery, and execution bounds;
+   then WAIT for the user. At `signoff` present the engineering report and
+   WAIT. `$TP loop approve` only on their explicit yes. A/B selection,
+   material authority/scope drift, exhausted recovery, and destructive or
+   external actions use their named human boundaries without recreating
+   Product, Design, or Plan approval gates.
    Escalations: present options, `$TP loop resolve retry|skip|abort` on
    their choice.
    If an approved task configuration itself is invalid, do not edit loop
    state: obtain the human's decision and run `$TP loop replan --by
    "<human>" --reason "<defect>"`. The frozen tasks stay in history and the
-   corrected plan must pass Plan DoR plus fresh human approval.
+   corrected plan must pass Plan DoR plus fresh consolidated authorization.
    **Visual sign-off (UI changes):** if the change touched a UI (any task
    with `type: ui`, or a diff under a client/component/screen path), don't
    sign off on a diff alone — RENDER THE FIXED SCREEN. Boot the real app

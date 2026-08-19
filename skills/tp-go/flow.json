@@ -6,14 +6,13 @@
     {"id": "goal", "label": "goal + loop init", "kind": "input"},
     {"id": "product", "label": "Product · WHAT", "kind": "stage"},
     {"id": "design", "label": "optional Design · HOW", "kind": "stage"},
-    {"id": "design_approval", "label": "design approval", "kind": "gate"},
     {"id": "plan", "label": "Plan + impact", "kind": "stage"},
-    {"id": "plan_approval", "label": "plan approval", "kind": "gate"},
+    {"id": "authorization", "label": "consolidated pre-implementation authorization", "kind": "gate"},
     {"id": "build", "label": "scoped build waves", "kind": "parallel"},
     {"id": "evaluate", "label": "Evaluate + shared context", "kind": "parallel"},
     {"id": "engineering", "label": "Engineering review", "kind": "parallel"},
     {"id": "signoff", "label": "final sign-off", "kind": "gate"},
     {"id": "retro", "label": "retro + graph true-up", "kind": "stage"}
   ],
-  "edges": [["goal", "product"], ["product", "design"], ["design", "design_approval"], ["design_approval", "plan"], ["plan", "plan_approval"], ["plan_approval", "build"], ["build", "evaluate"], ["evaluate", "engineering"], ["engineering", "signoff"], ["signoff", "retro"]]
+  "edges": [["goal", "product"], ["product", "design"], ["design", "plan"], ["plan", "authorization"], ["authorization", "build"], ["build", "evaluate"], ["evaluate", "engineering"], ["engineering", "signoff"], ["signoff", "retro"]]
 }

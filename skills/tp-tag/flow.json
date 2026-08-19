@@ -7,25 +7,25 @@
     {"id": "thread", "label": "Slack thread goal", "kind": "input"},
     {"id": "store", "label": "repo-persisted KB", "kind": "state"},
     {"id": "loop", "label": "governed loop", "kind": "control"},
+    {"id": "authorization", "label": "attributed consolidated authorization", "kind": "gate"},
     {"id": "work", "label": "role dispatch + evidence", "kind": "parallel"},
     {"id": "dashboard", "label": "dashboard attached", "kind": "visual"},
-    {"id": "reply", "label": "human reply in thread", "kind": "gate"},
-    {"id": "approve", "label": "attributed approval", "kind": "decision"},
+    {"id": "signoff", "label": "attributed final sign-off", "kind": "gate"},
     {"id": "persist", "label": "commit KB + resume state", "kind": "state"}
   ],
   "edges": [
     ["thread", "store"],
     ["store", "loop"],
-    ["loop", "work"],
+    ["loop", "authorization"],
+    ["authorization", "work"],
     ["work", "dashboard"],
-    ["dashboard", "reply"],
-    ["reply", "approve"],
-    ["approve", "persist"]
+    ["dashboard", "signoff"],
+    ["signoff", "persist"]
   ],
   "invariants": {
     "store": "TASKPLANE_STORE=repo",
     "dashboard": ".taskplane/dashboard.html",
-    "approval_requires": "--by",
+    "approval_requires": "attributed host event",
     "self_approval": false,
     "tool_interception": false
   }

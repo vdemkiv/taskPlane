@@ -58,10 +58,12 @@ not repeated in the tables.
 | `tp.py lens show` | the full brief for one lens |
 | `tp.py loop` | drive the Evaluate-Loop engine |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
+| `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
 | `tp.py loop evidence` | assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill |
 | `tp.py loop gate` | orchestrator-only: judge the evidence and advance the loop |
 | `tp.py loop guide` | before pass submission, check deterministic workflow facts and return one bounded drift correction |
+| `tp.py loop host-input` | consume one trusted-session host event JSON object from stdin through the governed human-input boundary |
 | `tp.py loop init` | start an Evaluate-Loop for a goal |
 | `tp.py loop next` | print the next stage brief for the active loop |
 | `tp.py loop replan` | human: archive frozen tasks and return to Plan for a corrected plan plus fresh approval |
@@ -516,6 +518,14 @@ record a human approval at a checkpoint gate
 | `--force` | flag | pass a BLOCKED refinement gate anyway |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py loop authorize`
+
+derive routine authority for a real host/facade flow from the bound consolidated receipt
+
+Positional arguments:
+
+- `flow` — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
+
 ## `tp.py loop claim`
 
 a worker claims one wave task into its own worktree
@@ -558,6 +568,10 @@ before pass submission, check deterministic workflow facts and return one bounde
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--task` | TASK | task id (parallel execute waves) |
+
+## `tp.py loop host-input`
+
+consume one trusted-session host event JSON object from stdin through the governed human-input boundary
 
 ## `tp.py loop init`
 
