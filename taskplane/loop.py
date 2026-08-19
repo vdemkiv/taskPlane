@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import stat
 import time
 
 import authority as authority_engine
@@ -167,48 +168,332 @@ def request_human_decision(state: dict, reason: str, response: object, *,
         consumed=consumed)
 
 
-def record_preview_feedback(ws: str, text: str, *, actor: str,
-                            authenticated: bool, kind: str) -> dict:
-    """Persist attributable preview feedback without treating UI as authority."""
+def _trace_effect_seen(ws: str, effect_id: str) -> bool:
+    root = os.path.realpath(tp.tp_dir(ws))
+    for path in tp.trace_paths(ws):
+        fd = None
+        try:
+            absolute = os.path.abspath(path)
+            if os.path.commonpath((root, absolute)) != root:
+                continue
+            before = os.lstat(absolute)
+            if not stat.S_ISREG(before.st_mode):
+                continue
+            fd = os.open(absolute, os.O_RDONLY |
+                         getattr(os, "O_NOFOLLOW", 0))
+            after = os.fstat(fd)
+            if not stat.S_ISREG(after.st_mode) or \
+                    (before.st_dev, before.st_ino) != \
+                    (after.st_dev, after.st_ino):
+                os.close(fd)
+                fd = None
+                continue
+            with os.fdopen(fd, encoding="utf-8") as handle:
+                fd = None
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("authority_effect_id") == effect_id:
+                        return True
+        except OSError:
+            continue
+        finally:
+            if fd is not None:
+                os.close(fd)
+    return False
+
+
+def _open_directory_without_symlinks(path: str) -> int:
+    """Open an absolute directory while rejecting every symlink component."""
+    directory = os.path.abspath(path)
+    drive, tail = os.path.splitdrive(directory)
+    root = drive + os.sep if drive else os.sep
+    parts = [part for part in tail.split(os.sep) if part]
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    supports_relative_open = (
+        directory_flag is not None and nofollow is not None and
+        os.open in getattr(os, "supports_dir_fd", set()))
+    if supports_relative_open:
+        flags = os.O_RDONLY | directory_flag | nofollow
+        current_fd = os.open(root, os.O_RDONLY | directory_flag)
+        current_path = root
+        try:
+            for part in parts:
+                candidate = os.path.join(current_path, part)
+                info = os.lstat(candidate)
+                if stat.S_ISLNK(info.st_mode):
+                    raise OSError(
+                        "authority trace path contains a symlink: " +
+                        candidate)
+                if not stat.S_ISDIR(info.st_mode):
+                    raise OSError(
+                        "authority trace path component is not a directory: " +
+                        candidate)
+                next_fd = None
+                try:
+                    next_fd = os.open(part, flags, dir_fd=current_fd)
+                    opened = os.fstat(next_fd)
+                    if not stat.S_ISDIR(opened.st_mode) or (
+                            info.st_dev, info.st_ino) != (
+                                opened.st_dev, opened.st_ino):
+                        raise OSError(
+                            "authority trace path component changed while "
+                            "opening: " + candidate)
+                except Exception:
+                    if next_fd is not None:
+                        os.close(next_fd)
+                    raise
+                os.close(current_fd)
+                current_fd = next_fd
+                current_path = candidate
+            return current_fd
+        except Exception:
+            os.close(current_fd)
+            raise
+
+    # Platforms without relative O_NOFOLLOW traversal still fail closed for
+    # ordinary accidental substitution by checking every ancestor before the
+    # final open. The deployment threat model excludes a hostile same-UID
+    # process racing this fallback.
+    current_path = root
+    final_info = os.lstat(root)
+    for part in parts:
+        current_path = os.path.join(current_path, part)
+        final_info = os.lstat(current_path)
+        if stat.S_ISLNK(final_info.st_mode):
+            raise OSError(
+                "authority trace path contains a symlink: " + current_path)
+        if not stat.S_ISDIR(final_info.st_mode):
+            raise OSError(
+                "authority trace path component is not a directory: " +
+                current_path)
+    flags = os.O_RDONLY
+    if directory_flag is not None:
+        flags |= directory_flag
+    dir_fd = os.open(directory, flags)
+    opened = os.fstat(dir_fd)
+    if not stat.S_ISDIR(opened.st_mode) or (
+            final_info.st_dev, final_info.st_ino) != (
+                opened.st_dev, opened.st_ino):
+        os.close(dir_fd)
+        raise OSError("authority trace directory changed while opening")
+    return dir_fd
+
+
+def _append_authority_trace(ws: str, event: str, data: dict) -> None:
+    """Append one authority trace without following directory/file links."""
+    directory = os.path.abspath(tp.tp_dir(ws))
+    dir_fd = _open_directory_without_symlinks(directory)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    supports_relative_open = os.open in getattr(os, "supports_dir_fd", set())
+    trace_fd = None
+    existing = None
+    try:
+        name = "trace.jsonl"
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if nofollow is not None:
+            flags |= nofollow
+        if nofollow is None:
+            trace_path = os.path.join(directory, name)
+            try:
+                existing = os.lstat(trace_path)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None and stat.S_ISLNK(existing.st_mode):
+                raise OSError(
+                    "authority trace file is a symlink: " + trace_path)
+        if supports_relative_open:
+            trace_fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
+        else:
+            trace_fd = os.open(os.path.join(directory, name), flags, 0o600)
+        current = os.fstat(trace_fd)
+        if not stat.S_ISREG(current.st_mode):
+            raise OSError("authority trace target is not a regular file")
+        if existing is not None and (
+                existing.st_dev, existing.st_ino) != (
+                    current.st_dev, current.st_ino):
+            raise OSError("authority trace file changed while opening")
+        record = {"event": event, "ts": time.time(), **data}
+        raw = (json.dumps(record, default=str) + "\n").encode("utf-8")
+        written = os.write(trace_fd, raw)
+        if written != len(raw):
+            raise OSError("authority trace append was incomplete")
+        os.fsync(trace_fd)
+    finally:
+        if trace_fd is not None:
+            os.close(trace_fd)
+        os.close(dir_fd)
+
+
+def _kb_effect_seen(ws: str, effect_id: str) -> bool:
+    try:
+        return any((row.get("links") or {}).get("authority_effect") == effect_id
+                   for row in kb.list_decisions(ws))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _enqueue_authority_effect(state: dict, effect_id: str, *,
+                              trace_event: str, trace_data: dict,
+                              kb_data: dict | None = None) -> None:
+    outbox = state.setdefault("authority_effect_outbox", {})
+    outbox.setdefault(effect_id, {
+        "schema": "taskplane.authority-effect/v1", "status": "pending",
+        "trace": {"delivered": False, "event": trace_event,
+                  "data": trace_data},
+        "kb": ({"delivered": False, "data": kb_data}
+               if kb_data is not None else None),
+    })
+
+
+def reconcile_authority_effects(ws: str) -> dict:
+    """Deliver durable authority effects idempotently after state commit."""
+    delivered = pending = 0
     with mutate(ws) as state:
         if state is None:
-            return {"error": "no active loop"}
-        change = _preview_feedback(
-            state, text, actor=actor, authenticated=authenticated, kind=kind)
-        if not change["accepted"]:
-            return change
-        state.setdefault("preview_changes", []).append(change)
-        if change["reauthorization_required"]:
-            state["reauthorization_required"] = True
-        tp.trace(ws, "preview_change", actor=change["actor"], kind=kind,
-                 material=change["material"],
-                 change=change["fingerprint"])
-        return change
+            return {"delivered": 0, "pending": 0}
+        for effect_id, row in (state.get("authority_effect_outbox") or {}).items():
+            if row.get("status") == "delivered":
+                delivered += 1
+                continue
+            trace_effect = row.get("trace") or {}
+            try:
+                if not trace_effect.get("delivered"):
+                    if not _trace_effect_seen(ws, effect_id):
+                        _append_authority_trace(
+                            ws, str(trace_effect.get("event") or
+                                    "authority_effect"),
+                            {**dict(trace_effect.get("data") or {}),
+                             "authority_effect_id": effect_id})
+                    trace_effect["delivered"] = _trace_effect_seen(ws, effect_id)
+                kb_effect = row.get("kb")
+                if trace_effect.get("delivered") and kb_effect and not \
+                        kb_effect.get("delivered"):
+                    if not _kb_effect_seen(ws, effect_id):
+                        data = dict(kb_effect.get("data") or {})
+                        links = {**dict(data.pop("links", {}) or {}),
+                                 "authority_effect": effect_id}
+                        kb.record_decision(ws, links=links, **data)
+                    kb_effect["delivered"] = _kb_effect_seen(ws, effect_id)
+            except Exception as exc:  # effect remains durable for retry
+                row["last_error"] = f"{exc.__class__.__name__}: {exc}"
+            complete = bool(trace_effect.get("delivered")) and (
+                row.get("kb") is None or bool((row.get("kb") or {}).get(
+                    "delivered")))
+            if complete:
+                row["status"] = "delivered"
+                row.pop("last_error", None)
+                delivered += 1
+            else:
+                row["status"] = "pending"
+                pending += 1
+    return {"delivered": delivered, "pending": pending}
 
 
-def handle_host_input(ws: str, event: dict) -> dict:
-    """Consume one authenticated host event through governed boundaries."""
+def _host_session_envelope(state: dict, event: dict,
+                           host_event: object | None) -> dict:
+    """Bind trusted-session attribution to the loop's current target."""
+    expected_revision = str(state.get("authority_target_revision") or
+                            state.get("baseline") or "")
+    receipt = state.get("authority_receipt") or {}
+    envelope = authority_engine.HostSessionAdapter().observe(
+        event, host_event,
+        expected_actor=str(receipt.get("actor") or ""),
+        expected_thread=str(receipt.get("thread") or ""),
+        expected_revision=expected_revision,
+        expected_target={"revision": expected_revision})
+    if envelope.get("attributed") and not all((
+            str(receipt.get("actor") or "").strip(),
+            str(receipt.get("thread") or "").strip(), expected_revision)):
+        return {**envelope, "attributed": False,
+                "reasons": ["current_authority_unbound"]}
+    return envelope
+
+
+def handle_host_input(ws: str, event: dict,
+                      host_event: object | None = None) -> dict:
+    """Consume one trusted local host/session event.
+
+    The supported deployment is a single trusted Codex/Claude session.  The
+    separate adapter observation supplies attribution; labels in the event
+    body do not.  Stale and replay checks remain mechanical and atomic.
+    """
     if not isinstance(event, dict):
         return {"error": "host event must be a mapping"}
+    reconcile_authority_effects(ws)
     kind = str(event.get("type") or "").strip().lower()
     if kind == "preview_feedback":
-        return record_preview_feedback(
-            ws, str(event.get("text") or ""),
-            actor=str(event.get("actor") or ""),
-            authenticated=bool(event.get("authenticated")),
-            kind=str(event.get("change_kind") or "behavioral"))
+        with mutate(ws) as state:
+            if state is None:
+                return {"error": "no active loop"}
+            envelope = _host_session_envelope(state, event, host_event)
+            if not envelope["attributed"]:
+                return {"accepted": False, "reasons": envelope["reasons"]}
+            expected_revision = str(state.get("authority_target_revision") or
+                                    state.get("baseline") or "")
+            if envelope["revision"] != expected_revision:
+                return {"accepted": False, "reasons": ["wrong_revision"]}
+            event_id = envelope["event_id"]
+            consumed = state.setdefault("consumed_host_events", {})
+            if event_id in consumed:
+                return {"accepted": False, "reasons": ["replayed_event"]}
+            change = _preview_feedback(
+                state, str(event.get("text") or ""), actor=envelope["actor"],
+                authenticated=True,
+                kind=str(event.get("change_kind") or "behavioral"))
+            if not change["accepted"]:
+                return change
+            state.setdefault("preview_changes", []).append(change)
+            if change["reauthorization_required"]:
+                state["reauthorization_required"] = True
+            consumed[event_id] = {
+                "actor": envelope["actor"], "thread": envelope["thread"],
+                "revision": envelope["revision"],
+                "target": envelope["target"], "source": envelope["source"],
+                "event_ref": envelope["event_ref"],
+            }
+            _enqueue_authority_effect(
+                state, f"preview:{event_id}", trace_event="preview_change",
+                trace_data={"actor": change["actor"],
+                            "kind": str(event.get("change_kind") or
+                                        "behavioral"),
+                            "material": change["material"],
+                            "change": change["fingerprint"]})
+        effects = reconcile_authority_effects(ws)
+        return {**change, "effect_delivery": effects}
     if kind == "human_decision":
-        state = load(ws)
-        if state is None:
-            return {"error": "no active loop"}
-        return request_human_decision(
-            state, str(event.get("reason") or "unsafe_or_ambiguous"),
-            event.get("response"), actor=str(event.get("actor") or ""),
-            thread=str(event.get("thread") or ""),
-            revision=str(event.get("revision") or ""),
-            consumed=bool(event.get("consumed")),
-            fact=str(event.get("fact") or ""),
-            consequence=str(event.get("consequence") or ""))
+        with mutate(ws) as state:
+            if state is None:
+                return {"error": "no active loop"}
+            envelope = _host_session_envelope(state, event, host_event)
+            if not envelope["attributed"]:
+                return {"authorized": False, "human_required": True,
+                        "reasons": envelope["reasons"]}
+            decision_id = envelope["event_id"]
+            consumed = state.setdefault("consumed_host_decisions", {})
+            response = event.get("response")
+            if isinstance(response, dict):
+                response = {**response, "authenticated": True}
+            result = request_human_decision(
+                state, str(event.get("reason") or "unsafe_or_ambiguous"),
+                response, actor=envelope["actor"],
+                thread=envelope["thread"], revision=envelope["revision"],
+                consumed=decision_id in consumed,
+                fact=str(event.get("fact") or ""),
+                consequence=str(event.get("consequence") or ""))
+            if result["authorized"]:
+                consumed[decision_id] = {
+                    "actor": envelope["actor"],
+                    "thread": envelope["thread"],
+                    "revision": envelope["revision"],
+                    "target": envelope["target"],
+                    "source": envelope["source"],
+                    "event_ref": envelope["event_ref"],
+                }
+            return result
     return {"error": "host event type must be preview_feedback|human_decision"}
 
 
@@ -478,7 +763,7 @@ def _legacy_loop_path(ws: str) -> str:
     return os.path.join(tp.tp_dir(ws), LOOP_FILE)
 
 
-def load(ws: str) -> dict | None:
+def _load_raw(ws: str) -> dict | None:
     p = _loop_path(ws)
     if not os.path.exists(p):
         p = _legacy_loop_path(ws)          # pre-spec state, read once
@@ -488,6 +773,17 @@ def load(ws: str) -> dict | None:
     # file and a remedy (tp.StateError) — never a bare JSONDecodeError
     # traceback, and never a silent default that would mask the corruption.
     return tp.load_json(p, what="loop state file")
+
+
+def load(ws: str) -> dict | None:
+    """Load loop state and flush any crash-surviving authority outbox."""
+    state = _load_raw(ws)
+    if state is not None and any(
+            row.get("status") != "delivered" for row in
+            (state.get("authority_effect_outbox") or {}).values()):
+        reconcile_authority_effects(ws)
+        state = _load_raw(ws)
+    return state
 
 
 def save(ws: str, state: dict) -> None:
@@ -525,10 +821,30 @@ def mutate(ws: str):
     """
     os.makedirs(_state_dir(ws), exist_ok=True)
     with tp.file_lock(_loop_path(ws)):
-        st = load(ws)
+        st = _load_raw(ws)
+        original = (json.loads(json.dumps(st)) if st is not None else None)
         yield st
         if st is not None:
-            save(ws, st)
+            fence = st.pop("_authority_revision_fence", None)
+            if fence:
+                before = tp.git_head(ws)
+                if before != fence:
+                    st.clear()
+                    st.update(original or {})
+                    st["_revision_fence_failed"] = {
+                        "expected": str(fence), "actual": str(before)}
+                    return
+                save(ws, st)
+                after = tp.git_head(ws)
+                if after != fence:
+                    if original is not None:
+                        save(ws, original)
+                    st.clear()
+                    st.update(original or {})
+                    st["_revision_fence_failed"] = {
+                        "expected": str(fence), "actual": str(after)}
+            else:
+                save(ws, st)
 
 
 TERMINAL_STEPS = ("done", "failed")
@@ -581,6 +897,9 @@ def init(ws: str, goal: str, spec_path: str | None = None,
                  else "plan" if spec_path else "pm"),
         "tasks": None,
         "current_task": 0,
+        "consumed_host_decisions": {},
+        "consumed_host_events": {},
+        "authority_effect_outbox": {},
     }
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,
@@ -3303,111 +3622,130 @@ def select(ws: str, choice: str, note: str = "") -> dict:
     step variants never have: a winner goes to the engineering review; a
     hybrid goes back to plan for the graft (both variants kept as
     reference). Recorded to the KB — the WHY outlives the losing branch."""
-    state = load(ws)
-    if state is None:
-        return {"error": "no active loop"}
-    if state["step"] != "selection":
-        return {"error": f"selection only at the selection gate "
-                         f"(current: {state['step']})"}
-    tasks = state.get("tasks") or []
-    variants = [t for t in tasks if t.get("variant")] or tasks
-    expected_revision = str(state.get("authority_target_revision") or
-                            state.get("baseline") or "")
-    current_revision = tp.git_head(ws)
-    boundary = authority_engine.build_selection(
-        variants, selected=choice.strip(),
-        revision=current_revision, expected_revision=expected_revision)
-    if not boundary["authorized"] and "stale_selection" in boundary["reasons"]:
-        return {"error": "A/B selection is stale — the checkout revision "
-                         "changed after the selection gate opened; refresh "
-                         "the variants before choosing",
-                "expected_revision": expected_revision,
-                "actual_revision": current_revision,
-                "variants": [{"id": t["id"], "variant": t.get("variant")}
-                             for t in variants]}
-    if not boundary["authorized"] and "invalid_selection" in boundary["reasons"] \
-            and choice.strip().lower() not in {
-                "hybrid", "neither", "none", "reject", "reject-both"}:
-        return {"error": f"no variant matches '{choice}' — use a task "
-                         "id, a variant letter, or 'hybrid'",
-                "variants": [{"id": t["id"], "variant": t.get("variant")}
-                             for t in variants]}
-    if choice.strip().lower() == "hybrid":
-        state["selection"] = {"choice": "hybrid", "note": note,
-                              "revision": current_revision}
-        for t in variants:
-            t["status"] = "reference"
-        state["step"] = "plan"
-        instruction = (
-            "Hybrid selected: write a NEW plan/tasks.json with the graft "
-            "task(s) — name the base variant's branch and what to graft "
-            "from the other — then `loop gate pass`. Plan approval and the "
-            "build/evaluate cycle apply as usual; both variant branches "
-            "stay as reference until the retro.")
-    elif choice.strip().lower() in ("neither", "none", "reject", "reject-both"):
-        # Neither variant ships — the A/B round is abandoned. Both variants
-        # become not_selected (kept as reference branches) and the loop goes
-        # back to PLAN for a fresh approach, so the human who picks "neither"
-        # has a real transition instead of parking at the selection gate.
-        state["selection"] = {"choice": "neither", "note": note,
-                              "revision": current_revision}
-        for t in variants:
-            t["status"] = "not_selected"
-        state["step"] = "plan"
-        instruction = (
-            "Neither variant selected: both are set aside (branches kept as "
-            "reference). Write a NEW plan/tasks.json taking a different "
-            "approach — what did both variants get wrong? — then "
-            "`loop gate pass`. Plan approval and the build/evaluate cycle "
-            "apply as usual.")
-    else:
-        c = choice.strip()
-        win = next((t for t in variants
-                    if t["id"] == c
-                    or str(t.get("variant", "")).lower() == c.lower()), None)
-        if win is None:
+    reconcile_authority_effects(ws)
+    with mutate(ws) as state:
+        if state is None:
+            return {"error": "no active loop"}
+        if state["step"] != "selection":
+            return {"error": f"selection only at the selection gate "
+                             f"(current: {state['step']})"}
+        tasks = state.get("tasks") or []
+        variants = [t for t in tasks if t.get("variant")] or tasks
+        expected_revision = str(state.get("authority_target_revision") or
+                                state.get("baseline") or "")
+        # Revision validation and state mutation share one lock. A checkout
+        # change can no longer land between validation and persistence.
+        current_revision = tp.git_head(ws)
+        boundary = authority_engine.build_selection(
+            variants, selected=choice.strip(), revision=current_revision,
+            expected_revision=expected_revision)
+        if not boundary["authorized"] and \
+                "stale_selection" in boundary["reasons"]:
+            return {"error": "A/B selection is stale — the checkout revision "
+                             "changed after the selection gate opened; refresh "
+                             "the variants before choosing",
+                    "expected_revision": expected_revision,
+                    "actual_revision": current_revision,
+                    "variants": [{"id": t["id"],
+                                  "variant": t.get("variant")}
+                                 for t in variants]}
+        if not boundary["authorized"] and \
+                "invalid_selection" in boundary["reasons"] and \
+                choice.strip().lower() not in {
+                    "hybrid", "neither", "none", "reject", "reject-both"}:
             return {"error": f"no variant matches '{choice}' — use a task "
                              "id, a variant letter, or 'hybrid'",
                     "variants": [{"id": t["id"],
                                   "variant": t.get("variant")}
                                  for t in variants]}
-        state["selection"] = {"choice": win["id"],
-                              "variant": win.get("variant"), "note": note,
-                              "revision": current_revision}
-        win["selected"] = True
-        win["status"] = "passed"
-        for t in variants:
-            if t is not win:
+        state["_authority_revision_fence"] = current_revision
+        if choice.strip().lower() == "hybrid":
+            state["selection"] = {"choice": "hybrid", "note": note,
+                                  "revision": current_revision}
+            for t in variants:
+                t["status"] = "reference"
+            state["step"] = "plan"
+            instruction = (
+                "Hybrid selected: write a NEW plan/tasks.json with the graft "
+                "task(s) — name the base variant's branch and what to graft "
+                "from the other — then `loop gate pass`. Plan approval and "
+                "the build/evaluate cycle apply as usual; both variant "
+                "branches stay as reference until the retro.")
+        elif choice.strip().lower() in (
+                "neither", "none", "reject", "reject-both"):
+        # Neither variant ships — the A/B round is abandoned. Both variants
+        # become not_selected (kept as reference branches) and the loop goes
+        # back to PLAN for a fresh approach, so the human who picks "neither"
+        # has a real transition instead of parking at the selection gate.
+            state["selection"] = {"choice": "neither", "note": note,
+                                  "revision": current_revision}
+            for t in variants:
                 t["status"] = "not_selected"
-        state["step"] = "em"
-        instruction = (
-            f"Winner: {win['id']}. Merge its branch "
-            f"(`git merge tp/{win['id']}`), keep the losing branch as "
-            "reference until the retro, clear the variant worktree "
-            "contracts, then run the engineering review of the merged "
-            "result (the complete selective routing decision).")
-    tp.trace(ws, "loop_select", choice=state["selection"]["choice"],
-             note=note)
-    kb.record_decision(
-        ws, f"A/B selection: {state['selection']['choice']} — "
-            f"{state['goal'][:48]}",
-        context=(f"Goal: {state['goal']}; variants: "
-                 + ", ".join(t["id"] for t in variants)),
-        decision=(note or f"Human selected {state['selection']['choice']} "
-                          "at the selection gate."),
-        tags=["ab-selection"],
-        context_files=sorted({g for t in variants
-                              for g in t.get("scope", [])}),
-        links={"loop": "selection"})
-    with mutate(ws) as locked:                       # v2.3.1: locked commit
-        if locked.get("step") != "selection":
-            return {"error": "the loop advanced concurrently during selection "
-                             f"(now '{locked.get('step')}') — re-run",
-                    "step": locked.get("step")}
-        locked.clear()
-        locked.update(state)
-    return {"step": state["step"], "selection": state["selection"],
-            "instruction": instruction, "status": status(ws)}
+            state["step"] = "plan"
+            instruction = (
+                "Neither variant selected: both are set aside (branches kept "
+                "as reference). Write a NEW plan/tasks.json taking a "
+                "different approach — what did both variants get wrong? — "
+                "then `loop gate pass`. Plan approval and the build/evaluate "
+                "cycle apply as usual.")
+        else:
+            c = choice.strip()
+            win = next((t for t in variants
+                        if t["id"] == c or
+                        str(t.get("variant", "")).lower() == c.lower()), None)
+            if win is None:
+                return {"error": f"no variant matches '{choice}' — use a task "
+                                 "id, a variant letter, or 'hybrid'",
+                        "variants": [{"id": t["id"],
+                                      "variant": t.get("variant")}
+                                     for t in variants]}
+            state["selection"] = {"choice": win["id"],
+                                  "variant": win.get("variant"), "note": note,
+                                  "revision": current_revision}
+            win["selected"] = True
+            win["status"] = "passed"
+            for t in variants:
+                if t is not win:
+                    t["status"] = "not_selected"
+            state["step"] = "em"
+            instruction = (
+                f"Winner: {win['id']}. Merge its branch "
+                f"(`git merge tp/{win['id']}`), keep the losing branch as "
+                "reference until the retro, clear the variant worktree "
+                "contracts, then run the engineering review of the merged "
+                "result (the complete selective routing decision).")
+        selection = dict(state["selection"])
+        goal = str(state.get("goal") or "")
+        context_files = sorted({g for t in variants
+                                for g in t.get("scope", [])})
+        effect_id = f"selection:{current_revision}:{selection['choice']}"
+        _enqueue_authority_effect(
+            state, effect_id, trace_event="loop_select",
+            trace_data={"choice": selection["choice"], "note": note},
+            kb_data={
+                "title": f"A/B selection: {selection['choice']} — {goal[:48]}",
+                "context": (f"Goal: {goal}; variants: "
+                            + ", ".join(t["id"] for t in variants)),
+                "decision": (note or
+                             f"Human selected {selection['choice']} at the "
+                             "selection gate."),
+                "tags": ["ab-selection"], "context_files": context_files,
+                "links": {"loop": "selection"},
+            })
+    state.pop("_authority_revision_fence", None)  # fake/test mutate adapters
+    fence_failure = state.pop("_revision_fence_failed", None)
+    if fence_failure:
+        return {
+            "error": "A/B selection is stale — the checkout revision changed "
+                     "during the locked selection commit; no authority "
+                     "transition was persisted",
+            "expected_revision": fence_failure["expected"],
+            "actual_revision": fence_failure["actual"],
+        }
+    effects = reconcile_authority_effects(ws)
+    return {"step": state["step"], "selection": selection,
+            "instruction": instruction, "status": status(ws),
+            "effect_delivery": effects}
 
 
 def _cascade_skip(state: dict, root_id: str) -> list:

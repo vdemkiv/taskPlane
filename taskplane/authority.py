@@ -2,7 +2,7 @@
 
 The packet is deliberately a pure value.  Hosts may present it differently,
 but a stage derives authority only from the approved semantic envelope and an
-authenticated actor/thread-bound receipt.  Fingerprint drift is evidence
+attributable actor/thread-bound receipt.  Fingerprint drift is evidence
 staleness; it is never, by itself, a request for more human authority.
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ RECEIPT_SCHEMA = "taskplane.authorization-receipt/v1"
 DERIVATION_SCHEMA = "taskplane.authorization-derivation/v1"
 DECISION_SCHEMA = "taskplane.human-decision/v1"
 CHANGE_SCHEMA = "taskplane.attributable-change/v1"
+HOST_SESSION_EVENT_SCHEMA = "taskplane.host-session-event/v1"
 
 ROUTINE_FLOWS = (
     "facade", "delivery", "product", "design", "build", "engineering",
@@ -64,6 +65,82 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _host_event_payload(event: Mapping) -> dict:
+    """Canonical event body bound to a trusted local host-session event."""
+    allowed = ("type", "text", "change_kind", "reason", "response", "fact",
+               "consequence")
+    payload = {key: _plain(event[key]) for key in allowed if key in event}
+    response = payload.get("response")
+    if isinstance(response, dict):
+        response.pop("authenticated", None)
+    return payload
+
+
+class HostSessionAdapter:
+    """Bind one event observed by the trusted local host/session adapter.
+
+    Taskplane deliberately has no signing or verification machinery here.
+    Its deployment boundary is one trusted Codex/Claude session on a local
+    machine or private sandbox.  The separate ``host_event`` mapping is
+    adapter attribution, while identity labels embedded in ``event`` remain
+    inert.  The engine derives the durable event id from every binding so a
+    repeated adapter observation is consumed as the same event.
+    """
+
+    def observe(self, event: Mapping, host_event: object, *,
+                expected_actor: str = "", expected_thread: str = "",
+                expected_revision: str = "",
+                expected_target: Mapping | None = None) -> dict:
+        reasons = []
+        if not isinstance(host_event, Mapping) or \
+                host_event.get("schema") != HOST_SESSION_EVENT_SCHEMA:
+            return {"attributed": False,
+                    "reasons": ["host_session_event_required"]}
+        if host_event.get("event_fingerprint") != _fingerprint(
+                _host_event_payload(event)):
+            reasons.append("host_event_mismatch")
+        for field in ("actor", "thread", "revision", "event_ref", "source"):
+            if not str(host_event.get(field) or "").strip():
+                reasons.append(f"host_event_missing_{field}")
+        target = host_event.get("target")
+        if not isinstance(target, Mapping):
+            reasons.append("host_event_missing_target")
+            target = {}
+        try:
+            target_value = _plain(target)
+        except ValueError:
+            reasons.append("host_event_invalid_target")
+            target_value = {}
+        actor = str(host_event.get("actor") or "")
+        thread = str(host_event.get("thread") or "")
+        revision = str(host_event.get("revision") or "")
+        if expected_actor and actor != str(expected_actor):
+            reasons.append("wrong_actor")
+        if expected_thread and thread != str(expected_thread):
+            reasons.append("wrong_thread")
+        if expected_revision and revision != str(expected_revision):
+            reasons.append("wrong_revision")
+        if expected_target is not None and target_value != \
+                _plain(expected_target):
+            reasons.append("wrong_target")
+        event_identity = {
+            "schema": "taskplane.host-session-event-identity/v1",
+            "source": str(host_event.get("source") or ""),
+            "event_ref": str(host_event.get("event_ref") or ""),
+            "actor": actor, "thread": thread, "revision": revision,
+            "target": target_value,
+            "event_fingerprint": str(
+                host_event.get("event_fingerprint") or ""),
+        }
+        return {
+            "attributed": not reasons, "reasons": sorted(set(reasons)),
+            "actor": actor, "thread": thread, "revision": revision,
+            "target": target_value, "event_id": _fingerprint(event_identity),
+            "source": str(host_event.get("source") or ""),
+            "event_ref": str(host_event.get("event_ref") or ""),
+        }
 
 
 def _plain(value: object) -> object:
