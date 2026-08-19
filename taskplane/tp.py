@@ -2146,6 +2146,72 @@ def cmd_dod(a) -> int:
 
 # --------------------------------------------------------------- loop
 
+def _loop_evidence_workspaces(loopmod, workspace: str,
+                              task_id: str | None) -> tuple:
+    """Return (authority, evidence, error) for one exact task claim.
+
+    Parallel evaluators operate on claimed worktree bytes while loop state
+    remains owned by the primary checkout. Managed locators name that parent;
+    legacy nested worktrees are resolved only among this Git repository's
+    worktrees, and only a canonical task record with an exact path match wins.
+    """
+    origin = os.path.realpath(workspace)
+    state = loopmod._load_raw(origin)
+    authority = origin if state is not None else None
+    if authority is None:
+        import storage as runtime_storage
+        candidates = []
+        try:
+            locator = runtime_storage.load_workspace_locator(origin)
+        except runtime_storage.StorageIdentityError:
+            locator = None
+        if locator:
+            candidates.append(str(locator.get("primary_checkout") or ""))
+        try:
+            listed = tp._run(
+                ["git", "worktree", "list", "--porcelain"], cwd=origin)
+            candidates.extend(
+                line[len("worktree "):]
+                for line in listed.stdout.splitlines()
+                if line.startswith("worktree "))
+        except OSError:
+            candidates = []
+        matches = []
+        for raw in dict.fromkeys(candidates):
+            candidate = os.path.realpath(str(raw or ""))
+            if not candidate or candidate == origin:
+                continue
+            try:
+                candidate_state = loopmod._load_raw(candidate)
+            except (OSError, tp.StateError):
+                continue
+            for task in (candidate_state or {}).get("tasks") or []:
+                if task_id is not None and str(task.get("id")) != str(task_id):
+                    continue
+                claimed = str(task.get("workspace") or "")
+                if claimed and os.path.realpath(claimed) == origin:
+                    matches.append((candidate, candidate_state))
+                    break
+        if len(matches) != 1:
+            return None, None, ({"error": "no active loop"} if not matches
+                                else {"error": "multiple active loops claim "
+                                               "this task worktree"})
+        authority, state = matches[0]
+
+    task = (loopmod._current_task(state) if task_id is None else
+            next((row for row in state.get("tasks") or []
+                  if str(row.get("id")) == str(task_id)), None))
+    if task is None:
+        return authority, authority, None
+    claimed = str(task.get("workspace") or "")
+    evidence_ws = (os.path.realpath(claimed)
+                   if claimed and os.path.isdir(claimed) else authority)
+    if origin != authority and origin != evidence_ws:
+        return None, None, {
+            "error": "this worktree is not the claimed workspace for "
+                     f"task {task.get('id')!r}"}
+    return authority, evidence_ws, None
+
 def cmd_loop(a) -> int:
     """Drive the taskplane-owned Evaluate-Loop state machine."""
     import loop as loopmod
@@ -2212,8 +2278,18 @@ def cmd_loop(a) -> int:
     elif action == "replan":
         out = loopmod.replan(ws, by=a.by, reason=a.reason)
     elif action == "evidence":
-        out = loopmod.evidence(ws, task_id=getattr(a, "task", None),
-                               write=getattr(a, "write", False))
+        state_ws, evidence_ws, error = _loop_evidence_workspaces(
+            loopmod, ws, getattr(a, "task", None))
+        if error:
+            out = error
+        else:
+            token = loopmod._EVIDENCE_STATE_WORKSPACE.set(state_ws)
+            try:
+                out = loopmod.evidence(
+                    evidence_ws, task_id=getattr(a, "task", None),
+                    write=getattr(a, "write", False))
+            finally:
+                loopmod._EVIDENCE_STATE_WORKSPACE.reset(token)
     elif action == "guide":
         out = loopmod.guide(ws, task_id=getattr(a, "task", None))
     elif action == "authorize":

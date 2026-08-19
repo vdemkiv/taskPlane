@@ -27,6 +27,7 @@ existing spec (→plan).
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import os
 import stat
@@ -626,14 +627,20 @@ def _load_raw(ws: str) -> dict | None:
     return tp.load_json(p, what="loop state file")
 
 
+_EVIDENCE_STATE_WORKSPACE = contextvars.ContextVar(
+    "taskplane_evidence_state_workspace", default=None)
+
+
 def load(ws: str) -> dict | None:
     """Load loop state and flush any crash-surviving authority outbox."""
-    state = _load_raw(ws)
+    # CLI evidence may bind task bytes to its primary coordination state.
+    state_ws = _EVIDENCE_STATE_WORKSPACE.get() or ws
+    state = _load_raw(state_ws)
     if state is not None and any(
             row.get("status") != "delivered" for row in
             (state.get("authority_effect_outbox") or {}).values()):
-        reconcile_authority_effects(ws)
-        state = _load_raw(ws)
+        reconcile_authority_effects(state_ws)
+        state = _load_raw(state_ws)
     return state
 
 
