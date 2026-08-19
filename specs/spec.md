@@ -35,7 +35,9 @@ approval.
 - Automatic repository preparation, bounded routine recovery, phase ownership,
   isolated parallel execution, status telemetry, onboarding repair, and
   attributed thread continuation across Codex, Claude, and Slack-capable flows.
-- Progressive risk-first engineering review with four explicit deep floors,
+- Progressive risk-first engineering review with one attributable deep floor
+  for documentation-only/simple low-risk work and four deep floors for
+  substantive, risky, mixed, or evidenced ambiguous/corrupt work,
   one light sweep, evidence-triggered deep promotions, early provisional
   request-changes, metadata-only repair, affected-slot retry, exact evidence
   binding, outage caching, documentation-aware routing, convergence policy,
@@ -169,12 +171,15 @@ approval.
 
 15. **Deep-review floors scale with attributable risk.** Documentation-only
     and simple low-risk changes run exactly one risk-selected deep review lens.
+    Missing/inapplicable code-module mapping alone does not widen that review.
     Substantive or risky changes retain architecture, code-quality, security,
-    and QA as four mandatory deep floors. Cache, light sweep, early provisional
-    publication, or another lens cannot replace the deep slot or slots required
-    for the change's risk class. **Verify:** documentation-only, simple
-    low-risk, substantive, risky, mixed, early-blocker, and mapping-gap fixtures
-    assert exact risk classification, lens selection, and slot conservation.
+    and QA as four mandatory deep floors; genuinely ambiguous or corrupt
+    evidence widens to those floors with an explicit evidence-backed reason.
+    Cache, light sweep, early provisional publication, or another lens cannot
+    replace the deep slot or slots required for the change's risk class.
+    **Verify:** documentation-only, simple low-risk, substantive, risky, mixed,
+    early-blocker, mapping-gap, ambiguous, and corrupt fixtures assert exact
+    risk classification, lens selection, reason, and slot conservation.
 
 16. **Other review is progressive.** Non-floor lenses begin through at most one
     bounded light sweep and promote to named deep review only from attributable
@@ -221,9 +226,13 @@ approval.
 22. **Documentation routing avoids module fail-open widening.** Documentation-
     only and mixed changes route from document content, directives, contracts,
     audiences, and graph evidence. Missing/inapplicable code-module mapping
-    retains the four floors and the smallest explained evidence-backed widening,
-    never unconditional all-lens or no-review. **Verify:** API/security/user docs,
-    runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases.
+    alone retains exactly one attributable risk-selected deep lens for
+    documentation-only/simple low-risk work. Only genuinely ambiguous, corrupt,
+    mixed, substantively risky, or otherwise materially risky evidence widens
+    to architecture, code-quality, security, and QA, with an explicit reason;
+    routing is never unconditional all-lens or no-review. **Verify:** API/
+    security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed,
+    and absent-map cases.
 
 23. **Fix policy measures convergence.** Each fix evaluation records closed,
     persistent, regressed, and new admissible findings plus test/evidence

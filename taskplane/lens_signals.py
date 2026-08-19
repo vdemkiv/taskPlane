@@ -1189,8 +1189,9 @@ _DOC_RISK_PRIORITY = (
 def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
     """Classify review depth once per immutable routing context.
 
-    Trivial documentation and one-file low-risk code receive one attributable
-    deep slot.  Mixed, unmapped, substantive, and risky changes retain the
+    Documentation and one-file low-risk code receive one attributable deep
+    slot.  Missing module mapping alone does not widen them.  Mixed,
+    substantive, risky, or explicitly ambiguous/corrupt evidence retains the
     four engineering floors.  The cached result also makes repeated floor
     application idempotent: stage-created deep verdicts never reclassify their
     own input as substantive.
@@ -1227,19 +1228,25 @@ def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
         reason = "mixed code and non-document change"
     elif doc_files and len(doc_files) == len(ctx.files):
         import review_progression
-        signals = review_progression.document_lens_signals(
-            ctx.files,
-            {path: text for path, text in ctx.contents()},
+        document_content = {path: text for path, text in ctx.contents()}
+        uncertainty = review_progression.document_evidence_uncertainty(
+            ctx.files, document_content
         )
-        selected = next(
-            (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
-             and lens_id in vmap),
-            "tech-writer",
-        )
-        risk_class = "documentation-only"
-        reason = f"documentation evidence selected {selected}"
-        required = (selected,)
-        floor_prefix = "risk-selected review floor"
+        if uncertainty:
+            reason = uncertainty
+        else:
+            signals = review_progression.document_lens_signals(
+                ctx.files, document_content
+            )
+            selected = next(
+                (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
+                 and lens_id in vmap),
+                "tech-writer",
+            )
+            risk_class = "documentation-only"
+            reason = f"documentation evidence selected {selected}"
+            required = (selected,)
+            floor_prefix = "risk-selected review floor"
     elif missing_code_content:
         reason = "code content unavailable for risk classification"
     elif significant:

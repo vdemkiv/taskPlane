@@ -33,6 +33,13 @@ _DOC_RULES = (
     ("product", re.compile(r"\b(user guide|user-facing|journey|workflow)\b", re.I)),
 )
 
+_DOC_AMBIGUITY = re.compile(
+    r"\b(tbd|to be determined|ambiguous|"
+    r"(?:impact|ownership|behaviou?r|contract|scope)\s+(?:is\s+)?unknown|"
+    r"unclear\s+(?:impact|ownership|behaviou?r|contract|scope))\b",
+    re.I,
+)
+
 _DOMAIN_MARKERS = {
     "security": re.compile(r"\b(auth(?:n|z|entication|orization)?|oauth|permission|secret|token|vulnerab|exploit)\b", re.I),
     # Use ownership-specific phrases here, not generic review vocabulary such
@@ -87,6 +94,39 @@ def document_lens_signals(files, content_by_file=None) -> dict[str, list[str]]:
                     f"document evidence: {raw} contains {match.group(0).lower()}"
                 )
     return {lens_id: sorted(set(reasons)) for lens_id, reasons in sorted(out.items())}
+
+
+def document_evidence_uncertainty(files, content_by_file=None) -> str | None:
+    """Return an explicit reason only for evidenced ambiguity or corruption.
+
+    Missing content or module mapping is not evidence of risk and therefore
+    stays on the normal single-lens documentation route.  Corrupt payloads and
+    explicit uncertainty markers are review evidence, so callers can widen to
+    the four risk floors without treating every unmapped document as risky.
+    """
+    content_by_file = content_by_file or {}
+    for raw in sorted({str(f).replace("\\", "/") for f in files or []}):
+        if not _is_document(raw) or raw not in content_by_file:
+            continue
+        value = content_by_file[raw]
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                return f"corrupt document evidence: {raw} is not valid UTF-8"
+        if not isinstance(value, str):
+            return f"corrupt document evidence: {raw} is not text"
+        if "\x00" in value:
+            return f"corrupt document evidence: {raw} contains NUL"
+        if "\ufffd" in value:
+            return f"corrupt document evidence: {raw} contains invalid UTF-8"
+        match = _DOC_AMBIGUITY.search(value[:64 * 1024])
+        if match:
+            return (
+                f"ambiguous document evidence: {raw} contains explicit "
+                f"uncertainty marker {match.group(0).lower()!r}"
+            )
+    return None
 
 
 def apply_document_signals(verdict_map: dict, files, content_by_file=None) -> dict:

@@ -271,7 +271,7 @@
       "validation": "AC14 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_14."
     },
     {
-      "criterion": "Four engineering-review floors always run deep.** Architecture, code-quality, security, and QA are mandatory deep slots for every engineering review and cannot be replaced by cache, light sweep, early provisional publication, documentation-only scope, or another lens. **Verify:** code, docs, mixed, small, large, early-blocker, and mapping-gap fixtures assert exact floor selection and conservation.",
+      "criterion": "Deep-review floors scale with attributable risk.** Documentation-only and simple low-risk changes run exactly one attributable risk-selected deep lens, and missing/inapplicable code-module mapping alone does not widen them. Substantive, risky, mixed, or genuinely ambiguous/corrupt evidence runs architecture, code-quality, security, and QA as four mandatory deep floors with an explicit evidence-backed reason. Cache, light sweep, early provisional publication, or another lens cannot replace the slot or slots required for the risk class. **Verify:** code, docs, mixed, small, large, early-blocker, mapping-gap, ambiguous, and corrupt fixtures assert exact classification, reason, floor selection, and conservation.",
       "design_element": "contract:review-risk-progression",
       "validation": "AC15 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_15."
     },
@@ -306,7 +306,7 @@
       "validation": "AC21 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_21."
     },
     {
-      "criterion": "Documentation routing avoids module fail-open widening.** Documentation- only and mixed changes route from document content, directives, contracts, audiences, and graph evidence. Missing/inapplicable code-module mapping retains the four floors and the smallest explained evidence-backed widening, never unconditional all-lens or no-review. **Verify:** API/security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases.",
+      "criterion": "Documentation routing avoids module fail-open widening.** Documentation-only and mixed changes route from document content, directives, contracts, audiences, and graph evidence. Missing/inapplicable code-module mapping alone retains exactly one attributable risk-selected deep lens for documentation-only/simple low-risk work. Only genuinely ambiguous, corrupt, mixed, substantively risky, or otherwise materially risky evidence widens to architecture, code-quality, security, and QA, with an explicit reason; routing is never unconditional all-lens or no-review. **Verify:** API/security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases.",
       "design_element": "taskplane/review_progression.py",
       "validation": "AC22 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_22."
     },
@@ -364,7 +364,7 @@
   "risks": [
     {
       "risk": "Progressive routing misses serious concerns.",
-      "mitigation": "Catalog floors are unconditional; promotions require attributable evidence; ambiguity widens minimally with explanation.",
+      "mitigation": "Risk-scaled floors are conserved; missing mapping alone stays on one attributable deep lens, while substantive risk or evidenced ambiguity/corruption widens to four floors with an explicit reason; promotions require attributable evidence.",
       "owner": "Routing owner"
     },
     {
