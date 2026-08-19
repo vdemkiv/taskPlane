@@ -279,6 +279,61 @@ class TestLoop(unittest.TestCase):
         loop.retro(ws)                                         # → done
         self.assertEqual(loop.load(ws)["step"], "done")
 
+    def test_em_fail_routes_request_changes_without_signoff_evidence(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        state = loop.load(ws)
+        state.update({
+            "step": "em",
+            "tasks": [dict(TASK, status="passed")],
+            "current_task": 0,
+            "baseline": tp.git_head(ws),
+            "submission_required": True,
+        })
+        loop.save(ws, state)
+        review_root = os.path.join(ws, ".em-review")
+        os.makedirs(review_root, exist_ok=True)
+        findings_path = os.path.join(review_root, "findings.json")
+        report_path = os.path.join(review_root, "report.md")
+        findings = {
+            "meta": {"gate": {"verdict": "request-changes"}},
+            "findings": [
+                {"severity": "high", "title": f"blocker {index}"}
+                for index in range(1, 5)
+            ],
+        }
+        with open(findings_path, "w", encoding="utf-8") as stream:
+            json.dump(findings, stream)
+        with open(report_path, "w", encoding="utf-8") as stream:
+            stream.write("# Engineering review\n\nRequest changes.\n")
+        findings_before = open(findings_path, "rb").read()
+        report_before = open(report_path, "rb").read()
+
+        submitted = loop.submit(ws, "fail", note="four blocking findings")
+        self.assertTrue(submitted["submitted"])
+        evidence_fingerprint = submitted["submission"]["fingerprint"]
+        out = loop.gate(ws, "fail")
+
+        self.assertNotIn("error", out)
+        self.assertEqual(out["step"], "escalated")
+        state = loop.load(ws)
+        self.assertEqual(state["step"], "escalated")
+        self.assertNotIn("signoff_evidence", state)
+        self.assertNotIn("signoff_dod", state)
+        request_changes = state["engineering_review_request_changes"]
+        submission_audit = request_changes["submission"]
+        self.assertEqual(
+            submission_audit["fingerprint"],
+            evidence_fingerprint,
+        )
+        self.assertEqual(
+            submission_audit["evidence_paths"],
+            [findings_path, report_path],
+        )
+        self.assertEqual(open(findings_path, "rb").read(), findings_before)
+        self.assertEqual(open(report_path, "rb").read(), report_before)
+        self.assertTrue(loop.next_action(ws)["paused"])
+
     def test_signoff_is_bound_to_em_integration_not_later_shared_bytes(self):
         """A later commit/loop cannot make an approved EM revision fail DoD.
 

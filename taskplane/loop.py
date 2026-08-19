@@ -2970,6 +2970,13 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "at engineering review",
                     "step": step,
                     "dod": {"passed": False, "errors": signoff_errors}}
+    em_request_changes = None
+    if outcome == "fail" and step == "em":
+        review_submission = state.get("_submission") or {}
+        em_request_changes = {
+            "schema": "taskplane.engineering-review-request-changes/v1",
+            "submission": dict(review_submission),
+        }
 
     # H2 (v2.2.1): validation above ran on a snapshot and can take seconds
     # (tests, evidence, graph). Apply the transition under the state LOCK to
@@ -3184,11 +3191,20 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     verified_suite
             state["step"] = "evaluate"
         elif step == "em":
-            # The graph was true-d up before the EM brief, so its fingerprint is
-            # part of the evidence being gated rather than a post-review mutation.
-            state["signoff_evidence"] = signoff_evidence
-            state["signoff_dod"] = dict(signoff_evidence["dod"])
-            state["step"] = "signoff"
+            if outcome == "pass":
+                # The graph was true-d up before the EM brief, so its
+                # fingerprint is part of the evidence being gated rather
+                # than a post-review mutation.
+                state["signoff_evidence"] = signoff_evidence
+                state["signoff_dod"] = dict(signoff_evidence["dod"])
+                state["step"] = "signoff"
+            else:
+                # Request-changes evidence stays bound to the reviewed
+                # snapshot while the existing escalation/replan machinery
+                # owns recovery.  Pass-only sign-off evidence is untouched.
+                state["engineering_review_request_changes"] = \
+                    em_request_changes
+                state["step"] = "escalated"
     if step == "em" and outcome == "pass":
         # One more COMPLETED engineering review: advance the audit cadence
         # (every Nth em review runs as a full audit sweep). A cadence-store
