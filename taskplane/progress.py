@@ -26,6 +26,151 @@ DEFAULT_MAX_BYTES = 64 * 1024
 DEFAULT_ETA_MAX_AGE_SECONDS = 300.0
 MAX_HISTORY = 32
 
+# Host-native presentation primitives live with the progress read model rather
+# than the loop state machine.  They consume snapshots/state but never mutate
+# governed loop state.
+HUMAN_STEPS = {"design_approval", "plan_approval", "selection",
+               "signoff", "escalated", "done", "failed"}
+PIPELINE = [
+    ("pm", "PM"), ("design", "Design"),
+    ("design_approval", "Approve design"),
+    ("plan", "Plan"), ("plan_approval", "Approve"),
+    ("execute", "Execute"), ("evaluate", "Evaluate"), ("fix", "Fix"),
+    ("em", "EM"), ("signoff", "Sign-off"),
+    ("retro", "Retro + graph true-up"), ("done", "Done"),
+]
+SELECTION_STEP = ("selection", "Select")
+_NATIVE_TERMINAL_STATES = frozenset(
+    {"completed", "complete", "done", "cancelled", "failed", "failure"})
+
+
+class NativeProgressSession:
+    """One presentation-only PiP lifecycle over canonical snapshots."""
+
+    def __init__(self) -> None:
+        self.identity = None
+        self.last_sequence = -1
+        self.last_fingerprint = None
+        self.opened = False
+        self.closed = False
+
+    def publish(self, snapshot: object) -> dict:
+        identity = (snapshot.workflow_id, snapshot.run_id, snapshot.revision)
+        if self.identity is not None and identity != self.identity:
+            raise ValueError("progress session identity changed")
+        if snapshot.sequence < self.last_sequence:
+            raise ValueError("progress sequence moved backwards")
+        if (snapshot.sequence == self.last_sequence and
+                snapshot.fingerprint == self.last_fingerprint):
+            return self._result(snapshot, "duplicate")
+        if snapshot.sequence == self.last_sequence:
+            raise ValueError("progress sequence conflicts with prior snapshot")
+        if self.closed:
+            raise ValueError("progress session is closed")
+        self.identity = identity
+        self.last_sequence = snapshot.sequence
+        self.last_fingerprint = snapshot.fingerprint
+        terminal = snapshot.state.lower() in _NATIVE_TERMINAL_STATES
+        persistent = bool(snapshot.values.get("persistent", True))
+        if terminal and not self.opened:
+            transition = "none"
+            self.closed = True
+        elif not persistent and not self.opened:
+            transition = "none"
+        elif not self.opened:
+            self.opened = True
+            transition = "open"
+        elif terminal:
+            self.closed = True
+            transition = "close"
+        else:
+            transition = "update"
+        return self._result(snapshot, transition)
+
+    def _result(self, snapshot: object, transition: str) -> dict:
+        values = snapshot.to_dict()["values"]
+        return {
+            "schema": "taskplane.host-progress-session/v1",
+            "transition": transition, "workflow_id": snapshot.workflow_id,
+            "run_id": snapshot.run_id, "revision": snapshot.revision,
+            "sequence": snapshot.sequence, "stage": snapshot.stage,
+            "state": snapshot.state, "active_work": values.get("active_work"),
+            "completed_work": values.get("completed_work"),
+            "attention": values.get("attention", []),
+            "last_update": values.get("last_update", snapshot.sequence),
+            "tokens": values.get("tokens"),
+        }
+
+
+def project_agent_topology(events: list[dict]) -> dict:
+    """Fold canonical dispatch events into a stable, phantom-free graph."""
+    nodes, order, edges, edge_keys = {}, [], [], set()
+    immutable = ("task_id", "slot_id", "role", "scope", "wave")
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict):
+            continue
+        agent_id = str(event.get("agent_id") or "").strip()
+        task_id = str(event.get("task_id") or "").strip()
+        slot_id = str(event.get("slot_id") or "").strip()
+        if not (agent_id and task_id and slot_id):
+            continue
+        normalized = {
+            "agent_id": agent_id, "task_id": task_id, "slot_id": slot_id,
+            "role": str(event.get("role") or "unknown"),
+            "scope": list(event.get("scope") or []),
+            "wave": str(event.get("wave") or ""),
+            "state": str(event.get("state") or "unknown"),
+            "attention": list(event.get("attention") or []),
+            "outcome": event.get("outcome"),
+        }
+        prior = nodes.get(agent_id)
+        if prior:
+            if any(prior[key] != normalized[key] for key in immutable):
+                raise ValueError(f"agent identity changed: {agent_id}")
+            prior.update({key: normalized[key]
+                          for key in ("state", "attention", "outcome")})
+        else:
+            nodes[agent_id] = normalized
+            order.append(agent_id)
+        for source, relationship in (
+                [(str(event.get("retry_of") or ""), "retry")] +
+                [(str(item), "dependency")
+                 for item in event.get("depends_on") or []]):
+            if not source:
+                continue
+            key = (source, agent_id, relationship)
+            if key not in edge_keys:
+                edges.append({"from": source, "to": agent_id,
+                              "relationship": relationship})
+                edge_keys.add(key)
+    edges = [row for row in edges
+             if row["from"] in nodes and row["to"] in nodes]
+    return {"schema": "taskplane.host-agent-topology/v1",
+            "nodes": [nodes[key] for key in order], "edges": edges}
+
+
+def splice_selection(rail: list, state: dict | None) -> list:
+    """Insert the pending A/B selection gate before engineering review."""
+    if not (state and state.get("ab") and not state.get("selection")):
+        return list(rail)
+    ids = [row[0] for row in rail]
+    index = ids.index("em") if "em" in ids else len(rail)
+    selection = (SELECTION_STEP[0], SELECTION_STEP[1], True)
+    return list(rail[:index]) + [selection] + list(rail[index:])
+
+
+def display_pipeline(state: dict | None = None) -> list:
+    """Return the canonical governance rail for presentation."""
+    rows = list(PIPELINE)
+    if not (state and state.get("design_required")):
+        rows = [row for row in rows
+                if row[0] not in ("design", "design_approval")]
+    elif state.get("design_only"):
+        rows = [row for row in rows
+                if row[0] in ("pm", "design", "design_approval", "done")]
+    rail = [(step, label, step in HUMAN_STEPS) for step, label in rows]
+    return splice_selection(rail, state)
+
 
 def snapshot_path(workspace: str, *, state_dir: str | None = None) -> str:
     """Canonical non-authoritative progress snapshot location."""
