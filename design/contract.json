@@ -1,92 +1,549 @@
 {
-  "schema":"taskplane.design/v1","requirement":"R-0011","title":"Host-native workflow UX for Codex and Claude","summary":"Project one canonical workflow/audit model through capability-negotiated PiP, agent, approval, dashboard/carousel, preview, and accessible fallback surfaces without granting host UI authority.",
-  "current_state":{"summary":"Source-attributed immutable host capability snapshots, loop stages/waves/gates, measured token projection, durable isolated commands, target-bound review consent/sandboxes, and 14 KB bounded dashboard pages exist. Native persistent lifecycle, unified surface events, authenticated native approval receipts, deterministic 3–8 carousels, and governed integrated previews are not yet one cross-host contract.","sources":["taskplane/dashboard.py","taskplane/loop.py","taskplane/runtime_eval.py","taskplane/command_runtime.py","taskplane/command_adapters.py","taskplane/host_capabilities.py","taskplane/review.py","workflows","skills","agents","hooks",".codex-plugin",".claude-plugin","docs","taskplane/tests","specs/spec.md","lenses/references/python-solution-design.md"]},
-  "alternatives":[
-    {"id":"canonical-projectors","name":"Canonical semantic model with negotiated host projectors","description":"One versioned snapshot/event model drives thin Claude/Codex native projectors and fallback.","tradeoffs":{"gains":["Semantic parity and one audit authority","Deterministic safe fallback","Additive host evolution"],"costs":["Adapter conformance suite","Explicit lifecycle and receipt machinery"],"revisit_when":"All supported hosts implement one standardized native UI/receipt/preview protocol."}},
-    {"id":"host-owned","name":"Independent native implementations","description":"Each host reads workflow state and implements surfaces directly.","tradeoffs":{"gains":["Fast access to native features"],"costs":["Parallel truth","Approval and capability drift","Duplicated tests"],"revisit_when":"Semantic host parity is explicitly removed."}},
-    {"id":"widget-only","name":"Enhanced bounded widget only","description":"Use HTML/widget and static artifacts on every host.","tradeoffs":{"gains":["Smallest runtime change","Universal fallback"],"costs":["No PiP lifecycle","No native fan-out/receipts/integrated preview"],"revisit_when":"Only as the fallback for unavailable native capabilities."}}
+  "schema": "taskplane.design/v1",
+  "requirement": "R-0001",
+  "title": "Progressive convergent engineering review",
+  "summary": "A risk-first canonical review ledger preserves mandatory floors, promotes evidenced sweep concerns, publishes early immutable request-changes, repairs derivable metadata, caches exact infrastructure failures, converges by measured progress and derives isolated lens-quality telemetry.",
+  "current_state": {
+    "summary": "Taskplane already has signal routing, deep/light dispatch, v3 leases, promotion scaffolding, exact slot conservation, DoR/document classification, immutable partial collection, engine/worktree fingerprints, suite caching, host-parity UX and provider-correct spend. Debt remains over-widening, late blocker publication, metadata contradictions, repeated evaluator failure, global fix cap and sparse lens-value telemetry.",
+    "sources": [
+      "taskplane/review.py",
+      "taskplane/review_evidence.py",
+      "taskplane/review_dor.py",
+      "taskplane/lens.py",
+      "taskplane/lens_signals.py",
+      "taskplane/views.py",
+      "taskplane/runtime_eval.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/loop.py",
+      "taskplane/spend.py",
+      "taskplane/dashboard.py",
+      "agents/tp-engineering.md",
+      "agents/tp-lens.md",
+      "skills/tp-engineering",
+      "skills/tp-go",
+      "docs",
+      "taskplane/tests",
+      "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-tp-work-review-efficiency-retro-ed23fdb3/knowledge/requirements/R-0001-progressive-convergent-engineering-review.md",
+      "lenses/references/python-solution-design.md"
+    ]
+  },
+  "alternatives": [
+    {
+      "id": "progressive-ledger",
+      "name": "Canonical progressive ledger",
+      "description": "Extend incumbent ReviewKernel with versioned risk, binding, cache, convergence and telemetry records.",
+      "tradeoffs": {
+        "gains": [
+          "Early truthful blockers",
+          "Less redundant review/spend",
+          "Exact resumable recovery"
+        ],
+        "costs": [
+          "More explicit transitions",
+          "Compatibility fixture matrix"
+        ],
+        "revisit_when": "The lens catalog becomes small/cheap enough that exhaustive review is measurably faster without quality loss."
+      }
+    },
+    {
+      "id": "exhaustive",
+      "name": "Exhaustive up-front deep review",
+      "description": "Dispatch all applicable lenses before collection.",
+      "tradeoffs": {
+        "gains": [
+          "Simple scheduling",
+          "Maximum immediate breadth"
+        ],
+        "costs": [
+          "Slow and expensive",
+          "Delays blockers",
+          "Repeats known failures"
+        ],
+        "revisit_when": "A human explicitly selects forensic audit mode."
+      }
+    },
+    {
+      "id": "transient-progressive",
+      "name": "Progressive without canonical partial revisions",
+      "description": "Schedule progressively but retain partial results only in memory.",
+      "tradeoffs": {
+        "gains": [
+          "Smaller persistence delta"
+        ],
+        "costs": [
+          "Evidence loss on failure",
+          "No honest early request-changes",
+          "Weak resume/audit"
+        ],
+        "revisit_when": "Provisional evidence retention becomes prohibited."
+      }
+    }
   ],
-  "selected_approach":"canonical-projectors","decision":"Add host-neutral canonical surface snapshots and ordered events, extend source-attributed capability negotiation, and keep adapters transport-only. Use existing loop/review/command/token authorities; provide authenticated idempotent approval receipts, bounded deterministic dashboard pages, private disposable previews, and semantically equal fallbacks.",
-  "modules":{"existing":["taskplane/dashboard.py","taskplane/loop.py","taskplane/runtime_eval.py","taskplane/command_runtime.py","taskplane/command_adapters.py","taskplane/host_capabilities.py","taskplane/review.py","workflows","skills","agents","hooks",".codex-plugin",".claude-plugin","docs","taskplane/tests"],"new":["taskplane/host_native.py","taskplane/preview_runtime.py"]},
-  "contracts":[
-    {"id":"contract:host-native-progress","relation":"provides","description":"Persistent live PiP lifecycle with ordered bounded updates, truthful token provenance, reconnect, and terminal close."},
-    {"id":"contract:host-native-visualization","relation":"provides","description":"Canonical stable agent/task/slot topology, wave/dependency, attention, state and outcome projection."},
-    {"id":"contract:host-native-approval","relation":"provides","description":"Context-rich <=2-action native decision surface and authenticated target/revision-bound idempotent receipt."},
-    {"id":"contract:host-native-dashboard","relation":"provides","description":"Semantically equal native components and deterministic 3–8-item carousel pages over lossless canonical datasets."},
-    {"id":"contract:host-preview-runtime","relation":"provides","description":"Authorized pinned private disposable sandbox plus browser/hosted/side-panel preview lifecycle with no push."},
-    {"id":"contract:host-capability-negotiation","relation":"provides","description":"Source/confidence/freshness-bound per-surface selection and explicit accessible fallback without identical API assumptions."}
+  "selected_approach": "progressive-ledger",
+  "decision": "Extend existing ReviewKernel/storage/routing rather than add an authority: deterministic initial wave and promotions, immutable early revisions, exact evidence bindings, constrained repair/cache/retry, measured convergence, and post-review isolated telemetry.",
+  "modules": {
+    "existing": [
+      "taskplane/review.py",
+      "taskplane/review_evidence.py",
+      "taskplane/review_dor.py",
+      "taskplane/lens.py",
+      "taskplane/lens_signals.py",
+      "taskplane/views.py",
+      "taskplane/runtime_eval.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/loop.py",
+      "taskplane/spend.py",
+      "taskplane/dashboard.py",
+      "agents/tp-engineering.md",
+      "agents/tp-lens.md",
+      "skills/tp-engineering",
+      "skills/tp-go",
+      "docs",
+      "taskplane/tests"
+    ],
+    "new": [
+      "taskplane/review_progression.py",
+      "taskplane/review_repair.py",
+      "taskplane/evaluator_health.py",
+      "taskplane/review_convergence.py",
+      "taskplane/lens_telemetry.py"
+    ]
+  },
+  "contracts": [
+    {
+      "id": "contract:review-kernel-slot",
+      "relation": "changes",
+      "description": "Exactly-once lifecycle ledger for selected and promoted slots plus acceptance evidence."
+    },
+    {
+      "id": "contract:review-kernel-partial-revision",
+      "relation": "changes",
+      "description": "Immediate immutable provisional request-changes with known evidence and explicit gaps."
+    },
+    {
+      "id": "contract:review-kernel-mechanical-repair",
+      "relation": "changes",
+      "description": "One audited equivalence-bounded derivable metadata repair; substance retries affected slot."
+    },
+    {
+      "id": "contract:review-risk-progression",
+      "relation": "provides",
+      "description": "Mandatory floors, evidence-deep lenses, <=1 sweep and deterministic promotion/rejection."
+    },
+    {
+      "id": "contract:review-evidence-binding",
+      "relation": "provides",
+      "description": "Repository/exact-root/target/engine/run/lens/slot/lease/producer binding."
+    },
+    {
+      "id": "contract:evaluator-infrastructure-health",
+      "relation": "provides",
+      "description": "Exact-key expiring verified infrastructure-unavailable cache without lens verdict."
+    },
+    {
+      "id": "contract:review-fix-convergence",
+      "relation": "provides",
+      "description": "Measured finding/evidence progress and bounded continue/escalate decisions."
+    },
+    {
+      "id": "contract:lens-quality-telemetry",
+      "relation": "provides",
+      "description": "Post-review versioned quality/uniqueness/latency/cost telemetry isolated from current review."
+    }
   ],
-  "acceptance_map":[
-    {"criterion":"AC1: On every host profile supporting persistent PiP, one active workflow opens one session showing workflow identity, stage, active/completed work, attention, and last update; ordered changes are reflected and the session closes automatically on completion, cancellation, or failure, while completed static work never opens PiP.","design_element":"contract:host-native-progress","validation":"Lifecycle matrix across Codex/Claude profiles asserts one live open, ordered updates, no static open, reconnect, and exactly one close for all terminal states."},
-    {"criterion":"AC2: Complete, incremental, delayed, absent, malformed, and cross-provider usage fixtures show observed raw/effective tokens with scope/source or explicit partial/unavailable status, reconcile to the canonical token record, and never fabricate zero or estimates.","design_element":"contract:host-native-progress","validation":"Seven usage fixtures reconcile value/status/source to runtime_eval canonical token record and reject fabricated zero/estimated-observed values."},
-    {"criterion":"AC3: Serial, parallel, mixed-wave, retry, cancellation, failure, and resume fixtures visualize every dispatched agent with stable task/slot identity, role, scope, relationship, state, attention, and outcome matching the canonical audit record without duplicates or phantoms.","design_element":"contract:host-native-visualization","validation":"Seven topology fixtures compare stable node/edge/event sets to loop audit and assert no duplicate/phantom ids."},
-    {"criterion":"AC4: Plan, design, dynamic-validation, review, and signoff approval fixtures show the exact decision, reason, target/revision, relevant evidence, consequences, owner, and approvability, with at most two primary inline actions and richer content moved to detail/fullscreen.","design_element":"contract:host-native-approval","validation":"Five gate fixtures assert every context field, <=2 primary actions, and rich evidence only in detail/fullscreen with composer retained."},
-    {"criterion":"AC5: A native approval advances state exactly once only when an authenticated human receipt is bound to the current decision, actor, target, and revision; stale, duplicate, replayed, disabled, unauthenticated, wrong-revision, or presentation-only actions cannot advance.","design_element":"contract:host-native-approval","validation":"Positive receipt advances once; seven negative receipt fixtures produce zero transitions and explicit audit rejection."},
-    {"criterion":"AC6: Canonical workflow, DoR, dependency/impact, agents, lenses, criteria, findings, validation, artifacts, and gate snapshots project on Codex and Claude with equal values, ordering semantics, provenance, and actions despite allowed host-specific styling.","design_element":"contract:host-native-dashboard","validation":"Ten-component cross-host golden strips styling metadata and asserts semantic JSON equality, stable ordering/provenance/actions."},
-    {"criterion":"AC7: Dataset fixtures containing 0, 1, 3, 8, 9, 120, and multi-page items use deterministic 3-to-8-item visually consistent carousel pages where needed, expose concise metadata plus total/current position, support navigation/filtering, and preserve every stable item identity.","design_element":"contract:host-native-dashboard","validation":"Seven dataset fixtures assert deterministic page membership (3–8 where carousel applies), identical item-id round trip, positions, filter and navigation state."},
-    {"criterion":"AC8: Inline structure and viewport tests prove cards are single-purpose, responsive, have no nested scrolling/deep navigation, preserve the conversational composer, respect the two-primary-action limit, and use detail/fullscreen for rich multi-step exploration.","design_element":"taskplane/host_native.py","validation":"DOM/structure suite at small/large viewports rejects nested scroll/deep navigation/>2 primary actions and asserts focus/composer/fullscreen behavior."},
-    {"criterion":"AC9: One authorized design, build, and dynamic-review scenario opens an interactive pinned working preview in the host-integrated browser or side panel where supported, records preview identity/lifecycle, and links observed behavior to canonical evidence.","design_element":"contract:host-preview-runtime","validation":"Three end-to-end flow fixtures authorize, open, interact, observe, evidence-bind and close pinned browser/side-panel previews."},
-    {"criterion":"AC10: Valid, unavailable, denied, build-failed, timeout, attempted-push, escaped-path, external-network, and teardown preview fixtures prove execution occurs only in a registered pinned bounded disposable scope, never pushes or changes the source checkout/remotes, and fails safely with auditable outcomes.","design_element":"taskplane/preview_runtime.py","validation":"Nine fault fixtures assert registered disposable identity, resource/network policy, push count zero, unchanged checkout/remotes, bounded teardown and named audit outcome."},
-    {"criterion":"AC11: Supported, unsupported, partial, unknown, stale, contradictory, and changed-mid-run capability profiles record host/version, source/confidence, selected surface, limitations, and fallback and select deterministic behavior without false support.","design_element":"contract:host-capability-negotiation","validation":"Seven-profile matrix on both hosts asserts all provenance/selection fields and deterministic fallback for every non-supported or changed state."},
-    {"criterion":"AC12: Disabling PiP, visualization, carousel, approval, sandbox, hosting, browser, and side-panel capabilities independently preserves canonical values, evidence, audit, gates, and reachable safe actions in an accessible bounded fallback that names unavailable rather than user-declined.","design_element":"contract:host-capability-negotiation","validation":"Eight independent disablement fixtures compare canonical fingerprints/gates/actions to native case and assert explicit unavailable labels and <=14KB fallback pages."},
-    {"criterion":"AC13: Automated accessibility, keyboard, text-scaling, reduced-motion, light/dark theme, and responsive viewport checks prove native/fallback surfaces use system tokens/fonts/layout, WCAG AA contrast, semantic labels, alt text, visible focus, and non-color status cues.","design_element":"taskplane/host_native.py","validation":"Automated a11y suite across both projectors/fallback tests keyboard, 200% text, reduced motion, themes, viewports, AA contrast, labels/alt/focus/non-color cues."},
-    {"criterion":"AC14: Concurrent update, reconnect/resume, stale UI, duplicate event, host switch, and terminal-close fixtures prove PiP, fan-out, approvals, dashboards, carousels, previews, fallbacks, and artifacts reference one workflow/run, target, revision, task/slot identity, evidence, gate state, and ordered audit history.","design_element":"taskplane/host_native.py","validation":"Six concurrency/recovery fixtures assert one identity tuple/event order across all surfaces, idempotent acknowledgements, stale rejection and exactly-once terminal close."},
-    {"criterion":"AC15: Existing non-native design, build, review, status, approval, and artifact golden scenarios plus the native-capability matrix pass without lost evidence, weaker gates, removed tests, skips, xfails, loosened assertions, or reclassified failures.","design_element":"contract:host-native-dashboard","validation":"Six legacy golden flows plus capability matrix pass; test-diff audit rejects removal, skip/xfail, lowered floor, loosened assertion, or failure reclassification."}
+  "acceptance_map": [
+    {
+      "criterion": "AC1: Code, docs-only, mixed, empty-map, high-risk, low-risk, and early-blocker fixtures always select and conserve every catalog-declared mandatory engineering-review floor.",
+      "design_element": "contract:review-risk-progression",
+      "validation": "Seven change-shape fixtures assert every catalog floor is selected and conserved."
+    },
+    {
+      "criterion": "AC2: Representative small, large, code, configuration, and documentation changes dispatch mandatory floors, evidence-selected deep lenses, and zero or one bounded light sweep, with machine-readable n/a evidence rather than exhaustive catalog execution.",
+      "design_element": "contract:review-risk-progression",
+      "validation": "Five scale/type fixtures assert floors plus evidence-deep plus <=1 sweep and machine-readable n/a, never exhaustive dispatch."
+    },
+    {
+      "criterion": "AC3: High/major, low/minor, duplicate, cross-charter, missing-evidence, and replay sweep fixtures prove deep promotion requires normalized risk, referenced evidence, rationale, in-charter trigger, deterministic slot identity, and idempotency.",
+      "design_element": "contract:review-risk-progression",
+      "validation": "Six sweep fixtures assert normalized risk/evidence/rationale/charter/idempotent deterministic promotion identity."
+    },
+    {
+      "criterion": "AC4: Every admissible high/major sweep concern is promoted to its responsible deep lens or canonically rejected as duplicate, out-of-charter, invalid, or already covered; the light sweep never substitutes for the deep judgment.",
+      "design_element": "contract:review-risk-progression",
+      "validation": "Promotion ledger test asserts every admissible high/major is promoted or rejected by one canonical reason and never treated as deep verdict."
+    },
+    {
+      "criterion": "AC5: Blocker-first, blocker-late, simultaneous, duplicate, mechanically repaired, and invalidated-finding fixtures prove an immutable provisional request-changes revision publishes as soon as blocking evidence is admissible with complete known evidence and truthful gate state.",
+      "design_element": "contract:review-kernel-partial-revision",
+      "validation": "Six blocker-order/repair/invalidation fixtures assert immediate immutable request-changes with all known evidence and truthful disabled gate."
+    },
+    {
+      "criterion": "AC6: Mixed slot lifecycle fixtures reconcile every selected slot exactly as collected, running, undispatched, promoted-pending, missing, invalid, retrying, or infrastructure-unavailable in the provisional gap manifest and never label partial review exhaustive.",
+      "design_element": "contract:review-kernel-partial-revision",
+      "validation": "0/1/several/all gap matrix asserts every selected slot has exactly one named lifecycle state and partial is never exhaustive."
+    },
+    {
+      "criterion": "AC7: Removing or duplicating one prepared, dispatched, produced, validated, collected, promotion, or acceptance-evidence record keeps approval closed; only a complete exactly-once conserved ledger can proceed.",
+      "design_element": "contract:review-kernel-slot",
+      "validation": "Mutation matrix removes/duplicates each lifecycle and acceptance record; only complete exactly-once ledger enables approval."
+    },
+    {
+      "criterion": "AC8: Multi-revision fixtures prove later results, promotions, repairs, retries, dynamic evidence, and adjudications supersede provisional revisions immutably without losing or duplicating any previously valid finding, gap, provenance, or artifact identity.",
+      "design_element": "contract:review-kernel-partial-revision",
+      "validation": "Multi-revision round trip asserts immutable supersession with no lost/duplicate finding, gap, provenance or artifact id."
+    },
+    {
+      "criterion": "AC9: Permuted, omitted-summary, contradictory-summary, empty, fail-with-findings, and pass-with-zero slot payloads normalize to one byte-stable verdict/count/severity/completion metadata representation or a named substantive inconsistency.",
+      "design_element": "contract:review-kernel-mechanical-repair",
+      "validation": "Six payload permutations assert byte-stable normalized metadata or named substantive inconsistency."
+    },
+    {
+      "criterion": "AC10: Authoritatively derivable identity, count, summary, and schema metadata defects repair once with before/after, derivation authority, and fingerprint proof while target, view, evidence, findings, severity, rationale, action, verdict substance, lease, slot, and producer remain equivalent; any substantive mutation reruns only the affected slot.",
+      "design_element": "contract:review-kernel-mechanical-repair",
+      "validation": "Repair allowlist test proves one derivable repair with equivalence; substantive tamper invokes only affected producer."
+    },
+    {
+      "criterion": "AC11: Identical evaluator, engine fingerprint/version, host capability, repository, exact worktree, and valid time window reuse one verified infrastructure-unavailable result without relaunch or lens verdict; changing any key, expiry, or repaired infrastructure invalidates the cache.",
+      "design_element": "contract:evaluator-infrastructure-health",
+      "validation": "Cache-key matrix asserts one reuse only on exact evaluator/engine/capability/repository/root/window and invalidation on every key/expiry/repair."
+    },
+    {
+      "criterion": "AC12: Root, linked-worktree, sibling, moved-root, symlink, clone, engine-skew, stale-head, copied-result, and resume fixtures verify canonical repository, exact Git worktree, target/base/head, engine, run, lens, slot, lease, and producer binding and reject substitution.",
+      "design_element": "contract:review-evidence-binding",
+      "validation": "Nine repository/worktree/engine fixtures assert complete binding and reject symlink/sibling/clone/move/stale/copy/skew substitution."
+    },
+    {
+      "criterion": "AC13: API docs, security guidance, runbook, user docs, changelog, typo-only, mixed code/docs, malformed-doc, and absent-map fixtures route from documentation evidence and do not widen to the full module-level catalog solely due to missing or inapplicable code mapping.",
+      "design_element": "taskplane/review_progression.py",
+      "validation": "Nine document fixtures assert content/directive/contract/audience routing and no module-miss full-catalog widening."
+    },
+    {
+      "criterion": "AC14: Ambiguous or corrupt documentation retains mandatory floors and produces the smallest evidence-backed explained widening set with a stable routing fingerprint, never no-review or unconditional all-lens routing.",
+      "design_element": "contract:review-risk-progression",
+      "validation": "Ambiguous/corrupt document fixtures retain floors and assert minimal explained widening with stable fingerprint."
+    },
+    {
+      "criterion": "AC15: Fast convergence, three-plus-cycle convergence, no-progress, oscillation, regression, repeated-fingerprint, unsafe, scope-change, and human-stop fixtures record closed/persisted/regressed/new findings plus evidence progress and make deterministic continue/escalate decisions without a global two-cycle rule.",
+      "design_element": "contract:review-fix-convergence",
+      "validation": "Nine convergence fixtures assert deterministic continue/escalate without a global two-cycle rule."
+    },
+    {
+      "criterion": "AC16: Convergence score, cycle count, provisional request-changes, and cached failure can never auto-approve, abandon a required slot, widen implementation scope, or bypass a human-owned scope, destructive-action, or final-signoff decision.",
+      "design_element": "contract:review-fix-convergence",
+      "validation": "Authority-negative suite asserts scores/caches/provisional state never approve, abandon, widen scope or bypass human gates."
+    },
+    {
+      "criterion": "AC17: Each lens/run records eligible, selected, promoted, collected, admissible/confirmed/unique/overlap/duplicate/later-invalidated/false-positive findings, retries, repairs, latency, tokens/cost when available, and infrastructure unavailability with versioned definitions and denominators; golden arithmetic distinguishes unavailable from zero.",
+      "design_element": "contract:lens-quality-telemetry",
+      "validation": "Per-lens arithmetic golden asserts every named numerator/denominator, version and unavailable-vs-zero semantics."
+    },
+    {
+      "criterion": "AC18: Information-isolation fixtures show telemetry is derived only from sealed canonical revisions and later adjudication, does not expose one lens draft to another, alter current verdicts, or suppress mandatory floors, and yields identical substantive results when disabled.",
+      "design_element": "contract:lens-quality-telemetry",
+      "validation": "Isolation A/B fixture disables telemetry and asserts identical substantive review; telemetry reads sealed revisions/adjudication only."
+    },
+    {
+      "criterion": "AC19: Claude, Codex, managed worktrees, and supported fallbacks preserve the same review semantics, evidence, early revisions, conservation gate, repair, convergence, and telemetry definitions, and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions.",
+      "design_element": "contract:review-evidence-binding",
+      "validation": "Claude/Codex/worktree/fallback semantic goldens and test-audit assert parity and no removed/skip/xfail/loosen/reclassify changes."
+    }
   ],
-  "risks":[
-    {"risk":"Host UI becomes a competing workflow authority.","mitigation":"Persist canonical snapshot/event first; adapters emit receipts only; all transitions revalidate canonical identity.","owner":"Workflow owner"},
-    {"risk":"Capabilities are inferred or become stale mid-run.","mitigation":"Source/confidence/freshness snapshot, explicit changed state, deterministic per-surface fallback.","owner":"Host capability owner"},
-    {"risk":"High-frequency updates overwhelm host or duplicate model turns.","mitigation":"4 Hz/16 KiB coalesced adapter queue; attention/terminal preserved; UI updates never wake model.","owner":"Presentation owner"},
-    {"risk":"Approval actions replay or target wrong revision.","mitigation":"Authenticated actor/session/decision/target/revision/action nonce receipts with expiry and exactly-once audit key.","owner":"Gate owner"},
-    {"risk":"Preview escapes sandbox, pushes, leaks secrets, or remains public.","mitigation":"Registered private disposable scope, push-disabled adapter, path/network/resource enforcement, redaction and forced teardown.","owner":"Preview runtime owner"},
-    {"risk":"Carousel/fallback hides data or becomes inaccessible.","mitigation":"Stable item-id round trip, deterministic 3–8 pages, lossless artifacts, WCAG/keyboard/focus tests.","owner":"Dashboard owner"}
+  "risks": [
+    {
+      "risk": "Progressive routing misses serious concerns.",
+      "mitigation": "Catalog floors are unconditional; promotions require attributable evidence; ambiguity widens minimally with explanation.",
+      "owner": "Routing owner"
+    },
+    {
+      "risk": "Early provisional output is mistaken for exhaustive approval-ready review.",
+      "mitigation": "Schema/gate require request-changes, explicit gap manifest and approval disabled.",
+      "owner": "Collection owner"
+    },
+    {
+      "risk": "Repair/cache forges substantive review or crosses worktrees.",
+      "mitigation": "Equivalence allowlist plus exact repository/root/engine/run/lease binding and expiry.",
+      "owner": "Recovery owner"
+    },
+    {
+      "risk": "Convergence loops indefinitely or broadens scope.",
+      "mitigation": "Task bound, two no-progress threshold, oscillation/fingerprint/safety/scope/human escalation; no auto-approval.",
+      "owner": "Loop owner"
+    },
+    {
+      "risk": "Telemetry biases current producers or leaks data.",
+      "mitigation": "Derive only after sealed revisions/adjudication; no current-routing read edge; redact to bounded fingerprints/counts.",
+      "owner": "Telemetry owner"
+    }
   ],
-  "failure_modes":[
-    {"mode":"Capability is unknown, stale, contradictory, or changes.","detection":"host_capability_selection reports source/confidence/freshness and selected/fallback surfaces.","recovery":"Capability owner immediately switches only affected surface to bounded fallback; no canonical state changes."},
-    {"mode":"Native event is delayed, duplicated, out of order, or reconnects.","detection":"host_surface_update reports workflow/revision/sequence/ack disposition.","recovery":"Session owner rejects stale/duplicate, replays from last ack, retries twice, then fallback."},
-    {"mode":"Token data is absent, malformed, delayed, or mismatched.","detection":"host_token_projection reports observed status/source and reconciliation result.","recovery":"Projection marks partial/unavailable and retains prior observed facts; never substitutes zero or estimate."},
-    {"mode":"Approval receipt is invalid or replayed.","detection":"host_approval_receipt reports identity/auth/nonce/expiry validation.","recovery":"Gate owner refuses transition, audits rejection, and refreshes current decision surface."},
-    {"mode":"Dashboard page loses/duplicates items or violates UI bounds.","detection":"host_dashboard_page reports item ids, totals, bytes, action count and accessibility result.","recovery":"Dashboard owner rejects native page and emits bounded artifact-backed fallback within two attempts."},
-    {"mode":"Preview build, isolation, network, push, or teardown fails.","detection":"host_preview_lifecycle reports sandbox policy, pre/post source fingerprints, actions and teardown.","recovery":"Preview owner stops process tree, revokes private endpoint, performs one forced cleanup, preserves source, and publishes failure evidence/fallback."},
-    {"mode":"PiP fails to close at terminal state.","detection":"host_surface_session reports terminal event without close acknowledgement.","recovery":"Session owner retries close twice, marks native surface failed, and shows terminal fallback without reopening PiP."}
+  "failure_modes": [
+    {
+      "mode": "Mandatory floor or promoted slot disappears.",
+      "detection": "review_slot_ledger reports selected/promoted versus lifecycle conservation.",
+      "recovery": "ReviewKernel aborts approval immediately and retries only named missing slot within Plan bound."
+    },
+    {
+      "mode": "Sweep concern cannot prove risk/evidence/charter.",
+      "detection": "review_risk_progression reports normalized trigger/rejection reason.",
+      "recovery": "Routing owner records canonical rejection; admissible concern is promoted once, never substituted."
+    },
+    {
+      "mode": "Metadata repair changes substance.",
+      "detection": "review_metadata_repair reports before/after equivalence and allowlist result.",
+      "recovery": "Recovery owner rejects repair and reruns affected slot only, maximum Plan retry bound."
+    },
+    {
+      "mode": "Infrastructure cache key is stale or mismatched.",
+      "detection": "evaluator_health_cache reports full key, TTL and invalidation reason.",
+      "recovery": "Evaluator owner invalidates and probes once; verified unavailable never becomes verdict."
+    },
+    {
+      "mode": "Fix cycles show no progress, oscillation, regression or unsafe scope change.",
+      "detection": "review_convergence reports finding sets/evidence delta and decision reason.",
+      "recovery": "Loop owner escalates after two no-progress cycles or immediately on unsafe/scope/human stop."
+    },
+    {
+      "mode": "Telemetry denominator/source is missing.",
+      "detection": "lens_quality_metric reports definition version and availability.",
+      "recovery": "Telemetry owner records unavailable, never zero, and does not affect review."
+    }
   ],
-  "observability":{"signals":["host_capability_selection: host/version/source/confidence/freshness/selected/limitations/fallback","host_surface_session: workflow/run/revision/surface/open/reconnect/terminal/close","host_surface_update: sequence/bytes/coalesced/ack/disposition/latency","host_token_projection: raw/effective/scope/provider/source/status/reconciliation","host_agent_projection: stable task/slot/agent/edge/state/attention/outcome counts","host_approval_receipt: decision/target/revision/action/auth/nonce/expiry/outcome","host_dashboard_page: component/page/item ids/total/bytes/actions/a11y outcome","host_preview_lifecycle: sandbox/preview identity/policy/build/network/push/source fingerprints/teardown"],"alerts":["Fallback when surface update exceeds 16384 bytes or two retries.","Fallback when inline page exceeds 14000 bytes or carousel loses/duplicates ids.","Block gate transition on any invalid approval receipt.","Terminate preview on push, escape, unauthorized network, public exposure or resource bound.","Alert when terminal PiP or preview teardown lacks acknowledgement after retries."]},
-  "rollout":{"strategy":"Add canonical surface schema and audit-only projectors behind TASKPLANE_HOST_NATIVE_UX; enable capability/fallback, dashboard/fan-out, PiP/tokens, approval receipts, then preview runtime independently per capability. Dual-run Claude/Codex semantic goldens and retain legacy widgets/artifacts.","rollback":"Disable new native sessions; close active PiP/private previews; retain event/receipt readers; project every canonical snapshot through legacy bounded accessible widgets/artifacts. Canonical workflow/audit data is unchanged and no migration is reversed."},
-  "graph":{"baseline_fingerprint":"11db1c87480228a4a28948051a388cc6e7d9ccec958a810c770cf1cba71211e9","proposed_modules":["taskplane/dashboard.py","taskplane/loop.py","taskplane/runtime_eval.py","taskplane/command_runtime.py","taskplane/command_adapters.py","taskplane/host_capabilities.py","taskplane/review.py","workflows","skills","agents","hooks",".codex-plugin",".claude-plugin","docs","taskplane/tests","taskplane/host_native.py","taskplane/preview_runtime.py","contract:host-native-progress","contract:host-native-visualization","contract:host-native-approval","contract:host-native-dashboard","contract:host-preview-runtime","contract:host-capability-negotiation"],"proposed_edges":[
-    {"from":"taskplane/host_capabilities.py","to":"contract:host-capability-negotiation","kind":"provides","reason":"Records sourced per-surface capability selection/fallback."},
-    {"from":"taskplane/host_native.py","to":"contract:host-native-progress","kind":"provides","reason":"Projects PiP lifecycle and truthful token state."},
-    {"from":"taskplane/host_native.py","to":"contract:host-native-visualization","kind":"provides","reason":"Projects canonical agent topology."},
-    {"from":"taskplane/host_native.py","to":"contract:host-native-approval","kind":"provides","reason":"Projects decisions and validates native receipts."},
-    {"from":"taskplane/dashboard.py","to":"contract:host-native-dashboard","kind":"provides","reason":"Projects native components/carousels and fallback."},
-    {"from":"taskplane/preview_runtime.py","to":"contract:host-preview-runtime","kind":"provides","reason":"Owns registered disposable private preview lifecycle."},
-    {"from":"taskplane/host_native.py","to":"contract:host-capability-negotiation","kind":"consumes","reason":"Selects supported surface or fallback."},
-    {"from":"taskplane/preview_runtime.py","to":"contract:host-capability-negotiation","kind":"consumes","reason":"Selects sandbox/hosting/browser/side-panel path."},
-    {"from":"taskplane/loop.py","to":"contract:host-native-progress","kind":"consumes","reason":"Publishes canonical stage/wave/gate events."},
-    {"from":"taskplane/runtime_eval.py","to":"contract:host-native-progress","kind":"consumes","reason":"Supplies observed token record."},
-    {"from":"taskplane/review.py","to":"contract:host-native-approval","kind":"consumes","reason":"Verifies target-bound human receipt."},
-    {"from":"taskplane/command_runtime.py","to":"contract:host-preview-runtime","kind":"consumes","reason":"Runs durable bounded preview commands."},
-    {"from":"taskplane/command_adapters.py","to":"contract:host-preview-runtime","kind":"consumes","reason":"Enforces isolation and no-push launch."},
-    {"from":"workflows","to":"contract:host-native-visualization","kind":"consumes","reason":"Transport canonical dispatch events."},
-    {"from":".codex-plugin","to":"contract:host-capability-negotiation","kind":"consumes","reason":"Declares/observes Codex transport capabilities."},
-    {"from":".claude-plugin","to":"contract:host-capability-negotiation","kind":"consumes","reason":"Declares/observes Claude transport capabilities."},
-    {"from":"taskplane/tests","to":"contract:host-native-dashboard","kind":"validates","reason":"Proves parity, carousel, accessibility, fallback and compatibility."},
-    {"from":"taskplane/tests","to":"contract:host-preview-runtime","kind":"validates","reason":"Proves preview safety and teardown."}
-  ],"depth_policy":{"local_depth":3,"boundary_mode":"contract-only","contract_depth":1,"requirement_depth":1},"dor":[
-    {"check":"Baseline graph and impact are pinned.","evidence":"Fingerprint 11db1c87480228a4a28948051a388cc6e7d9ccec958a810c770cf1cba71211e9 at HEAD 4e1c7e7b437777306cb034dec1f4fa775a62addc; 115 modules/307 edges/73 components; impact 29, unknown none."},
-    {"check":"Requirement is resolved.","evidence":"R-0011 has 15 exact ACs, eight NFRs, six contracts, no open questions."},
-    {"check":"Current seams and Python constraints are grounded.","evidence":"Cited capability/loop/runtime/review/dashboard sources; Python reference digest 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7 verified/applied."},
-    {"check":"Ownership/order and UI constraints are explicit.","evidence":"Capability, presentation, gate, preview/dashboard owners; semantic→negotiation→dashboard→PiP→approval→preview sequence; official PiP/card/carousel/fullscreen/a11y bounds."},
-    {"check":"Traversal is bounded.","evidence":"Local depth 3, contract-only boundary, contract/requirement depth 1."}
-  ],"dod":[
-    {"check":"Realized graph/contracts conform.","evidence":"Engineering scan verifies declared modules/edges/contracts and no unexplained drift."},
-    {"check":"PiP/tokens/agents are truthful and resilient.","evidence":"Lifecycle, usage, topology, concurrent/reconnect matrices pass exact identities and bounds."},
-    {"check":"Approval authority is safe.","evidence":"Five decision contexts and positive/seven-negative receipt tests pass exactly-once transition."},
-    {"check":"Dashboard/carousel/accessibility meet guidance.","evidence":"Component parity, seven dataset, viewport and full automated a11y suites pass 14KB/3–8/<=2-action constraints."},
-    {"check":"Preview runtime is governed.","evidence":"Three flow previews and nine safety faults prove pinned private disposable no-push execution and teardown."},
-    {"check":"Capability/fallback parity holds.","evidence":"Seven profiles and eight independent disablements preserve canonical evidence/gates/actions and name limitations."},
-    {"check":"Python/package and legacy compatibility hold.","evidence":"Strict typing at trust boundaries, cancellation/failure tests, clean-wheel install, graph import verification, legacy goldens and no-weakened-test audit pass."}
-  ]},
-  "visualization":{"required":true,"kind":"data-flow","path":"design/visual.html","reason":"Cross-host capability selection, canonical authority, live/decision/dashboard surfaces and isolated preview lifecycle materially benefit from one data-flow visual."},
-  "lens_evidence":[{"lens":"solution-design","verdict":"pass","blockers":0,"evidence":"Applied verified Python guidance; grounded proposal in existing sourced capabilities, loop/wave/gate, measured-token, durable-command, sandbox/review and bounded-dashboard seams; compared canonical projectors, host-owned policy and widget-only fallback; mapped all 15 exact ACs to executable lifecycle, receipt, parity, carousel, accessibility, capability, preview and compatibility tests; numeric bounds, signals/recovery, ownership/order and additive rollback are internally consistent; no unresolved build decision or silent debt.","produced_by":"tp_step_designer_design_28973ea6","content_fingerprint":"e28ec2e6eca465bf0616f21249fc27d1553caafd48ce85b43fa89c45093b2b0a","self_attested":true}],
-  "open_questions":[]
+  "observability": {
+    "signals": [
+      "review_risk_progression: routing/promotions/rejections/fingerprints",
+      "review_slot_ledger: each selected slot lifecycle and acceptance evidence",
+      "review_revision_lineage: provisional/canonical/supersession/findings/gaps",
+      "review_metadata_repair: rule/authority/before/after/equivalence/outcome",
+      "review_evidence_binding: repository/root/target/engine/run/lens/slot/lease/producer checks",
+      "evaluator_health_cache: exact key/TTL/reuse/invalidation/outcome",
+      "review_convergence: cycles/closed/persisted/regressed/new/evidence progress/decision",
+      "lens_quality_metric: versioned eligible/selected/findings/retries/latency/tokens/cost/unavailable denominators"
+    ],
+    "alerts": [
+      "Block approval on any ledger conservation or acceptance-evidence gap.",
+      "Block repair on substantive change or failed equivalence.",
+      "Invalidate health cache on any key/TTL/repair change.",
+      "Escalate after two no-progress cycles, repeated fingerprint, oscillation, regression, unsafe or scope change."
+    ]
+  },
+  "rollout": {
+    "strategy": "Behind TASKPLANE_PROGRESSIVE_REVIEW, dual-record ledger/bindings, then progressive routing/provisional publication, repair/cache, convergence, and post-review telemetry. Compare complete-review and Claude/Codex/worktree goldens each phase.",
+    "rollback": "Disable new progressive sessions; finish issued leases with retained readers; preserve immutable revisions/telemetry; revert new reviews to current routing and task-plan fix bounds. No destructive migration or simultaneous host deployment."
+  },
+  "graph": {
+    "baseline_fingerprint": "e5756150b39714ed4c0349d31729d2c487d2d49417dc1661339c5ebd49acbb24",
+    "proposed_modules": [
+      "taskplane/review.py",
+      "taskplane/review_evidence.py",
+      "taskplane/review_dor.py",
+      "taskplane/lens.py",
+      "taskplane/lens_signals.py",
+      "taskplane/views.py",
+      "taskplane/runtime_eval.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/loop.py",
+      "taskplane/spend.py",
+      "taskplane/dashboard.py",
+      "agents/tp-engineering.md",
+      "agents/tp-lens.md",
+      "skills/tp-engineering",
+      "skills/tp-go",
+      "docs",
+      "taskplane/tests",
+      "taskplane/review_progression.py",
+      "taskplane/review_repair.py",
+      "taskplane/evaluator_health.py",
+      "taskplane/review_convergence.py",
+      "taskplane/lens_telemetry.py",
+      "contract:review-kernel-slot",
+      "contract:review-kernel-partial-revision",
+      "contract:review-kernel-mechanical-repair",
+      "contract:review-risk-progression",
+      "contract:review-evidence-binding",
+      "contract:evaluator-infrastructure-health",
+      "contract:review-fix-convergence",
+      "contract:lens-quality-telemetry"
+    ],
+    "proposed_edges": [
+      {
+        "from": "taskplane/review.py",
+        "to": "contract:review-kernel-slot",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/review_evidence.py",
+        "to": "contract:review-kernel-partial-revision",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/review_progression.py",
+        "to": "contract:review-risk-progression",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/review_repair.py",
+        "to": "contract:review-kernel-mechanical-repair",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/evaluator_health.py",
+        "to": "contract:evaluator-infrastructure-health",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/review_convergence.py",
+        "to": "contract:review-fix-convergence",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/lens_telemetry.py",
+        "to": "contract:lens-quality-telemetry",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/taskplane_lite.py",
+        "to": "contract:review-evidence-binding",
+        "kind": "provides",
+        "reason": "Owns the named canonical review contract."
+      },
+      {
+        "from": "taskplane/lens.py",
+        "to": "contract:review-risk-progression",
+        "kind": "consumes",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/lens_signals.py",
+        "to": "contract:review-risk-progression",
+        "kind": "consumes",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/review.py",
+        "to": "contract:review-evidence-binding",
+        "kind": "consumes",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "contract:review-fix-convergence",
+        "kind": "consumes",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/spend.py",
+        "to": "contract:lens-quality-telemetry",
+        "kind": "consumes",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/dashboard.py",
+        "to": "contract:review-kernel-partial-revision",
+        "kind": "consumes",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:review-risk-progression",
+        "kind": "validates",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:review-evidence-binding",
+        "kind": "validates",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:review-fix-convergence",
+        "kind": "validates",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:lens-quality-telemetry",
+        "kind": "validates",
+        "reason": "Consumes or verifies the canonical contract without parallel authority."
+      }
+    ],
+    "depth_policy": {
+      "local_depth": 3,
+      "boundary_mode": "contract-only",
+      "contract_depth": 1,
+      "requirement_depth": 1
+    },
+    "dor": [
+      {
+        "check": "Baseline and bounded impact are pinned.",
+        "evidence": "Fingerprint e5756150b39714ed4c0349d31729d2c487d2d49417dc1661339c5ebd49acbb24; action-payload impact/policy accepted; graph remains overlay-only."
+      },
+      {
+        "check": "Requirement is resolved.",
+        "evidence": "R-0001 has 19 exact ACs, eight NFRs/contracts, dependency R-0011 and no open questions."
+      },
+      {
+        "check": "As-built seams are grounded.",
+        "evidence": "Routing, leases, partial collection, worktree/engine fingerprint, spend, dashboard and host parity sources cited."
+      },
+      {
+        "check": "Python constraints applied.",
+        "evidence": "Reference SHA-256 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7 verified; sync ownership, trust validation, no packaging change."
+      },
+      {
+        "check": "Ownership/order/depth settled.",
+        "evidence": "Five new modules have owners; ledger→progression→repair/cache→convergence→telemetry; local 3, contract/requirement 1."
+      }
+    ],
+    "dod": [
+      {
+        "check": "Graph/contracts conform.",
+        "evidence": "Engineering rescans modules/edges/contracts and rejects unexplained drift."
+      },
+      {
+        "check": "Risk progression and early revision pass.",
+        "evidence": "AC1-8 routing/promotion/blocker/gap/conservation/supersession matrices pass."
+      },
+      {
+        "check": "Normalization, repair, cache and binding pass.",
+        "evidence": "AC9-12 permutation/tamper/exact-key/root-worktree matrices pass."
+      },
+      {
+        "check": "Docs and convergence pass.",
+        "evidence": "AC13-16 document/minimal-widening/convergence/authority matrices pass."
+      },
+      {
+        "check": "Telemetry/isolation/parity pass.",
+        "evidence": "AC17-19 arithmetic/A-B/cross-host/worktree/legacy goldens and no-weakened-test audit pass."
+      },
+      {
+        "check": "Python/package quality holds.",
+        "evidence": "Strict trust-boundary types, failure tests, clean-wheel install and import graph verification pass."
+      }
+    ]
+  },
+  "visualization": {
+    "required": true,
+    "kind": "state-transition",
+    "path": "design/visual.html",
+    "reason": "Promotion, early provisional publication, affected recovery and measured convergence form a non-linear state sequence."
+  },
+  "lens_evidence": [
+    {
+      "lens": "solution-design",
+      "verdict": "pass",
+      "blockers": 0,
+      "evidence": "Applied verified Python reference; grounded in current routing/lease/partial/worktree/cache/spend/host seams; compared canonical progressive, exhaustive and transient options; mapped all 19 exact ACs to executable matrices; numeric bounds, signals/recovery, ownership/order and additive rollback are consistent; telemetry is isolated and no unresolved Build decision or silent debt remains.",
+      "produced_by": "tp_step_designer_design_28973ea6",
+      "content_fingerprint": "cf65ce51b0481f29c5d8b6853433f5885db0747249f1df25eefe732d2b035346",
+      "self_attested": true
+    }
+  ],
+  "open_questions": []
 }

@@ -950,6 +950,14 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             workspace or ".", files, stage=stage,
             requirement_text=requirement_text,
             content_by_file=content_by_file)
+    if stage == "review":
+        # Component routing and module routing consume the same bounded
+        # document evidence.  A component-map miss is never a reason to
+        # widen documentation to the full catalog.
+        import review_progression
+        review_progression.apply_document_signals(
+            vmap, files, content_by_file
+        )
 
     selected = []
     for lens in cat["lenses"]:
@@ -1019,6 +1027,10 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             entry["negative_evidence"] = negative
         if floored:
             entry["floor"] = v["floor"]
+        for key in ("review_risk_class", "review_risk_reason",
+                    "review_required_deep"):
+            if key in v:
+                entry[key] = v[key]
         if proposed is not None and verdict != "n/a" and lid in proposed:
             # contract:lens-brief ADDITIVE key — which component(s)
             # contributed this routed lens (component path only).
@@ -1050,6 +1062,46 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             if "component_attribution" in x}
     elif comp_info is not None and comp_info.get("miss"):
         ctxd["component_layer_failed"] = comp_info["miss"]
+    if stage == "review":
+        import review_progression
+        required_rows = [row for row in selected
+                         if row.get("review_required_deep")]
+        if required_rows:
+            ctxd["review_risk"] = {
+                "class": required_rows[0]["review_risk_class"],
+                "reason": required_rows[0]["review_risk_reason"],
+                "required_deep_lenses": sorted(
+                    row["id"] for row in required_rows
+                ),
+            }
+        progressive = review_progression.initial_wave({
+            "lenses": selected,
+            "context": ctxd,
+        })
+        # The canonical ReviewKernel builds its routing decision directly
+        # from this complete catalog map.  Therefore the bounded sweep must
+        # be reflected in the dispositions themselves, not only copied into
+        # context metadata for the legacy brief dispatcher.  Retain every
+        # overflow lens as an explained n/a so coverage remains complete
+        # without allocating a second/unbounded light wave.
+        by_id = {str(row.get("id") or ""): row for row in selected}
+        for lens_id in progressive["deferred_light"]:
+            entry = by_id[lens_id]
+            prior = str(entry.get("verdict") or entry.get("tier") or "light")
+            entry["tier"] = entry["verdict"] = "n/a"
+            entry["mode"] = "none"
+            entry["negative_evidence"] = [
+                "deferred by bounded progressive review sweep "
+                f"(limit {review_progression.DEFAULT_SWEEP_LIMIT}; "
+                f"initial verdict '{prior}')"
+            ]
+        ctxd["review_progression"] = {
+            "schema": progressive["schema"],
+            "deep_slots": [row["slot"] for row in progressive["deep"]],
+            "sweep_count": progressive["sweep_count"],
+            "sweep_lenses": (progressive["sweep"] or {}).get("lenses", []),
+            "deferred_light": progressive["deferred_light"],
+        }
     return {"lenses": selected, "context": ctxd}
 
 
@@ -1226,7 +1278,9 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                     max_actions: int | None = None,
                     impact_context: str | None = None,
                     runnability: dict | None = None,
-                    context_paths: dict | None = None) -> dict:
+                    context_paths: dict | None = None,
+                    sweep_concerns=None,
+                    already_promoted=()) -> dict:
     """Turn a routing into READY-TO-DISPATCH lens-agent briefs — one governed
     read-only agent per DEEP lens (fanned out in parallel = much faster than
     one reviewer running them in sequence), the SWEEP lenses batched into a
@@ -1267,6 +1321,52 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             if x.get("tier") not in ("sweep", "light", "n/a")]
     sweep = [x for x in routing["lenses"]
              if x.get("tier") in ("sweep", "light")]
+    progressive = (routing.get("context") or {}).get("review_progression")
+    if progressive is not None:
+        ordered_sweep = list(progressive.get("sweep_lenses") or [])
+        allowed_sweep = set(ordered_sweep)
+        sweep = [x for x in sweep if x.get("id") in allowed_sweep]
+        sweep.sort(key=lambda x: ordered_sweep.index(x.get("id")))
+    concern_outcomes = None
+    if sweep_concerns is not None:
+        # This is the production boundary between the bounded light sweep and
+        # its adaptive deep follow-up.  Keep resolution in review_progression
+        # (normalization/charter/idempotence) while this dispatcher owns the
+        # actual brief creation.  A concern may promote only a lens that was
+        # in this routing's light sweep; every other apparent promotion is
+        # retained as an explicit out-of-charter rejection.
+        import review_progression
+        concern_outcomes = review_progression.resolve_sweep_concerns(
+            sweep_concerns, already_promoted=already_promoted
+        )
+        sweep_by_id = {str(row.get("id")): row for row in sweep}
+        accepted = []
+        for promotion in concern_outcomes["promotions"]:
+            lens_id = promotion["lens"]
+            row = sweep_by_id.get(lens_id)
+            if row is None:
+                concern_outcomes["rejections"].append({
+                    "concern_id": promotion["concern_id"],
+                    "lens": lens_id,
+                    "severity": promotion["severity"],
+                    "reason": "out-of-charter",
+                    "fingerprint": promotion["fingerprint"],
+                })
+                continue
+            promoted = dict(row)
+            promoted["tier"] = "deep"
+            promoted["verdict"] = "deep"
+            promoted["evidence"] = list(promoted.get("evidence") or []) + [
+                "adaptive promotion from bounded sweep: "
+                + promotion["evidence_ref"]
+            ]
+            promoted["promotion"] = dict(promotion)
+            deep.append(promoted)
+            accepted.append(promotion)
+        concern_outcomes["promotions"] = accepted
+        promoted_ids = {row["lens"] for row in accepted}
+        sweep = [row for row in sweep if row.get("id") not in promoted_ids]
+        deep.sort(key=lambda row: str(row.get("id") or ""))
     briefs = []
     for x in deep:
         lid = x["id"]
@@ -1349,6 +1449,16 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                 # (ADDITIVE — only the component path sets it).
                 d["component_attribution"] = list(x["component_attribution"])
             decision[x["id"]] = d
+        if concern_outcomes is not None:
+            for promotion in concern_outcomes["promotions"]:
+                entry = decision[promotion["lens"]]
+                entry["initial_verdict"] = entry["verdict"]
+                entry["verdict"] = "deep"
+                entry["promotion"] = dict(promotion)
+                entry["evidence"] = list(entry.get("evidence") or []) + [
+                    "adaptive promotion from bounded sweep: "
+                    + promotion["evidence_ref"]
+                ]
     if not briefs and sweep_brief is None:
         # A no-op diff routed no lenses at all — don't tell the caller to
         # dispatch agents that don't exist. Signal "nothing to review".
@@ -1382,6 +1492,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     }
     if decision is not None:
         out["routing_decision"] = decision
+    if concern_outcomes is not None:
+        out["review_progression"] = concern_outcomes
     if runnability:
         out["runnability"] = runnability
         out["instruction"] += (

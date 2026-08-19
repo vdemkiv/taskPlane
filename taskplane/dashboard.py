@@ -11,10 +11,11 @@ state — no tokens.
 
 from __future__ import annotations
 
-import json
-import os
+import base64
 import hashlib
 import html
+import json
+import os
 
 import taskplane_lite as tp
 import loop as _loop        # engine owns the state machine; the view derives
@@ -64,6 +65,23 @@ STEP_ROLE_LABEL = _loop.STEP_ROLE
 # whole record, archives included, is tp.trace_paths(ws) and that is what
 # retro mines.
 TRACE_TAIL_BYTES = 2 * 1024 * 1024
+
+
+def render_lossless_dashboard_inline(canonical_json: str) -> str:
+    """Render a complete small dashboard without making HTML authoritative.
+
+    The visible ``pre`` is accessible and complete.  The base64 payload lets
+    cross-host checks recover the exact canonical JSON without depending on
+    HTML entity parsing or host-specific styling.
+    """
+    raw = str(canonical_json)
+    encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+    return (
+        '<section class="tp-lossless-dashboard" '
+        'aria-label="Taskplane dashboard"><h2>Taskplane dashboard</h2>'
+        f'<pre>{html.escape(raw)}</pre>'
+        '<script type="application/x-taskplane-json-base64" '
+        f'data-taskplane-canonical="true">{encoded}</script></section>')
 
 
 def _read_trace_all(ws: str, stats: dict | None = None) -> list:

@@ -70,7 +70,7 @@ You have a goal and want it done — visibly, on-scope, one clear thread.
 > **tp-go: add CSV export to the monthly report**
 
 Requirement (via `tp-product`) → refinement score with a fix-cycle
-forecast → optional Design → **your Design approval** → plan → **your plan approval** → execution (parallel agents when tasks
+forecast → optional Design → plan → **your consolidated authorization** → execution (parallel agents when tasks
 are independent, each kept to its own files) → engineering review (via
 `tp-engineering`) → **your sign-off** → retrospective. You watch it happen on
 the live dashboard; an agent drifting out of its lane or firing a destructive
@@ -147,13 +147,13 @@ The whole reason it exists — legibility, focus, and a thread you don't lose:
   lenses, and a review-findings view — updating at every step. When something
   needs you, the dashboard says so with a button; when nothing does, it says
   that too.
-- **Gates that keep the thread**: when Design is used, the loop first pauses
-  for Design approval; it also pauses at plan approval and sign-off. Nothing
+- **Gates that keep the thread**: the loop pauses once for the consolidated
+  Product/Design/Plan packet and again at sign-off. Nothing
   advances those but you — so you're never surprised by
   what shipped.
 - **A graph-aware Ready/Done bar**: requirements name what they depend on and
   which API/event/data/runtime contracts they provide, consume, or change.
-  Before plan approval taskplane refreshes the graph and checks dependency
+  Before consolidated authorization taskplane refreshes the graph and checks dependency
   depth, boundaries, and every deliberately new module; undeclared graph
   surface blocks Ready for ordinary work too. During evaluation and
   final review it compares planned versus realized modules, requires evidence

@@ -56,8 +56,10 @@ checkout and then applies these checks there:
 6. Let taskplane initialize the context documents. On an existing project,
    fill `current-state.md` first so Product and Design reason from the as-built
    system rather than inventing a parallel one.
-7. State the goal. taskplane stops for explicit Design approval when used,
-   plan approval, and final sign-off; Claude never self-approves those gates.
+7. State the goal. Product, optional Design, and Plan pass mechanical evidence
+   gates and are presented in one consolidated pre-implementation
+   authorization packet. taskplane stops for that authorization, final
+   sign-off, and named exceptional boundaries; Claude never self-approves them.
 
 Claude Code loads taskplane's bundled hook after plugin reload. Chat/Cowork
 still uses the same engine-owned state, graph, evidence, and human gates, while
@@ -85,8 +87,9 @@ permissions and sandbox controls enabled.
    choice; it is not tied to the name of your ChatGPT or Codex subscription.
 6. Let taskplane initialize the context documents, then fill
    `current-state.md` first for an existing project. State the goal; taskplane
-   will stop at Design approval when that phase is used, plan approval, and
-   final sign-off for your explicit decision.
+   will stop at one consolidated pre-implementation authorization and final
+   sign-off (plus a named exceptional boundary such as A/B selection or
+   material authority change).
 
 For independent briefs, Codex uses its native subagent task orchestration:
 each taskplane brief provides an exact `task_name`, taskplane role and

@@ -1,53 +1,60 @@
-# R-0011 — Host-native workflow UX for Codex and Claude
+# R-0001 — Progressive convergent engineering review
 
 ## Decision
 
-Taskplane will add one canonical host-surface model and ordered audit event stream, projected by capability-negotiated Claude and Codex adapters. Host UI is presentation, never authority. Existing loop, review, command, token, evidence, and gate records remain authoritative; a new projector converts them into PiP progress, agent topology, approval, dashboard/carousel, preview, or bounded fallback views.
+Extend the existing ReviewKernel with one canonical progressive-review ledger. Initial dispatch contains catalog-declared mandatory deep floors, evidence-selected deep lenses, and at most one bounded light sweep. Sweep concerns can only promote named in-charter lenses through normalized, referenced trigger evidence. Valid blocking evidence immediately seals an immutable provisional `request-changes` revision; approval remains impossible until every selected/promoted slot and acceptance-evidence obligation is conserved exactly once.
 
-This is grounded in current seams: `host_capabilities.py` already records immutable source/confidence/status snapshots and treats unknown/contradictory evidence explicitly; `loop.py` owns stages, agent waves, human gates, and host dispatch; `runtime_eval.py` distinguishes measured token totals; `command_runtime.py`/`command_adapters.py` own durable commands and isolation; `review.py` owns target-bound consent, sandbox observations, and review truth; `dashboard.py` enforces 14,000-byte bounded pages and bridge-aware actions. The current-state inventory is empty, so these cited sources and baseline graph are the evidence.
+This is a delta against the shipped system. `lens.py`/`lens_signals.py` already perform signal routing and bounded dispatch; `review.py` already owns routing, v3 leases, promotions, slot conservation, DoR, and production models; `review_evidence.py` already supports immutable partial collections/revisions; `review_dor.py` classifies documents and criteria; `taskplane_lite.py` already fingerprints engine/worktree and caches suites; `loop.py` owns fix cycles/human authority; `spend.py` records provider-correct usage; R-0011 supplies canonical cross-host UX. The known gaps are module-miss over-widening, complete-only blocking publication, producer metadata contradictions, repeated evaluator launches, global two-cycle convergence, and sparse lens-value telemetry.
 
-The Python solution-design reference was verified at SHA-256 `9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7`. Synchronous Taskplane state remains the owner. Adapter update delivery may be asynchronous, but each session has one runtime-owned queue, coalescing bound, cancellation path, and terminal teardown; concurrent failures are recorded together rather than hidden. Runtime JSON/receipts are validated at trust boundaries. No new dependency, public package namespace, Python floor, lock policy, or wheel-content change is required. Mutable adapter/session state remains protected by existing file locks/serialized transitions and does not rely on the GIL.
+The verified Python solution-design reference SHA-256 is `9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7`. Review orchestration stays synchronous and file-locked; producer waves use the existing runtime. Runtime JSON/cache/evidence are validated at trust boundaries. No new dependency, package namespace, Python floor, lock, or wheel-content change is required; mutable ledgers are serialized and do not rely on the GIL.
 
 ## Alternatives
 
-### A. Canonical semantic model with negotiated host projectors — selected
+### A. Canonical progressive ledger — selected
 
-Add a versioned host-neutral surface snapshot/event contract and thin host projectors. Gains: semantic parity, auditable actions, deterministic fallback, additive host evolution. Costs: adapter conformance suite and explicit lifecycle machinery. Revisit when every supported host implements one standardized native UI protocol with identical receipt and preview semantics.
+Add risk progression, evidence binding, evaluator health cache, convergence, and lens telemetry as versioned records under ReviewKernel. Gains: early truthful blocking results, less dispatch/spend, exact recovery, one host-neutral authority. Costs: more explicit state transitions and compatibility fixtures. Revisit when the lens catalog becomes small/cheap enough that exhaustive review is measurably faster without quality loss.
 
-### B. Independent native implementations per host
+### B. Exhaustive up-front review
 
-Each host reads workflow state and implements PiP, approvals, dashboards, and previews directly. Gains: fastest access to native features. Costs: parallel truth, inconsistent capability claims, approval security drift, duplicated tests. Revisit only if semantic parity is removed from the product requirement.
+Always dispatch every applicable lens deeply. Gains: simple scheduling and maximum initial breadth. Costs: slow/costly, repeats known failures, delays blockers, and still does not solve repair/convergence. Revisit for an explicitly human-selected forensic audit mode, never default.
 
-### C. Enhanced HTML/widget only
+### C. Heuristic progressive review without canonical revisions
 
-Keep bounded inline HTML and static previews for every host. Gains: smallest runtime change and universal fallback. Costs: no persistent PiP, native fan-out, authoritative native receipts, or integrated preview lifecycle. Revisit as the fallback, never as the primary supported experience.
+Dispatch progressively but keep partial results transient until completion. Gains: smaller persistence delta. Costs: loses early findings on failure, cannot truthfully request changes, weak resume/audit. Revisit only if provisional evidence retention becomes prohibited.
 
-## Contracts and flow
+## State and contracts
 
-`contract:host-capability-negotiation` extends immutable host snapshots with PiP, visualization, approval, carousel, sandbox, hosting, browser, and side-panel observations. Each records host/version, source, confidence, freshness, limitations, selected surface, and fallback. Unknown, stale, partial, contradictory, or mid-run changes select a deterministic safe fallback; support is never inferred from files or prose.
+`contract:review-risk-progression` seals the routing fingerprint, mandatory floors, evidence-selected deep set, optional single sweep, normalized promotion triggers, and deterministic slot ids. A high/major sweep concern must reference evidence, rationale, charter and responsible lens; it is promoted or canonically rejected with reason. Light never substitutes for deep.
 
-`contract:host-native-progress` consumes ordered canonical workflow events. PiP opens only for a live persistent workflow, updates stage/work/attention/last-update/token state, reconnects by workflow/run/revision and closes exactly once on completion, cancellation, or failure. Updates are coalesced to at most four per second and 16 KiB per event, while attention and terminal transitions are never dropped. Tokens carry raw/effective value, scope, provider/source, observed status, and canonical record fingerprint; unavailable/partial is not zero.
+`contract:review-kernel-slot` becomes one slot ledger with states `selected`, `prepared`, `dispatched`, `produced`, `validated`, `collected`, `promoted-pending`, `retrying`, `missing`, `invalid`, and `infrastructure-unavailable`. Exactly-once conservation is checked across every transition and acceptance evidence.
 
-`contract:host-native-visualization` projects the canonical dispatch graph: stable task/slot/agent identity, role, scope, wave/dependency edges, state, attention, retry lineage, and outcome. The adapter cannot invent agents or completion.
+`contract:review-kernel-partial-revision` publishes immutable provisional request-changes immediately after the first admissible blocker. It contains all known valid findings, gaps, routing/promotions, dynamic evidence, provenance, artifacts, and `approval_enabled=false`; later revisions supersede without mutation/loss/duplication.
 
-`contract:host-native-approval` renders one decision snapshot with target/revision, reason, evidence, consequences, owner, approvability, and at most two primary inline actions. Rich evidence opens detail/fullscreen while retaining the composer. An action yields an authenticated receipt bound to host session, actor, decision, target, revision, action, nonce, and expiry; canonical gate code verifies it and advances exactly once. UI state alone has no authority.
+`contract:review-kernel-mechanical-repair` normalizes verdict/count/severity/completion metadata to canonical bytes. Only identity/count/summary/schema values derivable from the sealed lease/result may repair once, with before/after, authority and equivalence fingerprints. Any finding/evidence/target/view/lease/slot/producer/substantive verdict mutation retries only that slot.
 
-`contract:host-native-dashboard` defines canonical component snapshots for workflow, DoR, dependency/impact, agents, lenses, criteria, findings, validation, artifacts, and gate. Repeated datasets use stable ordering and item ids. Zero/one items use concise cards; three to eight use one carousel page; nine or more use deterministic pages of eight, with the final page rebalanced to at least three when possible. Pages show current/total, concise metadata, one CTA/item, and preserve filters/focus. No nested scrolling or deep inline navigation; rich exploration uses fullscreen. Inline payload remains <=14,000 bytes, while artifacts remain lossless.
+`contract:review-evidence-binding` binds repository identity, exact real worktree root, target/base/head, engine fingerprint/version, run, lens, slot, lease and observed producer. Paths exposed outside the kernel are redacted fingerprints; symlink, sibling, clone, moved root, stale head, copied result and engine skew fail closed.
 
-`contract:host-preview-runtime` registers a target/revision-bound disposable sandbox with CPU/memory/time/network policy, push disabled, private session access, teardown deadline, and capability/authorization receipts. Design, build, and dynamic review can expose a pinned interactive browser/side-panel preview; observed behavior becomes evidence. Source checkout/remotes are fingerprinted before/after. Attempted push, path escape, unauthorized network, public exposure, timeout, build failure, or teardown failure closes/fails safely and never changes canonical source.
+`contract:evaluator-infrastructure-health` caches only verified evaluator infrastructure-unavailable facts keyed by evaluator + engine/version + capability fingerprint + repository + exact worktree root + validity window. TTL is 15 minutes, maximum one reuse per review wave; any key change, expiry, repair receipt, or successful probe invalidates. Cache never creates a lens verdict.
 
-The canonical snapshot and audit event are stored before adapter delivery. Adapters acknowledge `(workflow, revision, event_sequence, surface)` idempotently. Reconnect replays from the last acknowledged sequence. Fallbacks consume the same snapshot and expose the same values, evidence, decisions, and safe actions while naming the missing capability as unavailable—not declined.
+`contract:review-fix-convergence` compares immutable finding fingerprints across cycles: closed, persisted, regressed, new, evidence progress, oscillation, unsafe/scope change. Continue while measurable progress is positive and within the task-specific maximum declared by Plan; escalate on two consecutive no-progress cycles, repeated fingerprint, oscillation, regression, unsafe action, scope change, or human stop. It never auto-approves or broadens scope.
 
-## UI guidance and accessibility
+`contract:lens-quality-telemetry` derives post-review metrics only from sealed revisions and later adjudication: eligible/selected/promoted/collected, admissible/confirmed/unique/overlap/duplicate/invalidated/false-positive findings, retries/repairs, latency, tokens/cost and infrastructure unavailability, all with schema/version/denominators. Telemetry is unavailable rather than zero and is invisible to concurrent lens producers/current routing.
 
-PiP is restricted to persistent live parallel sessions, responds dynamically, and auto-closes terminally. Inline cards are single-purpose with no more than two primary actions, nested scrolling, or deep navigation. Carousels show 3–8 consistent items, concise metadata, and one CTA per item. Fullscreen handles rich multi-step/detail work while keeping the composer reachable. Every surface uses host/system tokens, fonts, spacing, responsive layout, WCAG AA contrast, alt text, semantic labels, visible focus, reduced-motion support, and non-color cues.
+Documentation routing uses content, directives, contracts, audiences and graph evidence. Missing/inapplicable module mapping never widens by itself. Ambiguous/corrupt docs retain floors and add only the smallest evidence-backed explained set.
 
-## Failure, telemetry, rollout
+## Bounds, failure, rollout
 
-Signals: `host_capability_selection`, `host_surface_session`, `host_surface_update`, `host_token_projection`, `host_agent_projection`, `host_approval_receipt`, `host_dashboard_page`, and `host_preview_lifecycle`. They contain bounded ids, counts, statuses, durations, sources, and fingerprints—never prompts, credentials, secrets, personal paths, or unrelated repository content.
+- Initial work: mandatory floors + evidence-selected deep + `0..1` light sweep; no unconditional full catalog.
+- Sweep promotions are idempotent by `(routing fingerprint, concern fingerprint, lens)`.
+- Provisional publish occurs within the same collection transaction as first admissible blocker.
+- Metadata repair: at most once/result. Affected-slot retry follows Plan bounds. Health-cache TTL: 15 minutes, one reuse/wave.
+- Convergence escalation: two consecutive no-progress cycles; task-specific total bound replaces the global two-cycle cap.
+- Telemetry never affects the current review and stores bounded fingerprints/counts, not prompts/secrets/personal paths.
 
-Failure modes include stale/contradictory capability, event gap/duplicate, PiP reconnect/close failure, token source mismatch, phantom agent, invalid approval receipt, carousel loss/duplication, render/accessibility failure, preview isolation violation, and teardown failure. Each selects a named accessible fallback or fail-closed state; retries are capped at two per surface transition and teardown is attempted once plus one forced provider cleanup. UI failure never mutates canonical workflow/gate state.
+Signals: `review_risk_progression`, `review_slot_ledger`, `review_revision_lineage`, `review_metadata_repair`, `review_evidence_binding`, `evaluator_health_cache`, `review_convergence`, `lens_quality_metric`. Failures are named and preserve valid evidence. Recovery actors are ReviewKernel, evaluator-health owner, or human gate owner within the bounds above.
 
-Roll out additively behind `TASKPLANE_HOST_NATIVE_UX`: first canonical snapshots and audit-only adapters, then dashboard/fan-out, PiP, approval receipts, and previews per independently negotiated capability. Compare Claude/Codex semantic goldens and retain bounded legacy widgets/artifacts throughout. Rollback disables new native sessions, closes active PiP/previews, retains receipt/audit readers, and routes every canonical snapshot to the legacy accessible fallback. No stored canonical data is migrated or deleted.
+Roll out additively behind `TASKPLANE_PROGRESSIVE_REVIEW`: dual-record routing/ledger first, then provisional publication, repair/cache, convergence, and post-review telemetry. Compare existing complete-review and cross-host goldens. Rollback disables new progressive starts, finishes issued slots/readers, retains immutable revisions, and returns new reviews to current routing/fix behavior; no data migration or deletion.
 
-Module owners: host-capability owner extends negotiation; presentation owner owns `host_native.py` and dashboard projection; runtime/validation owner owns `preview_runtime.py`; existing loop/review/command owners publish canonical events only. Delivery order is semantic model → negotiation/fallback → dashboard/fan-out → PiP/tokens → approval receipts → preview runtime → cross-host compatibility.
+Owners/order: routing owner → `review_progression.py`; evidence owner → existing `review_evidence.py`; recovery owner → `review_repair.py`; infrastructure owner → `evaluator_health.py`; loop owner → `review_convergence.py`; telemetry owner → `lens_telemetry.py`. Ship ledger/binding first, progression/provisional second, repair/cache third, convergence fourth, telemetry last.
+
+The visual is useful because promotion, early provisional publication, affected recovery, and convergence form a non-linear state sequence.

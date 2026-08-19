@@ -17,6 +17,11 @@ from contextlib import contextmanager
 from typing import Callable, Mapping
 
 try:
+    import recovery
+except ImportError:  # package import path
+    from taskplane import recovery
+
+try:
     import fcntl as _file_lock
 except ImportError:  # pragma: no cover - exercised by windows-latest
     _file_lock = None
@@ -278,6 +283,7 @@ class CommandRuntime:
             "exit_code": None,
             "reason": None,
             "events": [],
+            "recovery": [],
             "deliveries": {},
             "delivery_leases": {},
             "artifact": None,
@@ -298,6 +304,45 @@ class CommandRuntime:
 
     def snapshot(self, handle: str) -> dict:
         return self._load(handle)
+
+    def record_recovery(self, handle: str, *, failure_class: str,
+                        detail: str, progress: float | None = None,
+                        safe: bool = True,
+                        authority_changed: bool = False,
+                        replan_required: bool = False) -> dict:
+        """Persist and return one secret-safe canonical recovery decision."""
+        with self._state_lock(handle):
+            snapshot = self._load(handle)
+            history = list(snapshot.get("recovery") or [])
+            safe_detail, redactions = _redact(str(detail))
+            related = [row for row in history
+                       if row.get("failure_class") == str(failure_class)]
+            fingerprints = [str(row.get("fingerprint") or "")
+                            for row in related]
+            fingerprints.append(_fingerprint(safe_detail))
+            progress_values = [float(row["progress"]) for row in related
+                               if row.get("progress") is not None]
+            if progress is not None:
+                progress_values.append(float(progress))
+            decision = recovery.decide_recovery(
+                failure_class=failure_class, attempt=len(related) + 1,
+                fingerprints=fingerprints, progress=progress_values,
+                safe=safe, authority_changed=authority_changed,
+                replan_required=replan_required)
+            row = {"schema": "taskplane.command-recovery/v1",
+                   "fingerprint": fingerprints[-1],
+                   "failure_class": str(failure_class),
+                   "progress": progress, "decision": decision,
+                   "at": float(self._clock())}
+            history.append(row)
+            snapshot["recovery"] = history
+            snapshot["revision"] = int(snapshot["revision"]) + 1
+            snapshot["updated_at"] = row["at"]
+            snapshot["metrics"]["output_redactions"] += redactions
+            event = {"revision": snapshot["revision"], "state": "recovery",
+                     "at": row["at"], "decision": decision}
+            self._save(handle, snapshot, event)
+            return decision
 
     def transition(self, handle: str, state: str, *, exit_code: int | None = None,
                    reason: str | None = None,

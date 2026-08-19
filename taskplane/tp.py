@@ -2216,6 +2216,32 @@ def cmd_loop(a) -> int:
                                write=getattr(a, "write", False))
     elif action == "guide":
         out = loopmod.guide(ws, task_id=getattr(a, "task", None))
+    elif action == "authorize":
+        # Host/facade dispatchers derive routine authority through the same
+        # production boundary as the loop engine.  A CLI surface keeps host
+        # adapters from reimplementing receipt or target checks.
+        out = loopmod.authorize_routine_flow(ws, a.flow)
+    elif action == "host-input":
+        # Taskplane runs inside one trusted local Codex/Claude session.  Its
+        # host adapter supplies separate session attribution; actor/thread/
+        # revision/boolean labels in the event body are never authority.
+        try:
+            event = json.load(sys.stdin)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            out = {"error": f"host event must be valid JSON: {exc.msg}"}
+        else:
+            if not isinstance(event, dict):
+                out = {"error": "host event must be a JSON object"}
+            else:
+                raw_host_event = os.environ.get(
+                    "TASKPLANE_HOST_SESSION_EVENT", "")
+                try:
+                    host_event = json.loads(raw_host_event) \
+                        if raw_host_event else None
+                except json.JSONDecodeError:
+                    host_event = None
+                out = loopmod.handle_host_input(
+                    ws, event, host_event=host_event)
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
@@ -5619,6 +5645,15 @@ def main(argv=None) -> int:
         "guide", help="before pass submission, check deterministic workflow "
         "facts and return one bounded drift correction")
     lguide.add_argument("--task", help="task id (parallel execute waves)")
+    lau = lsub.add_parser(
+        "authorize", help="derive routine authority for a real host/facade "
+        "flow from the bound consolidated receipt")
+    lau.add_argument(
+        "flow", help="routine flow identity (facade, delivery, product, "
+        "design, build, engineering, status, help, north_star or tag_slack)")
+    lsub.add_parser(
+        "host-input", help="consume one trusted-session host event JSON "
+        "object from stdin through the governed human-input boundary")
     lsub.add_parser("status", help="show the loop's stage, tasks and gates")
     lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "

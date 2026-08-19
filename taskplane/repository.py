@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+from typing import Callable
 
 import storage
+import recovery
 import taskplane_lite as tp
 
 
@@ -29,6 +32,117 @@ class AcquisitionResult:
     merge_base: str
     changed_files: tuple[str, ...]
     metadata: dict
+
+
+def acquire_with_recovery(acquire: Callable[[], object], *,
+                          max_attempts: int = 3) -> dict:
+    """Run repository preparation under bounded consolidated authority.
+
+    Authentication is a genuine authority boundary.  Host policy and an
+    unavailable external system wait for their state to change.  Routine
+    transfer/checkout failures retry locally and never manufacture approval.
+    """
+    fingerprints: list[str] = []
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            value = acquire()
+        except RepositoryAcquisitionError as exc:
+            kind = str(exc.kind or "checkout").lower()
+            if kind in {"authentication", "auth", "permission"}:
+                return {"schema": "taskplane.repository-preparation/v1",
+                        "status": "needs_user", "reason": "authority_required",
+                        "detail": exc.detail, "attempts": attempt}
+            if kind in {"host-policy", "policy"}:
+                return {"schema": "taskplane.repository-preparation/v1",
+                        "status": "waiting", "reason": "host_policy",
+                        "detail": exc.detail, "attempts": attempt}
+            if kind in {"external-unavailable", "external"}:
+                return {"schema": "taskplane.repository-preparation/v1",
+                        "status": "waiting", "reason": "external_unavailable",
+                        "detail": exc.detail, "attempts": attempt}
+            fingerprint = hashlib.sha256(
+                f"{kind}\0{exc.detail}".encode("utf-8")).hexdigest()
+            fingerprints.append(fingerprint)
+            decision = recovery.decide_recovery(
+                failure_class="network" if kind == "network" else "checkout",
+                attempt=attempt, fingerprints=fingerprints,
+                max_routine_attempts=max_attempts)
+            if decision["status"] == "recover":
+                continue
+            return {"schema": "taskplane.repository-preparation/v1",
+                    "status": "waiting", "reason": decision["reason"],
+                    "detail": exc.detail, "attempts": attempt,
+                    "recovery": decision}
+        return {"schema": "taskplane.repository-preparation/v1",
+                "status": "ready", "value": value, "attempts": attempt}
+
+
+_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def _valid_engines(plugin_family: str) -> list[tuple[tuple[int, int, int], str]]:
+    family = os.path.realpath(os.path.expanduser(plugin_family))
+    try:
+        names = os.listdir(family)
+    except PermissionError as exc:
+        raise RepositoryAcquisitionError("host-policy", str(exc)) from exc
+    except OSError as exc:
+        raise RepositoryAcquisitionError("external-unavailable", str(exc)) \
+            from exc
+    roots = [family, *(os.path.join(family, name) for name in names)]
+    candidates: list[tuple[tuple[int, int, int], str]] = []
+    for root in roots:
+        real_root = os.path.realpath(root)
+        try:
+            if os.path.commonpath((family, real_root)) != family:
+                continue
+            manifest = os.path.join(real_root, ".codex-plugin", "plugin.json")
+            engine = os.path.realpath(os.path.join(real_root, "taskplane", "tp.py"))
+            if os.path.commonpath((family, engine)) != family:
+                continue
+            with open(manifest, encoding="utf-8") as source:
+                data = json.load(source)
+        except PermissionError as exc:
+            raise RepositoryAcquisitionError("host-policy", str(exc)) from exc
+        except (OSError, ValueError, TypeError):
+            continue
+        version = data.get("version") if isinstance(data, dict) else None
+        match = _VERSION.fullmatch(str(version or ""))
+        if not match or data.get("name") != "taskplane" or not os.path.isfile(engine):
+            continue
+        if real_root != family and os.path.basename(real_root) != str(version):
+            continue
+        candidates.append((tuple(int(value) for value in match.groups()), engine))
+    return candidates
+
+
+def resolve_worktree_continuity(workspace: str, *, plugin_family: str) -> dict:
+    """Resolve current worktree, stable launcher, and newest valid engine."""
+    family = storage.resolve_repository_family(workspace)
+    launcher = family.get("launcher")
+    if not launcher:
+        return {"schema": "taskplane.worktree-continuity/v1",
+                "status": "waiting_external", "reason": "launcher_unavailable",
+                "worktree": family.get("worktree")}
+    try:
+        candidates = _valid_engines(plugin_family)
+    except RepositoryAcquisitionError as exc:
+        return {"schema": "taskplane.worktree-continuity/v1",
+                "status": "waiting_host_policy" if exc.kind == "host-policy"
+                else "waiting_external",
+                "reason": "host_policy" if exc.kind == "host-policy"
+                else "engine_unavailable", "worktree": family.get("worktree"),
+                "launcher": launcher}
+    if not candidates:
+        return {"schema": "taskplane.worktree-continuity/v1",
+                "status": "waiting_external", "reason": "engine_unavailable",
+                "worktree": family.get("worktree"), "launcher": launcher}
+    engine = max(candidates, key=lambda row: row[0])[1]
+    return {"schema": "taskplane.worktree-continuity/v1", "status": "ready",
+            "reason": "continuity_verified", "worktree": family["worktree"],
+            "launcher": launcher, "engine": engine}
 
 
 def _classify_failure(output: str) -> str:

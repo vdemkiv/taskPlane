@@ -254,6 +254,50 @@ def negotiate_snapshot_surfaces(
     )
 
 
+def progress_surface_projection(
+        *, host: str, host_version: str | None,
+        pip_observation: Observation, durable_status: Mapping[str, Any]) -> dict:
+    """Project one durable status snapshot to PiP or its bounded fallback.
+
+    Capability evidence selects presentation only.  The canonical progress
+    identity and values always come from the already-persisted status snapshot,
+    and the projection is explicitly non-gating.
+    """
+    if not isinstance(pip_observation, Observation):
+        raise TypeError("pip_observation must be an Observation")
+    if not isinstance(durable_status, Mapping):
+        raise TypeError("durable_status must be a mapping")
+    status = str(durable_status.get("status") or "unavailable")
+    identity = durable_status.get("identity")
+    active = durable_status.get("active")
+    if status == "available" and (not isinstance(identity, Mapping)
+                                  or not isinstance(active, Mapping)):
+        raise ValueError("available durable status requires identity and active")
+    selection = negotiate_host_surfaces(
+        host=host, host_version=host_version,
+        observations={"pip": pip_observation},
+        observed_at=pip_observation.observed_at, surfaces=("pip",))["pip"]
+    native = selection.selected_surface == "native" and status == "available"
+    return {
+        "schema": "taskplane.progress-surface/v1",
+        "host": _bounded(host, 32) or "unknown",
+        "host_version": _bounded(host_version, 64) or None,
+        "selected_surface": "native-pip" if native else "accessible-bounded",
+        "capability": selection.to_dict(),
+        "identity": dict(identity) if isinstance(identity, Mapping) else None,
+        "active": dict(active) if isinstance(active, Mapping) else None,
+        "state": durable_status.get("state"),
+        "tokens": durable_status.get("tokens"),
+        "focus_elapsed_seconds": durable_status.get("focus_elapsed_seconds"),
+        "eta": durable_status.get("eta"),
+        "updated_at": durable_status.get("updated_at"),
+        "status": status,
+        "limitation": (None if native else
+                       durable_status.get("reason") or selection.limitation),
+        "gating": False,
+    }
+
+
 def observations_from_environment(
         environment: Mapping[str, str] | None = None) -> dict[str, Observation]:
     """Decode explicit host receipts without inferring them from files.
