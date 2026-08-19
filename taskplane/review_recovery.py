@@ -48,6 +48,20 @@ def _fingerprint(value) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
+def _summary_equivalence_projection(result: Mapping) -> dict:
+    """Project producer substance while excluding derivable summaries."""
+    projected = copy.deepcopy(dict(result))
+    rows = projected.get("lens_results")
+    if not isinstance(rows, list):
+        raise RepairRejected("slot result lens_results must be a list")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RepairRejected("slot result lens verdict is invalid")
+        row.pop("verdict", None)
+        row.pop("blockers", None)
+    return projected
+
+
 def _declaration_words(value: object) -> tuple[str, ...]:
     """Normalize punctuation/formatting without guessing semantic aliases."""
     return tuple(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
@@ -434,10 +448,18 @@ def recover_summary_or_plan_retry(
                 })
         import review_evidence
         review_evidence.assert_summary_only_repair(before, after)
+        equivalence_before = _fingerprint(
+            _summary_equivalence_projection(before))
+        equivalence_after = _fingerprint(
+            _summary_equivalence_projection(after))
+        if equivalence_before != equivalence_after:
+            raise RepairRejected("summary repair changes review substance")
         material = {
             "slot_id": slot_id,
             "before_fingerprint": _fingerprint(before),
             "after_fingerprint": _fingerprint(after),
+            "equivalence_fingerprint_before": equivalence_before,
+            "equivalence_fingerprint_after": equivalence_after,
             "changes": changes,
         }
         return {
