@@ -447,6 +447,11 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         t = tiers(r)
         deep = [lid for lid, tier in t.items() if tier == "deep"]
         self.assertEqual(len(deep), lens_signals.DEEP_CAP)      # exactly 8
+        self.assertTrue(
+            {"architecture", "code-quality", "security", "qa"}
+            .issubset(deep),
+            "mandatory review floors must rank inside the cap",
+        )
         # every catalog lens still present — overflow was demoted, not dropped
         self.assertEqual(set(t), set(ALL_IDS))
         demoted = [x for x in r["lenses"]
@@ -529,10 +534,17 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
                            workspace=ws)
         finally:
             shutil.rmtree(ws)
+        floor_ids = {"architecture", "code-quality", "security", "qa"}
+        self.assertEqual(
+            {lens_id: entry(r, lens_id)["tier"] for lens_id in floor_ids},
+            {lens_id: "deep" for lens_id in floor_ids},
+        )
         qa = entry(r, "qa")
-        self.assertEqual(qa["tier"], "n/a")
         self.assertNotIn("change shape: code changed with no test file",
                          qa["evidence"])
+        for lens_id in floor_ids:
+            self.assertIn("mandatory review floor",
+                          entry(r, lens_id)["floor"])
 
     def test_trigger_respects_the_stage_profile(self):
         # qa is a review-stage lens. During build, tests legitimately may not
@@ -864,6 +876,7 @@ class TestB4RequirementKeywordUnionAtAssembly(unittest.TestCase):
         # floors) — with no requirement text the union is empty
         proposals = {lid for lid, e in self._component()["lens_map"].items()
                      if e["verdict"] in ("deep", "light")}
+        proposals.update({"architecture", "code-quality", "security", "qa"})
         for x in r["lenses"]:
             if x["tier"] != "n/a" and "component_attribution" in x:
                 self.assertIn(x["id"], proposals)
@@ -886,7 +899,12 @@ class TestCanonicalDiffContentSignals(unittest.TestCase):
 
         self.assertNotEqual(entry(whole_file, "security")["tier"], "n/a")
         self.assertNotEqual(entry(whole_file, "accessibility")["tier"], "n/a")
-        self.assertEqual(entry(canonical_diff, "security")["tier"], "n/a")
+        security = entry(canonical_diff, "security")
+        self.assertEqual(security["tier"], "deep")
+        self.assertIn("mandatory review floor", security["floor"])
+        self.assertFalse(any("credential" in evidence.lower()
+                             or "password" in evidence.lower()
+                             for evidence in security["evidence"]))
         self.assertEqual(entry(canonical_diff, "accessibility")["tier"], "n/a")
         self.assertEqual(canonical_diff["context"]["content_source"],
                          "canonical-diff")

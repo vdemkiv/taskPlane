@@ -1157,6 +1157,20 @@ def _apply_floors(vmap: dict, ctx: Ctx) -> dict:
             if f:
                 _promote(arch, "floor: architecture promoted to light — "
                          f"code change ({f})", to="light")
+    # Engineering review has four invariant deep judgments.  Apply this
+    # stage floor after the signal-specific floors so the stronger review
+    # requirement is the canonical protection carried into profile
+    # narrowing and cap ranking.  apply_budget() ranks floored entries first,
+    # keeping all four inside the hard cap without widening the cap itself.
+    if ctx.stage == "review":
+        for lens_id in ("architecture", "code-quality", "security", "qa"):
+            entry = vmap.get(lens_id)
+            if entry is not None:
+                _promote(
+                    entry,
+                    f"mandatory review floor: {lens_id} always runs deep",
+                    to="deep",
+                )
     return vmap
 
 

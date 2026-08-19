@@ -880,6 +880,14 @@ def _assemble_components(workspace, files, cat, *, stage, requirement_text,
         vmap = lens_signals.apply_budget(raw, cap=lens_signals.DEEP_CAP,
                                          target=lens_signals.DEEP_TARGET,
                                          ctx=ctx)
+        # Review floors can add a lens after component candidates are
+        # assembled.  They are still caused by this component-scoped review,
+        # so retain the brief contract's attribution instead of emitting an
+        # unattributed mandatory slot.
+        touched_ids = sorted(touched)
+        for lid, verdict in vmap.items():
+            if "floor" in verdict and lid not in proposed:
+                proposed[lid] = list(touched_ids)
         return vmap, proposed, {"components": sorted(touched)}
     except Exception as exc:
         return None, None, {"miss": str(exc)}
