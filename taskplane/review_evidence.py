@@ -120,6 +120,84 @@ def content_fingerprint(value) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def create_execution_binding(workspace: str, *, target: dict, run_id: str,
+                             lens_ids, slot_id: str,
+                             lease_fingerprint: str,
+                             producer: str) -> dict:
+    """Bind review evidence to its exact governed execution identity."""
+    root = tp.review_execution_root_identity(workspace)
+    target_row = {
+        "fingerprint": str((target or {}).get("fingerprint") or "").strip(),
+        "base": str((target or {}).get("merge_base") or
+                    (target or {}).get("base") or "").strip(),
+        "head": str((target or {}).get("head") or "").strip(),
+    }
+    identity = {
+        "run_id": str(run_id or "").strip(),
+        "lens_ids": _strings(lens_ids),
+        "slot_id": str(slot_id or "").strip(),
+        "lease_fingerprint": str(lease_fingerprint or "").strip(),
+        "producer": str(producer or "").strip(),
+    }
+    if not target_row["fingerprint"] or not target_row["head"] or \
+            any(not value for key, value in identity.items()
+                if key != "lens_ids") or not identity["lens_ids"]:
+        raise ProvenanceError("review execution binding is incomplete")
+    material = {
+        "schema": "taskplane.review-execution-binding/v1",
+        "repository_id": root["repository_id"],
+        "repository_kind": root["repository_kind"],
+        "worktree_fingerprint": root["worktree_fingerprint"],
+        "engine_fingerprint": root["engine_fingerprint"],
+        "target": target_row,
+        **identity,
+    }
+    return dict(material, binding_fingerprint=content_fingerprint(material))
+
+
+def verify_execution_binding(workspace: str, binding: dict, *, target: dict,
+                             run_id: str, lens_ids, slot_id: str,
+                             lease_fingerprint: str,
+                             producer: str) -> bool:
+    """Recompute the complete execution binding; no partial match is valid."""
+    try:
+        expected = create_execution_binding(
+            workspace, target=target, run_id=run_id, lens_ids=lens_ids,
+            slot_id=slot_id, lease_fingerprint=lease_fingerprint,
+            producer=producer)
+    except Exception as exc:
+        raise ProvenanceError(f"review execution binding is invalid: {exc}") \
+            from None
+    if not isinstance(binding, dict) or binding != expected:
+        raise ProvenanceError("review execution binding does not match")
+    return True
+
+
+def require_approvable_collection(collected: dict) -> bool:
+    """Prove exactly-once slot/result conservation for an approval candidate."""
+    if not isinstance(collected, dict):
+        raise ProvenanceError("review collection conservation is invalid")
+    expected = list(collected.get("expected_slot_ids") or [])
+    actual = list(collected.get("collected_slot_ids") or
+                  collected.get("slot_ids") or [])
+    results = list(collected.get("results") or [])
+    result_slots = [str(row.get("slot_id") or "")
+                    for row in results if isinstance(row, dict)]
+    fingerprints = list(collected.get("result_fingerprints") or [])
+    completeness = collected.get("completeness") or {}
+    conserved = bool(expected) and len(set(expected)) == len(expected) and \
+        len(set(actual)) == len(actual) and sorted(expected) == sorted(actual) and \
+        sorted(result_slots) == sorted(actual) and \
+        len(fingerprints) == len(actual) and \
+        len(set(fingerprints)) == len(fingerprints) and \
+        not list(collected.get("gaps") or []) and \
+        completeness == {"expected": len(expected), "collected": len(actual),
+                         "missing": 0, "complete": True}
+    if not conserved:
+        raise ProvenanceError("review collection conservation is incomplete")
+    return True
+
+
 def _strings(values) -> list[str]:
     return sorted({str(v).strip() for v in (values or []) if str(v).strip()})
 
@@ -902,7 +980,8 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
                       authored_slot: str, lens_ids, findings,
                       authored_by: str = "lens-slot",
                       references_applied=None, notes=None,
-                      source: str | None = None) -> dict:
+                      source: str | None = None, lens_results=None,
+                      repair_audit: dict | None = None) -> dict:
     lease = store.read(lease_ref)
     if lease.get("schema") != "taskplane.slot-lease/v1":
         raise ProvenanceError("result lease is invalid")
@@ -925,6 +1004,17 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
         "authored_by": authored_by,
         "findings": copy.deepcopy(list(findings or [])),
     }
+    if lens_results is not None:
+        if not isinstance(lens_results, list):
+            raise ProvenanceError("slot result lens_results must be a list")
+        base["lens_results"] = copy.deepcopy(lens_results)
+    if repair_audit is not None:
+        if not isinstance(repair_audit, dict) or \
+                repair_audit.get("equivalence") != "proven":
+            raise ProvenanceError("slot result repair audit is invalid")
+        base["repair_audit"] = copy.deepcopy(repair_audit)
+    if lease.get("execution_binding") is not None:
+        base["execution_binding"] = copy.deepcopy(lease["execution_binding"])
     if source:
         # This is supplied by ReviewKernel from the sealed lease, never by
         # the lens payload.  It is therefore immutable producer provenance,
@@ -975,7 +1065,7 @@ def collect_partial_slot_results(store: ArtifactStore,
         ]
         identity_fields.extend(field for field in (
             "reference_manifest_fingerprint", "routing_fingerprint",
-            "producer") if field in lease)
+            "producer", "execution_binding") if field in lease)
         for field in identity_fields:
             if row.get(field) != lease.get(field):
                 raise ProvenanceError(f"result {field} does not match lease")
