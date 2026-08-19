@@ -35,7 +35,10 @@ _DOC_RULES = (
 
 _DOMAIN_MARKERS = {
     "security": re.compile(r"\b(auth(?:n|z|entication|orization)?|oauth|permission|secret|token|vulnerab|exploit)\b", re.I),
-    "qa": re.compile(r"\b(test|coverage|fixture|assert|regression)\b", re.I),
+    # Use ownership-specific phrases here, not generic review vocabulary such
+    # as "fixture" or "regression" that can legitimately describe evidence
+    # for any lens.
+    "qa": re.compile(r"\b(coverage|missing test|test suite|untested)\b", re.I),
     "dba": re.compile(r"\b(database|query|index|schema|sql|table)\b", re.I),
     "sre": re.compile(r"\b(slo|incident|alert|retry|timeout|recovery|on-call)\b", re.I),
     "integrability": re.compile(r"\b(api|contract|protocol|version|endpoint)\b", re.I),

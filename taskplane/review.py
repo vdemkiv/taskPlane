@@ -1943,14 +1943,24 @@ def _promoted_slot_plan(store, state: dict, promotions: dict[str, list[dict]]) \
 
 
 def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
-        -> dict[str, list[dict]]:
-    """Return light lenses whose validated sweep output contains high risk."""
+        -> dict:
+    """Normalize high-risk sweep output into promotions and rejections.
+
+    The sweep is untrusted producer evidence even after lease validation.  It
+    therefore crosses the same deterministic promotion boundary as every
+    other progressive-review concern: duplicates/replays are idempotent and
+    cross-charter risks are explicitly rejected instead of becoming repeated
+    trigger rows for a deep slot.
+    """
     import loop
+    import review_progression
 
     if state.get("adaptive_wave"):
-        return {}
+        return {"promotions": {}, "rejections": copy.deepcopy(
+            state.get("promotion_rejections") or [])}
     decision = store.read(state["routing_decision"])["dispositions"]
-    promotions: dict[str, list[dict]] = {}
+    concerns = []
+    source_by_id = {}
     for ref in refs:
         result = store.read(ref)
         if result.get("slot_id") != "light-sweep":
@@ -1962,16 +1972,40 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
             if loop.normalize_severity(finding.get("severity")) not in \
                     ADAPTIVE_PROMOTION_SEVERITIES:
                 continue
-            triggers = promotions.setdefault(lens_id, [])
-            if len(triggers) >= 5:
-                continue
-            triggers.append({
+            concern_id = review_evidence_runtime.content_fingerprint(finding)
+            claim = finding.get("claim") if isinstance(
+                finding.get("claim"), dict) else {}
+            source_by_id.setdefault(concern_id, {
                 "severity": str(finding.get("severity") or ""),
                 "title": str(finding.get("title") or "")[:200],
                 "file": str(finding.get("file") or "")[:300],
                 "line": int(finding.get("line") or 1),
+                "concern_id": concern_id,
             })
-    return promotions
+            concerns.append({
+                "id": concern_id,
+                "severity": loop.normalize_severity(
+                    finding.get("severity")),
+                "lens": lens_id,
+                "evidence_ref": (f"{str(finding.get('file') or '')[:300]}:"
+                                 f"{int(finding.get('line') or 1)}"),
+                "rationale": str(
+                    finding.get("scenario") or finding.get("title") or ""),
+                "trigger": str(claim.get("trigger") or ""),
+            })
+    resolved = review_progression.resolve_sweep_concerns(concerns)
+    promotions: dict[str, list[dict]] = {}
+    for promotion in resolved["promotions"]:
+        trigger = copy.deepcopy(source_by_id[promotion["concern_id"]])
+        trigger.update({
+            "fingerprint": promotion["fingerprint"],
+            "evidence_ref": promotion["evidence_ref"],
+            "rationale": promotion["rationale"],
+            "trigger": promotion["trigger"],
+        })
+        promotions.setdefault(promotion["lens"], []).append(trigger)
+    return {"promotions": promotions,
+            "rejections": copy.deepcopy(resolved["rejections"])}
 
 
 def _prepare_slot_result_dirs(ws: str, slots: Iterable[dict]) -> None:
@@ -4630,7 +4664,9 @@ def _collect_review_transaction(
                 gap_slots=len(collected["gaps"]),
                 findings=len(revision["findings"]), approval_enabled=False)
             return manifest
-        promotions = _light_sweep_promotions(store, state, refs)
+        promotion_resolution = _light_sweep_promotions(store, state, refs)
+        promotions = promotion_resolution["promotions"]
+        promotion_rejections = promotion_resolution["rejections"]
         if promotions:
             _consume_review_authority(
                 state, "affected_retry",
@@ -4673,6 +4709,8 @@ def _collect_review_transaction(
                 "context_fingerprint": state["envelope"]["fingerprint"],
                 "routing_decision": _portable_ref(effective_ref),
                 "promotions": copy.deepcopy(promotions),
+                "promotion_rejections": copy.deepcopy(
+                    promotion_rejections),
                 "slots": promoted_manifest, "counters": counters,
                 "next_action": "dispatch every promoted deep slot in one wave, "
                                "then retry review collect once",
@@ -4682,6 +4720,7 @@ def _collect_review_transaction(
                 slots=list(state.get("slots") or []) + promoted_internal,
                 dispatch_slots=promoted_manifest,
                 routing_decision=effective_ref,
+                promotion_rejections=copy.deepcopy(promotion_rejections),
                 adaptive_wave={"status": "dispatched", "wave": 2,
                                "promotions": copy.deepcopy(promotions)},
                 manifest=manifest, counters=counters)
@@ -4770,7 +4809,9 @@ def _collect_review_transaction(
                          "target": identity["target_fingerprint"],
                          "dor_evidence": dor,
                          "requirements_validation": requirements_validation,
-                         "result_validations": portable_validations},
+                         "result_validations": portable_validations,
+                         "promotion_rejections": copy.deepcopy(
+                             promotion_rejections)},
                 "findings": revision["findings"],
                 "notes": revision.get("notes") or []}
         lines = ["# Engineering review", "",
@@ -4796,6 +4837,7 @@ def _collect_review_transaction(
             "artifact_set": copy.deepcopy(canonical_output["publication"]),
             "inline_page_count": len(canonical_output["inline_pages"]),
             "slot_conservation": conservation,
+            "promotion_rejections": copy.deepcopy(promotion_rejections),
         })
         _collection_fault("post_manifest")
         prepared = dict(
@@ -4805,6 +4847,7 @@ def _collect_review_transaction(
             counters=manifest["counters"], lens_results=lens_results,
             slot_conservation=conservation,
             result_validations=result_validations,
+            promotion_rejections=copy.deepcopy(promotion_rejections),
             prior_identity=prior, publication_body=body,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.

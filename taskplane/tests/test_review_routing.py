@@ -158,8 +158,12 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             routing = lens.route(
                 self.diff["files"], breadth="routed", stage="review",
                 workspace=self.ws, requirement_text="safe change")
+            light_ids = [row["id"] for row in routing["lenses"]
+                         if row.get("tier") == "light"]
+            self.assertTrue(light_ids)
+            retained = light_ids[0]
             for row in routing["lenses"]:
-                if row.get("tier") == "light" and row["id"] != "architecture":
+                if row.get("tier") == "light" and row["id"] != retained:
                     row["tier"] = row["verdict"] = "n/a"
                     row["negative_evidence"] = ["single-light test fixture"]
             return routing
@@ -385,8 +389,13 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                          started["context_fingerprint"])
         promoted = review._load_state(self.ws, started["run_id"])
         self.assertEqual(promoted["adaptive_wave"]["wave"], 2)
-        self.assertEqual(len([row for row in promoted["slots"]
-                              if row["lens_ids"] == [light_lens]]), 1)
+        # The bounded initial sweep may itself contain exactly this one lens;
+        # count the newly allocated deep slot, not the source sweep slot.
+        self.assertEqual(len([
+            row for row in promoted["slots"]
+            if row["slot_id"] != "light-sweep" and
+            row["lens_ids"] == [light_lens]
+        ]), 1)
         self.assertTrue(any(row["slot_id"] == "light-sweep" and
                             light_lens in row["lens_ids"]
                             for row in promoted["slots"]))
@@ -406,6 +415,50 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                     "routing_decision"])["dispositions"])
         self.assertIn("promoted light → deep", rendered)
         self.assertIn(finding["title"], rendered)
+
+    def test_light_sweep_normalizes_duplicate_replay_and_cross_charter_risks(self):
+        store = review_evidence.ArtifactStore(self.ws)
+        decision_ref = store.put("routing-decision", {
+            "schema": "taskplane.routing-decision/v2",
+            "dispositions": {"security": {"verdict": "light"}},
+        })
+        accepted = {
+            "lens": "security", "kind": "defect", "severity": "major",
+            "class": "regression", "file": "src/service.py", "line": 1,
+            "title": "Authorization can be bypassed",
+            "scenario": "A caller can reach protected data without permission.",
+            "claim": {
+                "trigger": "invoke the endpoint without authorization",
+                "outcome": "protected data is returned",
+                "repro": "call the endpoint without a permission token",
+            },
+        }
+        cross_charter = {
+            **accepted, "title": "Query needs an index", "line": 2,
+            "scenario": "The database query performs a table scan.",
+            "claim": {
+                "trigger": "run the database query without an index",
+                "outcome": "the table scan is slow",
+                "repro": "inspect the SQL query plan",
+            },
+        }
+        result_ref = store.put("lens-result", {
+            "slot_id": "light-sweep",
+            "findings": [accepted, dict(accepted), cross_charter],
+        })
+
+        resolved = review._light_sweep_promotions(
+            store, {"routing_decision": decision_ref}, [result_ref])
+
+        self.assertEqual(list(resolved["promotions"]), ["security"])
+        self.assertEqual(len(resolved["promotions"]["security"]), 1)
+        self.assertEqual(
+            [row["reason"] for row in resolved["rejections"]],
+            ["duplicate", "out-of-charter"],
+        )
+        self.assertEqual(
+            len({row["fingerprint"] for row in
+                 resolved["promotions"]["security"]}), 1)
 
     def test_low_light_sweep_finding_does_not_dispatch_a_deep_wave(self):
         started = self._start()
@@ -630,16 +683,16 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                         brief["language_references"])
                 content = json.dumps(
                     result, sort_keys=True, separators=(",", ":"))
+                event = {
+                    "turn_id": f"managed-child-turn-{index}",
+                    "agent_id": f"managed-child-{index}", "cwd": parent,
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": slot["result_path"],
+                                   "content": content}}
+                review.register_slot_producer(
+                    checkout, event=event, contract=contract,
+                    task_slot=producer["task_slot"])
                 if index == 0:
-                    event = {
-                        "turn_id": "managed-child-turn",
-                        "agent_id": "managed-child-1", "cwd": parent,
-                        "tool_name": "Write",
-                        "tool_input": {"file_path": slot["result_path"],
-                                       "content": content}}
-                    review.register_slot_producer(
-                        checkout, event=event, contract=contract,
-                        task_slot=producer["task_slot"])
                     screened = __import__("io").StringIO()
                     with mock.patch.dict(os.environ, {
                             "TASKPLANE_HOME": home,
@@ -650,6 +703,10 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                         self.assertEqual(cli.main(["screen"]), 0)
                     self.assertEqual(screened.getvalue().strip(), "",
                                      "Codex leased writes stay advisory")
+                else:
+                    review.record_slot_write_observation(
+                        checkout, event=event, contract=contract,
+                        task_slot=producer["task_slot"])
                 self.assertEqual(
                     review.leased_result_workspace(
                         parent, [slot["result_path"]]), checkout)
