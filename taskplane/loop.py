@@ -205,25 +205,117 @@ def _trace_effect_seen(ws: str, effect_id: str) -> bool:
     return False
 
 
-def _append_authority_trace(ws: str, event: str, data: dict) -> None:
-    """Append one authority trace without following directory/file links."""
+def _open_directory_without_symlinks(path: str) -> int:
+    """Open an absolute directory while rejecting every symlink component."""
+    directory = os.path.abspath(path)
+    drive, tail = os.path.splitdrive(directory)
+    root = drive + os.sep if drive else os.sep
+    parts = [part for part in tail.split(os.sep) if part]
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory_flag = getattr(os, "O_DIRECTORY", None)
-    if nofollow is None or directory_flag is None:
-        raise OSError("symlink-safe authority trace append is unavailable")
+    supports_relative_open = (
+        directory_flag is not None and nofollow is not None and
+        os.open in getattr(os, "supports_dir_fd", set()))
+    if supports_relative_open:
+        flags = os.O_RDONLY | directory_flag | nofollow
+        current_fd = os.open(root, os.O_RDONLY | directory_flag)
+        current_path = root
+        try:
+            for part in parts:
+                candidate = os.path.join(current_path, part)
+                info = os.lstat(candidate)
+                if stat.S_ISLNK(info.st_mode):
+                    raise OSError(
+                        "authority trace path contains a symlink: " +
+                        candidate)
+                if not stat.S_ISDIR(info.st_mode):
+                    raise OSError(
+                        "authority trace path component is not a directory: " +
+                        candidate)
+                next_fd = None
+                try:
+                    next_fd = os.open(part, flags, dir_fd=current_fd)
+                    opened = os.fstat(next_fd)
+                    if not stat.S_ISDIR(opened.st_mode) or (
+                            info.st_dev, info.st_ino) != (
+                                opened.st_dev, opened.st_ino):
+                        raise OSError(
+                            "authority trace path component changed while "
+                            "opening: " + candidate)
+                except Exception:
+                    if next_fd is not None:
+                        os.close(next_fd)
+                    raise
+                os.close(current_fd)
+                current_fd = next_fd
+                current_path = candidate
+            return current_fd
+        except Exception:
+            os.close(current_fd)
+            raise
+
+    # Platforms without relative O_NOFOLLOW traversal still fail closed for
+    # ordinary accidental substitution by checking every ancestor before the
+    # final open. The deployment threat model excludes a hostile same-UID
+    # process racing this fallback.
+    current_path = root
+    final_info = os.lstat(root)
+    for part in parts:
+        current_path = os.path.join(current_path, part)
+        final_info = os.lstat(current_path)
+        if stat.S_ISLNK(final_info.st_mode):
+            raise OSError(
+                "authority trace path contains a symlink: " + current_path)
+        if not stat.S_ISDIR(final_info.st_mode):
+            raise OSError(
+                "authority trace path component is not a directory: " +
+                current_path)
+    flags = os.O_RDONLY
+    if directory_flag is not None:
+        flags |= directory_flag
+    dir_fd = os.open(directory, flags)
+    opened = os.fstat(dir_fd)
+    if not stat.S_ISDIR(opened.st_mode) or (
+            final_info.st_dev, final_info.st_ino) != (
+                opened.st_dev, opened.st_ino):
+        os.close(dir_fd)
+        raise OSError("authority trace directory changed while opening")
+    return dir_fd
+
+
+def _append_authority_trace(ws: str, event: str, data: dict) -> None:
+    """Append one authority trace without following directory/file links."""
     directory = os.path.abspath(tp.tp_dir(ws))
-    info = os.lstat(directory)
-    if not stat.S_ISDIR(info.st_mode):
-        raise OSError("authority trace directory is not a real directory")
-    dir_fd = os.open(directory, os.O_RDONLY | directory_flag | nofollow)
+    dir_fd = _open_directory_without_symlinks(directory)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    supports_relative_open = os.open in getattr(os, "supports_dir_fd", set())
     trace_fd = None
+    existing = None
     try:
-        trace_fd = os.open(
-            "trace.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow,
-            0o600, dir_fd=dir_fd)
+        name = "trace.jsonl"
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if nofollow is not None:
+            flags |= nofollow
+        if nofollow is None:
+            trace_path = os.path.join(directory, name)
+            try:
+                existing = os.lstat(trace_path)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None and stat.S_ISLNK(existing.st_mode):
+                raise OSError(
+                    "authority trace file is a symlink: " + trace_path)
+        if supports_relative_open:
+            trace_fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
+        else:
+            trace_fd = os.open(os.path.join(directory, name), flags, 0o600)
         current = os.fstat(trace_fd)
         if not stat.S_ISREG(current.st_mode):
             raise OSError("authority trace target is not a regular file")
+        if existing is not None and (
+                existing.st_dev, existing.st_ino) != (
+                    current.st_dev, current.st_ino):
+            raise OSError("authority trace file changed while opening")
         record = {"event": event, "ts": time.time(), **data}
         raw = (json.dumps(record, default=str) + "\n").encode("utf-8")
         written = os.write(trace_fd, raw)

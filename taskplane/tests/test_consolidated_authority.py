@@ -531,6 +531,49 @@ def test_reconciliation_rejects_symlink_substitution(monkeypatch, tmp_path):
     assert outside.read_text(encoding="utf-8") == before
 
 
+@pytest.mark.parametrize("force_fallback", [False, True])
+def test_authority_trace_rejects_symlinked_ancestor_directory(
+        monkeypatch, tmp_path, force_fallback):
+    real_parent = tmp_path / "real-parent"
+    trace_root = real_parent / "workspace" / ".taskplane"
+    trace_root.mkdir(parents=True)
+    visible_parent = tmp_path / "visible" / "nested"
+    visible_parent.mkdir(parents=True)
+    redirected = visible_parent / "redirected"
+    redirected.symlink_to(real_parent, target_is_directory=True)
+    apparent_trace_root = redirected / "workspace" / ".taskplane"
+    monkeypatch.setattr(
+        loop.tp, "tp_dir", lambda ws: str(apparent_trace_root))
+    if force_fallback:
+        monkeypatch.setattr(loop.os, "supports_dir_fd", set())
+
+    with pytest.raises(OSError, match="symlink"):
+        loop._append_authority_trace(
+            "/workspace", "loop_select",
+            {"authority_effect_id": "selection:r1:a"})
+
+    assert not (trace_root / "trace.jsonl").exists()
+
+
+@pytest.mark.parametrize("force_fallback", [False, True])
+def test_authority_trace_appends_through_normal_nested_directories(
+        monkeypatch, tmp_path, force_fallback):
+    trace_root = tmp_path / "normal" / "workspace" / ".taskplane"
+    trace_root.mkdir(parents=True)
+    monkeypatch.setattr(loop.tp, "tp_dir", lambda ws: str(trace_root))
+    if force_fallback:
+        monkeypatch.setattr(loop.os, "supports_dir_fd", set())
+
+    loop._append_authority_trace(
+        "/workspace", "loop_select",
+        {"authority_effect_id": "selection:r1:a"})
+
+    row = loop.json.loads(
+        (trace_root / "trace.jsonl").read_text(encoding="utf-8"))
+    assert row["event"] == "loop_select"
+    assert row["authority_effect_id"] == "selection:r1:a"
+
+
 def test_preview_replay_reconciles_failed_durable_trace_effect(monkeypatch):
     event = {"type": "preview_feedback", "text": "increase spacing",
              "change_kind": "cosmetic"}
