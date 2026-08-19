@@ -5128,3 +5128,14 @@ def trace(workspace: str, event: str, **data) -> None:
                   f"{workspace}. Fix the .taskplane dir (disk/permissions) "
                   "before trusting this session's audit trail.",
                   file=sys.stderr)
+        return
+
+    # Keep the cheap status read model current from the same production event
+    # path. It is presentation-only: snapshot damage or an unavailable disk
+    # must never turn into authority or block the audit transition above.
+    try:
+        import progress
+        progress.record_trace_event(
+            workspace, event, rec, observed_at=rec["ts"], state_dir=d)
+    except Exception:
+        pass

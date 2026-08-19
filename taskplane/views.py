@@ -33,10 +33,14 @@ that already holds the state skip even that.
 """
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import json
 import os
 import sys
+import tempfile
+from collections.abc import Mapping
 
 import taskplane_lite as tp
 
@@ -53,6 +57,140 @@ _REVISION_ID_KEYS = ("target_fingerprint", "context_fingerprint",
 _HUMAN_DASHBOARD_STEPS = frozenset({
     "design_approval", "plan_approval", "selection", "signoff", "escalated",
 })
+
+LARGE_DASHBOARD_INLINE_BYTES = 64 * 1024
+_CANONICAL_START = "<!-- taskplane-canonical-json:start -->"
+_CANONICAL_END = "<!-- taskplane-canonical-json:end -->"
+
+
+def canonical_dashboard_bytes(model: Mapping) -> bytes:
+    """Canonical JSON is the machine authority for every delivery surface."""
+    if not isinstance(model, Mapping):
+        raise TypeError("dashboard model must be a mapping")
+    return json.dumps(
+        dict(model), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")
+
+
+def _write_delivery_artifact(path: str, payload: bytes) -> None:
+    target = os.path.abspath(path)
+    parent = os.path.dirname(target)
+    os.makedirs(parent, exist_ok=True)
+    if os.path.lexists(target) and os.path.islink(target):
+        raise ValueError("dashboard artifact path must not be a symlink")
+    fd, temporary = tempfile.mkstemp(prefix=".dashboard-", dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+
+
+def _artifact_ref(path: str, payload: bytes) -> dict:
+    return {"status": "available", "path": path, "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def _embedded_html(body: str, canonical: bytes) -> bytes:
+    encoded = base64.b64encode(canonical).decode("ascii")
+    return (
+        '<!DOCTYPE html><html lang="en"><meta charset="utf-8"><body>'
+        + body
+        + '<script type="application/x-taskplane-json-base64" '
+          f'data-taskplane-canonical="true">{encoded}</script>'
+          '</body></html>').encode("utf-8")
+
+
+def deliver_dashboard(output_dir: str, model: Mapping, *,
+                      inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
+                      html_renderer=None) -> dict:
+    """Publish a lossless, size-appropriate dashboard artifact set.
+
+    JSON and complete Markdown are required.  Inline is selected only when
+    the canonical semantic bytes fit the declared boundary.  HTML is a
+    best-effort convenience and cannot change publication or gate state.
+    """
+    if isinstance(inline_threshold, bool) or not isinstance(inline_threshold, int) \
+            or inline_threshold < 1:
+        raise ValueError("inline_threshold must be a positive byte count")
+    canonical = canonical_dashboard_bytes(model)
+    canonical_text = canonical.decode("utf-8")
+    root = os.path.abspath(output_dir)
+    if os.path.lexists(root) and os.path.islink(root):
+        raise ValueError("dashboard output directory must not be a symlink")
+    os.makedirs(root, exist_ok=True)
+    json_path = os.path.join(root, "dashboard.json")
+    markdown_path = os.path.join(root, "dashboard.md")
+    markdown = (
+        "# Taskplane dashboard\n\n"
+        "Canonical complete dashboard evidence (JSON):\n\n"
+        f"{_CANONICAL_START}\n```json\n{canonical_text}\n```\n"
+        f"{_CANONICAL_END}\n").encode("utf-8")
+    _write_delivery_artifact(json_path, canonical)
+    _write_delivery_artifact(markdown_path, markdown)
+    artifacts = {"json": _artifact_ref(json_path, canonical),
+                 "markdown": _artifact_ref(markdown_path, markdown)}
+
+    inline = None
+    mode = "complete-markdown"
+    if len(canonical) <= inline_threshold:
+        import dashboard as _dashboard
+        content = _dashboard.render_lossless_dashboard_inline(canonical_text)
+        inline = {"format": "html", "content": content, "complete": True,
+                  "semantic_bytes": len(canonical)}
+        mode = "inline"
+
+    html_path = os.path.join(root, "dashboard.html")
+    if html_renderer is None:
+        artifacts["html"] = {"status": "unavailable", "path": html_path,
+                             "reason": "optional HTML was not requested"}
+    else:
+        try:
+            body = str(html_renderer(canonical_text))
+            html_payload = _embedded_html(body, canonical)
+            _write_delivery_artifact(html_path, html_payload)
+            artifacts["html"] = _artifact_ref(html_path, html_payload)
+        except Exception as exc:
+            artifacts["html"] = {
+                "status": "unavailable", "path": html_path,
+                "reason": f"{exc.__class__.__name__}: {exc}"}
+
+    return {
+        "schema": "taskplane.dashboard-delivery/v1", "status": "published",
+        "mode": mode, "semantic_bytes": len(canonical),
+        "semantic_sha256": hashlib.sha256(canonical).hexdigest(),
+        "gate": dict(model.get("gate") or {}), "inline": inline,
+        "artifacts": artifacts,
+    }
+
+
+def decode_dashboard_artifact(kind: str, payload: bytes) -> dict:
+    """Decode a delivery surface for semantic-equivalence verification."""
+    text = payload.decode("utf-8")
+    if kind == "json":
+        value = json.loads(text)
+    elif kind == "markdown":
+        start = text.index(_CANONICAL_START) + len(_CANONICAL_START)
+        end = text.rindex(_CANONICAL_END)
+        fenced = text[start:end].strip()
+        if not fenced.startswith("```json\n") or not fenced.endswith("\n```"):
+            raise ValueError("invalid complete Markdown dashboard artifact")
+        value = json.loads(fenced[len("```json\n"):-len("\n```")])
+    elif kind in {"html", "inline"}:
+        marker = 'data-taskplane-canonical="true">'
+        start = text.index(marker) + len(marker)
+        end = text.index("</script>", start)
+        value = json.loads(base64.b64decode(text[start:end]).decode("utf-8"))
+    else:
+        raise ValueError(f"unsupported dashboard artifact kind: {kind}")
+    if not isinstance(value, dict):
+        raise ValueError("dashboard artifact must decode to an object")
+    return value
 
 
 def _transition_step(out: dict) -> str:
@@ -313,6 +451,43 @@ def refresh_views(ws: str, out: dict) -> dict:
                 "refreshed for this internal transition — keep using this "
                 "path as the progress reference; do not render or acknowledge "
                 "it until a human gate or explicit status request")}
+        # R-0001: delivery is a production concern, not a test-only helper.
+        # The transition payload is the canonical semantic input; the rendered
+        # fragment is retained as evidence but never replaces canonical JSON.
+        # Very large values bypass inline transport automatically and point to
+        # the complete Markdown artifact instead.
+        delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
+        delivery_model = {
+            "schema": "taskplane.dashboard-delivery-model/v1",
+            "transition": {key: value for key, value in out.items()
+                           if key not in {"dashboard", "artifacts"}},
+            "rendered_dashboard": {"fragment": frag},
+            "gate": dict((out.get("gate") or
+                          ((out.get("status") or {}).get("gate")
+                           if isinstance(out.get("status"), dict) else {}) or
+                          {})),
+        }
+        try:
+            delivery = deliver_dashboard(
+                delivery_root, delivery_model,
+                inline_threshold=LARGE_DASHBOARD_INLINE_BYTES,
+                html_renderer=lambda _canonical: doc)
+            if delivery.get("inline"):
+                inline = dict(delivery["inline"])
+                inline_path = os.path.join(delivery_root, "dashboard.inline.html")
+                _write_delivery_artifact(
+                    inline_path, inline.pop("content").encode("utf-8"))
+                inline["path"] = inline_path
+                delivery["inline"] = inline
+            out["dashboard"]["delivery"] = delivery
+        except Exception as exc:
+            detail = f"{exc.__class__.__name__}: {exc}"
+            out["dashboard"]["delivery"] = {
+                "schema": "taskplane.dashboard-delivery/v1",
+                "status": "unavailable", "gating": False, "reason": detail,
+                "action": "retry artifact delivery"}
+            with contextlib.suppress(Exception):
+                tp.trace(ws, "artifact_delivery_unavailable", error=detail)
         # WS-F: the engine can render, write and point at the artifact, and
         # has no way to see whether it reached a human — which is exactly how
         # "no inline dashboard, no report, nothing" kept happening against a
