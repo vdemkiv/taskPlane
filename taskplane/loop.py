@@ -2249,6 +2249,60 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     return errors
 
 
+def _canonical_evaluation_progress(ws: str, state: dict,
+                                   task: dict) -> dict | None:
+    """Project the committed evaluator revision into convergence facts."""
+    import review as _review
+    import review_evidence as _review_evidence
+
+    binding = review_kernel_binding(state, "evaluate", task)
+    if not binding:
+        return None
+    kernel_ws = str(binding.get("workspace") or ws)
+    kernel = _review._load_state(kernel_ws, binding["run_id"])
+    if kernel.get("status") != "complete" or \
+            kernel.get("stage") != EVALUATE_ROUTE_STAGE:
+        return None
+    sealed = _review_evidence.sealed_current_revision(
+        _review_evidence.ArtifactStore(kernel_ws), kernel.get("revision") or {})
+    verdict, read_errors = _read_json(runtime_storage.evaluation_path(kernel_ws))
+    if read_errors:
+        verdict = {}
+    criteria = verdict.get("criteria") if isinstance(verdict, dict) else []
+    evidence_complete = sum(
+        isinstance(row, dict) and row.get("status") == "met" and
+        bool(str(row.get("evidence") or "").strip())
+        for row in (criteria if isinstance(criteria, list) else []))
+    suite = ((state.get("_suite_evidence") or {}).get(str(task.get("id")))
+             or {})
+    import yield_meter
+
+    finding_rows = []
+    for row in sealed.get("findings") or []:
+        if not isinstance(row, dict) or row.get("admissible") is False:
+            continue
+        identity = str(row.get("fingerprint") or row.get("id") or "").strip()
+        if not identity:
+            identity = yield_meter.fingerprint(row)
+        if identity:
+            finding_rows.append({"id": identity, "admissible": True})
+    return {
+        "findings": finding_rows,
+        "acceptance_evidence_complete": evidence_complete,
+        "tests_passed": int(
+            suite.get("schema") == "taskplane.suite-evidence/v1" and
+            suite.get("returncode") == 0),
+        "canonical_revision": sealed["canonical_revision"],
+        "findings_fingerprint": sealed["findings_fingerprint"],
+        "scope_fingerprint": _review_evidence.content_fingerprint({
+            "scope": task.get("scope") or [],
+            "contracts": task.get("contracts") or [],
+        }),
+        "authority_fingerprint": _review_evidence.content_fingerprint(
+            state.get("authority_derivations") or {}),
+    }
+
+
 def _evaluation_unavailable_errors(ws: str, state: dict,
                                    task: dict) -> tuple[list, dict]:
     """Admit a pure model/host outage without inventing a product defect."""
@@ -2994,6 +3048,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         act_ws = tws if tws and os.path.isdir(tws) else ws
 
     unavailable_verdict = None
+    evaluation_progress = None
 
     # A reported PASS is a request to evaluate the gate. Evidence, not the
     # agent's assertion, determines whether the state machine advances.
@@ -3039,6 +3094,13 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": "evaluation infrastructure is unavailable, not "
                              "a product defect — gate unavailable; no FIX "
                              "cycle was opened", "step": step}
+        try:
+            evaluation_progress = _canonical_evaluation_progress(
+                act_ws, state, task)
+        except Exception as exc:  # legacy/incomplete runs retain old fallback
+            tp.trace(ws, "review_convergence_unavailable",
+                     task=(task or {}).get("id"),
+                     error=f"{exc.__class__.__name__}: {exc}")
     if outcome == "pass" and step == "em":
         review_errors = _engineering_review_errors(ws, state)
         if review_errors:
@@ -3196,7 +3258,57 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                         state["step"] = after_last
             else:
                 t["fix_cycles"] = t.get("fix_cycles", 0) + 1
-                if t["fix_cycles"] <= state["max_fix_cycles"]:
+                if isinstance(evaluation_progress, dict):
+                    import review_convergence
+
+                    previous = t.get("convergence_revision")
+                    history = list(t.get("convergence_history") or [])
+                    if isinstance(previous, dict):
+                        closed = {
+                            finding for row in history if isinstance(row, dict)
+                            for finding in ((row.get("findings") or {}).get(
+                                "closed") or [])}
+                        boundaries = t.get("convergence_boundaries") or {}
+                        decision = review_convergence.evaluate_fix_cycle(
+                            previous, evaluation_progress,
+                            cycle=t["fix_cycles"], previously_closed=closed,
+                            history=history,
+                            max_cycles=t.get("max_fix_cycles"),
+                            human_stop=boundaries.get("human_stop") is True,
+                            unsafe_recovery=(
+                                boundaries.get("unsafe_recovery") is True),
+                            scope_changed=(
+                                previous.get("scope_fingerprint") !=
+                                evaluation_progress.get("scope_fingerprint") or
+                                boundaries.get("scope_changed") is True),
+                            authority_changed=(
+                                previous.get("authority_fingerprint") !=
+                                evaluation_progress.get("authority_fingerprint") or
+                                boundaries.get("authority_changed") is True))
+                    else:
+                        # The first failed canonical evaluation establishes the
+                        # comparison baseline and opens one bounded fix.
+                        baseline = review_convergence.evaluate_fix_cycle(
+                            evaluation_progress, evaluation_progress,
+                            cycle=t["fix_cycles"])
+                        decision = dict(
+                            baseline, decision="continue",
+                            reason="canonical_baseline_established")
+                    history.append(decision)
+                    t["convergence_history"] = history
+                    t["convergence_revision"] = evaluation_progress
+                    tp.trace(ws, "review_convergence_decision",
+                             task=t.get("id"), cycle=t["fix_cycles"],
+                             decision=decision["decision"],
+                             reason=decision["reason"])
+                    if decision["decision"] == "continue":
+                        state["step"] = "fix"
+                    else:
+                        t["status"] = "failed"
+                        state["step"] = "escalated"
+                elif t["fix_cycles"] <= state["max_fix_cycles"]:
+                    # Compatibility for old persisted runs that predate the
+                    # canonical review revision required by convergence v1.
                     state["step"] = "fix"
                 else:
                     t["status"] = "failed"
