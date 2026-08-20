@@ -2,72 +2,102 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>R-0003 proof-carrying governance lifecycle</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R-0004 stage lifecycle and bounded handoff design</title>
 <style>
-  :root { color-scheme: light dark; --bg:#f7f8fb; --card:#fff; --ink:#172033;
-    --muted:#5e687a; --line:#9aa5b7; --ok:#13795b; --warn:#a15c00;
-    --stop:#b42318; --accent:#3859c7; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#111622; --card:#1b2332;
-    --ink:#edf1f7; --muted:#b6c0d0; --line:#5f6d81; --ok:#4ed6a4;
-    --warn:#ffc266; --stop:#ff8b82; --accent:#91a7ff; } }
-  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink);
-    font:15px/1.45 ui-sans-serif,system-ui,sans-serif; }
-  main { max-width:1200px; margin:auto; padding:28px; } h1 { font-size:28px; margin:0 0 6px; }
-  .lead { color:var(--muted); max-width:80ch; margin:0 0 24px; }
-  .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
-  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
-  h2 { font-size:18px; margin:0 0 14px; } .state { border-left:5px solid var(--accent);
-    padding:9px 11px; margin:10px 0; background:color-mix(in srgb,var(--card) 88%,var(--accent)); }
-  .ok { border-color:var(--ok); } .warn { border-color:var(--warn); }
-  .stop { border-color:var(--stop); } .arrow { text-align:center; color:var(--muted); font-weight:700; }
-  code { font-size:.92em; } ul { padding-left:20px; } .wide { grid-column:1/-1; }
-  .sequence { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; align-items:stretch; }
-  .step { border:1px solid var(--line); border-radius:9px; padding:12px; }
-  .step strong { display:block; color:var(--accent); margin-bottom:5px; }
-  .guard { color:var(--stop); font-weight:650; }
-  @media (max-width:850px) { .grid,.sequence { grid-template-columns:1fr; } .wide { grid-column:auto; } }
+:root{color-scheme:light dark;--bg:#f7f8fb;--panel:#fff;--ink:#172033;--muted:#526075;--line:#9aa7ba;--blue:#2457d6;--blue2:#e9efff;--green:#147a55;--green2:#e3f5ed;--amber:#9a5c00;--amber2:#fff1d5;--red:#a52d35;--red2:#fde9eb;--violet:#6741c3;--violet2:#f0ebff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:1180px;margin:auto;padding:28px}header{margin-bottom:18px}h1{font-size:clamp(24px,3vw,38px);line-height:1.12;margin:0 0 8px}h2{font-size:18px;margin:0 0 12px}.lede{max-width:900px;color:var(--muted);margin:0}.grid{display:grid;grid-template-columns:1.25fr .75fr;gap:16px}.panel{background:var(--panel);border:1px solid #d8deea;border-radius:14px;padding:18px;box-shadow:0 2px 10px rgba(27,42,75,.05)}.flow{display:grid;grid-template-columns:1fr 34px 1fr;gap:8px;align-items:stretch}.node{border:2px solid var(--blue);background:var(--blue2);border-radius:12px;padding:13px}.node h3,.outcome h3{font-size:15px;margin:0 0 6px}.node p,.outcome p,.small{font-size:13px;color:var(--muted);margin:0}.arrow{align-self:center;text-align:center;color:var(--blue);font-size:25px;font-weight:700}.manifest{border-color:var(--violet);background:var(--violet2)}.outcomes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.outcome{border:1px solid var(--line);border-radius:10px;padding:10px}.done{background:var(--green2);border-color:var(--green)}.closed{background:var(--amber2);border-color:var(--amber)}.discarded{background:var(--red2);border-color:var(--red)}.bar{margin:12px 0;border:1px dashed var(--line);border-radius:10px;padding:10px;font-size:13px}.split{display:grid;grid-template-columns:1fr 1fr;gap:8px}.child{border:1px solid var(--violet);border-radius:10px;padding:10px;background:var(--violet2)}.stack{display:grid;gap:12px}.tag{display:inline-block;font:600 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;padding:3px 6px;border-radius:999px;background:#e8ebf0;color:#38445a}.checks{margin:8px 0 0;padding-left:19px}.checks li{margin:5px 0}.projection{border-left:5px solid var(--amber)}.authority{border-left:5px solid var(--red)}.migration{border-left:5px solid var(--violet)}.legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;color:var(--muted);font-size:12px}.legend span:before{content:"";display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--blue);margin-right:5px}.legend .immutable:before{background:var(--green)}.legend .projection-key:before{background:var(--amber)}.legend .reject:before{background:var(--red)}.foot{margin-top:16px;font-size:13px;color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}@media(max-width:820px){.grid,.flow{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}.outcomes{grid-template-columns:1fr}}@media(prefers-color-scheme:dark){:root{--bg:#10141d;--panel:#171d28;--ink:#edf1f7;--muted:#b1bccd;--line:#68758a;--blue:#83a6ff;--blue2:#1c2b4c;--green:#65d0a6;--green2:#18382f;--amber:#f0bd63;--amber2:#3b2d16;--red:#ff8d97;--red2:#3e2026;--violet:#b69cff;--violet2:#29203f}.panel{border-color:#303a4b}.tag{background:#303849;color:#e5e9f1}}
 </style>
 </head>
-<body><main>
-  <h1>Proof before authority; proof again before cleanup</h1>
-  <p class="lead">R-0003 adds three canonical decisions while preserving the shipped ReviewKernel. Every uncertain branch stops locally and keeps evidence or worktree bytes intact.</p>
-  <div class="grid">
-    <section aria-labelledby="enforcement"><h2 id="enforcement">1. Enforcement status</h2>
-      <div class="state">Exact workspace + session receipt and/or current screen activity</div>
-      <div class="arrow">↓ canonical decision</div>
-      <div class="state ok"><strong>live</strong><br>Entry proceeds; closure rechecks proof.</div>
-      <div class="state stop"><strong>unproven</strong><br>Strict entry/closure refuses before mutation.</div>
-      <div class="state warn"><strong>advisory</strong><br>Only with attributable human acknowledgment; stamped everywhere.</div>
-    </section>
-    <section aria-labelledby="collision"><h2 id="collision">2. Delivery isolation</h2>
-      <div class="state">Exact-workspace governed state?</div>
-      <div class="state ok"><strong>No</strong> — no-op; Taskplane claims no authority.</div>
-      <div class="state"><strong>Yes</strong> — classify with versioned registry.</div>
-      <ul>
-        <li>Taskplane or helper: allow silently</li>
-        <li>Known competing driver: deny + audit</li>
-        <li>Unknown foreign: advise + audit; deny in strict isolation</li>
-        <li>Signed state root: report and exclude from write authority</li>
+<body>
+<main class="wrap">
+<header>
+  <div class="tag">taskplane.design/v1 · R-0004</div>
+  <h1>Immutable stages; bounded handoffs</h1>
+  <p class="lede">A stage is an independently addressable aggregate. Its execution tree ends at a terminal outcome; only a small, verified manifest crosses into a fresh successor tree. The active pointer is a rebuildable projection, never history.</p>
+</header>
+
+<div class="grid">
+  <section class="panel" aria-labelledby="lifecycle-title">
+    <h2 id="lifecycle-title">Lifecycle and data flow</h2>
+    <div class="flow">
+      <article class="node">
+        <h3>Active stage aggregate</h3>
+        <p>Stable id · requirement/design revision · kind · lineage · bounded input · unique execution root · budget · authority</p>
+      </article>
+      <div class="arrow" aria-hidden="true">→</div>
+      <article class="node manifest">
+        <h3>Atomic RunStore commit</h3>
+        <p>Write immutable objects, then commit head + lineage + active projection + request-fingerprinted receipt under one expected revision.</p>
+      </article>
+    </div>
+
+    <div class="outcomes" aria-label="Exactly one terminal outcome">
+      <article class="outcome done"><h3>done</h3><p>All declared deliverables and completion evidence verify.</p></article>
+      <article class="outcome closed"><h3>closed</h3><p>Actor, time, and reason explain why no further work is required.</p></article>
+      <article class="outcome discarded"><h3>discarded</h3><p>Actor, time, and reason; output is not default-consumable.</p></article>
+    </div>
+
+    <div class="bar"><strong>No reopen edge.</strong> Further work creates a new stage. A retry with the same operation id returns the existing receipt; different bytes under that id fail closed.</div>
+
+    <div class="flow">
+      <article class="node manifest">
+        <h3>≤64 KiB handoff</h3>
+        <p>Producer outcome · revisions · target/commit · contracts · deliverables · evidence · ≤64 verified artifact refs · exclusions · authorization</p>
+      </article>
+      <div class="arrow" aria-hidden="true">→</div>
+      <article class="node">
+        <h3>Fresh successor tree</h3>
+        <p>No predecessor agents, conversations, events, transcripts, leases, runtime state, secrets, paths, tools, or approvals.</p>
+      </article>
+    </div>
+
+    <div class="bar"><strong>Split is one transaction:</strong> close parent with <code>reason_code=split</code>, create two or more deterministic children, assign each an explicit artifact subset, dependencies, budget, lifecycle, and unique root.</div>
+    <div class="split" aria-label="Independent split children">
+      <article class="child"><strong>Child A</strong><br><span class="small">Own immutable head, receipt stream, artifacts, and outcome</span></article>
+      <article class="child"><strong>Child B</strong><br><span class="small">Cannot mutate Child A or the closed parent</span></article>
+    </div>
+  </section>
+
+  <aside class="stack" aria-label="Authority, projections, and migration rules">
+    <section class="panel projection">
+      <h2>Projection, not authority</h2>
+      <p class="small"><code>active_stage_projection</code> contains sorted active ids and an optional foreground id. Missing or corrupt projections rebuild from immutable indexed heads under lock. Ambiguity stops dispatch; it is never guessed.</p>
+      <ul class="checks">
+        <li>Stage summary ≤16 KiB</li>
+        <li>History page ≤100 rows + cursor</li>
+        <li>Status, dashboard, review, sign-off, Retro open zero predecessor trees</li>
       </ul>
     </section>
-    <section aria-labelledby="cleanup"><h2 id="cleanup">3. Cleanup eligibility</h2>
-      <div class="state">Durable orchestrator merge receipt</div>
-      <div class="arrow">↓ locked immediate revalidation</div>
-      <div class="state ok">Exact managed registration + path/type/branch/tip + clean/released/non-variant + no retention/lock + tip ancestor of current primary</div>
-      <div class="state stop">Any uncertainty → <strong>preserved</strong>; no force, no broader retry, no branch deletion</div>
-      <div class="state ok">Remove exact linked worktree, verify absence, record <strong>removed</strong> or replay as <strong>already-clean</strong></div>
+
+    <section class="panel authority">
+      <h2>Fail-closed authority</h2>
+      <p class="small">Every mutation rebinds exact run, repository/worktree, requirement/design, actor/session, and authority revision immediately before commit.</p>
+      <ul class="checks">
+        <li>Stale authority: reject</li>
+        <li>Digest/path/bound failure: reject</li>
+        <li>R-0003 cleanup remains separate</li>
+        <li>Only exact registered + merged-tip-proven worktrees can be removed; every negative retains, never force</li>
+      </ul>
     </section>
-    <section class="wide" aria-labelledby="sequence"><h2 id="sequence">Post-Evaluate sequence</h2>
-      <div class="sequence">
-        <div class="step"><strong>A. Evaluate passes</strong>Task is eligible to merge; variants remain retained.</div>
-        <div class="step"><strong>B. Resolve primary</strong>Exact repository and primary ref; ambiguity stops.</div>
-        <div class="step"><strong>C. Merge succeeds</strong>Orchestrator observes ordinary Git success.</div>
-        <div class="step"><strong>D. Receipt commits</strong>Branch/tip, primary tip, task, run, and path are fsync-durable.</div>
-        <div class="step"><strong>E. Revalidate/remove</strong>One no-force attempt; one idempotent maintenance replay after crash.</div>
-      </div>
-      <p class="guard">The cleanup arrow starts only after D. A crash before D preserves the tree; a changed fact at E preserves it; canonical requirements, design, plan, submissions, tests, review, audit, and sign-off records are never cleanup targets.</p>
+
+    <section class="panel migration">
+      <h2>Conservative migration</h2>
+      <p class="small">Fingerprint and retain singleton source bytes first. Project only unambiguous facts. Anything ambiguous becomes an immutable <code>legacy-unknown/v1</code> sentinel with an explicit reason—not pending, done, closed, or discarded.</p>
+      <ul class="checks">
+        <li>Conserve requirements, tasks, decisions</li>
+        <li>Conserve evidence, commits, reviews, audit</li>
+        <li>Cut over adapter only after verified receipt</li>
+        <li>Rollback never collapses immutable history</li>
+      </ul>
     </section>
-  </div>
-</main></body>
+  </aside>
+</div>
+
+<div class="legend" aria-label="Legend">
+  <span>active or bounded context</span><span class="immutable">immutable authority</span><span class="projection-key">replaceable projection</span><span class="reject">fail-closed boundary</span>
+</div>
+<p class="foot">Scaling proof: equivalent predecessors with 10 and 100,000 irrelevant events must produce byte-identical successor startup payloads, identical selected-reference reads, stable token work, and zero predecessor execution-tree opens. This visual is explanatory; the text-first contract is authoritative.</p>
+</main>
+</body>
 </html>

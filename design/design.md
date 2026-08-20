@@ -1,250 +1,223 @@
-# R-0003 design — proof-carrying enforcement, isolation, and cleanup
+# R-0004 Design — Stage-isolated delivery entities and bounded artifact handoffs
+
+Status: proposed HOW, awaiting orchestrator gate and human approval. This document does not mutate the as-built dependency graph.
 
 ## Decision
 
-Extend the v2.17.11 kernel with three additive, canonical services:
+Extend `RunStore` with immutable stage aggregates, immutable handoff manifests, and a small projection/legacy adapter. The run manifest becomes the atomic index for stage heads, lineage, operation receipts, and a replaceable active-stage projection; it is not the stage history itself. Every stage receives its own execution root and starts from one bounded, versioned input manifest plus explicitly selected content-addressed artifacts.
 
-1. `taskplane/enforcement.py` computes and persists the only
-   `live|unproven|advisory` decision for an exact repository, workspace,
-   session, run, and revision. Entry, dispatch, gates, status, dashboard,
-   artifacts, recommendations, and retro project that same record.
-2. `taskplane/collision.py` applies one versioned registry to skill calls,
-   agent dispatches, foreign-state signatures, write-authority exclusions,
-   and a durable interference ledger. It is a no-op without exact-workspace
-   governed state.
-3. `taskplane/worktree_cleanup.py` owns a two-phase post-merge protocol: a
-   durable orchestrator merge receipt first, then an independently locked and
-   immediately revalidated cleanup attempt. It removes only the exact
-   registered linked worktree with plain `git worktree remove -- <path>`;
-   never a branch, evidence, a symlink, or a tree whose safety is uncertain.
+This is an additive `taskplane.run/v4` design. Existing v3 run receipts and the R-0003 enforcement, collision-isolation, worktree-registration, merge, and cleanup behavior remain regression obligations. Stage terminalization never implies worktree deletion. Existing cleanup remains a separate, fail-closed operation governed by its exact registered-worktree and merged-tip proofs.
 
-The ReviewKernel normalization, narrow retry, evaluator-unavailable,
-shape-safe status, Python compatibility, live-manifest lookup, and exact
-claimed-worktree fixes already present in v2.17.11 remain regression
-obligations. This design does not replace or weaken them.
+## Current-state evidence
 
-## Why this shape
+- `taskplane/loop.py` persists and mutates one `loop.json`; `force` initialization replaces that file, and loop steps, tasks, submissions, gates, and approvals share the same mutable record.
+- `taskplane/track.py` represents one active track by moving the live `loop.json` to and from `tracks/<name>/loop.json` under a common lock. This preserves only singleton ownership, not immutable stage lineage or independent split children.
+- `taskplane/run_store.py` already provides revision-checked atomic manifest commits, journal entries, and durable R-0003 enforcement/interference/merge/cleanup receipts. It is the smallest existing transaction boundary on which to add stage indexes and idempotency receipts.
+- `taskplane/review_evidence.py` already provides confined, immutable, content-addressed canonical JSON artifacts with digest and byte-count verification. Stage handoffs can consume that contract rather than inventing a second artifact authority.
+- `taskplane/storage.py` resolves canonical external run roots and managed worktree registration. Execution roots and stage-object roots must use the same locator and must not be placed in the source checkout.
+- `taskplane/loop_status.py` and `taskplane/dashboard.py` currently project the singleton loop state. `taskplane/retro.py` currently loads all run trace events. They require a bounded stage-summary read seam so predecessor execution trees are never opened for normal status, review, sign-off, or Retro.
+- `docs/state-spec.md` documents external, run-scoped runtime state and the present singleton loop/track model. The stage schema, projection semantics, and migration require an explicit state-spec update.
 
-The three new concerns share a trust pattern: derive a small decision from
-structural evidence, persist it atomically with identity and revision, then
-make adapters render or enforce the record without inventing another truth.
-Keeping the decisions in kernel modules avoids divergent Claude, Codex,
-Slack, hook, CLI, and dashboard interpretations. Separating the destructive
-cleanup boundary from ordinary repository preparation keeps the safe default
-obvious and testable.
+The captured dependency graph has 64 modules and 224 edges. Its baseline content fingerprint is `6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976`. The graph’s current-state inventory is empty, so the cited repository sources above are the current-state authority. R-0004 has exactly 11 acceptance criteria, no open questions, and a resolvable dependency on R-0003.
 
-### Alternatives considered
+## Alternatives
 
-- **Selected — canonical kernel records plus two-phase cleanup.** Gains one
-  authority decision, deterministic cross-host projections, bounded hook
-  work, and crash-recoverable cleanup. It adds three small modules, one data
-  registry, and fixture matrices. Revisit if hosts provide an authenticated,
-  repository-scoped enforcement and plugin-exclusion protocol with equivalent
-  receipts and audit semantics.
-- **Distributed adapter checks plus immediate removal.** Each entry command,
-  hook, dashboard, and merge driver would implement its own liveness/collision
-  checks and remove a worktree immediately after `git merge`. This has fewer
-  new modules but recreates the contradictions R-0003 forbids and cannot prove
-  the merge record survived before deletion. Revisit only if Taskplane becomes
-  single-host and single-entry-point.
-- **Status quo: warnings, manual plugin discipline, manual cleanup.** This is
-  maximally reversible and makes no destructive engine change, but absent
-  hooks remain silent, competing drivers remain structurally allowed, and
-  merged worktrees accumulate. Revisit as the rollback mode, not as the target
-  behavior.
+### A. Extend the singleton move/restore model
 
-## Current-state anchors
+Add stage fields to `loop.json` and teach `track.py` to move more files between active and inactive directories.
 
-- `host_capabilities.py` already writes bounded hook receipts, but
-  `runtime_hook_observations` can accept an old session-bound receipt when the
-  current session is unknown. `taskplane_lite.screen_liveness` already derives
-  active-contract meter evidence but only emits a warning.
-- `tp.py:cmd_screen_dispatch` is opt-in and treats a dispatch with no emitted
-  expectation as allowed. Neither hook manifest routes the `Skill` tool.
-- `taskplane_lite.build_contract` centralizes `scope_paths`,
-  `out_of_scope_paths`, and read-only `write_allow`, so signed foreign roots can
-  be excluded once at contract compilation.
-- `storage.py` deterministically derives managed task-worktree paths and writes
-  worker locators; `run_store.py` provides revision-checked atomic manifests
-  and journals. Neither records a task worktree's branch/tip lifecycle or owns
-  post-merge cleanup today.
-- `loop.py` instructs the orchestrator to run `git merge tp/<task>` and remove
-  a worktree after Evaluate passes; it marks the task passed but has no durable
-  merge receipt or cleanup transaction. EM already has a regression proving it
-  can run after worker trees disappear.
-- v2.17.11 tests already cover ReviewKernel summary normalization, substantive
-  narrow retry, provenance/conservation, evaluator outage identity, dashboard
-  shape safety, live run lookup, and claimed-worktree evaluation. Those tests
-  remain floors.
+This is the smallest superficial change and preserves current CLI shapes. It fails the core aggregate boundary: split children still contend for one mutable history, moving a record changes its address, terminal predecessors can be reclassified by restore, and successor startup remains coupled to a record containing predecessor tasks and submissions. Extra locks cannot turn the moved singleton into independently addressable immutable stages.
 
-The three supplied documents were used only as field/specification evidence.
-Product authority comes from R-0003 and `specs/spec.md`.
+Revisit only if R-0004 is narrowed to single-stage, single-child sequential execution without immutable lineage or bounded context.
 
-## Runtime contracts
+### B. RunStore-backed immutable stage aggregates with a projection adapter — selected
 
-### Enforcement decision
+Store each stage revision, terminal summary, and handoff manifest as immutable content-addressed objects. Commit only references and bounded summaries into a revision-checked run index. Keep `loop.json` and track commands behind a compatibility adapter while migration is active; make new stage writes authoritative in `RunStore`.
 
-`taskplane.enforcement-status/v1` contains the normalized repository and exact
-workspace fingerprints, session fingerprint (or explicit unknown), run and
-revision, host/mode, status, one stable `evidence_id`, receipt/meter evidence,
-reasons, and optional advisory `{actor, acknowledged_at, decision_id}`.
+This reuses atomic file replacement, run locking, revision checks, canonical runtime roots, artifact verification, and R-0003 receipts. The cost is a deliberate v3-to-v4 schema migration and a temporary dual-reader. It provides explicit aggregate roots without requiring replay of all historical events.
 
-The decision is synchronous and read-only until accepted for a run. The CLI
-guard executes before `new`, `loop init`, `review start`, stage emission, or
-claim can create state. On a live Claude host, the entry command's own
-PreToolUse path has already written a fresh exact-workspace receipt, so the
-guard adds zero probes and zero model calls. In strict mode `unproven` refuses
-without writing run state. `--advisory --by <actor>` records one attributable
-decision and changes the canonical status to `advisory`. Closing gates
-recompute from structural evidence; loss of live proof blocks closure until
-fresh proof or a recorded advisory acknowledgment.
+Revisit if a future requirement needs multi-region writers, arbitrary temporal queries, or rebuilding every domain fact from an event log.
 
-If the current session identity is unknown, every foreign/session-bound
-receipt is freshness-limited to 300 seconds. A known current session requires
-an exact session match. Both paths require exact workspace compatibility.
+### C. Full event-sourced stage graph
 
-### Delivery isolation and interference
+Represent every stage transition, split, handoff, and projection change as an event and reconstruct entities through replay plus snapshots.
 
-`taskplane.delivery-isolation-registry/v1` is packaged JSON with a version and
-content fingerprint. It lists Taskplane namespaces/roles, host built-ins,
-non-delivery helper patterns, known competing delivery namespaces, and
-versioned foreign-state signatures. The seed conflict is
-`orchestrator-supaconductor`; helper seeds cover document, spreadsheet,
-presentation, and visualization capabilities.
+This offers the richest temporal query surface and natural append-only audit. It also creates a new event schema, replay/upcaster/snapshot machinery, ordering rules, and compaction policy. It makes bounded startup and Retro harder to prove because consumers can accidentally replay predecessor history. Current local, revision-checked single-run writes do not justify that complexity.
 
-`taskplane.foreign-interference/v1` records bounded identity, disposition,
-registry fingerprint, exact governed run/step/workspace evidence, actor/session
-fingerprints when available, and time. Known delivery competitors are denied
-even when `TASKPLANE_ENFORCE_DISPATCH` is unset. Unknown foreign invocations
-are advised and recorded, or denied under strict isolation. Advisory runs may
-record what was observed but never claim an inactive hook denied it.
+Revisit when independently writing coordinators or temporal audit queries become product requirements and snapshot governance is funded.
 
-Onboarding and governed entry perform bounded signature discovery. A directory
-name alone never matches. Signed roots are persisted and appended to compiled
-`out_of_scope_paths`; an override requires an attributable decision and exact
-root. Status reads the durable summary and performs no rediscovery.
+## Aggregate and storage model
 
-### Merge receipt and cleanup record
+### Immutable objects
 
-The orchestrator uses an engine-owned merge boundary rather than free-form
-merge prose. After a non-variant task passes Evaluate, the boundary resolves
-the primary checkout and recorded primary branch, executes the ordinary merge,
-and only after Git reports success atomically commits
-`taskplane.task-merge/v1` with repository identity, run/task, exact managed
-path, branch ref, pre-merge branch tip, primary ref, resulting primary tip,
-and time. A crash before this receipt leaves cleanup ineligible.
+`taskplane/stage_entities.py` owns `taskplane.stage/v1` and its state machine. A stage object contains:
 
-`taskplane.worktree-cleanup/v1` is keyed by merge-receipt id and has
-`pending|preserved|removed|already-clean|manual-attention` outcomes plus every
-checked identity and reason. A locked cleanup reads only the registered
-candidate named by the receipt, never scans arbitrary worktrees, and then
-re-resolves immediately before removal:
+- stable `stage_id` and `run_id`;
+- `requirement_id` and content fingerprint/revision, optional approved design fingerprint/revision, and `stage_kind` (`product`, `design`, `plan`, `build`, `evaluate`, `engineering`, `retro`, or extension kind);
+- sorted `parent_stage_ids` and `predecessor_stage_ids`;
+- an immutable `input_manifest_ref` and a unique `execution_root_id` resolved beneath the canonical run root;
+- declared deliverables, budget, dependencies, contracts, and authority binding;
+- lifecycle state (`active` or `terminal`) and exactly one terminal outcome (`done`, `closed`, or `discarded`) when terminal;
+- attribution, reason codes, timestamps, aggregate revision, and content fingerprint.
 
-- repository identity and primary checkout;
-- exact Git worktree registration and linked-worktree type;
-- `lstat` directory identity (no symlink/reparse point) and exact derived
-  managed path;
-- task/run locator, recorded branch ref, and unchanged recorded branch tip;
-- unambiguous primary ref and current local primary tip (no fetch);
-- empty porcelain-v2 status including untracked/staged/unmerged bytes;
-- no Git/worktree/task lock or merge/rebase/sequencer state;
-- inactive, released, passed-and-merge-recorded lifecycle;
-- no variant (selected or otherwise), failed state, or evidence-retention flag;
-- `git merge-base --is-ancestor <recorded-tip> <current-primary-tip>` success.
+Only an active aggregate can be terminalized. `done` is accepted only after every declared deliverable and completion-evidence reference verifies. `closed` requires actor, time, reason code, and text explaining why no further work is required. `discarded` requires actor, time, reason code, text explaining why results must not be consumed, and sets `default_consumable=false`. There is no reopen transition. Further work creates a successor stage.
 
-Any missing, ambiguous, changed, or failing fact produces `preserved` before
-the removal call. Removal uses no force and no branch deletion. Immediately
-after success, the engine verifies both path absence and registration absence,
-then commits `removed`. If a crash occurs after Git removal but before the
-outcome commit, the single maintenance replay recognizes the exact receipt,
-absent exact registration, and absent exact directory as `already-clean`.
-Conflicting or partial absence becomes `manual-attention` and is never retried
-with a stronger primitive.
+Discarded and closed artifacts remain immutable and addressable for audit. Later reuse is possible only through a new attributable authorization that selects exact artifact fingerprints into a new handoff; this never changes the predecessor outcome and never treats a discarded stage result as default input.
 
-## Sequencing and ownership
+### Handoff manifest
 
-1. Preserve all v2.17.11 ReviewKernel regression fixtures as a pre-change
-   floor.
-2. Add the enforcement decision and receipt trust fix; wire entry and closing
-   gates before status/artifact projections.
-3. Add the collision registry, Skill matcher, dispatch check, signed-root
-   exclusion, and durable interference projection.
-4. Add managed task registration fields and the orchestrator merge receipt.
-5. Add cleanup eligibility/removal/replay, then enable automatic cleanup only
-   after the merge receipt is durable.
-6. Update dashboard, skills, docs, hook manifests, and cross-host parity
-   fixtures from the canonical APIs.
+`taskplane/stage_handoff.py` owns `taskplane.stage-handoff/v1`. Its canonical form records:
 
-`enforcement.py`, `collision.py`, and `worktree_cleanup.py` own domain rules;
-`tp.py` and `loop.py` own CLI/orchestration wiring; `run_store.py` owns atomic
-persistence; `dashboard.py`, `runtime_eval.py`, agents, skills, and docs are
-projections only. No simultaneous deployment across independent services and
-no stored-data migration are required.
+- producer stage id and terminal outcome;
+- requirement id/revision and design revision/fingerprint;
+- target identity and commit identity when applicable;
+- provided/consumed/changed contracts;
+- declared deliverables and verified evidence references;
+- each selected artifact kind, fingerprint, digest, byte count, and redacted canonical locator;
+- explicit exclusions, including predecessor agents, conversations, event logs, tool transcripts, leases, runtime state, undeclared paths, tools, secrets, and approvals;
+- authorization actor, authority record, time, and operation id.
 
-## Failure, observability, and bounds
+The canonical manifest is at most 64 KiB, contains at most 64 selected artifact references, and each bounded stage summary is at most 16 KiB. Artifact bodies are not inlined in startup; a stage resolves only selected verified references. A larger or incomplete manifest fails closed before a successor is created. Explicit content expansion needs a new attributed authorization and reason and is recorded as another selected artifact, never an implicit transcript import.
 
-All records use existing atomic-write/file-lock conventions. Hook and collision
-decisions are synchronous, registry-bounded, network-free, and model-free; the
-target is p95 <= 100 ms in local fixture runs. A live entry adds 0 probes.
-Receipt freshness is 300 seconds only when exact current-session identity is
-unavailable. Cleanup performs one attempt after a durable merge and at most one
-idempotent maintenance replay per unchanged outcome fingerprint.
+### Run index and active projection
 
-Durable signals are `enforcement_decision`, `enforcement_gate_refused`,
-`foreign_interference_event`, `foreign_state_detected`, `merge_recorded`,
-`worktree_cleanup_preserved`, `worktree_cleanup_removed`,
-`worktree_cleanup_already_clean`, and `worktree_cleanup_manual_attention`.
-Strict entry/gate refusals, known collision denials, and manual-attention
-cleanup outcomes are actionable dashboard/CLI alerts; preserved cleanup is a
-status reason, not a failure alert.
+`RunStore` v4 adds:
 
-This local CLI has no service availability/throughput SLO. Canonical decision,
-merge, and cleanup records have RPO 0 after the command reports success via
-fsync-backed atomic commit; cleanup recovery has RTO one maintenance pass.
+- `stage_heads`: `stage_id -> immutable stage object reference + bounded summary`;
+- `lineage`: immutable parent/predecessor/child and handoff-reference tuples;
+- `stage_operations`: operation-id receipts for start, resume, terminalize, handoff, split, and migration;
+- `active_stage_projection`: a rebuildable object containing sorted active stage ids and an optional foreground stage id.
+
+The projection is a cache, not authority. Its value must equal the active states in `stage_heads`; readers reject ambiguity and rebuild it under the run lock. History is derived from indexed immutable heads and lineage, never from the projection and never from directory location. A status page returns at most 100 summaries plus a cursor.
+
+### Independent execution trees
+
+Every stage obtains `runs/<run-id>/stages/executions/<stage-id>/` through `storage.py`. The path is unique, confined, and never reused. A host dispatcher creates a fresh native agent/thread/tree for the stage and supplies only:
+
+1. the stage id and current authority binding;
+2. the verified input handoff manifest;
+3. explicitly selected artifact references;
+4. the stage’s own budget and declared scope.
+
+No predecessor conversation, agent identity, trace, event log, tool transcript, lease, meter, active contract, or runtime environment is inherited. Resume of an active stage creates a new attempt beneath the same isolated stage root from the same immutable input manifest; resuming a terminal stage is rejected and the caller must create a successor.
+
+## Atomic commands and idempotency
+
+Each command requires `run_id`, expected run revision, actor/authority, and an idempotency `operation_id`. Under the existing `RunStore` lock it:
+
+1. returns the prior receipt when the operation id and request fingerprint match, or rejects reuse with different input;
+2. loads and validates the current indexed aggregate heads and authority;
+3. verifies all artifact references, declared evidence, lifecycle preconditions, and numeric bounds;
+4. writes immutable stage/handoff objects first; unreferenced objects are harmless and garbage collection is out of scope;
+5. commits in one atomic run-manifest revision the new heads, lineage, active projection, and operation receipt;
+6. appends the diagnostic journal entry after the authoritative commit.
+
+A crash before step 5 leaves the prior lifecycle authoritative. A crash after step 5 is recovered by the stored receipt even if the diagnostic journal append was missed. Duplicate events, reconnects, and retries are therefore semantic no-ops. Revision conflicts reload and re-evaluate; they never merge lifecycle changes speculatively.
+
+### Start and terminalize
+
+Starting a successor requires a terminal predecessor plus a valid handoff authorization, except for a root stage. It writes the new active aggregate and updates lineage/projection in one commit. Terminalization writes exactly one terminal outcome and removes that stage from the projection in one commit. Creating a successor may be combined with terminalization only by the dedicated `terminalize_and_start` command, so there is no state in which a successor is active without a durable predecessor outcome and handoff.
+
+Non-build stages may terminalize `closed` or `discarded` with no successor. No implicit implementation stage is created.
+
+### Split
+
+`split_stage` requires an active parent and at least two child specifications. One transaction:
+
+- terminalizes the parent `closed` with `reason_code=split`, actor, time, and reason;
+- creates deterministic child ids from `run_id + parent_stage_id + operation_id + ordinal`;
+- binds each child to an explicit selected-artifact subset, dependency list, budget, input manifest, and unique execution root;
+- records child lineage and the parent-to-child handoffs;
+- replaces the active projection with the child set and stores one receipt.
+
+Children have separate aggregate heads. A child operation can name only that child’s expected head, so it cannot update its parent or siblings. Read-only artifact reference overlap is allowed; undeclared artifact inheritance is not.
+
+## Bounded read models
+
+`loop_status.py`, dashboard, review, sign-off, and Retro consume `stage_summary_page` and `lineage_summary`; they do not open predecessor execution directories. A terminal summary includes stage id/kind/outcome, predecessor outcome, handoff fingerprint, child ids, bounded deliverable/evidence counts, pending human action, and timestamps. Text-first renderings expose the same fields and never rely on color or the visual.
+
+`retro.py` stops scanning all predecessor trace events. Terminalization produces the bounded metrics Retro needs, including outcome, duration, attempts, finding counts, selected artifact bytes, manifest bytes, startup tokens, explicit expansion reason, and graph/evidence fingerprints. Retro aggregates those summaries. Detailed execution data remains addressable for an explicit audit command, outside the default status/startup path.
+
+The scaling invariant is mechanical: successor startup serialization reads the handoff object and selected artifact references only. A fixture constructs equivalent terminal stages with 10 and 100,000 irrelevant predecessor events and asserts byte-identical startup bytes, identical selected-ref reads, zero predecessor execution-tree opens, bounded manifest size, and startup/token counters independent of event count.
+
+## Legacy migration and compatibility
+
+`taskplane/stage_migration.py` performs an idempotent, non-destructive migration under the loop/run locks:
+
+1. fingerprint the exact singleton `loop.json`, `tracks.json`, stored track records, and associated requirements/tasks/decisions/evidence/commits/reviews/audit references;
+2. retain those source bytes as content-addressed migration artifacts before projecting anything;
+3. deterministically create v4 stage objects only for states whose identity, lifecycle, and evidence are unambiguous;
+4. preserve every ambiguous record as `taskplane.legacy-unknown/v1` with source fingerprint, explicit `unknown_reason`, and retained references—never guess `pending`, `done`, `closed`, or `discarded`;
+5. atomically commit stage indexes, lineage, projection, migration receipt, and source fingerprints;
+6. switch the adapter to stage-authoritative reads only after the receipt verifies.
+
+The unknown record is an audit/migration sentinel, not a stage terminal outcome. It cannot be selected as default successor input. Resolution creates an attributable new stage or handoff while retaining the sentinel unchanged.
+
+During rollout, old CLI/status callers use `track.py` as a narrow projection adapter. They may read a v4 foreground projection and render legacy fields, but they may not move, restore, overwrite, or reclassify stage aggregates. New writes go only through stage commands. The original legacy artifacts remain retained and readable throughout rollback.
+
+## Authorization, evidence, and R-0003 preservation
+
+The changed consolidated-authorization contract binds every lifecycle command and handoff authorization to the exact run, repository/worktree, requirement/design revision, actor/session, and current authority revision. Authority is re-resolved immediately before the atomic commit; stale or advisory-only authority cannot be silently upgraded.
+
+The consumed review-evidence-binding contract verifies review artifact identity and keeps evidence usable after an execution worktree is removed. Stage handoff code consumes the existing artifact reference verifier rather than interpreting arbitrary paths.
+
+R-0003 automatic recovery remains bounded and does not gain stage authority. Recovery may replay an already authorized operation id or rebuild the active projection from immutable heads. It cannot choose a terminal outcome, add artifacts, reopen a stage, manufacture a child, approve a gate, or broaden worktree cleanup.
+
+Stage terminalization, migration, and retention never call cleanup. Existing post-merge cleanup may remove only an exact registered Taskplane-managed linked worktree after the recorded branch tip is proven an ancestor of the re-resolved primary `main` tip and every R-0003 last-moment eligibility check passes. Dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked/reparse-point, path-mismatched, missing-ref, ambiguous-main, primary/main, merge-in-progress, evidence-needed, or last-moment-uncertain worktrees remain retained. Cleanup is no-force, never broadens scope, deletes no branch/commit/requirement/design/plan/submission/test/review-evidence/audit/sign-off input, and records its outcome idempotently; a pre-merge-receipt crash retains, a post-receipt crash permits only one identical maintenance replay, and canonical EM/graph/evidence/Retro/status/sign-off records remain usable after an eligible removal.
+
+## Failure and negative-case policy
+
+- Invalid schema, missing revision, oversized manifest, too many references, digest mismatch, undeclared path/tool/secret/approval, noncanonical execution root, or stale authority: reject before changing the run index.
+- Terminal transition requested twice: identical operation returns its receipt; a different request rejects because the head is terminal.
+- Start races terminalize: expected revision permits one commit; the loser reloads and can only return the matching receipt or fail.
+- Split child collision, fewer than two children, duplicate child spec, unresolved dependency, missing budget, or artifact outside its declared subset: reject the whole split.
+- Projection absent/corrupt/ambiguous: stop stage dispatch, rebuild from indexed heads under lock, and record the repair; never choose a foreground stage heuristically.
+- Crash around immutable writes: unindexed objects cannot affect lifecycle; a later maintenance tool may report them but does not delete them in this requirement.
+- Legacy ambiguity: preserve an explicit unknown sentinel and require attributed resolution.
+- Predecessor trace growth: startup and default read models never open it; a regression is a release blocker.
+- R-0003 worktree cleanup negatives: retain the worktree and record the exact failed predicate; never retry with force or broader path authority.
+
+## Observability
+
+Structured signals include stage id/kind/state/outcome, operation/receipt fingerprint, run revision, authority revision, predecessor/parent/child ids, handoff fingerprint, manifest bytes, selected-ref count and bytes, startup bytes/tokens, explicit expansion reason, projection repairs, lifecycle conflicts, migration source/result fingerprints, unknown reasons, and cleanup-preservation reason. Metadata is bounded and redacts host paths and secret-bearing values.
+
+Alerts fire for terminal-reopen attempts, ambiguous active projections, repeated operation-id mismatch, stage/handoff digest failure, successor startup opening a predecessor execution root, manifest bound violation, migration loss/count mismatch, and any destructive cleanup attempt lacking the complete R-0003 proof.
 
 ## Rollout and rollback
 
-Roll out additively: land regression floors; introduce record schemas and
-read-only projections; enable strict Claude entry where hook support is
-declared; enable known-collision denial with unknowns advisory; then enable
-automatic cleanup after merge-matrix tests pass. No external dependency or
-data migration is introduced.
+1. Ship v4 readers, schemas, immutable object storage, validation, and projection rebuild behind a disabled feature flag; retain v3 writes.
+2. Run shadow migrations and compare bounded legacy/v4 summaries, retained reference counts, lineage, and authority bindings without switching readers.
+3. Enable stage-native roots for new runs, then migrate existing runs only after the source-retention and conservation report passes. Keep legacy CLI reads through the adapter.
+4. Move dashboard/status/review/sign-off/Retro to bounded summaries and enforce zero predecessor-tree reads. Stop singleton move/restore writes only after coverage and migration telemetry are clean.
+5. Remove the write side of the adapter in a later requirement; retain legacy readers and source artifacts for audit.
 
-Rollback may change Claude enforcement to `warn`, disable collision screening,
-and return cleanup to manual mode. It must retain truthful `unproven` or
-`advisory` records, interference/merge/cleanup audits, all ReviewKernel floors,
-orchestrator-only approvals, and the prohibition on force removal and branch or
-evidence deletion.
+Rollback disables creation of new v4 stages and returns unmigrated callers to legacy reads. It does not delete immutable objects, erase receipts, collapse stage histories into one mutable loop, reopen terminal entities, guess unknown legacy state, or weaken R-0003 cleanup/evidence proofs. Migrated runs remain readable through v4 and may be resumed only when the stage feature is re-enabled or via an explicit forward migration; no lossy reverse migration is allowed.
 
-## Declared debt
+## Python solution-design application
 
-The competing-delivery registry is intentionally curated because current hosts
-do not expose authenticated per-project plugin exclusion or a universal
-delivery-skill taxonomy. Unknown foreign invocations therefore remain advised
-by default and denyable in strict isolation. Pay this debt down when hosts ship
-repository-scoped plugin controls with signed plugin identity; at that point the
-registry becomes a compatibility fallback rather than primary classification.
-The downstream debt record, if Product tracks the host dependency separately,
-is: `tp req debt "Replace curated collision registry with authenticated host identity" --req R-0003 --reason "Hosts lack per-project plugin exclusion and a signed delivery-skill taxonomy" --follow-up "Adopt the host protocol and retain the registry only as compatibility fallback" --files "taskplane/collision.py,taskplane/collision_registry.json,hooks/**,.codex/**"`.
+The Python solution-design reference was read in full and SHA-256 verified as `9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7`.
 
-## Python and packaging constraints
+| Lens concern | Design disposition |
+| --- | --- |
+| Supported runtime | Preserve the project’s Python 3.10–3.12 floor; parse, import, and smoke-test each version. No 3.14-only syntax or behavior. |
+| Sync/async/cancellation | Storage and CLI paths remain synchronous. No event loop or background task is introduced. Interruption is handled at the atomic commit boundary and by idempotent receipts. |
+| Boundary typing | Validate JSON dictionaries, enums, identifiers, byte/count bounds, environment-derived roots, Git identities, and artifact references at runtime. Use narrow typed records internally; do not rely on annotations as validation. |
+| Concurrency | Use explicit cross-process file locks and expected manifest revisions. Make no correctness claim based on the GIL. |
+| Resources/packaging | Schemas are represented in Python validators unless a data schema is added; any added resource must be included in the wheel/plugin and verified by clean-install import tests. Runtime state stays in canonical external roots. |
+| Exceptions/cleanup | Convert boundary errors to stable domain failures, preserve causal diagnostics without secrets, close descriptors through context managers, and never compensate with destructive deletion. |
+| Performance | Canonical JSON hashing and selected-reference reads are linear in the bounded manifest, not predecessor history. Benchmark 10 vs 100,000 predecessor events and assert byte identity and zero tree opens. |
+| Verification | Add lifecycle/property matrices, crash injection at every commit boundary, duplicate/retry/reconnect fixtures, migration conservation tests, malicious-path/reference tests, import-cycle checks, and clean-wheel tests. |
 
-All call paths remain synchronous; there is no async cancellation or
-`ExceptionGroup` contract. JSON, CLI/event, environment, Git, and persisted
-records are runtime-validated trust boundaries, preferably with `TypedDict`
-projections at consumers. Mutable run state remains under existing file locks
-and atomic revision checks; no free-threaded safety is inferred from the GIL.
+## Graph readiness and completion
 
-The public namespace remains `taskplane`; no runtime dependency is added. The
-collision registry must be included in plugin/wheel contents. Although the
-language reference targets Python 3.14, R-0003's compatibility contract is the
-binding floor: code and imports must parse and run on supported Python
-3.10/3.11/3.12, with clean-wheel install/import, strict type checks at the new
-boundaries, failure-injection tests, and dependency-graph verification.
+The proposed graph overlay uses the captured depth policy: local depth 3, contract-only boundary traversal, contract depth 1, and requirement depth 1. Design entry is ready because the graph is pinned, R-0004’s dependency R-0003 resolves, all 11 criteria and six contract relations are present, current seams are cited, atomic ownership is assigned, and numeric/context boundaries are fixed.
 
-## Visualization
+Completion requires the implementation plan and engineering review to account for every proposed module, edge, and contract; a post-merge graph scan; exact lifecycle/handoff/split/migration and 10-vs-100,000-event fixtures; cross-host bounded-summary parity; Python/package checks; and explicit realization evidence for every scanner-invisible contract edge. Any drift returns to Design before sign-off.
 
-`design/visual.html` is required because three related state machines and the
-merge-before-cleanup ordering are easier to review together than as prose.
-It is dependency-free, keyboard-readable, and carries the same negative-case
-boundaries as this design.
+## Deferred debt
+
+The compatibility read adapter and retained legacy singleton formats are intentional rollout debt. Once all supported workspaces have a verified v4 migration receipt, record removal as requirement-linked debt rather than deleting support inside this change:
+
+`tp req debt "Remove the R-0004 singleton loop/track compatibility adapter after migration coverage reaches 100%" --req R-0004 --owner engineering --trigger "all supported persisted workspaces report verified v4 migration receipts"`
+
+No other design question remains open.

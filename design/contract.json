@@ -1,433 +1,345 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0003",
-  "title": "Proof-carrying enforcement, collision isolation, and safe post-merge cleanup",
-  "summary": "Preserve the landed v2.17.11 ReviewKernel fixes, then add one exact-workspace enforcement decision, one versioned collision/interference authority, and one durable two-phase merge/cleanup transaction that removes only revalidated Taskplane-managed linked worktrees.",
+  "requirement": "R-0004",
+  "title": "Stage-isolated delivery entities and bounded artifact handoffs",
+  "summary": "Add immutable RunStore-backed stage aggregate roots, content-addressed bounded handoff manifests, a replaceable active-stage projection, and a non-destructive singleton migration adapter while preserving all R-0003 authority, evidence, and fail-closed worktree-cleanup invariants.",
   "current_state": {
-    "summary": "v2.17.11 already normalizes derivable ReviewKernel summaries, retries substantive slot changes narrowly, preserves provenance/conservation, treats evaluator outages as unavailable, renders all contract shapes, resolves live review manifests, supports Python 3.10-3.12, and binds evaluation to claimed worktrees. Remaining gaps are advisory-only Claude liveness, opt-in dispatch screening with no Skill matcher or collision registry, no signed-root exclusion/interference ledger, and merge/removal prose without a durable merge receipt or conservative cleanup owner.",
+    "summary": "The product persists one mutable loop.json, track switching moves that singleton record, RunStore v3 already supplies revision-checked atomic manifests and R-0003 receipts, review_evidence already supplies confined content-addressed artifacts, and current status/Retro paths can read singleton or full-trace state. There is no independently addressable stage aggregate, immutable lineage, split transaction, bounded inter-stage manifest, or conservative singleton migration.",
     "sources": [
-      "specs/spec.md",
-      "taskplane/review_evidence.py",
-      "taskplane/review_repair.py",
-      "taskplane/review_recovery.py",
-      "taskplane/evaluator_health.py",
-      "taskplane/review.py",
-      "taskplane/dashboard.py",
-      "taskplane/host_capabilities.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/tp.py",
-      "taskplane/loop.py",
-      "taskplane/repository.py",
-      "taskplane/storage.py",
-      "taskplane/run_store.py",
-      "taskplane/runtime_eval.py",
-      "hooks/hooks.json",
-      ".codex/hooks.json",
-      "taskplane/tests/test_review_evidence_lifecycle.py",
-      "taskplane/tests/test_status_and_large_delivery.py",
-      "taskplane/tests/test_host_capabilities.py",
-      "taskplane/tests/test_loop.py",
-      "taskplane/tests/test_storage_kernel.py",
-      "/Users/vdemkiv/Downloads/taskplane-bug-report.md",
-      "/Users/vdemkiv/Downloads/skill-collision-isolation.md",
-      "/Users/vdemkiv/Downloads/claude-enforcement-heartbeat.md",
-      "lenses/references/python-solution-design.md"
+      "taskplane/loop.py: singleton loop state, transition contracts, atomic loop.json save",
+      "taskplane/track.py: common-lock singleton loop.json move/restore",
+      "taskplane/run_store.py: taskplane.run/v3 revision-checked atomic commit, journal, and R-0003 receipts",
+      "taskplane/review_evidence.py: confined immutable content-addressed artifact references",
+      "taskplane/storage.py: canonical external run roots and exact managed-worktree registrations",
+      "taskplane/loop_status.py: singleton human/status read model",
+      "taskplane/retro.py: current full trace-event read path",
+      "taskplane/dashboard.py: current loop and review projections",
+      "docs/state-spec.md: persisted loop/track and runtime placement contract",
+      "taskplane/tests/test_track_retro.py and taskplane/tests/test_v230_loop.py: singleton track safety regression floors",
+      "taskplane/tests/test_artifact_references.py: immutable artifact integrity regression floor"
     ]
   },
   "alternatives": [
     {
-      "id": "canonical-proof-records",
-      "name": "Canonical proof records with two-phase cleanup",
-      "description": "Add kernel-owned enforcement, collision/interference, and cleanup decisions; adapters consume them, and cleanup starts only after a durable orchestrator merge receipt and immediate eligibility revalidation.",
+      "id": "singleton-extension",
+      "name": "Extend singleton move and restore",
+      "description": "Add lifecycle and handoff fields to loop.json and teach track.py to move a larger set of per-stage files.",
       "tradeoffs": {
         "gains": [
-          "One cross-host authority truth and evidence id",
-          "Structural collision denial without prose dependence",
-          "Fail-closed, idempotent, auditable cleanup"
+          "Smallest superficial code and CLI change",
+          "Reuses the existing common loop lock"
         ],
         "costs": [
-          "Three focused Python modules and one packaged registry",
-          "State-machine, crash, Git, and host-parity fixture matrices"
+          "A moved mutable record is not an independently addressable immutable aggregate",
+          "Split children still share one mutable history and one context-bearing loop record",
+          "Restore can reclassify predecessor state and cannot prove bounded successor startup"
         ],
-        "revisit_when": "Hosts expose an authenticated repository-scoped enforcement and plugin-exclusion protocol with equivalent receipts, audit, and cleanup transaction semantics."
+        "revisit_when": "R-0004 is narrowed to strictly sequential single-child execution with no immutable lineage, split, or bounded-context requirements."
       }
     },
     {
-      "id": "distributed-adapter-checks",
-      "name": "Distributed adapter checks and immediate removal",
-      "description": "Implement liveness and collision checks independently in hooks, CLI, status, and dashboard, then have the merge driver remove a worktree immediately after Git succeeds.",
+      "id": "runstore-stage-aggregates",
+      "name": "RunStore immutable stage aggregates with projection adapter",
+      "description": "Persist content-addressed stage and handoff objects, atomically index their heads/lineage/operation receipts in RunStore v4, derive a replaceable active projection, and temporarily adapt legacy loop/track readers.",
       "tradeoffs": {
         "gains": [
-          "Fewer new domain modules",
-          "Small local patches at each surface"
+          "Reuses existing revision checks, locks, atomic replacement, canonical run roots, and artifact verification",
+          "Makes terminal history, successors, and split children immutable and independently addressable",
+          "Makes successor startup and status depend only on bounded manifests and summaries"
         ],
         "costs": [
-          "Divergent classifications and evidence ids",
-          "No durable merge-before-delete proof",
-          "Repeated trust-boundary logic in adapters"
+          "Requires a deliberate v3-to-v4 migration and temporary dual-reader",
+          "Adds three focused domain modules and explicit projection-repair semantics"
         ],
-        "revisit_when": "Taskplane supports only one host, one entry surface, and one non-parallel repository layout."
+        "revisit_when": "Multiple distributed writers or arbitrary temporal replay queries require an event log as the primary source of truth."
       }
     },
     {
-      "id": "warnings-and-manual-cleanup",
-      "name": "Status quo warnings and manual cleanup",
-      "description": "Keep liveness advisory, rely on users to disable competing plugins, and leave worktree removal to the orchestrator or human.",
+      "id": "event-sourced-stage-graph",
+      "name": "Full event-sourced stage graph",
+      "description": "Make lifecycle, split, handoff, and projection changes append-only events and rebuild stage aggregates through replay and snapshots.",
       "tradeoffs": {
         "gains": [
-          "No new destructive engine path",
-          "Immediate rollback posture"
+          "Rich temporal queries and a complete append-only transition stream",
+          "Natural extension point for future multi-writer coordination"
         ],
         "costs": [
-          "Silent non-enforcement remains possible",
-          "Competing delivery loops remain structurally allowed",
-          "Merged managed worktrees continue to accumulate"
+          "Requires ordering, replay, upcaster, snapshot, compaction, and migration governance",
+          "Creates new paths for startup, status, or Retro to accidentally scale with predecessor history",
+          "Disproportionate to current local revision-checked writers"
         ],
-        "revisit_when": "Used only as explicit warn/manual rollback mode after canonical records exist."
+        "revisit_when": "Multi-region writers, temporal queries, or event-level external integrations are accepted product requirements and snapshot governance is funded."
       }
     }
   ],
-  "selected_approach": "canonical-proof-records",
-  "decision": "Select canonical proof records because R-0003 requires identical structural classifications across surfaces and requires cleanup to be both destructive and crash-safe. A single decision per concern, persisted with existing atomic run-store primitives and projected by adapters, is the smallest design that makes those invariants mechanically reviewable.",
+  "selected_approach": "runstore-stage-aggregates",
+  "decision": "Select RunStore-backed immutable stage aggregates because they are the smallest existing transaction model that can make stage identity, terminal outcomes, lineage, splits, bounded handoffs, retry idempotency, and conservative migration mechanically true. Immutable objects are written before one authoritative manifest revision updates their index, lineage, active projection, and operation receipt. The active pointer and legacy loop/track shapes are projections only. Full event sourcing is deferred because it adds replay and snapshot complexity without improving R-0004's bounded default reads.",
   "modules": {
     "existing": [
-      "taskplane/tp.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/host_capabilities.py",
-      "taskplane/loop.py",
-      "taskplane/review.py",
-      "taskplane/review_evidence.py",
-      "taskplane/review_repair.py",
-      "taskplane/review_recovery.py",
-      "taskplane/evaluator_health.py",
-      "taskplane/dashboard.py",
-      "taskplane/repository.py",
-      "taskplane/storage.py",
       "taskplane/run_store.py",
+      "taskplane/storage.py",
+      "taskplane/loop.py",
+      "taskplane/track.py",
+      "taskplane/review_evidence.py",
+      "taskplane/loop_status.py",
+      "taskplane/dashboard.py",
+      "taskplane/retro.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/tp.py",
       "taskplane/runtime_eval.py",
-      "hooks/hooks.json",
-      ".codex/hooks.json",
-      "agents",
-      "skills",
-      "docs",
+      "taskplane/repository.py",
+      "taskplane/worktree_cleanup.py",
       "taskplane/tests",
-      "specs/spec.md"
+      "docs",
+      "skills"
     ],
     "new": [
-      "taskplane/enforcement.py",
-      "taskplane/collision.py",
-      "taskplane/collision_registry.json",
-      "taskplane/worktree_cleanup.py"
+      "taskplane/stage_entities.py",
+      "taskplane/stage_handoff.py",
+      "taskplane/stage_migration.py"
     ]
   },
   "contracts": [
     {
-      "relation": "consumes",
-      "id": "contract:review-kernel-slot",
-      "description": "Retains exact run, slot, producer, lease, engine, worktree, findings, and acceptance-evidence conservation."
+      "relation": "provides",
+      "id": "contract:stage-entity-lifecycle",
+      "description": "taskplane.stage/v1 gives each stage a stable identity, isolated execution root, immutable indexed head, active-to-exactly-one-terminal transition, and idempotent lifecycle receipt."
     },
     {
-      "relation": "consumes",
-      "id": "contract:review-kernel-mechanical-repair",
-      "description": "Retains equivalence-bounded summary normalization and affected-slot-only substantive retry."
+      "relation": "provides",
+      "id": "contract:stage-artifact-handoff",
+      "description": "taskplane.stage-handoff/v1 is the sole default inter-stage context boundary and carries bounded authority-bound metadata plus explicitly selected verified content-addressed artifacts."
     },
     {
-      "relation": "consumes",
-      "id": "contract:review-evidence-binding",
-      "description": "Retains exact claimed-worktree and canonical evidence binding after worker cleanup."
-    },
-    {
-      "relation": "consumes",
-      "id": "contract:evaluator-infrastructure-health",
-      "description": "Retains exact-key non-judgmental evaluator outage caching and retry."
+      "relation": "provides",
+      "id": "contract:delivery-lineage",
+      "description": "The immutable indexed predecessor, parent, child, handoff, and outcome relations are authoritative; the active-stage projection is rebuildable and non-authoritative."
     },
     {
       "relation": "changes",
       "id": "contract:consolidated-authorization",
-      "description": "Adds structural enforcement status and attributable advisory operation to every authority derivation."
+      "description": "Every stage start, resume, terminalization, handoff, split, migration resolution, and explicit artifact reuse binds the exact run, repository/worktree, requirement/design revision, actor/session, and authority revision and re-resolves authority before commit."
     },
     {
       "relation": "changes",
       "id": "contract:automatic-recovery",
-      "description": "Adds bounded enforcement recovery and one idempotent cleanup maintenance replay without stronger authority."
+      "description": "Recovery may replay an identical authorized operation receipt or rebuild the active projection; it cannot select outcomes, add artifacts, reopen terminal stages, manufacture children, approve gates, or broaden R-0003 cleanup."
     },
     {
-      "relation": "changes",
-      "id": "contract:onboarding-worktree-continuity",
-      "description": "Adds signed foreign-root reporting and exact managed worktree registration/retention continuity."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:claude-enforcement-status",
-      "description": "taskplane.enforcement-status/v1 is the sole live, unproven, or advisory decision for exact workspace/session/run/revision evidence."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:exclusive-delivery-authority",
-      "description": "taskplane.delivery-isolation-registry/v1 deterministically allows Taskplane/helpers and denies or advises foreign delivery drivers only during exact-workspace governed state."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:foreign-interference-audit",
-      "description": "taskplane.foreign-interference/v1 durably records bounded identities, dispositions, registry evidence, signed roots, run/step, actor/session evidence, and time."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:managed-worktree-cleanup",
-      "description": "taskplane.task-merge/v1 and taskplane.worktree-cleanup/v1 prove durable merge, immediate exact eligibility revalidation, no-force removal, idempotent replay, and evidence retention."
+      "relation": "consumes",
+      "id": "contract:review-evidence-binding",
+      "description": "Handoffs reuse the existing immutable review artifact identity, digest, byte-count, confinement, and canonical-run storage checks so evidence remains verifiable after a worker tree is removed."
     }
   ],
   "graph": {
-    "baseline_fingerprint": "1c922579cff49bae94329a07532106138583e9de73be0048f6b7dacc70930d6b",
+    "baseline_fingerprint": "6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976",
     "proposed_modules": [
-      "taskplane/tp.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/host_capabilities.py",
-      "taskplane/loop.py",
-      "taskplane/review.py",
-      "taskplane/review_evidence.py",
-      "taskplane/review_repair.py",
-      "taskplane/review_recovery.py",
-      "taskplane/evaluator_health.py",
-      "taskplane/dashboard.py",
-      "taskplane/repository.py",
-      "taskplane/storage.py",
       "taskplane/run_store.py",
+      "taskplane/storage.py",
+      "taskplane/loop.py",
+      "taskplane/track.py",
+      "taskplane/review_evidence.py",
+      "taskplane/loop_status.py",
+      "taskplane/dashboard.py",
+      "taskplane/retro.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/tp.py",
       "taskplane/runtime_eval.py",
-      "hooks/hooks.json",
-      ".codex/hooks.json",
-      "agents",
-      "skills",
-      "docs",
+      "taskplane/repository.py",
+      "taskplane/worktree_cleanup.py",
       "taskplane/tests",
-      "specs/spec.md",
-      "taskplane/enforcement.py",
-      "taskplane/collision.py",
-      "taskplane/collision_registry.json",
-      "taskplane/worktree_cleanup.py"
+      "docs",
+      "skills",
+      "taskplane/stage_entities.py",
+      "taskplane/stage_handoff.py",
+      "taskplane/stage_migration.py"
     ],
     "proposed_edges": [
       {
-        "from": "taskplane/host_capabilities.py",
-        "to": "contract:claude-enforcement-status",
-        "kind": "consumes",
-        "reason": "Supplies bounded exact-session and exact-workspace hook receipt observations."
-      },
-      {
-        "from": "taskplane/taskplane_lite.py",
-        "to": "contract:claude-enforcement-status",
-        "kind": "consumes",
-        "reason": "Supplies active-contract meter liveness and applies the canonical closing decision."
-      },
-      {
-        "from": "taskplane/enforcement.py",
-        "to": "contract:claude-enforcement-status",
+        "from": "taskplane/stage_entities.py",
+        "to": "contract:stage-entity-lifecycle",
         "kind": "provides",
-        "reason": "Owns structural classification, evidence identity, advisory acknowledgment, and entry/closure guards."
+        "reason": "Owns stage schema, validation, terminal outcomes, split invariants, and idempotent transition commands."
       },
       {
-        "from": "taskplane/enforcement.py",
+        "from": "taskplane/stage_handoff.py",
+        "to": "contract:stage-artifact-handoff",
+        "kind": "provides",
+        "reason": "Owns bounded canonical manifests, exclusions, selected artifact references, and startup serialization."
+      },
+      {
+        "from": "taskplane/stage_entities.py",
+        "to": "contract:delivery-lineage",
+        "kind": "provides",
+        "reason": "Owns immutable predecessor, parent, child, outcome, and handoff relations plus projection rebuild."
+      },
+      {
+        "from": "taskplane/stage_entities.py",
         "to": "contract:consolidated-authorization",
         "kind": "changes",
-        "reason": "Makes enforcement status and advisory identity part of derived authority."
+        "reason": "Requires and revalidates exact authority bindings for every lifecycle mutation."
       },
       {
-        "from": "taskplane/tp.py",
-        "to": "contract:claude-enforcement-status",
+        "from": "taskplane/stage_entities.py",
+        "to": "contract:automatic-recovery",
+        "kind": "changes",
+        "reason": "Restricts recovery to exact receipt replay and deterministic projection rebuild."
+      },
+      {
+        "from": "taskplane/stage_handoff.py",
+        "to": "contract:review-evidence-binding",
         "kind": "consumes",
-        "reason": "Guards CLI entry, dispatch, review closure, and machine-shaped recovery before mutation."
+        "reason": "Verifies selected evidence through the existing canonical artifact binding instead of trusting paths."
+      },
+      {
+        "from": "taskplane/stage_entities.py",
+        "to": "taskplane/run_store.py",
+        "kind": "runtime",
+        "reason": "Commits stage heads, lineage, active projection, and operation receipts under one expected revision."
+      },
+      {
+        "from": "taskplane/stage_entities.py",
+        "to": "taskplane/stage_handoff.py",
+        "kind": "runtime",
+        "reason": "Validates immutable handoffs before successor or split-child creation."
+      },
+      {
+        "from": "taskplane/stage_handoff.py",
+        "to": "taskplane/review_evidence.py",
+        "kind": "runtime",
+        "reason": "Reuses content-addressed artifact put, verify, read, digest, byte-count, and confinement semantics."
+      },
+      {
+        "from": "taskplane/stage_handoff.py",
+        "to": "taskplane/storage.py",
+        "kind": "runtime",
+        "reason": "Resolves immutable stage objects and artifacts only inside the canonical run root."
+      },
+      {
+        "from": "taskplane/stage_entities.py",
+        "to": "taskplane/storage.py",
+        "kind": "runtime",
+        "reason": "Allocates one confined, non-reused execution root per stable stage id."
+      },
+      {
+        "from": "taskplane/stage_migration.py",
+        "to": "taskplane/stage_entities.py",
+        "kind": "runtime",
+        "reason": "Creates deterministic v4 aggregates or explicit immutable legacy-unknown sentinels."
+      },
+      {
+        "from": "taskplane/stage_migration.py",
+        "to": "taskplane/run_store.py",
+        "kind": "runtime",
+        "reason": "Atomically commits migrated indexes, lineage, projections, receipts, and conservation evidence."
+      },
+      {
+        "from": "taskplane/stage_migration.py",
+        "to": "taskplane/review_evidence.py",
+        "kind": "runtime",
+        "reason": "Retains exact legacy source bytes and references as immutable migration artifacts before projection."
       },
       {
         "from": "taskplane/loop.py",
-        "to": "contract:claude-enforcement-status",
-        "kind": "consumes",
-        "reason": "Guards stage emission, claim, and loop closure with the canonical decision."
+        "to": "taskplane/stage_entities.py",
+        "kind": "runtime",
+        "reason": "Routes new-stage loop transitions through authoritative lifecycle commands rather than mutating predecessor loop state."
       },
       {
-        "from": "taskplane/run_store.py",
-        "to": "contract:claude-enforcement-status",
-        "kind": "stores",
-        "reason": "Atomically persists accepted enforcement decisions and advisory attribution."
-      },
-      {
-        "from": "taskplane/dashboard.py",
-        "to": "contract:claude-enforcement-status",
-        "kind": "consumes",
-        "reason": "Projects the persisted status and evidence id without re-derivation."
-      },
-      {
-        "from": "taskplane/runtime_eval.py",
-        "to": "contract:claude-enforcement-status",
-        "kind": "consumes",
-        "reason": "Stamps gate, evidence, recommendation, and retro projections."
-      },
-      {
-        "from": "taskplane/collision_registry.json",
-        "to": "contract:exclusive-delivery-authority",
-        "kind": "provides",
-        "reason": "Packages versioned Taskplane, helper, conflict, built-in, and foreign-state signature rules."
-      },
-      {
-        "from": "taskplane/collision.py",
-        "to": "contract:exclusive-delivery-authority",
-        "kind": "provides",
-        "reason": "Owns exact-workspace governed-state detection and registry-bounded skill/agent dispositions."
-      },
-      {
-        "from": "hooks/hooks.json",
-        "to": "contract:exclusive-delivery-authority",
-        "kind": "consumes",
-        "reason": "Routes Claude Skill and agent PreToolUse events to canonical screening."
-      },
-      {
-        "from": ".codex/hooks.json",
-        "to": "contract:exclusive-delivery-authority",
-        "kind": "consumes",
-        "reason": "Routes equivalent Codex skill and dispatch events without changing authority semantics."
+        "from": "taskplane/track.py",
+        "to": "taskplane/stage_migration.py",
+        "kind": "runtime",
+        "reason": "Uses the compatibility projection/reader and stops move/restore writes after a verified migration receipt."
       },
       {
         "from": "taskplane/tp.py",
-        "to": "contract:exclusive-delivery-authority",
-        "kind": "consumes",
-        "reason": "Wires screen-skill and independent known-conflict dispatch denial."
-      },
-      {
-        "from": "taskplane/collision.py",
-        "to": "contract:foreign-interference-audit",
-        "kind": "provides",
-        "reason": "Owns durable events, signed-root discovery, bounded identity, and summary projection."
-      },
-      {
-        "from": "taskplane/run_store.py",
-        "to": "contract:foreign-interference-audit",
-        "kind": "stores",
-        "reason": "Persists interference events and summaries under revision checks."
+        "to": "taskplane/stage_entities.py",
+        "kind": "runtime",
+        "reason": "Exposes start, resume, terminalize, split, history, and explicit reuse commands with machine-readable failures."
       },
       {
         "from": "taskplane/taskplane_lite.py",
-        "to": "contract:exclusive-delivery-authority",
+        "to": "taskplane/stage_entities.py",
+        "kind": "runtime",
+        "reason": "Binds stage-specific active contracts, meters, authority, and execution roots without predecessor runtime inheritance."
+      },
+      {
+        "from": "taskplane/loop_status.py",
+        "to": "contract:delivery-lineage",
         "kind": "consumes",
-        "reason": "Compiles signed foreign roots into out_of_scope_paths unless an attributable exact-root override exists."
+        "reason": "Reads paged bounded stage/lineage summaries and never opens predecessor execution trees."
       },
       {
         "from": "taskplane/dashboard.py",
-        "to": "contract:foreign-interference-audit",
+        "to": "contract:delivery-lineage",
         "kind": "consumes",
-        "reason": "Renders durable interference summaries and stays quiet for clean runs."
+        "reason": "Renders current stage, predecessor outcome, handoff, child lineage, and pending action in text-first form."
+      },
+      {
+        "from": "taskplane/retro.py",
+        "to": "contract:delivery-lineage",
+        "kind": "consumes",
+        "reason": "Aggregates bounded terminal summaries instead of scanning predecessor trace trees."
       },
       {
         "from": "taskplane/runtime_eval.py",
-        "to": "contract:foreign-interference-audit",
+        "to": "contract:stage-artifact-handoff",
         "kind": "consumes",
-        "reason": "Adds nonzero interference headlines to retro from stored events only."
+        "reason": "Projects exact stage, predecessor outcome, handoff, and lineage evidence into review and sign-off."
       },
       {
-        "from": "taskplane/storage.py",
-        "to": "contract:onboarding-worktree-continuity",
-        "kind": "changes",
-        "reason": "Extends exact managed worker registration with task, branch, tip, lifecycle, variant, and retention identity."
+        "from": "taskplane/run_store.py",
+        "to": "contract:stage-entity-lifecycle",
+        "kind": "stores",
+        "reason": "Persists immutable object references, bounded heads, and exactly-once lifecycle receipts in taskplane.run/v4."
+      },
+      {
+        "from": "taskplane/run_store.py",
+        "to": "contract:delivery-lineage",
+        "kind": "stores",
+        "reason": "Persists authoritative immutable lineage and the rebuildable active-stage projection."
       },
       {
         "from": "taskplane/repository.py",
-        "to": "contract:managed-worktree-cleanup",
+        "to": "contract:consolidated-authorization",
         "kind": "consumes",
-        "reason": "Resolves repository, registered linked worktrees, and the unambiguous local primary ref without fetching."
-      },
-      {
-        "from": "taskplane/worktree_cleanup.py",
-        "to": "contract:managed-worktree-cleanup",
-        "kind": "provides",
-        "reason": "Owns merge receipts, eligibility, last-moment revalidation, no-force exact removal, verification, and replay."
-      },
-      {
-        "from": "taskplane/loop.py",
-        "to": "contract:managed-worktree-cleanup",
-        "kind": "consumes",
-        "reason": "Calls the orchestrator-owned merge boundary only after non-variant Evaluate pass and records lifecycle release."
-      },
-      {
-        "from": "taskplane/run_store.py",
-        "to": "contract:managed-worktree-cleanup",
-        "kind": "stores",
-        "reason": "Durably journals merge receipt before cleanup and cleanup outcome after exact removal verification."
+        "reason": "Re-resolves exact repository, worktree, target, and commit identity before lifecycle commit and preserves R-0003 cleanup proof."
       },
       {
         "from": "taskplane/worktree_cleanup.py",
         "to": "contract:automatic-recovery",
-        "kind": "changes",
-        "reason": "Adds one idempotent post-receipt maintenance replay while prohibiting stronger or broader cleanup retries."
-      },
-      {
-        "from": "taskplane/review.py",
-        "to": "contract:review-kernel-slot",
         "kind": "consumes",
-        "reason": "Preserved collector and conservation boundary remains authoritative."
-      },
-      {
-        "from": "taskplane/review_evidence.py",
-        "to": "contract:review-evidence-binding",
-        "kind": "provides",
-        "reason": "Preserved immutable evidence and exact execution binding remain canonical after cleanup."
-      },
-      {
-        "from": "taskplane/review_repair.py",
-        "to": "contract:review-kernel-mechanical-repair",
-        "kind": "provides",
-        "reason": "Preserved summary normalization remains equivalence-bounded."
-      },
-      {
-        "from": "taskplane/review_recovery.py",
-        "to": "contract:review-kernel-mechanical-repair",
-        "kind": "consumes",
-        "reason": "Preserved retry scheduler reissues only substantive affected slots."
-      },
-      {
-        "from": "taskplane/evaluator_health.py",
-        "to": "contract:evaluator-infrastructure-health",
-        "kind": "provides",
-        "reason": "Preserved exact-key unavailable cache remains non-judgmental."
-      },
-      {
-        "from": "agents",
-        "to": "contract:consolidated-authorization",
-        "kind": "consumes",
-        "reason": "Role guidance uses canonical continuation, enforcement, and cleanup semantics."
+        "reason": "Preserves the separate R-0003 idempotent cleanup replay and every exact-worktree retention negative."
       },
       {
         "from": "skills",
-        "to": "contract:consolidated-authorization",
+        "to": "contract:stage-artifact-handoff",
         "kind": "consumes",
-        "reason": "Facade/persona guidance exposes executable continuation without owning decisions."
+        "reason": "Starts each product/design/build/review/retro delivery entity from the bounded manifest rather than predecessor conversation state."
       },
       {
         "from": "docs",
-        "to": "contract:onboarding-worktree-continuity",
-        "kind": "consumes",
-        "reason": "Documents exact host recovery, foreign-state exclusion, merge receipt, and cleanup preservation."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:claude-enforcement-status",
-        "kind": "validates",
-        "reason": "Runs exact receipt, entry, gate, propagation, stale-session, and host-parity matrices."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:exclusive-delivery-authority",
-        "kind": "validates",
-        "reason": "Runs known/helper/unknown/no-governance/advisory/signed-root matrices."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:managed-worktree-cleanup",
-        "kind": "validates",
-        "reason": "Runs every preservation case, crash point, idempotent replay, no-force, and post-removal governance fixture."
-      },
-      {
-        "from": "specs/spec.md",
-        "to": "contract:consolidated-authorization",
+        "to": "contract:stage-entity-lifecycle",
         "kind": "defines",
-        "reason": "R-0003 remains the product authority for scope and negative cases."
+        "reason": "Documents immutable lifecycle, terminal semantics, storage, migration, rollback, and legacy adapter behavior."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:stage-entity-lifecycle",
+        "kind": "validates",
+        "reason": "Runs lifecycle, terminal outcome, split isolation, retry, crash, reconnect, and migration-conservation matrices."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:stage-artifact-handoff",
+        "kind": "validates",
+        "reason": "Runs schema, authority, digest, byte/ref bound, exclusion, malicious-path, and explicit-reuse tests."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "contract:delivery-lineage",
+        "kind": "validates",
+        "reason": "Runs projection-rebuild, sibling immutability, paged history, bounded-summary, and 10-versus-100000-event tests."
       }
     ],
     "depth_policy": {
@@ -438,300 +350,245 @@
     },
     "dor": [
       {
-        "check": "Baseline graph and requirement are pinned",
-        "evidence": "Baseline fingerprint is 1c922579cff49bae94329a07532106138583e9de73be0048f6b7dacc70930d6b; R-0003 has exactly 28 criteria, no open questions, and depends on resolvable R-0001 and R-0002."
+        "check": "Requirement identity, dependency, and exact acceptance surface are ready",
+        "evidence": "R-0004 is canonical, depends on resolvable R-0003, contains exactly 11 acceptance criteria, six required contract relations, and no open questions; R-0005 is not substituted."
       },
       {
-        "check": "As-built regression floors are identified",
-        "evidence": "Current review repair/evidence/recovery, evaluator health, status, run lookup, Python, and claimed-worktree tests are named as preserve-only obligations."
+        "check": "Baseline graph and design overlay are pinned",
+        "evidence": "Captured graph fingerprint is 6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976 with 64 modules and 224 edges; the design proposes an overlay only at local depth 3, contract-only boundary, contract depth 1, requirement depth 1."
       },
       {
-        "check": "New authorities and boundaries are named",
-        "evidence": "One enforcement record, one versioned collision registry/interference record, and one merge/cleanup transaction own the new behavior; adapters only consume them."
+        "check": "Current state is repository-grounded despite the inventory warning",
+        "evidence": "loop.py, track.py, run_store.py, storage.py, review_evidence.py, loop_status.py, retro.py, dashboard.py, state-spec.md, and focused regression tests are cited; no empty inventory claim is treated as evidence."
       },
       {
-        "check": "Destructive scope is closed",
-        "evidence": "Only exact registered managed linked worktrees after a durable merge receipt are candidates; every R-0003 preservation case, no-force rule, no branch deletion, and no evidence deletion are explicit."
+        "check": "Aggregate ownership and atomic boundaries are settled",
+        "evidence": "stage_entities owns lifecycle/lineage, stage_handoff owns the sole default context boundary, stage_migration owns non-destructive conversion, and one RunStore revision owns heads/lineage/projection/operation receipt."
       },
       {
-        "check": "Python and packaging constraints are settled",
-        "evidence": "Synchronous stdlib-only modules, runtime validation at JSON/env/Git boundaries, registry included in wheel/plugin, and supported parse/run floor Python 3.10-3.12."
+        "check": "Numeric and negative boundaries are settled",
+        "evidence": "Manifest <=64 KiB, <=64 selected references, summary <=16 KiB, history page <=100; no predecessor runtime inheritance; no terminal reopen; explicit legacy unknown; and every R-0003 cleanup retention negative remains fail-closed."
+      },
+      {
+        "check": "Python solution-design reference is applied",
+        "evidence": "python-solution-design.md SHA-256 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7; Python 3.10-3.12, synchronous I/O, explicit locks/revisions, runtime boundary validation, clean-package checks, and failure injection are specified."
       }
     ],
     "dod": [
       {
-        "check": "Realized graph and contracts conform",
-        "evidence": "Engineering records every proposed module/edge/contract, runs graph scan after merge, and reports conformant design metadata with empty drift."
+        "check": "Realized modules, edges, contracts, and graph depth conform",
+        "evidence": "Engineering records every proposed module, all 31 proposed edges, all six contract relations, explicit evidence for scanner-invisible boundary edges, an updated graph scan after merge, and conformant design metadata with empty drift."
       },
       {
-        "check": "ReviewKernel floors remain exact",
-        "evidence": "AC1-10 existing normalization, retry, provenance, status, Python, live-manifest, continuation, outage, and claimed-worktree fixtures pass without weakened assertions."
+        "check": "All 11 acceptance mappings pass without reinterpretation",
+        "evidence": "The exact criterion strings in acceptance_map each have a named design element and executable validation; requirement-store equality and one-to-one coverage are checked mechanically."
       },
       {
-        "check": "Enforcement and collision matrices pass",
-        "evidence": "AC11-21 exact status, zero-state refusal, self-proving receipt, advisory propagation, degradation, 300-second freshness, collision tiers, signed roots, no-op, and retro fixtures pass."
+        "check": "Atomic lifecycle, handoff, split, and recovery matrices pass",
+        "evidence": "Crash injection before/after immutable writes, manifest commit, and journal append plus duplicate/reconnect/retry/race fixtures prove no duplicate child, lost artifact, reopened terminal stage, or ambiguous projection."
       },
       {
-        "check": "Cleanup matrix and crash recovery pass",
-        "evidence": "AC22-27 eligibility, all preservation cases, immediate revalidation, no-force removal, branch/evidence retention, pre/post-record crash, replay, EM/retro/status/sign-off fixtures pass."
+        "check": "Bounded context and read-model performance pass",
+        "evidence": "Equivalent 10- and 100000-event predecessors yield byte-identical startup payloads, identical selected-reference reads, zero predecessor-tree opens, stable startup/token work, bounded manifests/summaries, and paged history."
       },
       {
-        "check": "Cross-host rollback stays conservative",
-        "evidence": "AC28 Codex/Claude/Slack-capable and managed/legacy goldens pass in strict/warn/off and collision enabled/disabled modes; no rollback fixture auto-approves, forges live, weakens review, or force-deletes."
+        "check": "Migration conserves legacy knowledge and uncertainty",
+        "evidence": "Requirements, tasks, decisions, evidence, commits, reviews, audit history, and source bytes have before/after conservation proofs; ambiguity creates an explicit immutable unknown sentinel and never a guessed lifecycle."
       },
       {
-        "check": "Python/package quality holds",
-        "evidence": "Python 3.10/3.11/3.12 parse and smoke matrix, strict boundary typing, failure injection, clean-wheel install/import with registry contents, and import/dependency graph checks pass."
+        "check": "R-0003 authority, evidence, and cleanup regression floors remain exact",
+        "evidence": "Existing enforcement/collision/evidence/merge/cleanup tests pass; stage terminalization never invokes cleanup; only exact registered managed linked worktrees with recorded tip ancestor of re-resolved primary main remain eligible. Dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked/reparse-point, path-mismatched, missing-ref, ambiguous-main, primary/main, merge-in-progress, evidence-needed, and last-moment-uncertain trees retain. No force, broader scope, branch/commit/requirement/design/plan/submission/test/review-evidence/audit/sign-off deletion occurs."
+      },
+      {
+        "check": "Cross-host, accessibility, privacy, and package quality hold",
+        "evidence": "Codex, Claude, Slack-capable, managed, and legacy goldens use identical stage/manifest semantics; machine and text-first projections expose outcomes/lineage/actions; redaction and hostile input tests pass; Python 3.10/3.11/3.12 and clean-wheel/plugin import/resource tests pass."
+      },
+      {
+        "check": "Rollout and rollback preserve immutable history",
+        "evidence": "Shadow migration comparison, new-run canary, bounded-reader cutover, and rollback fixtures prove no reverse collapse, terminal reopen, unknown-state guess, artifact deletion, authority weakening, or cleanup broadening."
       }
     ]
   },
   "acceptance_map": [
     {
-      "criterion": "A blocker-only producer summary over canonical high, major, and blocker findings is normalized once before collection with before/after, derivation authority, and proven equivalence; findings stay byte-identical, collection completes when otherwise valid, and no producer rewrite is requested.",
-      "design_element": "contract:review-kernel-mechanical-repair",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py -k 'metadata_contradiction or normalizes_derivable or canonical_result'`; assert one repair audit, unchanged finding bytes, complete collection, and no producer rerun."
+      "criterion": "Every stage entity has a stable stage id, requirement revision, stage kind, parent or predecessor links, bounded input manifest, independent execution tree, and exactly one terminal outcome of done, closed, or discarded.",
+      "design_element": "taskplane.stage/v1 aggregate schema, immutable indexed heads, unique canonical execution roots, 64 KiB input bound, and active-to-one-terminal state machine in stage_entities.py.",
+      "validation": "Schema/property tests generate every kind/link/outcome combination; reject missing/duplicate identities, reused roots, missing revisions, oversized inputs, zero/multiple outcomes, and any terminal-to-active transition."
     },
     {
-      "criterion": "A substantive result mutation cannot be normalized: only its affected slot is reissued within the attempt bound, unchanged siblings remain sealed, and the new attempt retains original run and slot lineage.",
-      "design_element": "taskplane/review_recovery.py",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py -k 'substantive_mutation or fail_to_pass'`; assert one affected slot, max-attempt bound, sealed sibling reuse, and original run/slot lineage."
+      "criterion": "Done requires the declared deliverables and completion evidence; closed requires an attributable reason explaining why no further work is required; discarded requires an attributable reason explaining why its results must not be consumed. No terminal entity can silently return to active.",
+      "design_element": "Outcome-specific terminal guards, immutable terminal head, attributable actor/time/reason, discarded default_consumable=false, and no reopen command.",
+      "validation": "Outcome matrix verifies done rejects missing deliverables/evidence, closed/discarded reject absent attribution or reasons, discarded input is excluded by default, and all later transition attempts reject without head mutation."
     },
     {
-      "criterion": "Wrong-producer, copied, sibling-worktree, stale-lease, wrong-run, missing-slot, duplicate-slot, and engine-mismatch fixtures remain non-approvable; only exact once-complete slot and acceptance-evidence conservation permits approval.",
-      "design_element": "contract:review-kernel-slot",
-      "validation": "Run provenance/conservation matrices in `test_review_evidence_lifecycle.py`, `test_review_routing.py`, and `test_loop.py`; every named negative must keep approval disabled and exact once-complete evidence must enable it."
+      "criterion": "Starting a next stage creates a new execution tree and consumes only a versioned manifest plus explicitly selected content-addressed artifacts from predecessor stages; prior agents, conversations, event logs, tool transcripts, leases, and runtime state are not inherited as context.",
+      "design_element": "Fresh per-stage execution root and dispatcher payload serializer that accepts only taskplane.stage-handoff/v1 plus verified selected refs and an explicit exclusion list.",
+      "validation": "Cross-host startup goldens and hostile fixture seed predecessor agents/transcripts/logs/leases/runtime/secrets; successor bytes contain none, root id differs, and only declared verified fingerprints resolve."
     },
     {
-      "criterion": "Dashboard, status, and inline projection render for coding, read-only, ReviewKernel, released, and legacy contracts and show available scope/write allowance; no missing coding object raises KeyError.",
-      "design_element": "taskplane/dashboard.py",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_status_and_large_delivery.py -k contract_projection`; assert all five shapes render scope/write allowance in dashboard, status, and inline output without KeyError."
+      "criterion": "A handoff manifest records producer stage id and outcome, requirement and design revisions, target and commit identity where applicable, contracts, deliverables, evidence references, artifact fingerprints, exclusions, and the actor and time authorizing continuation.",
+      "design_element": "taskplane.stage-handoff/v1 canonical schema, 64 KiB/64-ref bounds, content fingerprint, authority binding, target applicability rule, and artifact verifier.",
+      "validation": "Canonical schema matrix requires every named field, conditional target/commit identity, exact contract relations, digest/bytes, exclusions and attribution; tamper, omission, path escape, oversize and stale-authority cases fail closed."
     },
     {
-      "criterion": "CLI and dashboard parse and ReviewKernel start smoke tests pass on supported Python 3.10, 3.11, and 3.12; an unsupported interpreter fails before state creation with one actionable version error.",
-      "design_element": "taskplane/tp.py",
-      "validation": "Run CI parse/import and ReviewKernel start smoke jobs under Python 3.10, 3.11, and 3.12 plus an unsupported-version launcher fixture; assert supported success and one pre-state actionable refusal."
+      "criterion": "Product, Design, Review, Evaluation, and other non-build work can terminate closed or discarded without creating an implementation stage, while their retained artifacts remain addressable for audit or later explicit reuse.",
+      "design_element": "Stage-kind-independent terminal command, optional successor, immutable artifact retention, and separately authorized explicit fingerprint reuse that does not mutate the predecessor outcome.",
+      "validation": "Per-kind tests close/discard without a build child, verify zero active successor and retained artifact reads, reject default discarded consumption, and permit exact later reuse only with new actor/time/authority/reason."
     },
     {
-      "criterion": "While a ReviewKernel run is active and collection is incomplete, repository status resolves the same run id and manifest that review collect can operate on.",
-      "design_element": "taskplane/run_store.py",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_routing.py -k 'run_id or manifest'`; create an incomplete active run and assert repository status and collect resolve byte-equivalent canonical manifest identity."
+      "criterion": "Splitting a deliverable closes the parent with a split reason and creates two or more independently addressable child stage entities with explicit artifact subsets, dependencies, budgets, and lifecycles; one child outcome cannot mutate sibling or parent history.",
+      "design_element": "Single split_stage RunStore transaction, deterministic child ids, >=2 child guard, explicit subsets/dependencies/budgets, separate heads/roots, and parent closed reason_code=split.",
+      "validation": "Property/concurrency/crash tests cover 2..N children, duplicate retry, subset violations and races; compare parent/sibling fingerprints before and after one child terminalizes and assert only that child's head changes."
     },
     {
-      "criterion": "Validation needs-user payloads, Product/Engineering guidance, and CLI docs expose the same executable dynamic, render, and static continuation and identify the canonical inline dashboard artifact.",
-      "design_element": "skills",
-      "validation": "Run onboarding/docs and review-continuation fixtures; execute each emitted dynamic/render/static command and assert Product, Engineering, CLI docs, payloads, and dashboard obligation name the same inline artifact."
+      "criterion": "The active-stage pointer is a replaceable projection only. Starting, resuming, splitting, or terminalizing a stage never overwrites or reclassifies a predecessor entity, and history lists every terminal and active entity with lineage.",
+      "design_element": "Authoritative stage_heads/lineage index, rebuildable active_stage_projection with sorted ids/optional foreground, immutable predecessor heads, and cursor-paged history summaries.",
+      "validation": "Delete/corrupt projection and rebuild from heads; mutation sequence compares every predecessor fingerprint, detects ambiguity rather than choosing, and lists all active/terminal entities with exact parent/predecessor/child/handoff links."
     },
     {
-      "criterion": "Regression fixtures retain PR-commit and README DoR derivation, explicit dynamic-validation consent receipt, out-of-scope write denial, immutable provenance/findings, early truthful request-changes, and approval conservation.",
-      "design_element": "taskplane/tests",
-      "validation": "Run the R-0003 ReviewKernel regression subset across `test_review_routing.py`, `test_review_evidence_lifecycle.py`, and guardrail tests; require all named properties and prohibit assertion weakening."
+      "criterion": "Crash, duplicate event, reconnect, and retry fixtures prove stage terminalization, handoff creation, and split creation are atomic and idempotent, with no duplicate child, lost artifact, reopened terminal stage, or ambiguous active pointer.",
+      "design_element": "Expected run revision, request-fingerprinted operation id, write-object-before-index protocol, one atomic heads/lineage/projection/receipt commit, and receipt-authoritative replay.",
+      "validation": "Failure injection at every write/replace/journal boundary plus duplicate/reconnect/race fixtures assert one receipt, one semantic transition, exact artifact conservation, deterministic children, terminal immutability, and projection=heads equality."
     },
     {
-      "criterion": "A bound evaluator outage remains unavailable rather than pass or fail, keeps readiness closed, retries evaluation without opening a product-fix cycle, and reuses cache only on the exact evaluator, engine, capability, repository, worktree, and validity key.",
-      "design_element": "contract:evaluator-infrastructure-health",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py taskplane/tests/test_loop.py -k 'evaluator_outage or unavailable'`; assert no verdict, closed readiness, evaluate retry, and exact cache-key miss on each identity change."
+      "criterion": "Dashboard, status, review, sign-off, and Retro show the current stage, predecessor outcome, artifact handoff, and child lineage from bounded summaries without loading predecessor execution trees.",
+      "design_element": "<=16 KiB terminal summary, <=100-row cursor page, lineage_summary API, text-first renderers, and Retro aggregation over terminal metrics rather than trace scans.",
+      "validation": "Instrument file opens and assert each surface renders all named fields and pending actions from summaries while predecessor execution roots raise if opened; test page bounds, text-only parity, and corrupt-summary failures."
     },
     {
-      "criterion": "Parallel DoD and evaluator evidence bind to the exact claimed task worktree whether invoked from primary or worker checkout; parent, sibling, moved, dirty, and stale trees cannot substitute.",
-      "design_element": "contract:review-evidence-binding",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_loop.py -k 'claimed_task_worktree or binds_claimed'`; execute from primary and worker, then mutate parent/sibling/path/dirty/head identities and assert rejection."
+      "criterion": "As irrelevant predecessor history grows from ten to one hundred thousand events, the default successor startup payload remains byte-identical and bounded to the manifest plus explicitly selected artifacts; startup work and token use do not scale with predecessor runtime history.",
+      "design_element": "Pure canonical startup serializer over the handoff object and selected refs only, with manifest/ref/byte/token telemetry and zero predecessor-tree dependency.",
+      "validation": "10-vs-100000-event benchmark asserts identical SHA-256 and bytes, same read count, zero predecessor-root opens, <=64 KiB manifest, <=64 refs, and stable startup work/token estimate within fixed measurement tolerance."
     },
     {
-      "criterion": "Given identical workspace/session evidence, every entry, dispatch, closing gate, status, dashboard, artifact, and retro returns one matching live, unproven, or advisory classification and evidence id.",
-      "design_element": "contract:claude-enforcement-status",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_enforcement_and_collision.py -k canonical_projection`; freeze evidence and assert identical status/evidence_id across every named surface."
-    },
-    {
-      "criterion": "With Claude hook support declared but absent, strict new, loop init, review start, stage emission, and claim fail nonzero with host-specific recovery and create no contract, loop, review, or receipt state.",
-      "design_element": "taskplane/enforcement.py",
-      "validation": "Run the strict absent-hook entry matrix in `test_enforcement_and_collision.py`; snapshot state roots before each command and assert nonzero machine refusal, exact host recovery, and zero new state bytes."
-    },
-    {
-      "criterion": "With the Claude hook live, the same entry succeeds from its fresh PreToolUse receipt without an extra probe, model call, or human prompt.",
-      "design_element": "taskplane/host_capabilities.py",
-      "validation": "Run the self-proving PreToolUse fixture for every entry; assert the entry event's receipt is consumed and probe/model/prompt counters remain exactly zero."
-    },
-    {
-      "criterion": "Advisory without by refuses; advisory with an attributable identity records one decision and stamps every gate, evidence payload, manifest, verdict, dashboard, recommendation, and retro with actor and time.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "Run the advisory full-loop fixture; omit `--by` for refusal, then use a fixed actor/time and structurally walk every named artifact for one matching decision id, actor, and timestamp."
-    },
-    {
-      "criterion": "A run that entered live but loses valid screen activity cannot pass a loop gate or close review until fresh proof or explicit advisory acknowledgment; the downgrade propagates without discarding evidence.",
-      "design_element": "taskplane/taskplane_lite.py",
-      "validation": "Run the mid-run degradation fixture; expire activity, assert both closures refuse while evidence fingerprints remain unchanged, then restore proof or acknowledge advisory and assert propagated status."
-    },
-    {
-      "criterion": "A foreign session receipt older than the bounded 300-second freshness window with no known current session classifies unproven; matching fresh receipts and screen activity classify live.",
-      "design_element": "taskplane/host_capabilities.py",
-      "validation": "Run receipt trust cases at 299, 300, and 301 seconds with known/unknown/matching/foreign sessions; assert old foreign unknown-session evidence is unproven and exact fresh/activity evidence is live."
-    },
-    {
-      "criterion": "During an active governed step, a registry-known competing delivery skill or agent is denied even when optional dispatch enforcement is unset; the denial names the run, step, foreign identity, and exact Taskplane continuation.",
-      "design_element": "contract:exclusive-delivery-authority",
-      "validation": "Run known skill/agent fixtures with `TASKPLANE_ENFORCE_DISPATCH` unset; assert hook denial plus exact run, step, identity, continuation, and no foreign write."
-    },
-    {
-      "criterion": "Allowlisted document, spreadsheet, presentation, and visualization helpers pass silently; an unknown foreign skill is recorded and advised normally and denied under strict isolation, with versioned registry evidence.",
-      "design_element": "taskplane/collision_registry.json",
-      "validation": "Run helper and unknown-skill table tests in normal/strict modes; assert silent helper allow, advised/denied unknown dispositions, and registry version/fingerprint on every non-silent event."
-    },
-    {
-      "criterion": "A signature-matching competing state root is named in entry, onboarding, and status and excluded from new write authority; a same-named unsigned directory is ignored, and inclusion requires an attributable override.",
-      "design_element": "taskplane/collision.py",
-      "validation": "Run signed/unsigned/override repository fixtures; assert bounded discovery at entry/onboarding, durable status projection, compiled out_of_scope exclusion, and exact actor-bound override."
-    },
-    {
-      "criterion": "With no exact-workspace contract, live loop, or open review, skill and dispatch screens are no-ops; advisory mode reports observed interference without claiming an inactive hook denied it.",
-      "design_element": "taskplane/collision.py",
-      "validation": "Run inactive workspace and advisory fixtures; assert byte-empty/no-op screen output outside governed state and advisory records use observed/advised, never denied-by-hook."
-    },
-    {
-      "criterion": "A retro with interference headlines durable counts and identities for denied skills, denied agents, advised invocations, and signed roots; a clean run has no interference headline and status performs no rediscovery.",
-      "design_element": "contract:foreign-interference-audit",
-      "validation": "Run dirty/clean retro fixtures and instrument signature discovery; assert exact durable counts/identities, absent clean headline, and zero discovery calls during status."
-    },
-    {
-      "criterion": "After an orchestrator merge into the resolved primary branch, eligibility proves exact managed registration, recorded branch and tip, clean inactive lifecycle, and branch-tip ancestry to the current primary tip; names, statuses, messages, and path prefixes alone do not qualify.",
-      "design_element": "contract:managed-worktree-cleanup",
-      "validation": "Run `python3 -m pytest -q taskplane/tests/test_worktree_cleanup.py -k eligibility`; vary each proof independently and assert eligibility only with exact registration/path/type/branch/tip/lifecycle/cleanliness and ancestry."
-    },
-    {
-      "criterion": "Dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked, path-mismatched, missing-ref, ambiguous-main, merge-in-progress, and evidence-needed worktrees are preserved, including on last-moment eligibility uncertainty.",
-      "design_element": "taskplane/worktree_cleanup.py",
-      "validation": "Run the parameterized preservation matrix in `test_worktree_cleanup.py`; inject every named case before initial and last-moment reads and assert path, registration, branch, and evidence remain."
-    },
-    {
-      "criterion": "Cleanup re-resolves repository, registered path, worktree type, branch and tip, primary tip, cleanliness, lifecycle, variant, and retention immediately before removal; any failure preserves the tree and registration and never retries with force, broader scope, or branch deletion.",
-      "design_element": "taskplane/worktree_cleanup.py",
-      "validation": "Instrument ordered Git/filesystem calls and inject failure at every revalidation/removal point; assert all facts are reread, one exact no-force remove at most, and no force, glob, fetch, broader path, or branch command."
-    },
-    {
-      "criterion": "Replayed successful cleanup is already-clean and removes only the eligible linked worktree registration and directory; branch, commits, requirement, design, plan, submissions, tests, review evidence, audit, and sign-off inputs remain addressable.",
-      "design_element": "taskplane/run_store.py",
-      "validation": "Run cleanup twice and inventory refs plus canonical artifact fingerprints before/after; assert removed then already-clean, branch/commit retention, and successful reads of every named record."
-    },
-    {
-      "criterion": "Automatic cleanup starts only after the orchestrator durably records a successful merge into the resolved primary branch; a pre-record crash preserves the tree and a post-record crash is recoverable by one idempotent maintenance pass.",
-      "design_element": "taskplane/loop.py",
-      "validation": "Run crash injection before merge, after Git/before receipt, after receipt/before removal, and after removal/before outcome; assert only durable receipt enables cleanup and one maintenance replay converges."
-    },
-    {
-      "criterion": "EM, graph and evidence reconciliation, retro, status, and final sign-off complete from canonical records after eligible trees are removed; evidence-needed trees remain until their owning lifecycle explicitly releases retention.",
-      "design_element": "taskplane/runtime_eval.py",
-      "validation": "Run a full parallel loop with one removable and one evidence-needed tree; remove the eligible tree, complete EM/graph/evidence/retro/status/sign-off, then explicitly release retention and re-evaluate the held tree."
-    },
-    {
-      "criterion": "Codex, Claude, Slack-capable flows, managed and legacy worktrees, enforcement modes, and collision modes preserve equivalent authority/evidence semantics; rollback cannot auto-approve, forge live status, weaken ReviewKernel regression tests, or force-delete a tree.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "Run cross-host golden matrices for strict/warn/off and collision normal/strict/off plus managed/legacy cleanup; compare normalized authority/evidence and audit prohibited calls, approvals, live claims, test diffs, and force flags."
+      "criterion": "A migration converts singleton loop records into stage entities without losing requirements, tasks, decisions, evidence, commits, reviews, or audit history; ambiguous legacy state is preserved with an explicit unknown reason rather than guessed as pending, done, closed, or discarded.",
+      "design_element": "Idempotent stage_migration source fingerprint, immutable legacy source artifacts, conservation manifest, deterministic known projections, taskplane.legacy-unknown/v1 sentinel, and verified receipt before adapter cutover.",
+      "validation": "Golden and generative legacy fixtures compare before/after identity/count/fingerprint sets for every named record class, replay identically after crashes, and require explicit unknown_reason for ambiguity with no guessed lifecycle or lost source bytes."
     }
   ],
   "risks": [
     {
-      "risk": "A legitimate Claude session is locked out by missing or stale structural proof.",
-      "mitigation": "Use the entry call's own fresh receipt, exact 300-second fallback only when session identity is unknown, host-specific recovery, attributable advisory, and warn mode as rollback without forging live.",
-      "owner": "taskplane/enforcement.py"
+      "risk": "A projection is accidentally treated as lifecycle authority and revives or hides a stage.",
+      "mitigation": "All writes require immutable indexed heads; projection equality is verified/rebuilt under lock, ambiguity stops dispatch, and tests delete/corrupt it.",
+      "owner": "stage lifecycle engineering"
     },
     {
-      "risk": "Collision rules falsely deny a helper or classify a directory by name.",
-      "mitigation": "Use a versioned fingerprinted registry, explicit helper patterns, signed multi-file state layouts, exact governed-state checks, advised unknowns by default, and fixture corpus for both false-positive directions.",
-      "owner": "taskplane/collision.py"
+      "risk": "The legacy adapter becomes a second writer and reintroduces singleton overwrite semantics.",
+      "mitigation": "After migration receipt, adapter APIs are read-only projections and every loop/track mutation routes through stage_entities; AST/runtime tests prohibit move/restore writes on v4 runs.",
+      "owner": "loop compatibility engineering"
     },
     {
-      "risk": "Cleanup destroys unmerged bytes or targets a foreign/path-swapped tree.",
-      "mitigation": "Require exact managed registration and recorded identities, lstat non-link checks, clean porcelain-v2 bytes, lifecycle/variant/retention checks, local ancestry, and an immediate second read under lock before one no-force exact-path call.",
-      "owner": "taskplane/worktree_cleanup.py"
+      "risk": "A handoff leaks predecessor transcript, secret, path, approval, or runtime authority.",
+      "mitigation": "Closed schema, redacted canonical refs, explicit exclusions, authority rebinding, byte/ref bounds, hostile-input tests, and startup serializers with no predecessor-tree handle.",
+      "owner": "security and privacy review"
     },
     {
-      "risk": "A crash splits Git removal from the cleanup outcome record.",
-      "mitigation": "Persist merge first, key cleanup by receipt, verify path and registration after removal, and permit one exact already-clean maintenance replay; partial absence becomes manual-attention.",
-      "owner": "taskplane/run_store.py"
+      "risk": "Split or retry creates duplicate children or partially terminalizes the parent.",
+      "mitigation": "Deterministic child ids and one request-fingerprinted expected-revision RunStore commit cover parent head, children, lineage, projection, and receipt.",
+      "owner": "run-store engineering"
     },
     {
-      "risk": "Removing a worker checkout makes review or sign-off evidence unreachable.",
-      "mitigation": "Require canonical external evidence before lifecycle release, preserve evidence-needed trees, retain all branches/commits/run records, and run EM-through-sign-off after-removal fixtures.",
-      "owner": "taskplane/runtime_eval.py"
+      "risk": "Legacy ambiguity is silently classified to make migration appear complete.",
+      "mitigation": "Unknown sentinel is the only allowed ambiguous projection, carries an explicit reason and retained source fingerprint, and cannot be default successor input.",
+      "owner": "migration engineering"
     },
     {
-      "risk": "New Python modules or packaged registry break supported interpreters/installations.",
-      "mitigation": "Use synchronous stdlib-only Python 3.10 syntax, runtime-validate trust boundaries, include the JSON resource in wheel/plugin contents, and run clean-wheel imports plus 3.10/3.11/3.12 smoke jobs.",
-      "owner": "taskplane/tests"
+      "risk": "Stage terminalization broadens or prematurely triggers destructive R-0003 worktree cleanup.",
+      "mitigation": "Lifecycle contains no cleanup call; cleanup remains a separate exact-registration/merged-tip/re-resolved-main proof with all retention negatives, no force, and durable outcomes.",
+      "owner": "repository safety review"
+    },
+    {
+      "risk": "Bounded summaries omit information needed by Review or Retro, causing a fallback to full predecessor traces.",
+      "mitigation": "Define all required review/retro metrics in the terminal summary, make predecessor-root opens fail in tests, and require an explicit audit command for details.",
+      "owner": "review and retro engineering"
     }
   ],
   "failure_modes": [
     {
-      "mode": "Strict entry or closure cannot prove a live screen.",
-      "detection": "enforcement_gate_refused signal contains status, evidence_id, host, surface, and recovery.",
-      "recovery": "The human reloads/retries for fresh proof or records one `--advisory --by` decision; no automatic retry or partial state creation occurs."
+      "mode": "Crash before the authoritative run-index commit",
+      "detection": "No matching stage_operations receipt and indexed heads retain the previous revision; optional immutable objects are unreferenced.",
+      "recovery": "Retry the same operation id; recompute and commit once. Do not delete orphan objects in R-0004."
     },
     {
-      "mode": "A known competing driver or unknown strict-isolation invocation is attempted.",
-      "detection": "foreign_interference_event signal contains registry fingerprint, disposition, run, step, identity, and continuation.",
-      "recovery": "The hook denies once and directs the orchestrator to the exact Taskplane continuation; advisory observations remain non-denial records."
+      "mode": "Crash after run-index commit but before diagnostic journal append",
+      "detection": "Matching request-fingerprinted receipt and new indexed heads exist while the non-authoritative journal entry is absent.",
+      "recovery": "Return the durable receipt and optionally append a deduplicated diagnostic entry; never repeat the semantic transition."
     },
     {
-      "mode": "Foreign-state signature discovery is unreadable or ambiguous.",
-      "detection": "foreign_state_detected signal records only proven roots; a bounded discovery diagnostic records uncertainty without naming an unsigned root.",
-      "recovery": "Contract compilation fails closed for the uncertain candidate root or requires an attributable exact-root override; status reads the last durable result."
+      "mode": "Operation id is reused with different request bytes",
+      "detection": "Stored request fingerprint differs from the retry fingerprint.",
+      "recovery": "Fail closed with an operation-id collision; require a new id after the caller reconciles current heads."
     },
     {
-      "mode": "Merge succeeds but the durable merge receipt is not committed.",
-      "detection": "merge_recorded signal is absent while the task worktree registration remains present.",
-      "recovery": "No cleanup runs; the orchestrator re-resolves the merge state and explicitly records it or preserves the tree for manual attention."
+      "mode": "Active projection is missing, corrupt, stale, or ambiguous",
+      "detection": "Projection fails schema/fingerprint validation or differs from the active states in stage_heads.",
+      "recovery": "Stop dispatch and rebuild deterministically under the run lock; if foreground is not uniquely derivable, leave it unset and require attribution."
     },
     {
-      "mode": "Eligibility changes between merge and cleanup or at last-moment revalidation.",
-      "detection": "worktree_cleanup_preserved signal names the exact failed invariant and unchanged candidate identity.",
-      "recovery": "The cleanup owner performs no removal; only a later state change plus one bounded maintenance pass may reconsider the same registered candidate."
+      "mode": "Handoff artifact is missing, altered, outside the canonical store, or exceeds a declared bound",
+      "detection": "Artifact identity/digest/byte/confinement validation or manifest size/ref count validation fails before successor creation.",
+      "recovery": "Keep predecessor and projection unchanged; regenerate or explicitly reselect valid artifacts under a new authorization."
     },
     {
-      "mode": "Git removal fails or leaves path/registration state inconsistent.",
-      "detection": "worktree_cleanup_manual_attention signal contains exit class and postcondition state without command output secrets.",
-      "recovery": "Stop permanently for that outcome fingerprint; never force, broaden, delete a branch, or retry automatically. A human resolves the exact Git condition."
+      "mode": "Concurrent terminalize, successor, or split commands race",
+      "detection": "Expected RunStore revision or expected stage-head fingerprint conflicts.",
+      "recovery": "Reload heads and return an identical receipt only for the same request; otherwise reject without speculative merge."
     },
     {
-      "mode": "The process crashes after exact removal but before outcome persistence.",
-      "detection": "worktree_cleanup_already_clean signal is produced when one replay sees the same durable receipt and both exact path and exact registration absent.",
-      "recovery": "The maintenance owner commits already-clean once and performs no Git mutation."
+      "mode": "Legacy lifecycle or reference identity cannot be proven",
+      "detection": "Migration classifier cannot map all source facts to one valid stage state without inference.",
+      "recovery": "Retain source bytes and create an explicit legacy-unknown sentinel; require attributable forward resolution."
+    },
+    {
+      "mode": "Default status/startup path attempts to load a predecessor execution tree",
+      "detection": "Instrumented access guard and zero-tree-open telemetry fire; 10-vs-100000-event performance fixture diverges.",
+      "recovery": "Block release/canary, restore bounded summary/ref reader, and re-run byte-identity and cross-host tests."
+    },
+    {
+      "mode": "A stage transition reaches post-merge worktree cleanup without full R-0003 eligibility",
+      "detection": "Exact revalidation finds dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked/reparse-point, path-mismatched, missing-ref, ambiguous-main, primary/main, merge-in-progress, evidence-needed, last-moment-uncertain, branch/tip-mismatched, or recorded-tip-not-ancestor state.",
+      "recovery": "Retain the exact tree and registration plus branch, commits, requirement, design, plan, submissions, tests, review evidence, audit, and sign-off inputs; record the predicate; never force, broaden, delete a branch, or retry with stronger authority."
     }
   ],
   "observability": {
     "signals": [
-      "enforcement_decision: stable status/evidence_id with exact workspace, session, run, revision, and optional advisory attribution",
-      "enforcement_gate_refused: strict entry/closure surface, reason, evidence_id, and host recovery",
-      "foreign_interference_event: bounded identity, disposition, registry fingerprint, governed run/step, and time",
-      "foreign_state_detected: signed root, signature id/version, exclusion or attributable override",
-      "merge_recorded: durable receipt id, repository/task/branch tip, primary ref/tip, and time",
-      "worktree_cleanup_preserved: receipt id, failed invariant, exact candidate, and no-mutation outcome",
-      "worktree_cleanup_removed: receipt id plus verified path/registration absence",
-      "worktree_cleanup_already_clean: replay id and exact absent postconditions",
-      "worktree_cleanup_manual_attention: receipt id, bounded failure class, and inconsistent postcondition"
+      "stage id, kind, lifecycle, terminal outcome, and aggregate fingerprint",
+      "run revision, operation id, request fingerprint, and receipt status",
+      "authority revision, actor/session identity, and revalidation result",
+      "predecessor, parent, child, handoff, and active-projection fingerprints",
+      "manifest bytes, selected-reference count/bytes, startup bytes/tokens, and explicit expansion reason",
+      "projection repair count/reason and lifecycle revision conflicts",
+      "migration source/result fingerprints, conservation counts, unknown reason, and adapter mode",
+      "bounded status/Retro page sizes and predecessor execution-tree open count",
+      "R-0003 cleanup eligibility, retention predicate, merge receipt, re-resolved main tip, and removal verification"
     ],
     "alerts": [
-      "Dashboard and machine output surface every strict enforcement refusal with one host-specific recovery.",
-      "Known collision denials name the run, step, identity, and exact Taskplane continuation.",
-      "Cleanup manual-attention is a status/retro headline and disables further automatic attempts for the same outcome fingerprint."
+      "Alert and block dispatch on a terminal-reopen attempt or ambiguous active projection.",
+      "Alert on operation-id/request-fingerprint mismatch or repeated lifecycle revision conflicts.",
+      "Alert and reject on stage/handoff/artifact digest, confinement, schema, or numeric-bound failure.",
+      "Alert and block release if a default startup/status/review/sign-off/Retro path opens a predecessor execution tree or the 10-vs-100000 startup invariant diverges.",
+      "Alert and stop migration on conservation mismatch, missing retained source bytes, or ambiguous state without explicit unknown_reason.",
+      "Alert and retain on any cleanup attempt without the complete R-0003 exact registered-worktree and merged-tip proof."
     ]
   },
   "rollout": {
-    "strategy": "Land and pin v2.17.11 ReviewKernel regression floors first; add versioned record schemas and read-only projections; wire exact receipt trust and strict Claude entry/closure; add Skill/dispatch collision screening with known conflicts denied and unknowns advised; add signed-root exclusion; then introduce the orchestrator merge receipt and enable automatic cleanup only after the full preservation/crash matrix passes. Keep all changes additive and stdlib-only.",
-    "rollback": "Set enforcement to warn, disable collision screening, and set cleanup to manual while retaining truthful unproven/advisory status, all audit/merge/cleanup records, and every ReviewKernel floor. Rollback cannot auto-approve, claim live without proof, delete branches/evidence, or invoke force removal."
+    "strategy": "Ship additive taskplane.run/v4 readers, validators, immutable objects, operation receipts, and projection repair behind a disabled flag. Run non-mutating shadow migrations and compare bounded legacy/v4 summaries and conservation sets. Enable stage-native execution for new runs, then verified migrations, then bounded dashboard/status/review/sign-off/Retro readers. Stop singleton move/restore writes only after migration/zero-tree-open telemetry and cross-host fixtures pass. Keep the legacy read adapter and retained source artifacts until a later requirement retires them.",
+    "rollback": "Disable new v4 stage creation and leave immutable stage/handoff/source objects and receipts intact. Unmigrated runs may return to legacy reads; migrated runs remain v4-readable and pause mutation until re-enabled. Never reverse-collapse stage history into loop.json, reopen terminal outcomes, guess legacy unknowns, delete artifacts/branches/evidence, weaken authority/evidence binding, or broaden/force R-0003 cleanup."
   },
   "visualization": {
     "required": true,
     "kind": "state-transition",
     "path": "design/visual.html",
-    "reason": "The enforcement, collision, and cleanup state machines plus the durable merge-before-remove sequence contain multiple fail-closed branches that are materially clearer together."
+    "reason": "The active-to-terminal state machine, atomic successor/split transactions, bounded artifact flow, replaceable projection, and conservative legacy migration interact across multiple branches and are materially clearer as one accessible diagram."
   },
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "Applied hash-verified Python guidance; checked the proposal against v2.17.11 review, receipt, contract, loop, storage, run-store, dashboard, hook, and test seams; compared three materially different approaches; mapped all 28 exact criteria to runnable fixtures; tied every failure detection to a declared signal; made rollback additive and conservative; and surfaced Python 3.10-3.12 packaging, synchronous ownership, trust-boundary validation, RPO 0 after reported commits, one-pass cleanup RTO, 300-second receipt freshness, zero entry probes, and p95 <=100 ms local hook bounds.",
-      "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "fcd459da0b928153c6d0695ca8cd4afe853dbb10f0950e44566c28f85ffde40d",
+      "evidence": "Compared singleton extension, RunStore immutable aggregates, and full event sourcing; selected the smallest authoritative aggregate/transaction boundary; defined schemas, lifecycle and split state machines, 64 KiB/64-ref/16 KiB/100-row bounds, atomic crash semantics, exact 11-criterion verification, R-0003 cleanup retention negatives, migration conservation/unknown handling, bounded read models, rollout/rollback, and the full Python solution-design disposition. Required Python reference SHA-256 verified as 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7.",
+      "produced_by": "tp-designer self-attested solution-design application for R-0004",
+      "content_fingerprint": "28d8ae50217990462d79d6d43fae1e33bae8523cd31b66b034df4a295c1a51d6",
       "self_attested": true
     }
   ],
