@@ -247,6 +247,22 @@ class TestLoop(unittest.TestCase):
             evaluation=verdict["evaluation"], failures=verdict["failures"]))
         self.assertNotEqual(state["tasks"][0]["status"], "passed")
 
+    def test_evaluator_unavailable_retry_returns_to_evaluate_without_opening_fix(self):
+        ws, verdict, _ = self._gate_evaluator_unavailable()
+
+        result = loop.resolve(ws, "retry")
+
+        self.assertEqual(result["step"], "evaluate")
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        self.assertEqual(state["step"], "evaluate")
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["fix_cycles"], 0)
+        self.assertEqual(task["evaluation"]["verdict"], "non-judged")
+        self.assertEqual(
+            task["evaluation"]["outage_identity"]["evaluation"],
+            verdict["evaluation"])
+
     def test_next_activates_contract_gate_clears(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
