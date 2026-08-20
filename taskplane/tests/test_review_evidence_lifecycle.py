@@ -415,6 +415,42 @@ def test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_
         fixture.tearDown()
 
 
+def test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and_retries_only_original_producer(
+):
+    from test_review_routing import TestSelectiveReviewKernel
+
+    fixture = TestSelectiveReviewKernel()
+    fixture.setUp()
+    try:
+        started = fixture._start(
+            retry_lenses={"security"}, retry_source_run_id="a" * 32)
+        before = review._load_state(fixture.ws, started["run_id"])
+        assert len(before["slots"]) == 1
+        original = before["slots"][0]
+        original_brief = review_evidence.ArtifactStore(fixture.ws).read(
+            original["brief"])
+        original_task = original_brief["role"]["task_name"]
+
+        # A producer may report fail without checked evidence. With no
+        # canonical blocking finding, changing that to pass would invent a
+        # positive judgment unsupported by anything the producer inspected.
+        fixture._write_slot_results(
+            verdict="fail", findings=[], run_id=started["run_id"])
+        manifest = review.collect_review(
+            fixture.ws, publish=False, run_id=started["run_id"])
+        after = review._load_state(fixture.ws, started["run_id"])
+
+        assert manifest["status"] != "complete"
+        assert manifest["approval"]["enabled"] is False
+        assert after["status"] == "ready"
+        assert len(manifest["gaps"]) == 1
+        assert manifest["gaps"][0]["slot_id"] == original["slot_id"]
+        assert manifest["gaps"][0]["producer_task"] == original_task
+        assert "checked evidence" in manifest["gaps"][0]["reason"]
+    finally:
+        fixture.tearDown()
+
+
 def test_complete_collection_still_cannot_approve_unproven_acceptance():
     revision = {
         "canonical_revision": 1, "target_fingerprint": "target-1",

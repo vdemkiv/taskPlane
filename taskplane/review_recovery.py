@@ -435,12 +435,17 @@ def recover_summary_or_plan_retry(
                 raise RepairRejected("canonical blocker count is invalid")
             index = by_lens[lens_id]
             expected_verdict = "fail" if count else "pass"
+            summary = after["lens_results"][index]
+            if summary["verdict"] == "fail" and expected_verdict == "pass" \
+                    and not summary["checked_evidence"]:
+                raise RepairRejected(
+                    "fail-to-pass summary repair requires checked evidence")
             for field, value in (("blockers", count),
                                  ("verdict", expected_verdict)):
-                prior = after["lens_results"][index][field]
+                prior = summary[field]
                 if prior == value:
                     continue
-                after["lens_results"][index][field] = value
+                summary[field] = value
                 changes.append({
                     "path": f"lens_results[{index}].{field}",
                     "before": prior, "after": value,
