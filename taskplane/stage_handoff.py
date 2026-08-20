@@ -1,0 +1,379 @@
+"""Bounded, content-addressed handoff manifests for isolated stages.
+
+The manifest is a closed control-plane value.  It never carries artifact
+bodies or host paths and every referenced artifact is verified before a
+successor can use the manifest.
+"""
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from datetime import datetime
+import re
+from typing import TypeAlias
+
+import review_evidence
+import storage as runtime_storage
+
+
+SCHEMA = "taskplane.stage-handoff/v1"
+MAX_MANIFEST_BYTES = 64 * 1024
+MAX_ARTIFACT_REFERENCES = 64
+TERMINAL_OUTCOMES = frozenset({"done", "closed", "discarded"})
+REQUIRED_EXCLUSIONS = frozenset({
+    "predecessor-agents",
+    "predecessor-conversations",
+    "predecessor-event-logs",
+    "predecessor-tool-transcripts",
+    "predecessor-leases",
+    "predecessor-runtime-state",
+    "undeclared-paths",
+    "undeclared-tools",
+    "secrets",
+    "approvals",
+})
+
+JsonObject: TypeAlias = dict[str, object]
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_REPOSITORY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
+_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_CONTRACT = re.compile(r"^contract:[a-z][a-z0-9-]{0,127}$")
+_MANIFEST_FIELDS = frozenset({
+    "schema", "producer", "requirement", "design", "target", "commit",
+    "contracts", "deliverables", "evidence_references",
+    "selected_artifacts", "exclusions", "authorization", "fingerprint",
+})
+_AUTHORITY_FIELDS = frozenset({
+    "actor", "session_id", "authorized_at", "operation_id",
+    "authority_record",
+})
+_AUTHORITY_RECORD_FIELDS = frozenset({
+    "schema", "authority_schema", "revision", "fingerprint",
+})
+
+
+class HandoffValidationError(ValueError):
+    """The handoff does not satisfy its closed boundary contract."""
+
+
+class HandoffIntegrityError(HandoffValidationError):
+    """The canonical manifest identity does not match its content."""
+
+
+class StaleAuthorityError(HandoffValidationError):
+    """The handoff was authorized against an obsolete authority revision."""
+
+
+def _closed(value: object, fields: frozenset[str],
+            label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise HandoffValidationError(f"{label} must be an object")
+    keys = {str(key) for key in value}
+    unknown = keys - fields
+    missing = fields - keys
+    if unknown:
+        raise HandoffValidationError(
+            f"{label} has unknown fields: {', '.join(sorted(unknown))}")
+    if missing:
+        raise HandoffValidationError(
+            f"{label} has missing fields: {', '.join(sorted(missing))}")
+    return value
+
+
+def _identifier(value: object, label: str) -> str:
+    text = str(value or "").strip()
+    if not _IDENTIFIER.fullmatch(text):
+        raise HandoffValidationError(f"{label} is invalid")
+    return text
+
+
+def _fingerprint(value: object, label: str) -> str:
+    text = str(value or "").strip()
+    if not _FINGERPRINT.fullmatch(text):
+        raise HandoffValidationError(f"{label} is invalid")
+    return text
+
+
+def _revision(value: object, label: str) -> str:
+    if isinstance(value, bool):
+        raise HandoffValidationError(f"{label} is invalid")
+    text = str(value or "").strip()
+    if not text or len(text) > 128:
+        raise HandoffValidationError(f"{label} is invalid")
+    return text
+
+
+def _strings(values: object, label: str, *,
+             pattern: re.Pattern[str] | None = None,
+             allow_empty: bool = False) -> list[str]:
+    if not isinstance(values, list):
+        raise HandoffValidationError(f"{label} must be a list")
+    result: list[str] = []
+    for raw in values:
+        if not isinstance(raw, str):
+            raise HandoffValidationError(f"{label} entries must be strings")
+        value = raw.strip()
+        if not value or len(value) > 256 or (pattern and not pattern.fullmatch(value)):
+            raise HandoffValidationError(f"{label} contains an invalid entry")
+        result.append(value)
+    if not allow_empty and not result:
+        raise HandoffValidationError(f"{label} must not be empty")
+    if len(set(result)) != len(result):
+        raise HandoffValidationError(f"{label} contains duplicate entries")
+    return sorted(result)
+
+
+def _portable_references(
+        store: review_evidence.ArtifactStore,
+        references: Iterable[dict[str, object]],
+        label: str) -> list[dict[str, object]]:
+    if isinstance(references, (str, bytes, Mapping)):
+        raise HandoffValidationError(f"{label} must be a list")
+    result = [review_evidence.portable_artifact_reference(store, reference)
+              for reference in references]
+    identities = [(row["kind"], row["fingerprint"]) for row in result]
+    if len(set(identities)) != len(identities):
+        raise HandoffValidationError(f"{label} contains duplicate references")
+    return sorted(result, key=lambda row: (str(row["kind"]),
+                                           str(row["fingerprint"])))
+
+
+def _validate_timestamp(value: object) -> str:
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HandoffValidationError("authorization time is invalid") from exc
+    if parsed.tzinfo is None:
+        raise HandoffValidationError("authorization time needs a timezone")
+    return text
+
+
+def canonical_artifact_store(workspace: str) -> review_evidence.ArtifactStore:
+    """Resolve the existing canonical run artifact boundary for a workspace."""
+    runtime_storage.load_workspace_locator(workspace)
+    return review_evidence.ArtifactStore(workspace)
+
+
+def create_manifest(
+        store: review_evidence.ArtifactStore, *, producer_stage_id: str,
+        producer_outcome: str, requirement: Mapping[str, object],
+        design: Mapping[str, object] | None,
+        target: Mapping[str, object] | None,
+        commit: Mapping[str, object] | None,
+        contracts: Mapping[str, object], deliverables: Iterable[str],
+        evidence_references: Iterable[dict[str, object]],
+        selected_artifacts: Iterable[dict[str, object]],
+        exclusions: Iterable[str],
+        authorization: Mapping[str, object],
+        allow_nonconsumable_reuse: bool = False) -> JsonObject:
+    """Create and fully verify one deterministic stage handoff manifest."""
+    evidence_rows = list(evidence_references)
+    artifact_rows = list(selected_artifacts)
+    if len(evidence_rows) + len(artifact_rows) > MAX_ARTIFACT_REFERENCES:
+        raise HandoffValidationError(
+            f"handoff contains at most {MAX_ARTIFACT_REFERENCES} artifact references")
+    contract_rows = _closed(
+        contracts, frozenset({"provided", "consumed", "changed"}),
+        "contracts")
+    canonical_contracts = {
+        relation: _strings(contract_rows.get(relation), f"contracts {relation}",
+                           pattern=_CONTRACT, allow_empty=True)
+        for relation in ("provided", "consumed", "changed")
+    }
+    canonical_deliverables = _strings(list(deliverables), "deliverables")
+    canonical_exclusions = _strings(list(exclusions), "exclusions")
+    portable_evidence = _portable_references(
+        store, evidence_rows, "evidence references")
+    portable_artifacts = _portable_references(
+        store, artifact_rows, "selected artifacts")
+    body: JsonObject = {
+        "schema": SCHEMA,
+        "producer": {"stage_id": str(producer_stage_id),
+                     "outcome": str(producer_outcome)},
+        "requirement": dict(requirement),
+        "design": dict(design) if design is not None else None,
+        "target": dict(target) if target is not None else None,
+        "commit": dict(commit) if commit is not None else None,
+        "contracts": canonical_contracts,
+        "deliverables": canonical_deliverables,
+        "evidence_references": portable_evidence,
+        "selected_artifacts": portable_artifacts,
+        "exclusions": canonical_exclusions,
+        "authorization": dict(authorization),
+    }
+    body["fingerprint"] = manifest_fingerprint(body)
+    return validate_manifest(
+        store, body, allow_nonconsumable_reuse=allow_nonconsumable_reuse)
+
+
+def manifest_fingerprint(manifest: Mapping[str, object]) -> str:
+    """Return the semantic fingerprint, excluding its self-reference."""
+    material = {str(key): value for key, value in manifest.items()
+                if str(key) != "fingerprint"}
+    return review_evidence.content_fingerprint(material)
+
+
+def _validate_portable_references(
+        store: review_evidence.ArtifactStore, value: object,
+        label: str) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise HandoffValidationError(f"{label} must be a list")
+    identities: list[tuple[str, str]] = []
+    for reference in value:
+        try:
+            review_evidence.verify_portable_artifact_reference(store, reference)
+        except review_evidence.ArtifactIntegrityError as exc:
+            if "unknown fields" in str(exc):
+                raise HandoffValidationError(
+                    "artifact reference has unknown fields: " +
+                    str(exc).split(": ", 1)[-1]) \
+                    from exc
+            raise
+        identities.append((str(reference["kind"]),
+                           str(reference["fingerprint"])))
+    if len(set(identities)) != len(identities):
+        raise HandoffValidationError(f"{label} contains duplicate references")
+    canonical = sorted(value, key=lambda row: (str(row["kind"]),
+                                               str(row["fingerprint"])))
+    if value != canonical:
+        raise HandoffValidationError(f"{label} is not in canonical order")
+    return value
+
+
+def validate_manifest(
+        store: review_evidence.ArtifactStore, manifest: Mapping[str, object], *,
+        expected_authority_revision: int | None = None,
+        expected_authority_fingerprint: str | None = None,
+        allow_nonconsumable_reuse: bool = False) -> JsonObject:
+    """Validate schema, authority, artifact integrity, and numeric bounds."""
+    row = _closed(manifest, _MANIFEST_FIELDS, "handoff manifest")
+    if row.get("schema") != SCHEMA:
+        raise HandoffValidationError("unsupported handoff manifest schema")
+    if manifest_fingerprint(row) != row.get("fingerprint"):
+        raise HandoffIntegrityError("handoff manifest fingerprint mismatch")
+
+    producer = _closed(row.get("producer"),
+                       frozenset({"stage_id", "outcome"}), "producer")
+    _identifier(producer.get("stage_id"), "producer stage id")
+    outcome = str(producer.get("outcome") or "")
+    if outcome not in TERMINAL_OUTCOMES:
+        raise HandoffValidationError("producer outcome is not terminal")
+    if outcome in {"closed", "discarded"} and not allow_nonconsumable_reuse:
+        raise HandoffValidationError(
+            f"{outcome} stage results cannot be consumed by default")
+
+    requirement = _closed(
+        row.get("requirement"), frozenset({"id", "revision", "fingerprint"}),
+        "requirement")
+    _identifier(requirement.get("id"), "requirement id")
+    _revision(requirement.get("revision"), "requirement revision")
+    _fingerprint(requirement.get("fingerprint"), "requirement fingerprint")
+
+    design = row.get("design")
+    if design is not None:
+        design_row = _closed(design, frozenset({"revision", "fingerprint"}),
+                             "design")
+        _revision(design_row.get("revision"), "design revision")
+        _fingerprint(design_row.get("fingerprint"), "design fingerprint")
+
+    target, commit = row.get("target"), row.get("commit")
+    if (target is None) != (commit is None):
+        raise HandoffValidationError("target and commit must appear together")
+    if target is not None and commit is not None:
+        target_row = _closed(
+            target, frozenset({"repository_id", "fingerprint"}), "target")
+        repository_id = str(target_row.get("repository_id") or "").strip()
+        if not _REPOSITORY_ID.fullmatch(repository_id):
+            raise HandoffValidationError("target repository id is invalid")
+        target_fingerprint = _fingerprint(
+            target_row.get("fingerprint"), "target fingerprint")
+        commit_row = _closed(
+            commit, frozenset({"sha", "target_fingerprint"}), "commit")
+        if not _COMMIT.fullmatch(str(commit_row.get("sha") or "")):
+            raise HandoffValidationError("commit sha is invalid")
+        if commit_row.get("target_fingerprint") != target_fingerprint:
+            raise HandoffValidationError("commit target fingerprint mismatch")
+
+    contract_rows = _closed(
+        row.get("contracts"), frozenset({"provided", "consumed", "changed"}),
+        "contracts")
+    for relation in ("provided", "consumed", "changed"):
+        values = _strings(contract_rows.get(relation), f"contracts {relation}",
+                          pattern=_CONTRACT, allow_empty=True)
+        if values != contract_rows.get(relation):
+            raise HandoffValidationError(
+                f"contracts {relation} is not in canonical order")
+    deliverables = _strings(row.get("deliverables"), "deliverables")
+    if deliverables != row.get("deliverables"):
+        raise HandoffValidationError("deliverables are not in canonical order")
+    canonical_exclusions = _strings(row.get("exclusions"), "exclusions")
+    if canonical_exclusions != row.get("exclusions"):
+        raise HandoffValidationError("exclusions are not in canonical order")
+    exclusions = set(canonical_exclusions)
+    missing_exclusions = REQUIRED_EXCLUSIONS - exclusions
+    if missing_exclusions:
+        raise HandoffValidationError(
+            "handoff is missing required exclusions: " +
+            ", ".join(sorted(missing_exclusions)))
+
+    evidence = _validate_portable_references(
+        store, row.get("evidence_references"), "evidence references")
+    if not evidence:
+        raise HandoffValidationError("handoff evidence references are incomplete")
+    artifacts = _validate_portable_references(
+        store, row.get("selected_artifacts"), "selected artifacts")
+    if len(evidence) + len(artifacts) > MAX_ARTIFACT_REFERENCES:
+        raise HandoffValidationError(
+            f"handoff contains at most {MAX_ARTIFACT_REFERENCES} artifact references")
+
+    authority = _closed(row.get("authorization"), _AUTHORITY_FIELDS,
+                        "authorization")
+    _identifier(authority.get("actor"), "authorization actor")
+    _identifier(authority.get("session_id"), "authorization session id")
+    _identifier(authority.get("operation_id"), "authorization operation id")
+    _validate_timestamp(authority.get("authorized_at"))
+    authority_record = _closed(
+        authority.get("authority_record"), _AUTHORITY_RECORD_FIELDS,
+        "authority record")
+    if authority_record.get("schema") != \
+            "taskplane.authority-record-reference/v1" or \
+            authority_record.get("authority_schema") != \
+            "taskplane.consolidated-authorization/v1":
+        raise HandoffValidationError("authority record schema is invalid")
+    revision = authority_record.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise HandoffValidationError("authority revision is invalid")
+    authority_fingerprint = _fingerprint(
+        authority_record.get("fingerprint"), "authority fingerprint")
+    if expected_authority_revision is not None and \
+            revision != expected_authority_revision:
+        raise StaleAuthorityError("handoff authority revision is stale")
+    if expected_authority_fingerprint is not None and \
+            authority_fingerprint != expected_authority_fingerprint:
+        raise StaleAuthorityError("handoff authority fingerprint is stale")
+
+    size = len(review_evidence.canonical_bytes(row))
+    if size > MAX_MANIFEST_BYTES:
+        raise HandoffValidationError(
+            f"canonical handoff exceeds {MAX_MANIFEST_BYTES} bytes")
+    return dict(row)
+
+
+def store_manifest(store: review_evidence.ArtifactStore,
+                   manifest: Mapping[str, object]) -> dict[str, object]:
+    """Persist a verified manifest under its semantic fingerprint."""
+    validated = validate_manifest(store, manifest)
+    return store.put("stage-handoff", validated,
+                     fingerprint=str(validated["fingerprint"]))
+
+
+def read_manifest(store: review_evidence.ArtifactStore,
+                  reference: Mapping[str, object], *,
+                  expected_authority_revision: int | None = None) -> JsonObject:
+    """Read and verify a stored handoff plus every selected artifact."""
+    value = store.read(dict(reference))
+    if not isinstance(value, Mapping):
+        raise HandoffValidationError("stored handoff manifest must be an object")
+    return validate_manifest(
+        store, value, expected_authority_revision=expected_authority_revision)

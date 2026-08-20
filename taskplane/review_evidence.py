@@ -377,6 +377,67 @@ class ArtifactStore:
         return refs
 
 
+PORTABLE_ARTIFACT_REFERENCE_FIELDS = frozenset({
+    "schema", "kind", "fingerprint", "digest", "bytes", "locator",
+    "transport",
+})
+
+
+def portable_artifact_reference(
+        store: ArtifactStore,
+        reference: dict[str, object]) -> dict[str, object]:
+    """Verify and redact one artifact reference for an inter-stage handoff.
+
+    Worktree and host paths are routing details, not portable authority.  The
+    kind/fingerprint tuple is the canonical locator and the digest/byte count
+    continue to bind the exact stored bytes.
+    """
+    artifact = reference.get("artifact") \
+        if isinstance(reference, dict) and isinstance(
+            reference.get("artifact"), dict) else reference
+    if not isinstance(artifact, dict):
+        raise ArtifactIntegrityError("artifact reference must be an object")
+    store.verify(artifact)
+    kind = str(artifact.get("kind") or "")
+    fingerprint = str(artifact.get("fingerprint") or "")
+    return {
+        "schema": "taskplane.artifact-reference/v1",
+        "kind": kind,
+        "fingerprint": fingerprint,
+        "digest": str(artifact.get("digest") or ""),
+        "bytes": int(artifact.get("bytes")),
+        "locator": f"artifact://{kind}/{fingerprint}",
+        "transport": "artifact-reference",
+    }
+
+
+def verify_portable_artifact_reference(
+        store: ArtifactStore, reference: dict[str, object]) -> bool:
+    """Verify the closed, path-free form used by stage handoff manifests."""
+    if not isinstance(reference, dict):
+        raise ArtifactIntegrityError("portable artifact reference must be an object")
+    unknown = set(reference) - PORTABLE_ARTIFACT_REFERENCE_FIELDS
+    missing = PORTABLE_ARTIFACT_REFERENCE_FIELDS - set(reference)
+    if unknown:
+        raise ArtifactIntegrityError(
+            "portable artifact reference has unknown fields: " +
+            ", ".join(sorted(unknown)))
+    if missing:
+        raise ArtifactIntegrityError(
+            "portable artifact reference has missing fields: " +
+            ", ".join(sorted(missing)))
+    if reference.get("schema") != "taskplane.artifact-reference/v1" or \
+            reference.get("transport") != "artifact-reference":
+        raise ArtifactIntegrityError("portable artifact reference schema is invalid")
+    kind = str(reference.get("kind") or "")
+    fingerprint = str(reference.get("fingerprint") or "")
+    if reference.get("locator") != f"artifact://{kind}/{fingerprint}":
+        raise ArtifactIntegrityError("portable artifact locator mismatch")
+    native = {key: reference[key] for key in (
+        "schema", "kind", "fingerprint", "digest", "bytes", "transport")}
+    return store.verify(native)
+
+
 def retained_cleanup_evidence(primary_workspace: str, worker_workspace: str,
                               references: Iterable[dict], *,
                               lifecycle_released: bool) -> dict:
