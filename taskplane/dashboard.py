@@ -2191,14 +2191,18 @@ def _review_dor_panel(meta):
         for row in dor.get("acceptance") or [])
     requested = dor.get("requested_lenses") or {}
     dispositions = dor.get("lens_dispositions") or {}
+
+    def directive_dispositions(row):
+        return ", ".join(sorted(
+            lid + " (" + str(dispositions.get(lid) or "requested") + ")"
+            for lid, values in requested.items()
+            if (row.get("text") or "") in values)) or "unmapped"
+
     directives = "".join(
         '<li style="margin:3px 0">'
         f'{_esc(row.get("text") or "")} '
         f'<span style="{_MICRO}">→ '
-        f'{_esc(", ".join(sorted(
-            lid + " (" + str(dispositions.get(lid) or "requested") + ")"
-            for lid, values in requested.items()
-            if (row.get("text") or "") in values)) or "unmapped")}'
+        f'{_esc(directive_dispositions(row))}'
         '</span></li>'
         for row in dor.get("review_directives") or [])
     lists = "".join(

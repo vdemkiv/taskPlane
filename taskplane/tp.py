@@ -22,15 +22,33 @@ Subcommands the govern-under-contract skill drives:
 
 from __future__ import annotations
 
+import os
+import sys
+
+
+_MINIMUM_PYTHON = (3, 10)
+
+
+def _enforce_supported_python(version_info=None) -> None:
+    """Refuse unsupported interpreters before imports or repository state."""
+    version = version_info if version_info is not None else sys.version_info
+    if tuple(version[:2]) >= _MINIMUM_PYTHON:
+        return
+    found = ".".join(str(part) for part in tuple(version[:3]))
+    print("taskplane requires Python 3.10 or newer; found Python " + found,
+          file=sys.stderr)
+    raise SystemExit(2)
+
+
+_enforce_supported_python()
+
 import argparse
 import ast
 import contextlib
 import hashlib
 import io
 import json
-import os
 import re
-import sys
 import time as _time
 import traceback
 
@@ -4692,12 +4710,24 @@ def cmd_repository(a) -> int:
         try:
             value = repository_run_store.RunStore().load(a.run_id)
         except Exception as exc:
-            print(json.dumps({
-                "schema": "taskplane.preflight/v1", "status": "unavailable",
-                "run_id": a.run_id,
-                "reason": f"{exc.__class__.__name__}: {exc}"},
-                sort_keys=True, separators=(",", ":")))
-            return 1
+            try:
+                import review as review_runtime
+                review_ws = review_runtime.resolve_review_workspace(
+                    ws, a.run_id)
+                state = review_runtime._load_state(review_ws, a.run_id)
+                value = state.get("manifest")
+                if state.get("status") == "complete" or \
+                        not isinstance(value, dict) or \
+                        value.get("run_id") != a.run_id:
+                    raise review_runtime.ReviewKernelError(
+                        "active review manifest is unavailable")
+            except Exception:
+                print(json.dumps({
+                    "schema": "taskplane.preflight/v1",
+                    "status": "unavailable", "run_id": a.run_id,
+                    "reason": f"{exc.__class__.__name__}: {exc}"},
+                    sort_keys=True, separators=(",", ":")))
+                return 1
         print(json.dumps(value, sort_keys=True, separators=(",", ":")))
         return 0
     if action == "resume":
@@ -5343,6 +5373,27 @@ _CLI_NARGS_NOTE = {"*": "zero or more", "+": "one or more", "?": "optional"}
 CLI_REFERENCE_REGEN = ("python3 taskplane/tp.py help --md > "
                        "docs/cli-reference.md")
 
+_CLI_REVIEW_OPTION_NOTE = [
+    "When ReviewKernel returns `status: needs_user`, execute the selected",
+    "`action.choices[*].command` verbatim through the stable workspace launcher.",
+    "Use `python3` on macOS/Linux and `py` on Windows:",
+    "",
+    "```bash",
+    "python3 .taskplane/codex-hook.py review option dynamic --run-id <run-id>",
+    "python3 .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>",
+    "python3 .taskplane/codex-hook.py review option static --run-id <run-id>",
+    "py .taskplane/codex-hook.py review option dynamic --run-id <run-id>",
+    "py .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>",
+    "py .taskplane/codex-hook.py review option static --run-id <run-id>",
+    "```",
+    "",
+    "Do not substitute `review resume`: that command resolves repository",
+    "preflight decisions, not review-execution mode. Render the opening canonical",
+    "dashboard from `visuals.workflow_and_wave.inline.path` and the collected",
+    "canonical dashboard from `visuals.final_dashboard.inline.path`.",
+    "",
+]
+
 
 def cli_reference_markdown(parser) -> str:
     """Render `parser`'s whole command tree as markdown, or refuse.
@@ -5416,6 +5467,8 @@ def cli_reference_markdown(parser) -> str:
     for path, par, help_text in commands:
         name = " ".join((parser.prog,) + path)
         out += [f"## `{name}`", "", _cli_cell(help_text), ""]
+        if name == "tp.py review option":
+            out += _CLI_REVIEW_OPTION_NOTE
         positionals = _cli_positionals(par)
         if positionals:
             out.append("Positional arguments:")

@@ -321,12 +321,25 @@ def plan_affected_retries(leases: Iterable[Mapping], *, valid_results: Mapping,
         if attempt >= max_attempts:
             exhausted.append(slot_id)
             continue
-        producer_calls.append({
+        producer_call = {
             "slot_id": slot_id,
             "lease_fingerprint": lease_by_slot[slot_id]["lease_fingerprint"],
             "attempt": attempt + 1,
             "reason": failed[slot_id],
-        })
+        }
+        binding = lease_by_slot[slot_id].get("execution_binding")
+        if binding is not None:
+            if not isinstance(binding, Mapping) or \
+                    str(binding.get("run_id") or "").strip() == "" or \
+                    binding.get("slot_id") != slot_id or \
+                    binding.get("lease_fingerprint") != \
+                    lease_by_slot[slot_id]["lease_fingerprint"] or \
+                    not str(binding.get("binding_fingerprint") or "").strip():
+                raise RepairRejected(
+                    "retry lease execution lineage is invalid for slot: " +
+                    slot_id)
+            producer_call["execution_binding"] = copy.deepcopy(dict(binding))
+        producer_calls.append(producer_call)
     affected = sorted(failed)
     status = "unavailable" if exhausted else "retry" if producer_calls else \
         "complete"

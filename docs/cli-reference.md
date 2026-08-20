@@ -904,6 +904,24 @@ Positional arguments:
 
 record the human's optional dynamic review/render choice
 
+When ReviewKernel returns `status: needs_user`, execute the selected
+`action.choices[*].command` verbatim through the stable workspace launcher.
+Use `python3` on macOS/Linux and `py` on Windows:
+
+```bash
+python3 .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+python3 .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+python3 .taskplane/codex-hook.py review option static --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+py .taskplane/codex-hook.py review option static --run-id <run-id>
+```
+
+Do not substitute `review resume`: that command resolves repository
+preflight decisions, not review-execution mode. Render the opening canonical
+dashboard from `visuals.workflow_and_wave.inline.path` and the collected
+canonical dashboard from `visuals.final_dashboard.inline.path`.
+
 Positional arguments:
 
 - `selection`

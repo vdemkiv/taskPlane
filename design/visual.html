@@ -1,1 +1,73 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Consolidated progressive flow</title><style>body{margin:0;padding:26px;background:#0d1117;color:#e6edf3;font:15px system-ui}main{max-width:1120px;margin:auto}.row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.b{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}.auth{border-color:#a371f7}.auto{border-color:#3fb950}.human{border-color:#f85149}.review{border-color:#58a6ff}.lower{display:grid;grid-template-columns:1fr 48px 1fr 48px 1fr;align-items:center;gap:10px;margin-top:18px}.arrow{text-align:center;font-size:23px;color:#8b949e}@media(max-width:760px){.row,.lower{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}}</style></head><body><main><h1>One authorization, mechanical stages, bounded human attention</h1><div class="row"><section class="b auth"><h3>Consolidated packet</h3><p>Requirement · target/scope · Design/Plan · sandbox · recovery · delivery</p></section><section class="b auto"><h3>Product</h3><p>Refine + mechanical gate</p></section><section class="b auto"><h3>Design + Plan</h3><p>Semantic evolution, not byte gate</p></section><section class="b auto"><h3>Build + recover</h3><p>Bounded automation</p></section><section class="b review"><h3>Engineering risk route</h3><p><strong>1 attributable deep lens:</strong> documentation-only, simple low-risk, or missing-map-only work.</p><p><strong>4 deep floors:</strong> architecture · code-quality · security · QA, only for substantive, risky, ambiguous, or corrupt evidence; record the reason.</p><p>Then ≤1 sweep + promotions.</p></section></div><div class="lower"><section class="b review"><h3>Severe harm</h3><p>Immediate provisional request-changes.</p></section><div class="arrow">→</div><section class="b auto"><h3>Converge + conserve</h3><p>Repair metadata · retry affected · cache exact outage</p></section><div class="arrow">→</div><section class="b"><h3>Deliver everywhere</h3><p>Native/inline · Markdown · JSON · optional HTML · thread</p></section></div><div class="lower"><section class="b auto"><h3>Byte/non-material</h3><p>Audit + revalidate + continue</p></section><div class="arrow">↔</div><section class="b human"><h3>Human boundary</h3><p>Material authority/contracts · A/B · exhausted recovery · irreversible/external · sign-off</p></section><div class="arrow">↔</div><section class="b"><h3>Durable status</h3><p>Owner · tokens · elapsed · wait · sourced ETA; non-gating</p></section></div></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R-0003 proof-carrying governance lifecycle</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f7f8fb; --card:#fff; --ink:#172033;
+    --muted:#5e687a; --line:#9aa5b7; --ok:#13795b; --warn:#a15c00;
+    --stop:#b42318; --accent:#3859c7; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111622; --card:#1b2332;
+    --ink:#edf1f7; --muted:#b6c0d0; --line:#5f6d81; --ok:#4ed6a4;
+    --warn:#ffc266; --stop:#ff8b82; --accent:#91a7ff; } }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.45 ui-sans-serif,system-ui,sans-serif; }
+  main { max-width:1200px; margin:auto; padding:28px; } h1 { font-size:28px; margin:0 0 6px; }
+  .lead { color:var(--muted); max-width:80ch; margin:0 0 24px; }
+  .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  h2 { font-size:18px; margin:0 0 14px; } .state { border-left:5px solid var(--accent);
+    padding:9px 11px; margin:10px 0; background:color-mix(in srgb,var(--card) 88%,var(--accent)); }
+  .ok { border-color:var(--ok); } .warn { border-color:var(--warn); }
+  .stop { border-color:var(--stop); } .arrow { text-align:center; color:var(--muted); font-weight:700; }
+  code { font-size:.92em; } ul { padding-left:20px; } .wide { grid-column:1/-1; }
+  .sequence { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; align-items:stretch; }
+  .step { border:1px solid var(--line); border-radius:9px; padding:12px; }
+  .step strong { display:block; color:var(--accent); margin-bottom:5px; }
+  .guard { color:var(--stop); font-weight:650; }
+  @media (max-width:850px) { .grid,.sequence { grid-template-columns:1fr; } .wide { grid-column:auto; } }
+</style>
+</head>
+<body><main>
+  <h1>Proof before authority; proof again before cleanup</h1>
+  <p class="lead">R-0003 adds three canonical decisions while preserving the shipped ReviewKernel. Every uncertain branch stops locally and keeps evidence or worktree bytes intact.</p>
+  <div class="grid">
+    <section aria-labelledby="enforcement"><h2 id="enforcement">1. Enforcement status</h2>
+      <div class="state">Exact workspace + session receipt and/or current screen activity</div>
+      <div class="arrow">↓ canonical decision</div>
+      <div class="state ok"><strong>live</strong><br>Entry proceeds; closure rechecks proof.</div>
+      <div class="state stop"><strong>unproven</strong><br>Strict entry/closure refuses before mutation.</div>
+      <div class="state warn"><strong>advisory</strong><br>Only with attributable human acknowledgment; stamped everywhere.</div>
+    </section>
+    <section aria-labelledby="collision"><h2 id="collision">2. Delivery isolation</h2>
+      <div class="state">Exact-workspace governed state?</div>
+      <div class="state ok"><strong>No</strong> — no-op; Taskplane claims no authority.</div>
+      <div class="state"><strong>Yes</strong> — classify with versioned registry.</div>
+      <ul>
+        <li>Taskplane or helper: allow silently</li>
+        <li>Known competing driver: deny + audit</li>
+        <li>Unknown foreign: advise + audit; deny in strict isolation</li>
+        <li>Signed state root: report and exclude from write authority</li>
+      </ul>
+    </section>
+    <section aria-labelledby="cleanup"><h2 id="cleanup">3. Cleanup eligibility</h2>
+      <div class="state">Durable orchestrator merge receipt</div>
+      <div class="arrow">↓ locked immediate revalidation</div>
+      <div class="state ok">Exact managed registration + path/type/branch/tip + clean/released/non-variant + no retention/lock + tip ancestor of current primary</div>
+      <div class="state stop">Any uncertainty → <strong>preserved</strong>; no force, no broader retry, no branch deletion</div>
+      <div class="state ok">Remove exact linked worktree, verify absence, record <strong>removed</strong> or replay as <strong>already-clean</strong></div>
+    </section>
+    <section class="wide" aria-labelledby="sequence"><h2 id="sequence">Post-Evaluate sequence</h2>
+      <div class="sequence">
+        <div class="step"><strong>A. Evaluate passes</strong>Task is eligible to merge; variants remain retained.</div>
+        <div class="step"><strong>B. Resolve primary</strong>Exact repository and primary ref; ambiguity stops.</div>
+        <div class="step"><strong>C. Merge succeeds</strong>Orchestrator observes ordinary Git success.</div>
+        <div class="step"><strong>D. Receipt commits</strong>Branch/tip, primary tip, task, run, and path are fsync-durable.</div>
+        <div class="step"><strong>E. Revalidate/remove</strong>One no-force attempt; one idempotent maintenance replay after crash.</div>
+      </div>
+      <p class="guard">The cleanup arrow starts only after D. A crash before D preserves the tree; a changed fact at E preserves it; canonical requirements, design, plan, submissions, tests, review, audit, and sign-off records are never cleanup targets.</p>
+    </section>
+  </div>
+</main></body>
+</html>

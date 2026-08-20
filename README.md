@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.12** | **ReviewKernel evidence now stays exact, executable, and bounded.** Canonical patches include only governed tracked and untracked files, explicit empty scopes remain empty, oversized scopes fail visibly, continuation commands select `python3` on POSIX and `py` on Windows, and focused regression coverage preserves normalization, lineage, status, outage, and worktree-binding behavior. |
 | **v2.17.11** | **Codex host readiness now checks Codex without changing Claude's native hook.** Repeated workspace installation produces exactly one Codex-native SessionStart checker on POSIX and Windows and replaces the stale Claude-host row that kept onboarding transitional. |
 | **v2.17.10** | **Final review and recovery stay truthful across worktrees and evaluator outages.** Evidence binds to the claimed task worktree, unavailable evaluations remain non-judged and retry at evaluation, metadata repair cannot manufacture an evidence-free pass, and status, delivery, sign-off, and routing projections remain deterministic and shape-safe. |
-| **v2.17.9** | **Review effort now scales with attributable risk.** Documentation-only and simple low-risk changes receive one risk-selected deep lens, substantive or risky changes retain four mandatory floors, and the governed local workflow adds consolidated authorization, bounded evidence repair, durable progress, recovery, convergence telemetry, and cross-host delivery. |
 
 ## Install
 

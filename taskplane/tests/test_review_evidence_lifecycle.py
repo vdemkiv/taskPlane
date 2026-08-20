@@ -180,6 +180,19 @@ def test_metadata_contradiction_repairs_from_canonical_findings_once():
 
 def test_substantive_mutation_reruns_only_the_affected_slot():
     lease = _lease()
+    lease["execution_binding"] = {
+        "schema": "taskplane.review-execution-binding/v1",
+        "repository_id": "repository-1",
+        "repository_kind": "git-common-dir",
+        "worktree_fingerprint": "worktree-1",
+        "engine_fingerprint": "engine-1",
+        "target": {"fingerprint": "target-1", "base": "base-1",
+                   "head": "head-1"},
+        "run_id": "original-run-1", "lens_ids": ["security"],
+        "slot_id": "deep.security",
+        "lease_fingerprint": lease["lease_fingerprint"],
+        "producer": "lens-slot", "binding_fingerprint": "binding-1",
+    }
     result = _result(lease)
     result["lens_results"][0]["checked_evidence"] = "rewritten"
     sibling = _lease("deep.qa")
@@ -192,6 +205,8 @@ def test_substantive_mutation_reruns_only_the_affected_slot():
     assert planned["affected_slot_ids"] == ["deep.security"]
     assert [row["slot_id"] for row in planned["retry_plan"][
         "producer_calls"]] == ["deep.security"]
+    assert planned["retry_plan"]["producer_calls"][0][
+        "execution_binding"] == lease["execution_binding"]
     assert planned["retry_plan"]["reused_results"] == {
         "deep.qa": "result-qa"}
 
@@ -228,6 +243,14 @@ def test_exact_execution_binding_rejects_every_identity_change(tmp_path):
             review_evidence.verify_execution_binding(
                 root, binding, target=actual_target, **args)
 
+    for field in ("engine_fingerprint", "worktree_fingerprint"):
+        mutated_binding = copy.deepcopy(binding)
+        mutated_binding[field] = "foreign-" + field
+        with pytest.raises(review_evidence.ProvenanceError,
+                           match="execution binding"):
+            review_evidence.verify_execution_binding(
+                root, mutated_binding, target=target, **expected)
+
     sibling = tmp_path.parent / (tmp_path.name + "-sibling")
     sibling.mkdir()
     subprocess.run(["git", "init", "-q", str(sibling)], check=True)
@@ -238,9 +261,26 @@ def test_exact_execution_binding_rejects_every_identity_change(tmp_path):
 
 
 def test_evaluator_outage_cache_is_exact_expiring_and_never_a_verdict(tmp_path):
+    repository = tmp_path / "repository"
+    sibling = tmp_path / "sibling"
+    foreign = tmp_path / "foreign"
+    for path in (repository, foreign):
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"],
+                       cwd=path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=path,
+                       check=True)
+        (path / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=path,
+                       check=True)
+    subprocess.run(["git", "worktree", "add", "-q", "--detach",
+                    str(sibling), "HEAD"], cwd=repository, check=True)
+
     cache = evaluator_health.EvaluatorHealthCache(str(tmp_path / "cache"))
     key = evaluator_health.cache_key(
-        str(tmp_path), evaluator="tp-evaluator", evaluator_version="2.17.8",
+        str(repository), evaluator="tp-evaluator",
+        evaluator_version="2.17.8",
         engine_fingerprint="engine-1", capability="subagent",
         recovery_fingerprint="recovery-1")
     cache.record_unavailable(
@@ -265,7 +305,13 @@ def test_evaluator_outage_cache_is_exact_expiring_and_never_a_verdict(tmp_path):
             "engine_fingerprint": "engine-1", "capability": "subagent",
             "recovery_fingerprint": "recovery-1", **changed,
         }
-        other = evaluator_health.cache_key(str(tmp_path), **args)
+        other = evaluator_health.cache_key(str(repository), **args)
+        assert cache.lookup(other, now=120.0)["status"] == "miss"
+    for other_workspace in (sibling, foreign):
+        other = evaluator_health.cache_key(
+            str(other_workspace), evaluator="tp-evaluator",
+            evaluator_version="2.17.8", engine_fingerprint="engine-1",
+            capability="subagent", recovery_fingerprint="recovery-1")
         assert cache.lookup(other, now=120.0)["status"] == "miss"
 
 

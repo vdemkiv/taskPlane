@@ -137,6 +137,23 @@ the original build-failure finding. Use `unavailable` only when the host or
 toolchain cannot execute the command at all. Proceed static only after the human
 explicitly chooses static or dynamic work reaches a terminal evidence state.
 
+**Review continuation contract.** If a ReviewKernel payload is `needs_user`,
+use its `action.choices[*].command` verbatim. The stable launcher forms are
+platform-specific (`python3` on macOS/Linux, `py` on Windows):
+
+```bash
+python3 .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+python3 .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+python3 .taskplane/codex-hook.py review option static --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+py .taskplane/codex-hook.py review option static --run-id <run-id>
+```
+
+Do not substitute `review resume` or a prose-only instruction. The opening
+canonical dashboard is `visuals.workflow_and_wave.inline.path`; after
+collection the canonical dashboard is `visuals.final_dashboard.inline.path`.
+
 On hosts that do not register `agents/` as named definitions, dispatch a
 general subagent with the brief plus `agents/tp-lens.md` as its role
 instructions. The contract and output path remain identical.

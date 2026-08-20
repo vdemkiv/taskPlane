@@ -1,4 +1,6 @@
 """T3: the graph/evidence kernel is the normal review path."""
+import contextlib
+import io
 import json
 import os
 import sys
@@ -6,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -277,6 +280,136 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("actual.py", patch)
         self.assertNotIn(".codex/hooks.json", patch)
+
+    def test_canonical_diff_scope_excludes_unrelated_bytes_and_overflow_is_explicit(self):
+        ws = tempfile.mkdtemp(prefix="tp-review-scoped-diff-")
+        subprocess = __import__("subprocess")
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        for rel in ("task.py", "unrelated.md"):
+            with open(os.path.join(ws, rel), "w", encoding="utf-8") as handle:
+                handle.write("base\n")
+        subprocess.run(["git", "add", "task.py", "unrelated.md"],
+                       cwd=ws, check=True)
+        subprocess.run(["git", "-c", "user.name=T", "-c",
+                        "user.email=t@example.com", "commit", "-q",
+                        "-m", "base"], cwd=ws, check=True)
+        base = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ws, text=True,
+            encoding="utf-8", errors="replace").strip()
+        with open(os.path.join(ws, "task.py"), "w", encoding="utf-8") as handle:
+            handle.write("value = 2\n")
+        with open(os.path.join(ws, "task_test.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("def test_value():\n    assert True\n")
+        with open(os.path.join(ws, "unrelated.md"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("x" * 20_000)
+
+        rc, patch = review.canonical_diff_patch(
+            ws, base, paths=["task.py", "task_test.py"], max_bytes=4_000)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("task.py", patch)
+        self.assertIn("task_test.py", patch)
+        self.assertNotIn("unrelated.md", patch)
+        overflow_rc, overflow_patch = review.canonical_diff_patch(
+            ws, base, paths=["task.py", "task_test.py"], max_bytes=16)
+        self.assertEqual(overflow_rc, review.CANONICAL_DIFF_TOO_LARGE)
+        self.assertEqual(overflow_patch, "")
+
+    def test_canonical_diff_explicit_empty_scope_stays_empty(self):
+        ws = tempfile.mkdtemp(prefix="tp-review-empty-scope-")
+        subprocess = __import__("subprocess")
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        with open(os.path.join(ws, "unrelated.txt"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("base\n")
+        subprocess.run(["git", "add", "unrelated.txt"], cwd=ws, check=True)
+        subprocess.run(["git", "-c", "user.name=T", "-c",
+                        "user.email=t@example.com", "commit", "-q",
+                        "-m", "base"], cwd=ws, check=True)
+        base = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ws, text=True,
+            encoding="utf-8", errors="replace").strip()
+        with open(os.path.join(ws, "unrelated.txt"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("changed\n")
+
+        rc, patch = review.canonical_diff_patch(ws, base, paths=[])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(patch, "")
+
+    def test_loop_review_kernel_requests_only_governed_implementation_files(self):
+        changed = [
+            "taskplane/review.py",
+            "taskplane/tests/new_regression.py",
+            "design/contract.json",
+            "unrelated/large.bin",
+        ]
+        task = {
+            "id": "t-scoped-review",
+            "scope": ["taskplane/review.py", "taskplane/tests/**"],
+            "contracts": [],
+        }
+        manifest = {"run_id": "a" * 32, "status": "ready"}
+        with mock.patch.object(loop, "_diff_files", return_value=changed), \
+                mock.patch.object(
+                    review, "canonical_diff_patch",
+                    return_value=(0, "diff --git a/taskplane/review.py "
+                                      "b/taskplane/review.py\n")) as derive, \
+                mock.patch.object(review, "start_review",
+                                  return_value=manifest), \
+                mock.patch.object(review, "_load_state",
+                                  return_value={"routing": {"lenses": []}}):
+            opened, _routing = loop._review_kernel(
+                self.ws, self.ws, base="HEAD", step="evaluate", task=task,
+                graph=self.graph, impact=self.impact,
+                requirement={"acceptance": []})
+
+        self.assertEqual(opened, manifest)
+        self.assertEqual(derive.call_args.kwargs["paths"], [
+            "taskplane/review.py", "taskplane/tests/new_regression.py"])
+
+    def test_slot_registration_loads_only_ready_run_summaries(self):
+        opened = self._start()
+        state = review._load_state(self.ws, opened["run_id"])
+        slot = state["slots"][0]
+        expected = slot["producer_contract"]
+        index = review._load_index(self.ws)
+        for number in range(256):
+            run_id = f"{number + 1:032x}"
+            if run_id == opened["run_id"]:
+                continue
+            index["runs"][run_id] = {
+                "state": f"missing/{run_id}.json",
+                "status": "complete",
+                "stage": "review",
+                "kernel_policy": review.KERNEL_POLICY_VERSION,
+                "target_fingerprint": f"historical-{number}",
+            }
+        tp.atomic_write_json(review._index_path(self.ws), index, sort_keys=True)
+        original_load_json = review.tp.load_json
+        loaded_states = []
+
+        def observed_load(path, *args, **kwargs):
+            if str(path).endswith("state.json"):
+                loaded_states.append(os.path.realpath(path))
+            return original_load_json(path, *args, **kwargs)
+
+        event = {"session_id": "bounded-registration-session",
+                 "agent_id": "bounded-registration-child"}
+        contract = {"task": expected["task"], "read_only": True,
+                    "write_allow": list(expected["write_allow"])}
+        with mock.patch.object(review.tp, "load_json",
+                               side_effect=observed_load):
+            registered = review.register_slot_producer(
+                self.ws, event=event, contract=contract,
+                task_slot=expected["task_slot"])
+
+        self.assertEqual(registered["run_id"], opened["run_id"])
+        self.assertEqual(loaded_states, [os.path.realpath(
+            review._state_path(self.ws, opened["run_id"]))])
 
     def test_changed_hunk_context_is_bounded_before_lens_routing(self):
         oversized = "x" * (review.MAX_ROUTING_FILE_BYTES + 100)
@@ -1004,12 +1137,23 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 "outcome": "the request violates the required safety invariant",
                 "repro": "run the failing request against the changed service"},
         }])
+        first = review.collect_review(self.ws, publish=False)
+        self.assertEqual(first["status"], "needs_deep_followup")
+        self.assertNotIn("gaps", first)
+        self._write_pending_slots()
         manifest = review.collect_review(self.ws, publish=False)
-        self.assertEqual(manifest["status"], "incomplete")
-        self.assertTrue(any("blocking finding" in gap["reason"]
-                            for gap in manifest["gaps"]))
-        self.assertIsNone(review_evidence._read_current(
-            review_evidence.ArtifactStore(self.ws)))
+        store = review_evidence.ArtifactStore(self.ws)
+        validations = [store.read(ref)
+                       for ref in manifest["result_validations"]]
+
+        self.assertEqual(manifest["status"], "complete")
+        self.assertTrue(manifest["findings"])
+        self.assertTrue(all(row["repair"]["equivalence"] == "proven"
+                            for row in validations))
+        self.assertTrue(all(row["repair"]["derivation_authority"] ==
+                            "canonical-admissible-findings/v1"
+                            for row in validations))
+        self.assertIsNotNone(review_evidence._read_current(store))
 
     def test_collection_reports_every_invalid_slot_in_one_repair_batch(self):
         self._start()
@@ -1025,17 +1169,26 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 "repro": "run the failing request against the changed service"},
         }])
         state = review._load_state(self.ws)
+        first = review.collect_review(self.ws, publish=False)
+        self.assertEqual(first["status"], "needs_deep_followup")
+        self.assertNotIn("gaps", first)
+        self._write_pending_slots()
         manifest = review.collect_review(self.ws, publish=False)
-        repairs = manifest["gaps"]
-        self.assertEqual({row["slot_id"] for row in repairs},
-                         {row["slot_id"] for row in state["slots"]})
-        self.assertTrue(all(row["producer_task"] for row in repairs))
-        self.assertTrue(all("blocking finding contradicts" in row["reason"]
-                            for row in repairs))
+        store = review_evidence.ArtifactStore(self.ws)
+        validations = [store.read(ref)
+                       for ref in manifest["result_validations"]]
+        self.assertTrue({row["slot_id"] for row in state["slots"]} <=
+                        {row["slot_id"] for row in validations})
+        self.assertTrue(all(row["repair"]["equivalence"] == "proven"
+                            for row in validations))
+        self.assertTrue(all(
+                            row["repair"]["equivalence_fingerprint_before"] ==
+                            row["repair"]["equivalence_fingerprint_after"]
+                            for row in validations))
         self.assertEqual(manifest["schema"],
-                         "taskplane.review-collect-manifest/v3")
-        self.assertFalse(manifest["approval"]["enabled"])
-        self.assertIn("repair only", manifest["next_action"])
+                         "taskplane.review-collect-manifest/v2")
+        self.assertEqual(manifest["status"], "complete")
+        self.assertNotIn("gaps", manifest)
 
     def test_review_blocking_policy_matches_the_canonical_class_rule(self):
         cases = [
@@ -1360,6 +1513,28 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             self.ws, first["run_id"])["target"]["fingerprint"], "target-1")
         self.assertEqual(review._load_state(
             self.ws, second["run_id"])["target"]["fingerprint"], "target-2")
+
+        output = io.StringIO()
+        args = SimpleNamespace(
+            repository_action="status", workspace=self.ws,
+            run_id=first["run_id"])
+        with mock.patch.object(
+                run_store.RunStore, "load",
+                side_effect=FileNotFoundError("run manifest is unavailable")), \
+                contextlib.redirect_stdout(output):
+            status_code = cli.cmd_repository(args)
+        status_manifest = json.loads(output.getvalue())
+        self.assertEqual(status_code, 0)
+        self.assertEqual(status_manifest,
+                         review._load_state(
+                             self.ws, first["run_id"])["manifest"])
+
+        self._write_slot_results(run_id=first["run_id"])
+        collected = review.collect_review(
+            self.ws, publish=False, run_id=first["run_id"])
+        self.assertEqual(collected["run_id"], status_manifest["run_id"])
+        self.assertEqual(review._load_state(
+            self.ws, second["run_id"])["status"], "ready")
 
     def test_manifest_counters_equal_the_final_canonical_bytes(self):
         out = self._start()

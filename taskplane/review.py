@@ -59,6 +59,7 @@ BRIEF_NAME = "blast-radius.md"
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_ROUTING_FILES = 200
 MAX_ROUTING_FILE_BYTES = 64 * 1024
+CANONICAL_DIFF_TOO_LARGE = 75
 KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
 RESULT_SCHEMA = "taskplane.lens-slot-output/v2"
@@ -716,6 +717,7 @@ def review_execution_preflight(*, selection: str | None = None,
                       "dependency install"))
     choices = [{**row, "requires": list(row["requires"])}
                for row in _REVIEW_EXECUTION_CHOICES]
+    workspace_launcher = "py" if os.name == "nt" else "python3"
     action_id = _review_execution_action_id(run_id, "review-execution-mode")
     for choice in choices:
         if choice["response"] != "static":
@@ -727,7 +729,8 @@ def review_execution_preflight(*, selection: str | None = None,
                 choice["description"] += " Dependencies must be installed first."
         choice["prompt"] = (f"{choice['label']} for review "
                             f"{str(run_id or '').strip()}".strip())
-        choice["command"] = ("taskplane review option " +
+        choice["command"] = (workspace_launcher +
+                             " .taskplane/codex-hook.py review option " +
                              choice["response"] + " --run-id " +
                              str(run_id or "").strip())
     if not selection:
@@ -1424,14 +1427,30 @@ def bounded_caller_expander(graph: dict) -> Callable:
     return expand
 
 
-def canonical_diff_patch(ws: str, base: str,
+def canonical_diff_patch(ws: str, base: str, *,
+                         paths: Iterable[str] | None = None,
                          max_bytes: int = 400_000) -> tuple[int, str]:
-    """One bounded patch including untracked files for every review surface."""
+    """Return one bounded patch, including scoped untracked files.
+
+    ``paths`` is an exact, already-governed file set.  Supplying it prevents
+    unrelated dirty-workspace bytes from entering the immutable review
+    artifact.  Exceeding ``max_bytes`` is an explicit nonzero result; a
+    successful empty patch must never stand in for evidence that was dropped.
+    """
     import subprocess
 
     try:
+        selected = None if paths is None else sorted({
+            str(path).replace("\\", "/")
+            for path in paths if str(path)
+        })
+        if selected == []:
+            return 0, ""
+        tracked_args = ["git", "diff", base]
+        if selected is not None:
+            tracked_args.extend(["--", *selected])
         tracked = subprocess.run(
-            ["git", "diff", base], cwd=ws, capture_output=True, text=True,
+            tracked_args, cwd=ws, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=120)
         if tracked.returncode:
             return tracked.returncode, ""
@@ -1443,8 +1462,13 @@ def canonical_diff_patch(ws: str, base: str,
             return untracked.returncode, ""
         parts = [tracked.stdout or ""]
         size = len(parts[0].encode("utf-8"))
+        if size > max_bytes:
+            return CANONICAL_DIFF_TOO_LARGE, ""
+        selected_set = None if selected is None else set(selected)
         for rel in sorted(line for line in untracked.stdout.splitlines()
                           if line.strip()):
+            if selected_set is not None and rel not in selected_set:
+                continue
             if rel == ".codex/hooks.json":
                 try:
                     with open(os.path.join(ws, rel), encoding="utf-8") as f:
@@ -1469,7 +1493,7 @@ def canonical_diff_patch(ws: str, base: str,
             text = addition.stdout or ""
             size += len(text.encode("utf-8"))
             if size > max_bytes:
-                return 0, ""
+                return CANONICAL_DIFF_TOO_LARGE, ""
             parts.append(text)
         return 0, "".join(parts)
     except (OSError, subprocess.TimeoutExpired):
@@ -3125,7 +3149,12 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
     if _observe_lifecycle:
         _observe_hook_child(ws, event)
     candidates = []
-    for run_id in sorted(_load_index(ws)["runs"]):
+    index = _load_index(ws)
+    ready_runs = sorted(
+        run_id for run_id, summary in index["runs"].items()
+        if isinstance(summary, dict) and summary.get("status") == "ready" and
+        summary.get("kernel_policy") == KERNEL_POLICY_VERSION)
+    for run_id in ready_runs:
         state = tp.load_json(_state_path(ws, run_id), default=None,
                              what="review kernel run state")
         if not isinstance(state, dict) or state.get("status") != "ready":

@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -157,8 +158,10 @@ def _start_review_without_execution_choice():
     return ws, opened
 
 
-def test_review_preflight_exposes_one_structured_choice_without_side_effects():
-    row = review.review_execution_preflight()
+def test_review_preflight_exposes_one_structured_choice_without_side_effects(
+        monkeypatch):
+    run_id = "b" * 32
+    row = review.review_execution_preflight(run_id=run_id)
     assert row["schema"] == "taskplane.review-execution-preflight/v1"
     assert row["status"] == "needs_user"
     assert row["static_only"] is True
@@ -169,6 +172,67 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects():
         "dependency-install", "process-execution"]
     assert row["action"]["choices"][1]["requires"] == [
         "dependency-install", "process-execution", "browser-access"]
+    commands = [choice["command"] for choice in row["action"]["choices"]]
+    launcher = (("py" if os.name == "nt" else "python3") +
+                " .taskplane/codex-hook.py review option ")
+    assert commands == [
+        launcher + "dynamic --run-id " + run_id,
+        launcher + "dynamic-render --run-id " + run_id,
+        launcher + "static --run-id " + run_id,
+    ]
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    guidance_paths = [
+        "agents/tp-product.md", "agents/tp-engineering.md",
+        "skills/tp-product/SKILL.md", "skills/tp-engineering/SKILL.md",
+        "docs/cli-reference.md",
+    ]
+    for relative in guidance_paths:
+        with open(os.path.join(root, relative), encoding="utf-8") as stream:
+            guidance = stream.read()
+        posix_launcher = "python3 .taskplane/codex-hook.py review option "
+        assert posix_launcher + "dynamic --run-id <run-id>" in guidance
+        assert posix_launcher + "dynamic-render --run-id <run-id>" in guidance
+        assert posix_launcher + "static --run-id <run-id>" in guidance
+        windows_launcher = "py .taskplane/codex-hook.py review option "
+        assert windows_launcher + "dynamic --run-id <run-id>" in guidance
+        assert windows_launcher + "dynamic-render --run-id <run-id>" in guidance
+        assert windows_launcher + "static --run-id <run-id>" in guidance
+        assert "visuals.workflow_and_wave.inline.path" in guidance
+
+    with monkeypatch.context() as platform:
+        platform.setattr(review.os, "name", "nt")
+        windows_commands = [
+            choice["command"] for choice in
+            review.review_execution_preflight(
+                run_id=run_id)["action"]["choices"]]
+    assert windows_commands == [
+        windows_launcher + "dynamic --run-id " + run_id,
+        windows_launcher + "dynamic-render --run-id " + run_id,
+        windows_launcher + "static --run-id " + run_id,
+    ]
+
+    workspace, opened = _start_review_without_execution_choice()
+    static_command = next(
+        choice["command"] for choice in
+        opened["review_execution"]["action"]["choices"]
+        if choice["response"] == "static")
+    launcher_dir = os.path.join(workspace, ".taskplane")
+    os.makedirs(launcher_dir, exist_ok=True)
+    shutil.copyfile(
+        os.path.join(ROOT, ".taskplane", "codex-hook.py"),
+        os.path.join(launcher_dir, "codex-hook.py"))
+    executed = subprocess.run(
+        static_command.split(), cwd=workspace, text=True,
+        capture_output=True, check=False)
+    assert executed.returncode == 0, executed.stderr
+    continued = json.loads(executed.stdout)
+    assert continued["run_id"] == opened["run_id"]
+    assert continued["status"] == "ready"
+    assert continued["review_execution"]["selection"] == "static"
+    assert continued["visuals"]["workflow_and_wave"]["inline"]["path"]
+    assert review._load_state(workspace, opened["run_id"])["run_id"] == \
+        opened["run_id"]
 
 
 def test_review_dor_classifies_commit_claims_and_review_directives(tmp_path):

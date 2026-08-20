@@ -913,11 +913,20 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
     import review
     import review_evidence
 
-    diff_rc, patch = review.canonical_diff_patch(diff_ws, base)
-    if diff_rc:
-        raise review.ReviewKernelError("canonical diff derivation failed")
     files = [f for f in _diff_files(diff_ws, base)
-             if not f.startswith(lens_router.LOOP_OWNED)]
+             if not f.startswith(lens_router.LOOP_OWNED) and
+             (not task or not task.get("scope") or
+              tp.match_any(f, task.get("scope") or []))]
+    diff_rc, patch = review.canonical_diff_patch(
+        diff_ws, base, paths=files)
+    if diff_rc:
+        reason = ("canonical governed diff exceeds the 400000-byte bound"
+                  if diff_rc == review.CANONICAL_DIFF_TOO_LARGE else
+                  "canonical diff derivation failed")
+        raise review.ReviewKernelError(reason)
+    if files and not patch:
+        raise review.ReviewKernelError(
+            "canonical governed diff is empty for changed task files")
     head = tp.git_head(diff_ws) or ""
     target_material = {"workspace": os.path.realpath(diff_ws), "head": head,
                        "base": base, "step": step,

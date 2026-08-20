@@ -57,6 +57,23 @@ revise the same R-record with `$TP req amend R-XXXX ...`, and re-run Product
 DoR; do not create a replacement requirement or trigger Build. tp-product
 itself remains read-only and never impersonates Build.
 
+**Review continuation contract.** If a ReviewKernel payload is `needs_user`,
+use its `action.choices[*].command` verbatim. The stable launcher forms are
+platform-specific (`python3` on macOS/Linux, `py` on Windows):
+
+```bash
+python3 .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+python3 .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+python3 .taskplane/codex-hook.py review option static --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+py .taskplane/codex-hook.py review option static --run-id <run-id>
+```
+
+Do not substitute `review resume` or a prose-only instruction. The opening
+canonical dashboard is `visuals.workflow_and_wave.inline.path`; after
+collection the canonical dashboard is `visuals.final_dashboard.inline.path`.
+
 Use exact lens ids for NFR fields. Any code-bearing requirement includes
 `security` and `architecture` in its FIRST `req new`, plus the material
 risk/domain axes (`data-safety`, `privacy-compliance`, `sre`, `dba`,

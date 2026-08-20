@@ -1,703 +1,433 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0001",
-  "title": "Consolidated progressive delivery and engineering review",
-  "summary": "One attributable authorization and semantic evolution classifier drive mechanically gated Product/Design/Plan, bounded automatic recovery, progressive engineering review, truthful status/onboarding, and complete cross-host/thread delivery without byte-drift approval loops.",
+  "requirement": "R-0003",
+  "title": "Proof-carrying enforcement, collision isolation, and safe post-merge cleanup",
+  "summary": "Preserve the landed v2.17.11 ReviewKernel fixes, then add one exact-workspace enforcement decision, one versioned collision/interference authority, and one durable two-phase merge/cleanup transaction that removes only revalidated Taskplane-managed linked worktrees.",
   "current_state": {
-    "summary": "Taskplane already has signal routing, deep/light dispatch, v3 leases, promotion scaffolding, exact slot conservation, DoR/document classification, immutable partial collection, engine/worktree fingerprints, suite caching, host-parity UX and provider-correct spend. Debt remains over-widening, late blocker publication, metadata contradictions, repeated evaluator failure, global fix cap and sparse lens-value telemetry.",
+    "summary": "v2.17.11 already normalizes derivable ReviewKernel summaries, retries substantive slot changes narrowly, preserves provenance/conservation, treats evaluator outages as unavailable, renders all contract shapes, resolves live review manifests, supports Python 3.10-3.12, and binds evaluation to claimed worktrees. Remaining gaps are advisory-only Claude liveness, opt-in dispatch screening with no Skill matcher or collision registry, no signed-root exclusion/interference ledger, and merge/removal prose without a durable merge receipt or conservative cleanup owner.",
     "sources": [
-      "taskplane/review.py",
+      "specs/spec.md",
       "taskplane/review_evidence.py",
-      "taskplane/review_dor.py",
-      "taskplane/lens.py",
-      "taskplane/lens_signals.py",
-      "taskplane/views.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/loop.py",
-      "taskplane/spend.py",
+      "taskplane/review_repair.py",
+      "taskplane/review_recovery.py",
+      "taskplane/evaluator_health.py",
+      "taskplane/review.py",
       "taskplane/dashboard.py",
-      "agents/tp-engineering.md",
-      "agents/tp-lens.md",
-      "skills/tp-engineering",
-      "skills/tp-go",
-      "docs",
-      "taskplane/tests",
-      "/Users/vdemkiv/.taskplane/projects/-Users-vdemkiv-Documents-taskPlane-tp-work-review-efficiency-retro-ed23fdb3/knowledge/requirements/R-0001-progressive-convergent-engineering-review.md",
+      "taskplane/host_capabilities.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/tp.py",
+      "taskplane/loop.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/run_store.py",
+      "taskplane/runtime_eval.py",
+      "hooks/hooks.json",
+      ".codex/hooks.json",
+      "taskplane/tests/test_review_evidence_lifecycle.py",
+      "taskplane/tests/test_status_and_large_delivery.py",
+      "taskplane/tests/test_host_capabilities.py",
+      "taskplane/tests/test_loop.py",
+      "taskplane/tests/test_storage_kernel.py",
+      "/Users/vdemkiv/Downloads/taskplane-bug-report.md",
+      "/Users/vdemkiv/Downloads/skill-collision-isolation.md",
+      "/Users/vdemkiv/Downloads/claude-enforcement-heartbeat.md",
       "lenses/references/python-solution-design.md"
     ]
   },
   "alternatives": [
     {
-      "id": "consolidated-semantic-ledger",
-      "name": "One authority ledger with semantic evolution classification",
-      "description": "One packet/receipt derives routine stage authority; semantic materiality, not byte drift, controls reauthorization; progressive review remains canonical.",
+      "id": "canonical-proof-records",
+      "name": "Canonical proof records with two-phase cleanup",
+      "description": "Add kernel-owned enforcement, collision/interference, and cleanup decisions; adapters consume them, and cleanup starts only after a durable orchestrator merge receipt and immediate eligibility revalidation.",
       "tradeoffs": {
         "gains": [
-          "Fewer ceremonial prompts",
-          "One cross-host authority truth",
-          "Lossless bounded recovery"
+          "One cross-host authority truth and evidence id",
+          "Structural collision denial without prose dependence",
+          "Fail-closed, idempotent, auditable cleanup"
         ],
         "costs": [
-          "Authority/evolution/recovery fixture matrices"
+          "Three focused Python modules and one packaged registry",
+          "State-machine, crash, Git, and host-parity fixture matrices"
         ],
-        "revisit_when": "Hosts standardize an equivalent authority transaction protocol."
+        "revisit_when": "Hosts expose an authenticated repository-scoped enforcement and plugin-exclusion protocol with equivalent receipts, audit, and cleanup transaction semantics."
       }
     },
     {
-      "id": "phase-approvals",
-      "name": "Approval per Product, Design, Plan and recovery",
-      "description": "Each stage owns a separate human checkpoint.",
+      "id": "distributed-adapter-checks",
+      "name": "Distributed adapter checks and immediate removal",
+      "description": "Implement liveness and collision checks independently in hooks, CLI, status, and dashboard, then have the merge driver remove a worktree immediately after Git succeeds.",
       "tradeoffs": {
         "gains": [
-          "Simple stage-local logic"
+          "Fewer new domain modules",
+          "Small local patches at each surface"
         ],
         "costs": [
-          "Approval fatigue",
-          "Harmless byte-drift deadlocks",
-          "Divergent thread behavior"
+          "Divergent classifications and evidence ids",
+          "No durable merge-before-delete proof",
+          "Repeated trust-boundary logic in adapters"
         ],
-        "revisit_when": "An opt-in regulated mode legally requires independent phase signers."
+        "revisit_when": "Taskplane supports only one host, one entry surface, and one non-parallel repository layout."
       }
     },
     {
-      "id": "silent-autonomy",
-      "name": "Silent autonomy until final sign-off",
-      "description": "Continue every non-final action without a receipt.",
+      "id": "warnings-and-manual-cleanup",
+      "name": "Status quo warnings and manual cleanup",
+      "description": "Keep liveness advisory, rely on users to disable competing plugins, and leave worktree removal to the orchestrator or human.",
       "tradeoffs": {
         "gains": [
-          "Minimum interruption"
+          "No new destructive engine path",
+          "Immediate rollback posture"
         ],
         "costs": [
-          "Silence expands authority",
-          "Changed scope/contracts and external actions become unsafe"
+          "Silent non-enforcement remains possible",
+          "Competing delivery loops remain structurally allowed",
+          "Merged managed worktrees continue to accumulate"
         ],
-        "revisit_when": "Never under the accepted least-privilege requirement."
+        "revisit_when": "Used only as explicit warn/manual rollback mode after canonical records exist."
       }
     }
   ],
-  "selected_approach": "consolidated-semantic-ledger",
-  "decision": "Compose one consolidated authorization/authority ledger with semantic requirement-contract-authority evolution classification, automatic mechanical gates/recovery, the preserved progressive review ledger, durable truthful status/onboarding, and complete cross-host/thread delivery. Fingerprint drift invalidates stale evidence but is not itself a human gate.",
+  "selected_approach": "canonical-proof-records",
+  "decision": "Select canonical proof records because R-0003 requires identical structural classifications across surfaces and requires cleanup to be both destructive and crash-safe. A single decision per concern, persisted with existing atomic run-store primitives and projected by adapters, is the smallest design that makes those invariants mechanically reviewable.",
   "modules": {
     "existing": [
+      "taskplane/tp.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/host_capabilities.py",
+      "taskplane/loop.py",
       "taskplane/review.py",
       "taskplane/review_evidence.py",
-      "taskplane/review_dor.py",
-      "taskplane/lens.py",
-      "taskplane/lens_signals.py",
-      "taskplane/views.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/loop.py",
-      "taskplane/spend.py",
+      "taskplane/review_repair.py",
+      "taskplane/review_recovery.py",
+      "taskplane/evaluator_health.py",
       "taskplane/dashboard.py",
-      "agents/tp-engineering.md",
-      "agents/tp-lens.md",
-      "skills/tp-engineering",
-      "skills/tp-go",
-      "docs",
-      "taskplane/tests",
-      "taskplane/tp.py",
-      "taskplane/preflight.py",
       "taskplane/repository.py",
       "taskplane/storage.py",
-      "taskplane/command_runtime.py",
-      "taskplane/command_adapters.py",
-      "taskplane/host_capabilities.py",
-      "workflows",
-      "skills",
+      "taskplane/run_store.py",
+      "taskplane/runtime_eval.py",
+      "hooks/hooks.json",
+      ".codex/hooks.json",
       "agents",
-      "hooks",
-      ".codex-plugin",
-      ".claude-plugin"
+      "skills",
+      "docs",
+      "taskplane/tests",
+      "specs/spec.md"
     ],
     "new": [
-      "taskplane/review_progression.py",
-      "taskplane/review_repair.py",
-      "taskplane/evaluator_health.py",
-      "taskplane/review_convergence.py",
-      "taskplane/lens_telemetry.py",
-      "taskplane/authority.py",
-      "taskplane/recovery.py",
-      "taskplane/progress.py"
+      "taskplane/enforcement.py",
+      "taskplane/collision.py",
+      "taskplane/collision_registry.json",
+      "taskplane/worktree_cleanup.py"
     ]
   },
   "contracts": [
     {
+      "relation": "consumes",
       "id": "contract:review-kernel-slot",
-      "relation": "changes",
-      "description": "Exactly-once lifecycle ledger for selected and promoted slots plus acceptance evidence."
+      "description": "Retains exact run, slot, producer, lease, engine, worktree, findings, and acceptance-evidence conservation."
     },
     {
-      "id": "contract:review-kernel-partial-revision",
-      "relation": "changes",
-      "description": "Immediate immutable provisional request-changes with known evidence and explicit gaps."
-    },
-    {
+      "relation": "consumes",
       "id": "contract:review-kernel-mechanical-repair",
-      "relation": "changes",
-      "description": "One audited equivalence-bounded derivable metadata repair; substance retries affected slot."
+      "description": "Retains equivalence-bounded summary normalization and affected-slot-only substantive retry."
     },
     {
-      "id": "contract:review-risk-progression",
-      "relation": "provides",
-      "description": "Mandatory floors, evidence-deep lenses, <=1 sweep and deterministic promotion/rejection."
-    },
-    {
+      "relation": "consumes",
       "id": "contract:review-evidence-binding",
-      "relation": "provides",
-      "description": "Repository/exact-root/target/engine/run/lens/slot/lease/producer binding."
+      "description": "Retains exact claimed-worktree and canonical evidence binding after worker cleanup."
     },
     {
+      "relation": "consumes",
       "id": "contract:evaluator-infrastructure-health",
-      "relation": "provides",
-      "description": "Exact-key expiring verified infrastructure-unavailable cache without lens verdict."
+      "description": "Retains exact-key non-judgmental evaluator outage caching and retry."
     },
     {
-      "id": "contract:review-fix-convergence",
-      "relation": "provides",
-      "description": "Measured finding/evidence progress and bounded continue/escalate decisions."
-    },
-    {
-      "id": "contract:lens-quality-telemetry",
-      "relation": "provides",
-      "description": "Post-review versioned quality/uniqueness/latency/cost telemetry isolated from current review."
-    },
-    {
+      "relation": "changes",
       "id": "contract:consolidated-authorization",
-      "relation": "provides",
-      "description": "One attributable packet and stage derivations cover unchanged routine work; only semantic material authority changes reauthorize."
+      "description": "Adds structural enforcement status and attributable advisory operation to every authority derivation."
     },
     {
+      "relation": "changes",
       "id": "contract:automatic-recovery",
-      "relation": "provides",
-      "description": "Bounded classified routine repair/retry/convergence with explicit safety/authority/exhaustion escalation."
+      "description": "Adds bounded enforcement recovery and one idempotent cleanup maintenance replay without stronger authority."
     },
     {
-      "id": "contract:status-progress-telemetry",
-      "relation": "provides",
-      "description": "Cheap durable non-gating owner/token/elapsed/wait/ETA snapshots."
-    },
-    {
+      "relation": "changes",
       "id": "contract:onboarding-worktree-continuity",
-      "relation": "provides",
-      "description": "Classified self-repair and exact dynamic sibling-worktree engine resolution."
+      "description": "Adds signed foreign-root reporting and exact managed worktree registration/retention continuity."
     },
     {
-      "id": "contract:product-internal-north-star",
       "relation": "provides",
-      "description": "Conditional seven-field internal Product advice that never gates."
+      "id": "contract:claude-enforcement-status",
+      "description": "taskplane.enforcement-status/v1 is the sole live, unproven, or advisory decision for exact workspace/session/run/revision evidence."
     },
     {
-      "id": "contract:large-markdown-delivery",
       "relation": "provides",
-      "description": "JSON authority, inline small output, automatic complete Markdown, optional HTML."
+      "id": "contract:exclusive-delivery-authority",
+      "description": "taskplane.delivery-isolation-registry/v1 deterministically allows Taskplane/helpers and denies or advises foreign delivery drivers only during exact-workspace governed state."
     },
     {
-      "id": "contract:attributed-thread-continuation",
       "relation": "provides",
-      "description": "Actor/thread/target/revision-bound approval and complete accessible fallback delivery."
+      "id": "contract:foreign-interference-audit",
+      "description": "taskplane.foreign-interference/v1 durably records bounded identities, dispositions, registry evidence, signed roots, run/step, actor/session evidence, and time."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:managed-worktree-cleanup",
+      "description": "taskplane.task-merge/v1 and taskplane.worktree-cleanup/v1 prove durable merge, immediate exact eligibility revalidation, no-force removal, idempotent replay, and evidence retention."
     }
   ],
-  "acceptance_map": [
-    {
-      "criterion": "One authorization covers routine end-to-end work.** A consolidated packet identifies the requirement, conditional design/plan, target and scope, acceptance criteria, dynamic-validation intent, ordinary sandbox authority, routine fix/recovery policy, evaluation/collection, artifact delivery, and execution bounds. One attributable approval authorizes those unchanged activities through final-signoff readiness. **Verify:** all ten flow fixtures complete routine stages without another approval and retain one receipt plus stage-by-stage authority derivation.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC1 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_01."
-    },
-    {
-      "criterion": "Mechanical definition gates auto-advance.** Product, Design, and Plan stages automatically complete/score/check and advance when their contracts, graph checks, acceptance mapping, required design/review lenses, and evidence pass. They do not request separate Product, Design, or Plan approval. **Verify:** pass/fail fixtures assert automatic advance only on complete evidence and a named non-human blocker when mechanical checks fail.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC2 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_02."
-    },
-    {
-      "criterion": "Human-attention boundaries are closed and explicit.** A new human decision occurs only for initial consolidated authorization; explicit A/B selection; exhausted/no-progress recovery or replan; material scope creep or major authority change; destructive/irreversible action; new external system, credential, publication, or spend; changed acceptance criteria; recovery that weakens a gate; or final sign-off. **Verify:** an approval trace for every flow contains no other prompt and each allowed prompt names the new fact, consequence, and authority requested.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC3 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_03."
-    },
-    {
-      "criterion": "Silence never expands authority.** Missing, stale, ambiguous, or unauthenticated responses pause only the affected human-owned decision and cannot authorize additional scope, external effects, destructive action, changed criteria, weakened controls, or final approval. **Verify:** timeout, replay, wrong-thread, wrong-revision, and free-form ambiguous fixtures.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC4 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_04."
-    },
-    {
-      "criterion": "Routine recovery is automatic and bounded.** Within authorized scope, Taskplane retries or mechanically repairs transient, metadata, evaluator, collection, artifact, render, and setup failures automatically two to three times or while measurable convergence continues. It asks only after the bounded policy is exhausted, progress stops/oscillates/worsens, safety or authority changes, or replan is needed. **Verify:** one-, two-, three-, converging-longer, no-progress, repeated-fingerprint, unsafe, and authority- change cases assert recover/escalate behavior and reasons.",
-      "design_element": "contract:automatic-recovery",
-      "validation": "AC5 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_05."
-    },
-    {
-      "criterion": "Ownership and parallelism remain governed.** Each phase has one accountable owner; parallel agents/subagents run only in isolated worktrees with bounded scopes, evidence-bound submissions, and orchestrator-only gates. **Verify:** serial, parallel, overlapping-scope, sibling-worktree, crashed-owner, copied- evidence, and attempted-worker-gate fixtures preserve ownership and isolation.",
-      "design_element": "taskplane/loop.py",
-      "validation": "AC6 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_06."
-    },
-    {
-      "criterion": "Facade performs preparation automatically.** Repository acquisition, managed checkout/worktree preparation, target/ref pinning, and verification run without a user prompt when existing authority is sufficient. Failures classify into automatic recovery or a named genuine authority/external boundary. **Verify:** local, remote, cached, stale, moved, auth-required, host- policy, and external-unavailable repository fixtures.",
-      "design_element": "taskplane/repository.py",
-      "validation": "AC7 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_07."
-    },
-    {
-      "criterion": "Facade preserves intent and hides persona plumbing.** User intent, current loop state, and authority deterministically select Product/Design/Build/ Engineering/Status/Help behavior; the user is never asked which persona to invoke. **Verify:** ambiguous-language/state matrix routes or asks one substantive clarification without exposing internal role selection.",
-      "design_element": "taskplane/tp.py",
-      "validation": "AC8 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_08."
-    },
-    {
-      "criterion": "Dashboard delivery is size-appropriate and complete.** Small dashboards render inline. Very large dashboards automatically deliver complete Markdown without truncating evidence; canonical JSON remains machine authority and HTML failure/absence is optional and nonblocking. **Verify:** below/above thresholds and large-finding fixtures compare semantic equality and gate state across JSON, inline, Markdown, and optional HTML.",
-      "design_element": "contract:large-markdown-delivery",
-      "validation": "AC9 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_09."
-    },
-    {
-      "criterion": "Design and Plan share one authorization packet.** High-impact work may retain a separate Design phase, but Design and Plan are presented together in the consolidated pre-implementation packet; mechanically passing stages do not request another approval. Non-material evolution within accepted requirements/contracts proceeds automatically. **Verify:** high/low impact, material/non-material drift, contract-preserving, and contract-changing scenarios assert packet contents and reauthorization boundaries.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC10 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_10."
-    },
-    {
-      "criterion": "Product completes refinement automatically.** Product records and scores the complete requirement and feeds it into the consolidated packet without a standalone Product approval. Missing acceptance, contract, dependency, or NFR evidence blocks mechanically rather than asking for ceremonial approval. **Verify:** complete and gap fixtures assert score/evidence and transition behavior.",
-      "design_element": "taskplane/review_dor.py",
-      "validation": "AC11 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_11."
-    },
-    {
-      "criterion": "North-star is conditional internal advice.** Product invokes north-star internally only for strategic ambiguity, high opportunity cost, irreversible direction, or an explicit request. It is advisory and never a gate or separate user-facing flow. Its concise note always contains alignment, leverage, reversibility, opportunity cost, coherence, sharpest tension, and recommendation. **Verify:** trigger/non-trigger fixtures and schema checks; absence or disagreement cannot independently block work.",
-      "design_element": "contract:product-internal-north-star",
-      "validation": "AC12 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_12."
-    },
-    {
-      "criterion": "Build preserves the intended selection boundary.** A single variant uses consolidated authorization end to end. When A/B variants were explicitly chosen, variant selection is the only ordinary mid-build human gate and each variant retains isolated comparable evidence. **Verify:** single, A/B, invalid variant, stale selection, and resumed selection fixtures.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC13 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_13."
-    },
-    {
-      "criterion": "Preview feedback becomes an attributable scoped change.** Human feedback from a design/build preview is recorded as an attributable scoped change request against the current requirement/target. Non-material in-contract feedback proceeds automatically; changed acceptance, material scope, or authority returns to consolidated authorization. **Verify:** cosmetic, behavioral, acceptance-changing, scope-expanding, and unauthenticated input.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC14 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_14."
-    },
-    {
-      "criterion": "Deep-review floors scale with attributable risk.** Documentation-only and simple low-risk changes run exactly one attributable risk-selected deep lens, and missing/inapplicable code-module mapping alone does not widen them. Substantive, risky, mixed, or genuinely ambiguous/corrupt evidence runs architecture, code-quality, security, and QA as four mandatory deep floors with an explicit evidence-backed reason. Cache, light sweep, early provisional publication, or another lens cannot replace the slot or slots required for the risk class. **Verify:** code, docs, mixed, small, large, early-blocker, mapping-gap, ambiguous, and corrupt fixtures assert exact classification, reason, floor selection, and conservation.",
-      "design_element": "contract:review-risk-progression",
-      "validation": "AC15 executable fixture matrix verifies exact risk classification, reason, required deep-lens identity, and slot conservation across documentation-only, simple low-risk, substantive, risky, mixed, early-blocker, mapping-gap, ambiguous, and corrupt cases. Run: python3 -m pytest -q taskplane/tests/test_review_progression.py::test_review_floors_scale_with_attributable_risk_across_required_matrix taskplane/tests/test_review_progression.py::test_document_risk_signal_selects_an_attributable_single_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_docs_only_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_simple_low_risk_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_substantive_and_risky_changes_retain_four_mandatory_deep_floors."
-    },
-    {
-      "criterion": "Other review is progressive.** Non-floor lenses begin through at most one bounded light sweep and promote to named deep review only from attributable normalized evidence within the lens charter. Every high/major concern is promoted or explicitly rejected as duplicate, invalid, out-of-charter, or already covered. **Verify:** severity, duplicate, replay, missing-evidence, cross-charter, and mixed-sweep fixtures.",
-      "design_element": "contract:review-risk-progression",
-      "validation": "AC16 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_16."
-    },
-    {
-      "criterion": "Severe harm publishes request-changes immediately.** An admissible Blocker, High, any security vulnerability, or harmful/destructive bug publishes an immutable provisional request-changes revision immediately, preserving complete known evidence and explicit lifecycle gaps. Exhaustive collection is not required for this recommendation. **Verify:** each trigger, non-trigger severities, invalidated finding, duplicate, and simultaneous finding fixtures assert timing and lineage.",
-      "design_element": "contract:review-kernel-partial-revision",
-      "validation": "AC17 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_17."
-    },
-    {
-      "criterion": "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
-      "design_element": "contract:review-kernel-slot",
-      "validation": "AC18 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_18."
-    },
-    {
-      "criterion": "Normalization and repair never redo substance.** Producer verdict/count/ severity/summary metadata normalizes deterministically from canonical findings. Authoritatively derivable metadata-only defects repair automatically with before/after, derivation authority, and fingerprint equivalence; substantive change reruns only affected slots. **Verify:** field permutation, summary contradiction, identity/count defect, and every substantive mutation.",
-      "design_element": "contract:review-kernel-mechanical-repair",
-      "validation": "AC19 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_19."
-    },
-    {
-      "criterion": "Exact execution-root evidence binding remains.** Every review/evaluation artifact verifies repository identity, exact Git worktree root, target/base/ head, engine fingerprint, run, lens, slot, lease, and producer. Parent, sibling, moved, symlinked, cloned, engine-skewed, stale, or copied evidence cannot substitute. **Verify:** negative topology matrix and valid resume.",
-      "design_element": "contract:review-evidence-binding",
-      "validation": "AC20 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_20."
-    },
-    {
-      "criterion": "Evaluator-outage cache is exact and truthful.** A verified evaluator infrastructure failure reuses only for the same evaluator, engine/version, capability, repository, exact worktree, and validity window. It records infrastructure unavailable—not lens pass/fail—and invalidates on any key, expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count.",
-      "design_element": "contract:evaluator-infrastructure-health",
-      "validation": "AC21 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_21."
-    },
-    {
-      "criterion": "Documentation routing avoids module fail-open widening.** Documentation-only and mixed changes route from document content, directives, contracts, audiences, and graph evidence. Missing/inapplicable code-module mapping alone retains exactly one attributable risk-selected deep lens for documentation-only/simple low-risk work. Only genuinely ambiguous, corrupt, mixed, substantively risky, or otherwise materially risky evidence widens to architecture, code-quality, security, and QA, with an explicit reason; routing is never unconditional all-lens or no-review. **Verify:** API/security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases.",
-      "design_element": "taskplane/review_progression.py",
-      "validation": "AC22 executable fixtures verify attributable document-lens selection, malformed/absent-map/mixed handling, and the boundary where missing mapping alone stays on one deep lens while evidenced ambiguity or corruption widens to four floors with an explicit reason. Run: python3 -m pytest -q taskplane/tests/test_review_progression.py::test_document_risk_signal_selects_an_attributable_single_deep_lens taskplane/tests/test_review_progression.py::test_document_malformed_absent_map_and_mixed_inputs_never_fail_open taskplane/tests/test_review_progression.py::test_missing_mapping_alone_stays_single_deep_and_only_evidenced_ambiguity_widens."
-    },
-    {
-      "criterion": "Fix policy measures convergence.** Each fix evaluation records closed, persistent, regressed, and new admissible findings plus test/evidence progress. Safe measurable convergence can continue beyond three cycles; no-progress, repetition, oscillation, worsening, task-specific bounds, unsafe recovery, scope/authority change, or human stop escalates. **Verify:** convergence matrix and human-ownership assertions.",
-      "design_element": "contract:review-fix-convergence",
-      "validation": "AC23 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_23."
-    },
-    {
-      "criterion": "Per-lens telemetry is complete and independent.** Each lens records eligible/selected/promoted/collected state, admissible/confirmed/unique/ overlap/duplicate/invalidated/false-positive findings, retry/repair, latency, provider-correct tokens/cost when available, and infrastructure unavailability with versioned definitions/denominators. Telemetry derives from sealed revisions, does not expose drafts across lenses, alter current verdicts, or suppress floors. **Verify:** golden arithmetic, unavailable-vs- zero, information-isolation, and enabled/disabled equivalence fixtures.",
-      "design_element": "contract:lens-quality-telemetry",
-      "validation": "AC24 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_24."
-    },
-    {
-      "criterion": "Status is cheap, live, and non-gating.** Status reads durable snapshots only, performs no expensive recomputation, and never blocks or gates work. Picture-in-Picture continuously identifies the active agent/phase and updates from durable events. **Verify:** instrumentation asserts bounded reads/no graph/review recomputation and identical workflow outcome with status open, closed, interrupted, or unavailable.",
-      "design_element": "contract:status-progress-telemetry",
-      "validation": "AC25 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_25."
-    },
-    {
-      "criterion": "Progress telemetry is truthful.** Status shows observed tokens used, elapsed time in the current focus/stage, and execution/wait/human-wait state. ETA appears only from observed comparable or bounded work and includes source, confidence, and update time; otherwise it says unavailable. **Verify:** execution, tool wait, agent wait, human wait, resume, unknown tokens, sparse history, comparable history, and stale ETA fixtures.",
-      "design_element": "contract:status-progress-telemetry",
-      "validation": "AC26 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_26."
-    },
-    {
-      "criterion": "Onboarding self-repairs when authorized.** Every setup check is classified self-repairable, authority-required, host-policy, or external-unavailable. Self-repair executes automatically; authority-required asks once for the exact authority; host-policy/external-unavailable explains and retries only when state can change, without repeated prompts. **Verify:** full setup matrix and prompt counts.",
-      "design_element": "contract:onboarding-worktree-continuity",
-      "validation": "AC27 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_27."
-    },
-    {
-      "criterion": "Onboarding survives sibling worktrees.** A stable repository-family hook/ launcher resolves the exact current worktree and latest valid engine dynamically, so supported sibling worktrees operate without restart or a new Taskplane task. **Verify:** root, nested, sibling, newly created, moved, stale-engine, unavailable-engine, and policy-restricted worktree fixtures.",
-      "design_element": "contract:onboarding-worktree-continuity",
-      "validation": "AC28 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_28."
-    },
-    {
-      "criterion": "Thread approval is attributable and sufficient.** In Claude-tag/Slack contexts, one attributed approval in the bound thread authorizes the same routine continuation as the consolidated packet; wrong thread, actor, revision, replay, or ambiguous reply cannot authorize. **Verify:** receipt matrix and one-routine-approval trace.",
-      "design_element": "contract:attributed-thread-continuation",
-      "validation": "AC29 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_29."
-    },
-    {
-      "criterion": "Thread delivery preserves complete evidence.** A concise summary leads, but the complete evidence set is attached or linked and remains canonical. Missing native controls degrade to an accessible thread summary, complete Markdown/artifacts, and canonical actions through attributed replies; unavailable controls are never interpreted as decline. Automatic retry/ recovery precedes any user prompt. **Verify:** native, missing-control, attachment/link failure, large artifact, retry success/exhaustion, and accessibility fixtures.",
-      "design_element": "contract:large-markdown-delivery",
-      "validation": "AC30 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_30."
-    },
-    {
-      "criterion": "Evidence remains lossless across all recovery and delivery.** Provisional publication, promotion, normalization, repair, retry, cache reuse, supersession, dashboard-size fallback, and thread delivery never drop or duplicate valid findings, criteria, gaps, provenance, telemetry, or artifact identity. **Verify:** an end-to-end multi-revision large-review round trip reconciles canonical JSON, complete Markdown, optional HTML, and thread links.",
-      "design_element": "contract:review-kernel-partial-revision",
-      "validation": "AC31 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_31."
-    },
-    {
-      "criterion": "Cross-host and legacy semantics remain compatible.** Codex, Claude, Slack-capable entry, managed worktrees, and supported fallbacks preserve the same authorization, recovery, gate, review, evidence, convergence, status, and telemetry semantics. **Verify:** golden cross-host scenarios and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions.",
-      "design_element": "contract:consolidated-authorization",
-      "validation": "AC32 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_32."
-    }
-  ],
-  "risks": [
-    {
-      "risk": "Progressive routing misses serious concerns.",
-      "mitigation": "Risk-scaled floors are conserved; missing mapping alone stays on one attributable deep lens, while substantive risk or evidenced ambiguity/corruption widens to four floors with an explicit reason; promotions require attributable evidence.",
-      "owner": "Routing owner"
-    },
-    {
-      "risk": "Early provisional output is mistaken for exhaustive approval-ready review.",
-      "mitigation": "Schema/gate require request-changes, explicit gap manifest and approval disabled.",
-      "owner": "Collection owner"
-    },
-    {
-      "risk": "Repair/cache forges substantive review or crosses worktrees.",
-      "mitigation": "Equivalence allowlist plus exact repository/root/engine/run/lease binding and expiry.",
-      "owner": "Recovery owner"
-    },
-    {
-      "risk": "Convergence loops indefinitely or broadens scope.",
-      "mitigation": "Task bound, two no-progress threshold, oscillation/fingerprint/safety/scope/human escalation; no auto-approval.",
-      "owner": "Loop owner"
-    },
-    {
-      "risk": "Telemetry biases current producers or leaks data.",
-      "mitigation": "Derive only after sealed revisions/adjudication; no current-routing read edge; redact to bounded fingerprints/counts.",
-      "owner": "Telemetry owner"
-    },
-    {
-      "risk": "Byte-level design evolution repeatedly invalidates human approval.",
-      "mitigation": "Classify normalized requirement/contract/target/scope/authority semantics; byte drift only invalidates stale mechanical evidence.",
-      "owner": "Authority owner"
-    },
-    {
-      "risk": "Consolidated consent silently expands authority.",
-      "mitigation": "Closed authority ledger; missing/stale/ambiguous receipts pause only affected boundary; destructive/external/material changes reauthorize.",
-      "owner": "Authority owner"
-    },
-    {
-      "risk": "Automatic recovery loops or weakens gates.",
-      "mitigation": "Typed classes, 2–3 retries/convergence rules, immutable evidence and explicit exhausted/safety/authority escalation.",
-      "owner": "Recovery owner"
-    },
-    {
-      "risk": "Thread/status/UI becomes parallel truth or loses large evidence.",
-      "mitigation": "Canonical JSON/revisions remain authority; snapshot-only status; complete Markdown and attributed receipts.",
-      "owner": "Delivery owner"
-    }
-  ],
-  "failure_modes": [
-    {
-      "mode": "Mandatory floor or promoted slot disappears.",
-      "detection": "review_slot_ledger reports selected/promoted versus lifecycle conservation.",
-      "recovery": "ReviewKernel aborts approval immediately and retries only named missing slot within Plan bound."
-    },
-    {
-      "mode": "Sweep concern cannot prove risk/evidence/charter.",
-      "detection": "review_risk_progression reports normalized trigger/rejection reason.",
-      "recovery": "Routing owner records canonical rejection; admissible concern is promoted once, never substituted."
-    },
-    {
-      "mode": "Metadata repair changes substance.",
-      "detection": "review_metadata_repair reports before/after equivalence and allowlist result.",
-      "recovery": "Recovery owner rejects repair and reruns affected slot only, maximum Plan retry bound."
-    },
-    {
-      "mode": "Infrastructure cache key is stale or mismatched.",
-      "detection": "evaluator_health_cache reports full key, TTL and invalidation reason.",
-      "recovery": "Evaluator owner invalidates and probes once; verified unavailable never becomes verdict."
-    },
-    {
-      "mode": "Fix cycles show no progress, oscillation, regression or unsafe scope change.",
-      "detection": "review_convergence reports finding sets/evidence delta and decision reason.",
-      "recovery": "Loop owner escalates after two no-progress cycles or immediately on unsafe/scope/human stop."
-    },
-    {
-      "mode": "Telemetry denominator/source is missing.",
-      "detection": "lens_quality_metric reports definition version and availability.",
-      "recovery": "Telemetry owner records unavailable, never zero, and does not affect review."
-    },
-    {
-      "mode": "Authority packet or derivation is stale, ambiguous or wrong-thread.",
-      "detection": "authority_derivation reports packet/actor/thread/requirement/target/revision/scope semantic match.",
-      "recovery": "Authority owner pauses only affected boundary and requests the exact new fact/authority once."
-    },
-    {
-      "mode": "Design/plan bytes change without semantic materiality.",
-      "detection": "semantic_evolution reports byte-only/non-material/material/unsafe with requirement-contract-authority delta.",
-      "recovery": "Orchestrator mechanically revalidates byte/non-material changes and continues; material/unsafe reauthorizes or pauses."
-    },
-    {
-      "mode": "Routine repair/retry is exhausted or stops converging.",
-      "detection": "automatic_recovery reports class, attempts, fingerprints and convergence.",
-      "recovery": "Recovery owner escalates after 2–3 attempts or convergence stop, never weakens a gate."
-    },
-    {
-      "mode": "Large/thread delivery or native control fails.",
-      "detection": "artifact_delivery and thread_continuation report semantic counts, retry and control availability.",
-      "recovery": "Delivery owner retries automatically then supplies complete Markdown/artifacts and attributable reply actions."
-    }
-  ],
-  "observability": {
-    "signals": [
-      "review_risk_progression: routing/promotions/rejections/fingerprints",
-      "review_slot_ledger: each selected slot lifecycle and acceptance evidence",
-      "review_revision_lineage: provisional/canonical/supersession/findings/gaps",
-      "review_metadata_repair: rule/authority/before/after/equivalence/outcome",
-      "review_evidence_binding: repository/root/target/engine/run/lens/slot/lease/producer checks",
-      "evaluator_health_cache: exact key/TTL/reuse/invalidation/outcome",
-      "review_convergence: cycles/closed/persisted/regressed/new/evidence progress/decision",
-      "lens_quality_metric: versioned eligible/selected/findings/retries/latency/tokens/cost/unavailable denominators",
-      "authority_packet: actor/thread/requirement/target/scope/contracts/authority/bounds fingerprint",
-      "authority_derivation: stage/packet/semantic inputs/outcome",
-      "semantic_evolution: byte/non-material/material/unsafe deltas and authority result",
-      "mechanical_gate: stage/check/evidence/outcome",
-      "automatic_recovery: class/attempt/fingerprint/progress/escalation",
-      "status_snapshot: owner/agent/phase/tokens/elapsed/wait/ETA source/confidence/freshness",
-      "onboarding_continuity: check class/worktree/engine/repair/outcome",
-      "thread_continuation: actor/thread/packet/action/receipt/delivery outcome",
-      "artifact_delivery: format/bytes/counts/semantic equality/retry"
-    ],
-    "alerts": [
-      "Block approval on any ledger conservation or acceptance-evidence gap.",
-      "Block repair on substantive change or failed equivalence.",
-      "Invalidate health cache on any key/TTL/repair change.",
-      "Escalate after two no-progress cycles, repeated fingerprint, oscillation, regression, unsafe or scope change."
-    ]
-  },
-  "rollout": {
-    "strategy": "Behind TASKPLANE_CONSOLIDATED_FLOW, dual-record packet/evolution; enable mechanical Product/Design/Plan auto-advance; preparation/recovery; preserved progressive review; status/onboarding; Markdown/thread delivery. Compare Codex/Claude/Slack/worktree/legacy goldens each phase.",
-    "rollback": "Disable new consolidated packets, finish in-flight work with retained readers, route to legacy bounded/Markdown delivery, and preserve immutable evidence. Rollback cannot auto-approve, delete evidence, or reverse authority decisions."
-  },
   "graph": {
-    "baseline_fingerprint": "e5756150b39714ed4c0349d31729d2c487d2d49417dc1661339c5ebd49acbb24",
+    "baseline_fingerprint": "1c922579cff49bae94329a07532106138583e9de73be0048f6b7dacc70930d6b",
     "proposed_modules": [
+      "taskplane/tp.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/host_capabilities.py",
+      "taskplane/loop.py",
       "taskplane/review.py",
       "taskplane/review_evidence.py",
-      "taskplane/review_dor.py",
-      "taskplane/lens.py",
-      "taskplane/lens_signals.py",
-      "taskplane/views.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/loop.py",
-      "taskplane/spend.py",
-      "taskplane/dashboard.py",
-      "agents/tp-engineering.md",
-      "agents/tp-lens.md",
-      "skills/tp-engineering",
-      "skills/tp-go",
-      "docs",
-      "taskplane/tests",
-      "taskplane/review_progression.py",
       "taskplane/review_repair.py",
+      "taskplane/review_recovery.py",
       "taskplane/evaluator_health.py",
-      "taskplane/review_convergence.py",
-      "taskplane/lens_telemetry.py",
-      "contract:review-kernel-slot",
-      "contract:review-kernel-partial-revision",
-      "contract:review-kernel-mechanical-repair",
-      "contract:review-risk-progression",
-      "contract:review-evidence-binding",
-      "contract:evaluator-infrastructure-health",
-      "contract:review-fix-convergence",
-      "contract:lens-quality-telemetry",
-      "taskplane/tp.py",
-      "taskplane/preflight.py",
+      "taskplane/dashboard.py",
       "taskplane/repository.py",
       "taskplane/storage.py",
-      "taskplane/command_runtime.py",
-      "taskplane/command_adapters.py",
-      "taskplane/host_capabilities.py",
-      "workflows",
-      "skills",
+      "taskplane/run_store.py",
+      "taskplane/runtime_eval.py",
+      "hooks/hooks.json",
+      ".codex/hooks.json",
       "agents",
-      "hooks",
-      ".codex-plugin",
-      ".claude-plugin",
-      "taskplane/authority.py",
-      "taskplane/recovery.py",
-      "taskplane/progress.py",
-      "contract:consolidated-authorization",
-      "contract:automatic-recovery",
-      "contract:status-progress-telemetry",
-      "contract:onboarding-worktree-continuity",
-      "contract:product-internal-north-star",
-      "contract:large-markdown-delivery",
-      "contract:attributed-thread-continuation"
+      "skills",
+      "docs",
+      "taskplane/tests",
+      "specs/spec.md",
+      "taskplane/enforcement.py",
+      "taskplane/collision.py",
+      "taskplane/collision_registry.json",
+      "taskplane/worktree_cleanup.py"
     ],
     "proposed_edges": [
       {
+        "from": "taskplane/host_capabilities.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "consumes",
+        "reason": "Supplies bounded exact-session and exact-workspace hook receipt observations."
+      },
+      {
+        "from": "taskplane/taskplane_lite.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "consumes",
+        "reason": "Supplies active-contract meter liveness and applies the canonical closing decision."
+      },
+      {
+        "from": "taskplane/enforcement.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "provides",
+        "reason": "Owns structural classification, evidence identity, advisory acknowledgment, and entry/closure guards."
+      },
+      {
+        "from": "taskplane/enforcement.py",
+        "to": "contract:consolidated-authorization",
+        "kind": "changes",
+        "reason": "Makes enforcement status and advisory identity part of derived authority."
+      },
+      {
+        "from": "taskplane/tp.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "consumes",
+        "reason": "Guards CLI entry, dispatch, review closure, and machine-shaped recovery before mutation."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "consumes",
+        "reason": "Guards stage emission, claim, and loop closure with the canonical decision."
+      },
+      {
+        "from": "taskplane/run_store.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "stores",
+        "reason": "Atomically persists accepted enforcement decisions and advisory attribution."
+      },
+      {
+        "from": "taskplane/dashboard.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "consumes",
+        "reason": "Projects the persisted status and evidence id without re-derivation."
+      },
+      {
+        "from": "taskplane/runtime_eval.py",
+        "to": "contract:claude-enforcement-status",
+        "kind": "consumes",
+        "reason": "Stamps gate, evidence, recommendation, and retro projections."
+      },
+      {
+        "from": "taskplane/collision_registry.json",
+        "to": "contract:exclusive-delivery-authority",
+        "kind": "provides",
+        "reason": "Packages versioned Taskplane, helper, conflict, built-in, and foreign-state signature rules."
+      },
+      {
+        "from": "taskplane/collision.py",
+        "to": "contract:exclusive-delivery-authority",
+        "kind": "provides",
+        "reason": "Owns exact-workspace governed-state detection and registry-bounded skill/agent dispositions."
+      },
+      {
+        "from": "hooks/hooks.json",
+        "to": "contract:exclusive-delivery-authority",
+        "kind": "consumes",
+        "reason": "Routes Claude Skill and agent PreToolUse events to canonical screening."
+      },
+      {
+        "from": ".codex/hooks.json",
+        "to": "contract:exclusive-delivery-authority",
+        "kind": "consumes",
+        "reason": "Routes equivalent Codex skill and dispatch events without changing authority semantics."
+      },
+      {
+        "from": "taskplane/tp.py",
+        "to": "contract:exclusive-delivery-authority",
+        "kind": "consumes",
+        "reason": "Wires screen-skill and independent known-conflict dispatch denial."
+      },
+      {
+        "from": "taskplane/collision.py",
+        "to": "contract:foreign-interference-audit",
+        "kind": "provides",
+        "reason": "Owns durable events, signed-root discovery, bounded identity, and summary projection."
+      },
+      {
+        "from": "taskplane/run_store.py",
+        "to": "contract:foreign-interference-audit",
+        "kind": "stores",
+        "reason": "Persists interference events and summaries under revision checks."
+      },
+      {
+        "from": "taskplane/taskplane_lite.py",
+        "to": "contract:exclusive-delivery-authority",
+        "kind": "consumes",
+        "reason": "Compiles signed foreign roots into out_of_scope_paths unless an attributable exact-root override exists."
+      },
+      {
+        "from": "taskplane/dashboard.py",
+        "to": "contract:foreign-interference-audit",
+        "kind": "consumes",
+        "reason": "Renders durable interference summaries and stays quiet for clean runs."
+      },
+      {
+        "from": "taskplane/runtime_eval.py",
+        "to": "contract:foreign-interference-audit",
+        "kind": "consumes",
+        "reason": "Adds nonzero interference headlines to retro from stored events only."
+      },
+      {
+        "from": "taskplane/storage.py",
+        "to": "contract:onboarding-worktree-continuity",
+        "kind": "changes",
+        "reason": "Extends exact managed worker registration with task, branch, tip, lifecycle, variant, and retention identity."
+      },
+      {
+        "from": "taskplane/repository.py",
+        "to": "contract:managed-worktree-cleanup",
+        "kind": "consumes",
+        "reason": "Resolves repository, registered linked worktrees, and the unambiguous local primary ref without fetching."
+      },
+      {
+        "from": "taskplane/worktree_cleanup.py",
+        "to": "contract:managed-worktree-cleanup",
+        "kind": "provides",
+        "reason": "Owns merge receipts, eligibility, last-moment revalidation, no-force exact removal, verification, and replay."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "contract:managed-worktree-cleanup",
+        "kind": "consumes",
+        "reason": "Calls the orchestrator-owned merge boundary only after non-variant Evaluate pass and records lifecycle release."
+      },
+      {
+        "from": "taskplane/run_store.py",
+        "to": "contract:managed-worktree-cleanup",
+        "kind": "stores",
+        "reason": "Durably journals merge receipt before cleanup and cleanup outcome after exact removal verification."
+      },
+      {
+        "from": "taskplane/worktree_cleanup.py",
+        "to": "contract:automatic-recovery",
+        "kind": "changes",
+        "reason": "Adds one idempotent post-receipt maintenance replay while prohibiting stronger or broader cleanup retries."
+      },
+      {
         "from": "taskplane/review.py",
         "to": "contract:review-kernel-slot",
-        "kind": "provides",
-        "reason": "Owns the named canonical review contract."
+        "kind": "consumes",
+        "reason": "Preserved collector and conservation boundary remains authoritative."
       },
       {
         "from": "taskplane/review_evidence.py",
-        "to": "contract:review-kernel-partial-revision",
+        "to": "contract:review-evidence-binding",
         "kind": "provides",
-        "reason": "Owns the named canonical review contract."
-      },
-      {
-        "from": "taskplane/review_progression.py",
-        "to": "contract:review-risk-progression",
-        "kind": "provides",
-        "reason": "Owns the named canonical review contract."
+        "reason": "Preserved immutable evidence and exact execution binding remain canonical after cleanup."
       },
       {
         "from": "taskplane/review_repair.py",
         "to": "contract:review-kernel-mechanical-repair",
         "kind": "provides",
-        "reason": "Owns the named canonical review contract."
+        "reason": "Preserved summary normalization remains equivalence-bounded."
+      },
+      {
+        "from": "taskplane/review_recovery.py",
+        "to": "contract:review-kernel-mechanical-repair",
+        "kind": "consumes",
+        "reason": "Preserved retry scheduler reissues only substantive affected slots."
       },
       {
         "from": "taskplane/evaluator_health.py",
         "to": "contract:evaluator-infrastructure-health",
         "kind": "provides",
-        "reason": "Owns the named canonical review contract."
+        "reason": "Preserved exact-key unavailable cache remains non-judgmental."
       },
       {
-        "from": "taskplane/review_convergence.py",
-        "to": "contract:review-fix-convergence",
-        "kind": "provides",
-        "reason": "Owns the named canonical review contract."
-      },
-      {
-        "from": "taskplane/lens_telemetry.py",
-        "to": "contract:lens-quality-telemetry",
-        "kind": "provides",
-        "reason": "Owns the named canonical review contract."
-      },
-      {
-        "from": "taskplane/taskplane_lite.py",
-        "to": "contract:review-evidence-binding",
-        "kind": "provides",
-        "reason": "Owns the named canonical review contract."
-      },
-      {
-        "from": "taskplane/lens.py",
-        "to": "contract:review-risk-progression",
-        "kind": "consumes",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/lens_signals.py",
-        "to": "contract:review-risk-progression",
-        "kind": "consumes",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/review.py",
-        "to": "contract:review-evidence-binding",
-        "kind": "consumes",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/loop.py",
-        "to": "contract:review-fix-convergence",
-        "kind": "consumes",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/spend.py",
-        "to": "contract:lens-quality-telemetry",
-        "kind": "consumes",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/dashboard.py",
-        "to": "contract:review-kernel-partial-revision",
-        "kind": "consumes",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:review-risk-progression",
-        "kind": "validates",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:review-evidence-binding",
-        "kind": "validates",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:review-fix-convergence",
-        "kind": "validates",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:lens-quality-telemetry",
-        "kind": "validates",
-        "reason": "Consumes or verifies the canonical contract without parallel authority."
-      },
-      {
-        "from": "taskplane/authority.py",
+        "from": "agents",
         "to": "contract:consolidated-authorization",
-        "kind": "provides",
-        "reason": "Owns the amended cross-flow contract intent."
+        "kind": "consumes",
+        "reason": "Role guidance uses canonical continuation, enforcement, and cleanup semantics."
       },
       {
-        "from": "taskplane/recovery.py",
-        "to": "contract:automatic-recovery",
-        "kind": "provides",
-        "reason": "Owns the amended cross-flow contract intent."
+        "from": "skills",
+        "to": "contract:consolidated-authorization",
+        "kind": "consumes",
+        "reason": "Facade/persona guidance exposes executable continuation without owning decisions."
       },
       {
-        "from": "taskplane/progress.py",
-        "to": "contract:status-progress-telemetry",
-        "kind": "provides",
-        "reason": "Owns the amended cross-flow contract intent."
-      },
-      {
-        "from": "taskplane/repository.py",
+        "from": "docs",
         "to": "contract:onboarding-worktree-continuity",
-        "kind": "provides",
-        "reason": "Owns the amended cross-flow contract intent."
+        "kind": "consumes",
+        "reason": "Documents exact host recovery, foreign-state exclusion, merge receipt, and cleanup preservation."
       },
       {
-        "from": "taskplane/review_dor.py",
-        "to": "contract:product-internal-north-star",
-        "kind": "provides",
-        "reason": "Owns the amended cross-flow contract intent."
+        "from": "taskplane/tests",
+        "to": "contract:claude-enforcement-status",
+        "kind": "validates",
+        "reason": "Runs exact receipt, entry, gate, propagation, stale-session, and host-parity matrices."
       },
       {
-        "from": "taskplane/views.py",
-        "to": "contract:large-markdown-delivery",
-        "kind": "provides",
-        "reason": "Owns the amended cross-flow contract intent."
+        "from": "taskplane/tests",
+        "to": "contract:exclusive-delivery-authority",
+        "kind": "validates",
+        "reason": "Runs known/helper/unknown/no-governance/advisory/signed-root matrices."
       },
       {
-        "from": "workflows",
-        "to": "contract:attributed-thread-continuation",
-        "kind": "provides",
-        "reason": "Owns the amended cross-flow contract intent."
+        "from": "taskplane/tests",
+        "to": "contract:managed-worktree-cleanup",
+        "kind": "validates",
+        "reason": "Runs every preservation case, crash point, idempotent replay, no-force, and post-removal governance fixture."
+      },
+      {
+        "from": "specs/spec.md",
+        "to": "contract:consolidated-authorization",
+        "kind": "defines",
+        "reason": "R-0003 remains the product authority for scope and negative cases."
       }
     ],
     "depth_policy": {
@@ -708,67 +438,300 @@
     },
     "dor": [
       {
-        "check": "Baseline and amended requirement are pinned.",
-        "evidence": "Graph fingerprint e5756150b39714ed4c0349d31729d2c487d2d49417dc1661339c5ebd49acbb24; amended R-0001 has 32 exact ACs, 15 contracts, R-0011 dependency and no questions."
+        "check": "Baseline graph and requirement are pinned",
+        "evidence": "Baseline fingerprint is 1c922579cff49bae94329a07532106138583e9de73be0048f6b7dacc70930d6b; R-0003 has exactly 28 criteria, no open questions, and depends on resolvable R-0001 and R-0002."
       },
       {
-        "check": "Authority/materiality boundaries are settled.",
-        "evidence": "Closed human boundary set; byte-only/non-material auto-revalidate, material-contract reauthorizes, unsafe pauses."
+        "check": "As-built regression floors are identified",
+        "evidence": "Current review repair/evidence/recovery, evaluator health, status, run lookup, Python, and claimed-worktree tests are named as preserve-only obligations."
       },
       {
-        "check": "As-built seams and Python constraints are grounded.",
-        "evidence": "Loop/review/routing/root/repository/runtime/status/delivery sources cited; verified Python reference applied; no packaging change."
+        "check": "New authorities and boundaries are named",
+        "evidence": "One enforcement record, one versioned collision registry/interference record, and one merge/cleanup transaction own the new behavior; adapters only consume them."
       },
       {
-        "check": "Ownership/order/depth are settled.",
-        "evidence": "Authority→gates→recovery/preparation→review→status/onboarding→delivery/thread; local 3, contract/requirement 1."
+        "check": "Destructive scope is closed",
+        "evidence": "Only exact registered managed linked worktrees after a durable merge receipt are candidates; every R-0003 preservation case, no-force rule, no branch deletion, and no evidence deletion are explicit."
+      },
+      {
+        "check": "Python and packaging constraints are settled",
+        "evidence": "Synchronous stdlib-only modules, runtime validation at JSON/env/Git boundaries, registry included in wheel/plugin, and supported parse/run floor Python 3.10-3.12."
       }
     ],
     "dod": [
       {
-        "check": "Graph/contracts conform.",
-        "evidence": "Engineering rescans modules/edges/contracts and rejects unexplained drift."
+        "check": "Realized graph and contracts conform",
+        "evidence": "Engineering records every proposed module/edge/contract, runs graph scan after merge, and reports conformant design metadata with empty drift."
       },
       {
-        "check": "Risk progression and early revision pass.",
-        "evidence": "AC1-8 routing/promotion/blocker/gap/conservation/supersession matrices pass."
+        "check": "ReviewKernel floors remain exact",
+        "evidence": "AC1-10 existing normalization, retry, provenance, status, Python, live-manifest, continuation, outage, and claimed-worktree fixtures pass without weakened assertions."
       },
       {
-        "check": "Normalization, repair, cache and binding pass.",
-        "evidence": "AC9-12 permutation/tamper/exact-key/root-worktree matrices pass."
+        "check": "Enforcement and collision matrices pass",
+        "evidence": "AC11-21 exact status, zero-state refusal, self-proving receipt, advisory propagation, degradation, 300-second freshness, collision tiers, signed roots, no-op, and retro fixtures pass."
       },
       {
-        "check": "Docs and convergence pass.",
-        "evidence": "AC13-16 document/minimal-widening/convergence/authority matrices pass."
+        "check": "Cleanup matrix and crash recovery pass",
+        "evidence": "AC22-27 eligibility, all preservation cases, immediate revalidation, no-force removal, branch/evidence retention, pre/post-record crash, replay, EM/retro/status/sign-off fixtures pass."
       },
       {
-        "check": "Telemetry/isolation/parity pass.",
-        "evidence": "AC17-19 arithmetic/A-B/cross-host/worktree/legacy goldens and no-weakened-test audit pass."
+        "check": "Cross-host rollback stays conservative",
+        "evidence": "AC28 Codex/Claude/Slack-capable and managed/legacy goldens pass in strict/warn/off and collision enabled/disabled modes; no rollback fixture auto-approves, forges live, weakens review, or force-deletes."
       },
       {
-        "check": "Python/package quality holds.",
-        "evidence": "Strict trust-boundary types, failure tests, clean-wheel install and import graph verification pass."
-      },
-      {
-        "check": "Consolidated authority and semantic evolution pass.",
-        "evidence": "AC1-14 and AC25-32 authorization, auto-gate, recovery, preparation, status, onboarding, thread and delivery matrices pass without byte-only human gates."
+        "check": "Python/package quality holds",
+        "evidence": "Python 3.10/3.11/3.12 parse and smoke matrix, strict boundary typing, failure injection, clean-wheel install/import with registry contents, and import/dependency graph checks pass."
       }
     ]
   },
+  "acceptance_map": [
+    {
+      "criterion": "A blocker-only producer summary over canonical high, major, and blocker findings is normalized once before collection with before/after, derivation authority, and proven equivalence; findings stay byte-identical, collection completes when otherwise valid, and no producer rewrite is requested.",
+      "design_element": "contract:review-kernel-mechanical-repair",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py -k 'metadata_contradiction or normalizes_derivable or canonical_result'`; assert one repair audit, unchanged finding bytes, complete collection, and no producer rerun."
+    },
+    {
+      "criterion": "A substantive result mutation cannot be normalized: only its affected slot is reissued within the attempt bound, unchanged siblings remain sealed, and the new attempt retains original run and slot lineage.",
+      "design_element": "taskplane/review_recovery.py",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py -k 'substantive_mutation or fail_to_pass'`; assert one affected slot, max-attempt bound, sealed sibling reuse, and original run/slot lineage."
+    },
+    {
+      "criterion": "Wrong-producer, copied, sibling-worktree, stale-lease, wrong-run, missing-slot, duplicate-slot, and engine-mismatch fixtures remain non-approvable; only exact once-complete slot and acceptance-evidence conservation permits approval.",
+      "design_element": "contract:review-kernel-slot",
+      "validation": "Run provenance/conservation matrices in `test_review_evidence_lifecycle.py`, `test_review_routing.py`, and `test_loop.py`; every named negative must keep approval disabled and exact once-complete evidence must enable it."
+    },
+    {
+      "criterion": "Dashboard, status, and inline projection render for coding, read-only, ReviewKernel, released, and legacy contracts and show available scope/write allowance; no missing coding object raises KeyError.",
+      "design_element": "taskplane/dashboard.py",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_status_and_large_delivery.py -k contract_projection`; assert all five shapes render scope/write allowance in dashboard, status, and inline output without KeyError."
+    },
+    {
+      "criterion": "CLI and dashboard parse and ReviewKernel start smoke tests pass on supported Python 3.10, 3.11, and 3.12; an unsupported interpreter fails before state creation with one actionable version error.",
+      "design_element": "taskplane/tp.py",
+      "validation": "Run CI parse/import and ReviewKernel start smoke jobs under Python 3.10, 3.11, and 3.12 plus an unsupported-version launcher fixture; assert supported success and one pre-state actionable refusal."
+    },
+    {
+      "criterion": "While a ReviewKernel run is active and collection is incomplete, repository status resolves the same run id and manifest that review collect can operate on.",
+      "design_element": "taskplane/run_store.py",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_routing.py -k 'run_id or manifest'`; create an incomplete active run and assert repository status and collect resolve byte-equivalent canonical manifest identity."
+    },
+    {
+      "criterion": "Validation needs-user payloads, Product/Engineering guidance, and CLI docs expose the same executable dynamic, render, and static continuation and identify the canonical inline dashboard artifact.",
+      "design_element": "skills",
+      "validation": "Run onboarding/docs and review-continuation fixtures; execute each emitted dynamic/render/static command and assert Product, Engineering, CLI docs, payloads, and dashboard obligation name the same inline artifact."
+    },
+    {
+      "criterion": "Regression fixtures retain PR-commit and README DoR derivation, explicit dynamic-validation consent receipt, out-of-scope write denial, immutable provenance/findings, early truthful request-changes, and approval conservation.",
+      "design_element": "taskplane/tests",
+      "validation": "Run the R-0003 ReviewKernel regression subset across `test_review_routing.py`, `test_review_evidence_lifecycle.py`, and guardrail tests; require all named properties and prohibit assertion weakening."
+    },
+    {
+      "criterion": "A bound evaluator outage remains unavailable rather than pass or fail, keeps readiness closed, retries evaluation without opening a product-fix cycle, and reuses cache only on the exact evaluator, engine, capability, repository, worktree, and validity key.",
+      "design_element": "contract:evaluator-infrastructure-health",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py taskplane/tests/test_loop.py -k 'evaluator_outage or unavailable'`; assert no verdict, closed readiness, evaluate retry, and exact cache-key miss on each identity change."
+    },
+    {
+      "criterion": "Parallel DoD and evaluator evidence bind to the exact claimed task worktree whether invoked from primary or worker checkout; parent, sibling, moved, dirty, and stale trees cannot substitute.",
+      "design_element": "contract:review-evidence-binding",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_loop.py -k 'claimed_task_worktree or binds_claimed'`; execute from primary and worker, then mutate parent/sibling/path/dirty/head identities and assert rejection."
+    },
+    {
+      "criterion": "Given identical workspace/session evidence, every entry, dispatch, closing gate, status, dashboard, artifact, and retro returns one matching live, unproven, or advisory classification and evidence id.",
+      "design_element": "contract:claude-enforcement-status",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_enforcement_and_collision.py -k canonical_projection`; freeze evidence and assert identical status/evidence_id across every named surface."
+    },
+    {
+      "criterion": "With Claude hook support declared but absent, strict new, loop init, review start, stage emission, and claim fail nonzero with host-specific recovery and create no contract, loop, review, or receipt state.",
+      "design_element": "taskplane/enforcement.py",
+      "validation": "Run the strict absent-hook entry matrix in `test_enforcement_and_collision.py`; snapshot state roots before each command and assert nonzero machine refusal, exact host recovery, and zero new state bytes."
+    },
+    {
+      "criterion": "With the Claude hook live, the same entry succeeds from its fresh PreToolUse receipt without an extra probe, model call, or human prompt.",
+      "design_element": "taskplane/host_capabilities.py",
+      "validation": "Run the self-proving PreToolUse fixture for every entry; assert the entry event's receipt is consumed and probe/model/prompt counters remain exactly zero."
+    },
+    {
+      "criterion": "Advisory without by refuses; advisory with an attributable identity records one decision and stamps every gate, evidence payload, manifest, verdict, dashboard, recommendation, and retro with actor and time.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "Run the advisory full-loop fixture; omit `--by` for refusal, then use a fixed actor/time and structurally walk every named artifact for one matching decision id, actor, and timestamp."
+    },
+    {
+      "criterion": "A run that entered live but loses valid screen activity cannot pass a loop gate or close review until fresh proof or explicit advisory acknowledgment; the downgrade propagates without discarding evidence.",
+      "design_element": "taskplane/taskplane_lite.py",
+      "validation": "Run the mid-run degradation fixture; expire activity, assert both closures refuse while evidence fingerprints remain unchanged, then restore proof or acknowledge advisory and assert propagated status."
+    },
+    {
+      "criterion": "A foreign session receipt older than the bounded 300-second freshness window with no known current session classifies unproven; matching fresh receipts and screen activity classify live.",
+      "design_element": "taskplane/host_capabilities.py",
+      "validation": "Run receipt trust cases at 299, 300, and 301 seconds with known/unknown/matching/foreign sessions; assert old foreign unknown-session evidence is unproven and exact fresh/activity evidence is live."
+    },
+    {
+      "criterion": "During an active governed step, a registry-known competing delivery skill or agent is denied even when optional dispatch enforcement is unset; the denial names the run, step, foreign identity, and exact Taskplane continuation.",
+      "design_element": "contract:exclusive-delivery-authority",
+      "validation": "Run known skill/agent fixtures with `TASKPLANE_ENFORCE_DISPATCH` unset; assert hook denial plus exact run, step, identity, continuation, and no foreign write."
+    },
+    {
+      "criterion": "Allowlisted document, spreadsheet, presentation, and visualization helpers pass silently; an unknown foreign skill is recorded and advised normally and denied under strict isolation, with versioned registry evidence.",
+      "design_element": "taskplane/collision_registry.json",
+      "validation": "Run helper and unknown-skill table tests in normal/strict modes; assert silent helper allow, advised/denied unknown dispositions, and registry version/fingerprint on every non-silent event."
+    },
+    {
+      "criterion": "A signature-matching competing state root is named in entry, onboarding, and status and excluded from new write authority; a same-named unsigned directory is ignored, and inclusion requires an attributable override.",
+      "design_element": "taskplane/collision.py",
+      "validation": "Run signed/unsigned/override repository fixtures; assert bounded discovery at entry/onboarding, durable status projection, compiled out_of_scope exclusion, and exact actor-bound override."
+    },
+    {
+      "criterion": "With no exact-workspace contract, live loop, or open review, skill and dispatch screens are no-ops; advisory mode reports observed interference without claiming an inactive hook denied it.",
+      "design_element": "taskplane/collision.py",
+      "validation": "Run inactive workspace and advisory fixtures; assert byte-empty/no-op screen output outside governed state and advisory records use observed/advised, never denied-by-hook."
+    },
+    {
+      "criterion": "A retro with interference headlines durable counts and identities for denied skills, denied agents, advised invocations, and signed roots; a clean run has no interference headline and status performs no rediscovery.",
+      "design_element": "contract:foreign-interference-audit",
+      "validation": "Run dirty/clean retro fixtures and instrument signature discovery; assert exact durable counts/identities, absent clean headline, and zero discovery calls during status."
+    },
+    {
+      "criterion": "After an orchestrator merge into the resolved primary branch, eligibility proves exact managed registration, recorded branch and tip, clean inactive lifecycle, and branch-tip ancestry to the current primary tip; names, statuses, messages, and path prefixes alone do not qualify.",
+      "design_element": "contract:managed-worktree-cleanup",
+      "validation": "Run `python3 -m pytest -q taskplane/tests/test_worktree_cleanup.py -k eligibility`; vary each proof independently and assert eligibility only with exact registration/path/type/branch/tip/lifecycle/cleanliness and ancestry."
+    },
+    {
+      "criterion": "Dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked, path-mismatched, missing-ref, ambiguous-main, merge-in-progress, and evidence-needed worktrees are preserved, including on last-moment eligibility uncertainty.",
+      "design_element": "taskplane/worktree_cleanup.py",
+      "validation": "Run the parameterized preservation matrix in `test_worktree_cleanup.py`; inject every named case before initial and last-moment reads and assert path, registration, branch, and evidence remain."
+    },
+    {
+      "criterion": "Cleanup re-resolves repository, registered path, worktree type, branch and tip, primary tip, cleanliness, lifecycle, variant, and retention immediately before removal; any failure preserves the tree and registration and never retries with force, broader scope, or branch deletion.",
+      "design_element": "taskplane/worktree_cleanup.py",
+      "validation": "Instrument ordered Git/filesystem calls and inject failure at every revalidation/removal point; assert all facts are reread, one exact no-force remove at most, and no force, glob, fetch, broader path, or branch command."
+    },
+    {
+      "criterion": "Replayed successful cleanup is already-clean and removes only the eligible linked worktree registration and directory; branch, commits, requirement, design, plan, submissions, tests, review evidence, audit, and sign-off inputs remain addressable.",
+      "design_element": "taskplane/run_store.py",
+      "validation": "Run cleanup twice and inventory refs plus canonical artifact fingerprints before/after; assert removed then already-clean, branch/commit retention, and successful reads of every named record."
+    },
+    {
+      "criterion": "Automatic cleanup starts only after the orchestrator durably records a successful merge into the resolved primary branch; a pre-record crash preserves the tree and a post-record crash is recoverable by one idempotent maintenance pass.",
+      "design_element": "taskplane/loop.py",
+      "validation": "Run crash injection before merge, after Git/before receipt, after receipt/before removal, and after removal/before outcome; assert only durable receipt enables cleanup and one maintenance replay converges."
+    },
+    {
+      "criterion": "EM, graph and evidence reconciliation, retro, status, and final sign-off complete from canonical records after eligible trees are removed; evidence-needed trees remain until their owning lifecycle explicitly releases retention.",
+      "design_element": "taskplane/runtime_eval.py",
+      "validation": "Run a full parallel loop with one removable and one evidence-needed tree; remove the eligible tree, complete EM/graph/evidence/retro/status/sign-off, then explicitly release retention and re-evaluate the held tree."
+    },
+    {
+      "criterion": "Codex, Claude, Slack-capable flows, managed and legacy worktrees, enforcement modes, and collision modes preserve equivalent authority/evidence semantics; rollback cannot auto-approve, forge live status, weaken ReviewKernel regression tests, or force-delete a tree.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "Run cross-host golden matrices for strict/warn/off and collision normal/strict/off plus managed/legacy cleanup; compare normalized authority/evidence and audit prohibited calls, approvals, live claims, test diffs, and force flags."
+    }
+  ],
+  "risks": [
+    {
+      "risk": "A legitimate Claude session is locked out by missing or stale structural proof.",
+      "mitigation": "Use the entry call's own fresh receipt, exact 300-second fallback only when session identity is unknown, host-specific recovery, attributable advisory, and warn mode as rollback without forging live.",
+      "owner": "taskplane/enforcement.py"
+    },
+    {
+      "risk": "Collision rules falsely deny a helper or classify a directory by name.",
+      "mitigation": "Use a versioned fingerprinted registry, explicit helper patterns, signed multi-file state layouts, exact governed-state checks, advised unknowns by default, and fixture corpus for both false-positive directions.",
+      "owner": "taskplane/collision.py"
+    },
+    {
+      "risk": "Cleanup destroys unmerged bytes or targets a foreign/path-swapped tree.",
+      "mitigation": "Require exact managed registration and recorded identities, lstat non-link checks, clean porcelain-v2 bytes, lifecycle/variant/retention checks, local ancestry, and an immediate second read under lock before one no-force exact-path call.",
+      "owner": "taskplane/worktree_cleanup.py"
+    },
+    {
+      "risk": "A crash splits Git removal from the cleanup outcome record.",
+      "mitigation": "Persist merge first, key cleanup by receipt, verify path and registration after removal, and permit one exact already-clean maintenance replay; partial absence becomes manual-attention.",
+      "owner": "taskplane/run_store.py"
+    },
+    {
+      "risk": "Removing a worker checkout makes review or sign-off evidence unreachable.",
+      "mitigation": "Require canonical external evidence before lifecycle release, preserve evidence-needed trees, retain all branches/commits/run records, and run EM-through-sign-off after-removal fixtures.",
+      "owner": "taskplane/runtime_eval.py"
+    },
+    {
+      "risk": "New Python modules or packaged registry break supported interpreters/installations.",
+      "mitigation": "Use synchronous stdlib-only Python 3.10 syntax, runtime-validate trust boundaries, include the JSON resource in wheel/plugin contents, and run clean-wheel imports plus 3.10/3.11/3.12 smoke jobs.",
+      "owner": "taskplane/tests"
+    }
+  ],
+  "failure_modes": [
+    {
+      "mode": "Strict entry or closure cannot prove a live screen.",
+      "detection": "enforcement_gate_refused signal contains status, evidence_id, host, surface, and recovery.",
+      "recovery": "The human reloads/retries for fresh proof or records one `--advisory --by` decision; no automatic retry or partial state creation occurs."
+    },
+    {
+      "mode": "A known competing driver or unknown strict-isolation invocation is attempted.",
+      "detection": "foreign_interference_event signal contains registry fingerprint, disposition, run, step, identity, and continuation.",
+      "recovery": "The hook denies once and directs the orchestrator to the exact Taskplane continuation; advisory observations remain non-denial records."
+    },
+    {
+      "mode": "Foreign-state signature discovery is unreadable or ambiguous.",
+      "detection": "foreign_state_detected signal records only proven roots; a bounded discovery diagnostic records uncertainty without naming an unsigned root.",
+      "recovery": "Contract compilation fails closed for the uncertain candidate root or requires an attributable exact-root override; status reads the last durable result."
+    },
+    {
+      "mode": "Merge succeeds but the durable merge receipt is not committed.",
+      "detection": "merge_recorded signal is absent while the task worktree registration remains present.",
+      "recovery": "No cleanup runs; the orchestrator re-resolves the merge state and explicitly records it or preserves the tree for manual attention."
+    },
+    {
+      "mode": "Eligibility changes between merge and cleanup or at last-moment revalidation.",
+      "detection": "worktree_cleanup_preserved signal names the exact failed invariant and unchanged candidate identity.",
+      "recovery": "The cleanup owner performs no removal; only a later state change plus one bounded maintenance pass may reconsider the same registered candidate."
+    },
+    {
+      "mode": "Git removal fails or leaves path/registration state inconsistent.",
+      "detection": "worktree_cleanup_manual_attention signal contains exit class and postcondition state without command output secrets.",
+      "recovery": "Stop permanently for that outcome fingerprint; never force, broaden, delete a branch, or retry automatically. A human resolves the exact Git condition."
+    },
+    {
+      "mode": "The process crashes after exact removal but before outcome persistence.",
+      "detection": "worktree_cleanup_already_clean signal is produced when one replay sees the same durable receipt and both exact path and exact registration absent.",
+      "recovery": "The maintenance owner commits already-clean once and performs no Git mutation."
+    }
+  ],
+  "observability": {
+    "signals": [
+      "enforcement_decision: stable status/evidence_id with exact workspace, session, run, revision, and optional advisory attribution",
+      "enforcement_gate_refused: strict entry/closure surface, reason, evidence_id, and host recovery",
+      "foreign_interference_event: bounded identity, disposition, registry fingerprint, governed run/step, and time",
+      "foreign_state_detected: signed root, signature id/version, exclusion or attributable override",
+      "merge_recorded: durable receipt id, repository/task/branch tip, primary ref/tip, and time",
+      "worktree_cleanup_preserved: receipt id, failed invariant, exact candidate, and no-mutation outcome",
+      "worktree_cleanup_removed: receipt id plus verified path/registration absence",
+      "worktree_cleanup_already_clean: replay id and exact absent postconditions",
+      "worktree_cleanup_manual_attention: receipt id, bounded failure class, and inconsistent postcondition"
+    ],
+    "alerts": [
+      "Dashboard and machine output surface every strict enforcement refusal with one host-specific recovery.",
+      "Known collision denials name the run, step, identity, and exact Taskplane continuation.",
+      "Cleanup manual-attention is a status/retro headline and disables further automatic attempts for the same outcome fingerprint."
+    ]
+  },
+  "rollout": {
+    "strategy": "Land and pin v2.17.11 ReviewKernel regression floors first; add versioned record schemas and read-only projections; wire exact receipt trust and strict Claude entry/closure; add Skill/dispatch collision screening with known conflicts denied and unknowns advised; add signed-root exclusion; then introduce the orchestrator merge receipt and enable automatic cleanup only after the full preservation/crash matrix passes. Keep all changes additive and stdlib-only.",
+    "rollback": "Set enforcement to warn, disable collision screening, and set cleanup to manual while retaining truthful unproven/advisory status, all audit/merge/cleanup records, and every ReviewKernel floor. Rollback cannot auto-approve, claim live without proof, delete branches/evidence, or invoke force removal."
+  },
   "visualization": {
     "required": true,
-    "kind": "data-flow",
+    "kind": "state-transition",
     "path": "design/visual.html",
-    "reason": "Authorization derivation, semantic evolution, progressive review and cross-host delivery form a branching flow."
+    "reason": "The enforcement, collision, and cleanup state machines plus the durable merge-before-remove sequence contain multiple fail-closed branches that are materially clearer together."
   },
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "Applied verified Python guidance; grounded in canonical loop/review/root/runtime/status/delivery seams; compared semantic authority ledger, phase approvals and unsafe silent autonomy; mapped all 32 amended ACs and 15 contracts to executable boundaries; preserved original progressive review; byte drift is evidence not authority; bounded recovery, failure signals, ownership/order and additive rollback are consistent.",
+      "evidence": "Applied hash-verified Python guidance; checked the proposal against v2.17.11 review, receipt, contract, loop, storage, run-store, dashboard, hook, and test seams; compared three materially different approaches; mapped all 28 exact criteria to runnable fixtures; tied every failure detection to a declared signal; made rollback additive and conservative; and surfaced Python 3.10-3.12 packaging, synchronous ownership, trust-boundary validation, RPO 0 after reported commits, one-pass cleanup RTO, 300-second receipt freshness, zero entry probes, and p95 <=100 ms local hook bounds.",
       "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "c99f453da5d42f9e1c2611c17af32508db3b55ccab6320b88ab747688a0a5eba",
+      "content_fingerprint": "fcd459da0b928153c6d0695ca8cd4afe853dbb10f0950e44566c28f85ffde40d",
       "self_attested": true
     }
   ],

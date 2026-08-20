@@ -27,11 +27,13 @@ jobs:
         include:
           - python: "3.10"
             tests: >-
+              taskplane/tests/test_r0002_reviewkernel_regression_floor.py
               taskplane/tests/test_repository_preflight.py
               taskplane/tests/test_storage_kernel.py
               taskplane/tests/test_windows_portability.py
           - python: "3.11"
             tests: >-
+              taskplane/tests/test_r0002_reviewkernel_regression_floor.py
               taskplane/tests/test_repository_preflight.py
               taskplane/tests/test_storage_kernel.py
               taskplane/tests/test_windows_portability.py

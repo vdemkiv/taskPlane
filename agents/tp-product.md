@@ -69,6 +69,23 @@ Do not create a change-request replacement merely to add fields that belonged
 in the first requirement. Do not render or acknowledge dashboards; the
 orchestrator owns human presentation.
 
+**Review continuation contract.** If a ReviewKernel payload is `needs_user`,
+use its `action.choices[*].command` verbatim. The stable launcher forms are
+platform-specific (`python3` on macOS/Linux, `py` on Windows):
+
+```bash
+python3 .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+python3 .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+python3 .taskplane/codex-hook.py review option static --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic --run-id <run-id>
+py .taskplane/codex-hook.py review option dynamic-render --run-id <run-id>
+py .taskplane/codex-hook.py review option static --run-id <run-id>
+```
+
+Do not substitute `review resume` or a prose-only instruction. The opening
+canonical dashboard is `visuals.workflow_and_wave.inline.path`; after
+collection the canonical dashboard is `visuals.final_dashboard.inline.path`.
+
 NFR names are catalog ids, not prose categories. For every code-bearing
 scope, include `--nfr "security=..."` and `--nfr "architecture=..."` in the
 FIRST `req new`; add exact ids such as `data-safety`, `privacy-compliance`,

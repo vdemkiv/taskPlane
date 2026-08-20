@@ -1,401 +1,370 @@
-# Specification — consolidated governed delivery and convergent review
+# Specification — governed-run enforcement, collision isolation, and safe worktree cleanup
 
 ## Problem
 
-Taskplane currently asks for too many routine approvals and can interrupt
-otherwise recoverable work, while engineering review still needs the accepted
-risk-first, evidence-complete efficiency controls. Users need one attributable
-authorization that carries bounded work end to end, automatic mechanical gates
-and recovery, and human attention reserved for genuinely new authority,
-selection, escalation, irreversible action, or final sign-off.
+Taskplane must remain trustworthy when host hooks are absent, another delivery
+orchestrator competes for authority, ReviewKernel metadata needs repair, or
+parallel task worktrees outlive their merge. Today those cases can silently
+degrade enforcement, allow two delivery loops to drive one governed workspace,
+or leave managed worktrees behind; an over-broad cleanup would create the
+opposite failure by destroying unmerged work or evidence.
+
+The August 19 field evidence also identified ReviewKernel collection and
+dashboard failures. Fixes for metadata normalization, non-judged evaluator
+outages, shape-safe status projection, and exact claimed-worktree binding are
+already on `main` in v2.17.10/v2.17.11. This amendment treats those shipped
+behaviors as non-regressible obligations while defining the remaining Claude
+enforcement, collision-isolation, and cleanup outcomes.
 
 ## Users and context
 
-Engineers use the Taskplane facade, governed delivery, Product, Design, Build,
-engineering review, Status, Help/onboarding, Product's strategic advisory, and
-Claude-tag/Slack entry points. This amendment consolidates attributable human
-feedback from all ten flows into R-0001 while preserving its progressive-review
-requirements: exact evidence/worktree binding, evaluator-outage caching,
-documentation-aware routing, early provisional revisions, convergence-based
-fixing, per-lens telemetry, complete evidence, and full conservation before
-approval.
+Engineers run Taskplane through Codex, Claude Code, Chat/Cowork, Slack-capable
+entry points, local repositories, managed checkouts, and parallel task
+worktrees. They need to know whether governance is structurally enforced or
+explicitly advisory, to have one delivery authority inside governed state, and
+to recover disk space only when Taskplane can prove a managed branch is already
+merged into the repository's primary branch (`main` in this repository).
+
+Evidence reviewed for this change:
+
+- `/Users/vdemkiv/Downloads/taskplane-bug-report.md` (field evidence only)
+- `backlog/skill-collision-isolation.md` (identical to the supplied collision
+  evidence; product decisions are re-stated here)
+- `backlog/claude-enforcement-heartbeat.md` (identical to the supplied heartbeat
+  evidence; product decisions are re-stated here)
+- current v2.17.11 behavior and regression tests on `main`
 
 ## In scope
 
-- One consolidated, attributable pre-implementation authorization packet for
-  accepted requirements, conditional design, plan, dynamic validation,
-  ordinary sandbox work, routine fixes/recovery, evaluation, collection,
-  artifact delivery, and bounded end-to-end execution.
-- Mechanical Product, Design, and Plan gates that auto-advance when their
-  contracts, graph checks, acceptance mapping, and required lenses pass.
-- A closed set of events that return to a human: consolidated authorization,
-  explicit A/B selection, exhausted/non-convergent recovery or replan,
-  material scope/authority change, destructive/irreversible or new external
-  authority, changed acceptance criteria or weakened gate, and final sign-off.
-- Automatic repository preparation, bounded routine recovery, phase ownership,
-  isolated parallel execution, status telemetry, onboarding repair, and
-  attributed thread continuation across Codex, Claude, and Slack-capable flows.
-- Progressive risk-first engineering review with one attributable deep floor
-  for documentation-only/simple low-risk work and four deep floors for
-  substantive, risky, mixed, or evidenced ambiguous/corrupt work,
-  one light sweep, evidence-triggered deep promotions, early provisional
-  request-changes, metadata-only repair, affected-slot retry, exact evidence
-  binding, outage caching, documentation-aware routing, convergence policy,
-  and per-lens efficiency/quality telemetry.
-- Small inline dashboards and complete Markdown delivery for very large
-  dashboards, with JSON as machine authority and HTML optional/nonblocking.
+- Preserve the landed ReviewKernel collection, metadata-repair, evaluator-
+  unavailable, dashboard-shape, Python-compatibility, and claimed-worktree
+  binding outcomes as regression obligations.
+- Expose one structural enforcement status for Claude-family hosts; fail closed
+  at governed entry and closing gates when enforcement is unproven, with an
+  explicit attributable advisory escape hatch.
+- Screen known competing delivery skills and agent dispatches while Taskplane
+  governs the exact workspace; allow non-delivery helpers and audit unknown
+  foreign skills without claiming ungoverned workspaces.
+- Detect competing-orchestrator state by signature, exclude it from compiled
+  write authority by default, and report interference in status/onboarding and
+  retrospectives.
+- Automatically clean only Taskplane-managed linked task worktrees whose exact
+  branch tips are verifiably ancestors of the current primary-branch tip after
+  a successful orchestrator-owned merge.
+- Make cleanup conservative, idempotent, auditable, path-safe, and independent
+  of branch deletion or governance-evidence retention.
+- Keep hook manifests, skills/docs, status, dashboard, and cross-host behavior
+  consistent with the canonical engine decisions.
 
 ## Out of scope
 
-- Silence, inferred intent, or prior unrelated approval granting new authority.
-- Auto-approving final sign-off, A/B selection, material scope/authority
-  change, destructive/irreversible action, external credentials/publication/
-  spend, changed acceptance criteria, or gate-weakening recovery.
-- Weakening orchestrator-only gates, evidence-bound submissions, isolated
-  worktrees, acceptance evidence, slot conservation, or audit attribution.
-- Asking users to choose Product/Design/Engineering personas or exposing
-  north-star as a separate required user flow.
-- Unbounded recovery loops, global silent failure, fabricated progress/tokens/
-  ETA, or treating unavailable telemetry as zero.
-- Removing mandatory review floors, allowing a light sweep to substitute for a
-  required deep judgment, or requiring exhaustive collection before a truthful
-  provisional request-changes revision.
-- Dropping valid evidence/findings during early publication, normalization,
-  repair, retry, cache reuse, supersession, or large-dashboard delivery.
-- Broad product-feature changes, lens-catalog/charter changes, dependency-graph
-  redesign, model/billing redesign, or release/marketplace publication.
+- Disabling, uninstalling, renaming, shadowing, or modifying another plugin.
+- Governing skill choice or agent dispatch when no Taskplane contract, loop, or
+  review is active in the exact workspace.
+- Treating model prose, plugin descriptions, directory names alone, or stale
+  receipts as proof of enforcement or foreign-state identity.
+- Weakening provenance, slot conservation, acceptance evidence, orchestrator-
+  only gates, exact worktree binding, or the human final-signoff boundary.
+- Automatically deleting Git branches, stashes, untracked files, failed-task
+  artifacts, governance records, selected A/B variants, review evidence, or
+  any worktree not proven Taskplane-managed.
+- Force-removing dirty, locked, linked, symlinked, foreign, unmerged, ambiguous,
+  selected-variant, failed, active, or evidence-needed worktrees.
+- Fetching, rebasing, merging, resolving conflicts, changing `main`, or asking
+  for broader authority merely to make a worktree eligible for cleanup.
+- Release/marketplace publication, host-level per-project plugin controls,
+  lens-catalog redesign, or unrelated product features.
+
+## Functional requirements
+
+1. The ReviewKernel collector derives summary verdict/count/severity metadata
+   from canonical admissible findings before contradiction rejection, records
+   an evidence-bearing equivalence audit, and never requires an impossible
+   producer rewrite for a metadata-only repair.
+2. Substantive review-result changes retry only affected slots; exact producer,
+   lease, worktree, run, and slot provenance plus full conservation remain
+   mandatory for approval.
+3. Review/status surfaces remain usable for coding, read-only Product/Design,
+   ReviewKernel, released, and legacy contract shapes, and supported Python
+   interpreters fail actionably rather than at parse time.
+4. Review execution choice, run-manifest lookup, dashboard-artifact addressing,
+   evaluator-unavailable recovery, and exact claimed-worktree evaluation remain
+   internally consistent and reachable.
+5. One kernel-owned enforcement status classifies an exact workspace/session as
+   `live`, `unproven`, or explicitly `advisory` from structural receipts and
+   screen activity; every entry, gate, status, dashboard, artifact, and retro
+   consumes that same decision.
+6. Claude governed entry and closing gates fail closed without current proof of
+   enforcement in strict mode and create no partial governed state; a live hook
+   proves itself through the entry call without an extra probe.
+7. Advisory operation requires an explicit human identity, is durably recorded,
+   and is stamped on all downstream artifacts; mid-run enforcement loss must be
+   acknowledged before a closing gate can pass.
+8. During exact-workspace governed state, known competing delivery skills and
+   agents are denied structurally with an actionable Taskplane equivalent;
+   unknown foreign delivery invocations are recorded and advised, and strict
+   isolation may deny them.
+9. Non-delivery helper skills are silently allowed, and all collision screening
+   is a no-op outside governed state; advisory runs report weaker assurance
+   without pretending that inactive hooks enforced a denial.
+10. Competing-orchestrator state is identified by versioned signatures rather
+    than names, excluded from new contract write authority by default, and may
+    be included only by an explicit attributable override.
+11. Status/onboarding and retro outputs truthfully report foreign interference,
+    including denied skills, denied dispatches, advised invocations, and signed
+    state roots, while clean runs remain quiet.
+12. Cleanup eligibility requires Taskplane-managed identity, an exact registered
+    linked-worktree path, a clean worktree, an inactive/released task lifecycle,
+    and proof that the candidate branch tip is an ancestor of the current
+    resolved primary-branch tip (`main` here).
+13. Cleanup revalidates every eligibility fact immediately before removal and
+    preserves a candidate on any uncertainty, state change, lock, path anomaly,
+    Git failure, or evidence-retention need; it never uses force.
+14. Cleanup runs after a successful orchestrator-owned merge and may be retried
+    by bounded maintenance, but removes only the linked worktree registration and
+    directory. It does not delete branches or canonical Taskplane evidence.
+15. Cleanup decisions and outcomes are durable, idempotent, visible in status/
+    retro, and preserve EM/final-signoff behavior after eligible worktrees are
+    gone.
 
 ## Acceptance criteria
 
-1. **One authorization covers routine end-to-end work.** A consolidated packet
-   identifies the requirement, conditional design/plan, target and scope,
-   acceptance criteria, dynamic-validation intent, ordinary sandbox authority,
-   routine fix/recovery policy, evaluation/collection, artifact delivery, and
-   execution bounds. One attributable approval authorizes those unchanged
-   activities through final-signoff readiness. **Verify:** all ten flow fixtures
-   complete routine stages without another approval and retain one receipt plus
-   stage-by-stage authority derivation.
-
-2. **Mechanical definition gates auto-advance.** Product, Design, and Plan
-   stages automatically complete/score/check and advance when their contracts,
-   graph checks, acceptance mapping, required design/review lenses, and evidence
-   pass. They do not request separate Product, Design, or Plan approval.
-   **Verify:** pass/fail fixtures assert automatic advance only on complete
-   evidence and a named non-human blocker when mechanical checks fail.
-
-3. **Human-attention boundaries are closed and explicit.** A new human decision
-   occurs only for initial consolidated authorization; explicit A/B selection;
-   exhausted/no-progress recovery or replan; material scope creep or major
-   authority change; destructive/irreversible action; new external system,
-   credential, publication, or spend; changed acceptance criteria; recovery
-   that weakens a gate; or final sign-off. **Verify:** an approval trace for
-   every flow contains no other prompt and each allowed prompt names the new
-   fact, consequence, and authority requested.
-
-4. **Silence never expands authority.** Missing, stale, ambiguous, or
-   unauthenticated responses pause only the affected human-owned decision and
-   cannot authorize additional scope, external effects, destructive action,
-   changed criteria, weakened controls, or final approval. **Verify:** timeout,
-   replay, wrong-thread, wrong-revision, and free-form ambiguous fixtures.
-
-5. **Routine recovery is automatic and bounded.** Within authorized scope,
-   Taskplane retries or mechanically repairs transient, metadata, evaluator,
-   collection, artifact, render, and setup failures automatically two to three
-   times or while measurable convergence continues. It asks only after the
-   bounded policy is exhausted, progress stops/oscillates/worsens, safety or
-   authority changes, or replan is needed. **Verify:** one-, two-, three-,
-   converging-longer, no-progress, repeated-fingerprint, unsafe, and authority-
-   change cases assert recover/escalate behavior and reasons.
-
-6. **Ownership and parallelism remain governed.** Each phase has one accountable
-   owner; parallel agents/subagents run only in isolated worktrees with bounded
-   scopes, evidence-bound submissions, and orchestrator-only gates. **Verify:**
-   serial, parallel, overlapping-scope, sibling-worktree, crashed-owner, copied-
-   evidence, and attempted-worker-gate fixtures preserve ownership and isolation.
-
-7. **Facade performs preparation automatically.** Repository acquisition,
-   managed checkout/worktree preparation, target/ref pinning, and verification
-   run without a user prompt when existing authority is sufficient. Failures
-   classify into automatic recovery or a named genuine authority/external
-   boundary. **Verify:** local, remote, cached, stale, moved, auth-required, host-
-   policy, and external-unavailable repository fixtures.
-
-8. **Facade preserves intent and hides persona plumbing.** User intent, current
-   loop state, and authority deterministically select Product/Design/Build/
-   Engineering/Status/Help behavior; the user is never asked which persona to
-   invoke. **Verify:** ambiguous-language/state matrix routes or asks one
-   substantive clarification without exposing internal role selection.
-
-9. **Dashboard delivery is size-appropriate and complete.** Small dashboards
-   render inline. Very large dashboards automatically deliver complete Markdown
-   without truncating evidence; canonical JSON remains machine authority and
-   HTML failure/absence is optional and nonblocking. **Verify:** below/above
-   thresholds and large-finding fixtures compare semantic equality and gate
-   state across JSON, inline, Markdown, and optional HTML.
-
-10. **Design and Plan share one authorization packet.** High-impact work may
-    retain a separate Design phase, but Design and Plan are presented together
-    in the consolidated pre-implementation packet; mechanically passing stages
-    do not request another approval. Non-material evolution within accepted
-    requirements/contracts proceeds automatically. **Verify:** high/low impact,
-    material/non-material drift, contract-preserving, and contract-changing
-    scenarios assert packet contents and reauthorization boundaries.
-
-11. **Product completes refinement automatically.** Product records and scores
-    the complete requirement and feeds it into the consolidated packet without
-    a standalone Product approval. Missing acceptance, contract, dependency,
-    or NFR evidence blocks mechanically rather than asking for ceremonial
-    approval. **Verify:** complete and gap fixtures assert score/evidence and
-    transition behavior.
-
-12. **North-star is conditional internal advice.** Product invokes north-star
-    internally only for strategic ambiguity, high opportunity cost,
-    irreversible direction, or an explicit request. It is advisory and never a
-    gate or separate user-facing flow. Its concise note always contains
-    alignment, leverage, reversibility, opportunity cost, coherence, sharpest
-    tension, and recommendation. **Verify:** trigger/non-trigger fixtures and
-    schema checks; absence or disagreement cannot independently block work.
-
-13. **Build preserves the intended selection boundary.** A single variant uses
-    consolidated authorization end to end. When A/B variants were explicitly
-    chosen, variant selection is the only ordinary mid-build human gate and
-    each variant retains isolated comparable evidence. **Verify:** single, A/B,
-    invalid variant, stale selection, and resumed selection fixtures.
-
-14. **Preview feedback becomes an attributable scoped change.** Human feedback
-    from a design/build preview is recorded as an attributable scoped change
-    request against the current requirement/target. Non-material in-contract
-    feedback proceeds automatically; changed acceptance, material scope, or
-    authority returns to consolidated authorization. **Verify:** cosmetic,
-    behavioral, acceptance-changing, scope-expanding, and unauthenticated input.
-
-15. **Deep-review floors scale with attributable risk.** Documentation-only
-    and simple low-risk changes run exactly one risk-selected deep review lens.
-    Missing/inapplicable code-module mapping alone does not widen that review.
-    Substantive or risky changes retain architecture, code-quality, security,
-    and QA as four mandatory deep floors; genuinely ambiguous or corrupt
-    evidence widens to those floors with an explicit evidence-backed reason.
-    Cache, light sweep, early provisional publication, or another lens cannot
-    replace the deep slot or slots required for the change's risk class.
-    **Verify:** documentation-only, simple low-risk, substantive, risky, mixed,
-    early-blocker, mapping-gap, ambiguous, and corrupt fixtures assert exact
-    risk classification, lens selection, reason, and slot conservation.
-
-16. **Other review is progressive.** Non-floor lenses begin through at most one
-    bounded light sweep and promote to named deep review only from attributable
-    normalized evidence within the lens charter. Every high/major concern is
-    promoted or explicitly rejected as duplicate, invalid, out-of-charter, or
-    already covered. **Verify:** severity, duplicate, replay, missing-evidence,
-    cross-charter, and mixed-sweep fixtures.
-
-17. **Severe harm publishes request-changes immediately.** An admissible
-    Blocker, High, any security vulnerability, or harmful/destructive bug
-    publishes an immutable provisional request-changes revision immediately,
-    preserving complete known evidence and explicit lifecycle gaps. Exhaustive
-    collection is not required for this recommendation. **Verify:** each trigger,
-    non-trigger severities, invalidated finding, duplicate, and simultaneous
-    finding fixtures assert timing and lineage.
-
-18. **Approval still requires complete conservation.** Approval/pass remains
-    unavailable until every mandatory/selected/promoted slot is prepared,
-    dispatched, produced, validated, and collected exactly once, all acceptance
-    evidence is complete, and no unresolved gap remains. Request-changes may be
-    provisional; approval may not. **Verify:** remove/duplicate every lifecycle
-    record and assert only the complete conserved case is approvable.
-
-19. **Normalization and repair never redo substance.** Producer verdict/count/
-    severity/summary metadata normalizes deterministically from canonical
-    findings. Authoritatively derivable metadata-only defects repair
-    automatically with before/after, derivation authority, and fingerprint
-    equivalence; substantive change reruns only affected slots. **Verify:** field
-    permutation, summary contradiction, identity/count defect, and every
-    substantive mutation.
-
-20. **Exact execution-root evidence binding remains.** Every review/evaluation
-    artifact verifies repository identity, exact Git worktree root, target/base/
-    head, engine fingerprint, run, lens, slot, lease, and producer. Parent,
-    sibling, moved, symlinked, cloned, engine-skewed, stale, or copied evidence
-    cannot substitute. **Verify:** negative topology matrix and valid resume.
-
-21. **Evaluator-outage cache is exact and truthful.** A verified evaluator
-    infrastructure failure reuses only for the same evaluator, engine/version,
-    capability, repository, exact worktree, and validity window. It records
-    infrastructure unavailable—not lens pass/fail—and invalidates on any key,
-    expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count.
-
-22. **Documentation routing avoids module fail-open widening.** Documentation-
-    only and mixed changes route from document content, directives, contracts,
-    audiences, and graph evidence. Missing/inapplicable code-module mapping
-    alone retains exactly one attributable risk-selected deep lens for
-    documentation-only/simple low-risk work. Only genuinely ambiguous, corrupt,
-    mixed, substantively risky, or otherwise materially risky evidence widens
-    to architecture, code-quality, security, and QA, with an explicit reason;
-    routing is never unconditional all-lens or no-review. **Verify:** API/
-    security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed,
-    and absent-map cases.
-
-23. **Fix policy measures convergence.** Each fix evaluation records closed,
-    persistent, regressed, and new admissible findings plus test/evidence
-    progress. Safe measurable convergence can continue beyond three cycles;
-    no-progress, repetition, oscillation, worsening, task-specific bounds,
-    unsafe recovery, scope/authority change, or human stop escalates. **Verify:**
-    convergence matrix and human-ownership assertions.
-
-24. **Per-lens telemetry is complete and independent.** Each lens records
-    eligible/selected/promoted/collected state, admissible/confirmed/unique/
-    overlap/duplicate/invalidated/false-positive findings, retry/repair,
-    latency, provider-correct tokens/cost when available, and infrastructure
-    unavailability with versioned definitions/denominators. Telemetry derives
-    from sealed revisions, does not expose drafts across lenses, alter current
-    verdicts, or suppress floors. **Verify:** golden arithmetic, unavailable-vs-
-    zero, information-isolation, and enabled/disabled equivalence fixtures.
-
-25. **Status is cheap, live, and non-gating.** Status reads durable snapshots
-    only, performs no expensive recomputation, and never blocks or gates work.
-    Picture-in-Picture continuously identifies the active agent/phase and
-    updates from durable events. **Verify:** instrumentation asserts bounded
-    reads/no graph/review recomputation and identical workflow outcome with
-    status open, closed, interrupted, or unavailable.
-
-26. **Progress telemetry is truthful.** Status shows observed tokens used,
-    elapsed time in the current focus/stage, and execution/wait/human-wait state.
-    ETA appears only from observed comparable or bounded work and includes
-    source, confidence, and update time; otherwise it says unavailable.
-    **Verify:** execution, tool wait, agent wait, human wait, resume, unknown
-    tokens, sparse history, comparable history, and stale ETA fixtures.
-
-27. **Onboarding self-repairs when authorized.** Every setup check is classified
-    self-repairable, authority-required, host-policy, or external-unavailable.
-    Self-repair executes automatically; authority-required asks once for the
-    exact authority; host-policy/external-unavailable explains and retries only
-    when state can change, without repeated prompts. **Verify:** full setup matrix
-    and prompt counts.
-
-28. **Onboarding survives sibling worktrees.** A stable repository-family hook/
-    launcher resolves the exact current worktree and latest valid engine
-    dynamically, so supported sibling worktrees operate without restart or a
-    new Taskplane task. **Verify:** root, nested, sibling, newly created, moved,
-    stale-engine, unavailable-engine, and policy-restricted worktree fixtures.
-
-29. **Thread approval is attributable and sufficient.** In Claude-tag/Slack
-    contexts, one attributed approval in the bound thread authorizes the same
-    routine continuation as the consolidated packet; wrong thread, actor,
-    revision, replay, or ambiguous reply cannot authorize. **Verify:** receipt
-    matrix and one-routine-approval trace.
-
-30. **Thread delivery preserves complete evidence.** A concise summary leads,
-    but the complete evidence set is attached or linked and remains canonical.
-    Missing native controls degrade to an accessible thread summary, complete
-    Markdown/artifacts, and canonical actions through attributed replies;
-    unavailable controls are never interpreted as decline. Automatic retry/
-    recovery precedes any user prompt. **Verify:** native, missing-control,
-    attachment/link failure, large artifact, retry success/exhaustion, and
-    accessibility fixtures.
-
-31. **Evidence remains lossless across all recovery and delivery.** Provisional
-    publication, promotion, normalization, repair, retry, cache reuse,
-    supersession, dashboard-size fallback, and thread delivery never drop or
-    duplicate valid findings, criteria, gaps, provenance, telemetry, or artifact
-    identity. **Verify:** an end-to-end multi-revision large-review round trip
-    reconciles canonical JSON, complete Markdown, optional HTML, and thread links.
-
-32. **Cross-host and legacy semantics remain compatible.** Codex, Claude,
-    Slack-capable entry, managed worktrees, and supported fallbacks preserve the
-    same authorization, recovery, gate, review, evidence, convergence, status,
-    and telemetry semantics. **Verify:** golden cross-host scenarios and existing
-    suites pass without removed, skipped, xfailed, loosened, or reclassified
-    governance assertions.
+1. **Metadata-only ReviewKernel repair reaches collection.** Reproduce a slot
+   whose findings contain normalized high/major/blocker rows while its producer
+   summary uses the older blocker-only count. Collection normalizes the summary
+   from canonical admissible findings exactly once, records before/after,
+   derivation authority, and proven equivalence, leaves finding bytes intact,
+   and reaches a canonical complete revision when no other gap exists. No
+   producer contract reactivation or result rewrite is requested.
+2. **Substance still reruns narrowly.** Mutating checked evidence, findings, or
+   another substantive result field cannot be normalized. The engine reissues
+   only the affected slot within its attempt bound, keeps unchanged sibling
+   results sealed, and binds the new attempt to the original run/slot lineage.
+3. **Provenance and conservation do not regress.** Wrong producer, copied,
+   sibling-worktree, stale lease, wrong run, missing slot, duplicate slot, and
+   mismatched engine cases remain non-approvable; only exact once-complete slot
+   and acceptance-evidence conservation permits approval.
+4. **Review status is shape-safe.** With each supported coding, read-only,
+   ReviewKernel, released, and legacy contract shape active, status, dashboard,
+   and inline projection render without exception and show the available scope
+   or write allowance. A missing `coding` object never raises `KeyError`.
+5. **Supported Python versions start cleanly.** The CLI/dashboard modules parse
+   and the ReviewKernel start smoke fixture runs on every Python version in the
+   supported CI matrix (currently 3.10, 3.11, and 3.12). An unsupported
+   interpreter receives one actionable version error before state creation;
+   supported versions never fail through PEP-701-only syntax.
+6. **Live review runs remain addressable.** While a ReviewKernel run is active
+   and collection is incomplete, repository/run status resolves the same run id
+   and canonical manifest. It cannot report `run manifest is unavailable` for a
+   run that `review collect --run-id` can still operate on.
+7. **Review recovery guidance matches executable actions.** A validation
+   `needs_user` payload, Product/Engineering guidance, and CLI reference expose
+   the same executable dynamic/render/static continuation; dashboard obligations
+   identify the canonical inline artifact. Fixtures execute the emitted command
+   rather than relying on a conflicting prose command.
+8. **Accepted ReviewKernel behavior remains.** PR-commit/README DoR derivation,
+   explicit dynamic-validation consent with an attributable receipt, strict
+   out-of-scope write denial, immutable findings/provenance, early truthful
+   request-changes, and approval conservation all remain covered by executable
+   regression fixtures.
+9. **Evaluator unavailability is non-judgmental.** A bound evaluator outage is
+   recorded as unavailable rather than pass/fail, keeps readiness closed, and a
+   retry returns to evaluation without opening a product-fix cycle. Cache reuse
+   remains exact to evaluator, engine, capability, repository, worktree, and
+   validity window.
+10. **Evaluation stays on the claimed tree.** Parallel task DoD and evaluator
+    evidence bind to the exact claimed task worktree whether invoked from the
+    primary or worker checkout; a sibling, parent, moved, dirty, or stale tree
+    cannot substitute.
+11. **One structural enforcement decision serves every surface.** Given the
+    same workspace/session receipts and meter state, new/loop/review entry,
+    stage dispatch, closing gates, status, dashboard, artifacts, and retro all
+    return the same `live|unproven|advisory` classification and evidence id.
+12. **Unproven Claude entry creates nothing.** With Claude hook support declared
+    but the plugin hook absent, strict `new`, `loop init`, `review start`, stage
+    emission, and claim return nonzero machine-shaped refusals with host-specific
+    recovery and leave contracts, loop/review state, and receipts uncreated.
+13. **A live Claude hook is self-proving.** The same entry commands succeed when
+    the hook is live, using the fresh PreToolUse receipt from that entry command
+    with no additional probe, model call, or human prompt.
+14. **Advisory mode is explicit and lossless.** `--advisory` without `--by`
+    refuses. With an attributable identity it records one decision, proceeds,
+    and stamps every gate, evidence payload, review manifest/verdict, dashboard,
+    recommendation, and retro with who acknowledged advisory status and when.
+15. **Mid-run degradation gates closure.** A run that entered live but has no
+    valid screen activity in the active contract window cannot pass a loop gate
+    or close a review until fresh proof or an explicit advisory acknowledgment;
+    the downgrade propagates from that point without discarding evidence.
+16. **Stale receipts cannot vouch for another session.** A foreign session
+    fingerprint with no known current session and an observation older than the
+    bounded freshness window (300 seconds today) classifies `unproven`; matching
+    fresh receipts and screen activity classify live.
+17. **Known delivery collisions are denied.** With an active governed step,
+    invoking a registry-known competing delivery skill or agent is denied even
+    when optional dispatch enforcement is unset. The denial names the active
+    run/step, foreign identity, and exact Taskplane continuation; no foreign
+    state write or self-approval follows.
+18. **Helpers and unknowns follow declared tiers.** Document/spreadsheet/
+    presentation/visualization helpers on the non-delivery allowlist pass
+    silently. An unknown foreign skill is recorded and advised in normal mode
+    and denied in strict isolation. Registry and allowlist changes are versioned
+    and visible in the audit record.
+19. **Foreign state detection is signature-safe.** A competing state layout
+    with the registry's required signature is named in entry, onboarding, and
+    status; a directory with the same name but no signature is ignored. New
+    contract authority excludes the signed root unless an explicit attributable
+    override is recorded.
+20. **Taskplane claims only governed state.** With no exact-workspace contract,
+    live loop, or open review, skill and dispatch screens are no-ops. An
+    advisory run never claims a hook denial occurred; it reports advisory
+    assurance and observed interference only.
+21. **Interference is measurable.** A retro with denials or advised foreign
+    invocations headlines counts and identities for denied skills, denied
+    agents, advised invocations, and detected signed roots; a clean run has no
+    interference headline. Status reads this durable record without rerunning
+    discovery.
+22. **Merged managed worktrees become eligible, not assumed.** After the
+    orchestrator successfully merges a Taskplane task branch into the resolved
+    primary branch, eligibility proves the candidate is registered at the exact
+    Taskplane-managed path, its branch/tip matches the recorded task, the tree is
+    clean and inactive, and `branch_tip` is an ancestor of the current primary-
+    branch tip. A branch name, task status, merge message, or path prefix alone
+    is insufficient.
+23. **Every preservation case fails closed.** Matrix fixtures preserve dirty,
+    untracked, staged, unmerged, foreign/unregistered, selected A/B variant,
+    failed, active, locked, symlinked, path-mismatched, missing-ref, ambiguous-
+    main, merge-in-progress, and evidence-needed worktrees. They also preserve
+    any candidate whose eligibility cannot be re-read immediately before
+    removal.
+24. **Cleanup is path-safe and never forced.** Immediately before removal the
+    engine re-resolves repository identity, registered path, worktree type,
+    branch/tip, primary tip, clean state, lifecycle, variant, and retention
+    flags. Any check or Git removal failure leaves the worktree and registration
+    intact, emits one actionable diagnostic, and never retries with `--force`, a
+    broader path, or branch deletion.
+25. **Cleanup is idempotent and evidence-preserving.** Replaying cleanup after a
+    successful removal reports already-clean with no error. Only the eligible
+    linked worktree registration and directory disappear; the branch, commits,
+    requirement/design/plan, submissions, tests, review evidence, audit trail,
+    and final-signoff inputs remain addressable.
+26. **Cleanup timing follows the merge transaction.** Automatic cleanup is
+    attempted only after the orchestrator has observed a successful merge into
+    the resolved primary branch and durably recorded the merge result. A crash
+    before that record preserves the tree; a crash after it may be recovered by
+    one idempotent maintenance pass using the same eligibility rules.
+27. **Removed eligible trees do not break governance.** EM synthesis, graph/
+    evidence reconciliation, retro, status, and final sign-off complete from
+    retained canonical records after eligible worker trees are removed. A task
+    marked evidence-needed remains present until that retention flag is
+    explicitly released by the owning lifecycle.
+28. **Cross-host and rollback semantics stay conservative.** Codex, Claude,
+    Slack-capable flows, managed/legacy worktrees, strict/warn/off enforcement,
+    and enabled/disabled collision screening retain equivalent authority and
+    evidence semantics. Rollback may return to warning/manual cleanup but cannot
+    auto-approve, forge live enforcement, weaken ReviewKernel regression tests,
+    or force-delete a worktree.
 
 ## Non-functional requirements
 
-- `security`: Authorization is attributable, target/revision/scope bound and
-  least-privilege; silence, stale receipts, UI absence, cache, repair, recovery,
-  or telemetry cannot expand authority, cross worktrees, forge evidence, weaken
-  a gate, expose secrets, or authorize destructive/external action.
-- `architecture`: One canonical authorization packet, authority ledger,
-  mechanical-gate model, recovery/convergence record, slot ledger, evidence
-  binding, status snapshot, and audit stream serve every host/flow; adapters and
-  UI never create parallel truth.
-- `data-safety`: Valid requirements, designs, plans, evidence, findings,
-  criteria, gaps, telemetry, artifacts, receipts, and revisions survive
-  automation, repair, retry, caching, supersession, and fallback losslessly.
-- `sre`: Preparation, gates, recovery, review waves, promotions, caches, status,
-  onboarding, rendering, attachments, and thread actions have deterministic
-  bounded states, 2–3 routine retries or convergence logic, expiry, idempotency,
-  actionable diagnostics, and no infinite/prompt loop.
-- `integrability`: Authorization, recovery, review, status, onboarding,
-  north-star-note, Markdown delivery, and thread-continuation contracts are
-  versioned and semantically portable across Codex, Claude, Slack, worktrees,
-  and supported legacy consumers.
-- `scalability`: Progressive review scales with attributable risk rather than
-  catalog size; durable status reads stay cheap; large dashboards/artifacts,
-  agent waves, revisions, and telemetry remain complete and bounded/indexable.
-- `cost-finops`: Automatic recovery avoids redundant user/model turns;
-  evaluator cache, metadata repair, progressive dispatch, affected-slot retry,
-  durable status, and provider-correct per-lens telemetry bound wasted spend;
-  new external spend always requires human authority.
-- `privacy-compliance`: Receipts, thread records, evidence paths, worktree
-  identity, status, caches, telemetry, and artifacts retain minimum audit data
-  while redacting credentials, secrets, personal paths, prompts, and unrelated
-  conversation/repository content.
-- `accessibility`: Inline/status/thread fallbacks and approval packets are
-  keyboard operable, semantically labeled, readable without color, responsive,
-  and provide complete Markdown when native visualization is unavailable.
+- `security`: Enforcement and advisory acknowledgments are actor/session/
+  workspace/revision bound; collision decisions are registry-evidenced; cleanup
+  resolves exact Git identity and paths and cannot expand authority, traverse a
+  link, remove a foreign tree, weaken a gate, expose credentials, or use force.
+- `architecture`: One canonical enforcement decision, collision registry,
+  interference record, ReviewKernel repair authority, and worktree-cleanup
+  eligibility record serve all commands/hosts; adapters, hooks, docs, and UI do
+  not create parallel truth.
+- `data-safety`: Findings, producer evidence, branches, commits, dirty/unmerged
+  bytes, variants, failed-task state, requirements, designs, plans, submissions,
+  audit records, and final-signoff evidence survive repair, retry, cleanup,
+  crash recovery, and rollback without loss or duplication.
+- `sre`: Entry/gate checks and cleanup are deterministic, bounded, idempotent,
+  crash-recoverable, and observable; failures preserve state and produce one
+  actionable reason rather than looping, hanging collection, or escalating to a
+  stronger removal primitive.
+- `integrability`: Versioned enforcement, collision, interference, repair, and
+  cleanup contracts preserve semantic parity across Codex, Claude, Slack,
+  managed/legacy repositories, current manifests, and supported hook adapters.
+- `scalability`: Collision checks remain constant or registry-bounded per tool
+  event; status reads durable summaries; cleanup enumerates only registered
+  Taskplane-managed candidates and does not scan or mutate arbitrary worktrees.
+- `cost-finops`: A live hook requires no extra probe; metadata repair and
+  evaluator retry avoid redundant agents; collision/status checks are cheap;
+  cleanup retries only after state can change and never fetches or launches
+  model work merely to prove merge eligibility.
+- `privacy-compliance`: Receipts, identities, interference events, paths, and
+  cleanup audits retain the minimum attributable data and redact credentials,
+  secrets, prompts, personal paths in portable artifacts, and unrelated plugin
+  or repository content.
+- `accessibility`: Refusals, advisory stamps, collision explanations, cleanup
+  exclusions, status, dashboard, and retro are machine-shaped plus readable
+  without color, expose keyboard-accessible actions where controls exist, and
+  retain complete Markdown fallbacks.
 
 ## Contract handoff
 
 - `scope_paths`:
   - `taskplane/tp.py`
+  - `taskplane/taskplane_lite.py`
+  - `taskplane/host_capabilities.py`
   - `taskplane/loop.py`
   - `taskplane/review.py`
   - `taskplane/review_evidence.py`
-  - `taskplane/review_dor.py`
-  - `taskplane/lens.py`
-  - `taskplane/lens_signals.py`
-  - `taskplane/views.py`
-  - `taskplane/runtime_eval.py`
-  - `taskplane/taskplane_lite.py`
-  - `taskplane/spend.py`
+  - `taskplane/review_repair.py`
+  - `taskplane/review_recovery.py`
+  - `taskplane/evaluator_health.py`
   - `taskplane/dashboard.py`
-  - `taskplane/command_runtime.py`
-  - `taskplane/command_adapters.py`
-  - `taskplane/host_capabilities.py`
-  - `taskplane/preflight.py`
   - `taskplane/repository.py`
   - `taskplane/storage.py`
-  - `agents/**`
-  - `skills/**`
-  - `workflows/**`
+  - `taskplane/run_store.py`
+  - `taskplane/runtime_eval.py`
   - `hooks/**`
+  - `.codex/**`
   - `.codex-plugin/**`
   - `.claude-plugin/**`
+  - `agents/**`
+  - `skills/**`
   - `docs/**`
+  - `backlog/skill-collision-isolation.md`
+  - `backlog/claude-enforcement-heartbeat.md`
   - `taskplane/tests/**`
   - `specs/spec.md`
-- `out_of_scope`: feature/lens-catalog/graph/model/billing redesign, release or
-  marketplace publication, automatic final/A-B/destructive/external approval,
-  evidence weakening, unlimited recovery, and unrelated product behavior.
-- `dod.test_command`: `python3 -m pytest -q taskplane/tests/test_requirements.py`
-- dependency: `R-0011`.
-- existing changed contracts preserved:
+- `out_of_scope`: foreign plugin mutation/removal, ungoverned routing control,
+  branch/stash/evidence deletion, fetch/rebase/merge-to-enable-cleanup,
+  force-removal, final-signoff automation, governance weakening, host-native
+  per-project plugin management, publication, and unrelated product behavior.
+- `dod.test_command`: `python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py taskplane/tests/test_review_routing.py taskplane/tests/test_status_and_large_delivery.py taskplane/tests/test_loop.py taskplane/tests/test_host_capabilities.py taskplane/tests/test_storage_kernel.py`
+- dependencies:
+  - `R-0002` (changed-from governed-run enforcement, collision isolation, and
+    safe worktree cleanup)
+  - `R-0001` (sole explicit dependency; consolidated governed delivery and
+    convergent review)
+- contracts:
   - `contract:review-kernel-slot`
-  - `contract:review-kernel-partial-revision`
   - `contract:review-kernel-mechanical-repair`
-- existing provided contracts preserved:
-  - `contract:review-risk-progression`
   - `contract:review-evidence-binding`
   - `contract:evaluator-infrastructure-health`
-  - `contract:review-fix-convergence`
-  - `contract:lens-quality-telemetry`
-- added/changed contract intent:
   - `contract:consolidated-authorization`
   - `contract:automatic-recovery`
-  - `contract:status-progress-telemetry`
   - `contract:onboarding-worktree-continuity`
-  - `contract:product-internal-north-star`
-  - `contract:large-markdown-delivery`
-  - `contract:attributed-thread-continuation`
+  - `contract:claude-enforcement-status`
+  - `contract:exclusive-delivery-authority`
+  - `contract:foreign-interference-audit`
+  - `contract:managed-worktree-cleanup`
+- `contract_relations`:
+  - consumes `contract:review-kernel-slot`
+  - consumes `contract:review-kernel-mechanical-repair`
+  - consumes `contract:review-evidence-binding`
+  - consumes `contract:evaluator-infrastructure-health`
+  - changes `contract:consolidated-authorization`
+  - changes `contract:automatic-recovery`
+  - changes `contract:onboarding-worktree-continuity`
+  - provides `contract:claude-enforcement-status`
+  - provides `contract:exclusive-delivery-authority`
+  - provides `contract:foreign-interference-audit`
+  - provides `contract:managed-worktree-cleanup`
 
-This remains bounded to Taskplane control-plane/workflow UX and engineering-
-review efficiency. It is a material cross-flow authority-contract amendment
-and requires Design before Build. There are no blocking Product questions.
+This is a material cross-host authority and destructive-lifecycle boundary. It
+requires Design before Plan/Build, with an acceptance-to-design map for every
+criterion and explicit state machines for enforcement, collision disposition,
+and cleanup eligibility. There are no blocking Product questions.
