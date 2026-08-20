@@ -744,9 +744,11 @@
     {
       "id": "t15-risk-routing-product-design-reconciliation",
       "scope": [
+        "plan/tasks.json",
         "specs/spec.md",
         "design/contract.json",
         "design/design.md",
+        "design/visual.html",
         "taskplane/lens.py",
         "taskplane/lens_signals.py",
         "taskplane/review_progression.py",
@@ -811,7 +813,7 @@
       "criteria": [
         "Normalization and repair never redo substance.** Producer verdict/count/ severity/summary metadata normalizes deterministically from canonical findings. Authoritatively derivable metadata-only defects repair automatically with before/after, derivation authority, and fingerprint equivalence; substantive change reruns only affected slots. **Verify:** field permutation, summary contradiction, identity/count defect, and every substantive mutation."
       ],
-      "status": "pending"
+      "status": "passed"
     },
     {
       "id": "t17-evaluator-unavailable-readiness-state",
@@ -842,7 +844,7 @@
         "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
         "Evaluator-outage cache is exact and truthful.** A verified evaluator infrastructure failure reuses only for the same evaluator, engine/version, capability, repository, exact worktree, and validity window. It records infrastructure unavailable—not lens pass/fail—and invalidates on any key, expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count."
       ],
-      "status": "pending"
+      "status": "passed"
     },
     {
       "id": "t18-shape-safe-status-contract-projection",
@@ -877,7 +879,7 @@
         "Dashboard delivery is size-appropriate and complete.** Small dashboards render inline. Very large dashboards automatically deliver complete Markdown without truncating evidence; canonical JSON remains machine authority and HTML failure/absence is optional and nonblocking. **Verify:** below/above thresholds and large-finding fixtures compare semantic equality and gate state across JSON, inline, Markdown, and optional HTML.",
         "Status is cheap, live, and non-gating.** Status reads durable snapshots only, performs no expensive recomputation, and never blocks or gates work. Picture-in-Picture continuously identifies the active agent/phase and updates from durable events. **Verify:** instrumentation asserts bounded reads/no graph/review recomputation and identical workflow outcome with status open, closed, interrupted, or unavailable."
       ],
-      "status": "pending"
+      "status": "passed"
     }
   ]
 }

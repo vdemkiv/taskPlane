@@ -1,123 +1,86 @@
-# R-0001 post-EM focused repair plan
+# R-0001 final t15 scope-correction plan
 
-This authorized replan starts at the completed 14-task Engineering Manager
-request-changes checkpoint. It preserves the archived t1–t14 task history,
-worktrees, commits, submissions, and evidence, including t14's accepted
-exact-worktree and fixture corrections through commit `ac1f960`. Product and
-Design are not restarted. The only new work is four scope-disjoint tasks for
-the four reproduced EM blockers. The approved Design checkpoint fingerprint is
-`87d23fd659956c3b821790a2ecfe6fe0007ce13c5eb6e161a986102612ffe44e`;
-t15's in-place wording reconciliation is directly authorized by this EM
-replan and may not introduce a new HOW.
+This human-approved replan preserves the complete archived t1–t18 delivery
+history, commits, submissions, evaluations, and evidence. It does not restart
+Product or Design, create a feature, broaden acceptance, or repeat green work.
+The only executable work is the remaining t15 reconciliation, now authorized
+to edit the two stale artifacts omitted from its prior scope:
+`plan/tasks.json` and `design/visual.html`.
 
 Identity boundary: this is the 32-AC Progressive convergent engineering review
 R-0001. It does not cover or claim the separate 15-AC governed-run reliability
 and exclusive authority R-0001 from another task/store.
 
-The plan packet contains 18 coverage records: t1–t14 are explicitly
-`status: "passed"` and load as SETTLED, while only t15–t18 are
-`status: "pending"` and executable. The four repair tasks run focused declared
-tests only. There is no local full suite in this plan: after focused closure
-and independent evaluation, CI owns the single final
-`python3 -m pytest -q taskplane/tests` confirmation.
+## Preserved governed baseline
 
-## Preserved checkpoint
+- t1–t14 retain their exact archived definitions and `status: "passed"`.
+  They provide Plan DoR coverage and load as SETTLED, so execution skips them.
+- t15 retains the already-green implementation/fixer commit `2602b5b`, its
+  focused evidence, criteria, contracts, graph edges, impact policy, and prior
+  scope. It remains `status: "pending"` only for the bounded stale-artifact
+  reconciliation described below.
+- t16 commit `2061139`, t17 commit `fcee90c`, and t18 commit `cdceb475` retain
+  their accepted evidence and are now `status: "passed"`. They are
+  coverage-only SETTLED records and will not be rerun.
+- The current governed primary, including the accepted t14 exact-worktree and
+  harness fixes, is t15's baseline. t15 has `deps: []`; no settled task is
+  rescheduled as an executable prerequisite.
 
-- t1–t13 remain completed exactly as archived; this replan does not reopen,
-  broaden, replace, or reschedule any of their accepted work. Their full
-  definitions are copied from the durable Taskplane snapshot and marked
-  passed solely to preserve requirement, contract, module, edge, policy, and
-  criterion coverage for Plan DoR. Execution skips them as SETTLED.
-- t14 remains completed with its exact-worktree/fixture fixes and focused
-  evidence. Its full snapshot definition is likewise marked passed for
-  coverage only. Its valid commit and evidence are part of the governed
-  primary baseline for every repair task, not work or a dependency to repeat.
-- The EM request-changes report remains the authority for the four bounded
-  defects. No unrelated cleanup, wishlist documentation, i18n,
-  retention/compaction, scalability machinery, private-key scheme, or
-  same-UID authenticated-host boundary enters this plan.
+The 17 settled records plus pending t15 collectively retain ownership of all
+32 acceptance criteria, all approved Design modules, all 15 requirement
+contract ids, every canonical Design edge, the approved acceptance mapping,
+and the typed depth policy. The approved Design checkpoint remains the source
+of HOW; this replan changes only repair reachability.
 
-## Bounded graph and contract impact
+## Bounded impact
 
-This correction reuses the single bounded graph-impact result obtained for the
-same four unchanged repair surfaces in the rejected packet; making a second
-identical call would add no planning evidence. At graph fingerprint
-`9dd9e555fb5e583431dcc1d51d203edac707682a2b4609d2d298bfa954b05e14`,
-it touched `design`, `specs`, `taskplane`, and `taskplane/tests`; reached 25
-impacted nodes; affected only `req:R-0001`; and reported no unknown modules,
-dependent requirements, policy blocks, contract-boundary violations,
-truncation, or depth truncation. The existing typed policy remains local depth
-3, `contract-only` boundaries, contract depth 1, and requirement depth 1.
-No repair task introduces a module, contract, resource, or distributed
-boundary. Across the 14 settled coverage records and four pending repairs, all
-32 acceptance criteria and every approved Design module, named contract,
-canonical edge, and impact-policy surface remain owned.
+The planner made exactly one required graph-impact call over t15's corrected
+scope, including `plan/tasks.json` and `design/visual.html`. At graph
+fingerprint
+`58c3742bf33ae859ec63aef3727b779c232ea901192673ff70368af5a5795ea2`,
+the result touched `design`, `plan`, `specs`, `taskplane`, and
+`taskplane/tests`; reached 24 impacted nodes; affected only `req:R-0001`; and
+reported no unknown modules, dependent requirements, policy blocks, contract
+boundary nodes, truncation, or depth truncation. The existing policy remains
+local depth 3, `contract-only` boundaries, contract depth 1, and requirement
+depth 1. No new module, contract, resource, or distributed boundary is added.
 
-## Repair wave
+## Only pending work: t15
 
-All four tasks start from the current governed primary baseline containing the
-accepted t14 fixes. Their `deps` arrays are empty because the passed t14 record
-is coverage-only rather than an executable prerequisite. Their write scopes
-are disjoint, so they may run in one parallel wave. The ordering below is risk
-priority, not a new dependency.
+t15 keeps its existing risk-routing implementation and focused selector. Its
+scope adds exactly:
 
-1. **t15 — risk-routing Product/Design reconciliation.** Reconcile AC15 and
-   AC22 in-place to the already authorized risk-scaled rule and make the
-   Product wording, approved Design artifacts, runtime routing, and focused
-   fixtures agree. Documentation-only and simple low-risk changes select
-   exactly one attributable risk-selected deep lens. A missing code-module
-   mapping alone does not widen. Only evidence of genuine ambiguity,
-   corruption, mixed/substantive impact, or other material risk widens to the
-   four architecture, code-quality, security, and QA floors, and the widening
-   records its reason. The focused matrix also conserves the selected slot(s)
-   and the eight-lens cap. This is reconciliation to the approved criterion,
-   not a new product requirement or design approach. For mechanical ownership,
-   t15's `criteria` array copies the currently persisted AC15 and contradictory
-   AC22 text verbatim; AC22 is the defect input, not the intended output. The
-   task must reconcile the persisted AC22/acceptance map and Design wording to
-   the authorized rule before changing runtime behavior.
-2. **t16 — collector normalization order.** Move audited, metadata-only
-   normalization of derivable verdict/count/severity/summary contradictions
-   ahead of rejection. Record before/after values, derivation authority, and
-   fingerprint equivalence, then complete collection in that same call without
-   rerunning the producer. A substantive mutation remains a repair failure and
-   retries only the affected original producer; unrelated valid results are
-   conserved.
-3. **t17 — evaluator-unavailable readiness state.** Preserve evaluator
-   infrastructure unavailability as a distinct non-judged state with exact
-   outage identity. It cannot become a pass, mark the task passed, or open
-   readiness without independent evidence or an explicit governing policy.
-   Cache behavior stays exact and truthful across evaluator, engine/version,
-   capability, repository, worktree, validity-window, expiry, and recovery
-   changes.
-4. **t18 — shape-safe status contract projection.** Centralize the supported
-   contract projection used by dashboard and CLI/status rendering so coding,
-   read-only, review, and partially released/released contracts are handled
-   without a direct `contract['coding']` assumption. Status stays snapshot-only,
-   non-gating, and semantically consistent across JSON, inline, Markdown, and
-   optional HTML delivery.
+- `plan/tasks.json`, so the persisted AC22 ownership text can be reconciled
+  with the already authorized risk-scaled AC15/AC22 rule; and
+- `design/visual.html`, so the visual no longer states an unconditional
+  four-deep-floor rule.
 
-Each task owns one focused `python3 -m pytest -q` command naming only its
-cluster's tests. Any new regression test named in a command is created within
-that task's declared test scope. No repair task may weaken, skip, xfail,
-remove, or reclassify an existing governance assertion.
+The repair must make the requirement, Design Contract, Design narrative,
+visual, active plan criterion, runtime routing, and focused fixtures agree:
+documentation-only and simple low-risk changes select exactly one attributable
+risk-selected deep lens; a missing code-module mapping alone does not widen;
+only genuinely ambiguous, corrupt, substantively risky, or otherwise
+evidence-backed material risk widens to the architecture, code-quality,
+security, and QA floors with an explicit reason. The selected slot or slots
+and the eight-lens cap remain conserved.
+
+The task retains one focused command string naming only the existing t15
+selectors. There is no local repository-wide suite in this plan. CI retains
+ownership of the single complete `python3 -m pytest -q taskplane/tests`
+confirmation after focused closure and independent evaluation.
 
 ## Risks and rollback
 
-The principal risk is encoding the AC15 rule in runtime while leaving AC22 or
-the approved Design prose contradictory. t15 therefore owns those artifacts
-together and must preserve one attributable deep slot for low-risk work rather
-than using a missing mapping as a proxy for substantive risk. Any four-floor
-widening needs an explicit evidence-backed reason.
+The narrow risk is semantic drift between the corrected runtime behavior and
+the two stale artifacts. `plan/tasks.json` is in scope only to update t15's
+AC22 ownership text after the requirement wording is reconciled; it is not
+authority to change task history, statuses, other criteria, or any other task
+definition. `design/visual.html` may express the approved risk-scaled rule but
+may not introduce a new Design approach.
 
-Collector repair is limited to authority-derivable metadata. It must not
-rewrite findings, identities, evidence, or other substance under the label of
-normalization. Evaluator outage handling must not convert operational
-availability into an engineering judgment. Contract projection must preserve
-the original status semantics rather than fabricate absent fields.
-
-Rollback is task-local: revert only the non-convergent repair while preserving
-t1–t14 and the other accepted repairs. A focused failure stays inside that
-task's bounded fix cycle. Broad compatibility is assessed once by CI after the
-four focused tasks and independent evaluations close; a CI failure is new
-integration evidence, not authority to silently widen a leaf task.
+No assertion may be removed, skipped, xfailed, loosened, or reclassified. No
+private keys, host authentication boundary, i18n, retention/compaction,
+scalability machinery, or wishlist documentation enters the repair. If the
+focused t15 selector does not converge, rollback only the new stale-artifact
+repair while preserving commit `2602b5b` and all settled task evidence, then
+return the exact blocker to the governed loop.
