@@ -522,7 +522,8 @@ def _install_codex_hooks(ws: str) -> dict:
     hooks = prior["hooks"]
     for event, rows in _codex_hook_rows().items():
         existing = [row for row in hooks.get(event, [])
-                    if _CODEX_HOOK_MARKER not in json.dumps(row)]
+                    if _CODEX_HOOK_MARKER not in json.dumps(row)
+                    and "host_native_runtime.py" not in json.dumps(row)]
         hooks[event] = existing + rows
     tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
     _exclude_generated_codex_config(ws, prior)

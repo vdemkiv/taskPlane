@@ -41,6 +41,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "TASKPLANE_HOOK_PATH=bridge python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/hooks/host_native_runtime.py\" check --host codex",
+            "commandWindows": "set \"TASKPLANE_HOOK_PATH=bridge\" & if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\hooks\\host_native_runtime.py\" check --host codex) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\hooks\\host_native_runtime.py\" check --host codex) else (echo taskplane host-native discovery: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset 1>&2 & exit /b 2)",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
             "command": "if [ -f \".taskplane/codex-hook.py\" ]; then TASKPLANE_HOOK_PATH=bridge python3 \".taskplane/codex-hook.py\" context; else TASKPLANE_HOOK_PATH=bridge python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" context; fi",
             "commandWindows": "if exist \".taskplane\\codex-hook.py\" (set \"TASKPLANE_HOOK_PATH=bridge\" & py -3 \".taskplane\\codex-hook.py\" context) else (set \"TASKPLANE_HOOK_PATH=bridge\" & if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" context) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" context) else (echo taskplane context hook: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset - failing closed 1>&2 & exit /b 2))",
             "timeout": 10
