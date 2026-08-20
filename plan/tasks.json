@@ -1,33 +1,31 @@
 {
   "tasks": [
     {
-      "id": "t02-enforcement-decision-and-receipts",
+      "id": "t01-bounded-handoff-artifact-boundary",
       "scope": [
-        "taskplane/enforcement.py",
-        "taskplane/host_capabilities.py",
-        "taskplane/run_store.py",
-        "taskplane/tests/test_enforcement_core.py"
+        "taskplane/stage_handoff.py",
+        "taskplane/review_evidence.py",
+        "taskplane/tests/test_stage_handoff.py",
+        "taskplane/tests/test_stage_handoff_security.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_enforcement_core.py taskplane/tests/test_host_capabilities.py",
-      "req": "R-0003",
-      "deps": [
-        "t01-reviewkernel-regression-floor"
-      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_handoff.py taskplane/tests/test_stage_handoff_security.py taskplane/tests/test_artifact_references.py",
+      "req": "R-0004",
+      "deps": [],
       "type": "security",
       "contracts": [
-        "contract:claude-enforcement-status",
-        "contract:consolidated-authorization"
+        "contract:stage-artifact-handoff",
+        "contract:consolidated-authorization",
+        "contract:review-evidence-binding"
       ],
       "new_modules": [
-        "taskplane/host_capabilities.py",
-        "taskplane/run_store.py",
-        "taskplane/enforcement.py"
+        "taskplane/stage_handoff.py",
+        "taskplane/review_evidence.py"
       ],
       "design_edges": [
-        "taskplane/host_capabilities.py->contract:claude-enforcement-status:consumes",
-        "taskplane/enforcement.py->contract:claude-enforcement-status:provides",
-        "taskplane/enforcement.py->contract:consolidated-authorization:changes",
-        "taskplane/run_store.py->contract:claude-enforcement-status:stores"
+        "taskplane/stage_handoff.py->contract:stage-artifact-handoff:provides",
+        "taskplane/stage_handoff.py->contract:review-evidence-binding:consumes",
+        "taskplane/stage_handoff.py->taskplane/review_evidence.py:runtime",
+        "taskplane/stage_handoff.py->taskplane/storage.py:runtime"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -36,139 +34,107 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Given identical workspace/session evidence, every entry, dispatch, closing gate, status, dashboard, artifact, and retro returns one matching live, unproven, or advisory classification and evidence id.",
-        "With the Claude hook live, the same entry succeeds from its fresh PreToolUse receipt without an extra probe, model call, or human prompt.",
-        "A foreign session receipt older than the bounded 300-second freshness window with no known current session classifies unproven; matching fresh receipts and screen activity classify live."
+        "A handoff manifest records producer stage id and outcome, requirement and design revisions, target and commit identity where applicable, contracts, deliverables, evidence references, artifact fingerprints, exclusions, and the actor and time authorizing continuation."
       ],
       "model": "deep"
     },
     {
-      "id": "t03-enforcement-gates-and-projections",
+      "id": "t02-atomic-stage-lifecycle-and-lineage",
       "scope": [
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/loop.py",
-        "taskplane/dashboard.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/tests/test_enforcement_integration.py"
+        "taskplane/stage_entities.py",
+        "taskplane/run_store.py",
+        "taskplane/storage.py",
+        "taskplane/repository.py",
+        "taskplane/worktree_cleanup.py",
+        "taskplane/tests/test_stage_entities.py",
+        "taskplane/tests/test_stage_transactions.py",
+        "taskplane/tests/test_stage_split.py",
+        "taskplane/tests/test_stage_projection.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_enforcement_integration.py taskplane/tests/test_loop.py taskplane/tests/test_status_and_large_delivery.py",
-      "req": "R-0003",
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_entities.py taskplane/tests/test_stage_transactions.py taskplane/tests/test_stage_split.py taskplane/tests/test_stage_projection.py taskplane/tests/test_storage_kernel.py taskplane/tests/test_worktree_cleanup_eligibility.py taskplane/tests/test_worktree_cleanup.py",
+      "req": "R-0004",
       "deps": [
-        "t02-enforcement-decision-and-receipts"
+        "t01-bounded-handoff-artifact-boundary"
       ],
-      "type": "security",
+      "type": "reliability",
       "contracts": [
-        "contract:claude-enforcement-status",
+        "contract:stage-entity-lifecycle",
+        "contract:stage-artifact-handoff",
+        "contract:delivery-lineage",
+        "contract:consolidated-authorization",
+        "contract:automatic-recovery",
+        "contract:review-evidence-binding"
+      ],
+      "new_modules": [
+        "taskplane/stage_entities.py",
+        "taskplane/run_store.py",
+        "taskplane/storage.py",
+        "taskplane/repository.py",
+        "taskplane/worktree_cleanup.py",
+        "taskplane/tests"
+      ],
+      "design_edges": [
+        "taskplane/stage_entities.py->contract:stage-entity-lifecycle:provides",
+        "taskplane/stage_entities.py->contract:delivery-lineage:provides",
+        "taskplane/stage_entities.py->contract:consolidated-authorization:changes",
+        "taskplane/stage_entities.py->contract:automatic-recovery:changes",
+        "taskplane/stage_entities.py->taskplane/run_store.py:runtime",
+        "taskplane/stage_entities.py->taskplane/stage_handoff.py:runtime",
+        "taskplane/stage_entities.py->taskplane/storage.py:runtime",
+        "taskplane/run_store.py->contract:stage-entity-lifecycle:stores",
+        "taskplane/run_store.py->contract:delivery-lineage:stores",
+        "taskplane/repository.py->contract:consolidated-authorization:consumes",
+        "taskplane/worktree_cleanup.py->contract:automatic-recovery:consumes",
+        "taskplane/tests->contract:stage-entity-lifecycle:validates",
+        "taskplane/tests->contract:stage-artifact-handoff:validates",
+        "taskplane/tests->contract:delivery-lineage:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Every stage entity has a stable stage id, requirement revision, stage kind, parent or predecessor links, bounded input manifest, independent execution tree, and exactly one terminal outcome of done, closed, or discarded.",
+        "Done requires the declared deliverables and completion evidence; closed requires an attributable reason explaining why no further work is required; discarded requires an attributable reason explaining why its results must not be consumed. No terminal entity can silently return to active.",
+        "Splitting a deliverable closes the parent with a split reason and creates two or more independently addressable child stage entities with explicit artifact subsets, dependencies, budgets, and lifecycles; one child outcome cannot mutate sibling or parent history.",
+        "The active-stage pointer is a replaceable projection only. Starting, resuming, splitting, or terminalizing a stage never overwrites or reclassifies a predecessor entity, and history lists every terminal and active entity with lineage.",
+        "Crash, duplicate event, reconnect, and retry fixtures prove stage terminalization, handoff creation, and split creation are atomic and idempotent, with no duplicate child, lost artifact, reopened terminal stage, or ambiguous active pointer."
+      ],
+      "model": "deep"
+    },
+    {
+      "id": "t03-isolated-stage-dispatch-and-cli",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tp.py",
+        "taskplane/tests/test_stage_dispatch.py",
+        "taskplane/tests/test_stage_cli.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_dispatch.py taskplane/tests/test_stage_cli.py taskplane/tests/test_v230_loop.py taskplane/tests/test_v231_dispatch.py",
+      "req": "R-0004",
+      "deps": [
+        "t02-atomic-stage-lifecycle-and-lineage"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:stage-entity-lifecycle",
+        "contract:stage-artifact-handoff",
+        "contract:delivery-lineage",
         "contract:consolidated-authorization",
         "contract:automatic-recovery"
       ],
       "new_modules": [
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
         "taskplane/loop.py",
-        "taskplane/dashboard.py",
-        "taskplane/runtime_eval.py"
-      ],
-      "design_edges": [
-        "taskplane/taskplane_lite.py->contract:claude-enforcement-status:consumes",
-        "taskplane/tp.py->contract:claude-enforcement-status:consumes",
-        "taskplane/loop.py->contract:claude-enforcement-status:consumes",
-        "taskplane/dashboard.py->contract:claude-enforcement-status:consumes",
-        "taskplane/runtime_eval.py->contract:claude-enforcement-status:consumes",
-        "taskplane/tests->contract:claude-enforcement-status:validates"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "With Claude hook support declared but absent, strict new, loop init, review start, stage emission, and claim fail nonzero with host-specific recovery and create no contract, loop, review, or receipt state.",
-        "Advisory without by refuses; advisory with an attributable identity records one decision and stamps every gate, evidence payload, manifest, verdict, dashboard, recommendation, and retro with actor and time.",
-        "A run that entered live but loses valid screen activity cannot pass a loop gate or close review until fresh proof or explicit advisory acknowledgment; the downgrade propagates without discarding evidence."
-      ],
-      "model": "deep"
-    },
-    {
-      "id": "t04-collision-registry-and-classification",
-      "scope": [
-        "taskplane/collision.py",
-        "taskplane/collision_registry.json",
-        "taskplane/run_store.py",
-        "taskplane/tests/test_collision_core.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_collision_core.py",
-      "req": "R-0003",
-      "deps": [
-        "t03-enforcement-gates-and-projections"
-      ],
-      "type": "security",
-      "contracts": [
-        "contract:exclusive-delivery-authority",
-        "contract:foreign-interference-audit",
-        "contract:onboarding-worktree-continuity"
-      ],
-      "new_modules": [
-        "taskplane/collision.py",
-        "taskplane/collision_registry.json"
-      ],
-      "design_edges": [
-        "taskplane/collision_registry.json->contract:exclusive-delivery-authority:provides",
-        "taskplane/collision.py->contract:exclusive-delivery-authority:provides",
-        "taskplane/collision.py->contract:foreign-interference-audit:provides",
-        "taskplane/run_store.py->contract:foreign-interference-audit:stores"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "During an active governed step, a registry-known competing delivery skill or agent is denied even when optional dispatch enforcement is unset; the denial names the run, step, foreign identity, and exact Taskplane continuation.",
-        "Allowlisted document, spreadsheet, presentation, and visualization helpers pass silently; an unknown foreign skill is recorded and advised normally and denied under strict isolation, with versioned registry evidence.",
-        "A signature-matching competing state root is named in entry, onboarding, and status and excluded from new write authority; a same-named unsigned directory is ignored, and inclusion requires an attributable override.",
-        "With no exact-workspace contract, live loop, or open review, skill and dispatch screens are no-ops; advisory mode reports observed interference without claiming an inactive hook denied it."
-      ],
-      "model": "deep"
-    },
-    {
-      "id": "t05-collision-adapters-and-audit",
-      "scope": [
-        "hooks/hooks.json",
-        ".codex/hooks.json",
-        "taskplane/tp.py",
         "taskplane/taskplane_lite.py",
-        "taskplane/dashboard.py",
-        "taskplane/runtime_eval.py",
-        "taskplane/tests/test_collision_integration.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_collision_integration.py taskplane/tests/test_status_and_large_delivery.py",
-      "req": "R-0003",
-      "deps": [
-        "t04-collision-registry-and-classification"
-      ],
-      "type": "integration",
-      "contracts": [
-        "contract:exclusive-delivery-authority",
-        "contract:foreign-interference-audit",
-        "contract:consolidated-authorization",
-        "contract:onboarding-worktree-continuity"
-      ],
-      "new_modules": [
-        "hooks/hooks.json",
-        ".codex/hooks.json"
+        "taskplane/tp.py"
       ],
       "design_edges": [
-        "hooks/hooks.json->contract:exclusive-delivery-authority:consumes",
-        ".codex/hooks.json->contract:exclusive-delivery-authority:consumes",
-        "taskplane/tp.py->contract:exclusive-delivery-authority:consumes",
-        "taskplane/taskplane_lite.py->contract:exclusive-delivery-authority:consumes",
-        "taskplane/dashboard.py->contract:foreign-interference-audit:consumes",
-        "taskplane/runtime_eval.py->contract:foreign-interference-audit:consumes",
-        "taskplane/tests->contract:exclusive-delivery-authority:validates"
+        "taskplane/loop.py->taskplane/stage_entities.py:runtime",
+        "taskplane/tp.py->taskplane/stage_entities.py:runtime",
+        "taskplane/taskplane_lite.py->taskplane/stage_entities.py:runtime"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -177,73 +143,44 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "A retro with interference headlines durable counts and identities for denied skills, denied agents, advised invocations, and signed roots; a clean run has no interference headline and status performs no rediscovery."
+        "Starting a next stage creates a new execution tree and consumes only a versioned manifest plus explicitly selected content-addressed artifacts from predecessor stages; prior agents, conversations, event logs, tool transcripts, leases, and runtime state are not inherited as context."
       ],
       "model": "standard"
     },
     {
-      "id": "t06-merge-receipt-and-readonly-eligibility",
+      "id": "t04-conservative-singleton-migration",
       "scope": [
-        "taskplane/repository.py",
-        "taskplane/storage.py",
-        "taskplane/run_store.py",
-        "taskplane/worktree_cleanup.py",
-        "taskplane/tests/test_worktree_cleanup_eligibility.py"
+        "taskplane/stage_migration.py",
+        "taskplane/track.py",
+        "docs/state-spec.md",
+        "docs/loop-design.md",
+        "taskplane/tests/test_stage_migration.py",
+        "taskplane/tests/test_stage_legacy_adapter.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_worktree_cleanup_eligibility.py taskplane/tests/test_storage_kernel.py",
-      "req": "R-0003",
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_migration.py taskplane/tests/test_stage_legacy_adapter.py taskplane/tests/test_track_retro.py taskplane/tests/test_v230_loop.py",
+      "req": "R-0004",
       "deps": [
-        "t05-collision-adapters-and-audit"
+        "t02-atomic-stage-lifecycle-and-lineage"
       ],
-      "type": "reliability",
+      "type": "data",
       "contracts": [
-        "contract:managed-worktree-cleanup",
-        "contract:onboarding-worktree-continuity"
-      ],
-      "new_modules": [
-        "taskplane/repository.py",
-        "taskplane/storage.py",
-        "taskplane/worktree_cleanup.py"
-      ],
-      "design_edges": [
-        "taskplane/storage.py->contract:onboarding-worktree-continuity:changes",
-        "taskplane/repository.py->contract:managed-worktree-cleanup:consumes",
-        "taskplane/worktree_cleanup.py->contract:managed-worktree-cleanup:provides",
-        "taskplane/run_store.py->contract:managed-worktree-cleanup:stores"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "After an orchestrator merge into the resolved primary branch, eligibility proves exact managed registration, recorded branch and tip, clean inactive lifecycle, and branch-tip ancestry to the current primary tip; names, statuses, messages, and path prefixes alone do not qualify."
-      ],
-      "model": "deep"
-    },
-    {
-      "id": "t07-cleanup-preservation-crash-and-replay",
-      "scope": [
-        "taskplane/worktree_cleanup.py",
-        "taskplane/run_store.py",
-        "taskplane/tests/test_worktree_cleanup.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_worktree_cleanup.py -k 'preservation or revalidation or no_force or replay or crash or evidence'",
-      "req": "R-0003",
-      "deps": [
-        "t06-merge-receipt-and-readonly-eligibility"
-      ],
-      "type": "security",
-      "contracts": [
-        "contract:managed-worktree-cleanup",
+        "contract:stage-entity-lifecycle",
+        "contract:delivery-lineage",
+        "contract:consolidated-authorization",
         "contract:automatic-recovery",
         "contract:review-evidence-binding"
       ],
-      "new_modules": [],
+      "new_modules": [
+        "taskplane/stage_migration.py",
+        "taskplane/track.py",
+        "docs"
+      ],
       "design_edges": [
-        "taskplane/worktree_cleanup.py->contract:automatic-recovery:changes",
-        "taskplane/tests->contract:managed-worktree-cleanup:validates"
+        "taskplane/stage_migration.py->taskplane/stage_entities.py:runtime",
+        "taskplane/stage_migration.py->taskplane/run_store.py:runtime",
+        "taskplane/stage_migration.py->taskplane/review_evidence.py:runtime",
+        "taskplane/track.py->taskplane/stage_migration.py:runtime",
+        "docs->contract:stage-entity-lifecycle:defines"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -252,33 +189,42 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked, path-mismatched, missing-ref, ambiguous-main, merge-in-progress, and evidence-needed worktrees are preserved, including on last-moment eligibility uncertainty.",
-        "Cleanup re-resolves repository, registered path, worktree type, branch and tip, primary tip, cleanliness, lifecycle, variant, and retention immediately before removal; any failure preserves the tree and registration and never retries with force, broader scope, or branch deletion.",
-        "Replayed successful cleanup is already-clean and removes only the eligible linked worktree registration and directory; branch, commits, requirement, design, plan, submissions, tests, review evidence, audit, and sign-off inputs remain addressable."
+        "A migration converts singleton loop records into stage entities without losing requirements, tasks, decisions, evidence, commits, reviews, or audit history; ambiguous legacy state is preserved with an explicit unknown reason rather than guessed as pending, done, closed, or discarded."
       ],
       "model": "deep"
     },
     {
-      "id": "t08-post-removal-governance-continuity",
+      "id": "t05-bounded-lineage-projections-and-scaling",
       "scope": [
-        "taskplane/runtime_eval.py",
+        "taskplane/loop_status.py",
         "taskplane/dashboard.py",
-        "taskplane/review_evidence.py",
-        "taskplane/tests/test_worktree_cleanup_governance.py"
+        "taskplane/retro.py",
+        "taskplane/runtime_eval.py",
+        "taskplane/tests/test_stage_bounded_views.py",
+        "taskplane/tests/test_stage_startup_scaling.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_worktree_cleanup_governance.py taskplane/tests/test_status_and_large_delivery.py",
-      "req": "R-0003",
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_bounded_views.py taskplane/tests/test_stage_startup_scaling.py taskplane/tests/test_status_and_large_delivery.py taskplane/tests/test_v230_dashboard.py taskplane/tests/test_track_retro.py",
+      "req": "R-0004",
       "deps": [
-        "t07-cleanup-preservation-crash-and-replay"
+        "t03-isolated-stage-dispatch-and-cli"
       ],
-      "type": "reliability",
+      "type": "performance",
       "contracts": [
-        "contract:managed-worktree-cleanup",
-        "contract:review-evidence-binding",
-        "contract:foreign-interference-audit"
+        "contract:stage-artifact-handoff",
+        "contract:delivery-lineage"
       ],
-      "new_modules": [],
-      "design_edges": [],
+      "new_modules": [
+        "taskplane/loop_status.py",
+        "taskplane/dashboard.py",
+        "taskplane/retro.py",
+        "taskplane/runtime_eval.py"
+      ],
+      "design_edges": [
+        "taskplane/loop_status.py->contract:delivery-lineage:consumes",
+        "taskplane/dashboard.py->contract:delivery-lineage:consumes",
+        "taskplane/retro.py->contract:delivery-lineage:consumes",
+        "taskplane/runtime_eval.py->contract:stage-artifact-handoff:consumes"
+      ],
       "impact_policy": {
         "local_depth": 3,
         "boundary_mode": "contract-only",
@@ -286,55 +232,58 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "EM, graph and evidence reconciliation, retro, status, and final sign-off complete from canonical records after eligible trees are removed; evidence-needed trees remain until their owning lifecycle explicitly releases retention."
+        "Dashboard, status, review, sign-off, and Retro show the current stage, predecessor outcome, artifact handoff, and child lineage from bounded summaries without loading predecessor execution trees.",
+        "As irrelevant predecessor history grows from ten to one hundred thousand events, the default successor startup payload remains byte-identical and bounded to the manifest plus explicitly selected artifacts; startup work and token use do not scale with predecessor runtime history."
       ],
-      "model": "standard"
+      "model": "deep"
     },
     {
-      "id": "t09-enable-automatic-cleanup-and-cross-host-conformance",
+      "id": "t06-cross-host-rollout-and-r0003-preservation",
       "scope": [
-        "taskplane/loop.py",
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/worktree_cleanup.py",
-        "taskplane/run_store.py",
-        "hooks/hooks.json",
-        ".codex/hooks.json",
-        "agents/**",
-        "skills/**",
-        "docs/**",
-        "taskplane/tests/**"
+        "skills/taskplane/SKILL.md",
+        "skills/taskplane/flow.json",
+        "skills/tp-product/SKILL.md",
+        "skills/tp-product/flow.json",
+        "skills/tp-design/SKILL.md",
+        "skills/tp-design/flow.json",
+        "skills/tp-build/SKILL.md",
+        "skills/tp-go/SKILL.md",
+        "skills/tp-go/flow.json",
+        "skills/tp-go/references/parallel.md",
+        "skills/tp-go/references/retro.md",
+        "skills/tp-engineering/SKILL.md",
+        "skills/tp-engineering/flow.json",
+        "skills/tp-status/SKILL.md",
+        "skills/tp-status/flow.json",
+        ".github/workflows/ci.yml",
+        "scripts/package_openai.py",
+        "scripts/package_claude.py",
+        "taskplane/tests/test_stage_non_build_handoffs.py",
+        "taskplane/tests/test_stage_cross_host.py",
+        "taskplane/tests/test_stage_rollout.py",
+        "taskplane/tests/test_stage_r0003_preservation.py",
+        "taskplane/tests/test_stage_release_matrix.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_worktree_cleanup.py taskplane/tests/test_worktree_cleanup_governance.py taskplane/tests/test_enforcement_integration.py taskplane/tests/test_collision_integration.py taskplane/tests/test_r0002_cross_host_conformance.py",
-      "req": "R-0003",
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_non_build_handoffs.py taskplane/tests/test_stage_cross_host.py taskplane/tests/test_stage_rollout.py taskplane/tests/test_stage_r0003_preservation.py taskplane/tests/test_stage_release_matrix.py taskplane/tests/test_host_native_compatibility.py taskplane/tests/test_dispatch_parity.py taskplane/tests/test_skill_flows.py taskplane/tests/test_r0002_reviewkernel_regression_floor.py taskplane/tests/test_enforcement_core.py taskplane/tests/test_enforcement_integration.py taskplane/tests/test_collision_core.py taskplane/tests/test_collision_integration.py taskplane/tests/test_worktree_cleanup_eligibility.py taskplane/tests/test_worktree_cleanup.py taskplane/tests/test_artifact_references.py taskplane/tests/test_review_evidence_lifecycle.py taskplane/tests/test_consolidated_authority.py taskplane/tests/test_release_freshness.py taskplane/tests/test_release_provenance.py",
+      "req": "R-0004",
       "deps": [
-        "t08-post-removal-governance-continuity"
+        "t04-conservative-singleton-migration",
+        "t05-bounded-lineage-projections-and-scaling"
       ],
-      "type": "security",
+      "type": "integration",
       "contracts": [
-        "contract:review-kernel-slot",
-        "contract:review-kernel-mechanical-repair",
-        "contract:review-evidence-binding",
-        "contract:evaluator-infrastructure-health",
+        "contract:stage-entity-lifecycle",
+        "contract:stage-artifact-handoff",
+        "contract:delivery-lineage",
         "contract:consolidated-authorization",
         "contract:automatic-recovery",
-        "contract:onboarding-worktree-continuity",
-        "contract:claude-enforcement-status",
-        "contract:exclusive-delivery-authority",
-        "contract:foreign-interference-audit",
-        "contract:managed-worktree-cleanup"
+        "contract:review-evidence-binding"
       ],
       "new_modules": [
-        "agents",
-        "skills",
-        "docs",
-        "taskplane/tests"
+        "skills"
       ],
       "design_edges": [
-        "taskplane/loop.py->contract:managed-worktree-cleanup:consumes",
-        "agents->contract:consolidated-authorization:consumes",
-        "skills->contract:consolidated-authorization:consumes",
-        "docs->contract:onboarding-worktree-continuity:consumes"
+        "skills->contract:stage-artifact-handoff:consumes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -343,86 +292,9 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Automatic cleanup starts only after the orchestrator durably records a successful merge into the resolved primary branch; a pre-record crash preserves the tree and a post-record crash is recoverable by one idempotent maintenance pass.",
-        "Codex, Claude, Slack-capable flows, managed and legacy worktrees, enforcement modes, and collision modes preserve equivalent authority/evidence semantics; rollback cannot auto-approve, forge live status, weaken ReviewKernel regression tests, or force-delete a tree."
+        "Product, Design, Review, Evaluation, and other non-build work can terminate closed or discarded without creating an implementation stage, while their retained artifacts remain addressable for audit or later explicit reuse."
       ],
       "model": "deep"
-    },
-    {
-      "id": "t01-reviewkernel-regression-floor",
-      "scope": [
-        "taskplane/review.py",
-        "taskplane/review_evidence.py",
-        "taskplane/review_repair.py",
-        "taskplane/review_recovery.py",
-        "taskplane/evaluator_health.py",
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/dashboard.py",
-        "taskplane/run_store.py",
-        "taskplane/loop.py",
-        "agents/tp-product.md",
-        "agents/tp-engineering.md",
-        "skills/tp-product/SKILL.md",
-        "skills/tp-engineering/SKILL.md",
-        "docs/cli-reference.md",
-        ".github/workflows/ci.yml",
-        "specs/spec.md",
-        "taskplane/tests/test_r0002_reviewkernel_regression_floor.py",
-        "taskplane/tests/test_review_evidence_lifecycle.py",
-        "taskplane/tests/test_review_routing.py",
-        "taskplane/tests/test_status_and_large_delivery.py",
-        "taskplane/tests/test_review_preflight.py",
-        "taskplane/tests/test_dor_dod.py",
-        "taskplane/tests/test_binding_obligations.py",
-        "taskplane/tests/test_loop.py"
-      ],
-      "tests": "python3 -m pytest -q -p no:cacheprovider taskplane/tests/test_r0002_reviewkernel_regression_floor.py taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun taskplane/tests/test_review_evidence_lifecycle.py::test_substantive_mutation_reruns_only_the_affected_slot taskplane/tests/test_review_evidence_lifecycle.py::test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and_retries_only_original_producer taskplane/tests/test_review_evidence_lifecycle.py::test_exact_execution_binding_rejects_every_identity_change taskplane/tests/test_review_evidence_lifecycle.py::test_approval_collection_requires_exactly_once_conservation taskplane/tests/test_review_evidence_lifecycle.py::test_complete_collection_still_cannot_approve_unproven_acceptance taskplane/tests/test_review_evidence_lifecycle.py::test_evaluator_outage_cache_is_exact_expiring_and_never_a_verdict taskplane/tests/test_review_evidence_lifecycle.py::test_severe_harm_immediately_yields_immutable_request_changes taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_blocking_finding_cannot_hide_behind_pass_zero_summary taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_collection_reports_every_invalid_slot_in_one_repair_batch taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_two_active_runs_are_addressable_and_never_overwrite taskplane/tests/test_status_and_large_delivery.py::test_contract_projection_is_shape_safe_for_coding_read_only_review_and_released_contracts taskplane/tests/test_review_preflight.py::test_review_preflight_exposes_one_structured_choice_without_side_effects taskplane/tests/test_review_preflight.py::test_review_dor_classifies_commit_claims_and_review_directives taskplane/tests/test_review_preflight.py::test_explicit_dynamic_option_is_consent_without_magic_chat_phrase taskplane/tests/test_dor_dod.py::TestSignoffDoD::test_out_of_scope_change_fails taskplane/tests/test_binding_obligations.py::TheRunDeclaresWhatItOwesUpFront::test_a_review_owes_the_dashboard_with_its_embedded_graph taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_remains_non_judged_and_keeps_readiness_closed taskplane/tests/test_loop.py::TestLoop::test_unavailable_warning_preserves_exact_outage_identity_without_pass_verdict taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_retry_returns_to_evaluate_without_opening_fix taskplane/tests/test_loop.py::TestParallelExecution::test_parallel_execute_gate_validates_claimed_task_worktree taskplane/tests/test_loop.py::TestParallelExecution::test_evaluator_evidence_binds_claimed_worktree_from_either_checkout",
-      "req": "R-0003",
-      "deps": [],
-      "type": "security",
-      "contracts": [
-        "contract:review-kernel-slot",
-        "contract:review-kernel-mechanical-repair",
-        "contract:review-evidence-binding",
-        "contract:evaluator-infrastructure-health"
-      ],
-      "new_modules": [
-        "taskplane/review.py",
-        "taskplane/review_evidence.py",
-        "taskplane/review_repair.py",
-        "taskplane/review_recovery.py",
-        "taskplane/evaluator_health.py",
-        "specs/spec.md"
-      ],
-      "design_edges": [
-        "taskplane/review.py->contract:review-kernel-slot:consumes",
-        "taskplane/review_evidence.py->contract:review-evidence-binding:provides",
-        "taskplane/review_repair.py->contract:review-kernel-mechanical-repair:provides",
-        "taskplane/review_recovery.py->contract:review-kernel-mechanical-repair:consumes",
-        "taskplane/evaluator_health.py->contract:evaluator-infrastructure-health:provides",
-        "specs/spec.md->contract:consolidated-authorization:defines"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "A blocker-only producer summary over canonical high, major, and blocker findings is normalized once before collection with before/after, derivation authority, and proven equivalence; findings stay byte-identical, collection completes when otherwise valid, and no producer rewrite is requested.",
-        "A substantive result mutation cannot be normalized: only its affected slot is reissued within the attempt bound, unchanged siblings remain sealed, and the new attempt retains original run and slot lineage.",
-        "Wrong-producer, copied, sibling-worktree, stale-lease, wrong-run, missing-slot, duplicate-slot, and engine-mismatch fixtures remain non-approvable; only exact once-complete slot and acceptance-evidence conservation permits approval.",
-        "Dashboard, status, and inline projection render for coding, read-only, ReviewKernel, released, and legacy contracts and show available scope/write allowance; no missing coding object raises KeyError.",
-        "CLI and dashboard parse and ReviewKernel start smoke tests pass on supported Python 3.10, 3.11, and 3.12; an unsupported interpreter fails before state creation with one actionable version error.",
-        "While a ReviewKernel run is active and collection is incomplete, repository status resolves the same run id and manifest that review collect can operate on.",
-        "Validation needs-user payloads, Product/Engineering guidance, and CLI docs expose the same executable dynamic, render, and static continuation and identify the canonical inline dashboard artifact.",
-        "Regression fixtures retain PR-commit and README DoR derivation, explicit dynamic-validation consent receipt, out-of-scope write denial, immutable provenance/findings, early truthful request-changes, and approval conservation.",
-        "A bound evaluator outage remains unavailable rather than pass or fail, keeps readiness closed, retries evaluation without opening a product-fix cycle, and reuses cache only on the exact evaluator, engine, capability, repository, worktree, and validity key.",
-        "Parallel DoD and evaluator evidence bind to the exact claimed task worktree whether invoked from primary or worker checkout; parent, sibling, moved, dirty, and stale trees cannot substitute."
-      ],
-      "model": "standard",
-      "status": "done"
     }
   ]
 }
