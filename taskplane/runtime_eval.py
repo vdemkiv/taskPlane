@@ -35,6 +35,89 @@ REVIEW_FACTS = (
 TOKEN_PROJECTION_SCHEMA = "taskplane.host-token-projection/v1"
 
 
+def enforcement_projection(value: dict | None) -> dict:
+    """Bounded lossless identity used by evidence and host projections."""
+    row = value if isinstance(value, dict) else {}
+    advisory = row.get("advisory") \
+        if isinstance(row.get("advisory"), dict) else None
+    return {
+        "schema": "taskplane.enforcement-projection/v1",
+        "status": (str(row.get("status")) if row.get("status") in {
+            "live", "unproven", "advisory"} else "unproven"),
+        "evidence_id": str(row.get("evidence_id") or "")[:80],
+        "workspace_fingerprint": str(
+            row.get("workspace_fingerprint") or "")[:64],
+        "session_fingerprint": (str(row.get("session_fingerprint"))[:64]
+                                if row.get("session_fingerprint") else None),
+        "run_id": str(row.get("run_id"))[:128]
+        if row.get("run_id") is not None else None,
+        "revision": row.get("revision"),
+        "mode": str(row.get("mode") or "warn"),
+        "advisory": ({
+            "actor": str(advisory.get("actor") or "")[:256],
+            "acknowledged_at": str(
+                advisory.get("acknowledged_at") or "")[:64],
+            "decision_id": str(advisory.get("decision_id") or "")[:80],
+        } if advisory else None),
+    }
+
+
+def foreign_interference_projection(value: dict | None) -> dict:
+    """Bounded durable projection for status, retro, and runtime guidance."""
+    row = value if isinstance(value, dict) else {}
+    counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
+    safe_counts = {
+        key: max(0, int(counts.get(key) or 0)) for key in (
+            "denied_skills", "denied_agents", "advised_invocations",
+            "observed_invocations", "signed_roots")}
+    identities = sorted({str(item.get("identity") or "")[:256]
+                         for item in row.get("identities") or []
+                         if isinstance(item, dict) and item.get("identity")})[:128]
+    roots = sorted({str(item.get("root") or "")[:512]
+                    for item in row.get("state_roots") or []
+                    if isinstance(item, dict) and item.get("root")})[:64]
+    total = sum(safe_counts.values())
+    return {
+        "schema": "taskplane.foreign-interference-projection/v1",
+        "headline": total > 0, "total": total, "counts": safe_counts,
+        "identities": identities, "state_roots": roots,
+        "registry_evidence": sorted({
+            str(item.get("registry_fingerprint") or "")[:64]
+            for item in (row.get("events") or []) + (row.get("state_roots") or [])
+            if isinstance(item, dict) and item.get("registry_fingerprint")})[:16],
+    }
+
+
+def worktree_cleanup_projection(value: object) -> dict:
+    """Bounded cleanup outcomes used after worker directories disappear."""
+    if isinstance(value, dict) and value.get("schema") == \
+            "taskplane.worktree-cleanup/v1":
+        rows = [value]
+    elif isinstance(value, dict):
+        rows = [row for row in value.values() if isinstance(row, dict)]
+    elif isinstance(value, list):
+        rows = [row for row in value if isinstance(row, dict)]
+    else:
+        rows = []
+    allowed = {"pending", "preserved", "removed", "already-clean",
+               "manual-attention"}
+    projected = [{
+        "receipt_id": str(row.get("receipt_id") or "")[:128],
+        "task_id": str(row.get("task_id") or "")[:128],
+        "outcome": (str(row.get("outcome"))
+                    if row.get("outcome") in allowed else "manual-attention"),
+        "reason": str(row.get("reason") or "")[:512],
+        "outcome_fingerprint": str(
+            row.get("outcome_fingerprint") or "")[:64],
+    } for row in rows]
+    counts = {name: sum(row["outcome"] == name for row in projected)
+              for name in sorted(allowed)}
+    attention = counts["preserved"] + counts["manual-attention"]
+    return {"schema": "taskplane.worktree-cleanup-projection/v1",
+            "headline": attention > 0, "attention": attention,
+            "counts": counts, "outcomes": projected[:128]}
+
+
 def review_fix_convergence_projection(
         previous_revision: dict, current_revision: dict, *, cycle: int,
         previously_closed: set[str] | None = None,

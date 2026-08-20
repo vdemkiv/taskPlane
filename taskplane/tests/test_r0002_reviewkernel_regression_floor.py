@@ -233,12 +233,14 @@ def test_reviewkernel_supported_runtime_smoke_uses_the_matrix_interpreter():
     )
     result = subprocess.run(
         [sys.executable, "-c", command], cwd=str(ROOT / "taskplane"),
-        text=True, capture_output=True, check=False)
+        text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
 
     help_result = subprocess.run(
         [sys.executable, str(ROOT / "taskplane" / "tp.py"), "--help"],
-        cwd=str(ROOT), text=True, capture_output=True, check=False)
+        cwd=str(ROOT), text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False)
     assert help_result.returncode == 0, help_result.stderr
     assert help_result.stdout.startswith("usage: tp.py")
 
@@ -255,7 +257,8 @@ def test_unsupported_runtime_refuses_once_before_state_or_dependency_import(
     )
     result = subprocess.run(
         [sys.executable, "-c", command], cwd=str(tmp_path),
-        text=True, capture_output=True, check=False)
+        text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False)
 
     assert result.returncode == 2
     assert result.stdout == ""

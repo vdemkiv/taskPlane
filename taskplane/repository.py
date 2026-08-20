@@ -297,6 +297,43 @@ class RepositoryManager:
         return tp.file_lock(os.path.join(layout.checkout_root, "acquisition"),
                             timeout=30.0)
 
+    def merge_registered_task(self, primary_checkout: str, *, task_id: str,
+                              run_id: str | None = None) -> dict:
+        """Ordinary orchestrator merge followed by the durable receipt data.
+
+        Cleanup is intentionally not performed here.  Callers must persist
+        the returned receipt before invoking the cleanup transaction.
+        """
+        import worktree_cleanup
+
+        primary = os.path.realpath(primary_checkout)
+        registration = storage.load_task_worktree_registration(primary, task_id)
+        if registration is None:
+            raise RepositoryAcquisitionError(
+                "identity", "task worktree has no managed registration")
+        primary_ref = self._run(
+            ["git", "symbolic-ref", "--quiet", "HEAD"], cwd=primary)
+        if not primary_ref.startswith("refs/heads/"):
+            raise RepositoryAcquisitionError(
+                "identity", "primary branch is detached or ambiguous")
+        try:
+            registration = storage.refresh_task_worktree_tip(primary, task_id)
+        except storage.StorageIdentityError as exc:
+            raise RepositoryAcquisitionError("identity", str(exc)) from exc
+        # Ordinary Git merge semantics protect tracked local changes that
+        # would be overwritten. Loop-owned plan/spec artifacts may remain
+        # dirty in the primary checkout and are not cleanup candidates.
+        # Requiring a globally clean primary would deadlock every normal
+        # governed loop before its task branch could land. Worker cleanliness
+        # is likewise a cleanup eligibility fact: governance evidence may be
+        # untracked after Evaluate and must cause preservation, not suppress a
+        # valid merge receipt.
+        self._run(["git", "merge", "--no-edit",
+                   registration["branch_ref"]], cwd=primary)
+        return worktree_cleanup.record_merge_receipt(
+            primary, task_id=task_id,
+            run_id=run_id or registration.get("run_id"))
+
     def acquire_pr(self, identity: storage.RepositoryIdentity,
                    target: dict) -> AcquisitionResult:
         metadata = self._metadata(target)

@@ -1,6 +1,7 @@
 ---
 name: tp-lens
 description: >
+  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   A single review lens, run as its own governed read-only agent. Dispatched
   one-per-lens (in parallel) by a review so the catalog runs fast and each
   lens is visible with its own findings — instead of one reviewer walking

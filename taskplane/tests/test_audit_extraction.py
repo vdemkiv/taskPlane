@@ -577,12 +577,18 @@ class TestExtractionStructure(unittest.TestCase):
         progress.py. The authority integration seams remain beside loop state;
         this ratchet is lowered immediately by the extracted region.
 
+        3970 → 4222 (R-0003): one canonical enforcement projection and the
+        orchestrator-owned merge-receipt/cleanup transaction now cross the
+        loop state boundary. Domain classification and destructive eligibility
+        remain extracted in enforcement.py and worktree_cleanup.py; loop.py
+        contains only their atomic lifecycle and transition seams.
+
         What guards the extraction itself is the body/constant assertions
         above, not this count."""
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 3970, f"loop.py is {n} lines — the extraction shrink "
+            n, 4222, f"loop.py is {n} lines — the extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):

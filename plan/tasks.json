@@ -1,81 +1,6 @@
 {
   "tasks": [
     {
-      "id": "t01-reviewkernel-regression-floor",
-      "scope": [
-        "taskplane/review.py",
-        "taskplane/review_evidence.py",
-        "taskplane/review_repair.py",
-        "taskplane/review_recovery.py",
-        "taskplane/evaluator_health.py",
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/dashboard.py",
-        "taskplane/run_store.py",
-        "taskplane/loop.py",
-        "agents/tp-product.md",
-        "agents/tp-engineering.md",
-        "skills/tp-product/SKILL.md",
-        "skills/tp-engineering/SKILL.md",
-        "docs/cli-reference.md",
-        ".github/workflows/ci.yml",
-        "specs/spec.md",
-        "taskplane/tests/test_r0002_reviewkernel_regression_floor.py",
-        "taskplane/tests/test_review_evidence_lifecycle.py",
-        "taskplane/tests/test_review_routing.py",
-        "taskplane/tests/test_status_and_large_delivery.py",
-        "taskplane/tests/test_review_preflight.py",
-        "taskplane/tests/test_dor_dod.py",
-        "taskplane/tests/test_binding_obligations.py",
-        "taskplane/tests/test_loop.py"
-      ],
-      "tests": "python3 -m pytest -q -p no:cacheprovider taskplane/tests/test_r0002_reviewkernel_regression_floor.py taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun taskplane/tests/test_review_evidence_lifecycle.py::test_substantive_mutation_reruns_only_the_affected_slot taskplane/tests/test_review_evidence_lifecycle.py::test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and_retries_only_original_producer taskplane/tests/test_review_evidence_lifecycle.py::test_exact_execution_binding_rejects_every_identity_change taskplane/tests/test_review_evidence_lifecycle.py::test_approval_collection_requires_exactly_once_conservation taskplane/tests/test_review_evidence_lifecycle.py::test_complete_collection_still_cannot_approve_unproven_acceptance taskplane/tests/test_review_evidence_lifecycle.py::test_evaluator_outage_cache_is_exact_expiring_and_never_a_verdict taskplane/tests/test_review_evidence_lifecycle.py::test_severe_harm_immediately_yields_immutable_request_changes taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_blocking_finding_cannot_hide_behind_pass_zero_summary taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_collection_reports_every_invalid_slot_in_one_repair_batch taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_two_active_runs_are_addressable_and_never_overwrite taskplane/tests/test_status_and_large_delivery.py::test_contract_projection_is_shape_safe_for_coding_read_only_review_and_released_contracts taskplane/tests/test_review_preflight.py::test_review_preflight_exposes_one_structured_choice_without_side_effects taskplane/tests/test_review_preflight.py::test_review_dor_classifies_commit_claims_and_review_directives taskplane/tests/test_review_preflight.py::test_explicit_dynamic_option_is_consent_without_magic_chat_phrase taskplane/tests/test_dor_dod.py::TestSignoffDoD::test_out_of_scope_change_fails taskplane/tests/test_binding_obligations.py::TheRunDeclaresWhatItOwesUpFront::test_a_review_owes_the_dashboard_with_its_embedded_graph taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_remains_non_judged_and_keeps_readiness_closed taskplane/tests/test_loop.py::TestLoop::test_unavailable_warning_preserves_exact_outage_identity_without_pass_verdict taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_retry_returns_to_evaluate_without_opening_fix taskplane/tests/test_loop.py::TestParallelExecution::test_parallel_execute_gate_validates_claimed_task_worktree taskplane/tests/test_loop.py::TestParallelExecution::test_evaluator_evidence_binds_claimed_worktree_from_either_checkout",
-      "req": "R-0003",
-      "deps": [],
-      "type": "security",
-      "contracts": [
-        "contract:review-kernel-slot",
-        "contract:review-kernel-mechanical-repair",
-        "contract:review-evidence-binding",
-        "contract:evaluator-infrastructure-health"
-      ],
-      "new_modules": [
-        "taskplane/review.py",
-        "taskplane/review_evidence.py",
-        "taskplane/review_repair.py",
-        "taskplane/review_recovery.py",
-        "taskplane/evaluator_health.py",
-        "specs/spec.md"
-      ],
-      "design_edges": [
-        "taskplane/review.py->contract:review-kernel-slot:consumes",
-        "taskplane/review_evidence.py->contract:review-evidence-binding:provides",
-        "taskplane/review_repair.py->contract:review-kernel-mechanical-repair:provides",
-        "taskplane/review_recovery.py->contract:review-kernel-mechanical-repair:consumes",
-        "taskplane/evaluator_health.py->contract:evaluator-infrastructure-health:provides",
-        "specs/spec.md->contract:consolidated-authorization:defines"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "A blocker-only producer summary over canonical high, major, and blocker findings is normalized once before collection with before/after, derivation authority, and proven equivalence; findings stay byte-identical, collection completes when otherwise valid, and no producer rewrite is requested.",
-        "A substantive result mutation cannot be normalized: only its affected slot is reissued within the attempt bound, unchanged siblings remain sealed, and the new attempt retains original run and slot lineage.",
-        "Wrong-producer, copied, sibling-worktree, stale-lease, wrong-run, missing-slot, duplicate-slot, and engine-mismatch fixtures remain non-approvable; only exact once-complete slot and acceptance-evidence conservation permits approval.",
-        "Dashboard, status, and inline projection render for coding, read-only, ReviewKernel, released, and legacy contracts and show available scope/write allowance; no missing coding object raises KeyError.",
-        "CLI and dashboard parse and ReviewKernel start smoke tests pass on supported Python 3.10, 3.11, and 3.12; an unsupported interpreter fails before state creation with one actionable version error.",
-        "While a ReviewKernel run is active and collection is incomplete, repository status resolves the same run id and manifest that review collect can operate on.",
-        "Validation needs-user payloads, Product/Engineering guidance, and CLI docs expose the same executable dynamic, render, and static continuation and identify the canonical inline dashboard artifact.",
-        "Regression fixtures retain PR-commit and README DoR derivation, explicit dynamic-validation consent receipt, out-of-scope write denial, immutable provenance/findings, early truthful request-changes, and approval conservation.",
-        "A bound evaluator outage remains unavailable rather than pass or fail, keeps readiness closed, retries evaluation without opening a product-fix cycle, and reuses cache only on the exact evaluator, engine, capability, repository, worktree, and validity key.",
-        "Parallel DoD and evaluator evidence bind to the exact claimed task worktree whether invoked from primary or worker checkout; parent, sibling, moved, dirty, and stale trees cannot substitute."
-      ],
-      "model": "standard"
-    },
-    {
       "id": "t02-enforcement-decision-and-receipts",
       "scope": [
         "taskplane/enforcement.py",
@@ -422,6 +347,82 @@
         "Codex, Claude, Slack-capable flows, managed and legacy worktrees, enforcement modes, and collision modes preserve equivalent authority/evidence semantics; rollback cannot auto-approve, forge live status, weaken ReviewKernel regression tests, or force-delete a tree."
       ],
       "model": "deep"
+    },
+    {
+      "id": "t01-reviewkernel-regression-floor",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/review_repair.py",
+        "taskplane/review_recovery.py",
+        "taskplane/evaluator_health.py",
+        "taskplane/tp.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/dashboard.py",
+        "taskplane/run_store.py",
+        "taskplane/loop.py",
+        "agents/tp-product.md",
+        "agents/tp-engineering.md",
+        "skills/tp-product/SKILL.md",
+        "skills/tp-engineering/SKILL.md",
+        "docs/cli-reference.md",
+        ".github/workflows/ci.yml",
+        "specs/spec.md",
+        "taskplane/tests/test_r0002_reviewkernel_regression_floor.py",
+        "taskplane/tests/test_review_evidence_lifecycle.py",
+        "taskplane/tests/test_review_routing.py",
+        "taskplane/tests/test_status_and_large_delivery.py",
+        "taskplane/tests/test_review_preflight.py",
+        "taskplane/tests/test_dor_dod.py",
+        "taskplane/tests/test_binding_obligations.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "tests": "python3 -m pytest -q -p no:cacheprovider taskplane/tests/test_r0002_reviewkernel_regression_floor.py taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun taskplane/tests/test_review_evidence_lifecycle.py::test_substantive_mutation_reruns_only_the_affected_slot taskplane/tests/test_review_evidence_lifecycle.py::test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and_retries_only_original_producer taskplane/tests/test_review_evidence_lifecycle.py::test_exact_execution_binding_rejects_every_identity_change taskplane/tests/test_review_evidence_lifecycle.py::test_approval_collection_requires_exactly_once_conservation taskplane/tests/test_review_evidence_lifecycle.py::test_complete_collection_still_cannot_approve_unproven_acceptance taskplane/tests/test_review_evidence_lifecycle.py::test_evaluator_outage_cache_is_exact_expiring_and_never_a_verdict taskplane/tests/test_review_evidence_lifecycle.py::test_severe_harm_immediately_yields_immutable_request_changes taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_blocking_finding_cannot_hide_behind_pass_zero_summary taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_collection_reports_every_invalid_slot_in_one_repair_batch taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_two_active_runs_are_addressable_and_never_overwrite taskplane/tests/test_status_and_large_delivery.py::test_contract_projection_is_shape_safe_for_coding_read_only_review_and_released_contracts taskplane/tests/test_review_preflight.py::test_review_preflight_exposes_one_structured_choice_without_side_effects taskplane/tests/test_review_preflight.py::test_review_dor_classifies_commit_claims_and_review_directives taskplane/tests/test_review_preflight.py::test_explicit_dynamic_option_is_consent_without_magic_chat_phrase taskplane/tests/test_dor_dod.py::TestSignoffDoD::test_out_of_scope_change_fails taskplane/tests/test_binding_obligations.py::TheRunDeclaresWhatItOwesUpFront::test_a_review_owes_the_dashboard_with_its_embedded_graph taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_remains_non_judged_and_keeps_readiness_closed taskplane/tests/test_loop.py::TestLoop::test_unavailable_warning_preserves_exact_outage_identity_without_pass_verdict taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_retry_returns_to_evaluate_without_opening_fix taskplane/tests/test_loop.py::TestParallelExecution::test_parallel_execute_gate_validates_claimed_task_worktree taskplane/tests/test_loop.py::TestParallelExecution::test_evaluator_evidence_binds_claimed_worktree_from_either_checkout",
+      "req": "R-0003",
+      "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-mechanical-repair",
+        "contract:review-evidence-binding",
+        "contract:evaluator-infrastructure-health"
+      ],
+      "new_modules": [
+        "taskplane/review.py",
+        "taskplane/review_evidence.py",
+        "taskplane/review_repair.py",
+        "taskplane/review_recovery.py",
+        "taskplane/evaluator_health.py",
+        "specs/spec.md"
+      ],
+      "design_edges": [
+        "taskplane/review.py->contract:review-kernel-slot:consumes",
+        "taskplane/review_evidence.py->contract:review-evidence-binding:provides",
+        "taskplane/review_repair.py->contract:review-kernel-mechanical-repair:provides",
+        "taskplane/review_recovery.py->contract:review-kernel-mechanical-repair:consumes",
+        "taskplane/evaluator_health.py->contract:evaluator-infrastructure-health:provides",
+        "specs/spec.md->contract:consolidated-authorization:defines"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "A blocker-only producer summary over canonical high, major, and blocker findings is normalized once before collection with before/after, derivation authority, and proven equivalence; findings stay byte-identical, collection completes when otherwise valid, and no producer rewrite is requested.",
+        "A substantive result mutation cannot be normalized: only its affected slot is reissued within the attempt bound, unchanged siblings remain sealed, and the new attempt retains original run and slot lineage.",
+        "Wrong-producer, copied, sibling-worktree, stale-lease, wrong-run, missing-slot, duplicate-slot, and engine-mismatch fixtures remain non-approvable; only exact once-complete slot and acceptance-evidence conservation permits approval.",
+        "Dashboard, status, and inline projection render for coding, read-only, ReviewKernel, released, and legacy contracts and show available scope/write allowance; no missing coding object raises KeyError.",
+        "CLI and dashboard parse and ReviewKernel start smoke tests pass on supported Python 3.10, 3.11, and 3.12; an unsupported interpreter fails before state creation with one actionable version error.",
+        "While a ReviewKernel run is active and collection is incomplete, repository status resolves the same run id and manifest that review collect can operate on.",
+        "Validation needs-user payloads, Product/Engineering guidance, and CLI docs expose the same executable dynamic, render, and static continuation and identify the canonical inline dashboard artifact.",
+        "Regression fixtures retain PR-commit and README DoR derivation, explicit dynamic-validation consent receipt, out-of-scope write denial, immutable provenance/findings, early truthful request-changes, and approval conservation.",
+        "A bound evaluator outage remains unavailable rather than pass or fail, keeps readiness closed, retries evaluation without opening a product-fix cycle, and reuses cache only on the exact evaluator, engine, capability, repository, worktree, and validity key.",
+        "Parallel DoD and evaluator evidence bind to the exact claimed task worktree whether invoked from primary or worker checkout; parent, sibling, moved, dirty, and stale trees cannot substitute."
+      ],
+      "model": "standard",
+      "status": "done"
     }
   ]
 }

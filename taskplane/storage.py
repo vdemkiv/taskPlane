@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from urllib.parse import urlsplit
 
 
@@ -139,11 +140,21 @@ def resolve_repository_identity(workspace: str, *, remote: str | None = None) \
     value = remote or _git_value(root, "remote", "get-url", "origin")
     if value and _hosted_parts(value):
         return identity_from_remote(value, workspace=root)
-    name = os.path.basename(root.rstrip(os.sep)) or "repository"
+    common = _git_value(root, "rev-parse", "--git-common-dir")
+    common_root = None
+    if common:
+        common_root = os.path.realpath(
+            common if os.path.isabs(common) else os.path.join(root, common))
+    family_root = (os.path.dirname(common_root)
+                   if common_root and os.path.basename(common_root) == ".git"
+                   else root)
+    name = os.path.basename(family_root.rstrip(os.sep)) or "repository"
     # A local-only repository is path-owned. Key it by the canonical root so
     # identity stays stable across the explicit `git init` recovery step.
     # Hosted repositories are keyed by remote and already unify worktrees.
-    digest = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
+    # Linked worktrees of a local-only repository share one Git common dir.
+    # Keying by the checkout path split one repository into unrelated owners.
+    digest = hashlib.sha256((common_root or root).encode("utf-8")).hexdigest()[:16]
     return RepositoryIdentity(
         repo_id=f"local/{name.lower()}/{digest}", kind="local", host=None,
         owner=None, name=name, remote=value, workspace=root)
@@ -392,12 +403,120 @@ def task_worktree_reference(checkout: str, task_id: str) -> str:
             if load_workspace_locator(checkout) else f".tp-work/{task_id}")
 
 
+def task_worktree_registration_path(primary_checkout: str,
+                                    task_id: str) -> str:
+    locator = load_workspace_locator(primary_checkout)
+    base = (os.path.join(locator["paths"]["state"],
+                         "worktree-registrations") if locator else
+            os.path.join(os.path.realpath(primary_checkout), ".taskplane",
+                         "worktree-registrations"))
+    return os.path.join(base, _worktree_token(task_id) + ".json")
+
+
+def _worktree_branch_tip(checkout: str) -> tuple[str | None, str | None]:
+    branch = _git_value(checkout, "symbolic-ref", "--quiet", "HEAD")
+    tip = _git_value(checkout, "rev-parse", "HEAD")
+    return branch, tip
+
+
+def load_task_worktree_registration(primary_checkout: str,
+                                    task_id: str) -> dict | None:
+    path = task_worktree_registration_path(primary_checkout, task_id)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise StorageIdentityError(
+            f"managed worktree registration is unreadable: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema") != \
+            "taskplane.managed-task-worktree/v1":
+        raise StorageIdentityError("managed worktree registration is invalid")
+    expected = os.path.realpath(task_worktree_path(primary_checkout, task_id))
+    if value.get("task_id") != str(task_id) or \
+            os.path.realpath(str(value.get("path") or "")) != expected:
+        raise StorageIdentityError("managed worktree registration identity mismatch")
+    return value
+
+
+def register_task_worktree(primary_checkout: str, worker_checkout: str,
+                           task_id: str) -> dict:
+    """Durably register one exact linked task worktree outside its tree."""
+    primary = os.path.realpath(primary_checkout)
+    worker = os.path.realpath(os.path.abspath(worker_checkout))
+    expected = os.path.realpath(task_worktree_path(primary, task_id))
+    if worker != expected:
+        raise StorageIdentityError(
+            "worker checkout is outside its managed task worktree path")
+    branch, tip = _worktree_branch_tip(worker)
+    if not tip:
+        raise StorageIdentityError(
+            "managed task worktree must have a recorded tip")
+    identity = resolve_repository_identity(primary)
+    worker_identity = resolve_repository_identity(worker)
+    if worker_identity.repo_id != identity.repo_id:
+        raise StorageIdentityError("worker belongs to another repository")
+    parent = load_workspace_locator(primary)
+    value = {
+        "schema": "taskplane.managed-task-worktree/v1",
+        "repository": identity.to_dict(),
+        "repository_key": identity.key,
+        "run_id": str((parent or {}).get("run_id") or "legacy"),
+        "task_id": str(task_id), "path": worker,
+        "primary_checkout": primary, "branch_ref": branch,
+        "branch_tip": tip, "linked": True,
+        "registered_at": int(time.time()),
+    }
+    _atomic_json(task_worktree_registration_path(primary, task_id), value)
+    return value
+
+
+def refresh_task_worktree_tip(primary_checkout: str, task_id: str) -> dict:
+    """Record the exact task-branch tip immediately before its merge.
+
+    Registration happens when a task is claimed, before the executor creates
+    its commits.  The merge boundary therefore refreshes only the mutable tip
+    after re-proving the immutable repository, path, task, and branch identity.
+    """
+    primary = os.path.realpath(primary_checkout)
+    value = load_task_worktree_registration(primary, task_id)
+    if value is None:
+        raise StorageIdentityError(
+            "managed task worktree registration is missing")
+    worker = os.path.realpath(str(value.get("path") or ""))
+    expected = os.path.realpath(task_worktree_path(primary, task_id))
+    if worker != expected:
+        raise StorageIdentityError("managed worktree path changed")
+    identity = resolve_repository_identity(primary)
+    worker_identity = resolve_repository_identity(worker)
+    if identity.repo_id != value.get("repository", {}).get("repo_id") or \
+            worker_identity.repo_id != identity.repo_id:
+        raise StorageIdentityError("managed worktree repository changed")
+    branch, tip = _worktree_branch_tip(worker)
+    if not branch or branch != value.get("branch_ref"):
+        raise StorageIdentityError("managed task branch changed")
+    if not tip:
+        raise StorageIdentityError("managed task branch tip is unavailable")
+    branch_tip = _git_value(primary, "rev-parse", branch)
+    if branch_tip != tip:
+        raise StorageIdentityError("managed task branch ref and HEAD differ")
+    refreshed = dict(value)
+    refreshed["branch_tip"] = tip
+    refreshed["prepared_at"] = int(time.time())
+    _atomic_json(task_worktree_registration_path(primary, task_id), refreshed)
+    return refreshed
+
+
 def bind_worker_locator(primary_checkout: str, worker_checkout: str,
                         task_id: str) -> str | None:
     """Bind a managed linked worktree to isolated roots in the same run."""
     parent = load_workspace_locator(primary_checkout)
     if parent is None:
-        return None
+        return task_worktree_registration_path(
+            primary_checkout,
+            register_task_worktree(primary_checkout, worker_checkout,
+                                   task_id)["task_id"])
     expected = os.path.realpath(task_worktree_path(primary_checkout, task_id))
     worker = os.path.realpath(os.path.abspath(worker_checkout))
     if worker != expected:
@@ -417,6 +536,7 @@ def bind_worker_locator(primary_checkout: str, worker_checkout: str,
     }
     path = _locator_path(worker)
     _atomic_json(path, value)
+    register_task_worktree(primary_checkout, worker_checkout, task_id)
     return path
 
 

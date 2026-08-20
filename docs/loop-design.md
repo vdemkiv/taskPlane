@@ -200,8 +200,14 @@ Each was settled as the **Recommendation** noted below and is what shipped.
 - Workers commit and report `loop submit pass|fail --task <id>`; EVALUATE may
   instead submit `unavailable` for a proven host/model outage; the
   orchestrator alone runs the matching gate. Built tasks are then
-  evaluated (read-only, in their worktree, routed lenses) one by one; on
-  evaluate PASS the driver merges `tp/<id>` and removes the worktree.
+  evaluated (read-only, in their worktree, routed lenses) one by one. On
+  evaluate PASS the orchestrator resolves and merges the exact registered
+  task branch, durably records `taskplane.task-merge/v1`, and only then asks
+  the cleanup kernel to revalidate and remove the linked worktree. Cleanup
+  never uses force or deletes the branch. Dirty, active, failed, variant,
+  locked, identity-mismatched, or evidence-needed trees remain registered and
+  visible. `tp.py worktree-cleanup replay` performs one receipt-scoped crash
+  recovery pass; it never scans arbitrary worktrees.
 - All tasks passed → EM synthesis on the merged tree → human sign-off.
 
 Authority note: wave membership is a loop decision; each worker holds

@@ -103,6 +103,7 @@ not repeated in the tables.
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
 | `tp.py screen-dispatch` | PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict) |
 | `tp.py screen-render` | PreToolUse hook for the inline-render tool: record that a render RAN, and with which bytes. Observes only — never denies |
+| `tp.py screen-skill` | PreToolUse collision gate for Skill invocations during governed work |
 | `tp.py session-verify` | Stop/SessionEnd hook: exit 2 listing artifacts this run owes and never showed |
 | `tp.py share` | plan-aware knowledge sharing: status / plan / set private\|shared / push |
 | `tp.py share plan` | set the knowledge-storage plan |
@@ -124,6 +125,7 @@ not repeated in the tables.
 | `tp.py track new` | open a new track |
 | `tp.py track switch` | make another track the active one |
 | `tp.py version` | print the plugin version; --verify cross-checks every derived version surface against the single source (.codex-plugin/plugin.json) — CI-callable, exit 1 on drift |
+| `tp.py worktree-cleanup` | replay receipt-scoped post-merge cleanup once; never force-removes or deletes branches |
 | `tp.py yield` | what the harness returns (lens yield and where findings are caught) — advisory, gates nothing |
 | `tp.py yield mark` | record a human verdict on one finding: acted or dismissed |
 
@@ -514,6 +516,7 @@ record a human approval at a checkpoint gate
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--by` | BY | who approved and where (e.g. a Slack user + quoted reply) — recorded in trace + KB |
 | `--force` | flag | pass a BLOCKED refinement gate anyway |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
@@ -536,7 +539,9 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--agent-workspace` | AGENT_WORKSPACE (required) | the worker's worktree — its contract activates there |
+| `--by` | BY | human identity required with --advisory |
 
 ## `tp.py loop evidence`
 
@@ -557,6 +562,8 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
+| `--by` | BY | human identity required with --advisory |
 | `--note` | NOTE | one-line note recorded with the gate decision |
 | `--req` | REQ | attach requirement R-id to the loop before DoR evaluation (design anchor) |
 | `--task` | TASK | task id (parallel execute waves) |
@@ -583,6 +590,8 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
+| `--by` | BY | human identity required with --advisory |
 | `--checkpoints` | CHECKPOINTS | comma list: plan,em (default both) |
 | `--design` | flag | run the Design Contract + human design approval before implementation planning |
 | `--design-only` | flag | stop after the human approves the Design Contract instead of continuing to Plan/Build/Review |
@@ -598,6 +607,8 @@ print the next stage brief for the active loop
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
+| `--by` | BY | human identity required with --advisory |
 | `--emit` | one of: workflow, task, auto | stage dispatch surface (R-0004): 'workflow' wraps an evaluate/fix stage payload as ONE ready-to-run stage-wave workflow invocation, 'task' prints today's payload byte-identically (the mandatory fallback and the only Codex path), 'auto' consults workflow_available() (default) |
 | `--req` | REQ | attach requirement R-id to the loop before DoR evaluation (design anchor) |
 
@@ -661,6 +672,8 @@ print the EXECUTE wave: one brief per scope-disjoint task
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
+| `--by` | BY | human identity required with --advisory |
 | `--emit` | one of: workflow, task, auto | stage dispatch surface (R-0004): 'workflow' wraps the EXECUTE wave as ONE ready-to-run execute-wave workflow invocation covering every wave entry, 'task' prints today's wave payload byte-identically (the mandatory fallback and the only Codex path), 'auto' consults workflow_available() (default) |
 
 ## `tp.py new`
@@ -673,8 +686,11 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
+| `--allow-foreign-state` | ROOT (repeatable) | repeatable exact signed foreign-state root to include; requires --by and is recorded on the contract |
 | `--base` | REF | diff base for the target pin (e.g. origin/main) |
 | `--budget` | BUDGET | cooperative $ ceiling |
+| `--by` | BY | human identity required with --advisory or a foreign-state override |
 | `--deny` | DENY (repeatable) | extra deny command (repeatable) |
 | `--fetch` | flag | with a PR --target, fetch pull/N/head into this checkout first (needs git; `gh` is what supplies the PR's title, body and discussion) |
 | `--max-actions` | MAX_ACTIONS | hook-enforced action ceiling (default 60) |
@@ -940,6 +956,7 @@ apply one explicit user decision and continue the same repository preflight and 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--action-id` | ACTION_ID (required) | exact pending user-action id |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--by` | BY (required) | the user's approving/cancelling chat identity |
 | `--goal` | GOAL | contract goal text after preflight resumes |
 | `--max-actions` | MAX_ACTIONS | action ceiling for the resumed review contract |
@@ -967,6 +984,7 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--by` | BY (required) | the human approval or change-request words |
 | `--note` | NOTE | optional decision rationale |
 | `--run-id` | RUN_ID | select the collected review run |
@@ -982,7 +1000,9 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--base` | BASE | diff base ref |
+| `--by` | BY | human identity required with --advisory |
 | `--fetch` | flag | fetch pull/N/head into this checkout first |
 | `--goal` | GOAL | contract goal text (default: derived) |
 | `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
@@ -1016,6 +1036,10 @@ PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert u
 ## `tp.py screen-render`
 
 PreToolUse hook for the inline-render tool: record that a render RAN, and with which bytes. Observes only — never denies
+
+## `tp.py screen-skill`
+
+PreToolUse collision gate for Skill invocations during governed work
 
 ## `tp.py session-verify`
 
@@ -1198,6 +1222,18 @@ print the plugin version; --verify cross-checks every derived version surface ag
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--verify` | flag | cross-check every derived version surface against the single source; exit 1 on drift |
+
+## `tp.py worktree-cleanup`
+
+replay receipt-scoped post-merge cleanup once; never force-removes or deletes branches
+
+Positional arguments:
+
+- `action` — bounded maintenance action
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py yield`
 

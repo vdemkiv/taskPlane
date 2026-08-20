@@ -219,6 +219,28 @@ class ArtifactStore:
             raise ArtifactIntegrityError("artifact store root is a symlink")
         self._root_real = os.path.realpath(self.root)
 
+    @classmethod
+    def from_reference(cls, workspace: str, reference: dict) -> "ArtifactStore":
+        """Reopen a canonical store after its producer worktree was removed."""
+        artifact = reference.get("artifact") \
+            if isinstance(reference, dict) and isinstance(
+                reference.get("artifact"), dict) else reference
+        path = str((artifact or {}).get("path") or "")
+        if not os.path.isabs(path):
+            raise ArtifactIntegrityError(
+                "retained artifact reference needs an absolute canonical path")
+        real = os.path.realpath(path)
+        root = os.path.dirname(os.path.dirname(real))
+        if os.path.basename(root) != "review-artifacts-v2":
+            raise ArtifactIntegrityError("retained artifact store shape is invalid")
+        locator = runtime_storage.load_workspace_locator(workspace)
+        authority_root = (os.path.realpath(locator["home"]) if locator else
+                          os.path.realpath(workspace))
+        if os.path.commonpath((authority_root, root)) != authority_root:
+            raise ArtifactIntegrityError(
+                "retained artifact lies outside canonical repository storage")
+        return cls(workspace, root=root)
+
     def _validate_kind(self, kind: str) -> str:
         kind = str(kind or "")
         if not _KIND.fullmatch(kind):
@@ -325,6 +347,7 @@ class ArtifactStore:
             raise ArtifactIntegrityError("artifact byte length mismatch")
         return True
 
+
     def read(self, ref: dict):
         path = self._validated_path(ref)
         self.verify(ref)
@@ -352,6 +375,137 @@ class ArtifactStore:
                 kind, name[:-5], hashlib.sha256(data).hexdigest(),
                 len(data), path))
         return refs
+
+
+def retained_cleanup_evidence(primary_workspace: str, worker_workspace: str,
+                              references: Iterable[dict], *,
+                              lifecycle_released: bool) -> dict:
+    """Prove evidence is canonical and independent of a removable worker."""
+    worker = os.path.realpath(worker_workspace)
+    verified = []
+    reasons = []
+    if not lifecycle_released:
+        reasons.append("owning lifecycle has not released evidence retention")
+    for reference in references or []:
+        artifact = reference.get("artifact") \
+            if isinstance(reference, dict) and isinstance(
+                reference.get("artifact"), dict) else reference
+        path = os.path.realpath(str((artifact or {}).get("path") or ""))
+        try:
+            if not path or os.path.commonpath((worker, path)) == worker:
+                raise ArtifactIntegrityError(
+                    "evidence remains inside the candidate worktree")
+            store = ArtifactStore.from_reference(primary_workspace, reference)
+            store.verify(artifact)
+            verified.append({"path": path,
+                             "fingerprint": artifact.get("fingerprint"),
+                             "digest": artifact.get("digest")})
+        except (ArtifactIntegrityError, OSError, ValueError) as exc:
+            reasons.append(str(exc))
+    return {
+        "schema": "taskplane.worktree-evidence-retention/v1",
+        "status": "released" if not reasons else "evidence-needed",
+        "evidence_needed": bool(reasons), "reasons": reasons,
+        "verified": verified,
+    }
+
+
+def retain_worktree_governance(primary_workspace: str, worker_workspace: str,
+                               task_id: str) -> dict:
+    """Make legacy worker evidence primary-owned before cleanup.
+
+    Managed workers already write outside their checkout and are only
+    inventoried. Legacy workers are copied byte-for-byte into ignored primary
+    governance storage. No source byte is removed here.
+    """
+    primary = os.path.realpath(primary_workspace)
+    worker = os.path.realpath(worker_workspace)
+    token = re.sub(r"[^A-Za-z0-9._-]+", "-", str(task_id)).strip("-.") \
+        or "task"
+    destination = os.path.join(tp.tp_dir(primary),
+                               "retained-worktree-evidence", token)
+    candidates = [
+        runtime_storage.evaluation_root(worker),
+        runtime_storage.review_public_root(worker),
+        ArtifactStore(worker).root,
+    ]
+    retained = []
+
+    def add_file(source: str, relative: str) -> None:
+        if os.path.islink(source):
+            raise ArtifactIntegrityError("worktree evidence contains a symlink")
+        with open(source, "rb") as handle:
+            data = handle.read()
+        digest = hashlib.sha256(data).hexdigest()
+        target = os.path.join(destination, *relative.split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if os.path.exists(target):
+            with open(target, "rb") as handle:
+                if handle.read() != data:
+                    raise ArtifactIntegrityError(
+                        "retained evidence destination changed")
+        else:
+            fd, temporary = tempfile.mkstemp(
+                prefix=".retain-", dir=os.path.dirname(target))
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        retained.append({"path": os.path.realpath(target), "digest": digest,
+                         "bytes": len(data), "source": relative})
+
+    seen = set()
+    for root in candidates:
+        real_root = os.path.realpath(root)
+        if real_root in seen or not os.path.exists(real_root):
+            continue
+        seen.add(real_root)
+        if os.path.commonpath((worker, real_root)) != worker:
+            # Canonical managed storage survives directly; inventory files.
+            for base, dirs, files in os.walk(real_root):
+                dirs[:] = [name for name in dirs
+                           if not os.path.islink(os.path.join(base, name))]
+                for name in files:
+                    path = os.path.join(base, name)
+                    if os.path.islink(path):
+                        continue
+                    with open(path, "rb") as handle:
+                        data = handle.read()
+                    retained.append({
+                        "path": os.path.realpath(path),
+                        "digest": hashlib.sha256(data).hexdigest(),
+                        "bytes": len(data), "source": "canonical"})
+            continue
+        label = os.path.basename(real_root) or "evidence"
+        if os.path.isfile(real_root):
+            add_file(real_root, label)
+            continue
+        for base, dirs, files in os.walk(real_root):
+            dirs[:] = [name for name in dirs
+                       if not os.path.islink(os.path.join(base, name))]
+            for name in files:
+                source = os.path.join(base, name)
+                relative = os.path.join(
+                    label, os.path.relpath(source, real_root)).replace(
+                        os.sep, "/")
+                add_file(source, relative)
+    reasons = []
+    verdict = runtime_storage.evaluation_path(worker)
+    if not os.path.isfile(verdict) and not any(
+            row.get("source", "").endswith("verdict.json") for row in retained):
+        reasons.append("canonical evaluator verdict is unavailable")
+    return {
+        "schema": "taskplane.retained-worktree-governance/v1",
+        "task_id": str(task_id),
+        "status": "released" if not reasons else "evidence-needed",
+        "evidence_needed": bool(reasons), "reasons": reasons,
+        "records": sorted(retained, key=lambda row: row["path"]),
+    }
 
 
 def _target_fingerprint(target: dict) -> str:

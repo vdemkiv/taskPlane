@@ -155,6 +155,69 @@ class RunStore:
                 "status": updated.get("status"), "at": int(time.time())})
             return updated
 
+    def record_enforcement_decision(
+            self, run_id: str, *, expected_revision: int,
+            decision: dict) -> dict:
+        """Atomically retain the canonical enforcement decision for a run."""
+        import enforcement
+
+        checked = enforcement.validate_decision(decision)
+        if checked.get("run_id") not in (None, str(run_id)):
+            raise RunStoreError("enforcement decision belongs to another run")
+        current = self.load(run_id)
+        if int(current.get("revision") or 0) != int(expected_revision):
+            raise RevisionConflict(
+                f"run {run_id} revision is {current.get('revision')}, "
+                f"expected {expected_revision}")
+        history = list((current.get("enforcement") or {}).get("history") or [])
+        if not history or history[-1].get("evidence_id") != \
+                checked.get("evidence_id"):
+            history.append(copy.deepcopy(checked))
+        # Bound the projection while preserving the complete journaled writes.
+        history = history[-64:]
+        return self.commit(
+            run_id, expected_revision=expected_revision,
+            changes={"enforcement": {
+                "schema": "taskplane.run-enforcement/v1",
+                "current": checked,
+                "history": history,
+            }})
+
+    def record_foreign_interference(
+            self, run_id: str, *, expected_revision: int,
+            interference: dict) -> dict:
+        """Atomically persist the bounded foreign-interference authority."""
+        import collision
+
+        checked = collision.validate_ledger(interference)
+        if checked.get("run_id") not in (None, str(run_id)):
+            raise RunStoreError("foreign interference belongs to another run")
+        return self.commit(
+            run_id, expected_revision=expected_revision,
+            changes={"foreign_interference": checked})
+
+    def record_task_merge(self, run_id: str, *, expected_revision: int,
+                          receipt: dict) -> dict:
+        import worktree_cleanup
+        checked = worktree_cleanup.validate_merge_receipt(receipt)
+        if checked.get("run_id") != str(run_id):
+            raise RunStoreError("task merge receipt belongs to another run")
+        return self.commit(
+            run_id, expected_revision=expected_revision,
+            changes={"task_merges": {
+                str(checked["task_id"]): checked}})
+
+    def record_worktree_cleanup(self, run_id: str, *, expected_revision: int,
+                                cleanup: dict) -> dict:
+        import worktree_cleanup
+        checked = worktree_cleanup.validate_cleanup_record(cleanup)
+        if checked.get("run_id") != str(run_id):
+            raise RunStoreError("worktree cleanup belongs to another run")
+        return self.commit(
+            run_id, expected_revision=expected_revision,
+            changes={"worktree_cleanups": {
+                str(checked["task_id"]): checked}})
+
     def register_checkout(self, identity: storage.RepositoryIdentity, *,
                           checkout: str, source: str) -> dict:
         """Register a non-authoritative checkout alias without moving it."""

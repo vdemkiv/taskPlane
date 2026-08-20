@@ -1,0 +1,49 @@
+{
+  "schema": "taskplane.delivery-isolation-registry/v1",
+  "version": 1,
+  "known_competitors": {
+    "skill_namespaces": [
+      "orchestrator-supaconductor"
+    ],
+    "agent_namespaces": [
+      "orchestrator-supaconductor"
+    ]
+  },
+  "taskplane_namespaces": [
+    "taskplane",
+    "tp",
+    "tp-",
+    "tp_"
+  ],
+  "host_builtin_agents": [
+    "general-purpose",
+    "explore",
+    "plan"
+  ],
+  "helper_skills": [
+    "dataviz",
+    "documents",
+    "docx",
+    "pdf",
+    "pptx",
+    "presentations",
+    "spreadsheets",
+    "visualize",
+    "xlsx"
+  ],
+  "foreign_state_signatures": [
+    {
+      "plugin": "orchestrator-supaconductor",
+      "root": "conductor",
+      "required_all": [
+        "metadata.json"
+      ],
+      "required_any": [
+        "tracks",
+        "message-bus",
+        "message_bus"
+      ]
+    }
+  ],
+  "remediation": "Disable orchestrator-supaconductor globally in ~/.claude/settings.json enabledPlugins while Taskplane governs this repository; per-project plugin disable is not currently supported by the host."
+}

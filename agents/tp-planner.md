@@ -1,6 +1,7 @@
 ---
 name: tp-planner
 description: >
+  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   The PLAN step of the Evaluate-Loop: turns a spec/requirement into
   plan/tasks.json (machine) + plan/plan.md (human) under a read-only
   contract. Examples: <example>Context: loop next says step=plan.

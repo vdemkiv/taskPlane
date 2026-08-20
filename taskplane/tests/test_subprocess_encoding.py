@@ -31,6 +31,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 SKIP_DIRS = {
     ".git", ".tp-work", "__pycache__", "node_modules", ".venv", "venv",
+    "_to_delete",
 }
 RUNNERS = {"run", "Popen", "check_output", "call", "check_call"}
 

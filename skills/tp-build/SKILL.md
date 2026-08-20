@@ -1,6 +1,6 @@
 ---
 name: tp-build
-description: "The new-feature flow of taskplane — use when the goal is to BUILD something new: 'build a new feature', 'add X to the app', 'prototype this idea', 'build it as A/B variants', 'explore two approaches', 'greenfield this'. Enters from the product side (an idea to spec), the engineering side (a tech design to realize), or both. Front-loads a summoned north-star (strategy) check and specification refinement, renders the feature visually BEFORE and AFTER building, and can build the same requirement as competing A/B variants in isolated worktrees with a human selection gate. Same enforced contracts and full lens catalog as every taskplane flow."
+description: "Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs. The new-feature flow of taskplane — use when the goal is to BUILD something new: 'build a new feature', 'add X to the app', 'prototype this idea', 'build it as A/B variants', 'explore two approaches', 'greenfield this'. Enters from the product side (an idea to spec), the engineering side (a tech design to realize), or both. Front-loads a summoned north-star (strategy) check and specification refinement, renders the feature visually BEFORE and AFTER building, and can build the same requirement as competing A/B variants in isolated worktrees with a human selection gate. Same enforced contracts and full lens catalog as every taskplane flow."
 ---
 
 # /tp-build — new features, refined first, seen always

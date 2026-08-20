@@ -659,6 +659,30 @@ def save(ws: str, state: dict) -> None:
         tp.safe_remove(legacy)
 
 
+def record_enforcement(ws: str, decision: dict) -> dict:
+    """Persist one canonical decision for all loop consumers and artifacts."""
+    import enforcement as enforcement_kernel
+
+    checked = enforcement_kernel.validate_decision(decision)
+    with mutate(ws) as state:
+        if state is None:
+            return {"error": "no active loop"}
+        record = state.setdefault("enforcement", {
+            "schema": "taskplane.run-enforcement/v1",
+            "current": checked, "history": [],
+        })
+        history = list(record.get("history") or [])
+        if not history or history[-1].get("evidence_id") != \
+                checked.get("evidence_id"):
+            history.append(checked)
+        record.update({"schema": "taskplane.run-enforcement/v1",
+                       "current": checked, "history": history[-64:]})
+    tp.trace(ws, "enforcement_decision", status=checked["status"],
+             evidence_id=checked["evidence_id"], mode=checked["mode"],
+             actor=((checked.get("advisory") or {}).get("actor")))
+    return checked
+
+
 @contextlib.contextmanager
 def mutate(ws: str):
     """Serialize a read-modify-write of the shared loop state. Concurrent wave
@@ -707,6 +731,124 @@ def mutate(ws: str):
 
 
 TERMINAL_STEPS = ("done", "failed")
+
+
+def automatic_cleanup_enabled() -> bool:
+    """Rollback switch: default on; false returns to manual cleanup."""
+    return (os.environ.get("TASKPLANE_AUTO_WORKTREE_CLEANUP") or "on").strip() \
+        .lower() not in {"0", "false", "no", "off", "manual"}
+
+
+def _cleanup_lifecycle(task: dict) -> dict:
+    retention = task.get("evidence_retention") or {}
+    return {
+        "status": task.get("status"), "released": task.get("status") == "passed",
+        "active": False, "failed": task.get("status") == "failed",
+        "variant": task.get("variant"),
+        "selected_variant": bool(task.get("selected")),
+        "evidence_needed": retention.get("evidence_needed") is True,
+    }
+
+
+def _record_cleanup_state(ws: str, task_id: str, *, receipt: dict | None = None,
+                          retention: dict | None = None,
+                          cleanup_record: dict | None = None,
+                          merge_error: str | None = None) -> None:
+    with mutate(ws) as locked:
+        if locked is None:
+            raise tp.StateError(_loop_path(ws), "loop disappeared",
+                                "restore the loop before cleanup")
+        task = next((row for row in locked.get("tasks") or []
+                     if row.get("id") == task_id), None)
+        if task is None:
+            raise tp.StateError(_loop_path(ws), "cleanup task disappeared",
+                                "restore the approved task plan")
+        if receipt is not None:
+            locked.setdefault("task_merges", {})[task_id] = receipt
+            task["merge_receipt_id"] = receipt["receipt_id"]
+        if retention is not None:
+            task["evidence_retention"] = retention
+        if cleanup_record is not None:
+            locked.setdefault("worktree_cleanups", {})[task_id] = cleanup_record
+            task["cleanup_outcome"] = cleanup_record["outcome"]
+        if merge_error is not None:
+            task["merge_error"] = str(merge_error)[:1200]
+            locked["step"] = "escalated"
+
+
+def _automatic_merge_cleanup(ws: str, task: dict) -> dict | None:
+    """Orchestrator-only post-evaluate merge → receipt → cleanup boundary."""
+    if not automatic_cleanup_enabled() or task.get("variant") or \
+            task.get("merge_on_pass") is False:
+        return None
+    worker = str(task.get("workspace") or "")
+    if not worker:
+        return None
+    try:
+        registration = runtime_storage.load_task_worktree_registration(
+            ws, str(task["id"]))
+    except Exception as exc:
+        registration = None
+        registration_error = str(exc)
+    else:
+        registration_error = "managed registration is missing"
+    if registration is None:
+        return {"status": "preserved", "reason": registration_error}
+    try:
+        import repository
+        import review_evidence
+        import worktree_cleanup
+
+        retention = review_evidence.retain_worktree_governance(
+            ws, worker, str(task["id"]))
+        receipt = repository.RepositoryManager().merge_registered_task(
+            ws, task_id=str(task["id"]),
+            run_id=str(registration.get("run_id") or "legacy"))
+        # The merge receipt is durable before cleanup starts.
+        _record_cleanup_state(ws, str(task["id"]), receipt=receipt,
+                              retention=retention)
+        current = load(ws) or {}
+        stored_task = next((row for row in current.get("tasks") or []
+                            if row.get("id") == task.get("id")), task)
+        result = worktree_cleanup.cleanup(
+            receipt, lifecycle=_cleanup_lifecycle(stored_task))
+        _record_cleanup_state(ws, str(task["id"]), cleanup_record=result)
+        tp.trace(ws, "worktree_cleanup_" + result["outcome"].replace("-", "_"),
+                 task=task["id"], receipt_id=receipt["receipt_id"],
+                 reason=result["reason"])
+        return result
+    except Exception as exc:
+        _record_cleanup_state(ws, str(task["id"]), merge_error=str(exc))
+        tp.trace(ws, "worktree_cleanup_preserved", task=task.get("id"),
+                 reason=f"merge receipt unavailable: {exc}")
+        return {"status": "preserved",
+                "reason": f"merge receipt unavailable: {exc}"}
+
+
+def cleanup_replay(ws: str) -> dict:
+    """One bounded maintenance pass over durable receipts only."""
+    import worktree_cleanup
+
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop"}
+    outcomes = []
+    tasks = {str(row.get("id")): row for row in state.get("tasks") or []}
+    for task_id, receipt in sorted((state.get("task_merges") or {}).items()):
+        prior = (state.get("worktree_cleanups") or {}).get(task_id) or {}
+        if prior.get("outcome") in {"removed", "already-clean"}:
+            outcomes.append(prior)
+            continue
+        task = tasks.get(str(task_id)) or {"id": task_id, "status": "passed"}
+        result = worktree_cleanup.cleanup(
+            receipt, lifecycle=_cleanup_lifecycle(task))
+        _record_cleanup_state(ws, str(task_id), cleanup_record=result)
+        outcomes.append(result)
+        tp.trace(ws, "worktree_cleanup_" + result["outcome"].replace("-", "_"),
+                 task=task_id, receipt_id=receipt.get("receipt_id"),
+                 reason=result["reason"], replay=True)
+    return {"schema": "taskplane.worktree-cleanup-maintenance/v1",
+            "attempted": len(outcomes), "outcomes": outcomes}
 
 
 def init(ws: str, goal: str, spec_path: str | None = None,
@@ -986,6 +1128,7 @@ def wave(ws: str) -> dict:
     if state["step"] != "execute":
         return {"error": f"waves only at execute (current: {state['step']})"}
     tasks = state.get("tasks") or []
+    enforcement = ((state.get("enforcement") or {}).get("current"))
     passed = {t["id"] for t in tasks
               if t.get("status") in DEP_SATISFIED}
     ready, held = [], []
@@ -1039,6 +1182,7 @@ def wave(ws: str) -> dict:
             "design": _design_context(ws, state),
             "knowledge": kb.render_context(recalled),
             "runtime_evals": runtime_eval.guidance("execute"),
+            **({"enforcement": enforcement} if enforcement else {}),
         })
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
              held=[h["task"] for h in held])
@@ -1080,6 +1224,7 @@ def wave(ws: str) -> dict:
     return {
         "step": "execute", "parallel": True,
         "wave": entries, "held": held,
+        **({"enforcement": enforcement} if enforcement else {}),
         "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": (
             "Dispatch ONE governed subagent per wave entry, concurrently. "
@@ -1099,6 +1244,7 @@ def wave(ws: str) -> dict:
             "the SELECTION gate and the human picks what ships."),
     } if entries else {
         "step": "execute", "parallel": True, "wave": [], "held": held,
+        **({"enforcement": enforcement} if enforcement else {}),
         "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": "no dispatchable tasks — evaluate built tasks via "
                        "`loop next`, or resolve held dependencies.",
@@ -1136,6 +1282,9 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         test_command=t.get("tests"), plan_minted=True, regression_gate=True,
         tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                "MultiEdit"])
+    enforcement = ((state.get("enforcement") or {}).get("current"))
+    if enforcement:
+        contract["enforcement"] = enforcement
     agent_ws = os.path.abspath(agent_ws)
     locator_error = runtime_storage.worker_locator_error(ws, agent_ws, task_id)
     if locator_error: return {"error": locator_error, "task": task_id}
@@ -1171,7 +1320,8 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
             "contract": {"scope": contract["coding"]["scope_paths"],
                          "tests": contract["coding"]["dod"]["test_command"]},
             "dor": {"ready": dor_ready, "blockers": blockers,
-                    "warnings": warnings}}
+                    "warnings": warnings},
+            **({"enforcement": enforcement} if enforcement else {})}
 
 
 # --------------------------------------------------------------- next / gate
@@ -1346,6 +1496,9 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                                      for name in capability_vars) else None)
 
     contract = _step_contract(step, state, act_ws)
+    enforcement = ((state.get("enforcement") or {}).get("current"))
+    if enforcement:
+        contract["enforcement"] = enforcement
     evaluator_contract = None
     if step == "evaluate":
         evaluator_contract = evaluation_output.create_evaluator_contract(
@@ -3285,12 +3438,23 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # (v2.3.0): clearing before the lock left the workspace ungoverned during
     # the commit window; a refused gate above leaves it governed for retry.
     tp.clear(act_ws)
+    cleanup_result = None
+    cleanup_task = (_current_task(state) if isinstance(state, dict) else None)
+    if step == "evaluate" and outcome == "pass" and state.get("parallel") \
+            and cleanup_task is not None and \
+            cleanup_task.get("status") == "passed":
+        cleanup_result = _automatic_merge_cleanup(ws, cleanup_task)
+        # The helper may have moved the loop to escalation when the merge
+        # could not produce a durable receipt. Return the committed truth.
+        state = load(ws) or state
     yield_meter.gate_snapshot(ws, step, outcome)   # records, never gates
     tp.trace(ws, "loop_gate", step=step, outcome=outcome, note=note,
              **({"reason": ((unavailable_verdict or {}).get("evaluation")
                              or {}).get("reason_code")}
                 if outcome == "unavailable" else {}))
     return {"step": state["step"], "status": status(ws),
+            **({"worktree_cleanup": cleanup_result}
+               if cleanup_result is not None else {}),
             **({"warning": (state.get("evaluation_warnings") or [])[-1]}
                if outcome == "unavailable" else {})}
 

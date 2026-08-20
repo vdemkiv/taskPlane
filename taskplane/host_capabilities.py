@@ -427,15 +427,19 @@ def runtime_hook_observations(
             if age < -30.0:
                 continue
             observed_session = row.get("session_fingerprint")
-            if expected_session and observed_session and \
-                    observed_session != expected_session:
+            # A known current session requires an exact match. When the host
+            # exposes no current session id, even a session-bound receipt is
+            # only a bounded freshness signal; yesterday's Claude receipt must
+            # never vouch for today's hookless Cowork session.
+            if expected_session and observed_session != expected_session:
                 continue
             if hook_path == "bridge" and expected_workspace and \
                     row.get("workspace_fingerprint") != expected_workspace:
                 continue
-            # A session identity is the durable boundary. Time expiry is only
-            # needed for hosts that do not expose one.
-            if not observed_session and age > RUNTIME_RECEIPT_MAX_AGE_SECONDS:
+            # Exact matching session identity is the durable boundary. With no
+            # known current identity all receipts expire at the trust window.
+            if (not expected_session
+                    and age > RUNTIME_RECEIPT_MAX_AGE_SECONDS):
                 continue
             receipts[hook_path] = row
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -626,8 +630,8 @@ def probe_snapshot(
     else:
         effective_path = "blocked"
 
-    workspace_fp = hashlib.sha256(os.path.normcase(os.path.abspath(
-        ws)).encode("utf-8", errors="replace")).hexdigest()
+    workspace_fp = hashlib.sha256(os.path.normcase(os.path.realpath(
+        os.path.abspath(ws))).encode("utf-8", errors="replace")).hexdigest()
     session_fp = (hashlib.sha256(session_id.encode("utf-8")).hexdigest()
                   if session_id else None)
     payload = {

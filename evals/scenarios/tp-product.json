@@ -7,7 +7,7 @@
     "skills/tp-product/flow.json",
     "agents/tp-product.md"
   ],
-  "inputs_fingerprint": "510c3c7fa9cd992f81a567f400233ab1a1d3736c822deb25f02ced849a3a9ec1",
+  "inputs_fingerprint": "581e3203662cdb590f7dbe82c900d0a7a84426a3d00d9f04d685a6c58e8134d9",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp req new",

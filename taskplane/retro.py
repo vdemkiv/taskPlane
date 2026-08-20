@@ -91,13 +91,23 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
              f"- tasks: {len(report['tasks'])}",
              f"- hook denials: {report['hook_denials']}",
              f"- parallel waves: {report['parallel_waves']}",
-             f"- findings: {report['findings']['total']}", "",
+             f"- findings: {report['findings']['total']}"]
+    foreign = report.get("foreign_interference") or {}
+    if foreign.get("headline"):
+        lines.extend(["", "## FOREIGN INTERFERENCE", "",
+                      "- counts: " + json.dumps(
+                          foreign.get("counts") or {}, sort_keys=True),
+                      "- identities: " + ", ".join(
+                          foreign.get("identities") or []),
+                      "- signed roots: " + ", ".join(
+                          foreign.get("state_roots") or [])])
+    lines.extend(["",
              "## Graph true-up", "",
              f"- fingerprint: {graph['content_fingerprint']}",
              f"- scanned head: {graph['scanned_head']}",
              "- modules / edges / components: "
              f"{graph['modules']} / {graph['edges']} / {graph['components']}",
-             "", "## Lens routing", ""]
+             "", "## Lens routing", ""])
     lines.extend("- " + json.dumps(row, sort_keys=True) for row in routing)
     lines.extend(["", "## Lessons", ""])
     lines.extend("- " + str(lesson) for lesson in report["lessons"])
@@ -192,7 +202,23 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
 
         finding_rows, severity_counts, lens_counts = _findings(
             ws, normalize_severity)
+        try:
+            import collision
+            import runtime_eval
+            foreign_interference = runtime_eval.foreign_interference_projection(
+                collision.load_ledger(ws))
+        except Exception:
+            foreign_interference = {
+                "schema": "taskplane.foreign-interference-projection/v1",
+                "headline": False, "total": 0, "counts": {},
+                "identities": [], "state_roots": []}
         lessons = []
+        if foreign_interference.get("headline"):
+            lessons.append(
+                f"foreign interference observed {foreign_interference['total']} "
+                "time(s): " + ", ".join(
+                    foreign_interference.get("identities") or
+                    foreign_interference.get("state_roots") or []))
         if denies:
             lessons.append(
                 f"{len(denies)} hook denial(s) — scopes were tighter than "
@@ -247,6 +273,7 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "findings": {"total": len(finding_rows),
                          "by_severity": dict(sorted(severity_counts.items())),
                          "by_lens": dict(sorted(lens_counts.items()))},
+            "foreign_interference": foreign_interference,
             "graph_true_up": graph_true_up,
             "trace_scope": {"from_ts": trace_from, "events": len(events)},
             "lessons": lessons,

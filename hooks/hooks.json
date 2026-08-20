@@ -25,6 +25,17 @@
         ]
       },
       {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \".taskplane/codex-hook.py\" ]; then TASKPLANE_HOOK_PATH=native python3 \".taskplane/codex-hook.py\" screen-skill; else TASKPLANE_HOOK_PATH=native python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" screen-skill; fi",
+            "commandWindows": "if exist \".taskplane\\codex-hook.py\" (set \"TASKPLANE_HOOK_PATH=native\" & py -3 \".taskplane\\codex-hook.py\" screen-skill) else (set \"TASKPLANE_HOOK_PATH=native\" & if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" screen-skill) else if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" screen-skill) else (echo taskplane skill isolation hook: PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT unset - failing closed 1>&2 & exit /b 2))",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "mcp__visualize__.*",
         "hooks": [
           {

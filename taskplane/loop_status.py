@@ -59,6 +59,8 @@ def status(ws: str) -> dict:
         "max_fix_cycles": state["max_fix_cycles"],
         "checkpoints": state["checkpoints"],
     }
+    if state.get("enforcement"):
+        out["enforcement"] = state["enforcement"]
     if state.get("ab"):
         out["ab"] = True
     if state.get("design_required"):
@@ -127,6 +129,13 @@ def user_summary(ws: str, host: str | None = None,
     assurance = ("state-and-evidence enforced; tool interception is cooperative"
                  if host == "claude-tag" else
                  "state, evidence, and tool boundaries mechanically enforced")
+    enforcement = ((state.get("enforcement") or {}).get("current"))
+    if isinstance(enforcement, dict):
+        assurance = "screen enforcement " + str(
+            enforcement.get("status") or "unproven")
+        advisory = enforcement.get("advisory") or {}
+        if advisory.get("actor"):
+            assurance += "; acknowledged by " + str(advisory["actor"])
     if step == "done":
         headline = f"Complete — {settled}/{len(tasks)} task(s) settled."
     elif budget_blocked:
@@ -146,6 +155,7 @@ def user_summary(ws: str, host: str | None = None,
                                      "status": current.get("status")},
         "action_required": bool(action), "decision": action,
         "headline": headline, "host": host, "assurance": assurance,
+        **({"enforcement": enforcement} if enforcement else {}),
         "live_progress": live_progress,
         "submission_pending_validation": bool(
             state.get("_submission")

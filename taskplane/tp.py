@@ -55,6 +55,8 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import taskplane_lite as tp  # noqa: E402
 import host_capabilities as host_caps  # noqa: E402
+import enforcement as enforcement_kernel  # noqa: E402
+import collision as collision_kernel  # noqa: E402
 
 
 # Shared help text for the universal --workspace plumbing flag. It is
@@ -289,6 +291,79 @@ def _host_capability_snapshot(ws: str, install_context: str | None = None):
             native_manifest), bridge_configured=bool(bridge.get("ok")),
         observations=observations,
         now=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
+
+
+def _screen_enforcement_mode(host: str) -> str:
+    """Resolve the rollback lever without guessing an undeclared host."""
+    raw = os.environ.get("TASKPLANE_ENFORCE_SCREEN")
+    if raw is not None:
+        mode = str(raw).strip().lower()
+        if mode not in enforcement_kernel.MODES:
+            raise enforcement_kernel.EnforcementError(
+                "TASKPLANE_ENFORCE_SCREEN must be strict, warn, or off")
+        return mode
+    declared_claude = host == "claude" and bool(
+        os.environ.get("CLAUDE_SESSION_ID")
+        or os.environ.get("CLAUDE_CODE_VERSION")
+        or str(os.environ.get("TASKPLANE_HOST") or "").lower()
+        in {"claude", "claude-code", "cowork", "chat"})
+    return "strict" if declared_claude else "warn"
+
+
+def _saved_enforcement(value) -> dict | None:
+    if isinstance(value, dict) and value.get("schema") == \
+            "taskplane.run-enforcement/v1":
+        value = value.get("current")
+    try:
+        checked = enforcement_kernel.validate_decision(value)
+    except (TypeError, ValueError):
+        return None
+    return checked
+
+
+def _enforcement_check(
+        ws: str, *, saved=None, advisory: bool = False,
+        actor: str | None = None, run_id: str | None = None,
+        revision: str | int | None = None) -> tuple[dict, dict | None]:
+    """Compute one decision and, in strict mode, one machine refusal."""
+    prior = _saved_enforcement(saved)
+    workspace_fp = hashlib.sha256(os.path.normcase(os.path.realpath(
+        os.path.abspath(ws))).encode("utf-8")).hexdigest()
+    if (prior and prior.get("status") == "advisory"
+            and prior.get("workspace_fingerprint") == workspace_fp):
+        return prior, None
+    snapshot = _host_capability_snapshot(ws)
+    mode = _screen_enforcement_mode(snapshot.host)
+    decision = enforcement_kernel.enforcement_status(
+        ws, snapshot=snapshot, liveness=tp.screen_liveness(ws),
+        run_id=run_id, revision=(revision if revision is not None
+                                 else tp.git_head(ws)), mode=mode,
+        observed_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
+    if advisory:
+        try:
+            decision = enforcement_kernel.acknowledge_advisory(
+                decision, actor=str(actor or ""))
+        except enforcement_kernel.EnforcementError as exc:
+            return decision, {
+                "schema": "taskplane.enforcement-refusal/v1",
+                "error": str(exc), "enforcement": decision,
+                "recovery": ["repeat with --advisory --by <human>"],
+            }
+    if mode == "strict" and decision["status"] == "unproven":
+        recovery = (["run /reload-plugins, then retry this exact command",
+                     "or repeat with --advisory --by <human>"]
+                    if snapshot.host == "claude" and
+                    (os.environ.get("CLAUDE_CODE_VERSION") or
+                     os.environ.get("CLAUDE_SESSION_ID")) else
+                    ["start a new host conversation and retry",
+                     "or repeat with --advisory --by <human>"])
+        return decision, {
+            "schema": "taskplane.enforcement-refusal/v1",
+            "error": "governed action refused: screen enforcement is unproven",
+            "enforcement": decision,
+            "recovery": recovery,
+        }
+    return decision, None
 
 
 def _codex_runner_engine(runner_body: str) -> str | None:
@@ -717,6 +792,11 @@ def _onboard_report(ws: str) -> dict:
     except Exception:
         artifacts = None
     _ictx = _install_context()
+    # Onboarding is one of the explicit discovery boundaries. Status below
+    # reads this durable result and never scans the tree independently.
+    foreign_state = collision_kernel.discover_state_roots(ws)
+    if foreign_state:
+        collision_kernel.persist(ws, roots=foreign_state)
     return {"workspace": ws, "host": host, "artifacts": artifacts,
             "codex_hooks": codex_hooks,
             "host_capabilities": host_capabilities,
@@ -749,7 +829,8 @@ def _onboard_report(ws: str) -> dict:
             "model_tiers": {t: (tp.model_for_tier(t) or "inherit")
                             for t in tp.MODEL_TIERS},
             "reasoning_tiers": {t: tp.reasoning_for_tier(t)
-                                for t in tp.MODEL_TIERS}}
+                                for t in tp.MODEL_TIERS},
+            "foreign_state": foreign_state}
 
 
 # --------------------------------------------------------------- new
@@ -770,6 +851,12 @@ def cmd_new(a) -> int:
               "--workspace) a real project checkout, or `git init && git "
               "commit` first if this really is your project folder.",
               file=sys.stderr)
+        return 1
+    enforcement, refusal = _enforcement_check(
+        ws, advisory=bool(getattr(a, "advisory", False)),
+        actor=getattr(a, "by", None))
+    if refusal:
+        print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
         return 1
     # Build via the shared kernel builder so a CLI-created contract has the
     # EXACT shape the loop engine builds — one contract schema, not two.
@@ -793,6 +880,17 @@ def cmd_new(a) -> int:
                      if getattr(a, "max_actions", None) is not None
                      else None),
     )
+    allowed_foreign = list(getattr(a, "allow_foreign_state", None) or [])
+    if allowed_foreign:
+        if not str(getattr(a, "by", None) or "").strip():
+            print("taskplane: --allow-foreign-state requires --by ACTOR",
+                  file=sys.stderr)
+            return 1
+        c["foreign_state_override"] = {
+            "schema": "taskplane.foreign-state-override/v1",
+            "roots": allowed_foreign, "actor": str(a.by),
+        }
+    c["enforcement"] = enforcement
     # cooperative dollar advisory (kept on the shared shape as an optional
     # key). `is not None`, NOT truthiness: `--budget 0` means a ZERO ceiling
     # (maximally strict — any spend is over), never the $3 default.
@@ -1071,6 +1169,106 @@ def cmd_screen_render(a) -> int:
     return 0
 
 
+def _collision_authority(ws: str) -> dict:
+    """Read exact-workspace governed state without discovering foreign data."""
+    contract = tp.load_active(ws)
+    state = None
+    try:
+        import loop as loop_engine
+        state = loop_engine._load_raw(ws)
+    except Exception:
+        state = None
+    review_state = None
+    try:
+        import review as review_engine
+        review_state = review_engine._load_state(ws)
+    except Exception:
+        review_state = None
+    loop_active = isinstance(state, dict) and state.get("step") not in {
+        None, "done", "failed"}
+    review_active = isinstance(review_state, dict) and \
+        review_state.get("status") not in {
+            None, "complete", "failed", "cancelled", "unavailable"}
+    governed = bool(contract or loop_active or review_active)
+    step = ((state or {}).get("step") or (review_state or {}).get("stage")
+            or (contract or {}).get("stage") or "contract")
+    run_id = ((review_state or {}).get("run_id")
+              or (state or {}).get("run_id")
+              or (state or {}).get("requirement_id")
+              or (contract or {}).get("task_id"))
+    enforcement = (((state or {}).get("enforcement") or {}).get("current")
+                   or (contract or {}).get("enforcement") or {})
+    return {"governed": governed, "run_id": run_id, "step": step,
+            "advisory": enforcement.get("status") == "advisory"}
+
+
+def _collision_allowlist() -> list[str]:
+    raw = os.environ.get("TASKPLANE_SKILL_ALLOW") or ""
+    return [item.strip() for item in raw.split(",")
+            if item.strip()]
+
+
+def _classify_collision(ws: str, kind: str, identity: str,
+                        *, brief_owned: bool = False) -> dict:
+    authority = _collision_authority(ws)
+    if brief_owned and authority["governed"]:
+        return collision_kernel.classify(
+            kind, "tp_" + identity, governed=True,
+            run_id=authority["run_id"], step=authority["step"])
+    collision_mode = (os.environ.get("TASKPLANE_COLLISION_SCREEN")
+                      or "on").strip().lower()
+    strict = collision_mode == "strict" or \
+        (os.environ.get("TASKPLANE_SKILL_STRICT") or "").strip().lower() \
+        in {"1", "true", "yes", "strict"}
+    decision = collision_kernel.classify(
+        kind, identity, governed=authority["governed"],
+        run_id=authority["run_id"], step=authority["step"], strict=strict,
+        advisory=(authority["advisory"] or collision_mode in {
+            "0", "false", "no", "off", "disabled"}),
+        allow=_collision_allowlist())
+    if decision.get("record"):
+        collision_kernel.persist(ws, decision=decision,
+                                 run_id=authority["run_id"])
+        tp.trace(ws, "foreign_interference", kind=kind, identity=identity,
+                 action=decision["action"], step=authority["step"],
+                 run_id=authority["run_id"],
+                 registry_version=decision["registry_version"],
+                 registry_fingerprint=decision["registry_fingerprint"])
+    return decision
+
+
+def _emit_collision(decision: dict) -> None:
+    if decision.get("action") == "deny":
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": decision["reason"]}}))
+    elif decision.get("action") in {"advise", "observed"}:
+        print(json.dumps({"systemMessage": decision["reason"]}))
+
+
+def cmd_screen_skill(a) -> int:
+    """PreToolUse authority gate for explicit Skill invocations."""
+    try:
+        event = json.load(sys.stdin)
+    except Exception as exc:
+        ws = _workspace()
+        authority = _collision_authority(ws)
+        if authority["governed"] and not authority["advisory"]:
+            reason = ("taskplane skill isolation could not parse hook input "
+                      f"({type(exc).__name__}); governed verification fails closed")
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": reason}}))
+        return 0
+    ti = event.get("tool_input") if isinstance(event, dict) else {}
+    ti = ti if isinstance(ti, dict) else {}
+    identity = ti.get("skill") or ti.get("skill_name") or ti.get("name") or ""
+    ws = _workspace(event.get("cwd"))
+    decision = _classify_collision(ws, "skill", str(identity))
+    _emit_collision(decision)
+    return 0
+
+
 def cmd_screen_dispatch(a) -> int:
     """PreToolUse hook for the Agent/Task tool: verify the driver dispatched
     the model the most recent matching brief resolved (tier routing). OPT-IN
@@ -1082,7 +1280,9 @@ def cmd_screen_dispatch(a) -> int:
     try:
         event = json.load(sys.stdin)
     except Exception as exc:
-        if mode == "strict":
+        authority = _collision_authority(_workspace())
+        if ((authority["governed"] and not authority["advisory"])
+                or mode == "strict"):
             reason = ("taskplane dispatch check: malformed hook input "
                       f"({type(exc).__name__}); strict verification cannot "
                       "prove this dispatch, so it is denied.")
@@ -1090,8 +1290,39 @@ def cmd_screen_dispatch(a) -> int:
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",
                 "permissionDecisionReason": reason}}))
         return 0
+    foreign_message = None
+    try:
+        ti = event.get("tool_input") or {}
+        agent = (ti.get("task_name") or ti.get("subagent_type")
+                 or ti.get("agent_type") or "")
+        ws = _workspace(event.get("cwd"))
+        expectation = tp.peek_expectation(ws, agent, strict=False)
+        brief_owned = bool(expectation and agent in {
+            expectation.get("task_name"), expectation.get("agent")})
+        collision = _classify_collision(
+            ws, "agent", str(agent), brief_owned=brief_owned)
+        if collision.get("action") == "deny":
+            _emit_collision(collision)
+            return 0
+        if collision.get("action") in {"advise", "observed"}:
+            foreign_message = collision["reason"]
+    except Exception as exc:
+        try:
+            authority = _collision_authority(
+                _workspace(event.get("cwd")))
+        except Exception:
+            authority = {"governed": True, "advisory": False}
+        if authority["governed"] and not authority["advisory"]:
+            reason = ("taskplane dispatch isolation errored "
+                      f"({type(exc).__name__}); governed verification fails closed")
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": reason}}))
+            return 0
     if mode not in ("warn", "strict"):
-        return 0                                   # opt-in: default inert
+        if foreign_message:
+            print(json.dumps({"systemMessage": foreign_message}))
+        return 0                                   # tier verification opt-in
     try:
         ti = event.get("tool_input") or {}
         native_codex = bool(ti.get("task_name"))
@@ -1129,6 +1360,8 @@ def cmd_screen_dispatch(a) -> int:
         ok = tp.commit_dispatch_verification(
             ws, agent, model, exp, ok, effort, strict=strict)
         if ok:
+            if foreign_message:
+                print(json.dumps({"systemMessage": foreign_message}))
             return 0
         if exp is None:
             reason = (f"taskplane dispatch check: native Codex task_name "
@@ -1152,7 +1385,9 @@ def cmd_screen_dispatch(a) -> int:
                 "permissionDecision": "deny",
                 "permissionDecisionReason": reason}}))
         else:
-            print(json.dumps({"systemMessage": reason}))
+            joined = reason if not foreign_message else \
+                foreign_message + "\n" + reason
+            print(json.dumps({"systemMessage": joined}))
         return 0
     except Exception as e:
         if mode == "strict":
@@ -1377,6 +1612,26 @@ def cmd_gc(a) -> int:
     out = tp.gc_runtime(ws)
     print(json.dumps(out, indent=2))
     return 0
+
+
+def cmd_worktree_cleanup(a) -> int:
+    """Run one receipt-scoped, no-force maintenance replay."""
+    import loop as loopmod
+
+    ws = _workspace(a.workspace)
+    state = loopmod.load(ws)
+    enforcement, refusal = _enforcement_check(
+        ws, saved=(state or {}).get("enforcement"),
+        run_id=(state or {}).get("run_id"),
+        revision=((state or {}).get("baseline") or tp.git_head(ws)))
+    if refusal:
+        print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
+        return 1
+    if state is not None:
+        loopmod.record_enforcement(ws, enforcement)
+    out = loopmod.cleanup_replay(ws)
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 1 if out.get("error") else 0
 
 
 # READ-ONLY inspection only. `clear` is deliberately NOT here.
@@ -2019,7 +2274,12 @@ def cmd_screen(a) -> int:
 def _loop_status_snapshot(ws: str) -> dict:
     try:
         import loop as loopmod
-        return loopmod.status(ws)
+        snapshot = loopmod.status(ws)
+        raw = loopmod._load_raw(ws)
+        if isinstance(raw, dict):
+            snapshot["task_merges"] = raw.get("task_merges") or {}
+            snapshot["worktree_cleanups"] = raw.get("worktree_cleanups") or {}
+        return snapshot
     except Exception as exc:
         return {"loop": "unavailable",
                 "error": f"{exc.__class__.__name__}: {exc}"}
@@ -2053,9 +2313,14 @@ def cmd_status(a) -> int:
                 }, indent=2))
                 return 1
         loop_status = _loop_status_snapshot(ws)
+        saved = ((loop_status.get("enforcement") or {}).get("current")
+                 if isinstance(loop_status, dict) else None)
+        enforcement, _ = _enforcement_check(ws, saved=saved)
         print(json.dumps({
             "active_contract": None,
             "loop": loop_status,
+            "enforcement": enforcement,
+            "foreign_interference": collision_kernel.load_ledger(ws),
             "headline": ("no active contract; project loop status is shown "
                          "below"),
         }, indent=2))
@@ -2076,6 +2341,10 @@ def cmd_status(a) -> int:
                                           "no dollar ceiling set)"),
         "budget_note": budget.get("note"),
         "dod": projection["dod"],
+        "enforcement": (_saved_enforcement(c.get("enforcement"))
+                        or _enforcement_check(ws)[0]),
+        "foreign_state": c.get("foreign_state"),
+        "foreign_interference": collision_kernel.load_ledger(ws),
         "loop": _loop_status_snapshot(ws),
     }, indent=2))
     return 0
@@ -2246,6 +2515,21 @@ def cmd_loop(a) -> int:
     ws = _workspace(a.workspace)
     action = a.loop_action
     out = None
+    enforcement = None
+    guarded_actions = {"init", "next", "wave", "claim", "gate", "approve"}
+    if action in guarded_actions:
+        current = loopmod.load(ws)
+        enforcement, refusal = _enforcement_check(
+            ws, saved=(current or {}).get("enforcement"),
+            advisory=bool(getattr(a, "advisory", False)),
+            actor=getattr(a, "by", None),
+            run_id=(current or {}).get("run_id"),
+            revision=((current or {}).get("baseline") or tp.git_head(ws)))
+        if refusal:
+            print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
+            return 1
+        if current is not None:
+            loopmod.record_enforcement(ws, enforcement)
     if action == "init":
         checkpoints = (a.checkpoints.split(",") if a.checkpoints is not None
                        else ["plan", "em"])
@@ -2255,6 +2539,8 @@ def cmd_loop(a) -> int:
                           requirement_id=a.req, parallel=a.parallel,
                           design=a.design, design_only=a.design_only,
                           force=getattr(a, "force", False))
+        if isinstance(st, dict) and not st.get("error") and enforcement:
+            loopmod.record_enforcement(ws, enforcement)
         # Only collapse to the success summary when the engine did NOT refuse.
         # Previously any dict with a "step" key (including a refusal that also
         # carries the CURRENT step) was reported as {"initialized": true} with
@@ -2373,6 +2659,11 @@ def cmd_loop(a) -> int:
     # On the task path _emit_stage returns None and the print below stays
     # BYTE-IDENTICAL to the pre-workflow payload (the MANDATORY fallback
     # and the only Codex path — R-0004's core promise).
+    if isinstance(out, dict):
+        canonical = enforcement or _saved_enforcement(
+            (loopmod.load(ws) or {}).get("enforcement"))
+        if canonical:
+            out.setdefault("enforcement", canonical)
     if action in ("wave", "next"):
         wrapped = _emit_stage(ws, out, getattr(a, "emit", None) or "auto")
         if wrapped is _STAGE_REFUSED:
@@ -3585,7 +3876,7 @@ def cmd_context(a) -> int:
 
 
 _HOOK_COMMANDS = frozenset({
-    "screen", "screen-dispatch", "screen-render", "context",
+    "screen", "screen-skill", "screen-dispatch", "screen-render", "context",
     "subagent-start", "subagent-stop", "session-verify",
 })
 
@@ -4178,6 +4469,18 @@ def cmd_review(a) -> int:
     import target as tgt
     import review as rv
     ws = _workspace(a.workspace)
+    review_action = getattr(a, "review_action", None)
+    enforcement = None
+    if review_action in {"start", "resume", "signoff"}:
+        active = tp.load_active(ws) or {}
+        enforcement, refusal = _enforcement_check(
+            ws, saved=active.get("enforcement"),
+            advisory=bool(getattr(a, "advisory", False)),
+            actor=getattr(a, "by", None),
+            run_id=getattr(a, "run_id", None))
+        if refusal:
+            print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
+            return 1
     if getattr(a, "review_action", None) == "option":
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
@@ -4298,6 +4601,8 @@ def cmd_review(a) -> int:
             result = rv.signoff_review(
                 ws, decision=a.decision, by=a.by, note=a.note or "",
                 run_id=getattr(a, "run_id", None))
+            if enforcement:
+                result["enforcement"] = enforcement
         except Exception as exc:
             print(json.dumps({"schema": "taskplane.review-signoff/v1",
                               "status": "signoff_failed",
@@ -4515,6 +4820,8 @@ def cmd_review(a) -> int:
         read_only=True, write_allow=write_allow,
         max_actions=(int(a.max_actions)
                      if getattr(a, "max_actions", None) is not None else None))
+    if enforcement:
+        c["enforcement"] = enforcement
     c["budget"]["max_cost_usd"] = DEFAULT_MAX_COST_USD
     if getattr(a, "max_tokens", None) is not None:
         c["budget"]["max_tokens"] = int(a.max_tokens)
@@ -4589,6 +4896,8 @@ def cmd_review(a) -> int:
                                     "status": manifest.get("status")}})
         manifest["contract"] = {"task_id": c["task_id"],
                                 "read_only": True, "status": "active"}
+        if enforcement:
+            manifest["enforcement"] = enforcement
         if repository_run:
             manifest["repository_run_id"] = repository_run
         manifest["tools"] = {"git": bool(t["git"]["present"]),
@@ -4599,8 +4908,9 @@ def cmd_review(a) -> int:
         manifest["obligations"] = owed
         manifest = rv._manifest(manifest)
         kernel_state = rv._load_state(ws, manifest.get("run_id"))
-        rv._save_state(ws, dict(kernel_state, manifest=manifest,
-                                counters=manifest["counters"]))
+        rv._save_state(ws, dict(
+            kernel_state, manifest=manifest, counters=manifest["counters"],
+            **({"enforcement": enforcement} if enforcement else {})))
     except Exception as e:
         step("route", False, reason=f"{e.__class__.__name__}: {e}")
         # review start owns this contract.  A failed opening must not leave a
@@ -4828,6 +5138,10 @@ def cmd_onboard(a) -> int:
     # HEADLINE, so it survives hosts without inline widgets.
     for line in report.get("install", {}).get("paths", []):
         print(line)
+    for row in report.get("foreign_state") or []:
+        print("FOREIGN STATE: " + str(row.get("plugin")) + " at "
+              + str(row.get("root")) + " — "
+              + str(row.get("remediation") or ""))
     print(dashboard.render_onboarding(report, out=a.out))
     return 0
 
@@ -5577,6 +5891,14 @@ def main(argv=None) -> int:
                    help="with a PR --target, fetch pull/N/head into this "
                         "checkout first (needs git; `gh` is what supplies "
                         "the PR's title, body and discussion)")
+    n.add_argument("--advisory", action="store_true",
+                   help="continue with visibly advisory screen enforcement")
+    n.add_argument("--by", default=None,
+                   help="human identity required with --advisory or a "
+                        "foreign-state override")
+    n.add_argument("--allow-foreign-state", action="append", metavar="ROOT",
+                   help="repeatable exact signed foreign-state root to include; "
+                        "requires --by and is recorded on the contract")
     n.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     n.set_defaults(fn=cmd_new)
 
@@ -5623,6 +5945,10 @@ def main(argv=None) -> int:
     s = sub.add_parser("screen", help="PreToolUse hook entrypoint (stdin event)")
     s.set_defaults(fn=cmd_screen)
 
+    ss = sub.add_parser("screen-skill", help="PreToolUse collision gate for "
+                        "Skill invocations during governed work")
+    ss.set_defaults(fn=cmd_screen_skill)
+
     sv = sub.add_parser("session-verify", help="Stop/SessionEnd hook: exit 2 "
                         "listing artifacts this run owes and never showed")
     sv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
@@ -5656,6 +5982,13 @@ def main(argv=None) -> int:
                          "records")
     gcp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     gcp.set_defaults(fn=cmd_gc)
+    wtc = sub.add_parser(
+        "worktree-cleanup", help="replay receipt-scoped post-merge cleanup "
+        "once; never force-removes or deletes branches")
+    wtc.add_argument("action", choices=["replay"],
+                     help="bounded maintenance action")
+    wtc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    wtc.set_defaults(fn=cmd_worktree_cleanup)
     cl = sub.add_parser("clear", help="deactivate the workspace contract")
     cl.add_argument("--all", action="store_true",
                     help="release EVERY active slot, not just this process's "
@@ -5714,6 +6047,10 @@ def main(argv=None) -> int:
     li.add_argument("--force", action="store_true",
                     help="replace an in-flight loop (the old loop.json is "
                          "archived first — without this flag re-init refuses)")
+    li.add_argument("--advisory", action="store_true",
+                    help="continue with visibly advisory screen enforcement")
+    li.add_argument("--by", default=None,
+                    help="human identity required with --advisory")
     ln = lsub.add_parser("next", help="print the next stage brief for the active loop")
     ln.add_argument("--req", help="attach requirement R-id to the loop "
                     "before DoR evaluation (design anchor)")
@@ -5725,6 +6062,10 @@ def main(argv=None) -> int:
                          "today's payload byte-identically (the mandatory "
                          "fallback and the only Codex path), 'auto' consults "
                          "workflow_available() (default)")
+    ln.add_argument("--advisory", action="store_true",
+                    help="acknowledge degraded screen enforcement")
+    ln.add_argument("--by", default=None,
+                    help="human identity required with --advisory")
     lw = lsub.add_parser("wave", help="print the EXECUTE wave: one brief per scope-disjoint task")
     lw.add_argument("--emit", choices=["workflow", "task", "auto"],
                     default="auto",
@@ -5734,10 +6075,18 @@ def main(argv=None) -> int:
                          "'task' prints today's wave payload byte-identically "
                          "(the mandatory fallback and the only Codex path), "
                          "'auto' consults workflow_available() (default)")
+    lw.add_argument("--advisory", action="store_true",
+                    help="acknowledge degraded screen enforcement")
+    lw.add_argument("--by", default=None,
+                    help="human identity required with --advisory")
     lc = lsub.add_parser("claim", help="a worker claims one wave task into its own worktree")
     lc.add_argument("task_id")
     lc.add_argument("--agent-workspace", required=True,
                     help="the worker's worktree — its contract activates there")
+    lc.add_argument("--advisory", action="store_true",
+                    help="acknowledge degraded screen enforcement")
+    lc.add_argument("--by", default=None,
+                    help="human identity required with --advisory")
     lg = lsub.add_parser("gate", help="orchestrator-only: judge the evidence and advance the loop")
     lg.add_argument("outcome", choices=["pass", "fail", "unavailable"])
     lg.add_argument("--note", default="",
@@ -5745,6 +6094,10 @@ def main(argv=None) -> int:
     lg.add_argument("--task", help="task id (parallel execute waves)")
     lg.add_argument("--req", help="attach requirement R-id to the loop "
                     "before DoR evaluation (design anchor)")
+    lg.add_argument("--advisory", action="store_true",
+                    help="acknowledge degraded screen enforcement")
+    lg.add_argument("--by", default=None,
+                    help="human identity required with --advisory")
     lsu = lsub.add_parser("submit", help="worker submits evidence without "
                             "transitioning state; the orchestrator gates")
     lsu.add_argument("outcome", choices=["pass", "fail", "unavailable"])
@@ -5763,6 +6116,8 @@ def main(argv=None) -> int:
     la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     la.add_argument("--force", action="store_true",
                     help="pass a BLOCKED refinement gate anyway")
+    la.add_argument("--advisory", action="store_true",
+                    help="acknowledge degraded screen enforcement")
     lr = lsub.add_parser("resolve", help="resolve a blocked loop: retry, skip, defer or abort")
     lr.add_argument("decision", choices=["retry", "skip", "defer", "abort"])
     lrp = lsub.add_parser(
@@ -6193,6 +6548,10 @@ def main(argv=None) -> int:
     rvs.add_argument("--run-id", default=None,
                      help="resume or deterministically name the repository "
                           "preflight run")
+    rvs.add_argument("--advisory", action="store_true",
+                     help="continue with visibly advisory screen enforcement")
+    rvs.add_argument("--by", default=None,
+                     help="human identity required with --advisory")
     rvs.set_defaults(fn=cmd_review)
     rvr = rvsub.add_parser(
         "resume", help="apply one explicit user decision and continue the "
@@ -6206,6 +6565,8 @@ def main(argv=None) -> int:
                      help="the user's decision for the pending action")
     rvr.add_argument("--by", required=True,
                      help="the user's approving/cancelling chat identity")
+    rvr.add_argument("--advisory", action="store_true",
+                     help="continue with visibly advisory screen enforcement")
     rvr.add_argument("--goal", nargs="*", default=None,
                      help="contract goal text after preflight resumes")
     rvr.add_argument("--max-actions", type=int, default=None,
@@ -6273,6 +6634,8 @@ def main(argv=None) -> int:
     rvsg.add_argument("--run-id", default=None,
                       help="select the collected review run")
     rvsg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvsg.add_argument("--advisory", action="store_true",
+                      help="acknowledge degraded screen enforcement")
     rvsg.set_defaults(fn=cmd_review)
     rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvp.set_defaults(fn=cmd_review)

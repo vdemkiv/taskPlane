@@ -1,7 +1,6 @@
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -217,13 +216,11 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
         choice["command"] for choice in
         opened["review_execution"]["action"]["choices"]
         if choice["response"] == "static")
-    launcher_dir = os.path.join(workspace, ".taskplane")
-    os.makedirs(launcher_dir, exist_ok=True)
-    shutil.copyfile(
-        os.path.join(ROOT, ".taskplane", "codex-hook.py"),
-        os.path.join(launcher_dir, "codex-hook.py"))
+    installed = taskplane_cli._install_codex_hooks(workspace)
+    assert installed["ok"], installed
     executed = subprocess.run(
         static_command.split(), cwd=workspace, text=True,
+        encoding="utf-8", errors="replace",
         capture_output=True, check=False)
     assert executed.returncode == 0, executed.stderr
     continued = json.loads(executed.stdout)

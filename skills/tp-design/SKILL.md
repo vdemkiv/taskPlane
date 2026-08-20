@@ -1,6 +1,6 @@
 ---
 name: tp-design
-description: "The pre-build solution-design flow of taskplane. Use when the user says 'taskplane design', asks to design a new feature or approach before coding, wants a technical design based on requirements and/or an existing codebase, wants alternatives and trade-offs, or needs dependency/contract/rollout decisions settled before Build. Produces an approved Design Contract with proposed graph, Design DoR/DoD, solution-design evidence, and conditional visualization. It designs the HOW; it does not implement or review current code."
+description: "Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs. The pre-build solution-design flow of taskplane. Use when the user says 'taskplane design', asks to design a new feature or approach before coding, wants a technical design based on requirements and/or an existing codebase, wants alternatives and trade-offs, or needs dependency/contract/rollout decisions settled before Build. Produces an approved Design Contract with proposed graph, Design DoR/DoD, solution-design evidence, and conditional visualization. It designs the HOW; it does not implement or review current code."
 ---
 
 # /tp-design — settle the HOW before Build

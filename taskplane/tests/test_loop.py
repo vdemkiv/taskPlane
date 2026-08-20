@@ -929,6 +929,7 @@ class TestParallelExecution(unittest.TestCase):
                 command.append("--write")
             result = subprocess.run(
                 command, cwd=cwd, check=True, text=True,
+                encoding="utf-8", errors="replace",
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             return json.loads(result.stdout)
 

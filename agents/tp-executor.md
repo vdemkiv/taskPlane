@@ -1,6 +1,7 @@
 ---
 name: tp-executor
 description: >
+  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   The EXECUTE step of the Evaluate-Loop: builds one task under its enforced
   contract, TDD-first, honoring the primed lenses and the requirement's
   acceptance criteria. Examples: <example>Context: loop next says

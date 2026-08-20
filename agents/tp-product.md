@@ -1,6 +1,7 @@
 ---
 name: tp-product
 description: >
+  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   The product persona of taskplane — owns the WHAT. Use it to turn a rough
   goal into a crisp, contract-ready spec: problem, users, in/out scope,
   testable acceptance criteria that become the DoD — and to act on product

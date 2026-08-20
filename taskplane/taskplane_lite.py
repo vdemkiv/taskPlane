@@ -1488,7 +1488,8 @@ def screen_command(cmd: str, coding: dict, workspace: str | None) -> str | None:
 
 
 _HOST_HOOK_COMMANDS = frozenset({
-    "screen", "screen-dispatch", "screen-render", "subagent-start",
+    "screen", "screen-skill", "screen-dispatch", "screen-render",
+    "subagent-start",
     "subagent-stop", "session-verify", "context",
 })
 
@@ -2926,6 +2927,43 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
     return c
 
 
+def apply_foreign_state_exclusions(contract: dict, workspace: str, *,
+                                   allow_roots=None, actor: str | None = None,
+                                   roots=None) -> dict:
+    """Compile signed foreign state roots into one contract's write wall."""
+    import collision
+
+    detected = list(roots if roots is not None else
+                    collision.discover_state_roots(workspace))
+    requested = sorted({str(item).replace("\\", "/").strip("/")
+                        for item in (allow_roots or []) if str(item).strip()})
+    known = {str(row.get("root")) for row in detected}
+    unknown = [item for item in requested if item not in known]
+    if unknown:
+        raise ValueError("foreign-state override does not match a detected "
+                         "signed root: " + ", ".join(unknown))
+    if requested and not str(actor or "").strip():
+        raise ValueError("foreign-state override requires an attributable actor")
+    coding = contract.setdefault("coding", {})
+    excluded = [row for row in detected if row.get("root") not in requested]
+    out = list(coding.get("out_of_scope_paths") or [])
+    for row in excluded:
+        root = str(row["root"]).rstrip("/")
+        for pattern in (root, root + "/**"):
+            if pattern not in out:
+                out.append(pattern)
+    coding["out_of_scope_paths"] = out
+    if detected:
+        contract["foreign_state"] = {
+            "schema": "taskplane.foreign-state-authority/v1",
+            "detected": detected,
+            "excluded_roots": [row["root"] for row in excluded],
+            "overrides": [{"root": root, "actor": str(actor)}
+                          for root in requested],
+        }
+    return contract
+
+
 # ------------------------------------------------------ submission authority
 
 SUBMISSION_CONTRACT_SCHEMA = "taskplane.submission-contract/v1"
@@ -3634,6 +3672,17 @@ def activate(workspace: str, contract: dict,
              snapshot: str | None = "auto") -> dict:
     """Write the active contract + snapshot so the PreToolUse hook enforces
     it. Returns the contract. snapshot='auto' records git HEAD."""
+    # This shared entry boundary covers CLI, loop, claim, and review adapters.
+    import collision
+    apply_foreign_state_exclusions(
+        contract, workspace,
+        allow_roots=((contract.get("foreign_state_override") or {}).get(
+            "roots") or []),
+        actor=(contract.get("foreign_state_override") or {}).get("actor"))
+    roots = ((contract.get("foreign_state") or {}).get("detected") or [])
+    if roots:
+        collision.persist(workspace, roots=roots,
+                          run_id=contract.get("task_id"))
     if snapshot == "auto":
         snapshot = git_head(workspace)
     # Orphan-release bookkeeping (see orphan_status): WHEN it was activated,

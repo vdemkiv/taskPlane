@@ -1,6 +1,7 @@
 ---
 name: tp-northstar
 description: >
+  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   The north-star review — taskplane's summoned STRATEGIC lens, read-only and
   advisory. It is NOT a loop stage: tp-product owns the WHAT and tp-engineering
   owns whether it's SOUND; this is the third lens a human calls for a direction

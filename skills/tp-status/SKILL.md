@@ -1,6 +1,6 @@
 ---
 name: tp-status
-description: "Use when the user asks where things stand with taskplane-governed work: 'status', 'where are we', 'what's the state of the loop/track/requirements/debt'. Read-only snapshot rendered as the inline mission-control dashboard: active track, loop step, tasks, open requirements, tracked debt, KB size, dependency graph — with an explicit action banner (gate buttons if a decision is yours, 'no action needed' if agents are working)."
+description: "Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs. Use when the user asks where things stand with taskplane-governed work: 'status', 'where are we', 'what's the state of the loop/track/requirements/debt'. Read-only snapshot rendered as the inline mission-control dashboard: active track, loop step, tasks, open requirements, tracked debt, KB size, dependency graph — with an explicit action banner (gate buttons if a decision is yours, 'no action needed' if agents are working)."
 ---
 
 # /tp-status — where the governed work stands

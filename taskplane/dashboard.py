@@ -2619,7 +2619,13 @@ def headline_onboarding(report):
         report.get("next_action"), "setup incomplete")
     host = report.get("host")
     tail = f" · host: {host}" if host else ""
-    return f"setup {ok}/{len(checks)} prerequisites ready · next: {nxt}{tail}"
+    foreign = report.get("foreign_state") or []
+    collision = (" · FOREIGN STATE: "
+                 + ", ".join(str(row.get("plugin")) + " at "
+                             + str(row.get("root")) for row in foreign)
+                 if foreign else "")
+    return (f"setup {ok}/{len(checks)} prerequisites ready · next: {nxt}"
+            f"{tail}{collision}")
 
 
 def render_onboarding(report, out=None):
@@ -2704,6 +2710,18 @@ def render_onboarding(report, out=None):
         actions = b(btn, "Start — what should we build?",
                     "taskplane is set up — help me state my first goal")
 
+    foreign = report.get("foreign_state") or []
+    foreign_html = ""
+    if foreign:
+        foreign_html = (
+            '<div role="alert" style="border:1px solid var(--text-danger);'
+            'border-left:4px solid var(--text-danger);border-radius:8px;'
+            'padding:10px 13px;margin-bottom:16px;font-size:12.5px">'
+            '<strong>Competing orchestrator state detected</strong><br>'
+            + '<br>'.join(_esc(str(row.get("plugin"))) + ' at <code>'
+                         + _esc(str(row.get("root"))) + '</code> — '
+                         + _esc(str(row.get("remediation") or ""))
+                         for row in foreign) + '</div>')
     frag = (
         f'<h2 class="sr-only">taskplane setup: {done} of {len(checks)} '
         f'prerequisites ready. {_esc(headline)}.</h2>'
@@ -2716,7 +2734,8 @@ def render_onboarding(report, out=None):
         f'{_esc(headline)}</div>'
         f'<div style="font-size:13.5px;color:var(--text-secondary);'
         f'line-height:1.55;margin-bottom:16px">{_esc(sub)}</div>'
-        f'<div style="border:1px solid var(--border);border-radius:8px;'
+        + foreign_html
+        + f'<div style="border:1px solid var(--border);border-radius:8px;'
         f'padding:4px 16px 8px;margin-bottom:16px">{"".join(rows)}</div>'
         f'<div style="display:flex;gap:8px;flex-wrap:wrap">{actions}</div>'
         f'<div style="{_MICRO};margin-top:14px">taskplane runs locally — it '
@@ -4506,6 +4525,65 @@ def _widget_parts(ws: str) -> dict:
     hmain = next((h for h in harness if not h["tag"]), None)
     totals = _meter_totals(ws)
     budget_exhausted, budget_used, budget_max = _budget_state(ws, contract)
+    enforcement = (((state or {}).get("enforcement") or {}).get("current")
+                   or (contract or {}).get("enforcement") or {})
+    enforcement_status = str(enforcement.get("status") or "unproven")
+    advisory = enforcement.get("advisory") or {}
+    actor = str(advisory.get("actor") or "")
+    when = str(advisory.get("acknowledged_at") or "")
+    evidence_id = str(enforcement.get("evidence_id") or "")
+    assurance = (
+        f'<div role="status" style="border:1px solid var(--border-strong);'
+        f'border-left:4px solid var(--text-primary);border-radius:6px;'
+        f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
+        f'<strong>screen enforcement: {_esc(enforcement_status)}</strong>'
+        + (f' · acknowledged by {_esc(actor)} at {_esc(when)}'
+           if actor else '')
+        + (f' · evidence {_esc(evidence_id[:20])}' if evidence_id else '')
+        + '</div>')
+    try:
+        import collision
+        foreign = collision.load_ledger(ws) or {}
+    except Exception:
+        foreign = {}
+    foreign_counts = foreign.get("counts") \
+        if isinstance(foreign.get("counts"), dict) else {}
+    foreign_total = sum(int(value or 0) for key, value in foreign_counts.items()
+                        if key != "signed_roots")
+    foreign_total += int(foreign_counts.get("signed_roots") or 0)
+    identities = [str(row.get("identity") or row.get("root") or "")
+                  for row in ((foreign.get("identities") or [])
+                              + (foreign.get("state_roots") or []))
+                  if isinstance(row, dict)]
+    interference = ""
+    if foreign_total:
+        interference = (
+            f'<div role="alert" style="border:1px solid var(--text-danger);'
+            f'border-left:4px solid var(--text-danger);border-radius:6px;'
+            f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
+            f'<strong>foreign interference: {foreign_total}</strong> · '
+            f'{_esc(json.dumps(foreign_counts, sort_keys=True))}'
+            + (f' · identities {_esc(", ".join(identities))}'
+               if identities else '') + '</div>')
+    cleanup_rows = ((state or {}).get("worktree_cleanups") or {})
+    try:
+        import runtime_eval
+        cleanup_projection = runtime_eval.worktree_cleanup_projection(
+            cleanup_rows)
+    except Exception:
+        cleanup_projection = {"headline": False, "outcomes": [], "counts": {}}
+    cleanup_alert = ""
+    if cleanup_projection.get("headline"):
+        reasons = "; ".join(
+            str(row.get("task_id")) + ": " + str(row.get("reason"))
+            for row in cleanup_projection.get("outcomes") or []
+            if row.get("outcome") in {"preserved", "manual-attention"})
+        cleanup_alert = (
+            f'<div role="alert" style="border:1px solid var(--text-danger);'
+            f'border-left:4px solid var(--text-danger);border-radius:6px;'
+            f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
+            f'<strong>worktree cleanup needs attention</strong> · '
+            f'{_esc(reasons)}</div>')
 
     pipe_s = _widget_spine(state, step, tasks, "s")
     pipe_d = _widget_spine(state, step, tasks, "d")
@@ -4623,7 +4701,9 @@ def _widget_parts(ws: str) -> dict:
              'actions.' if budget_exhausted else '') + '</h2>')
     notice = _trace_notice(tstats)
     return {
-        "sr": sr, "header": header, "notice": notice, "hero": hero,
+        "sr": sr, "header": header, "notice": notice,
+        "assurance": assurance, "interference": interference,
+        "cleanup_alert": cleanup_alert, "hero": hero,
         "gatebar": gatebar, "dor": dor_html, "stats": stats_html,
         "pipe_s": pipe_s, "pipe_d": pipe_d,
         "journey_s": journey_s, "journey_d": journey_d,
@@ -4672,6 +4752,9 @@ def widget(ws: str) -> str:
           f'font-family:var(--font-sans);color:'
           f'var(--text-primary)">' + p["header"]
         + p["notice"]
+        + p["assurance"]
+        + p["interference"]
+        + p["cleanup_alert"]
         + p["hero"]
         + p["gatebar"]
         + p["dor"]
@@ -4720,7 +4803,9 @@ def report_widget(ws: str) -> str:
         p["sr"] + _WIDGET_CSS
         + '<div dir="auto" style="padding:.5rem 0;font-family:var(--font-sans);'
           'color:var(--text-primary)">' + header
-        + p["notice"] + p["hero"] + p["dor"] + p["stats"]
+        + p["notice"] + p["assurance"] + p["interference"]
+        + p["cleanup_alert"]
+        + p["hero"] + p["dor"] + p["stats"]
         + p["workflow"] + p["graph"] + execution + context
         + p["gatebar"] + '</div>' + _WIDGET_JS)
 
@@ -5074,7 +5159,10 @@ def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
                    'color:var(--text-primary)">')
     p1_suffix = '</div>' + _WIDGET_JS
     p1_fixed_bytes = _page_bytes(p1_prefix) + _page_bytes(p1_suffix)
-    p1_body = (p["header"] + p["notice"] + p["hero"] + p["gatebar"]
+    p1_body = (p["header"] + p["notice"] + p["assurance"]
+               + p["interference"]
+               + p["cleanup_alert"]
+               + p["hero"] + p["gatebar"]
                + p["dor"] + p["stats"] + p["pipe_s"] + p["harness_panel"])
     p1_body = _fit_page(p1_body, max(256, budget - p1_fixed_bytes))
     pages.append({"title": "mission control — status & gate",

@@ -1,6 +1,7 @@
 ---
 name: tp-designer
 description: >
+  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   The DESIGN step of taskplane: turns a refined requirement plus current code,
   decisions, and dependency graph into an approvable Design Contract before
   implementation. It owns the proposed HOW, writes only design/**, never edits
