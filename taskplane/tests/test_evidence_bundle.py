@@ -262,11 +262,18 @@ class TestUnavailableModelEvaluationDoesNotOpenAProductFix(_AtEvaluate):
         result = submit_gate(self.ws, "unavailable")
         self.assertNotIn("error", result)
         state = loop.load(self.ws)
-        self.assertEqual(state["step"], "em")
-        self.assertEqual(state["tasks"][0]["status"], "passed")
+        self.assertEqual(state["step"], "escalated")
+        self.assertEqual(state["tasks"][0]["status"], "unavailable")
+        self.assertNotIn(state["tasks"][0]["status"], loop.SETTLED)
         self.assertEqual(state["tasks"][0]["fix_cycles"], 0)
         self.assertEqual(state["tasks"][0]["evaluation"]["status"],
                          "unavailable")
+        self.assertEqual(state["tasks"][0]["evaluation"]["verdict"],
+                         "non-judged")
+
+        retried = loop.resolve(self.ws, "retry")
+        self.assertEqual(retried["step"], "evaluate")
+        self.assertEqual(loop.load(self.ws)["tasks"][0]["status"], "running")
 
     def test_product_failure_cannot_be_disguised_as_unavailable(self):
         self._write_unavailable(not_met=True)

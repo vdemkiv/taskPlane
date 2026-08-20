@@ -3918,9 +3918,18 @@ def resolve(ws: str, decision: str) -> dict:
         return {"error": "nothing escalated to resolve"}
     t = _current_task(state)
     if decision == "retry":
+        evaluation = t.get("evaluation") or {}
+        retry_evaluation = (
+            t.get("status") == "unavailable"
+            and evaluation.get("status") == "unavailable"
+            and evaluation.get("verdict") == "non-judged"
+        )
         t["fix_cycles"] = 0
         t["status"] = "running"
-        state["step"] = "fix"
+        # An unavailable evaluator produced no product judgment, so there is
+        # no implementation finding to fix. Retry the missing judgment itself.
+        # Judged product failures continue through the existing fix route.
+        state["step"] = "evaluate" if retry_evaluation else "fix"
     elif decision == "skip":
         t["status"] = "skipped"
         # Cascade: a task that depended (transitively) on the skipped one
