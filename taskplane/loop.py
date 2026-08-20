@@ -12,7 +12,7 @@ State machine (per docs/loop-design.md, answers locked 2026-07-11):
   plan    → plan_approval (human) → execute
   execute → evaluate
   evaluate: pass → next task, or → em when all tasks pass
-            unavailable → next task/em with a visible warning, never fix
+            unavailable → escalated recovery with a non-judged warning
             fail → fix (if fix_cycles < max) else escalated (human)
   fix     → evaluate
   em      → signoff (human) → retro/graph true-up → done
@@ -27,6 +27,7 @@ existing spec (→plan).
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import os
 import stat
@@ -36,11 +37,13 @@ import authority as authority_engine
 import command_wave
 import depgraph
 import evaluation_output
+import evaluator_health
 import host_capabilities
 import kb
 import lens as lens_router
 import loop_status
 import loop_recovery
+import progress as progress_engine
 import retro as retro_engine
 import requirements as reqs
 import review_retry
@@ -568,9 +571,7 @@ STEP_ROLE = {
     "fix": "tp-fixer",
     "em": "tp-engineering",
 }
-HUMAN_STEPS = {"design_approval", "plan_approval", "selection",
-               "signoff", "escalated",
-               "done", "failed"}
+HUMAN_STEPS = progress_engine.HUMAN_STEPS
 
 COMMAND_WAVE_SCHEMA = command_wave.COMMAND_WAVE_SCHEMA
 command_wave_create = command_wave.create
@@ -588,159 +589,12 @@ SETTLED = {"passed", "not_selected", "reference", "skipped",
 # task but does NOT satisfy its dependents (they cascade-skip).
 DEP_SATISFIED = {"passed", "done", "external"}
 
-# The canonical governance rail — (step, label). This is the SINGLE source a
-# view renders its timeline from; the engine owns the machine, so a dashboard
-# must derive its pipeline from here (via display_pipeline) rather than
-# re-encode it and drift. is-human comes from HUMAN_STEPS, role from STEP_ROLE.
-PIPELINE = [
-    ("pm", "PM"), ("design", "Design"),
-    ("design_approval", "Approve design"),
-    ("plan", "Plan"), ("plan_approval", "Approve"),
-    ("execute", "Execute"), ("evaluate", "Evaluate"), ("fix", "Fix"),
-    ("em", "EM"), ("signoff", "Sign-off"),
-    ("retro", "Retro + graph true-up"), ("done", "Done"),
-]
-# The A/B selection gate is spliced in before 'em', but only for an A/B loop
-# that hasn't selected yet — one place owns that rule (display_pipeline).
-SELECTION_STEP = ("selection", "Select")
-
-_NATIVE_TERMINAL_STATES = frozenset(
-    {"completed", "complete", "done", "cancelled", "failed", "failure"})
-
-
-class NativeProgressSession:
-    """One presentation-only PiP lifecycle over canonical snapshots."""
-
-    def __init__(self) -> None:
-        self.identity = None
-        self.last_sequence = -1
-        self.last_fingerprint = None
-        self.opened = False
-        self.closed = False
-
-    def publish(self, snapshot: object) -> dict:
-        identity = (snapshot.workflow_id, snapshot.run_id, snapshot.revision)
-        if self.identity is not None and identity != self.identity:
-            raise ValueError("progress session identity changed")
-        if snapshot.sequence < self.last_sequence:
-            raise ValueError("progress sequence moved backwards")
-        if (snapshot.sequence == self.last_sequence and
-                snapshot.fingerprint == self.last_fingerprint):
-            return self._result(snapshot, "duplicate")
-        if snapshot.sequence == self.last_sequence:
-            raise ValueError("progress sequence conflicts with prior snapshot")
-        if self.closed:
-            raise ValueError("progress session is closed")
-        self.identity = identity
-        self.last_sequence = snapshot.sequence
-        self.last_fingerprint = snapshot.fingerprint
-        terminal = snapshot.state.lower() in _NATIVE_TERMINAL_STATES
-        persistent = bool(snapshot.values.get("persistent", True))
-        if terminal and not self.opened:
-            transition = "none"
-            self.closed = True
-        elif not persistent and not self.opened:
-            transition = "none"
-        elif not self.opened:
-            self.opened = True
-            transition = "open"
-        elif terminal:
-            self.closed = True
-            transition = "close"
-        else:
-            transition = "update"
-        return self._result(snapshot, transition)
-
-    def _result(self, snapshot: object, transition: str) -> dict:
-        values = snapshot.to_dict()["values"]
-        return {
-            "schema": "taskplane.host-progress-session/v1",
-            "transition": transition, "workflow_id": snapshot.workflow_id,
-            "run_id": snapshot.run_id, "revision": snapshot.revision,
-            "sequence": snapshot.sequence, "stage": snapshot.stage,
-            "state": snapshot.state, "active_work": values.get("active_work"),
-            "completed_work": values.get("completed_work"),
-            "attention": values.get("attention", []),
-            "last_update": values.get("last_update", snapshot.sequence),
-            "tokens": values.get("tokens"),
-        }
-
-
-def project_agent_topology(events: list[dict]) -> dict:
-    """Fold canonical dispatch events into a stable, phantom-free graph."""
-    nodes, order, edges, edge_keys = {}, [], [], set()
-    immutable = ("task_id", "slot_id", "role", "scope", "wave")
-    for event in events if isinstance(events, list) else []:
-        if not isinstance(event, dict):
-            continue
-        agent_id = str(event.get("agent_id") or "").strip()
-        task_id = str(event.get("task_id") or "").strip()
-        slot_id = str(event.get("slot_id") or "").strip()
-        if not (agent_id and task_id and slot_id):
-            continue
-        normalized = {
-            "agent_id": agent_id, "task_id": task_id, "slot_id": slot_id,
-            "role": str(event.get("role") or "unknown"),
-            "scope": list(event.get("scope") or []),
-            "wave": str(event.get("wave") or ""),
-            "state": str(event.get("state") or "unknown"),
-            "attention": list(event.get("attention") or []),
-            "outcome": event.get("outcome"),
-        }
-        prior = nodes.get(agent_id)
-        if prior:
-            if any(prior[key] != normalized[key] for key in immutable):
-                raise ValueError(f"agent identity changed: {agent_id}")
-            prior.update({key: normalized[key]
-                          for key in ("state", "attention", "outcome")})
-        else:
-            nodes[agent_id] = normalized
-            order.append(agent_id)
-        for source, relationship in (
-                [(str(event.get("retry_of") or ""), "retry")] +
-                [(str(item), "dependency")
-                 for item in event.get("depends_on") or []]):
-            if not source:
-                continue
-            key = (source, agent_id, relationship)
-            if key not in edge_keys:
-                edges.append({"from": source, "to": agent_id,
-                              "relationship": relationship})
-                edge_keys.add(key)
-    edges = [row for row in edges
-             if row["from"] in nodes and row["to"] in nodes]
-    return {"schema": "taskplane.host-agent-topology/v1",
-            "nodes": [nodes[key] for key in order], "edges": edges}
-
-
-def splice_selection(rail: list, state: dict | None) -> list:
-    """Insert the A/B 'selection' gate before 'em' when the loop is an A/B
-    round that hasn't selected yet. `rail` is any list whose items' [0] is a
-    step id (with or without label/flag). Returns a NEW list. This is the ONE
-    place the splice rule lives, so render()'s full rail and widget()'s
-    collapsed spine can't disagree."""
-    if not (state and state.get("ab") and not state.get("selection")):
-        return list(rail)
-    ids = [r[0] for r in rail]
-    i = ids.index("em") if "em" in ids else len(rail)
-    sel = (SELECTION_STEP[0], SELECTION_STEP[1], True)
-    return list(rail[:i]) + [sel] + list(rail[i:])
-
-
-def display_pipeline(state: dict | None = None) -> list:
-    """The ordered rail a view should render: list of (step, label, is_human).
-    Both dashboard.render() and dashboard.widget() derive from the engine
-    (this + splice_selection), so the timeline and the human-gate set can't
-    drift between the two renderers or from the engine."""
-    rows = list(PIPELINE)
-    if not (state and state.get("design_required")):
-        rows = [row for row in rows
-                if row[0] not in ("design", "design_approval")]
-    elif state.get("design_only"):
-        rows = [row for row in rows
-                if row[0] in ("pm", "design", "design_approval", "done")]
-    rail = [(s, lbl, s in HUMAN_STEPS) for s, lbl in rows]
-    return splice_selection(rail, state)
+PIPELINE = progress_engine.PIPELINE
+SELECTION_STEP = progress_engine.SELECTION_STEP
+NativeProgressSession = progress_engine.NativeProgressSession
+project_agent_topology = progress_engine.project_agent_topology
+splice_selection = progress_engine.splice_selection
+display_pipeline = progress_engine.display_pipeline
 
 
 def _next_unsettled_index(state: dict, after: int):
@@ -774,14 +628,20 @@ def _load_raw(ws: str) -> dict | None:
     return tp.load_json(p, what="loop state file")
 
 
+_EVIDENCE_STATE_WORKSPACE = contextvars.ContextVar(
+    "taskplane_evidence_state_workspace", default=None)
+
+
 def load(ws: str) -> dict | None:
     """Load loop state and flush any crash-surviving authority outbox."""
-    state = _load_raw(ws)
+    # CLI evidence may bind task bytes to its primary coordination state.
+    state_ws = _EVIDENCE_STATE_WORKSPACE.get() or ws
+    state = _load_raw(state_ws)
     if state is not None and any(
             row.get("status") != "delivered" for row in
             (state.get("authority_effect_outbox") or {}).values()):
-        reconcile_authority_effects(ws)
-        state = _load_raw(ws)
+        reconcile_authority_effects(state_ws)
+        state = _load_raw(state_ws)
     return state
 
 
@@ -1376,13 +1236,11 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         if step == "signoff":
             # Run the MECHANICAL Definition-of-Done here so the human signs off
             # seeing both the EM's read-out AND the scope-diff/lint verdict.
-            out["dod"] = _signoff_dod(ws, state)
+            out["dod"] = _signoff_gate_dod(ws, state)
             # v2.3.0 wiring: accepted design drift and hand-declared edge
             # realizations are VISIBLE at sign-off, not dead-on-pass.
-            findings, _errs = _read_json(
-                runtime_storage.review_public_path(ws, "findings.json"))
-            notices = _dc.design_review_notices(
-                (findings or {}).get("meta") or {})
+            notices = list(
+                (state.get("signoff_evidence") or {}).get("notices") or [])
             if notices:
                 out["notices"] = notices
         if step == "design_approval":
@@ -2064,6 +1922,46 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
         state.setdefault("_validated_suite_evidence", {})[task["id"]] = \
             suite_evidence
     return errors
+
+
+@contextlib.contextmanager
+def _claimed_execute_suite_binding():
+    """Run parallel EXECUTE suites from the claimed checkout namespace.
+
+    The orchestrator engine may be older than a task branch that changes the
+    engine itself. ``taskplane_lite.run_suite_command`` deliberately injects
+    the orchestrator's module namespace for ordinary validation, which made
+    an EXECUTE gate test stale engine bytes even though its cwd was the task
+    worktree. A wave gate instead needs the same plain command semantics the
+    executor used in that exact checkout. Force a fresh run so an earlier
+    validator-namespace cache record cannot substitute for that evidence.
+    """
+    import subprocess
+
+    original_runner = tp.run_suite_command
+    original_lookup = tp.suite_cache_lookup
+
+    def run_claimed(workspace, command, *, env=None, timeout=600):
+        shell = not isinstance(command, (list, tuple))
+        return subprocess.run(
+            command if shell else list(command),
+            cwd=workspace,
+            shell=shell,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    tp.run_suite_command = run_claimed
+    tp.suite_cache_lookup = lambda workspace, command, env: None
+    try:
+        yield
+    finally:
+        tp.run_suite_command = original_runner
+        tp.suite_cache_lookup = original_lookup
 
 
 def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
@@ -2883,8 +2781,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         # destroy the work. Commit first, then gate.
         wt = wt_precheck.get("workspace")
         if outcome == "pass":
-            dod_errors = _task_dod_errors(
-                wt or ws, state, wt_precheck, tp.snapshot_ref(wt or ws))
+            with _claimed_execute_suite_binding():
+                dod_errors = _task_dod_errors(
+                    wt or ws, state, wt_precheck, tp.snapshot_ref(wt or ws))
             if dod_errors:
                 tp.trace(ws, "loop_gate_blocked", step=step, task=task_id,
                          reason="dod", errors=dod_errors)
@@ -3101,14 +3000,25 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             tp.trace(ws, "review_convergence_unavailable",
                      task=(task or {}).get("id"),
                      error=f"{exc.__class__.__name__}: {exc}")
+    signoff_evidence = None
     if outcome == "pass" and step == "em":
-        review_errors = _engineering_review_errors(ws, state)
-        if review_errors:
+        signoff_evidence, signoff_errors = _signoff_evidence_binding(ws, state)
+        if signoff_errors:
             tp.trace(ws, "loop_gate_blocked", step=step,
-                     reason="engineering_review", errors=review_errors)
-            return {"error": "engineering review is incomplete — sign-off "
-                             "is not available", "step": step,
-                    "dod": {"passed": False, "errors": review_errors}}
+                     reason="terminal_signoff_evidence",
+                     errors=signoff_errors)
+            return {"error": "engineering review is incomplete or terminal "
+                             "sign-off evidence failed — the loop remains "
+                             "at engineering review",
+                    "step": step,
+                    "dod": {"passed": False, "errors": signoff_errors}}
+    em_request_changes = None
+    if outcome == "fail" and step == "em":
+        review_submission = state.get("_submission") or {}
+        em_request_changes = {
+            "schema": "taskplane.engineering-review-request-changes/v1",
+            "submission": dict(review_submission),
+        }
 
     # H2 (v2.2.1): validation above ran on a snapshot and can take seconds
     # (tests, evidence, graph). Apply the transition under the state LOCK to
@@ -3218,22 +3128,37 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             t = _current_task(state)
             build_failed = state.pop("_build_failed", False) or \
                 t.pop("_build_failed", False)
-            if outcome in ("pass", "unavailable") and not build_failed:
+            if outcome == "unavailable" and not build_failed:
+                availability = dict(
+                    (unavailable_verdict or {}).get("evaluation") or {})
+                identity = evaluator_health.outage_identity(
+                    task=str(t.get("id") or ""),
+                    requirement=str((unavailable_verdict or {}).get(
+                        "requirement") or ""),
+                    evaluation=availability,
+                    failures=list((unavailable_verdict or {}).get(
+                        "failures") or []))
+                warning = {
+                    "task": t.get("id"),
+                    "status": "unavailable",
+                    "verdict": "non-judged",
+                    "reason_code": availability.get("reason_code"),
+                    "detail": str(availability.get("detail") or "")[:500],
+                    "outage_identity": identity,
+                }
+                t["status"] = "unavailable"
+                t["evaluation"] = warning
+                warnings = state.setdefault("evaluation_warnings", [])
+                warnings[:] = [row for row in warnings
+                               if row.get("task") != t.get("id")]
+                warnings.append(warning)
+                # Infrastructure could not provide the independent judgment
+                # required for readiness.  Keep the task unsettled and pause
+                # at the existing governed recovery boundary; only an
+                # attributed human retry/skip/defer/abort can move it.
+                state["step"] = "escalated"
+            elif outcome == "pass" and not build_failed:
                 t["status"] = "passed"
-                if outcome == "unavailable":
-                    availability = dict(
-                        (unavailable_verdict or {}).get("evaluation") or {})
-                    warning = {
-                        "task": t.get("id"),
-                        "status": "unavailable",
-                        "reason_code": availability.get("reason_code"),
-                        "detail": str(availability.get("detail") or "")[:500],
-                    }
-                    t["evaluation"] = warning
-                    warnings = state.setdefault("evaluation_warnings", [])
-                    warnings[:] = [row for row in warnings
-                                   if row.get("task") != t.get("id")]
-                    warnings.append(warning)
                 # After the LAST task: A/B loops pause at the human SELECTION
                 # gate (variants never merge — one gets picked) — but only
                 # ONCE; a post-selection fix cycle goes back to the review.
@@ -3323,9 +3248,20 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     verified_suite
             state["step"] = "evaluate"
         elif step == "em":
-            # The graph was true-d up before the EM brief, so its fingerprint is
-            # part of the evidence being gated rather than a post-review mutation.
-            state["step"] = "signoff"
+            if outcome == "pass":
+                # The graph was true-d up before the EM brief, so its
+                # fingerprint is part of the evidence being gated rather
+                # than a post-review mutation.
+                state["signoff_evidence"] = signoff_evidence
+                state["signoff_dod"] = dict(signoff_evidence["dod"])
+                state["step"] = "signoff"
+            else:
+                # Request-changes evidence stays bound to the reviewed
+                # snapshot while the existing escalation/replan machinery
+                # owns recovery.  Pass-only sign-off evidence is untouched.
+                state["engineering_review_request_changes"] = \
+                    em_request_changes
+                state["step"] = "escalated"
     if step == "em" and outcome == "pass":
         # One more COMPLETED engineering review: advance the audit cadence
         # (every Nth em review runs as a full audit sweep). A cadence-store
@@ -3350,7 +3286,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                if outcome == "unavailable" else {})}
 
 
-def _signoff_dod(ws: str, state: dict) -> dict:
+def _compute_signoff_dod(ws: str, state: dict) -> dict:
     """Mechanical final DoD over aggregate scope, requirements, tests, graph,
     engineering evidence, and committed knowledge. Human sign-off remains."""
     scopes: list = []
@@ -3427,6 +3363,74 @@ def _signoff_dod(ws: str, state: dict) -> dict:
     # for, so it travels with the verdict instead of only into the trace.
     return {"passed": not errors, "errors": errors, "notices": notices,
             "scope": scopes, "baseline": baseline}
+
+
+def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
+    """Seal final DoD and review identity at the integrated revision.
+
+    Sign-off is a human decision over the EM-reviewed tree, not a fresh review
+    of whichever bytes happen to occupy the shared checkout later.  The EM
+    gate therefore computes the terminal mechanical verdict once and carries
+    its run-owned review identity into the human gate.
+    """
+    revision = tp.git_head(ws)
+    errors = []
+    if not revision:
+        errors.append("sign-off evidence has no integrated git revision")
+    elif tp.changed_files(ws, revision):
+        errors.append("sign-off evidence cannot bind an uncommitted product "
+                      "diff; commit the reviewed integration tree first")
+    if errors:
+        return None, errors
+    dod = _compute_signoff_dod(ws, state)
+    if not dod["passed"]:
+        return None, list(dod["errors"])
+    binding = review_kernel_binding(state, "em", _current_task(state)) or {}
+    findings, _ = _read_json(
+        runtime_storage.review_public_path(ws, "findings.json"))
+    meta = (findings or {}).get("meta") or {}
+    return {
+        "schema": "taskplane.signoff-evidence/v1",
+        "integration_revision": revision,
+        "requirement_id": state.get("requirement_id"),
+        "baseline": state.get("baseline"),
+        "review_kernel": dict(binding),
+        "review_revision": {
+            key: meta.get(key) for key in (
+                "target_fingerprint", "context_fingerprint",
+                "findings_fingerprint", "canonical_revision")
+            if meta.get(key) is not None
+        },
+        "dod": dod,
+        "notices": _dc.design_review_notices(meta),
+    }, []
+
+
+def _signoff_dod(ws: str, state: dict) -> dict:
+    """Return the EM-sealed terminal verdict; never re-read shared evidence."""
+    evidence = state.get("signoff_evidence")
+    if isinstance(evidence, dict) \
+            and evidence.get("schema") == "taskplane.signoff-evidence/v1" \
+            and evidence.get("integration_revision") \
+            and isinstance(evidence.get("dod"), dict):
+        return dict(evidence["dod"])
+    # Compatibility for callers that use this helper as the raw mechanical
+    # aggregate.  Human-gate presentation does not use this legacy fallback;
+    # next_action() surfaces a bounded-recovery marker instead.
+    return _compute_signoff_dod(ws, state)
+
+
+def _signoff_gate_dod(ws: str, state: dict) -> dict:
+    if state.get("signoff_evidence"):
+        return _signoff_dod(ws, state)
+    return {
+        "passed": False,
+        "errors": ["legacy sign-off state has no immutable integration "
+                   "evidence; approval can recover only when the current "
+                   "revision and EM evidence still agree"],
+        "notices": [], "scope": [], "baseline": state.get("baseline"),
+        "legacy_recovery": True,
+    }
 
 
 def _record_design_contracts(ws: str, state: dict, contract: dict | None) -> list:
@@ -3670,6 +3674,25 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             tags=["plan-approval"], context_files=scope,
             links={"loop": "plan"})
     elif step == "signoff":
+        if not state.get("signoff_evidence"):
+            recovered, recovery_errors = _signoff_evidence_binding(ws, state)
+            if recovery_errors:
+                tp.trace(ws, "loop_approve_blocked", gate="em_signoff",
+                         reason="legacy_evidence_unrecoverable",
+                         errors=recovery_errors, by=by)
+                return {
+                    "error": "legacy sign-off evidence cannot be recovered "
+                             "from the current integrated revision; return "
+                             "this same loop to engineering review and "
+                             "produce fresh terminal evidence",
+                    "step": "signoff",
+                    "dod": {"passed": False, "errors": recovery_errors},
+                    "recovery": "same_loop_engineering_review",
+                }
+            state["signoff_evidence"] = recovered
+            state["signoff_dod"] = dict(recovered["dod"])
+            tp.trace(ws, "legacy_signoff_evidence_recovered",
+                     revision=recovered["integration_revision"])
         dod = _signoff_dod(ws, state)
         if not dod["passed"]:
             tp.trace(ws, "loop_approve_blocked", gate="em_signoff",
@@ -3681,10 +3704,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         tp.trace(ws, "loop_approve", gate="em_signoff", final="retro", by=by)
         # v2.3.0 wiring: the sign-off payload carries the review's design
         # notices (accepted drift, declared edge realizations) when present.
-        findings, _errs = _read_json(
-            runtime_storage.review_public_path(ws, "findings.json"))
-        gate_notices = _dc.design_review_notices(
-            (findings or {}).get("meta") or {})
+        gate_notices = list(
+            (state.get("signoff_evidence") or {}).get("notices") or [])
         scope = sorted({g for t in (state.get("tasks") or [])
                         for g in t.get("scope", [])})
         kb.record_decision(
@@ -3747,6 +3768,16 @@ def select(ws: str, choice: str, note: str = "") -> dict:
         # Revision validation and state mutation share one lock. A checkout
         # change can no longer land between validation and persistence.
         current_revision = tp.git_head(ws)
+        # Pre-consolidation loops can resume at an already-open selection
+        # gate without the later authority_target_revision/baseline fields.
+        # There is no historical revision to reconstruct in that legacy
+        # shape, so migrate it once to the revision observed under this same
+        # lock. Current governed loops retain their persisted revision and
+        # still fail closed on stale checkout changes; the revision fence
+        # below protects both shapes through commit.
+        if not expected_revision:
+            expected_revision = current_revision
+            state["authority_target_revision"] = current_revision
         boundary = authority_engine.build_selection(
             variants, selected=choice.strip(), revision=current_revision,
             expected_revision=expected_revision)
@@ -3887,9 +3918,18 @@ def resolve(ws: str, decision: str) -> dict:
         return {"error": "nothing escalated to resolve"}
     t = _current_task(state)
     if decision == "retry":
+        evaluation = t.get("evaluation") or {}
+        retry_evaluation = (
+            t.get("status") == "unavailable"
+            and evaluation.get("status") == "unavailable"
+            and evaluation.get("verdict") == "non-judged"
+        )
         t["fix_cycles"] = 0
         t["status"] = "running"
-        state["step"] = "fix"
+        # An unavailable evaluator produced no product judgment, so there is
+        # no implementation finding to fix. Retry the missing judgment itself.
+        # Judged product failures continue through the existing fix route.
+        state["step"] = "evaluate" if retry_evaluation else "fix"
     elif decision == "skip":
         t["status"] = "skipped"
         # Cascade: a task that depended (transitively) on the skipped one
@@ -3955,8 +3995,55 @@ status = loop_status.status
 user_summary = loop_status.user_summary
 _publish_artifacts = loop_status.publish_artifacts
 _with_dashboard = loop_status.with_dashboard
+
+
+def _with_dispatch_dashboard(fn):
+    """Refresh durable artifacts and return their stable delivery contract.
+
+    ``next_action`` is serialized into Task-path and workflow prompts.  The
+    receipt's hashes and byte counts include host-specific dispatch
+    observations, so they differ when otherwise identical emissions occur in
+    sequence.  The selected mode and artifact locations are semantic output,
+    however: retain them and remove only those volatile content measurements.
+    """
+    wrapped = _with_dashboard(fn)
+
+    def dispatch_wrapped(ws, *args, **kwargs):
+        result = wrapped(ws, *args, **kwargs)
+        if isinstance(result, dict):
+            dashboard = result.get("dashboard")
+            if isinstance(dashboard, dict):
+                delivery = dashboard.get("delivery")
+                if isinstance(delivery, dict):
+                    stable = {key: value for key, value in delivery.items()
+                              if key not in {"semantic_bytes",
+                                             "semantic_sha256"}}
+                    artifacts = stable.get("artifacts")
+                    if isinstance(artifacts, dict):
+                        stable["artifacts"] = {
+                            name: ({key: value for key, value in receipt.items()
+                                    if key not in {"bytes", "sha256"}}
+                                   if isinstance(receipt, dict) else receipt)
+                            for name, receipt in artifacts.items()
+                        }
+                    inline = stable.get("inline")
+                    if isinstance(inline, dict):
+                        stable["inline"] = {
+                            key: value for key, value in inline.items()
+                            if key not in {"bytes", "sha256",
+                                           "semantic_bytes"}
+                        }
+                    dashboard["delivery"] = stable
+        return result
+
+    dispatch_wrapped.__name__ = fn.__name__
+    dispatch_wrapped.__doc__ = fn.__doc__
+    dispatch_wrapped.__wrapped__ = fn
+    return dispatch_wrapped
+
+
 gate = _with_dashboard(gate)
 submit = _with_dashboard(submit)
-next_action = _with_dashboard(next_action)
+next_action = _with_dispatch_dashboard(next_action)
 approve = _with_dashboard(approve)
 retro = _with_dashboard(retro)

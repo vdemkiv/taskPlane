@@ -13,6 +13,7 @@ import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
 import depgraph  # noqa: E402
+import evaluator_health  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 
@@ -109,7 +110,10 @@ def write_kernel_results(ws):
             "schema": "taskplane.lens-slot-output/v2",
             "authored_by": "lens-slot",
             "lens_results": [
-                {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                {"lens": lens_id, "verdict": "pass", "blockers": 0,
+                 "checked_evidence": [{
+                     "file": "src/todo/a.py", "line": 1,
+                     "claim": "declared happy-path fixture inspected"}]}
                 for lens_id in lease["lens_ids"]
             ],
             "findings": [],
@@ -178,6 +182,86 @@ class TestLoop(unittest.TestCase):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
         self.assertEqual(loop.load(ws)["step"], "plan")
+
+    def _gate_evaluator_unavailable(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        loop.next_action(ws)
+        loop.gate(ws, "pass")
+        loop.approve(ws, "plan")
+        loop.next_action(ws)
+        with open(os.path.join(ws, "src", "todo", "a.py"), "a",
+                  encoding="utf-8") as stream:
+            stream.write("\ndef complete():\n    return True\n")
+        with unittest.mock.patch(
+                "runtime_eval.guide_loop",
+                return_value={"status": "on_path", "recovered": False}):
+            submit_gate(ws, "pass")
+        write_verdict(ws)
+        path = os.path.join(ws, ".eval", "verdict.json")
+        with open(path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["evaluation"] = {
+            "status": "unavailable",
+            "reason_code": "agent_timeout",
+            "detail": "bounded evaluator attempt 7 timed out on host alpha",
+        }
+        verdict["verdict"] = "fail"
+        verdict["lenses"] = []
+        verdict["failures"] = [{
+            "what": "independent evaluator did not return a judgment",
+            "repro": "dispatch attempt 7 on host alpha",
+            "where": "host:alpha/evaluator:independent",
+        }]
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream)
+        with unittest.mock.patch(
+                "runtime_eval.guide_loop",
+                return_value={"status": "on_path", "recovered": False}):
+            result = submit_gate(ws, "unavailable")
+        return ws, verdict, result
+
+    def test_evaluator_unavailable_remains_non_judged_and_keeps_readiness_closed(self):
+        ws, _, result = self._gate_evaluator_unavailable()
+        self.assertNotIn("error", result)
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        self.assertEqual(task["status"], "unavailable")
+        self.assertNotIn(task["status"], loop.SETTLED)
+        self.assertEqual(task["fix_cycles"], 0)
+        self.assertEqual(state["step"], "escalated")
+
+    def test_unavailable_warning_preserves_exact_outage_identity_without_pass_verdict(self):
+        ws, verdict, result = self._gate_evaluator_unavailable()
+        state = loop.load(ws)
+        warning = state["evaluation_warnings"][0]
+        identity = warning["outage_identity"]
+        self.assertEqual(result["warning"], warning)
+        self.assertEqual(warning["verdict"], "non-judged")
+        self.assertEqual(identity["task"], verdict["task"])
+        self.assertEqual(identity["requirement"], verdict["requirement"])
+        self.assertEqual(identity["evaluation"], verdict["evaluation"])
+        self.assertEqual(identity["failures"], verdict["failures"])
+        self.assertEqual(identity, evaluator_health.outage_identity(
+            task=verdict["task"], requirement=verdict["requirement"],
+            evaluation=verdict["evaluation"], failures=verdict["failures"]))
+        self.assertNotEqual(state["tasks"][0]["status"], "passed")
+
+    def test_evaluator_unavailable_retry_returns_to_evaluate_without_opening_fix(self):
+        ws, verdict, _ = self._gate_evaluator_unavailable()
+
+        result = loop.resolve(ws, "retry")
+
+        self.assertEqual(result["step"], "evaluate")
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        self.assertEqual(state["step"], "evaluate")
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["fix_cycles"], 0)
+        self.assertEqual(task["evaluation"]["verdict"], "non-judged")
+        self.assertEqual(
+            task["evaluation"]["outage_identity"]["evaluation"],
+            verdict["evaluation"])
 
     def test_next_activates_contract_gate_clears(self):
         ws = git_ws(self.tmp, [TASK])
@@ -275,6 +359,154 @@ class TestLoop(unittest.TestCase):
         self.assertIn("loop retro", approved["instruction"])
         loop.retro(ws)                                         # → done
         self.assertEqual(loop.load(ws)["step"], "done")
+
+    def test_em_fail_routes_request_changes_without_signoff_evidence(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        state = loop.load(ws)
+        state.update({
+            "step": "em",
+            "tasks": [dict(TASK, status="passed")],
+            "current_task": 0,
+            "baseline": tp.git_head(ws),
+            "submission_required": True,
+        })
+        loop.save(ws, state)
+        review_root = os.path.join(ws, ".em-review")
+        os.makedirs(review_root, exist_ok=True)
+        findings_path = os.path.join(review_root, "findings.json")
+        report_path = os.path.join(review_root, "report.md")
+        findings = {
+            "meta": {"gate": {"verdict": "request-changes"}},
+            "findings": [
+                {"severity": "high", "title": f"blocker {index}"}
+                for index in range(1, 5)
+            ],
+        }
+        with open(findings_path, "w", encoding="utf-8") as stream:
+            json.dump(findings, stream)
+        with open(report_path, "w", encoding="utf-8") as stream:
+            stream.write("# Engineering review\n\nRequest changes.\n")
+        findings_before = open(findings_path, "rb").read()
+        report_before = open(report_path, "rb").read()
+
+        submitted = loop.submit(ws, "fail", note="four blocking findings")
+        self.assertTrue(submitted["submitted"])
+        evidence_fingerprint = submitted["submission"]["fingerprint"]
+        out = loop.gate(ws, "fail")
+
+        self.assertNotIn("error", out)
+        self.assertEqual(out["step"], "escalated")
+        state = loop.load(ws)
+        self.assertEqual(state["step"], "escalated")
+        self.assertNotIn("signoff_evidence", state)
+        self.assertNotIn("signoff_dod", state)
+        request_changes = state["engineering_review_request_changes"]
+        submission_audit = request_changes["submission"]
+        self.assertEqual(
+            submission_audit["fingerprint"],
+            evidence_fingerprint,
+        )
+        self.assertEqual(
+            submission_audit["evidence_paths"],
+            [findings_path, report_path],
+        )
+        self.assertEqual(open(findings_path, "rb").read(), findings_before)
+        self.assertEqual(open(report_path, "rb").read(), report_before)
+        self.assertTrue(loop.next_action(ws)["paused"])
+
+    def test_parallel_execute_gate_validates_claimed_task_worktree(self):
+        """EXECUTE DoD must import and test the claimed branch's bytes."""
+        tests = (
+            "python3 -c \"import sys; sys.path.insert(0, 'src/a'); "
+            "import taskplane_lite; assert "
+            "taskplane_lite.WORKTREE_ONLY_EXECUTE_DOD\""
+        )
+        ws = TestParallelExecution._ws(TestParallelExecution())
+        state = loop.load(ws)
+        state["tasks"][0]["tests"] = tests
+        loop.save(ws, state)
+
+        agent_ws = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(
+            ["git", "worktree", "add", "-q", agent_ws, "-b",
+             "tp/execute-dod-worktree-binding"],
+            cwd=ws, check=True,
+        )
+        loop.claim(ws, "t1", agent_ws)
+        module = os.path.join(agent_ws, "src", "a", "taskplane_lite.py")
+        os.makedirs(os.path.dirname(module), exist_ok=True)
+        shutil.copyfile(tp.__file__, module)
+        with open(module, "a", encoding="utf-8") as stream:
+            stream.write("WORKTREE_ONLY_EXECUTE_DOD = True\n")
+        subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+             "commit", "-qm", "worker-only engine bytes"],
+            cwd=agent_ws, check=True,
+        )
+
+        submitted = loop.submit(ws, "pass", task_id="t1")
+        self.assertTrue(submitted.get("submitted"), submitted)
+        gated = loop.gate(ws, "pass", task_id="t1")
+
+        self.assertNotIn("error", gated)
+        self.assertTrue(gated["built"])
+        self.assertEqual(loop.load(ws)["tasks"][0]["status"], "built")
+
+    def test_signoff_is_bound_to_em_integration_not_later_shared_bytes(self):
+        """A later commit/loop cannot make an approved EM revision fail DoD.
+
+        This is the screenshot regression: sign-off used to re-read the
+        mutable shared findings/design and current checkout, producing a
+        mixed-revision list of scope, design, graph and schema failures.
+        """
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        loop.next_action(ws); loop.gate(ws, "pass")
+        loop.next_action(ws); submit_gate(ws, "pass")
+        loop.next_action(ws); pass_eval(ws)
+        loop.next_action(ws); pass_em(ws)
+
+        sealed = loop.load(ws)["signoff_evidence"]
+        reviewed_revision = sealed["integration_revision"]
+        self.assertTrue(sealed["dod"]["passed"])
+
+        # Simulate subsequent local work and another loop replacing the
+        # legacy shared review projection with incompatible bytes.
+        open(os.path.join(ws, "README.md"), "w", encoding="utf-8").write(
+            "later unrelated loop\n")
+        subprocess.run(["git", "add", "README.md"], cwd=ws, check=True)
+        subprocess.run(["git", "commit", "-qm", "later loop"], cwd=ws,
+                       check=True)
+        with open(os.path.join(ws, ".em-review", "findings.json"), "w",
+                  encoding="utf-8") as stream:
+            json.dump({"meta": {"gate": {"verdict": "invalid"}},
+                       "findings": "wrong schema"}, stream)
+
+        action = loop.next_action(ws)
+        self.assertTrue(action["dod"]["passed"], action["dod"])
+        self.assertEqual(loop.load(ws)["signoff_evidence"]
+                         ["integration_revision"], reviewed_revision)
+        approved = loop.approve(ws, by="human")
+        self.assertEqual(approved["step"], "retro")
+
+    def test_legacy_signoff_recovery_fails_closed_without_new_loop_advice(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        state = loop.load(ws)
+        state.update({"step": "signoff", "baseline": tp.git_head(ws),
+                      "tasks": [dict(TASK, status="passed")]})
+        loop.save(ws, state)
+
+        action = loop.next_action(ws)
+        self.assertTrue(action["dod"]["legacy_recovery"])
+        self.assertNotIn("new loop", str(action).lower())
+        refused = loop.approve(ws, by="human")
+        self.assertEqual(refused["recovery"], "same_loop_engineering_review")
+        self.assertNotIn("re-anchor", str(refused).lower())
+        self.assertNotIn("new loop", str(refused).lower())
+        self.assertEqual(loop.load(ws)["step"], "signoff")
 
     def test_fail_autofix_then_escalate(self):
         ws = git_ws(self.tmp, [TASK])
@@ -658,6 +890,60 @@ class TestParallelExecution(unittest.TestCase):
         # the MAIN workspace is not governed by this worker's contract
         self.assertIsNone(tpl.load_active(ws))
 
+    def test_evaluator_evidence_binds_claimed_worktree_from_either_checkout(self):
+        """The evaluator may launch through the primary bridge or in the
+        claimed worker, but both paths must cite and describe worker bytes."""
+        ws = self._ws()
+        agent_ws = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
+                        "tp/t1-evidence"], cwd=ws, check=True)
+        loop.claim(ws, "t1", agent_ws)
+        changed = os.path.join(agent_ws, "src", "a", "evidence.py")
+        with open(changed, "w", encoding="utf-8") as stream:
+            stream.write("worker_only = True\n")
+
+        state = loop.load(ws)
+        state["current_task"] = 0
+        state["step"] = "evaluate"
+        state["graph_governance"] = False
+        env = {key: value for key, value in os.environ.items()
+               if key != "TASKPLANE_TASK"}
+        state["_suite_evidence"] = {"t1": {
+            "schema": "taskplane.suite-evidence/v1",
+            "command": "true",
+            "key": tp._suite_cache_key(agent_ws, "true", env),
+            "returncode": 0,
+            "tail": "",
+            "duration_s": 0.01,
+            "source": "execute-gate",
+        }}
+        loop.save(ws, state)
+
+        cli = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "tp.py")
+
+        def evidence(cwd, write=False):
+            command = [sys.executable, cli, "loop", "evidence",
+                       "--task", "t1"]
+            if write:
+                command.append("--write")
+            result = subprocess.run(
+                command, cwd=cwd, check=True, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return json.loads(result.stdout)
+
+        through_primary = evidence(ws, write=True)
+        from_worker = evidence(agent_ws)
+        for bundle in (through_primary, from_worker):
+            self.assertNotIn("error", bundle)
+            self.assertTrue(bundle["suite"]["cited"])
+            self.assertEqual(bundle["suite"]["source"], "execute-gate")
+            self.assertIn("src/a/evidence.py", bundle["diff"]["files"])
+        self.assertTrue(os.path.exists(os.path.join(
+            agent_ws, ".eval", "verdict.json")))
+        self.assertFalse(os.path.exists(os.path.join(
+            ws, ".eval", "verdict.json")))
+
     def test_parallel_gates_flow_to_evaluate_then_next_wave(self):
         ws = self._ws()
         for tid in ("t1", "t2"):
@@ -1001,6 +1287,17 @@ def _scrub(obj):
     """Wall-clock stamps are the only legitimate run-to-run difference when
     the same workspace bytes are gated twice; everything else must match."""
     if isinstance(obj, dict):
+        # Progress is an observational projection over the audit stream, not
+        # gate state. Replaying the same gate necessarily samples a different
+        # elapsed value; the dashboard delivery digests then differ only
+        # because that sampled projection is rendered into its payload. The
+        # progress/delivery contracts have their own exact tests, while this
+        # differential proves the engine-skew precheck changes no workflow
+        # outcome.
+        if obj.get("schema") == "taskplane.status-progress/v1":
+            return "<live-progress>"
+        if obj.get("schema") == "taskplane.dashboard-delivery/v1":
+            return "<dashboard-delivery>"
         return {k: ("<t>" if k.endswith("_at") or k in _VOLATILE
                     else _scrub(v)) for k, v in obj.items()}
     if isinstance(obj, list):

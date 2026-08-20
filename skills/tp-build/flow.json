@@ -6,9 +6,8 @@
     {"id": "idea", "label": "feature idea", "kind": "input"},
     {"id": "product", "label": "complete requirement", "kind": "stage"},
     {"id": "design", "label": "conditional design", "kind": "stage"},
-    {"id": "design_approval", "label": "design approval", "kind": "gate"},
     {"id": "plan", "label": "graph-aware plan", "kind": "stage"},
-    {"id": "plan_approval", "label": "plan approval", "kind": "gate"},
+    {"id": "authorization", "label": "consolidated pre-implementation authorization", "kind": "gate"},
     {"id": "variants", "label": "build one or A/B variants", "kind": "parallel"},
     {"id": "selection", "label": "A/B selection if used", "kind": "gate"},
     {"id": "evaluate", "label": "Evaluate", "kind": "parallel"},
@@ -16,5 +15,5 @@
     {"id": "signoff", "label": "feature sign-off", "kind": "gate"},
     {"id": "retro", "label": "retro + graph true-up", "kind": "stage"}
   ],
-  "edges": [["idea", "product"], ["product", "design"], ["design", "design_approval"], ["design_approval", "plan"], ["plan", "plan_approval"], ["plan_approval", "variants"], ["variants", "selection"], ["selection", "evaluate"], ["evaluate", "review"], ["review", "signoff"], ["signoff", "retro"]]
+  "edges": [["idea", "product"], ["product", "design"], ["design", "plan"], ["plan", "authorization"], ["authorization", "variants"], ["variants", "selection"], ["selection", "evaluate"], ["evaluate", "review"], ["review", "signoff"], ["signoff", "retro"]]
 }

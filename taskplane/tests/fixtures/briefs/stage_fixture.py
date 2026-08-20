@@ -41,9 +41,16 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASKPLANE = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
-PLUGIN_ROOT = os.path.dirname(TASKPLANE)
 if TASKPLANE not in sys.path:
     sys.path.insert(0, TASKPLANE)
+import taskplane_lite as _ENGINE  # noqa: E402
+
+# A checkout-bound suite can collect fixtures from one checkout while its
+# orchestrator-provided engine is loaded from another.  Stage payload paths
+# are authored by that loaded engine, so bind the strict scrub to its exact
+# plugin root rather than wildcarding either checkout path.
+PLUGIN_ROOT = os.path.dirname(
+    os.path.dirname(os.path.realpath(_ENGINE.__file__)))
 
 # every env var that may vary the dispatch path, tier->model resolution, or
 # the contract slot — cleared for determinism (the goldens' env scrub)

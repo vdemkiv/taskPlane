@@ -33,8 +33,9 @@ def test_review_floors_scale_with_attributable_risk_across_required_matrix():
         "mixed": (["src/widget.py", "docs/runbook.md"],
                   {"src/widget.py": "x = 1", "docs/runbook.md": "recovery"},
                   "substantive-risky", FLOORS),
-        "mapping-gap": (["unknown/no-module-map.py"], {},
-                        "substantive-risky", FLOORS),
+        "mapping-gap": (["unknown/no-module-map.py"],
+                        {"unknown/no-module-map.py": "x = 1"},
+                        "simple-low-risk", {"code-quality"}),
     }
     for name, (files, content, risk_class, expected) in fixtures.items():
         routed = _review_route(files, content)
@@ -267,3 +268,24 @@ def test_document_malformed_absent_map_and_mixed_inputs_never_fail_open():
     assert set(absent_map) == {"tech-writer"}
     assert {"integrability", "tech-writer"} <= set(mixed)
     assert set(mixed) < progression.catalog_lens_ids()
+
+
+def test_missing_mapping_alone_stays_single_deep_and_only_evidenced_ambiguity_widens():
+    missing_mapping = _review_route(["docs/unmapped.md"], {})
+    assert missing_mapping["context"]["review_risk"] == {
+        "class": "documentation-only",
+        "reason": "documentation evidence selected tech-writer",
+        "required_deep_lenses": ["tech-writer"],
+    }
+
+    uncertain_documents = {
+        "corrupt": "\x00broken document payload",
+        "ambiguous": "TBD: impact is ambiguous and ownership is unknown.",
+    }
+    for name, content in uncertain_documents.items():
+        routed = _review_route([f"docs/{name}.md"], {f"docs/{name}.md": content})
+        risk = routed["context"]["review_risk"]
+        assert risk["class"] == "substantive-risky", name
+        assert set(risk["required_deep_lenses"]) == FLOORS, name
+        assert name in risk["reason"], name
+        assert "document evidence" in risk["reason"], name

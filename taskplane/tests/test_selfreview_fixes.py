@@ -545,6 +545,33 @@ class TestContractSchemaUnified(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn("KeyError", r.stderr)
 
+    def test_status_dashboard_and_cli_survive_read_only_review_and_released_contracts(self):
+        shapes = [
+            {"task_id": "read-only", "task": "plan", "read_only": True,
+             "write_allow": ["plan/**"], "budget": {"max_actions": 4}},
+            {"task_id": "review-kernel", "task": "review lens slot qa",
+             "task_slot": "review-qa", "read_only": True,
+             "write_allow": [".review/result.json"]},
+            {"task_id": "released", "task": "released review producer",
+             "read_only": True},
+        ]
+        for contract in shapes:
+            with self.subTest(task_id=contract["task_id"]):
+                ws = _repo()
+                tl.activate(ws, contract)
+                r = subprocess.run([sys.executable, _TP_PY, "status"],
+                                   cwd=ws, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                status = json.loads(r.stdout)
+                self.assertEqual(status["task_id"], contract["task_id"])
+                self.assertEqual(status["read_only"], True)
+                self.assertIn("scope_paths", status)
+                rendered = dashboard.render(ws)
+                html = open(rendered, encoding="utf-8").read()
+                self.assertIn(contract["task_id"], html)
+                self.assertNotIn("KeyError", html)
+
     def test_status_includes_project_loop_without_active_contract(self):
         ws = _repo()
         loop.init(ws, "status journey")
@@ -677,6 +704,8 @@ class TestLoopSerialSkipAndSelection(unittest.TestCase):
         s2 = loop.load(ws)
         self.assertEqual(s2["step"], "plan")
         self.assertTrue(all(t["status"] == "not_selected" for t in s2["tasks"]))
+        self.assertEqual(s2["authority_target_revision"], tl.git_head(ws))
+        self.assertEqual(s2["selection"]["revision"], tl.git_head(ws))
 
     def test_display_pipeline_splices_selection_for_ab(self):
         steps = [s for s, _, _ in loop.display_pipeline({"ab": True})]

@@ -14,11 +14,11 @@
         "verdict": "n/a"
       },
       "architecture": {
-        "negative_evidence": [
-          "0 architecture signals: no architecture/adr/infra files, no infra topology, no architecture docs, no service-boundary code, no hub module or boundary contract in the graph"
+        "evidence": [
+          "mandatory review floor: architecture runs deep \u2014 empty or missing change mapping"
         ],
         "score": 0.0,
-        "verdict": "n/a"
+        "verdict": "deep"
       },
       "backend": {
         "negative_evidence": [
@@ -28,11 +28,11 @@
         "verdict": "n/a"
       },
       "code-quality": {
-        "negative_evidence": [
-          "0 code-quality signals: no code files changed, no code constructs in scope"
+        "evidence": [
+          "mandatory review floor: code-quality runs deep \u2014 empty or missing change mapping"
         ],
         "score": 0.0,
-        "verdict": "n/a"
+        "verdict": "deep"
       },
       "cost-finops": {
         "negative_evidence": [
@@ -119,11 +119,11 @@
         "verdict": "n/a"
       },
       "qa": {
-        "negative_evidence": [
-          "0 qa signals: no test files, no test constructs, no QA keywords in the requirement"
+        "evidence": [
+          "mandatory review floor: qa runs deep \u2014 empty or missing change mapping"
         ],
         "score": 0.0,
-        "verdict": "n/a"
+        "verdict": "deep"
       },
       "scalability": {
         "negative_evidence": [
@@ -133,11 +133,11 @@
         "verdict": "n/a"
       },
       "security": {
-        "negative_evidence": [
-          "0 security signals: no auth/secrets/enforcement paths, no auth or secret markers, no unsafe-input surface, no boundary contracts in impact, no security keywords in the requirement"
+        "evidence": [
+          "mandatory review floor: security runs deep \u2014 empty or missing change mapping"
         ],
         "score": 0.0,
-        "verdict": "n/a"
+        "verdict": "deep"
       },
       "services-selection": {
         "negative_evidence": [

@@ -1189,8 +1189,9 @@ _DOC_RISK_PRIORITY = (
 def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
     """Classify review depth once per immutable routing context.
 
-    Trivial documentation and one-file low-risk code receive one attributable
-    deep slot.  Mixed, unmapped, substantive, and risky changes retain the
+    Documentation and one-file low-risk code receive one attributable deep
+    slot.  Missing module mapping alone does not widen them.  Mixed,
+    substantive, risky, or explicitly ambiguous/corrupt evidence retains the
     four engineering floors.  The cached result also makes repeated floor
     application idempotent: stage-created deep verdicts never reclassify their
     own input as substantive.
@@ -1225,6 +1226,27 @@ def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
         reason = "mixed code and documentation change"
     elif code_files and len(non_doc_files) != len(code_files):
         reason = "mixed code and non-document change"
+    elif doc_files and len(doc_files) == len(ctx.files):
+        import review_progression
+        document_content = {path: text for path, text in ctx.contents()}
+        uncertainty = review_progression.document_evidence_uncertainty(
+            ctx.files, document_content
+        )
+        if uncertainty:
+            reason = uncertainty
+        else:
+            signals = review_progression.document_lens_signals(
+                ctx.files, document_content
+            )
+            selected = next(
+                (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
+                 and lens_id in vmap),
+                "tech-writer",
+            )
+            risk_class = "documentation-only"
+            reason = f"documentation evidence selected {selected}"
+            required = (selected,)
+            floor_prefix = "risk-selected review floor"
     elif missing_code_content:
         reason = "code content unavailable for risk classification"
     elif significant:
@@ -1248,21 +1270,6 @@ def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
         )
         required = (ranked[0] if ranked else "code-quality",)
         floor_prefix = "risk-selected review floor"
-    elif doc_files and len(doc_files) == len(ctx.files):
-        import review_progression
-        signals = review_progression.document_lens_signals(
-            ctx.files,
-            {path: text for path, text in ctx.contents()},
-        )
-        selected = next(
-            (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
-             and lens_id in vmap),
-            "tech-writer",
-        )
-        risk_class = "documentation-only"
-        reason = f"documentation evidence selected {selected}"
-        required = (selected,)
-        floor_prefix = "risk-selected review floor"
     else:
         reason = "unclassified or missing module mapping"
 
@@ -1282,15 +1289,20 @@ def apply_budget(verdict_map: dict, cap: int = DEEP_CAP,
     """Rank deep lenses by score (ties broken by lens id) and DEMOTE — never
     drop — everything past `cap` to light, recording the demotion in
     evidence. `target` documents the desired deep band; depth is never
-    manufactured to reach it. Floors run AFTER the budget when a ctx is
-    given, so a floor can never be budgeted away. Returns a NEW map."""
+    manufactured to reach it. Floors are applied before ranking so they
+    participate in the same hard cap as every other deep disposition; a
+    floor is ranked ahead of an equal non-floor signal but cannot expand the
+    deep set past the declared budget. Returns a NEW map."""
     out = {lid: {"verdict": v["verdict"], "score": v["score"],
                  "evidence": list(v["evidence"]),
                  "negative_evidence": list(v["negative_evidence"]),
                  **({"floor": v["floor"]} if "floor" in v else {})}
            for lid, v in verdict_map.items()}
+    if ctx is not None:
+        _apply_floors(out, ctx)
     deep = sorted((lid for lid, v in out.items() if v["verdict"] == "deep"),
-                  key=lambda lid: (-out[lid]["score"], lid))
+                  key=lambda lid: ("floor" not in out[lid],
+                                   -out[lid]["score"], lid))
     for rank, lid in enumerate(deep, start=1):
         if rank > cap:
             entry = out[lid]
@@ -1298,8 +1310,6 @@ def apply_budget(verdict_map: dict, cap: int = DEEP_CAP,
             entry["evidence"].append(
                 f"budget: demoted deep->light (rank {rank} > cap {cap}, "
                 f"score {entry['score']})")
-    if ctx is not None:
-        _apply_floors(out, ctx)
     return out
 
 

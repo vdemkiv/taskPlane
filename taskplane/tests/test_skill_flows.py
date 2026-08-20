@@ -14,19 +14,40 @@ SKILLS = ("taskplane", "tp-go", "tp-build", "tp-design", "tp-engineering",
           "tp-product", "tp-status", "tp-northstar", "tp-help", "tp-tag")
 EXPECTED_GATES = {
     "taskplane": {"signoff"},
-    "tp-go": {"design_approval", "plan_approval", "signoff"},
-    "tp-build": {"design_approval", "plan_approval", "selection", "signoff"},
+    "tp-go": {"authorization", "signoff"},
+    "tp-build": {"authorization", "selection", "signoff"},
     "tp-design": {"approval"},
     "tp-engineering": {"signoff"},
     "tp-product": {"approval"},
     "tp-status": set(),
     "tp-northstar": set(),
     "tp-help": set(),
-    "tp-tag": {"reply"},
+    "tp-tag": {"authorization", "signoff"},
 }
 
 
 class TestApprovedSkillFlows(unittest.TestCase):
+    def test_canonical_harness_uses_one_consolidated_authorization(self):
+        path = os.path.join(
+            ROOT, "skills", "taskplane", "references", "harness-rules.md")
+        with open(path, encoding="utf-8") as stream:
+            rules = stream.read()
+        self.assertIn("One consolidated explicit\n   human authorization", rules)
+        self.assertIn("mechanical fail-closed checks", rules)
+        self.assertIn("do not create separate ceremonial approval stops", rules)
+        self.assertNotIn("Design Contract\n   approval, plan approval", rules)
+        self.assertNotIn("requires fresh Plan approval", rules)
+
+    def test_build_flow_has_no_ceremonial_definition_gates(self):
+        path = os.path.join(ROOT, "skills", "tp-build", "flow.json")
+        with open(path, encoding="utf-8") as stream:
+            flow = json.load(stream)
+        gates = {row["id"] for row in flow["nodes"]
+                 if row["kind"] == "gate"}
+        self.assertEqual(gates, {"authorization", "selection", "signoff"})
+        self.assertNotIn("design_approval", {row["id"] for row in flow["nodes"]})
+        self.assertNotIn("plan_approval", {row["id"] for row in flow["nodes"]})
+
     def test_delivery_flows_finish_with_retro_after_signoff(self):
         for skill in ("tp-go", "tp-build"):
             with open(os.path.join(ROOT, "skills", skill, "flow.json"),

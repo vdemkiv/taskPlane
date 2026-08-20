@@ -1,8 +1,8 @@
 {
   "schema": "taskplane.design/v1",
   "requirement": "R-0001",
-  "title": "Progressive convergent engineering review",
-  "summary": "A risk-first canonical review ledger preserves mandatory floors, promotes evidenced sweep concerns, publishes early immutable request-changes, repairs derivable metadata, caches exact infrastructure failures, converges by measured progress and derives isolated lens-quality telemetry.",
+  "title": "Consolidated progressive delivery and engineering review",
+  "summary": "One attributable authorization and semantic evolution classifier drive mechanically gated Product/Design/Plan, bounded automatic recovery, progressive engineering review, truthful status/onboarding, and complete cross-host/thread delivery without byte-drift approval loops.",
   "current_state": {
     "summary": "Taskplane already has signal routing, deep/light dispatch, v3 leases, promotion scaffolding, exact slot conservation, DoR/document classification, immutable partial collection, engine/worktree fingerprints, suite caching, host-parity UX and provider-correct spend. Debt remains over-widening, late blocker publication, metadata contradictions, repeated evaluator failure, global fix cap and sparse lens-value telemetry.",
     "sources": [
@@ -29,58 +29,55 @@
   },
   "alternatives": [
     {
-      "id": "progressive-ledger",
-      "name": "Canonical progressive ledger",
-      "description": "Extend incumbent ReviewKernel with versioned risk, binding, cache, convergence and telemetry records.",
+      "id": "consolidated-semantic-ledger",
+      "name": "One authority ledger with semantic evolution classification",
+      "description": "One packet/receipt derives routine stage authority; semantic materiality, not byte drift, controls reauthorization; progressive review remains canonical.",
       "tradeoffs": {
         "gains": [
-          "Early truthful blockers",
-          "Less redundant review/spend",
-          "Exact resumable recovery"
+          "Fewer ceremonial prompts",
+          "One cross-host authority truth",
+          "Lossless bounded recovery"
         ],
         "costs": [
-          "More explicit transitions",
-          "Compatibility fixture matrix"
+          "Authority/evolution/recovery fixture matrices"
         ],
-        "revisit_when": "The lens catalog becomes small/cheap enough that exhaustive review is measurably faster without quality loss."
+        "revisit_when": "Hosts standardize an equivalent authority transaction protocol."
       }
     },
     {
-      "id": "exhaustive",
-      "name": "Exhaustive up-front deep review",
-      "description": "Dispatch all applicable lenses before collection.",
+      "id": "phase-approvals",
+      "name": "Approval per Product, Design, Plan and recovery",
+      "description": "Each stage owns a separate human checkpoint.",
       "tradeoffs": {
         "gains": [
-          "Simple scheduling",
-          "Maximum immediate breadth"
+          "Simple stage-local logic"
         ],
         "costs": [
-          "Slow and expensive",
-          "Delays blockers",
-          "Repeats known failures"
+          "Approval fatigue",
+          "Harmless byte-drift deadlocks",
+          "Divergent thread behavior"
         ],
-        "revisit_when": "A human explicitly selects forensic audit mode."
+        "revisit_when": "An opt-in regulated mode legally requires independent phase signers."
       }
     },
     {
-      "id": "transient-progressive",
-      "name": "Progressive without canonical partial revisions",
-      "description": "Schedule progressively but retain partial results only in memory.",
+      "id": "silent-autonomy",
+      "name": "Silent autonomy until final sign-off",
+      "description": "Continue every non-final action without a receipt.",
       "tradeoffs": {
         "gains": [
-          "Smaller persistence delta"
+          "Minimum interruption"
         ],
         "costs": [
-          "Evidence loss on failure",
-          "No honest early request-changes",
-          "Weak resume/audit"
+          "Silence expands authority",
+          "Changed scope/contracts and external actions become unsafe"
         ],
-        "revisit_when": "Provisional evidence retention becomes prohibited."
+        "revisit_when": "Never under the accepted least-privilege requirement."
       }
     }
   ],
-  "selected_approach": "progressive-ledger",
-  "decision": "Extend existing ReviewKernel/storage/routing rather than add an authority: deterministic initial wave and promotions, immutable early revisions, exact evidence bindings, constrained repair/cache/retry, measured convergence, and post-review isolated telemetry.",
+  "selected_approach": "consolidated-semantic-ledger",
+  "decision": "Compose one consolidated authorization/authority ledger with semantic requirement-contract-authority evolution classification, automatic mechanical gates/recovery, the preserved progressive review ledger, durable truthful status/onboarding, and complete cross-host/thread delivery. Fingerprint drift invalidates stale evidence but is not itself a human gate.",
   "modules": {
     "existing": [
       "taskplane/review.py",
@@ -99,14 +96,30 @@
       "skills/tp-engineering",
       "skills/tp-go",
       "docs",
-      "taskplane/tests"
+      "taskplane/tests",
+      "taskplane/tp.py",
+      "taskplane/preflight.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/command_runtime.py",
+      "taskplane/command_adapters.py",
+      "taskplane/host_capabilities.py",
+      "workflows",
+      "skills",
+      "agents",
+      "hooks",
+      ".codex-plugin",
+      ".claude-plugin"
     ],
     "new": [
       "taskplane/review_progression.py",
       "taskplane/review_repair.py",
       "taskplane/evaluator_health.py",
       "taskplane/review_convergence.py",
-      "taskplane/lens_telemetry.py"
+      "taskplane/lens_telemetry.py",
+      "taskplane/authority.py",
+      "taskplane/recovery.py",
+      "taskplane/progress.py"
     ]
   },
   "contracts": [
@@ -149,109 +162,209 @@
       "id": "contract:lens-quality-telemetry",
       "relation": "provides",
       "description": "Post-review versioned quality/uniqueness/latency/cost telemetry isolated from current review."
+    },
+    {
+      "id": "contract:consolidated-authorization",
+      "relation": "provides",
+      "description": "One attributable packet and stage derivations cover unchanged routine work; only semantic material authority changes reauthorize."
+    },
+    {
+      "id": "contract:automatic-recovery",
+      "relation": "provides",
+      "description": "Bounded classified routine repair/retry/convergence with explicit safety/authority/exhaustion escalation."
+    },
+    {
+      "id": "contract:status-progress-telemetry",
+      "relation": "provides",
+      "description": "Cheap durable non-gating owner/token/elapsed/wait/ETA snapshots."
+    },
+    {
+      "id": "contract:onboarding-worktree-continuity",
+      "relation": "provides",
+      "description": "Classified self-repair and exact dynamic sibling-worktree engine resolution."
+    },
+    {
+      "id": "contract:product-internal-north-star",
+      "relation": "provides",
+      "description": "Conditional seven-field internal Product advice that never gates."
+    },
+    {
+      "id": "contract:large-markdown-delivery",
+      "relation": "provides",
+      "description": "JSON authority, inline small output, automatic complete Markdown, optional HTML."
+    },
+    {
+      "id": "contract:attributed-thread-continuation",
+      "relation": "provides",
+      "description": "Actor/thread/target/revision-bound approval and complete accessible fallback delivery."
     }
   ],
   "acceptance_map": [
     {
-      "criterion": "AC1: Code, docs-only, mixed, empty-map, high-risk, low-risk, and early-blocker fixtures always select and conserve every catalog-declared mandatory engineering-review floor.",
-      "design_element": "contract:review-risk-progression",
-      "validation": "Seven change-shape fixtures assert every catalog floor is selected and conserved."
+      "criterion": "One authorization covers routine end-to-end work.** A consolidated packet identifies the requirement, conditional design/plan, target and scope, acceptance criteria, dynamic-validation intent, ordinary sandbox authority, routine fix/recovery policy, evaluation/collection, artifact delivery, and execution bounds. One attributable approval authorizes those unchanged activities through final-signoff readiness. **Verify:** all ten flow fixtures complete routine stages without another approval and retain one receipt plus stage-by-stage authority derivation.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC1 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_01."
     },
     {
-      "criterion": "AC2: Representative small, large, code, configuration, and documentation changes dispatch mandatory floors, evidence-selected deep lenses, and zero or one bounded light sweep, with machine-readable n/a evidence rather than exhaustive catalog execution.",
-      "design_element": "contract:review-risk-progression",
-      "validation": "Five scale/type fixtures assert floors plus evidence-deep plus <=1 sweep and machine-readable n/a, never exhaustive dispatch."
+      "criterion": "Mechanical definition gates auto-advance.** Product, Design, and Plan stages automatically complete/score/check and advance when their contracts, graph checks, acceptance mapping, required design/review lenses, and evidence pass. They do not request separate Product, Design, or Plan approval. **Verify:** pass/fail fixtures assert automatic advance only on complete evidence and a named non-human blocker when mechanical checks fail.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC2 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_02."
     },
     {
-      "criterion": "AC3: High/major, low/minor, duplicate, cross-charter, missing-evidence, and replay sweep fixtures prove deep promotion requires normalized risk, referenced evidence, rationale, in-charter trigger, deterministic slot identity, and idempotency.",
-      "design_element": "contract:review-risk-progression",
-      "validation": "Six sweep fixtures assert normalized risk/evidence/rationale/charter/idempotent deterministic promotion identity."
+      "criterion": "Human-attention boundaries are closed and explicit.** A new human decision occurs only for initial consolidated authorization; explicit A/B selection; exhausted/no-progress recovery or replan; material scope creep or major authority change; destructive/irreversible action; new external system, credential, publication, or spend; changed acceptance criteria; recovery that weakens a gate; or final sign-off. **Verify:** an approval trace for every flow contains no other prompt and each allowed prompt names the new fact, consequence, and authority requested.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC3 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_03."
     },
     {
-      "criterion": "AC4: Every admissible high/major sweep concern is promoted to its responsible deep lens or canonically rejected as duplicate, out-of-charter, invalid, or already covered; the light sweep never substitutes for the deep judgment.",
-      "design_element": "contract:review-risk-progression",
-      "validation": "Promotion ledger test asserts every admissible high/major is promoted or rejected by one canonical reason and never treated as deep verdict."
+      "criterion": "Silence never expands authority.** Missing, stale, ambiguous, or unauthenticated responses pause only the affected human-owned decision and cannot authorize additional scope, external effects, destructive action, changed criteria, weakened controls, or final approval. **Verify:** timeout, replay, wrong-thread, wrong-revision, and free-form ambiguous fixtures.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC4 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_04."
     },
     {
-      "criterion": "AC5: Blocker-first, blocker-late, simultaneous, duplicate, mechanically repaired, and invalidated-finding fixtures prove an immutable provisional request-changes revision publishes as soon as blocking evidence is admissible with complete known evidence and truthful gate state.",
+      "criterion": "Routine recovery is automatic and bounded.** Within authorized scope, Taskplane retries or mechanically repairs transient, metadata, evaluator, collection, artifact, render, and setup failures automatically two to three times or while measurable convergence continues. It asks only after the bounded policy is exhausted, progress stops/oscillates/worsens, safety or authority changes, or replan is needed. **Verify:** one-, two-, three-, converging-longer, no-progress, repeated-fingerprint, unsafe, and authority- change cases assert recover/escalate behavior and reasons.",
+      "design_element": "contract:automatic-recovery",
+      "validation": "AC5 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_05."
+    },
+    {
+      "criterion": "Ownership and parallelism remain governed.** Each phase has one accountable owner; parallel agents/subagents run only in isolated worktrees with bounded scopes, evidence-bound submissions, and orchestrator-only gates. **Verify:** serial, parallel, overlapping-scope, sibling-worktree, crashed-owner, copied- evidence, and attempted-worker-gate fixtures preserve ownership and isolation.",
+      "design_element": "taskplane/loop.py",
+      "validation": "AC6 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_06."
+    },
+    {
+      "criterion": "Facade performs preparation automatically.** Repository acquisition, managed checkout/worktree preparation, target/ref pinning, and verification run without a user prompt when existing authority is sufficient. Failures classify into automatic recovery or a named genuine authority/external boundary. **Verify:** local, remote, cached, stale, moved, auth-required, host- policy, and external-unavailable repository fixtures.",
+      "design_element": "taskplane/repository.py",
+      "validation": "AC7 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_07."
+    },
+    {
+      "criterion": "Facade preserves intent and hides persona plumbing.** User intent, current loop state, and authority deterministically select Product/Design/Build/ Engineering/Status/Help behavior; the user is never asked which persona to invoke. **Verify:** ambiguous-language/state matrix routes or asks one substantive clarification without exposing internal role selection.",
+      "design_element": "taskplane/tp.py",
+      "validation": "AC8 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_08."
+    },
+    {
+      "criterion": "Dashboard delivery is size-appropriate and complete.** Small dashboards render inline. Very large dashboards automatically deliver complete Markdown without truncating evidence; canonical JSON remains machine authority and HTML failure/absence is optional and nonblocking. **Verify:** below/above thresholds and large-finding fixtures compare semantic equality and gate state across JSON, inline, Markdown, and optional HTML.",
+      "design_element": "contract:large-markdown-delivery",
+      "validation": "AC9 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_09."
+    },
+    {
+      "criterion": "Design and Plan share one authorization packet.** High-impact work may retain a separate Design phase, but Design and Plan are presented together in the consolidated pre-implementation packet; mechanically passing stages do not request another approval. Non-material evolution within accepted requirements/contracts proceeds automatically. **Verify:** high/low impact, material/non-material drift, contract-preserving, and contract-changing scenarios assert packet contents and reauthorization boundaries.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC10 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_10."
+    },
+    {
+      "criterion": "Product completes refinement automatically.** Product records and scores the complete requirement and feeds it into the consolidated packet without a standalone Product approval. Missing acceptance, contract, dependency, or NFR evidence blocks mechanically rather than asking for ceremonial approval. **Verify:** complete and gap fixtures assert score/evidence and transition behavior.",
+      "design_element": "taskplane/review_dor.py",
+      "validation": "AC11 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_11."
+    },
+    {
+      "criterion": "North-star is conditional internal advice.** Product invokes north-star internally only for strategic ambiguity, high opportunity cost, irreversible direction, or an explicit request. It is advisory and never a gate or separate user-facing flow. Its concise note always contains alignment, leverage, reversibility, opportunity cost, coherence, sharpest tension, and recommendation. **Verify:** trigger/non-trigger fixtures and schema checks; absence or disagreement cannot independently block work.",
+      "design_element": "contract:product-internal-north-star",
+      "validation": "AC12 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_12."
+    },
+    {
+      "criterion": "Build preserves the intended selection boundary.** A single variant uses consolidated authorization end to end. When A/B variants were explicitly chosen, variant selection is the only ordinary mid-build human gate and each variant retains isolated comparable evidence. **Verify:** single, A/B, invalid variant, stale selection, and resumed selection fixtures.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC13 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_13."
+    },
+    {
+      "criterion": "Preview feedback becomes an attributable scoped change.** Human feedback from a design/build preview is recorded as an attributable scoped change request against the current requirement/target. Non-material in-contract feedback proceeds automatically; changed acceptance, material scope, or authority returns to consolidated authorization. **Verify:** cosmetic, behavioral, acceptance-changing, scope-expanding, and unauthenticated input.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC14 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_14."
+    },
+    {
+      "criterion": "Deep-review floors scale with attributable risk.** Documentation-only and simple low-risk changes run exactly one attributable risk-selected deep lens, and missing/inapplicable code-module mapping alone does not widen them. Substantive, risky, mixed, or genuinely ambiguous/corrupt evidence runs architecture, code-quality, security, and QA as four mandatory deep floors with an explicit evidence-backed reason. Cache, light sweep, early provisional publication, or another lens cannot replace the slot or slots required for the risk class. **Verify:** code, docs, mixed, small, large, early-blocker, mapping-gap, ambiguous, and corrupt fixtures assert exact classification, reason, floor selection, and conservation.",
+      "design_element": "contract:review-risk-progression",
+      "validation": "AC15 executable fixture matrix verifies exact risk classification, reason, required deep-lens identity, and slot conservation across documentation-only, simple low-risk, substantive, risky, mixed, early-blocker, mapping-gap, ambiguous, and corrupt cases. Run: python3 -m pytest -q taskplane/tests/test_review_progression.py::test_review_floors_scale_with_attributable_risk_across_required_matrix taskplane/tests/test_review_progression.py::test_document_risk_signal_selects_an_attributable_single_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_docs_only_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_simple_low_risk_change_uses_one_attributable_risk_selected_deep_lens taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_substantive_and_risky_changes_retain_four_mandatory_deep_floors."
+    },
+    {
+      "criterion": "Other review is progressive.** Non-floor lenses begin through at most one bounded light sweep and promote to named deep review only from attributable normalized evidence within the lens charter. Every high/major concern is promoted or explicitly rejected as duplicate, invalid, out-of-charter, or already covered. **Verify:** severity, duplicate, replay, missing-evidence, cross-charter, and mixed-sweep fixtures.",
+      "design_element": "contract:review-risk-progression",
+      "validation": "AC16 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_16."
+    },
+    {
+      "criterion": "Severe harm publishes request-changes immediately.** An admissible Blocker, High, any security vulnerability, or harmful/destructive bug publishes an immutable provisional request-changes revision immediately, preserving complete known evidence and explicit lifecycle gaps. Exhaustive collection is not required for this recommendation. **Verify:** each trigger, non-trigger severities, invalidated finding, duplicate, and simultaneous finding fixtures assert timing and lineage.",
       "design_element": "contract:review-kernel-partial-revision",
-      "validation": "Six blocker-order/repair/invalidation fixtures assert immediate immutable request-changes with all known evidence and truthful disabled gate."
+      "validation": "AC17 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_17."
     },
     {
-      "criterion": "AC6: Mixed slot lifecycle fixtures reconcile every selected slot exactly as collected, running, undispatched, promoted-pending, missing, invalid, retrying, or infrastructure-unavailable in the provisional gap manifest and never label partial review exhaustive.",
-      "design_element": "contract:review-kernel-partial-revision",
-      "validation": "0/1/several/all gap matrix asserts every selected slot has exactly one named lifecycle state and partial is never exhaustive."
-    },
-    {
-      "criterion": "AC7: Removing or duplicating one prepared, dispatched, produced, validated, collected, promotion, or acceptance-evidence record keeps approval closed; only a complete exactly-once conserved ledger can proceed.",
+      "criterion": "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
       "design_element": "contract:review-kernel-slot",
-      "validation": "Mutation matrix removes/duplicates each lifecycle and acceptance record; only complete exactly-once ledger enables approval."
+      "validation": "AC18 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_18."
     },
     {
-      "criterion": "AC8: Multi-revision fixtures prove later results, promotions, repairs, retries, dynamic evidence, and adjudications supersede provisional revisions immutably without losing or duplicating any previously valid finding, gap, provenance, or artifact identity.",
-      "design_element": "contract:review-kernel-partial-revision",
-      "validation": "Multi-revision round trip asserts immutable supersession with no lost/duplicate finding, gap, provenance or artifact id."
-    },
-    {
-      "criterion": "AC9: Permuted, omitted-summary, contradictory-summary, empty, fail-with-findings, and pass-with-zero slot payloads normalize to one byte-stable verdict/count/severity/completion metadata representation or a named substantive inconsistency.",
+      "criterion": "Normalization and repair never redo substance.** Producer verdict/count/ severity/summary metadata normalizes deterministically from canonical findings. Authoritatively derivable metadata-only defects repair automatically with before/after, derivation authority, and fingerprint equivalence; substantive change reruns only affected slots. **Verify:** field permutation, summary contradiction, identity/count defect, and every substantive mutation.",
       "design_element": "contract:review-kernel-mechanical-repair",
-      "validation": "Six payload permutations assert byte-stable normalized metadata or named substantive inconsistency."
+      "validation": "AC19 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_19."
     },
     {
-      "criterion": "AC10: Authoritatively derivable identity, count, summary, and schema metadata defects repair once with before/after, derivation authority, and fingerprint proof while target, view, evidence, findings, severity, rationale, action, verdict substance, lease, slot, and producer remain equivalent; any substantive mutation reruns only the affected slot.",
-      "design_element": "contract:review-kernel-mechanical-repair",
-      "validation": "Repair allowlist test proves one derivable repair with equivalence; substantive tamper invokes only affected producer."
+      "criterion": "Exact execution-root evidence binding remains.** Every review/evaluation artifact verifies repository identity, exact Git worktree root, target/base/ head, engine fingerprint, run, lens, slot, lease, and producer. Parent, sibling, moved, symlinked, cloned, engine-skewed, stale, or copied evidence cannot substitute. **Verify:** negative topology matrix and valid resume.",
+      "design_element": "contract:review-evidence-binding",
+      "validation": "AC20 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_20."
     },
     {
-      "criterion": "AC11: Identical evaluator, engine fingerprint/version, host capability, repository, exact worktree, and valid time window reuse one verified infrastructure-unavailable result without relaunch or lens verdict; changing any key, expiry, or repaired infrastructure invalidates the cache.",
+      "criterion": "Evaluator-outage cache is exact and truthful.** A verified evaluator infrastructure failure reuses only for the same evaluator, engine/version, capability, repository, exact worktree, and validity window. It records infrastructure unavailable—not lens pass/fail—and invalidates on any key, expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count.",
       "design_element": "contract:evaluator-infrastructure-health",
-      "validation": "Cache-key matrix asserts one reuse only on exact evaluator/engine/capability/repository/root/window and invalidation on every key/expiry/repair."
+      "validation": "AC21 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_21."
     },
     {
-      "criterion": "AC12: Root, linked-worktree, sibling, moved-root, symlink, clone, engine-skew, stale-head, copied-result, and resume fixtures verify canonical repository, exact Git worktree, target/base/head, engine, run, lens, slot, lease, and producer binding and reject substitution.",
-      "design_element": "contract:review-evidence-binding",
-      "validation": "Nine repository/worktree/engine fixtures assert complete binding and reject symlink/sibling/clone/move/stale/copy/skew substitution."
-    },
-    {
-      "criterion": "AC13: API docs, security guidance, runbook, user docs, changelog, typo-only, mixed code/docs, malformed-doc, and absent-map fixtures route from documentation evidence and do not widen to the full module-level catalog solely due to missing or inapplicable code mapping.",
+      "criterion": "Documentation routing avoids module fail-open widening.** Documentation-only and mixed changes route from document content, directives, contracts, audiences, and graph evidence. Missing/inapplicable code-module mapping alone retains exactly one attributable risk-selected deep lens for documentation-only/simple low-risk work. Only genuinely ambiguous, corrupt, mixed, substantively risky, or otherwise materially risky evidence widens to architecture, code-quality, security, and QA, with an explicit reason; routing is never unconditional all-lens or no-review. **Verify:** API/security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases.",
       "design_element": "taskplane/review_progression.py",
-      "validation": "Nine document fixtures assert content/directive/contract/audience routing and no module-miss full-catalog widening."
+      "validation": "AC22 executable fixtures verify attributable document-lens selection, malformed/absent-map/mixed handling, and the boundary where missing mapping alone stays on one deep lens while evidenced ambiguity or corruption widens to four floors with an explicit reason. Run: python3 -m pytest -q taskplane/tests/test_review_progression.py::test_document_risk_signal_selects_an_attributable_single_deep_lens taskplane/tests/test_review_progression.py::test_document_malformed_absent_map_and_mixed_inputs_never_fail_open taskplane/tests/test_review_progression.py::test_missing_mapping_alone_stays_single_deep_and_only_evidenced_ambiguity_widens."
     },
     {
-      "criterion": "AC14: Ambiguous or corrupt documentation retains mandatory floors and produces the smallest evidence-backed explained widening set with a stable routing fingerprint, never no-review or unconditional all-lens routing.",
-      "design_element": "contract:review-risk-progression",
-      "validation": "Ambiguous/corrupt document fixtures retain floors and assert minimal explained widening with stable fingerprint."
-    },
-    {
-      "criterion": "AC15: Fast convergence, three-plus-cycle convergence, no-progress, oscillation, regression, repeated-fingerprint, unsafe, scope-change, and human-stop fixtures record closed/persisted/regressed/new findings plus evidence progress and make deterministic continue/escalate decisions without a global two-cycle rule.",
+      "criterion": "Fix policy measures convergence.** Each fix evaluation records closed, persistent, regressed, and new admissible findings plus test/evidence progress. Safe measurable convergence can continue beyond three cycles; no-progress, repetition, oscillation, worsening, task-specific bounds, unsafe recovery, scope/authority change, or human stop escalates. **Verify:** convergence matrix and human-ownership assertions.",
       "design_element": "contract:review-fix-convergence",
-      "validation": "Nine convergence fixtures assert deterministic continue/escalate without a global two-cycle rule."
+      "validation": "AC23 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_23."
     },
     {
-      "criterion": "AC16: Convergence score, cycle count, provisional request-changes, and cached failure can never auto-approve, abandon a required slot, widen implementation scope, or bypass a human-owned scope, destructive-action, or final-signoff decision.",
-      "design_element": "contract:review-fix-convergence",
-      "validation": "Authority-negative suite asserts scores/caches/provisional state never approve, abandon, widen scope or bypass human gates."
-    },
-    {
-      "criterion": "AC17: Each lens/run records eligible, selected, promoted, collected, admissible/confirmed/unique/overlap/duplicate/later-invalidated/false-positive findings, retries, repairs, latency, tokens/cost when available, and infrastructure unavailability with versioned definitions and denominators; golden arithmetic distinguishes unavailable from zero.",
+      "criterion": "Per-lens telemetry is complete and independent.** Each lens records eligible/selected/promoted/collected state, admissible/confirmed/unique/ overlap/duplicate/invalidated/false-positive findings, retry/repair, latency, provider-correct tokens/cost when available, and infrastructure unavailability with versioned definitions/denominators. Telemetry derives from sealed revisions, does not expose drafts across lenses, alter current verdicts, or suppress floors. **Verify:** golden arithmetic, unavailable-vs- zero, information-isolation, and enabled/disabled equivalence fixtures.",
       "design_element": "contract:lens-quality-telemetry",
-      "validation": "Per-lens arithmetic golden asserts every named numerator/denominator, version and unavailable-vs-zero semantics."
+      "validation": "AC24 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_24."
     },
     {
-      "criterion": "AC18: Information-isolation fixtures show telemetry is derived only from sealed canonical revisions and later adjudication, does not expose one lens draft to another, alter current verdicts, or suppress mandatory floors, and yields identical substantive results when disabled.",
-      "design_element": "contract:lens-quality-telemetry",
-      "validation": "Isolation A/B fixture disables telemetry and asserts identical substantive review; telemetry reads sealed revisions/adjudication only."
+      "criterion": "Status is cheap, live, and non-gating.** Status reads durable snapshots only, performs no expensive recomputation, and never blocks or gates work. Picture-in-Picture continuously identifies the active agent/phase and updates from durable events. **Verify:** instrumentation asserts bounded reads/no graph/review recomputation and identical workflow outcome with status open, closed, interrupted, or unavailable.",
+      "design_element": "contract:status-progress-telemetry",
+      "validation": "AC25 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_25."
     },
     {
-      "criterion": "AC19: Claude, Codex, managed worktrees, and supported fallbacks preserve the same review semantics, evidence, early revisions, conservation gate, repair, convergence, and telemetry definitions, and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions.",
-      "design_element": "contract:review-evidence-binding",
-      "validation": "Claude/Codex/worktree/fallback semantic goldens and test-audit assert parity and no removed/skip/xfail/loosen/reclassify changes."
+      "criterion": "Progress telemetry is truthful.** Status shows observed tokens used, elapsed time in the current focus/stage, and execution/wait/human-wait state. ETA appears only from observed comparable or bounded work and includes source, confidence, and update time; otherwise it says unavailable. **Verify:** execution, tool wait, agent wait, human wait, resume, unknown tokens, sparse history, comparable history, and stale ETA fixtures.",
+      "design_element": "contract:status-progress-telemetry",
+      "validation": "AC26 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_26."
+    },
+    {
+      "criterion": "Onboarding self-repairs when authorized.** Every setup check is classified self-repairable, authority-required, host-policy, or external-unavailable. Self-repair executes automatically; authority-required asks once for the exact authority; host-policy/external-unavailable explains and retries only when state can change, without repeated prompts. **Verify:** full setup matrix and prompt counts.",
+      "design_element": "contract:onboarding-worktree-continuity",
+      "validation": "AC27 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_27."
+    },
+    {
+      "criterion": "Onboarding survives sibling worktrees.** A stable repository-family hook/ launcher resolves the exact current worktree and latest valid engine dynamically, so supported sibling worktrees operate without restart or a new Taskplane task. **Verify:** root, nested, sibling, newly created, moved, stale-engine, unavailable-engine, and policy-restricted worktree fixtures.",
+      "design_element": "contract:onboarding-worktree-continuity",
+      "validation": "AC28 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_28."
+    },
+    {
+      "criterion": "Thread approval is attributable and sufficient.** In Claude-tag/Slack contexts, one attributed approval in the bound thread authorizes the same routine continuation as the consolidated packet; wrong thread, actor, revision, replay, or ambiguous reply cannot authorize. **Verify:** receipt matrix and one-routine-approval trace.",
+      "design_element": "contract:attributed-thread-continuation",
+      "validation": "AC29 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_29."
+    },
+    {
+      "criterion": "Thread delivery preserves complete evidence.** A concise summary leads, but the complete evidence set is attached or linked and remains canonical. Missing native controls degrade to an accessible thread summary, complete Markdown/artifacts, and canonical actions through attributed replies; unavailable controls are never interpreted as decline. Automatic retry/ recovery precedes any user prompt. **Verify:** native, missing-control, attachment/link failure, large artifact, retry success/exhaustion, and accessibility fixtures.",
+      "design_element": "contract:large-markdown-delivery",
+      "validation": "AC30 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_30."
+    },
+    {
+      "criterion": "Evidence remains lossless across all recovery and delivery.** Provisional publication, promotion, normalization, repair, retry, cache reuse, supersession, dashboard-size fallback, and thread delivery never drop or duplicate valid findings, criteria, gaps, provenance, telemetry, or artifact identity. **Verify:** an end-to-end multi-revision large-review round trip reconciles canonical JSON, complete Markdown, optional HTML, and thread links.",
+      "design_element": "contract:review-kernel-partial-revision",
+      "validation": "AC31 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_31."
+    },
+    {
+      "criterion": "Cross-host and legacy semantics remain compatible.** Codex, Claude, Slack-capable entry, managed worktrees, and supported fallbacks preserve the same authorization, recovery, gate, review, evidence, convergence, status, and telemetry semantics. **Verify:** golden cross-host scenarios and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions.",
+      "design_element": "contract:consolidated-authorization",
+      "validation": "AC32 executable fixture matrix verifies the stated behaviors, negative boundaries, identities, counts, and audit consequences exactly; failure blocks mechanically or escalates only at the named human boundary. Run: python3 -m pytest -q taskplane/tests/test_consolidated_flow.py -k ac_32."
     }
   ],
   "risks": [
     {
       "risk": "Progressive routing misses serious concerns.",
-      "mitigation": "Catalog floors are unconditional; promotions require attributable evidence; ambiguity widens minimally with explanation.",
+      "mitigation": "Risk-scaled floors are conserved; missing mapping alone stays on one attributable deep lens, while substantive risk or evidenced ambiguity/corruption widens to four floors with an explicit reason; promotions require attributable evidence.",
       "owner": "Routing owner"
     },
     {
@@ -273,6 +386,26 @@
       "risk": "Telemetry biases current producers or leaks data.",
       "mitigation": "Derive only after sealed revisions/adjudication; no current-routing read edge; redact to bounded fingerprints/counts.",
       "owner": "Telemetry owner"
+    },
+    {
+      "risk": "Byte-level design evolution repeatedly invalidates human approval.",
+      "mitigation": "Classify normalized requirement/contract/target/scope/authority semantics; byte drift only invalidates stale mechanical evidence.",
+      "owner": "Authority owner"
+    },
+    {
+      "risk": "Consolidated consent silently expands authority.",
+      "mitigation": "Closed authority ledger; missing/stale/ambiguous receipts pause only affected boundary; destructive/external/material changes reauthorize.",
+      "owner": "Authority owner"
+    },
+    {
+      "risk": "Automatic recovery loops or weakens gates.",
+      "mitigation": "Typed classes, 2–3 retries/convergence rules, immutable evidence and explicit exhausted/safety/authority escalation.",
+      "owner": "Recovery owner"
+    },
+    {
+      "risk": "Thread/status/UI becomes parallel truth or loses large evidence.",
+      "mitigation": "Canonical JSON/revisions remain authority; snapshot-only status; complete Markdown and attributed receipts.",
+      "owner": "Delivery owner"
     }
   ],
   "failure_modes": [
@@ -305,6 +438,26 @@
       "mode": "Telemetry denominator/source is missing.",
       "detection": "lens_quality_metric reports definition version and availability.",
       "recovery": "Telemetry owner records unavailable, never zero, and does not affect review."
+    },
+    {
+      "mode": "Authority packet or derivation is stale, ambiguous or wrong-thread.",
+      "detection": "authority_derivation reports packet/actor/thread/requirement/target/revision/scope semantic match.",
+      "recovery": "Authority owner pauses only affected boundary and requests the exact new fact/authority once."
+    },
+    {
+      "mode": "Design/plan bytes change without semantic materiality.",
+      "detection": "semantic_evolution reports byte-only/non-material/material/unsafe with requirement-contract-authority delta.",
+      "recovery": "Orchestrator mechanically revalidates byte/non-material changes and continues; material/unsafe reauthorizes or pauses."
+    },
+    {
+      "mode": "Routine repair/retry is exhausted or stops converging.",
+      "detection": "automatic_recovery reports class, attempts, fingerprints and convergence.",
+      "recovery": "Recovery owner escalates after 2–3 attempts or convergence stop, never weakens a gate."
+    },
+    {
+      "mode": "Large/thread delivery or native control fails.",
+      "detection": "artifact_delivery and thread_continuation report semantic counts, retry and control availability.",
+      "recovery": "Delivery owner retries automatically then supplies complete Markdown/artifacts and attributable reply actions."
     }
   ],
   "observability": {
@@ -316,7 +469,16 @@
       "review_evidence_binding: repository/root/target/engine/run/lens/slot/lease/producer checks",
       "evaluator_health_cache: exact key/TTL/reuse/invalidation/outcome",
       "review_convergence: cycles/closed/persisted/regressed/new/evidence progress/decision",
-      "lens_quality_metric: versioned eligible/selected/findings/retries/latency/tokens/cost/unavailable denominators"
+      "lens_quality_metric: versioned eligible/selected/findings/retries/latency/tokens/cost/unavailable denominators",
+      "authority_packet: actor/thread/requirement/target/scope/contracts/authority/bounds fingerprint",
+      "authority_derivation: stage/packet/semantic inputs/outcome",
+      "semantic_evolution: byte/non-material/material/unsafe deltas and authority result",
+      "mechanical_gate: stage/check/evidence/outcome",
+      "automatic_recovery: class/attempt/fingerprint/progress/escalation",
+      "status_snapshot: owner/agent/phase/tokens/elapsed/wait/ETA source/confidence/freshness",
+      "onboarding_continuity: check class/worktree/engine/repair/outcome",
+      "thread_continuation: actor/thread/packet/action/receipt/delivery outcome",
+      "artifact_delivery: format/bytes/counts/semantic equality/retry"
     ],
     "alerts": [
       "Block approval on any ledger conservation or acceptance-evidence gap.",
@@ -326,8 +488,8 @@
     ]
   },
   "rollout": {
-    "strategy": "Behind TASKPLANE_PROGRESSIVE_REVIEW, dual-record ledger/bindings, then progressive routing/provisional publication, repair/cache, convergence, and post-review telemetry. Compare complete-review and Claude/Codex/worktree goldens each phase.",
-    "rollback": "Disable new progressive sessions; finish issued leases with retained readers; preserve immutable revisions/telemetry; revert new reviews to current routing and task-plan fix bounds. No destructive migration or simultaneous host deployment."
+    "strategy": "Behind TASKPLANE_CONSOLIDATED_FLOW, dual-record packet/evolution; enable mechanical Product/Design/Plan auto-advance; preparation/recovery; preserved progressive review; status/onboarding; Markdown/thread delivery. Compare Codex/Claude/Slack/worktree/legacy goldens each phase.",
+    "rollback": "Disable new consolidated packets, finish in-flight work with retained readers, route to legacy bounded/Markdown delivery, and preserve immutable evidence. Rollback cannot auto-approve, delete evidence, or reverse authority decisions."
   },
   "graph": {
     "baseline_fingerprint": "e5756150b39714ed4c0349d31729d2c487d2d49417dc1661339c5ebd49acbb24",
@@ -361,7 +523,30 @@
       "contract:review-evidence-binding",
       "contract:evaluator-infrastructure-health",
       "contract:review-fix-convergence",
-      "contract:lens-quality-telemetry"
+      "contract:lens-quality-telemetry",
+      "taskplane/tp.py",
+      "taskplane/preflight.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/command_runtime.py",
+      "taskplane/command_adapters.py",
+      "taskplane/host_capabilities.py",
+      "workflows",
+      "skills",
+      "agents",
+      "hooks",
+      ".codex-plugin",
+      ".claude-plugin",
+      "taskplane/authority.py",
+      "taskplane/recovery.py",
+      "taskplane/progress.py",
+      "contract:consolidated-authorization",
+      "contract:automatic-recovery",
+      "contract:status-progress-telemetry",
+      "contract:onboarding-worktree-continuity",
+      "contract:product-internal-north-star",
+      "contract:large-markdown-delivery",
+      "contract:attributed-thread-continuation"
     ],
     "proposed_edges": [
       {
@@ -471,6 +656,48 @@
         "to": "contract:lens-quality-telemetry",
         "kind": "validates",
         "reason": "Consumes or verifies the canonical contract without parallel authority."
+      },
+      {
+        "from": "taskplane/authority.py",
+        "to": "contract:consolidated-authorization",
+        "kind": "provides",
+        "reason": "Owns the amended cross-flow contract intent."
+      },
+      {
+        "from": "taskplane/recovery.py",
+        "to": "contract:automatic-recovery",
+        "kind": "provides",
+        "reason": "Owns the amended cross-flow contract intent."
+      },
+      {
+        "from": "taskplane/progress.py",
+        "to": "contract:status-progress-telemetry",
+        "kind": "provides",
+        "reason": "Owns the amended cross-flow contract intent."
+      },
+      {
+        "from": "taskplane/repository.py",
+        "to": "contract:onboarding-worktree-continuity",
+        "kind": "provides",
+        "reason": "Owns the amended cross-flow contract intent."
+      },
+      {
+        "from": "taskplane/review_dor.py",
+        "to": "contract:product-internal-north-star",
+        "kind": "provides",
+        "reason": "Owns the amended cross-flow contract intent."
+      },
+      {
+        "from": "taskplane/views.py",
+        "to": "contract:large-markdown-delivery",
+        "kind": "provides",
+        "reason": "Owns the amended cross-flow contract intent."
+      },
+      {
+        "from": "workflows",
+        "to": "contract:attributed-thread-continuation",
+        "kind": "provides",
+        "reason": "Owns the amended cross-flow contract intent."
       }
     ],
     "depth_policy": {
@@ -481,24 +708,20 @@
     },
     "dor": [
       {
-        "check": "Baseline and bounded impact are pinned.",
-        "evidence": "Fingerprint e5756150b39714ed4c0349d31729d2c487d2d49417dc1661339c5ebd49acbb24; action-payload impact/policy accepted; graph remains overlay-only."
+        "check": "Baseline and amended requirement are pinned.",
+        "evidence": "Graph fingerprint e5756150b39714ed4c0349d31729d2c487d2d49417dc1661339c5ebd49acbb24; amended R-0001 has 32 exact ACs, 15 contracts, R-0011 dependency and no questions."
       },
       {
-        "check": "Requirement is resolved.",
-        "evidence": "R-0001 has 19 exact ACs, eight NFRs/contracts, dependency R-0011 and no open questions."
+        "check": "Authority/materiality boundaries are settled.",
+        "evidence": "Closed human boundary set; byte-only/non-material auto-revalidate, material-contract reauthorizes, unsafe pauses."
       },
       {
-        "check": "As-built seams are grounded.",
-        "evidence": "Routing, leases, partial collection, worktree/engine fingerprint, spend, dashboard and host parity sources cited."
+        "check": "As-built seams and Python constraints are grounded.",
+        "evidence": "Loop/review/routing/root/repository/runtime/status/delivery sources cited; verified Python reference applied; no packaging change."
       },
       {
-        "check": "Python constraints applied.",
-        "evidence": "Reference SHA-256 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7 verified; sync ownership, trust validation, no packaging change."
-      },
-      {
-        "check": "Ownership/order/depth settled.",
-        "evidence": "Five new modules have owners; ledger→progression→repair/cache→convergence→telemetry; local 3, contract/requirement 1."
+        "check": "Ownership/order/depth are settled.",
+        "evidence": "Authority→gates→recovery/preparation→review→status/onboarding→delivery/thread; local 3, contract/requirement 1."
       }
     ],
     "dod": [
@@ -525,23 +748,27 @@
       {
         "check": "Python/package quality holds.",
         "evidence": "Strict trust-boundary types, failure tests, clean-wheel install and import graph verification pass."
+      },
+      {
+        "check": "Consolidated authority and semantic evolution pass.",
+        "evidence": "AC1-14 and AC25-32 authorization, auto-gate, recovery, preparation, status, onboarding, thread and delivery matrices pass without byte-only human gates."
       }
     ]
   },
   "visualization": {
     "required": true,
-    "kind": "state-transition",
+    "kind": "data-flow",
     "path": "design/visual.html",
-    "reason": "Promotion, early provisional publication, affected recovery and measured convergence form a non-linear state sequence."
+    "reason": "Authorization derivation, semantic evolution, progressive review and cross-host delivery form a branching flow."
   },
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "Applied verified Python reference; grounded in current routing/lease/partial/worktree/cache/spend/host seams; compared canonical progressive, exhaustive and transient options; mapped all 19 exact ACs to executable matrices; numeric bounds, signals/recovery, ownership/order and additive rollback are consistent; telemetry is isolated and no unresolved Build decision or silent debt remains.",
+      "evidence": "Applied verified Python guidance; grounded in canonical loop/review/root/runtime/status/delivery seams; compared semantic authority ledger, phase approvals and unsafe silent autonomy; mapped all 32 amended ACs and 15 contracts to executable boundaries; preserved original progressive review; byte drift is evidence not authority; bounded recovery, failure signals, ownership/order and additive rollback are consistent.",
       "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "cf65ce51b0481f29c5d8b6853433f5885db0747249f1df25eefe732d2b035346",
+      "content_fingerprint": "c99f453da5d42f9e1c2611c17af32508db3b55ccab6320b88ab747688a0a5eba",
       "self_attested": true
     }
   ],

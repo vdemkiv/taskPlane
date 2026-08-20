@@ -336,7 +336,7 @@ def test_real_collector_consumes_repair_and_exact_execution_binding():
                 lens_ids=lease["lens_ids"], slot_id=lease["slot_id"],
                 lease_fingerprint=lease["lease_fingerprint"],
                 producer=lease["producer"])
-        fixture._write_slot_results(findings=lambda lease: [{
+        fixture._write_slot_results(verdict="fail", findings=lambda lease: [{
             **_finding(severity="high", lens=lease["lens_ids"][0]),
             "claim": {"trigger": "exercise the changed review collector",
                       "outcome": "the evidence lifecycle is broken",
@@ -354,6 +354,99 @@ def test_real_collector_consumes_repair_and_exact_execution_binding():
                    for row in canonical_results)
         assert all(row["lens_results"][0]["verdict"] == "fail"
                    for row in canonical_results)
+    finally:
+        fixture.tearDown()
+
+
+def test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun():
+    from test_review_routing import TestSelectiveReviewKernel
+
+    fixture = TestSelectiveReviewKernel()
+    fixture.setUp()
+    try:
+        def producer_outputs(slots):
+            outputs = {}
+            for slot in slots:
+                with open(os.path.join(fixture.ws, slot["result_path"]),
+                          "rb") as stream:
+                    outputs[slot["slot_id"]] = stream.read()
+            return outputs
+
+        started = fixture._start()
+        fixture._write_slot_results(
+            verdict="pass", findings=lambda lease: []
+            if lease["slot_id"] == "light-sweep" else [{
+                **_finding(severity="high", lens=lease["lens_ids"][0]),
+                "claim": {
+                    "trigger": "collect a pass/zero producer summary",
+                    "outcome": "canonical blocking findings require fail/one",
+                    "repro": "collect the sealed fixture output once",
+                },
+            }])
+        before = review._load_state(fixture.ws, started["run_id"])
+        original_outputs = producer_outputs(before["slots"])
+
+        manifest = review.collect_review(
+            fixture.ws, publish=False, run_id=started["run_id"])
+        after = review._load_state(fixture.ws, started["run_id"])
+        store = review_evidence.ArtifactStore(fixture.ws)
+        validations = [store.read(ref)
+                       for ref in after["result_validations"]]
+
+        assert manifest["status"] == "complete"
+        assert manifest.get("gaps") in (None, [])
+        assert after["counters"]["dispatched_agent_count"] == \
+            before["counters"]["dispatched_agent_count"]
+        assert producer_outputs(before["slots"]) == original_outputs
+        assert validations
+        assert all(row["repair"]["equivalence"] == "proven"
+                   for row in validations)
+        assert all(row["repair"]["equivalence_fingerprint_before"] ==
+                   row["repair"]["equivalence_fingerprint_after"]
+                   for row in validations)
+        changed_repairs = [row["repair"] for row in validations
+                           if row["repair"]["changes"]]
+        assert changed_repairs
+        assert all(
+            {change["path"] for change in repair["changes"]} == {
+                "lens_results[0].blockers", "lens_results[0].verdict"}
+            for repair in changed_repairs)
+    finally:
+        fixture.tearDown()
+
+
+def test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and_retries_only_original_producer(
+):
+    from test_review_routing import TestSelectiveReviewKernel
+
+    fixture = TestSelectiveReviewKernel()
+    fixture.setUp()
+    try:
+        started = fixture._start(
+            retry_lenses={"security"}, retry_source_run_id="a" * 32)
+        before = review._load_state(fixture.ws, started["run_id"])
+        assert len(before["slots"]) == 1
+        original = before["slots"][0]
+        original_brief = review_evidence.ArtifactStore(fixture.ws).read(
+            original["brief"])
+        original_task = original_brief["role"]["task_name"]
+
+        # A producer may report fail without checked evidence. With no
+        # canonical blocking finding, changing that to pass would invent a
+        # positive judgment unsupported by anything the producer inspected.
+        fixture._write_slot_results(
+            verdict="fail", findings=[], run_id=started["run_id"])
+        manifest = review.collect_review(
+            fixture.ws, publish=False, run_id=started["run_id"])
+        after = review._load_state(fixture.ws, started["run_id"])
+
+        assert manifest["status"] != "complete"
+        assert manifest["approval"]["enabled"] is False
+        assert after["status"] == "ready"
+        assert len(manifest["gaps"]) == 1
+        assert manifest["gaps"][0]["slot_id"] == original["slot_id"]
+        assert manifest["gaps"][0]["producer_task"] == original_task
+        assert "checked evidence" in manifest["gaps"][0]["reason"]
     finally:
         fixture.tearDown()
 

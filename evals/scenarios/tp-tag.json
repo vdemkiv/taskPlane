@@ -6,7 +6,7 @@
     "skills/tp-tag/SKILL.md",
     "skills/tp-tag/flow.json"
   ],
-  "inputs_fingerprint": "41faa7f111eb7af02189a7aa388e9c63e64aa2727ac7357c6c34f9497945eca1",
+  "inputs_fingerprint": "19ac4a3f49102481b8c5c3197d9a113ea76333e7b31c381fb892f98f37009d04",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp loop gate",

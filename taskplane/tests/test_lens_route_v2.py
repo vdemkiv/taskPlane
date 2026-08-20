@@ -447,6 +447,11 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         t = tiers(r)
         deep = [lid for lid, tier in t.items() if tier == "deep"]
         self.assertEqual(len(deep), lens_signals.DEEP_CAP)      # exactly 8
+        self.assertTrue(
+            {"architecture", "code-quality", "security", "qa"}
+            .issubset(deep),
+            "mandatory review floors must rank inside the cap",
+        )
         # every catalog lens still present — overflow was demoted, not dropped
         self.assertEqual(set(t), set(ALL_IDS))
         demoted = [x for x in r["lenses"]
@@ -522,17 +527,61 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         self.assertNotIn("change shape: code changed with no test file",
                          entry(r, "qa")["evidence"])
 
-    def test_docs_only_change_never_fires_the_trigger(self):
+    def test_docs_only_change_uses_one_attributable_risk_selected_deep_lens(self):
         ws = write_ws({"docs/guide.md": "# guide\n"})
         try:
             r = lens.route(["docs/guide.md"], stage="review", catalog=CAT,
                            workspace=ws)
         finally:
             shutil.rmtree(ws)
+        deep = [x for x in r["lenses"] if x["tier"] == "deep"]
+        self.assertEqual([x["id"] for x in deep], ["tech-writer"])
+        self.assertEqual(deep[0]["review_risk_class"], "documentation-only")
+        self.assertIn("documentation evidence selected tech-writer",
+                      deep[0]["review_risk_reason"])
+        self.assertIn("risk-selected review floor", deep[0]["floor"])
         qa = entry(r, "qa")
-        self.assertEqual(qa["tier"], "n/a")
         self.assertNotIn("change shape: code changed with no test file",
                          qa["evidence"])
+
+    def test_simple_low_risk_change_uses_one_attributable_risk_selected_deep_lens(self):
+        ws = write_ws({"src/value.py": "value = 1\n"})
+        try:
+            r = lens.route(["src/value.py"], stage="review", catalog=CAT,
+                           workspace=ws)
+        finally:
+            shutil.rmtree(ws)
+        deep = [x for x in r["lenses"] if x["tier"] == "deep"]
+        self.assertEqual(len(deep), 1)
+        self.assertIn(deep[0]["id"],
+                      {"architecture", "code-quality", "security", "qa"})
+        self.assertEqual(deep[0]["review_risk_class"], "simple-low-risk")
+        self.assertIn("single mapped low-risk code file",
+                      deep[0]["review_risk_reason"])
+        self.assertIn("risk-selected review floor", deep[0]["floor"])
+
+    def test_substantive_and_risky_changes_retain_four_mandatory_deep_floors(self):
+        fixtures = (
+            {"src/one.py": "value = 1\n", "src/two.py": "value = 2\n"},
+            {"src/auth/login.py": "password = request.value\n"},
+        )
+        required = {"architecture", "code-quality", "security", "qa"}
+        for files in fixtures:
+            with self.subTest(files=sorted(files)):
+                ws = write_ws(files)
+                try:
+                    r = lens.route(sorted(files), stage="review", catalog=CAT,
+                                   workspace=ws)
+                finally:
+                    shutil.rmtree(ws)
+                self.assertTrue(required.issubset({
+                    x["id"] for x in r["lenses"] if x["tier"] == "deep"
+                }))
+                for lens_id in required:
+                    row = entry(r, lens_id)
+                    self.assertEqual(row["review_risk_class"],
+                                     "substantive-risky")
+                    self.assertIn("mandatory review floor", row["floor"])
 
     def test_trigger_respects_the_stage_profile(self):
         # qa is a review-stage lens. During build, tests legitimately may not
@@ -864,6 +913,7 @@ class TestB4RequirementKeywordUnionAtAssembly(unittest.TestCase):
         # floors) — with no requirement text the union is empty
         proposals = {lid for lid, e in self._component()["lens_map"].items()
                      if e["verdict"] in ("deep", "light")}
+        proposals.update(x["id"] for x in r["lenses"] if "floor" in x)
         for x in r["lenses"]:
             if x["tier"] != "n/a" and "component_attribution" in x:
                 self.assertIn(x["id"], proposals)
@@ -886,7 +936,11 @@ class TestCanonicalDiffContentSignals(unittest.TestCase):
 
         self.assertNotEqual(entry(whole_file, "security")["tier"], "n/a")
         self.assertNotEqual(entry(whole_file, "accessibility")["tier"], "n/a")
-        self.assertEqual(entry(canonical_diff, "security")["tier"], "n/a")
+        security = entry(canonical_diff, "security")
+        self.assertEqual(security["tier"], "n/a")
+        self.assertFalse(any("credential" in evidence.lower()
+                             or "password" in evidence.lower()
+                             for evidence in security["evidence"]))
         self.assertEqual(entry(canonical_diff, "accessibility")["tier"], "n/a")
         self.assertEqual(canonical_diff["context"]["content_source"],
                          "canonical-diff")

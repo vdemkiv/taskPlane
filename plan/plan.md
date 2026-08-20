@@ -1,98 +1,100 @@
-# R-0011 plan — host-native workflow UX for Codex and Claude
+# R-0001 post-EM two-finding repair plan
 
-This plan realizes the human-approved Design Contract fingerprint
-`153c98980cdeb87276701195112b22f2ac923bf828717501aa70ea14c8a89fe3`.
-The current contract artifact SHA-256 is
-`b05d264895b2b89d15bdc8fb96b44873149ab60409dacb2584f290666ad8ab4d`;
-the approved fingerprint remains the decision identity. The prior R-0010 plan
-is preserved unchanged in `plan/r0010-plan.pre-r0011.md` and
-`plan/r0010-tasks.pre-r0011.json`.
+This human-approved replan preserves every merged t1–t18 commit, worktree,
+submission, evaluation, and evidence record. It also preserves the sealed EM
+provisional request-changes revision and KB decision `0025`; neither is
+rewritten or reinterpreted. The only executable work is two focused,
+scope-disjoint repairs for the admitted F-01 and F-02 findings.
 
-## Graph and Design coverage
+Identity boundary: this is the 32-AC Progressive convergent engineering review
+R-0001. It does not cover or claim the separate 15-AC governed-run reliability
+and exclusive authority R-0001 from another task/store.
 
-The required single bounded impact call covered every proposed implementation
-surface and matched the approved baseline fingerprint
-`11db1c87480228a4a28948051a388cc6e7d9ccec958a810c770cf1cba71211e9`
-at HEAD `4e1c7e7b437777306cb034dec1f4fa775a62addc`. It returned 31 impacted
-nodes, no unknown modules, and the approved policy: local depth 3,
-`contract-only` boundaries, contract depth 1, requirement depth 1.
+## Preserved baseline and coverage
 
-The five tasks collectively declare every one of the 23 proposed graph nodes,
-all six exact contracts, all 18 proposed edges, and AC1–AC15 verbatim. The
-first task establishes the canonical schema. Dashboard, workflow/approval, and
-preview tasks then use disjoint source/test scopes and may execute in parallel
-isolated worktrees. The final host-packaging/compatibility task depends on all
-of them and owns the generic `taskplane/tests` graph node.
+- t1–t18 retain their complete task definitions and are explicitly
+  `status: "passed"`. They load as SETTLED coverage records and execution skips
+  them; this replan does not rerun, replace, or weaken their green work.
+- t19 and t20 are the only `status: "pending"` records. Both have `deps: []`
+  because they start from the current governed primary containing all merged
+  t1–t18 fixes and evidence.
+- The settled records plus the two focused repairs continue to own all 32
+  acceptance criteria, every approved Design module and canonical edge, all
+  15 requirement contract ids, the acceptance map, and the approved typed
+  impact policy. No Product or Design restart and no contract drift is needed.
+  Settled records retain earlier verbatim AC15/AC22 text variants as immutable
+  task evidence; those variants map to the same criterion identities and do
+  not create an AC33 or broaden R-0001.
 
-## Risk-first delivery
+The sealed EM revision remains a truthful provisional request-changes state:
+approval is closed, uncollected review slots remain explicit gaps, and F-01/F-02
+are repair inputs rather than permission to alter other evidence or findings.
 
-1. **Canonical surface model and capability negotiation.** Add one versioned
-   snapshot/event/audit model and one serialized adapter queue. Persist each
-   canonical update before delivery; acknowledge by workflow, revision,
-   sequence, and surface; replay from the last acknowledgement. Capability
-   records include host/version, source/confidence/freshness, limitations,
-   selected surface, and explicit fallback. Unknown, stale, contradictory,
-   partial, or changed-mid-run evidence never becomes support. Fallbacks expose
-   the same values/evidence/decisions/actions and say unavailable, not declined.
-2. **Live workflow, fan-out, and approval authority.** Publish ordered stage,
-   wave, agent, token, attention, gate, and terminal events from existing
-   canonical owners. PiP opens only for live persistent work, coalesces to at
-   most four <=16 KiB updates/second without dropping attention/terminal
-   transitions, reconnects, and closes once. Token values remain observed,
-   source-attributed, partial, or unavailable. Native approval cards show the
-   complete decision with <=2 primary actions; only authenticated current
-   actor/decision/target/revision receipts advance exactly once.
-3. **Native dashboard, carousel, and accessibility.** Project workflow, DoR,
-   dependency/impact, agents, lenses, criteria, findings, validation, artifacts,
-   and gate from canonical state. Zero/one items use concise cards; 3–8 use one
-   page; 9+ use deterministic pages of eight with a final page rebalanced to
-   at least three where possible. Preserve item ids, filters, focus, totals,
-   composer access, <=14 KiB inline payloads, and lossless artifact links. Use
-   system tokens and meet WCAG AA, keyboard, 200% text, reduced motion,
-   light/dark, alt-text, semantic-label, focus, responsive, and non-color cues.
-4. **Governed working previews.** Register design/build/review previews against
-   target/revision, private authorization, sandbox/hosting identity, CPU/memory/
-   time/network policy, no-push transport, teardown deadline, and capability
-   receipt. Browser/side-panel interaction becomes canonical evidence. Denial,
-   unavailability, build failure, timeout, push, path escape, external network,
-   public exposure, or teardown failure stays bounded and cannot change source
-   checkout/remotes or synthesize success.
-5. **Cross-host packaging and compatibility.** Declare/observe capabilities in
-   the Codex and Claude packages, align hooks/skills/agents/docs with the same
-   semantics, and run cross-host/native-disabled goldens. Host styling and API
-   names may differ; canonical values, ordering, provenance, actions, audit,
-   gates, and accessible fallbacks may not. Existing non-native design, build,
-   review, status, approval, and artifact flows retain full evidence and gate
-   strength.
+## Bounded impact
 
-## Exact non-functional requirements
+The planner made exactly one graph-impact call over the two new repair
+surfaces. At graph fingerprint
+`8103e5be4842eb3cb03fb8aaac6fd2fafb2203699b835662b15183400b2db616`,
+it touched only `taskplane` and `taskplane/tests`; reached 27 impacted nodes;
+affected only `req:R-0001`; and reported no unknown modules, dependent
+requirements, policy blocks, contract boundary nodes, truncation, or depth
+truncation. The existing policy remains local depth 3, `contract-only`
+boundaries, contract depth 1, and requirement depth 1. Neither task introduces
+a module, contract, resource, or distributed boundary.
 
-- **security**: Native actions, previews, sandbox/hosting, browser interaction, and capability claims are authenticated, target-bound, least-privilege, and fail closed; UI state is not authority and previews cannot push, escape isolation, leak secrets, or become public by default.
-- **architecture**: One versioned canonical semantic model and audit stream drive all Claude/Codex native projections and fallbacks; host adapters negotiate/render capabilities without creating parallel workflow truth.
-- **accessibility**: Native and fallback surfaces meet WCAG AA, support keyboard and responsive text, retain focus/composer access, provide alt text and semantic labels, and never communicate status by color alone.
-- **integrability**: PiP, visualization, approval, dashboard, carousel, preview, and capability contracts are versioned and tolerate additive host evolution without hard-coding identical Claude/Codex APIs.
-- **privacy-compliance**: UI and preview telemetry minimize repository/user data, redact credentials, secrets, personal paths, prompts, and unrelated content, and expose preview access only to the authorized conversation/session.
-- **sre**: Every native surface has explicit open, update, attention, terminal, error, reconnect, and teardown lifecycle with bounded retries/payloads and an actionable fallback rather than stuck or false completion.
-- **scalability**: Agent waves, token events, findings, criteria, and dashboards remain responsive through bounded updates and 3-to-8-item pages; host payloads do not copy full history on every update.
-- **cost-finops**: Token reporting is source-attributed and never estimated as observed; UI update coalescing and previews have bounded resource budgets and do not trigger redundant model turns or persist hosting after completion.
+## Independent repair wave
 
-## Runnable validation
+The tasks are scope-disjoint and may execute in parallel. F-01 is listed first
+because it is the admitted blocker.
 
-| Task | Criteria | Command |
-|---|---|---|
-| Canonical model/capabilities | AC11–AC12 | `python3 -m pytest -q taskplane/tests/test_host_native_capabilities.py` |
-| PiP/fan-out/approval | AC1–AC5 | `python3 -m pytest -q taskplane/tests/test_host_native_workflow.py` |
-| Dashboard/carousel/a11y | AC6–AC8, AC13 | `python3 -m pytest -q taskplane/tests/test_host_native_dashboard.py` |
-| Preview runtime | AC9–AC10 | `python3 -m pytest -q taskplane/tests/test_host_preview_runtime.py` |
-| Cross-host/legacy compatibility | AC14–AC15 | `python3 -m pytest -q taskplane/tests/test_host_native_compatibility.py` |
+### t19 — evidence-bearing metadata normalization
 
-## Rollout and rollback
+Owns only the collector, its metadata-repair/retry helpers, and focused
+lifecycle/recovery tests. After canonical metadata normalization,
+`taskplane/review.py` must revalidate the pass-evidence invariant. A
+fail-to-pass normalization with no checked evidence cannot be stored as a
+clean pass: mechanical repair is rejected and only that original producer is
+scheduled for retry.
 
-Roll out behind `TASKPLANE_HOST_NATIVE_UX`: canonical audit-only projectors,
-capability/fallback, dashboard/fan-out, PiP/tokens, approval receipts, then
-previews independently per capability. UI updates never wake the model. Retry
-each surface transition at most twice; teardown once plus one forced provider
-cleanup. Rollback disables new native sessions, closes active PiP/private
-previews, retains event/receipt readers, and routes canonical snapshots through
-legacy bounded accessible widgets/artifacts. No canonical data is migrated,
-rewritten, or deleted, and no package/Python-floor/dependency change is needed.
+The repair must preserve both accepted sides of the contract:
+
+- authority-derivable metadata contradictions still normalize with audited
+  before/after values and complete collection in one call without a producer
+  rerun; and
+- substantive or evidence-bearing defects still retry only the affected
+  original producer while conserving unrelated valid results.
+
+Its single focused pytest command covers the existing derivable-normalization
+and affected-producer tests plus the new inverse evidence-free-pass regression.
+
+### t20 — evaluator-unavailable retry routing
+
+Owns only `taskplane/loop.py` and the two focused loop/evidence-bundle test
+files. A retry from a truthful evaluator-infrastructure-unavailable escalation
+must restore `evaluate` with an unsettled task, never enter `fix`; `fix` remains
+reserved for a judged product failure. Unavailability stays distinct and
+non-judged, approval/readiness stays closed, and the exact outage identity is
+preserved across the transition.
+
+The task adds the unavailable → retry → evaluate transition fixture, retains
+the existing non-judged/readiness and outage-identity fixtures, and keeps the
+judged-failure retry-to-fix assertion. It also updates the known stale legacy
+node
+`TestUnavailableModelEvaluationDoesNotOpenAProductFix::test_unavailable_advances_with_warning_without_a_fix_cycle`
+in place so the focused selector and CI no longer encode an evidence-free
+passed state.
+
+## Validation and rollback
+
+Each pending task has exactly one focused `python3 -m pytest -q` command string
+containing only named cluster selectors. No task declares a local repository-
+wide suite; CI retains ownership of the complete
+`python3 -m pytest -q taskplane/tests` validation after both focused repairs
+and their independent evaluations close.
+
+No assertion may be removed, skipped, xfailed, loosened, or reclassified.
+t19 may change only evidence validation/repair routing and its focused tests;
+t20 may change only unavailable retry routing and its focused assertions. If a
+task fails to converge, rollback that task alone while preserving all t1–t18
+history, the other repair, the sealed provisional EM revision, and KB decision
+`0025`, then return the exact non-convergent finding to the governed loop.

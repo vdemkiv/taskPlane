@@ -378,9 +378,11 @@ def render(ws: str, out: str | None = None) -> str:
                 f'scope <code>{scope}</code></div>'
                 f'<div class="ameta">worktree <code>{_esc(wt)}</code></div></div>')
     elif contract:
-        ro = contract.get("read_only")
-        sc = contract["coding"]["scope_paths"] or (
-            contract.get("write_allow") if ro else ["(any — set scope!)"])
+        projection = tp.contract_projection(contract)
+        ro = projection["read_only"]
+        sc = projection["display_scope"] or [
+            "(nothing — released/read-only)" if ro else "(any — set scope!)"]
+        deny = projection["deny"]
         agent_cards.append(
             f'<div class="agent running"><div class="ah">'
             f'<b>{STEP_ROLE_LABEL.get(step, step)}</b>'
@@ -389,7 +391,8 @@ def render(ws: str, out: str | None = None) -> str:
             f'contract {_esc(contract.get("task_id",""))}</div>'
             f'<div class="ameta">scope <code>{_esc(", ".join(sc))}</code></div>'
             f'<div class="ameta">deny <code>'
-            f'{_esc(", ".join(contract["coding"]["command_policy"]["deny"][:3]))}…'
+            f'{_esc(", ".join(deny[:3]) or "(none declared)")}'
+            f'{"…" if len(deny) > 3 else ""}'
             f'</code></div></div>')
     else:
         awaiting = {"design_approval": "Review the design, then approve.",
@@ -4292,9 +4295,10 @@ def _widget_lanes(state, step, tasks, contract, hmap, hmain):
         return None
     cards = [_lane(t, step, lane_meter(t)) for t in tasks]
     if not cards and contract:
-        ro = contract.get("read_only")
-        sc = _esc(", ".join(contract["coding"]["scope_paths"]
-                  or contract.get("write_allow") or ["(any)"]))
+        projection = tp.contract_projection(contract)
+        ro = projection["read_only"]
+        fallback = "(nothing — released/read-only)" if ro else "(any)"
+        sc = _esc(", ".join(projection["display_scope"] or [fallback]))
         cards.append(
             f'<div style="border:1px solid var(--border);border-radius:8px;'
             f'padding:9px 11px"><div style="font-weight:500">'
