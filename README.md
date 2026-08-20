@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.10** | **Final review and recovery stay truthful across worktrees and evaluator outages.** Evidence binds to the claimed task worktree, unavailable evaluations remain non-judged and retry at evaluation, metadata repair cannot manufacture an evidence-free pass, and status, delivery, sign-off, and routing projections remain deterministic and shape-safe. |
 | **v2.17.9** | **Review effort now scales with attributable risk.** Documentation-only and simple low-risk changes receive one risk-selected deep lens, substantive or risky changes retain four mandatory floors, and the governed local workflow adds consolidated authorization, bounded evidence repair, durable progress, recovery, convergence telemetry, and cross-host delivery. |
 | **v2.17.8** | **Host-native workflow UX now shares one governed model across Codex and Claude.** PiP progress reports observed token usage, native fan-out and durable approval surfaces retain canonical identities, dashboards use accessible deterministic carousels, and pinned disposable previews fail closed unless isolation and teardown are verified. |
-| **v2.17.7** | **Review governance is now isolated at the real boundaries.** Structured acceptance criteria survive canonical DoR and approval, dynamic validation enforces verified process-tree isolation against direct and descendant pushes, and lifecycle contracts bind to exact worktrees so sibling Codex tasks can proceed independently. |
 
 ## Install
 
