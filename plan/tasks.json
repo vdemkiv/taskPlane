@@ -780,7 +780,7 @@
         "Deep-review floors scale with attributable risk.** Documentation-only and simple low-risk changes run exactly one risk-selected deep review lens. Substantive or risky changes retain architecture, code-quality, security, and QA as four mandatory deep floors. Cache, light sweep, early provisional publication, or another lens cannot replace the deep slot or slots required for the change's risk class. **Verify:** documentation-only, simple low-risk, substantive, risky, mixed, early-blocker, and mapping-gap fixtures assert exact risk classification, lens selection, and slot conservation.",
         "Documentation routing avoids module fail-open widening.** Documentation-only and mixed changes route from document content, directives, contracts, audiences, and graph evidence. Missing/inapplicable code-module mapping alone retains exactly one attributable risk-selected deep lens for documentation-only/simple low-risk work. Only genuinely ambiguous, corrupt, mixed, substantively risky, or otherwise materially risky evidence widens to architecture, code-quality, security, and QA, with an explicit reason; routing is never unconditional all-lens or no-review. **Verify:** API/security/user docs, runbook, changelog, typo, malformed, ambiguous, mixed, and absent-map cases."
       ],
-      "status": "pending"
+      "status": "passed"
     },
     {
       "id": "t16-collector-metadata-normalization-order",
@@ -880,6 +880,73 @@
         "Status is cheap, live, and non-gating.** Status reads durable snapshots only, performs no expensive recomputation, and never blocks or gates work. Picture-in-Picture continuously identifies the active agent/phase and updates from durable events. **Verify:** instrumentation asserts bounded reads/no graph/review recomputation and identical workflow outcome with status open, closed, interrupted, or unavailable."
       ],
       "status": "passed"
+    },
+    {
+      "id": "t19-evidence-bearing-metadata-normalization",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/review_repair.py",
+        "taskplane/review_recovery.py",
+        "taskplane/tests/test_review_evidence_lifecycle.py",
+        "taskplane/tests/test_review_recovery.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_evidence_lifecycle.py::test_metadata_contradiction_repairs_from_canonical_findings_once taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun taskplane/tests/test_review_evidence_lifecycle.py::test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and_retries_only_original_producer taskplane/tests/test_review_recovery.py::test_retry_plan_calls_only_affected_producers_and_preserves_valid_results",
+      "req": "R-0001",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:review-kernel-slot",
+        "contract:review-kernel-mechanical-repair",
+        "contract:automatic-recovery"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/review.py->contract:review-kernel-slot:provides",
+        "taskplane/review_repair.py->contract:review-kernel-mechanical-repair:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
+        "Normalization and repair never redo substance.** Producer verdict/count/ severity/summary metadata normalizes deterministically from canonical findings. Authoritatively derivable metadata-only defects repair automatically with before/after, derivation authority, and fingerprint equivalence; substantive change reruns only affected slots. **Verify:** field permutation, summary contradiction, identity/count defect, and every substantive mutation."
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "t20-evaluator-unavailable-retry-routing",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_evidence_bundle.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_remains_non_judged_and_keeps_readiness_closed taskplane/tests/test_loop.py::TestLoop::test_unavailable_warning_preserves_exact_outage_identity_without_pass_verdict taskplane/tests/test_loop.py::TestLoop::test_evaluator_unavailable_retry_returns_to_evaluate_without_opening_fix taskplane/tests/test_loop.py::TestLoop::test_escalate_retry_resets_cycles taskplane/tests/test_evidence_bundle.py::TestUnavailableModelEvaluationDoesNotOpenAProductFix::test_unavailable_advances_with_warning_without_a_fix_cycle",
+      "req": "R-0001",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:automatic-recovery",
+        "contract:review-kernel-slot",
+        "contract:evaluator-infrastructure-health"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Routine recovery is automatic and bounded.** Within authorized scope, Taskplane retries or mechanically repairs transient, metadata, evaluator, collection, artifact, render, and setup failures automatically two to three times or while measurable convergence continues. It asks only after the bounded policy is exhausted, progress stops/oscillates/worsens, safety or authority changes, or replan is needed. **Verify:** one-, two-, three-, converging-longer, no-progress, repeated-fingerprint, unsafe, and authority- change cases assert recover/escalate behavior and reasons.",
+        "Approval still requires complete conservation.** Approval/pass remains unavailable until every mandatory/selected/promoted slot is prepared, dispatched, produced, validated, and collected exactly once, all acceptance evidence is complete, and no unresolved gap remains. Request-changes may be provisional; approval may not. **Verify:** remove/duplicate every lifecycle record and assert only the complete conserved case is approvable.",
+        "Evaluator-outage cache is exact and truthful.** A verified evaluator infrastructure failure reuses only for the same evaluator, engine/version, capability, repository, exact worktree, and validity window. It records infrastructure unavailable—not lens pass/fail—and invalidates on any key, expiry, or recovery change. **Verify:** cache hit/miss matrix and launch count.",
+        "Cross-host and legacy semantics remain compatible.** Codex, Claude, Slack-capable entry, managed worktrees, and supported fallbacks preserve the same authorization, recovery, gate, review, evidence, convergence, status, and telemetry semantics. **Verify:** golden cross-host scenarios and existing suites pass without removed, skipped, xfailed, loosened, or reclassified governance assertions."
+      ],
+      "status": "pending"
     }
   ]
 }

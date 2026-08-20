@@ -1,86 +1,100 @@
-# R-0001 final t15 scope-correction plan
+# R-0001 post-EM two-finding repair plan
 
-This human-approved replan preserves the complete archived t1–t18 delivery
-history, commits, submissions, evaluations, and evidence. It does not restart
-Product or Design, create a feature, broaden acceptance, or repeat green work.
-The only executable work is the remaining t15 reconciliation, now authorized
-to edit the two stale artifacts omitted from its prior scope:
-`plan/tasks.json` and `design/visual.html`.
+This human-approved replan preserves every merged t1–t18 commit, worktree,
+submission, evaluation, and evidence record. It also preserves the sealed EM
+provisional request-changes revision and KB decision `0025`; neither is
+rewritten or reinterpreted. The only executable work is two focused,
+scope-disjoint repairs for the admitted F-01 and F-02 findings.
 
 Identity boundary: this is the 32-AC Progressive convergent engineering review
 R-0001. It does not cover or claim the separate 15-AC governed-run reliability
 and exclusive authority R-0001 from another task/store.
 
-## Preserved governed baseline
+## Preserved baseline and coverage
 
-- t1–t14 retain their exact archived definitions and `status: "passed"`.
-  They provide Plan DoR coverage and load as SETTLED, so execution skips them.
-- t15 retains the already-green implementation/fixer commit `2602b5b`, its
-  focused evidence, criteria, contracts, graph edges, impact policy, and prior
-  scope. It remains `status: "pending"` only for the bounded stale-artifact
-  reconciliation described below.
-- t16 commit `2061139`, t17 commit `fcee90c`, and t18 commit `cdceb475` retain
-  their accepted evidence and are now `status: "passed"`. They are
-  coverage-only SETTLED records and will not be rerun.
-- The current governed primary, including the accepted t14 exact-worktree and
-  harness fixes, is t15's baseline. t15 has `deps: []`; no settled task is
-  rescheduled as an executable prerequisite.
+- t1–t18 retain their complete task definitions and are explicitly
+  `status: "passed"`. They load as SETTLED coverage records and execution skips
+  them; this replan does not rerun, replace, or weaken their green work.
+- t19 and t20 are the only `status: "pending"` records. Both have `deps: []`
+  because they start from the current governed primary containing all merged
+  t1–t18 fixes and evidence.
+- The settled records plus the two focused repairs continue to own all 32
+  acceptance criteria, every approved Design module and canonical edge, all
+  15 requirement contract ids, the acceptance map, and the approved typed
+  impact policy. No Product or Design restart and no contract drift is needed.
+  Settled records retain earlier verbatim AC15/AC22 text variants as immutable
+  task evidence; those variants map to the same criterion identities and do
+  not create an AC33 or broaden R-0001.
 
-The 17 settled records plus pending t15 collectively retain ownership of all
-32 acceptance criteria, all approved Design modules, all 15 requirement
-contract ids, every canonical Design edge, the approved acceptance mapping,
-and the typed depth policy. The approved Design checkpoint remains the source
-of HOW; this replan changes only repair reachability.
+The sealed EM revision remains a truthful provisional request-changes state:
+approval is closed, uncollected review slots remain explicit gaps, and F-01/F-02
+are repair inputs rather than permission to alter other evidence or findings.
 
 ## Bounded impact
 
-The planner made exactly one required graph-impact call over t15's corrected
-scope, including `plan/tasks.json` and `design/visual.html`. At graph
-fingerprint
-`58c3742bf33ae859ec63aef3727b779c232ea901192673ff70368af5a5795ea2`,
-the result touched `design`, `plan`, `specs`, `taskplane`, and
-`taskplane/tests`; reached 24 impacted nodes; affected only `req:R-0001`; and
-reported no unknown modules, dependent requirements, policy blocks, contract
-boundary nodes, truncation, or depth truncation. The existing policy remains
-local depth 3, `contract-only` boundaries, contract depth 1, and requirement
-depth 1. No new module, contract, resource, or distributed boundary is added.
+The planner made exactly one graph-impact call over the two new repair
+surfaces. At graph fingerprint
+`8103e5be4842eb3cb03fb8aaac6fd2fafb2203699b835662b15183400b2db616`,
+it touched only `taskplane` and `taskplane/tests`; reached 27 impacted nodes;
+affected only `req:R-0001`; and reported no unknown modules, dependent
+requirements, policy blocks, contract boundary nodes, truncation, or depth
+truncation. The existing policy remains local depth 3, `contract-only`
+boundaries, contract depth 1, and requirement depth 1. Neither task introduces
+a module, contract, resource, or distributed boundary.
 
-## Only pending work: t15
+## Independent repair wave
 
-t15 keeps its existing risk-routing implementation and focused selector. Its
-scope adds exactly:
+The tasks are scope-disjoint and may execute in parallel. F-01 is listed first
+because it is the admitted blocker.
 
-- `plan/tasks.json`, so the persisted AC22 ownership text can be reconciled
-  with the already authorized risk-scaled AC15/AC22 rule; and
-- `design/visual.html`, so the visual no longer states an unconditional
-  four-deep-floor rule.
+### t19 — evidence-bearing metadata normalization
 
-The repair must make the requirement, Design Contract, Design narrative,
-visual, active plan criterion, runtime routing, and focused fixtures agree:
-documentation-only and simple low-risk changes select exactly one attributable
-risk-selected deep lens; a missing code-module mapping alone does not widen;
-only genuinely ambiguous, corrupt, substantively risky, or otherwise
-evidence-backed material risk widens to the architecture, code-quality,
-security, and QA floors with an explicit reason. The selected slot or slots
-and the eight-lens cap remain conserved.
+Owns only the collector, its metadata-repair/retry helpers, and focused
+lifecycle/recovery tests. After canonical metadata normalization,
+`taskplane/review.py` must revalidate the pass-evidence invariant. A
+fail-to-pass normalization with no checked evidence cannot be stored as a
+clean pass: mechanical repair is rejected and only that original producer is
+scheduled for retry.
 
-The task retains one focused command string naming only the existing t15
-selectors. There is no local repository-wide suite in this plan. CI retains
-ownership of the single complete `python3 -m pytest -q taskplane/tests`
-confirmation after focused closure and independent evaluation.
+The repair must preserve both accepted sides of the contract:
 
-## Risks and rollback
+- authority-derivable metadata contradictions still normalize with audited
+  before/after values and complete collection in one call without a producer
+  rerun; and
+- substantive or evidence-bearing defects still retry only the affected
+  original producer while conserving unrelated valid results.
 
-The narrow risk is semantic drift between the corrected runtime behavior and
-the two stale artifacts. `plan/tasks.json` is in scope only to update t15's
-AC22 ownership text after the requirement wording is reconciled; it is not
-authority to change task history, statuses, other criteria, or any other task
-definition. `design/visual.html` may express the approved risk-scaled rule but
-may not introduce a new Design approach.
+Its single focused pytest command covers the existing derivable-normalization
+and affected-producer tests plus the new inverse evidence-free-pass regression.
 
-No assertion may be removed, skipped, xfailed, loosened, or reclassified. No
-private keys, host authentication boundary, i18n, retention/compaction,
-scalability machinery, or wishlist documentation enters the repair. If the
-focused t15 selector does not converge, rollback only the new stale-artifact
-repair while preserving commit `2602b5b` and all settled task evidence, then
-return the exact blocker to the governed loop.
+### t20 — evaluator-unavailable retry routing
+
+Owns only `taskplane/loop.py` and the two focused loop/evidence-bundle test
+files. A retry from a truthful evaluator-infrastructure-unavailable escalation
+must restore `evaluate` with an unsettled task, never enter `fix`; `fix` remains
+reserved for a judged product failure. Unavailability stays distinct and
+non-judged, approval/readiness stays closed, and the exact outage identity is
+preserved across the transition.
+
+The task adds the unavailable → retry → evaluate transition fixture, retains
+the existing non-judged/readiness and outage-identity fixtures, and keeps the
+judged-failure retry-to-fix assertion. It also updates the known stale legacy
+node
+`TestUnavailableModelEvaluationDoesNotOpenAProductFix::test_unavailable_advances_with_warning_without_a_fix_cycle`
+in place so the focused selector and CI no longer encode an evidence-free
+passed state.
+
+## Validation and rollback
+
+Each pending task has exactly one focused `python3 -m pytest -q` command string
+containing only named cluster selectors. No task declares a local repository-
+wide suite; CI retains ownership of the complete
+`python3 -m pytest -q taskplane/tests` validation after both focused repairs
+and their independent evaluations close.
+
+No assertion may be removed, skipped, xfailed, loosened, or reclassified.
+t19 may change only evidence validation/repair routing and its focused tests;
+t20 may change only unavailable retry routing and its focused assertions. If a
+task fails to converge, rollback that task alone while preserving all t1–t18
+history, the other repair, the sealed provisional EM revision, and KB decision
+`0025`, then return the exact non-convergent finding to the governed loop.
