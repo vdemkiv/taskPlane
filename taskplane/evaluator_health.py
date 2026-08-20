@@ -19,6 +19,25 @@ _REASONS = frozenset({
 })
 
 
+def outage_identity(*, task: str, requirement: str, evaluation: Mapping,
+                    failures: list) -> dict:
+    """Bind a non-judgment to the exact admitted outage evidence."""
+    if evaluation.get("status") != "unavailable" or \
+            evaluation.get("reason_code") not in _REASONS:
+        raise EvaluatorHealthError("evaluator outage identity is invalid")
+    if not failures or not all(isinstance(row, Mapping) for row in failures):
+        raise EvaluatorHealthError("evaluator outage identity has no failures")
+    material = {
+        "schema": "taskplane.evaluator-outage-identity/v1",
+        "task": str(task or ""),
+        "requirement": str(requirement or ""),
+        "evaluation": copy.deepcopy(dict(evaluation)),
+        "failures": copy.deepcopy([dict(row) for row in failures]),
+    }
+    return dict(material, fingerprint=hashlib.sha256(
+        tp.canonical_json_bytes(material)).hexdigest())
+
+
 def cache_key(workspace: str, *, evaluator: str, evaluator_version: str,
               engine_fingerprint: str, capability: str,
               recovery_fingerprint: str) -> dict:

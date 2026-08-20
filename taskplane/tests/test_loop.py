@@ -13,6 +13,7 @@ import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
 import depgraph  # noqa: E402
+import evaluator_health  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 
@@ -181,6 +182,70 @@ class TestLoop(unittest.TestCase):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
         self.assertEqual(loop.load(ws)["step"], "plan")
+
+    def _gate_evaluator_unavailable(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        loop.next_action(ws)
+        loop.gate(ws, "pass")
+        loop.approve(ws, "plan")
+        loop.next_action(ws)
+        with open(os.path.join(ws, "src", "todo", "a.py"), "a",
+                  encoding="utf-8") as stream:
+            stream.write("\ndef complete():\n    return True\n")
+        with unittest.mock.patch(
+                "runtime_eval.guide_loop",
+                return_value={"status": "on_path", "recovered": False}):
+            submit_gate(ws, "pass")
+        write_verdict(ws)
+        path = os.path.join(ws, ".eval", "verdict.json")
+        with open(path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["evaluation"] = {
+            "status": "unavailable",
+            "reason_code": "agent_timeout",
+            "detail": "bounded evaluator attempt 7 timed out on host alpha",
+        }
+        verdict["verdict"] = "fail"
+        verdict["lenses"] = []
+        verdict["failures"] = [{
+            "what": "independent evaluator did not return a judgment",
+            "repro": "dispatch attempt 7 on host alpha",
+            "where": "host:alpha/evaluator:independent",
+        }]
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream)
+        with unittest.mock.patch(
+                "runtime_eval.guide_loop",
+                return_value={"status": "on_path", "recovered": False}):
+            result = submit_gate(ws, "unavailable")
+        return ws, verdict, result
+
+    def test_evaluator_unavailable_remains_non_judged_and_keeps_readiness_closed(self):
+        ws, _, result = self._gate_evaluator_unavailable()
+        self.assertNotIn("error", result)
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        self.assertEqual(task["status"], "unavailable")
+        self.assertNotIn(task["status"], loop.SETTLED)
+        self.assertEqual(task["fix_cycles"], 0)
+        self.assertEqual(state["step"], "escalated")
+
+    def test_unavailable_warning_preserves_exact_outage_identity_without_pass_verdict(self):
+        ws, verdict, result = self._gate_evaluator_unavailable()
+        state = loop.load(ws)
+        warning = state["evaluation_warnings"][0]
+        identity = warning["outage_identity"]
+        self.assertEqual(result["warning"], warning)
+        self.assertEqual(warning["verdict"], "non-judged")
+        self.assertEqual(identity["task"], verdict["task"])
+        self.assertEqual(identity["requirement"], verdict["requirement"])
+        self.assertEqual(identity["evaluation"], verdict["evaluation"])
+        self.assertEqual(identity["failures"], verdict["failures"])
+        self.assertEqual(identity, evaluator_health.outage_identity(
+            task=verdict["task"], requirement=verdict["requirement"],
+            evaluation=verdict["evaluation"], failures=verdict["failures"]))
+        self.assertNotEqual(state["tasks"][0]["status"], "passed")
 
     def test_next_activates_contract_gate_clears(self):
         ws = git_ws(self.tmp, [TASK])

@@ -12,7 +12,7 @@ State machine (per docs/loop-design.md, answers locked 2026-07-11):
   plan    → plan_approval (human) → execute
   execute → evaluate
   evaluate: pass → next task, or → em when all tasks pass
-            unavailable → next task/em with a visible warning, never fix
+            unavailable → escalated recovery with a non-judged warning
             fail → fix (if fix_cycles < max) else escalated (human)
   fix     → evaluate
   em      → signoff (human) → retro/graph true-up → done
@@ -37,6 +37,7 @@ import authority as authority_engine
 import command_wave
 import depgraph
 import evaluation_output
+import evaluator_health
 import host_capabilities
 import kb
 import lens as lens_router
@@ -3127,22 +3128,37 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             t = _current_task(state)
             build_failed = state.pop("_build_failed", False) or \
                 t.pop("_build_failed", False)
-            if outcome in ("pass", "unavailable") and not build_failed:
+            if outcome == "unavailable" and not build_failed:
+                availability = dict(
+                    (unavailable_verdict or {}).get("evaluation") or {})
+                identity = evaluator_health.outage_identity(
+                    task=str(t.get("id") or ""),
+                    requirement=str((unavailable_verdict or {}).get(
+                        "requirement") or ""),
+                    evaluation=availability,
+                    failures=list((unavailable_verdict or {}).get(
+                        "failures") or []))
+                warning = {
+                    "task": t.get("id"),
+                    "status": "unavailable",
+                    "verdict": "non-judged",
+                    "reason_code": availability.get("reason_code"),
+                    "detail": str(availability.get("detail") or "")[:500],
+                    "outage_identity": identity,
+                }
+                t["status"] = "unavailable"
+                t["evaluation"] = warning
+                warnings = state.setdefault("evaluation_warnings", [])
+                warnings[:] = [row for row in warnings
+                               if row.get("task") != t.get("id")]
+                warnings.append(warning)
+                # Infrastructure could not provide the independent judgment
+                # required for readiness.  Keep the task unsettled and pause
+                # at the existing governed recovery boundary; only an
+                # attributed human retry/skip/defer/abort can move it.
+                state["step"] = "escalated"
+            elif outcome == "pass" and not build_failed:
                 t["status"] = "passed"
-                if outcome == "unavailable":
-                    availability = dict(
-                        (unavailable_verdict or {}).get("evaluation") or {})
-                    warning = {
-                        "task": t.get("id"),
-                        "status": "unavailable",
-                        "reason_code": availability.get("reason_code"),
-                        "detail": str(availability.get("detail") or "")[:500],
-                    }
-                    t["evaluation"] = warning
-                    warnings = state.setdefault("evaluation_warnings", [])
-                    warnings[:] = [row for row in warnings
-                                   if row.get("task") != t.get("id")]
-                    warnings.append(warning)
                 # After the LAST task: A/B loops pause at the human SELECTION
                 # gate (variants never merge — one gets picked) — but only
                 # ONCE; a post-selection fix cycle goes back to the review.
