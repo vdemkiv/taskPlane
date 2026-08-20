@@ -74,8 +74,15 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(commands)
         self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in command
                             for command in commands))
+        governed = [command for command in commands
+                    if "host_native_runtime.py" not in command]
+        native_checks = [command for command in commands
+                         if "host_native_runtime.py" in command]
+        self.assertTrue(governed)
         self.assertTrue(all('[ -f ".taskplane/codex-hook.py" ]' in command
-                            for command in commands))
+                            for command in governed))
+        self.assertEqual(len(native_checks), 1)
+        self.assertIn("check --host codex", native_checks[0])
         self.assertTrue(all("PLUGIN_ROOT" in command for command in commands))
 
     def test_repository_hook_uses_plugin_when_worktree_runner_is_missing(self):

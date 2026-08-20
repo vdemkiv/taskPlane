@@ -47,13 +47,16 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
         self.assertIn(custom, config["hooks"]["SessionStart"])
         self.assertIn(".taskplane/codex-hook.py", json.dumps(config))
         native_checks = [
-            hook["command"]
+            hook
             for row in config["hooks"]["SessionStart"]
             for hook in row.get("hooks", [])
             if "host_native_runtime.py" in hook.get("command", "")
         ]
         self.assertEqual(len(native_checks), 1)
-        self.assertIn("check --host codex", native_checks[0])
+        self.assertIn("check --host codex", native_checks[0]["command"])
+        self.assertIn("check --host codex",
+                      native_checks[0]["commandWindows"])
+        self.assertNotIn("--host claude", json.dumps(native_checks[0]))
         runner = os.path.join(ws, ".taskplane", "codex-hook.py")
         self.assertTrue(os.path.isfile(runner))
         with open(runner, encoding="utf-8") as handle:

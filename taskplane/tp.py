@@ -423,18 +423,25 @@ def _codex_hook_rows() -> dict:
     for rows in generated.values():
         for row in rows:
             for hook in row.get("hooks") or []:
-                _codex_hook_action(hook.get("command"))
+                command = str(hook.get("command") or "")
+                is_host_native_check = "host_native_runtime.py" in command
+                _codex_hook_action(command)
                 # Keep the bundled missing-runner fallback. A Codex-managed
                 # worktree contains the tracked hook configuration but not
                 # the ignored local bridge, and the originating worktree may
                 # be removed while its task is still open.
-                hook["command"] = str(hook.get("command") or "").replace(
+                hook["command"] = command.replace(
                     "TASKPLANE_HOOK_PATH=native",
                     "TASKPLANE_HOOK_PATH=bridge")
                 hook["commandWindows"] = str(
                     hook.get("commandWindows") or "").replace(
                         "TASKPLANE_HOOK_PATH=native",
                         "TASKPLANE_HOOK_PATH=bridge")
+                if is_host_native_check:
+                    hook["command"] = hook["command"].replace(
+                        "check --host claude", "check --host codex")
+                    hook["commandWindows"] = hook["commandWindows"].replace(
+                        "check --host claude", "check --host codex")
     return generated
 
 
