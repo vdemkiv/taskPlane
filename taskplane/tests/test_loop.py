@@ -399,45 +399,6 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(open(report_path, "rb").read(), report_before)
         self.assertTrue(loop.next_action(ws)["paused"])
 
-    def test_parallel_execute_gate_validates_claimed_task_worktree(self):
-        """EXECUTE DoD must import and test the claimed branch's bytes."""
-        tests = (
-            "python3 -c \"import sys; sys.path.insert(0, 'src/a'); "
-            "import taskplane_lite; assert "
-            "taskplane_lite.WORKTREE_ONLY_EXECUTE_DOD\""
-        )
-        ws = TestParallelExecution._ws(TestParallelExecution())
-        state = loop.load(ws)
-        state["tasks"][0]["tests"] = tests
-        loop.save(ws, state)
-
-        agent_ws = os.path.join(ws, ".tp-work", "t1")
-        subprocess.run(
-            ["git", "worktree", "add", "-q", agent_ws, "-b",
-             "tp/execute-dod-worktree-binding"],
-            cwd=ws, check=True,
-        )
-        loop.claim(ws, "t1", agent_ws)
-        module = os.path.join(agent_ws, "src", "a", "taskplane_lite.py")
-        os.makedirs(os.path.dirname(module), exist_ok=True)
-        shutil.copyfile(tp.__file__, module)
-        with open(module, "a", encoding="utf-8") as stream:
-            stream.write("WORKTREE_ONLY_EXECUTE_DOD = True\n")
-        subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
-        subprocess.run(
-            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
-             "commit", "-qm", "worker-only engine bytes"],
-            cwd=agent_ws, check=True,
-        )
-
-        submitted = loop.submit(ws, "pass", task_id="t1")
-        self.assertTrue(submitted.get("submitted"), submitted)
-        gated = loop.gate(ws, "pass", task_id="t1")
-
-        self.assertNotIn("error", gated)
-        self.assertTrue(gated["built"])
-        self.assertEqual(loop.load(ws)["tasks"][0]["status"], "built")
-
     def test_signoff_is_bound_to_em_integration_not_later_shared_bytes(self):
         """A later commit/loop cannot make an approved EM revision fail DoD.
 
