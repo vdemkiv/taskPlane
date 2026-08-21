@@ -36,6 +36,8 @@ jobs:
               taskplane/tests/test_stage_rollout.py
               taskplane/tests/test_stage_r0003_preservation.py
               taskplane/tests/test_stage_release_matrix.py
+              taskplane/tests/test_stage_loop_integration.py
+              taskplane/tests/test_stage_cli.py
           - python: "3.11"
             tests: >-
               taskplane/tests/test_r0002_reviewkernel_regression_floor.py
@@ -47,6 +49,8 @@ jobs:
               taskplane/tests/test_stage_rollout.py
               taskplane/tests/test_stage_r0003_preservation.py
               taskplane/tests/test_stage_release_matrix.py
+              taskplane/tests/test_stage_loop_integration.py
+              taskplane/tests/test_stage_cli.py
           - python: "3.12"
             tests: >-
               taskplane/tests
@@ -248,12 +252,24 @@ jobs:
       - name: Build and validate Claude plugin package
         run: python scripts/package_claude.py
 
+      - name: Build and validate Claude file-upload plugin
+        run: python scripts/package_claude.py --ext plugin
+
       - name: Claude package build is deterministic (release provenance)
         run: |
           python3 scripts/package_claude.py --output-dir /tmp/tp-claude-a
           python3 scripts/package_claude.py --output-dir /tmp/tp-claude-b
           a=$(sha256sum /tmp/tp-claude-a/*.zip | cut -d' ' -f1)
           b=$(sha256sum /tmp/tp-claude-b/*.zip | cut -d' ' -f1)
+          echo "build A: $a"; echo "build B: $b"
+          test "$a" = "$b"
+
+      - name: Claude file-upload plugin is deterministic (release provenance)
+        run: |
+          python3 scripts/package_claude.py --ext plugin --output-dir /tmp/tp-claude-plugin-a
+          python3 scripts/package_claude.py --ext plugin --output-dir /tmp/tp-claude-plugin-b
+          a=$(sha256sum /tmp/tp-claude-plugin-a/*.plugin | cut -d' ' -f1)
+          b=$(sha256sum /tmp/tp-claude-plugin-b/*.plugin | cut -d' ' -f1)
           echo "build A: $a"; echo "build B: $b"
           test "$a" = "$b"
 
@@ -272,8 +288,10 @@ jobs:
           head = subprocess.run(["git", "rev-parse", "HEAD"],
                                 capture_output=True, text=True).stdout.strip()
           found = sorted(glob.glob("/tmp/tp-pkg-a/*.provenance.json")
-                         + glob.glob("/tmp/tp-claude-a/*.provenance.json"))
-          if len(found) < 2:
+                         + glob.glob("/tmp/tp-claude-a/*.provenance.json")
+                         + glob.glob(
+                             "/tmp/tp-claude-plugin-a/*.provenance.json"))
+          if len(found) != 3:
               sys.exit(f"expected a provenance record per archive, got {found}")
           for path in found:
               rec = json.load(open(path))

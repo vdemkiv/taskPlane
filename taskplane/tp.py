@@ -5796,30 +5796,171 @@ _CLI_STAGE_REQUEST_FIELDS = {
     ),
 }
 
+_CLI_STAGE_REQUIRED_FIELDS = {
+    "history": ("run_id",),
+    "start": ("stage", "expected_revision", "operation_id", "authority"),
+    "reuse": (
+        "stage OR successor_stage", "expected_revision", "operation_id",
+        "expected_predecessor_fingerprints", "authority", "reason", "actor",
+    ),
+    "resume": (
+        "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "authority",
+    ),
+    "terminalize": (
+        "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "outcome", "actor",
+        "terminalized_at", "authority",
+    ),
+    "terminalize-and-start": (
+        "predecessor_stage_id", "stage OR successor_stage",
+        "expected_head_fingerprint", "expected_revision", "operation_id",
+        "outcome", "actor", "terminalized_at", "authority",
+    ),
+    "split": (
+        "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "child_specs", "actor",
+        "terminalized_at", "reason", "authority",
+    ),
+}
+
+_CLI_STAGE_OPTIONAL_FIELDS = {
+    "history": ("schema", "cursor", "limit"),
+    "start": (
+        "schema", "expected_predecessor_fingerprints (required for a "
+        "successor; omit for a root)", "foreground", "declared_scope",
+    ),
+    "reuse": ("schema", "foreground", "declared_scope"),
+    "resume": ("schema", "attempt_id", "declared_scope"),
+    "terminalize": (
+        "schema", "reason_code + reason (required for closed/discarded; "
+        "forbidden for done)", "completed_deliverables + completion_evidence "
+        "(all deliverables and non-empty evidence required for done)",
+        "handoff_manifest",
+    ),
+    "terminalize-and-start": (
+        "schema", "run_id", "reason_code + reason (required for "
+        "closed/discarded; forbidden for done)",
+        "completed_deliverables + completion_evidence (all deliverables and "
+        "non-empty evidence required for done)", "foreground",
+        "declared_scope",
+    ),
+    "split": ("schema", "declared_scopes"),
+}
+
+_CLI_STAGE_ARTIFACT_REFERENCE_EXAMPLE = {
+    "schema": "taskplane.artifact-reference/v1",
+    "kind": "test-report",
+    "fingerprint": "a" * 64,
+    "digest": "a" * 64,
+    "bytes": 128,
+    "locator": "artifact://test-report/" + "a" * 64,
+    "transport": "artifact-reference",
+}
+
+_CLI_STAGE_AUTHORITY_EXAMPLE = {
+    "schema": "taskplane.stage-authority-binding/v1",
+    "run_id": "run-r0004",
+    "repository_id": "github.com/vdemkiv/taskplane",
+    "repository_key": "github.com-vdemkiv-taskplane-43a0a10bba",
+    "worktree_id": "t06-worktree",
+    "target_revision": "1" * 40,
+    "worktree_revision": "2" * 40,
+    "requirement_id": "R-0004",
+    "requirement_revision": "4",
+    "design_revision": "2",
+    "design_fingerprint": "c" * 64,
+    "actor": "human:operator",
+    "session_id": "codex-thread-1",
+    "authority_revision": 7,
+    "authority_fingerprint": "d" * 64,
+}
+
+_CLI_STAGE_VALUE_EXAMPLE = {
+    "schema": "taskplane.stage/v1",
+    "run_id": "run-r0004",
+    "stage_id": "stage-evaluate-001",
+    "requirement": {
+        "id": "R-0004", "revision": "4", "fingerprint": "b" * 64,
+    },
+    "design": {"revision": "2", "fingerprint": "c" * 64},
+    "stage_kind": "evaluate",
+    "parent_stage_ids": [],
+    "predecessor_stage_ids": ["stage-build-001"],
+    "input_manifest_ref": {
+        "schema": "taskplane.artifact-reference/v1",
+        "kind": "stage-handoff",
+        "fingerprint": "e" * 64,
+        "digest": "e" * 64,
+        "bytes": 1024,
+        "locator": "artifact://stage-handoff/" + "e" * 64,
+        "transport": "artifact-reference",
+    },
+    "execution_root_id": "execution-stage-evaluate-001",
+    "deliverables": ["evaluation-verdict"],
+    "selected_artifacts": [{
+        "schema": "taskplane.artifact-reference/v1",
+        "kind": "source",
+        "fingerprint": "f" * 64,
+        "digest": "f" * 64,
+        "bytes": 4096,
+        "locator": "artifact://source/" + "f" * 64,
+        "transport": "artifact-reference",
+    }],
+    "budget": {"attempt_limit": 3, "token_limit": 8000},
+    "dependencies": ["t06-cross-host-rollout"],
+    "contracts": ["contract:stage-artifact-handoff"],
+    "authority": _CLI_STAGE_AUTHORITY_EXAMPLE,
+    "state": "active",
+    "outcome": None,
+    "default_consumable": True,
+    "terminal": None,
+    "created_at": "2026-08-21T18:00:00Z",
+    "aggregate_revision": 1,
+}
+
 _CLI_STAGE_SUCCESSOR_EXAMPLE = {
     "schema": "taskplane.stage-command/v1",
-    "run_id": "run-r0004",
     "predecessor_stage_id": "stage-build-001",
-    "successor_stage": "<complete taskplane.stage/v1 object>",
-    "expected_head_fingerprint": "<predecessor stage fingerprint>",
+    "successor_stage": _CLI_STAGE_VALUE_EXAMPLE,
+    "expected_head_fingerprint": "9" * 64,
     "expected_revision": 12,
     "operation_id": "build-to-evaluate-001",
     "outcome": "done",
     "actor": "human:operator",
     "terminalized_at": "2026-08-21T18:00:00Z",
     "completed_deliverables": ["build-commit", "declared-tests"],
-    "completion_evidence": ["<portable artifact reference>"],
+    "completion_evidence": [_CLI_STAGE_ARTIFACT_REFERENCE_EXAMPLE],
     "foreground": True,
-    "authority": "<exact taskplane.stage-authority-binding/v1 object>",
+    "authority": _CLI_STAGE_AUTHORITY_EXAMPLE,
     "declared_scope": {
         "scope_paths": ["taskplane/**"],
         "out_of_scope_paths": [],
     },
 }
 
+_CLI_STAGE_HISTORY_EXAMPLE = {
+    "schema": "taskplane.stage-command/v1",
+    "run_id": "run-r0004",
+    "cursor": "0",
+    "limit": 25,
+}
+
 
 def _cli_stage_request_note() -> list[str]:
     """Generator-owned JSON boundary documentation for ``tp.py stage``."""
+    def render_fields(command: str, entries: tuple[str, ...]) -> str:
+        rendered_entries = []
+        fields = sorted(
+            _CLI_STAGE_REQUEST_FIELDS[command], key=len, reverse=True)
+        for entry in entries:
+            rendered = entry
+            for field in fields:
+                rendered = re.sub(
+                    rf"\b{re.escape(field)}\b", f"`{field}`", rendered)
+            rendered_entries.append(rendered)
+        return ", ".join(rendered_entries)
+
     out = [
         "### Closed stage-command request",
         "",
@@ -5829,26 +5970,94 @@ def _cli_stage_request_note() -> list[str]:
         "`taskplane.stage-command/v1`. Unknown fields and predecessor runtime",
         "context (agents, conversations, event logs, tool transcripts, leases,",
         "runtime state, workspaces, paths, or execution roots) are rejected.",
-        "The table lists the exact allowed top-level fields; operation-specific",
-        "identity, authority, lifecycle, and artifact validation still applies.",
+        "The table distinguishes fields required on every call from optional",
+        "or outcome-dependent fields. Fields joined by `OR` are exclusive",
+        "alternatives. Values remain subject to identity, authority, lifecycle,",
+        "and artifact validation.",
         "",
-        "| Stage command | Allowed request fields |",
-        "| --- | --- |",
+        "| Stage command | Required fields | Optional or conditional fields |",
+        "| --- | --- | --- |",
     ]
-    for command, fields in _CLI_STAGE_REQUEST_FIELDS.items():
-        rendered = ", ".join(f"`{field}`" for field in fields)
-        out.append(f"| `{command}` | {rendered} |")
+    for command in _CLI_STAGE_REQUEST_FIELDS:
+        required = render_fields(
+            command, _CLI_STAGE_REQUIRED_FIELDS[command])
+        optional = render_fields(
+            command, _CLI_STAGE_OPTIONAL_FIELDS[command])
+        out.append(f"| `{command}` | {required} | {optional} |")
     out += [
         "",
+        "#### Closed nested shapes",
+        "",
+        "A `taskplane.stage/v1` request value is a closed active-stage object.",
+        "It requires every key shown below except `fingerprint`, which may be",
+        "omitted and is recomputed canonically. `requirement` has exactly `id`,",
+        "`revision`, and `fingerprint`; `design` is either null or has exactly",
+        "`revision` and `fingerprint`. An input stage must have `state: active`,",
+        "`outcome: null`, `default_consumable: true`, and `terminal: null`.",
+        "Collections must already be sorted and unique. The execution root is",
+        "always `execution-<stage_id>`.",
+        "",
+        "```json",
+        *json.dumps(
+            _CLI_STAGE_VALUE_EXAMPLE, indent=2, ensure_ascii=False,
+        ).splitlines(),
+        "```",
+        "",
+        "`authority` is a closed `taskplane.stage-authority-binding/v1` object",
+        "with exactly the keys shown above. All identity and revision values",
+        "must match the live run, checkout, requirement, design, actor, and",
+        "session. When `design` is null, both authority design fields are null.",
+        "The top-level request `authority` and the stage's nested `authority`",
+        "must describe the same current binding.",
+        "",
+        "Every `input_manifest_ref`, `selected_artifacts` entry, and",
+        "`completion_evidence` entry is a closed",
+        "`taskplane.artifact-reference/v1` object with exactly `schema`, `kind`,",
+        "`fingerprint`, `digest`, `bytes`, `locator`, and `transport`. The",
+        "locator is `artifact://<kind>/<fingerprint>`, both hashes are 64",
+        "lowercase hexadecimal characters, bytes is a non-negative integer,",
+        "and transport is `artifact-reference`. For example:",
+        "",
+        "```json",
+        *json.dumps(
+            _CLI_STAGE_ARTIFACT_REFERENCE_EXAMPLE,
+            indent=2, ensure_ascii=False,
+        ).splitlines(),
+        "```",
+        "",
+        "`declared_scope` is either absent or a closed object with exactly",
+        "`scope_paths` and `out_of_scope_paths`. Each is a sorted, unique array",
+        "of at most 64 non-empty strings. `declared_scopes` on `split` is an",
+        "object keyed by generated child stage id whose values have this exact",
+        "shape.",
+        "",
+        "#### Runnable request templates",
+        "",
+        "History needs no lifecycle payload. Save this as `history.json` and",
+        "replace `run-r0004` with an existing run id:",
+        "",
+        "```json",
+        *json.dumps(
+            _CLI_STAGE_HISTORY_EXAMPLE, indent=2, ensure_ascii=False,
+        ).splitlines(),
+        "```",
+        "",
+        "```bash",
+        "tp.py stage history --request history.json",
+        "```",
+        "",
         "Atomic predecessor terminalization and successor startup use one",
-        "request and one receipt:",
+        "shape-complete request and one receipt:",
         "",
         "```bash",
         "tp.py stage terminalize-and-start --request request.json",
         "```",
         "",
-        "`request.json` (replace angle-bracket placeholders with the complete",
-        "validated objects or fingerprint):",
+        "Save the following as `request.json`. Before running it, replace the",
+        "example identifiers, revisions, hashes, byte counts, and timestamps",
+        "with values from the live predecessor, stored handoff, artifact, and",
+        "authority receipts. Replace whole values; do not use string",
+        "placeholders or local paths:",
         "",
         "```json",
         *json.dumps(

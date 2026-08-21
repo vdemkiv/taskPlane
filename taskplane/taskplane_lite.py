@@ -2727,6 +2727,9 @@ STAGE_NATIVE_ENV = "TASKPLANE_STAGE_NATIVE"
 STAGE_DISPATCH_SCHEMA = "taskplane.stage-dispatch/v1"
 STAGE_STARTUP_SCHEMA = "taskplane.stage-startup/v1"
 STAGE_RECEIPT_SCHEMA = "taskplane.stage-operation-receipt/v1"
+STAGE_AUTHORITY_REFERENCE_SCHEMA = \
+    "taskplane.stage-authority-reference/v1"
+STAGE_HANDOFF_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v1"
 MAX_STAGE_STARTUP_BYTES = 128 * 1024
 MAX_STAGE_RECEIPT_BYTES = 2 * 1024 * 1024
 _STAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -3094,6 +3097,66 @@ def _declared_stage_scope(value) -> dict | None:
     return checked
 
 
+def _stage_authority_reference(authority: dict) -> dict:
+    """Project attributable local authority to a pseudonymous reference.
+
+    The caller has already validated the stage aggregate and matched its raw
+    actor/session attribution to the verified handoff.  Hashing that complete
+    binding preserves a deterministic, cross-host proof link without placing
+    the identifying values in agent-facing startup bytes.
+    """
+    checked = _json_detach(authority, "stage authority")
+    return {
+        "schema": STAGE_AUTHORITY_REFERENCE_SCHEMA,
+        "fingerprint": hashlib.sha256(canonical_json_bytes(checked)).hexdigest(),
+    }
+
+
+def _verify_stage_authority_reference(value) -> dict:
+    if not isinstance(value, dict) or set(value) != {"schema", "fingerprint"} \
+            or value.get("schema") != STAGE_AUTHORITY_REFERENCE_SCHEMA:
+        raise StageDispatchError("stage authority reference is invalid")
+    _stage_fingerprint(
+        value.get("fingerprint"), "stage authority reference fingerprint")
+    return _json_detach(value, "stage authority reference")
+
+
+def _dispatch_handoff_projection(handoff: dict,
+                                 authority_reference: dict) -> dict:
+    """Make a content-addressed handoff projection safe for a stage worker."""
+    projected = _json_detach(handoff, "verified handoff")
+    source_fingerprint = projected.pop("fingerprint")
+    projected["schema"] = STAGE_HANDOFF_DISPATCH_SCHEMA
+    projected["source_fingerprint"] = source_fingerprint
+    projected["authorization"] = _json_detach(
+        authority_reference, "stage authority reference")
+    projected["fingerprint"] = hashlib.sha256(
+        canonical_json_bytes(projected)).hexdigest()
+    return projected
+
+
+def _verify_dispatch_handoff_projection(value, authority_reference: dict) \
+        -> dict:
+    fields = _STAGE_HANDOFF_FIELDS | {"source_fingerprint"}
+    if not isinstance(value, dict) or set(value) != fields or \
+            value.get("schema") != STAGE_HANDOFF_DISPATCH_SCHEMA:
+        raise StageDispatchError("stage dispatch handoff projection is invalid")
+    _stage_fingerprint(
+        value.get("source_fingerprint"), "source handoff fingerprint")
+    supplied = _stage_fingerprint(
+        value.get("fingerprint"), "stage dispatch handoff fingerprint")
+    payload = dict(value)
+    payload.pop("fingerprint")
+    expected = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    if supplied != expected:
+        raise StageDispatchError(
+            "stage dispatch handoff projection fingerprint mismatch")
+    if value.get("authorization") != authority_reference:
+        raise StageDispatchError(
+            "stage dispatch handoff authority reference mismatch")
+    return _json_detach(value, "stage dispatch handoff projection")
+
+
 def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
                            selected_artifacts: list, *,
                            attempt_id: str | None = None,
@@ -3122,11 +3185,15 @@ def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
     claim, attempt = _dispatch_claim(
         checked_stage, checked_receipt, attempt_id)
     scope = _declared_stage_scope(declared_scope)
+    authority_reference = _stage_authority_reference(
+        checked_stage["authority"])
+    dispatch_handoff = _dispatch_handoff_projection(
+        checked_handoff, authority_reference)
     startup = {
         "schema": STAGE_STARTUP_SCHEMA,
         "stage_id": checked_stage["stage_id"],
-        "authority": checked_stage["authority"],
-        "input_handoff": checked_handoff,
+        "authority": authority_reference,
+        "input_handoff": dispatch_handoff,
         "selected_artifacts": _json_detach(
             selected_artifacts, "selected artifacts"),
         "budget": checked_stage["budget"],
@@ -3223,6 +3290,10 @@ def stage_startup_bytes(dispatch: dict) -> bytes:
     if fields not in {frozenset(required),
                       frozenset(required | {"declared_scope"})}:
         raise StageDispatchError("stage startup fields are invalid")
+    authority_reference = _verify_stage_authority_reference(
+        startup.get("authority"))
+    projected_handoff = _verify_dispatch_handoff_projection(
+        startup.get("input_handoff"), authority_reference)
     _reject_runtime_context(startup, "stage startup")
     serialized = canonical_json_bytes(startup)
     if len(serialized) > MAX_STAGE_STARTUP_BYTES:
@@ -3233,6 +3304,9 @@ def stage_startup_bytes(dispatch: dict) -> bytes:
     selected = startup.get("selected_artifacts")
     if not isinstance(selected, list):
         raise StageDispatchError("stage startup selected artifacts are invalid")
+    if projected_handoff.get("selected_artifacts") != selected:
+        raise StageDispatchError(
+            "stage startup handoff selected artifacts mismatch")
     expected_telemetry = {
         "startup_bytes": len(serialized),
         "startup_tokens": (len(serialized) + 3) // 4,

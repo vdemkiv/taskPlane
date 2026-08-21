@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -186,6 +187,40 @@ def test_stage_rollout_requires_an_exact_explicit_mode(
         (expected != "disabled")
 
 
+def test_normal_new_run_init_can_reach_the_public_stage_start(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Importing the public-journey fixture locally keeps this rollout module
+    # independent from cross-host collection while exercising the same real
+    # RunStore/lifecycle boundary used by host adapters.
+    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+
+    workspace, store, stage = _real_loop_stage(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+
+    initialized = loop.init(
+        str(workspace), "exercise the stage-native canary",
+        requirement_id="R-0004")
+    started = loop.stage_command(str(workspace), "start", {
+        "schema": "taskplane.stage-command/v1",
+        "stage": stage,
+        "expected_revision": 1,
+        "operation_id": "start-reachable-new-run-canary",
+        "expected_predecessor_fingerprints": {},
+        "foreground": True,
+        "authority": stage["authority"],
+        "declared_scope": {
+            "scope_paths": ["specs/spec.md"],
+            "out_of_scope_paths": ["taskplane/loop.py"],
+        },
+    })
+
+    assert "error" not in initialized, initialized
+    assert "error" not in started, started
+    assert started["command"] == "start"
+    assert started["dispatch"]["startup"]["stage_id"] == stage["stage_id"]
+    assert store.load(str(stage["run_id"]))["schema"] == "taskplane.run/v4"
+
+
 def test_shadow_migration_compares_conservation_without_switching_readers(
         tmp_path: Path) -> None:
     workspace = tmp_path / "checkout"
@@ -288,6 +323,77 @@ def test_rollback_pauses_mutation_but_preserves_migrated_history_and_bytes(
     assert _tree_bytes(run_root) == before
     assert loop._stage_mutation_blocker(
         "enabled", store.load(RUN_ID), str(workspace)) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "payload"),
+    [
+        ("start", {"stage": {"run_id": RUN_ID}}),
+        ("reuse", {"stage": {"run_id": RUN_ID}}),
+        ("resume", {"run_id": RUN_ID}),
+        ("terminalize", {"run_id": RUN_ID}),
+        ("terminalize-and-start", {"stage": {"run_id": RUN_ID}}),
+        ("split", {"run_id": RUN_ID}),
+    ],
+)
+def test_disabled_migrated_v4_refuses_every_public_stage_mutation(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str,
+        payload: dict[str, object]) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    store, initial = _store(tmp_path)
+    _migrate(workspace, store, initial)
+    run_root = Path(store.home) / "runs" / RUN_ID
+    before = _tree_bytes(run_root)
+    monkeypatch.setattr(loop, "_stage_store", lambda _ws, _run_id: store)
+    monkeypatch.delenv(taskplane_lite.STAGE_NATIVE_ENV, raising=False)
+
+    refused = loop.stage_command(str(workspace), command, payload)
+
+    assert refused["command"] == command
+    assert refused["run_id"] == RUN_ID
+    assert refused["enabled"] is False
+    assert refused["legacy"] is False
+    assert "stage-native mutation is disabled" in refused["error"]
+    assert _tree_bytes(run_root) == before
+
+
+def test_disabled_migrated_v4_refuses_singleton_resolution_without_writes(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    store, initial = _store(tmp_path)
+    identity = storage.identity_from_remote(
+        "https://github.com/example/project.git")
+    layout = storage.resolve_layout(
+        identity, home=store.home, run_id=RUN_ID)
+    storage.write_workspace_locator(
+        str(workspace), identity=identity, layout=layout, run_id=RUN_ID)
+    state = {
+        "governance_revision": 2,
+        "goal": "retain the migrated stage history",
+        "step": "escalated",
+        "parallel": False,
+        "max_fix_cycles": 2,
+        "checkpoints": [],
+        "current_task": 0,
+        "tasks": [{"id": "t01", "status": "failed", "fix_cycles": 2}],
+    }
+    loop.save(str(workspace), state)
+    _migrate(workspace, store, initial, step="escalated")
+    run_root = Path(store.home) / "runs" / RUN_ID
+    state_path = Path(loop._loop_path(str(workspace)))
+    before_run = _tree_bytes(run_root)
+    before_state = state_path.read_bytes()
+    monkeypatch.delenv(taskplane_lite.STAGE_NATIVE_ENV, raising=False)
+
+    refused = loop.resolve(str(workspace), "abort")
+
+    assert "stage-native mutation is disabled" in refused["error"]
+    assert refused["stage_native"] == "read-only"
+    assert state_path.read_bytes() == before_state
+    assert _tree_bytes(run_root) == before_run
 
 
 def test_rollback_never_guesses_an_ambiguous_legacy_outcome(

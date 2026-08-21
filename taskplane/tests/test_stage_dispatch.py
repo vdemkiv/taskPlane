@@ -263,7 +263,21 @@ def test_stage_runtime_dispatch_is_deterministic_selected_only_and_bounded() \
         taskplane_lite.stage_startup_bytes(second)
     assert first["startup_sha256"] == hashlib.sha256(
         taskplane_lite.stage_startup_bytes(first)).hexdigest()
-    assert first["startup"]["input_handoff"] == handoff
+    authority_reference = first["startup"]["authority"]
+    assert authority_reference == {
+        "schema": "taskplane.stage-authority-reference/v1",
+        "fingerprint": hashlib.sha256(taskplane_lite.canonical_json_bytes(
+            stage["authority"])).hexdigest(),
+    }
+    projected_handoff = first["startup"]["input_handoff"]
+    assert projected_handoff["schema"] == \
+        "taskplane.stage-handoff-dispatch/v1"
+    assert projected_handoff["source_fingerprint"] == handoff["fingerprint"]
+    assert projected_handoff["authorization"] == authority_reference
+    projection_payload = copy.deepcopy(projected_handoff)
+    projection_fingerprint = projection_payload.pop("fingerprint")
+    assert projection_fingerprint == hashlib.sha256(
+        taskplane_lite.canonical_json_bytes(projection_payload)).hexdigest()
     assert first["startup"]["selected_artifacts"] == \
         stage["selected_artifacts"]
     assert first["telemetry"] == {
@@ -279,8 +293,39 @@ def test_stage_runtime_dispatch_is_deterministic_selected_only_and_bounded() \
     assert not ({
         "agents", "conversations", "events", "tool_transcripts", "leases",
         "meters", "active_contract", "runtime_environment", "workspace",
-        "path", "root",
+        "path", "root", "actor", "session_id",
     } & _all_keys(first["startup"]))
+    startup_bytes = taskplane_lite.stage_startup_bytes(first)
+    assert b"human:vdemkiv" not in startup_bytes
+    assert b"codex-thread-1" not in startup_bytes
+    # Privacy projection is non-mutating: attributable proof stays available
+    # to the local verification boundary and its persisted inputs.
+    assert stage["authority"]["actor"] == "human:vdemkiv"
+    assert stage["authority"]["session_id"] == "codex-thread-1"
+    assert handoff["authorization"]["actor"] == "human:vdemkiv"
+    assert handoff["authorization"]["session_id"] == "codex-thread-1"
+
+
+@pytest.mark.parametrize("tamper", ["authority", "handoff-authority",
+                                     "handoff-fingerprint"])
+def test_stage_startup_bytes_rejects_tampered_privacy_projection(
+        tamper: str) -> None:
+    stage, handoff = _stage_and_handoff()
+    dispatch = _dispatch(stage, handoff, _receipt(stage))
+    if tamper == "authority":
+        dispatch["startup"]["authority"]["fingerprint"] = "0" * 64
+    elif tamper == "handoff-authority":
+        dispatch["startup"]["input_handoff"]["authorization"][
+            "fingerprint"] = "0" * 64
+    else:
+        dispatch["startup"]["input_handoff"]["fingerprint"] = "0" * 64
+    serialized = taskplane_lite.canonical_json_bytes(dispatch["startup"])
+    dispatch["startup_sha256"] = hashlib.sha256(serialized).hexdigest()
+    dispatch["telemetry"]["startup_bytes"] = len(serialized)
+    dispatch["telemetry"]["startup_tokens"] = (len(serialized) + 3) // 4
+
+    with pytest.raises(taskplane_lite.StageDispatchError):
+        taskplane_lite.stage_startup_bytes(dispatch)
 
 
 @pytest.mark.parametrize("tamper", ["receipt-stage", "receipt-fingerprint",

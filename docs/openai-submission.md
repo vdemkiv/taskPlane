@@ -66,7 +66,8 @@ references, the local Python runtime, lifecycle hooks, agent roles, lens
 catalog, operating disciplines, runtime specifications, brand assets, and legal
 files. It deliberately excludes Claude manifests, MCP/app configuration, the
 Claude Tag-only skill, tests, non-runtime design documents, repository
-metadata, generated local state, and the animated documentation GIF. The
+metadata, and generated local state. The animated documentation GIF is
+included because README installation guidance references it. The
 builder validates the public directory field limits, skill front matter, asset
 dimensions, skills-only constraints, archive safety, and OpenAI's documented
 size and entry limits before reporting success.

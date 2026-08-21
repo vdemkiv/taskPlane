@@ -79,6 +79,7 @@ class TestGeneratedCliReference(unittest.TestCase):
 
     def test_generator_owns_the_closed_stage_request_contract(self):
         import tp as cli
+        import stage_entities
 
         generated = self._generate()
         self.assertIn("### Closed stage-command request", generated)
@@ -86,6 +87,13 @@ class TestGeneratedCliReference(unittest.TestCase):
         self.assertIn("| `terminalize-and-start` |", generated)
         self.assertIn("`predecessor_stage_id`", generated)
         self.assertIn("`successor_stage`", generated)
+        self.assertIn("| Stage command | Required fields |", generated)
+        self.assertIn("#### Closed nested shapes", generated)
+        self.assertIn("`taskplane.stage/v1`", generated)
+        self.assertIn("`taskplane.stage-authority-binding/v1`", generated)
+        self.assertIn("`taskplane.artifact-reference/v1`", generated)
+        self.assertIn("`scope_paths` and `out_of_scope_paths`", generated)
+        self.assertIn("tp.py stage history --request history.json", generated)
         self.assertIn(
             "tp.py stage terminalize-and-start --request request.json",
             generated,
@@ -101,6 +109,30 @@ class TestGeneratedCliReference(unittest.TestCase):
                 "out_of_scope_paths": [],
             },
         )
+        evidence = example["completion_evidence"]
+        self.assertTrue(evidence)
+        self.assertTrue(all(isinstance(row, dict) for row in evidence))
+        self.assertEqual(
+            set(evidence[0]),
+            {
+                "schema", "kind", "fingerprint", "digest", "bytes",
+                "locator", "transport",
+            },
+        )
+        self.assertEqual(
+            evidence[0]["schema"], "taskplane.artifact-reference/v1")
+        self.assertNotIn("<", json.dumps(example, sort_keys=True))
+        checked_stage = stage_entities.validate_stage(
+            example["successor_stage"])
+        self.assertEqual(checked_stage["schema"], "taskplane.stage/v1")
+        self.assertRegex(checked_stage["fingerprint"], r"^[0-9a-f]{64}$")
+
+        for command, allowed in cli._CLI_STAGE_REQUEST_FIELDS.items():
+            documentation = " ".join(
+                cli._CLI_STAGE_REQUIRED_FIELDS[command] +
+                cli._CLI_STAGE_OPTIONAL_FIELDS[command])
+            for field in allowed:
+                self.assertIn(field, documentation, (command, field))
 
 
 class TestReferencedDocumentation(unittest.TestCase):

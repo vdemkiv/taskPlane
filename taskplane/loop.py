@@ -222,13 +222,53 @@ def _stage_mutation_blocker(mode: str, manifest: Mapping[str, object],
             if "migration" in str(key).lower() and value not in (
                 None, False, "", [], {})
         ]
-        if load(ws) is not None or migration_fields:
+        singleton = load(ws)
+        pristine_new_run = bool(
+            isinstance(singleton, Mapping)
+            and singleton.get("tasks") is None
+            and singleton.get("current_task", 0) == 0
+            and singleton.get("step") in {"pm", "design", "plan"}
+            and not any(key in singleton for key in (
+                "baseline", "selection", "replan_history", "retro")))
+        if (singleton is not None and not pristine_new_run) or migration_fields:
             return ("new-run mode cannot promote an existing singleton or "
                     "migration-bound run; legacy read-only behavior remains "
                     "active")
     if schema not in {"taskplane.run/v3", "taskplane.run/v4"}:
         return "run is not stage-capable"
     return None
+
+
+def _stage_loop_mutation_refusal(ws: str) -> dict | None:
+    """Pause singleton writes when rollback leaves a migrated v4 readable.
+
+    An unmigrated v3 run remains on the byte-identical legacy path.  The
+    locator and manifest are opened only by mutation entry points; disabled
+    legacy reads therefore retain the old no-locator behavior.
+    """
+    if _stage_mode() != "disabled":
+        return None
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception:
+        return None
+    if not isinstance(locator, Mapping):
+        return None
+    run_id = str(locator.get("run_id") or "")
+    if not run_id:
+        return None
+    try:
+        manifest = _stage_store(ws, run_id).load(run_id)
+    except Exception:
+        return None
+    if manifest.get("schema") != "taskplane.run/v4":
+        return None
+    return {
+        "error": ("stage-native mutation is disabled for this migrated v4 "
+                  "run; history remains read-only"),
+        "stage_native": "read-only",
+        "run_id": run_id,
+    }
 
 
 def _current_stage_authority(
@@ -322,6 +362,24 @@ def _verified_stage_handoff(lifecycle: object, store: object,
         -> dict | None:
     """Resolve only the successor's selected, authority-bound handoff."""
     predecessors = list(stage.get("predecessor_stage_ids") or [])
+    parents = list(stage.get("parent_stage_ids") or [])
+    if not predecessors and parents:
+        failures: list[Exception] = []
+        for parent_id in parents:
+            try:
+                producer = _indexed_stage(
+                    store, manifest, str(stage["run_id"]), str(parent_id))
+                # A split handoff carries the explicit non-default reuse
+                # authorization for its closed parent.  Route it through the
+                # lifecycle verifier so that authorization is checked rather
+                # than treating the child as an ordinary root consumer.
+                return lifecycle._read_handoff(  # noqa: SLF001
+                    stage["input_manifest_ref"], producer=producer,
+                    consumer=stage)
+            except Exception as exc:
+                failures.append(exc)
+        raise ValueError("no verified split-parent handoff is dispatchable") \
+            from failures[-1]
     if not predecessors:
         # Root stages still cross the same bounded input boundary.  They have
         # no producer aggregate to compare, but their immutable reference is
@@ -408,7 +466,9 @@ _LOOP_STAGE_KINDS = {
 }
 
 
-def _stage_loop_context(ws: str) -> dict | None:
+def _stage_loop_context(
+        ws: str, state: Mapping[str, object] | None = None, *,
+        stage_id: str | None = None) -> dict | None:
     """Resolve an enabled v4 foreground without changing legacy state."""
     if _stage_mode() == "disabled":
         return None
@@ -427,7 +487,18 @@ def _stage_loop_context(ws: str) -> dict | None:
     if not isinstance(projection, Mapping):
         raise ValueError("stage-native loop projection is unavailable")
     active = list(projection.get("active_stage_ids") or [])
-    foreground = projection.get("foreground_stage_id")
+    foreground = stage_id or projection.get("foreground_stage_id")
+    if foreground is None and isinstance(state, Mapping):
+        task = _current_task(dict(state)) or {}
+        task_id = str(task.get("id") or "")
+        bindings = state.get("_stage_bindings")
+        task_bindings = (bindings.get(task_id)
+                         if isinstance(bindings, Mapping) else None)
+        kind = _LOOP_STAGE_KINDS.get(str(state.get("step") or ""))
+        if isinstance(task_bindings, Mapping) and kind:
+            bound = task_bindings.get(kind)
+            if isinstance(bound, str) and bound:
+                foreground = bound
     if foreground is None and len(active) == 1:
         foreground = active[0]
     if foreground is not None and foreground not in active:
@@ -453,9 +524,10 @@ def _stage_loop_identity(stage_entities: object, prefix: str,
 
 def _stage_loop_dispatch(
         ws: str, state: Mapping[str, object], *, slot: str,
-        declared_scope: Mapping[str, object] | None = None) -> dict | None:
+        declared_scope: Mapping[str, object] | None = None,
+        stage_id: str | None = None) -> dict | None:
     """Resume the exact foreground stage and return its bounded dispatch."""
-    context = _stage_loop_context(ws)
+    context = _stage_loop_context(ws, state, stage_id=stage_id)
     if context is None:
         return None
     stage = context.get("stage")
@@ -500,10 +572,10 @@ def _stage_loop_dispatch(
 
 def _stage_loop_deliverables(kind: str, state: Mapping[str, object]) -> list[str]:
     if kind == "build":
-        task_ids = sorted(str(row.get("id")) for row in
-                          (state.get("tasks") or [])
-                          if isinstance(row, Mapping) and row.get("id"))
-        return task_ids or ["build-output"]
+        current = _current_task(dict(state)) or {}
+        if current.get("id"):
+            return [str(current["id"])]
+        return ["build-output"]
     return {
         "product": ["product-requirement"],
         "design": ["design-contract"],
@@ -525,15 +597,66 @@ def _stage_loop_scope(scope_paths: object,
     }
 
 
+def _stage_loop_completion_reference(
+        ws: str, lifecycle: object, stage: Mapping[str, object], *,
+        from_step: str, to_step: str, completion: Mapping[str, object]) \
+        -> dict:
+    """Commit the exact stage result before it can terminalize ``done``.
+
+    A predecessor input handoff is startup context, never proof that the
+    current stage completed.  This artifact is consequently made only from
+    the gate/approval/Retro result that authorized this transition.
+    """
+    if not isinstance(completion, Mapping) or not completion:
+        raise ValueError(
+            "stage-native loop transition lacks committed completion evidence")
+    try:
+        detached = json.loads(json.dumps(
+            dict(completion), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("stage completion result is not canonical JSON") \
+            from exc
+    artifact_store = lifecycle._artifact_store()  # noqa: SLF001
+    value = {
+        "schema": "taskplane.loop-stage-completion/v1",
+        "run_id": stage["run_id"],
+        "stage_id": stage["stage_id"],
+        "stage_fingerprint": stage["fingerprint"],
+        "from_step": str(from_step),
+        "to_step": str(to_step),
+        "workspace_revision": tp.git_head(ws),
+        "result": detached,
+    }
+    native = artifact_store.put("completion-evidence", value)
+    try:
+        if __package__:
+            from . import review_evidence
+        else:
+            import review_evidence
+    except ImportError:
+        import review_evidence
+    return review_evidence.portable_artifact_reference(
+        artifact_store, native)
+
+
 def _stage_loop_transition(
         ws: str, state: Mapping[str, object], *, from_step: str,
-        to_step: str, terminal_outcome: str = "done") -> dict | None:
+        to_step: str, terminal_outcome: str = "done",
+        completion: Mapping[str, object] | None = None,
+        force: bool = False, terminal_only: bool = False) -> dict | None:
     """Mirror one loop kind transition in the immutable stage aggregate."""
+    if completion is None and isinstance(
+            state.get("_stage_completion"), Mapping):
+        completion = state.get("_stage_completion")
+    force = bool(force or state.get("_stage_force_transition"))
+    if to_step == "failed" and terminal_outcome == "done":
+        terminal_outcome = "discarded"
     from_kind = _LOOP_STAGE_KINDS.get(str(from_step))
     to_kind = _LOOP_STAGE_KINDS.get(str(to_step))
-    if from_kind is None or from_kind == to_kind:
+    if from_kind is None or (from_kind == to_kind and not force):
         return None
-    context = _stage_loop_context(ws)
+    context = _stage_loop_context(ws, state)
     if context is None:
         return None
     current_task = _current_task(dict(state)) or {}
@@ -547,6 +670,7 @@ def _stage_loop_transition(
         "to_kind": to_kind, "outcome": terminal_outcome,
         "task_id": current_task.get("id"),
         "fix_cycles": int(current_task.get("fix_cycles") or 0),
+        "terminal_only": bool(terminal_only),
     }
     # Crash recovery: the stage commit may precede the loop.json commit.
     operations = manifest.get("stage_operations") or {}
@@ -573,16 +697,19 @@ def _stage_loop_transition(
             f"{stage.get('stage_kind')!r}")
 
     lifecycle = context["lifecycle"]
-    handoff = _verified_stage_handoff(
-        lifecycle, context["store"], manifest, stage)
-    evidence = list((handoff or {}).get("evidence_references") or [])
-    if not evidence:
-        raise ValueError("stage-native loop transition lacks completion evidence")
+    evidence = []
+    if completion:
+        evidence = [_stage_loop_completion_reference(
+            ws, lifecycle, stage, from_step=from_step, to_step=to_step,
+            completion=completion)]
+    if terminal_outcome == "done" and not evidence:
+        raise ValueError(
+            "stage-native loop transition lacks committed completion evidence")
     actor = str((stage.get("authority") or {}).get("actor") or "")
-    authorized_at = str(((handoff or {}).get("authorization") or {}).get(
-        "authorized_at") or stage.get("created_at") or "")
-    completed = list(stage.get("deliverables") or [])
-    if to_kind is None:
+    authorized_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    completed = (list(stage.get("deliverables") or [])
+                 if terminal_outcome == "done" else [])
+    if to_kind is None or terminal_only:
         reason_code = None if terminal_outcome == "done" else "loop-terminal"
         reason = None if terminal_outcome == "done" else \
             f"loop ended at {to_step}"
@@ -624,18 +751,22 @@ def _stage_loop_transition(
     successor_id = _stage_loop_identity(
         stage_entities, "stage-", {**operation_material,
                                     "predecessor": stage["stage_id"]})
+    if not evidence:
+        raise ValueError(
+            "stage-native successor transition lacks stage-owned evidence")
     next_handoff = stage_handoff.create_manifest(
         artifact_store, producer_stage_id=str(stage["stage_id"]),
         producer_outcome=terminal_outcome,
         requirement=stage["requirement"], design=stage.get("design"),
-        target=(handoff or {}).get("target"),
-        commit=(handoff or {}).get("commit"),
-        contracts=(handoff or {}).get("contracts") or {
-            "provided": [], "consumed": [], "changed": []},
+        target=None, commit=None,
+        contracts={"provided": list(stage.get("contracts") or []),
+                   "consumed": [], "changed": []},
         deliverables=completed, evidence_references=evidence,
-        selected_artifacts=list(stage.get("selected_artifacts") or []),
+        selected_artifacts=evidence,
         exclusions=sorted(stage_handoff.REQUIRED_EXCLUSIONS),
-        authorization=authorization)
+        authorization=authorization,
+        allow_nonconsumable_reuse=terminal_outcome in {
+            "closed", "discarded"})
     native_ref = stage_handoff.store_manifest(artifact_store, next_handoff)
     input_ref = review_evidence.portable_artifact_reference(
         artifact_store, native_ref)
@@ -647,7 +778,7 @@ def _stage_loop_transition(
         input_manifest_ref=input_ref,
         execution_root_id=f"execution-{successor_id}",
         deliverables=_stage_loop_deliverables(to_kind, state),
-        selected_artifacts=list(stage.get("selected_artifacts") or []),
+        selected_artifacts=evidence,
         budget=dict(stage.get("budget") or {}), dependencies=[],
         contracts=list(stage.get("contracts") or []), authority=authority,
         created_at=authorized_at)
@@ -1312,6 +1443,8 @@ def _enqueue_authority_effect(state: dict, effect_id: str, *,
 
 def reconcile_authority_effects(ws: str) -> dict:
     """Deliver durable authority effects idempotently after state commit."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     delivered = pending = 0
     with mutate(ws) as state:
         if state is None:
@@ -1382,6 +1515,8 @@ def handle_host_input(ws: str, event: dict,
     separate adapter observation supplies attribution; labels in the event
     body do not.  Stale and replay checks remain mechanical and atomic.
     """
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     if not isinstance(event, dict):
         return {"error": "host event must be a mapping"}
     reconcile_authority_effects(ws)
@@ -1472,6 +1607,8 @@ def _derive_consolidated_authority(ws: str, state: dict,
 
 def authorize_routine_flow(ws: str, flow: str) -> dict:
     """Production entry point used by each host flow to derive authority."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     normalized = str(flow or "").strip().lower().replace("-", "_")
     if normalized not in authority_engine.ROUTINE_FLOWS:
         return {"error": f"unknown routine flow '{flow}'"}
@@ -1595,7 +1732,8 @@ def load(ws: str) -> dict | None:
     # CLI evidence may bind task bytes to its primary coordination state.
     state_ws = _EVIDENCE_STATE_WORKSPACE.get() or ws
     state = _load_raw(state_ws)
-    if state is not None and any(
+    read_only = _stage_loop_mutation_refusal(state_ws)
+    if state is not None and read_only is None and any(
             row.get("status") != "delivered" for row in
             (state.get("authority_effect_outbox") or {}).values()):
         reconcile_authority_effects(state_ws)
@@ -1619,6 +1757,8 @@ def save(ws: str, state: dict) -> None:
 
 def record_enforcement(ws: str, decision: dict) -> dict:
     """Persist one canonical decision for all loop consumers and artifacts."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     import enforcement as enforcement_kernel
 
     checked = enforcement_kernel.validate_decision(decision)
@@ -1785,6 +1925,8 @@ def _automatic_merge_cleanup(ws: str, task: dict) -> dict | None:
 
 def cleanup_replay(ws: str) -> dict:
     """One bounded maintenance pass over durable receipts only."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     import worktree_cleanup
 
     state = load(ws)
@@ -1814,6 +1956,8 @@ def init(ws: str, goal: str, spec_path: str | None = None,
          requirement_id: str | None = None, parallel: bool = False,
          design: bool = False, design_only: bool = False,
          force: bool = False) -> dict:
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     checkpoints = list(checkpoints if checkpoints is not None else
                        ["plan", "em"])
     # v2.3.0: init over an IN-FLIGHT loop refuses by default — one mistyped
@@ -1859,6 +2003,12 @@ def init(ws: str, goal: str, spec_path: str | None = None,
         "consumed_host_decisions": {},
         "consumed_host_events": {},
         "authority_effect_outbox": {},
+        # This marker is minted only by an explicit new-run init.  It lets
+        # the caller submit the exact root aggregate through `stage start`
+        # without treating arbitrary pre-existing singleton history as a
+        # canary.  The first v4 operation makes the marker irrelevant.
+        **({"_stage_native_new_run_pristine": True}
+           if _stage_mode() == "new-run" else {}),
     }
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,
@@ -2271,12 +2421,161 @@ def _scopes_overlap(a, b) -> bool:
                for x in sa for y in sb)
 
 
+def _stage_loop_wave_dispatches(
+        ws: str, state: Mapping[str, object], ready: list[dict]) -> dict:
+    """Bind each parallel entry to its own immutable stage/root."""
+    if not ready:
+        return {}
+    context = _stage_loop_context(ws, state)
+    if context is None:
+        return {}
+    parent = context.get("stage")
+    lifecycle = context.get("lifecycle")
+    stage_entities = context.get("stage_entities")
+    if not isinstance(parent, dict) or lifecycle is None or \
+            stage_entities is None:
+        raise ValueError("stage-native wave has no active build stage")
+    if parent.get("stage_kind") != "build":
+        raise ValueError("stage-native wave requires an active build stage")
+
+    # A one-entry wave already owns the sole build root.  Record that exact
+    # binding so later Evaluate dispatch cannot fall back to a different
+    # foreground after another child becomes active.
+    if len(ready) == 1:
+        task_id = str(ready[0]["id"])
+        with mutate(ws) as locked:
+            locked.setdefault("_stage_bindings", {}).setdefault(
+                task_id, {})["build"] = str(parent["stage_id"])
+        return {task_id: _stage_loop_dispatch(
+            ws, state, slot=task_id,
+            declared_scope=_stage_loop_scope(
+                ready[0].get("scope"), tp.DEFAULT_OUT_OF_SCOPE),
+            stage_id=str(parent["stage_id"]))}
+
+    try:
+        if __package__:
+            from . import review_evidence, stage_handoff
+        else:
+            import review_evidence
+            import stage_handoff
+    except ImportError:
+        import review_evidence
+        import stage_handoff
+    artifact_store = lifecycle._artifact_store()  # noqa: SLF001
+    task_ids = [str(task["id"]) for task in ready]
+    operation_material = {
+        "schema": "taskplane.loop-stage-wave-split/v1",
+        "run_id": context["run_id"],
+        "parent_stage_id": parent["stage_id"],
+        "parent_fingerprint": parent["fingerprint"],
+        "tasks": task_ids,
+    }
+    operation_id = _stage_loop_identity(
+        stage_entities, "loop-wave-split-", operation_material)
+    terminalized_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    authority = dict(parent["authority"])
+    authorization_base = {
+        "actor": authority["actor"],
+        "session_id": authority["session_id"],
+        "authorized_at": terminalized_at,
+        "authority_record": {
+            "schema": "taskplane.authority-record-reference/v1",
+            "authority_schema": "taskplane.consolidated-authorization/v1",
+            "revision": authority["authority_revision"],
+            "fingerprint": authority["authority_fingerprint"],
+        },
+    }
+    child_specs = []
+    selected = list(parent.get("selected_artifacts") or [])
+    for ordinal, task in enumerate(ready):
+        task_id = str(task["id"])
+        split_native = artifact_store.put("completion-evidence", {
+            "schema": "taskplane.loop-wave-child-input/v1",
+            "run_id": context["run_id"],
+            "parent_stage_id": parent["stage_id"],
+            "task_id": task_id,
+            "scope": _stage_loop_scope(
+                task.get("scope"), tp.DEFAULT_OUT_OF_SCOPE),
+        })
+        split_evidence = review_evidence.portable_artifact_reference(
+            artifact_store, split_native)
+        authorization = {
+            **authorization_base,
+            "operation_id": f"{operation_id}-child-{ordinal}",
+        }
+        handoff = stage_handoff.create_manifest(
+            artifact_store,
+            producer_stage_id=str(parent["stage_id"]),
+            producer_outcome="closed", requirement=parent["requirement"],
+            design=parent.get("design"), target=None, commit=None,
+            contracts={"provided": list(parent.get("contracts") or []),
+                       "consumed": [], "changed": []},
+            deliverables=[task_id],
+            evidence_references=[split_evidence],
+            selected_artifacts=selected,
+            exclusions=sorted(stage_handoff.REQUIRED_EXCLUSIONS),
+            authorization=authorization, allow_nonconsumable_reuse=True)
+        native_ref = stage_handoff.store_manifest(artifact_store, handoff)
+        portable_ref = review_evidence.portable_artifact_reference(
+            artifact_store, native_ref)
+        child_specs.append({
+            "stage_kind": "build",
+            "input_manifest_ref": portable_ref,
+            "selected_artifacts": selected,
+            "dependencies": [],
+            "budget": dict(parent.get("budget") or {}),
+            "deliverables": [task_id],
+            "contracts": list(parent.get("contracts") or []),
+        })
+    prospective = stage_entities.create_split(
+        parent, operation_id=operation_id, child_specs=child_specs,
+        actor=str(authority["actor"]), terminalized_at=terminalized_at,
+        reason="bind independent execution roots for the parallel loop wave")
+    for ordinal, child in enumerate(prospective["children"]):
+        handoff = lifecycle._read_handoff(  # noqa: SLF001
+            child["input_manifest_ref"], producer=prospective["parent"],
+            consumer=child)
+        _preflight_stage_dispatch(
+            child, handoff,
+            declared_scope=_stage_loop_scope(
+                ready[ordinal].get("scope"), tp.DEFAULT_OUT_OF_SCOPE))
+    lifecycle.split_stage(
+        str(parent["run_id"]), stage_id=str(parent["stage_id"]),
+        expected_head_fingerprint=str(parent["fingerprint"]),
+        expected_revision=int(context["manifest"]["revision"]),
+        operation_id=operation_id, child_specs=child_specs,
+        actor=str(authority["actor"]), terminalized_at=terminalized_at,
+        reason="bind independent execution roots for the parallel loop wave")
+
+    bindings = {
+        task_id: str(prospective["children"][ordinal]["stage_id"])
+        for ordinal, task_id in enumerate(task_ids)
+    }
+    with mutate(ws) as locked:
+        table = locked.setdefault("_stage_bindings", {})
+        for task_id, child_id in bindings.items():
+            table.setdefault(task_id, {})["build"] = child_id
+    dispatches = {}
+    current = load(ws) or dict(state)
+    for task in ready:
+        task_id = str(task["id"])
+        dispatches[task_id] = _stage_loop_dispatch(
+            ws, current, slot=task_id,
+            declared_scope=_stage_loop_scope(
+                task.get("scope"), tp.DEFAULT_OUT_OF_SCOPE),
+            stage_id=bindings[task_id])
+    return dispatches
+
+
 def wave(ws: str) -> dict:
     """The next parallel wave: every task whose dependencies have PASSED
     and whose scope is disjoint from the rest of the wave. Each entry ships
     its own contract + primed lenses + requirement — one governed agent per
     task, each in its own worktree. THE HARNESS IS PER AGENT: a worker's
     hook enforces its own task's contract in its own workspace."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
@@ -2310,6 +2609,13 @@ def wave(ws: str) -> dict:
             continue
         ready.append(t)
 
+    try:
+        stage_dispatches = _stage_loop_wave_dispatches(ws, state, ready)
+    except Exception as exc:
+        return {"error": "stage-native wave dispatch failed closed: "
+                f"{exc.__class__.__name__}: {exc}",
+                "step": "execute", "parallel": True}
+
     entries = []
     for t in ready:
         dispatch = tp.dispatch_fields(
@@ -2341,15 +2647,12 @@ def wave(ws: str) -> dict:
             "runtime_evals": runtime_eval.guidance("execute"),
             **({"enforcement": enforcement} if enforcement else {}),
         }
-        try:
+        stage_dispatch = stage_dispatches.get(str(t["id"]))
+        if stage_dispatch is None and not stage_dispatches:
             stage_dispatch = _stage_loop_dispatch(
                 ws, state, slot=str(t["id"]),
                 declared_scope=_stage_loop_scope(
                     t.get("scope"), tp.DEFAULT_OUT_OF_SCOPE))
-        except Exception as exc:
-            return {"error": "stage-native wave dispatch failed closed: "
-                    f"{exc.__class__.__name__}: {exc}",
-                    "step": "execute", "parallel": True}
         if stage_dispatch is not None:
             entry["stage_runtime_dispatch"] = stage_dispatch
         entries.append(entry)
@@ -2425,6 +2728,8 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     (worktree). From here the worker's PreToolUse hook enforces this task's
     scope/tools/commands — the core invariant: every parallel agent runs
     under the harness, individually."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     # v2.3.0 (scalability): DoR preparation shells out to git in the worker's
     # worktree (slow) — prepare OUTSIDE the global lock, then commit the
     # claim under the lock with a status RE-CHECK.
@@ -2498,6 +2803,8 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
 def next_action(ws: str, rid: str | None = None) -> dict:
     """Advance to the current step's work: activate its contract and return
     what the driver should run. Human steps pause without activating."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     state = load(ws)
     if state is None:
         return {"error": "no active loop — run `tp.py loop init` first"}
@@ -3934,6 +4241,8 @@ def submit(ws: str, outcome: str, note: str = "",
     unknown key, and the evaluate gate uses it to refuse evidence produced by
     a different build than the one validating it.
     """
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
@@ -4082,9 +4391,40 @@ def _submission_staleness(ws: str, submission: dict) -> str | None:
     return None
 
 
+def _stage_loop_gate_completion(
+        ws: str, state: Mapping[str, object], *, step: str, outcome: str,
+        note: str = "", submission: Mapping[str, object] | None = None) \
+        -> dict:
+    """Return the bounded result that the current gate actually validated."""
+    task = _current_task(dict(state)) or {}
+    result = {
+        "schema": "taskplane.loop-gate-result/v1",
+        "step": str(step), "outcome": str(outcome),
+        "task_id": task.get("id"), "note": str(note or "")[:1024],
+        "workspace_revision": tp.git_head(ws),
+    }
+    if isinstance(submission, Mapping):
+        result["submission"] = dict(submission)
+    elif step == "pm":
+        result["requirement_id"] = state.get("requirement_id")
+        result["spec_path"] = state.get("spec_path") or "specs/spec.md"
+    elif step in {"design", "design_approval"}:
+        result["design_fingerprint"] = state.get("design_fingerprint") or \
+            _design_evidence_fingerprint(ws)
+    elif step in {"plan", "plan_approval"}:
+        result["tasks"] = [str(row.get("id")) for row in
+                           (state.get("tasks") or []) if row.get("id")]
+        result["graph_dor"] = state.get("graph_dor")
+    elif step in {"em", "signoff"}:
+        result["signoff_evidence"] = state.get("signoff_evidence")
+    return result
+
+
 def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
          rid: str | None = None) -> dict:
     """Record the current step's outcome, transition, and clear its contract."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
@@ -4103,6 +4443,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "evaluated", "blockers": attach_errors}
         state = load(ws)
     step = state["step"]
+    submission = None
 
     # v2.3.0: validate --task FIRST in a parallel wave. An unknown id used to
     # fall through to "worker evidence was not submitted", telling the driver
@@ -4194,7 +4535,29 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     return {"error": f"task {task_id}: managed worktree "
                                      f"target binding failed: {exc}",
                             "step": step}
-            tp.clear(t.get("workspace") or ws)
+            stage_state = dict(locked)
+            stage_state["current_task"] = next(
+                index for index, row in enumerate(locked["tasks"])
+                if row.get("id") == task_id)
+            completion = _stage_loop_gate_completion(
+                ws, stage_state, step=step, outcome=outcome, note=note,
+                submission=submission)
+            try:
+                stage_transition = _stage_loop_transition(
+                    ws, stage_state, from_step="execute", to_step="evaluate",
+                    terminal_outcome=("done" if outcome == "pass"
+                                      else "discarded"),
+                    completion=completion)
+            except Exception as exc:
+                return {"error": "stage-native loop transition failed closed: "
+                        f"{exc.__class__.__name__}: {exc}", "step": step}
+            if isinstance(stage_transition, Mapping):
+                successor = ((stage_transition.get("result") or {}).get(
+                    "successor_head") or {}).get("summary") or {}
+                successor_id = successor.get("stage_id")
+                if successor_id:
+                    locked.setdefault("_stage_bindings", {}).setdefault(
+                        str(task_id), {})["evaluate"] = str(successor_id)
             t["status"] = "built"
             if prepared_registration is not None:
                 t["target_commit"] = prepared_registration["branch_tip"]
@@ -4206,12 +4569,15 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             t.pop("_submission", None)
             if outcome != "pass":
                 t["_build_failed"] = True
+            tp.clear(t.get("workspace") or ws)
             tp.trace(ws, "loop_gate", step=step, task=task_id, outcome=outcome,
                      note=note)
             running = [x["id"] for x in locked["tasks"]
                        if x.get("status") == "running"]
         return {"step": "execute", "task": task_id, "built": True,
-                "still_running": running, "status": status(ws)}
+                "still_running": running, "status": status(ws),
+                **({"stage_transition": stage_transition}
+                   if stage_transition is not None else {})}
 
     # H4 (v2.2.1): the pm gate was the one fail-open step — it advanced with
     # no spec and no submission. Symmetric minimal DoD: the authored
@@ -4979,6 +5345,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
     human even in environments with no hook enforcement. In an unattended
     or Tag session, an approve WITHOUT `by` is exactly the self-approval
     the adherence experiment flags — drivers must pass the human's words."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     state = load(ws)
     if state is None:
         return {"error": "no active loop"}
@@ -5172,13 +5540,17 @@ def select(ws: str, choice: str, note: str = "") -> dict:
     step variants never have: a winner goes to the engineering review; a
     hybrid goes back to plan for the graft (both variants kept as
     reference). Recorded to the KB — the WHY outlives the losing branch."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     reconcile_authority_effects(ws)
+    stage_transition = None
     with mutate(ws) as state:
         if state is None:
             return {"error": "no active loop"}
         if state["step"] != "selection":
             return {"error": f"selection only at the selection gate "
                              f"(current: {state['step']})"}
+        stage_before = json.loads(json.dumps(state))
         tasks = state.get("tasks") or []
         variants = [t for t in tasks if t.get("variant")] or tasks
         expected_revision = str(state.get("authority_target_revision") or
@@ -5292,6 +5664,21 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                 "tags": ["ab-selection"], "context_files": context_files,
                 "links": {"loop": "selection"},
             })
+        state["_stage_completion"] = {
+            "schema": "taskplane.loop-selection-result/v1",
+            "choice": selection, "note": str(note or "")[:1024],
+            "workspace_revision": current_revision,
+        }
+        try:
+            stage_transition = _stage_loop_transition(
+                ws, state, from_step="selection", to_step=state["step"])
+        except Exception as exc:
+            state.clear()
+            state.update(stage_before)
+            return {"error": "stage-native selection transition failed "
+                    f"closed: {exc.__class__.__name__}: {exc}",
+                    "step": "selection"}
+        state.pop("_stage_completion", None)
     state.pop("_authority_revision_fence", None)  # fake/test mutate adapters
     fence_failure = state.pop("_revision_fence_failed", None)
     if fence_failure:
@@ -5305,7 +5692,9 @@ def select(ws: str, choice: str, note: str = "") -> dict:
     effects = reconcile_authority_effects(ws)
     return {"step": state["step"], "selection": selection,
             "instruction": instruction, "status": status(ws),
-            "effect_delivery": effects}
+            "effect_delivery": effects,
+            **({"stage_transition": stage_transition}
+               if stage_transition is not None else {})}
 
 
 def _cascade_skip(state: dict, root_id: str) -> list:
@@ -5331,6 +5720,8 @@ def _cascade_skip(state: dict, root_id: str) -> list:
 
 def resolve(ws: str, decision: str) -> dict:
     """Human decision when a task escalated (fix cycles exhausted)."""
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
     state = load(ws)
     if state is None or state["step"] != "escalated":
         return {"error": "nothing escalated to resolve"}
@@ -5394,33 +5785,119 @@ def resolve(ws: str, decision: str) -> dict:
         state["step"] = "failed"
     else:
         return {"error": "decision must be retry|skip|defer|abort"}
-    tp.trace(ws, "loop_resolve", decision=decision, task=t.get("id"))
+    state["_stage_completion"] = {
+        "schema": "taskplane.loop-resolution-result/v1",
+        "decision": decision, "task_id": t.get("id"),
+        "resulting_status": t.get("status"),
+    }
+    stage_transition = None
     with mutate(ws) as locked:                       # v2.3.1: locked commit
         if locked.get("step") != "escalated":
             return {"error": "the loop advanced concurrently during resolve "
                              f"(now '{locked.get('step')}') — re-run",
                     "step": locked.get("step")}
+        try:
+            stage_transition = _stage_loop_transition(
+                ws, state, from_step="escalated", to_step=state["step"])
+        except Exception as exc:
+            return {"error": "stage-native recovery transition failed "
+                    f"closed: {exc.__class__.__name__}: {exc}",
+                    "step": "escalated"}
+        state.pop("_stage_completion", None)
         locked.clear()
         locked.update(state)
-    return {"step": state["step"], "status": status(ws)}
+    tp.trace(ws, "loop_resolve", decision=decision, task=t.get("id"))
+    return {"step": state["step"], "status": status(ws),
+            **({"stage_transition": stage_transition}
+               if stage_transition is not None else {})}
 def replan(ws: str, by: str, reason: str) -> dict:
-    return loop_recovery.replan(ws, by=by, reason=reason, load_state=load, mutate_state=mutate, clear_contract=tp.clear, trace=tp.trace, record_decision=kb.record_decision)
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
+
+    @contextlib.contextmanager
+    def stage_bound_mutate(workspace: str):
+        with mutate(workspace) as locked:
+            before = json.loads(json.dumps(locked)) if locked is not None \
+                else None
+            from_step = str((locked or {}).get("step") or "")
+            yield locked
+            if locked is None or locked.get("step") == from_step:
+                return
+            locked["_stage_completion"] = {
+                "schema": "taskplane.loop-replan-result/v1",
+                "from_step": from_step, "by": str(by),
+                "reason": str(reason),
+            }
+            locked["_stage_force_transition"] = True
+            try:
+                _stage_loop_transition(
+                    workspace, locked, from_step=from_step,
+                    to_step=str(locked["step"]))
+            except Exception:
+                locked.clear()
+                locked.update(before or {})
+                raise
+            finally:
+                locked.pop("_stage_completion", None)
+                locked.pop("_stage_force_transition", None)
+
+    try:
+        return loop_recovery.replan(
+            ws, by=by, reason=reason, load_state=load,
+            mutate_state=stage_bound_mutate, clear_contract=tp.clear,
+            trace=tp.trace, record_decision=kb.record_decision)
+    except Exception as exc:
+        return {"error": "stage-native replan transition failed closed: "
+                f"{exc.__class__.__name__}: {exc}",
+                "step": (load(ws) or {}).get("step")}
 def retro(ws: str) -> dict:
+    if refusal := _stage_loop_mutation_refusal(ws):
+        return refusal
+
+    @contextlib.contextmanager
+    def prepare_only_mutate(workspace: str):
+        with mutate(workspace) as locked:
+            yield locked
+            if locked is None:
+                return
+            sealed = locked.get("retro") or {}
+            if locked.get("step") in {"done", "failed"} and \
+                    sealed.get("status") == "complete":
+                locked["_retro_terminal_step"] = locked["step"]
+                locked["step"] = "retro"
+
     result = retro_engine.run(
-        ws, load_state=load, mutate_state=mutate,
+        ws, load_state=load, mutate_state=prepare_only_mutate,
         loop_path=_loop_path(ws), normalize_severity=normalize_severity)
     if not isinstance(result, dict) or result.get("error"):
         return result
     final = load(ws) or {}
-    if final.get("step") != "done":
+    target_step = str(final.get("_retro_terminal_step") or final.get("step"))
+    if target_step not in {"done", "failed"}:
         return result
     try:
-        transition = _stage_loop_transition(
-            ws, final, from_step="retro", to_step="done")
+        transition_kwargs = {"from_step": "retro", "to_step": target_step}
+        if final.get("_retro_terminal_step"):
+            transition_kwargs["completion"] = result
+        transition = _stage_loop_transition(ws, final, **transition_kwargs)
     except Exception as exc:
+        with mutate(ws) as locked:
+            if locked is not None:
+                locked.pop("_retro_terminal_step", None)
         return {"error": "stage-native Retro terminalization failed closed: "
-                f"{exc.__class__.__name__}: {exc}", "step": "done",
+                f"{exc.__class__.__name__}: {exc}", "step": "retro",
                 "retro": result}
+    if final.get("_retro_terminal_step"):
+        with mutate(ws) as locked:
+            if locked is None or locked.get("step") != "retro":
+                return {"error": "Retro legacy finalization lost its "
+                        "prepared state", "step": (locked or {}).get("step")}
+            sealed = locked.get("retro") or {}
+            if sealed.get("status") != "complete":
+                return {"error": "Retro report is not complete",
+                        "step": "retro"}
+            locked["step"] = target_step
+            locked.pop("_retro_terminal_step", None)
     if transition is not None:
         result = {**result, "stage_transition": transition}
     return result

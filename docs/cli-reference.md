@@ -1114,36 +1114,256 @@ bounded to 1,048,576 bytes and may declare schema
 `taskplane.stage-command/v1`. Unknown fields and predecessor runtime
 context (agents, conversations, event logs, tool transcripts, leases,
 runtime state, workspaces, paths, or execution roots) are rejected.
-The table lists the exact allowed top-level fields; operation-specific
-identity, authority, lifecycle, and artifact validation still applies.
+The table distinguishes fields required on every call from optional
+or outcome-dependent fields. Fields joined by `OR` are exclusive
+alternatives. Values remain subject to identity, authority, lifecycle,
+and artifact validation.
 
-| Stage command | Allowed request fields |
-| --- | --- |
-| `history` | `schema`, `run_id`, `cursor`, `limit` |
-| `start` | `schema`, `stage`, `expected_revision`, `operation_id`, `expected_predecessor_fingerprints`, `foreground`, `authority`, `declared_scope` |
-| `reuse` | `schema`, `stage`, `successor_stage`, `expected_revision`, `operation_id`, `expected_predecessor_fingerprints`, `foreground`, `authority`, `declared_scope`, `reason`, `actor` |
-| `resume` | `schema`, `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `attempt_id`, `authority`, `declared_scope` |
-| `terminalize` | `schema`, `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `reason_code`, `reason`, `completed_deliverables`, `completion_evidence`, `handoff_manifest`, `authority` |
-| `terminalize-and-start` | `schema`, `run_id`, `predecessor_stage_id`, `stage`, `successor_stage`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `reason_code`, `reason`, `completed_deliverables`, `completion_evidence`, `foreground`, `authority`, `declared_scope` |
-| `split` | `schema`, `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `child_specs`, `actor`, `terminalized_at`, `reason`, `authority`, `declared_scopes` |
+| Stage command | Required fields | Optional or conditional fields |
+| --- | --- | --- |
+| `history` | `run_id` | `schema`, `cursor`, `limit` |
+| `start` | `stage`, `expected_revision`, `operation_id`, `authority` | `schema`, `expected_predecessor_fingerprints` (required for a successor; omit for a root), `foreground`, `declared_scope` |
+| `reuse` | `stage` OR `successor_stage`, `expected_revision`, `operation_id`, `expected_predecessor_fingerprints`, `authority`, `reason`, `actor` | `schema`, `foreground`, `declared_scope` |
+| `resume` | `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `authority` | `schema`, `attempt_id`, `declared_scope` |
+| `terminalize` | `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `authority` | `schema`, `reason_code` + `reason` (required for closed/discarded; forbidden for done), `completed_deliverables` + `completion_evidence` (all deliverables and non-empty evidence required for done), `handoff_manifest` |
+| `terminalize-and-start` | `predecessor_stage_id`, `stage` OR `successor_stage`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `authority` | `schema`, `run_id`, `reason_code` + `reason` (required for closed/discarded; forbidden for done), `completed_deliverables` + `completion_evidence` (all deliverables and non-empty evidence required for done), `foreground`, `declared_scope` |
+| `split` | `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `child_specs`, `actor`, `terminalized_at`, `reason`, `authority` | `schema`, `declared_scopes` |
 
-Atomic predecessor terminalization and successor startup use one
-request and one receipt:
+#### Closed nested shapes
 
-```bash
-tp.py stage terminalize-and-start --request request.json
+A `taskplane.stage/v1` request value is a closed active-stage object.
+It requires every key shown below except `fingerprint`, which may be
+omitted and is recomputed canonically. `requirement` has exactly `id`,
+`revision`, and `fingerprint`; `design` is either null or has exactly
+`revision` and `fingerprint`. An input stage must have `state: active`,
+`outcome: null`, `default_consumable: true`, and `terminal: null`.
+Collections must already be sorted and unique. The execution root is
+always `execution-<stage_id>`.
+
+```json
+{
+  "schema": "taskplane.stage/v1",
+  "run_id": "run-r0004",
+  "stage_id": "stage-evaluate-001",
+  "requirement": {
+    "id": "R-0004",
+    "revision": "4",
+    "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "design": {
+    "revision": "2",
+    "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "stage_kind": "evaluate",
+  "parent_stage_ids": [],
+  "predecessor_stage_ids": [
+    "stage-build-001"
+  ],
+  "input_manifest_ref": {
+    "schema": "taskplane.artifact-reference/v1",
+    "kind": "stage-handoff",
+    "fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "bytes": 1024,
+    "locator": "artifact://stage-handoff/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "transport": "artifact-reference"
+  },
+  "execution_root_id": "execution-stage-evaluate-001",
+  "deliverables": [
+    "evaluation-verdict"
+  ],
+  "selected_artifacts": [
+    {
+      "schema": "taskplane.artifact-reference/v1",
+      "kind": "source",
+      "fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "bytes": 4096,
+      "locator": "artifact://source/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "transport": "artifact-reference"
+    }
+  ],
+  "budget": {
+    "attempt_limit": 3,
+    "token_limit": 8000
+  },
+  "dependencies": [
+    "t06-cross-host-rollout"
+  ],
+  "contracts": [
+    "contract:stage-artifact-handoff"
+  ],
+  "authority": {
+    "schema": "taskplane.stage-authority-binding/v1",
+    "run_id": "run-r0004",
+    "repository_id": "github.com/vdemkiv/taskplane",
+    "repository_key": "github.com-vdemkiv-taskplane-43a0a10bba",
+    "worktree_id": "t06-worktree",
+    "target_revision": "1111111111111111111111111111111111111111",
+    "worktree_revision": "2222222222222222222222222222222222222222",
+    "requirement_id": "R-0004",
+    "requirement_revision": "4",
+    "design_revision": "2",
+    "design_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "actor": "human:operator",
+    "session_id": "codex-thread-1",
+    "authority_revision": 7,
+    "authority_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "state": "active",
+  "outcome": null,
+  "default_consumable": true,
+  "terminal": null,
+  "created_at": "2026-08-21T18:00:00Z",
+  "aggregate_revision": 1
+}
 ```
 
-`request.json` (replace angle-bracket placeholders with the complete
-validated objects or fingerprint):
+`authority` is a closed `taskplane.stage-authority-binding/v1` object
+with exactly the keys shown above. All identity and revision values
+must match the live run, checkout, requirement, design, actor, and
+session. When `design` is null, both authority design fields are null.
+The top-level request `authority` and the stage's nested `authority`
+must describe the same current binding.
+
+Every `input_manifest_ref`, `selected_artifacts` entry, and
+`completion_evidence` entry is a closed
+`taskplane.artifact-reference/v1` object with exactly `schema`, `kind`,
+`fingerprint`, `digest`, `bytes`, `locator`, and `transport`. The
+locator is `artifact://<kind>/<fingerprint>`, both hashes are 64
+lowercase hexadecimal characters, bytes is a non-negative integer,
+and transport is `artifact-reference`. For example:
+
+```json
+{
+  "schema": "taskplane.artifact-reference/v1",
+  "kind": "test-report",
+  "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "bytes": 128,
+  "locator": "artifact://test-report/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "transport": "artifact-reference"
+}
+```
+
+`declared_scope` is either absent or a closed object with exactly
+`scope_paths` and `out_of_scope_paths`. Each is a sorted, unique array
+of at most 64 non-empty strings. `declared_scopes` on `split` is an
+object keyed by generated child stage id whose values have this exact
+shape.
+
+#### Runnable request templates
+
+History needs no lifecycle payload. Save this as `history.json` and
+replace `run-r0004` with an existing run id:
 
 ```json
 {
   "schema": "taskplane.stage-command/v1",
   "run_id": "run-r0004",
+  "cursor": "0",
+  "limit": 25
+}
+```
+
+```bash
+tp.py stage history --request history.json
+```
+
+Atomic predecessor terminalization and successor startup use one
+shape-complete request and one receipt:
+
+```bash
+tp.py stage terminalize-and-start --request request.json
+```
+
+Save the following as `request.json`. Before running it, replace the
+example identifiers, revisions, hashes, byte counts, and timestamps
+with values from the live predecessor, stored handoff, artifact, and
+authority receipts. Replace whole values; do not use string
+placeholders or local paths:
+
+```json
+{
+  "schema": "taskplane.stage-command/v1",
   "predecessor_stage_id": "stage-build-001",
-  "successor_stage": "<complete taskplane.stage/v1 object>",
-  "expected_head_fingerprint": "<predecessor stage fingerprint>",
+  "successor_stage": {
+    "schema": "taskplane.stage/v1",
+    "run_id": "run-r0004",
+    "stage_id": "stage-evaluate-001",
+    "requirement": {
+      "id": "R-0004",
+      "revision": "4",
+      "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "design": {
+      "revision": "2",
+      "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "stage_kind": "evaluate",
+    "parent_stage_ids": [],
+    "predecessor_stage_ids": [
+      "stage-build-001"
+    ],
+    "input_manifest_ref": {
+      "schema": "taskplane.artifact-reference/v1",
+      "kind": "stage-handoff",
+      "fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "bytes": 1024,
+      "locator": "artifact://stage-handoff/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "transport": "artifact-reference"
+    },
+    "execution_root_id": "execution-stage-evaluate-001",
+    "deliverables": [
+      "evaluation-verdict"
+    ],
+    "selected_artifacts": [
+      {
+        "schema": "taskplane.artifact-reference/v1",
+        "kind": "source",
+        "fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "bytes": 4096,
+        "locator": "artifact://source/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "transport": "artifact-reference"
+      }
+    ],
+    "budget": {
+      "attempt_limit": 3,
+      "token_limit": 8000
+    },
+    "dependencies": [
+      "t06-cross-host-rollout"
+    ],
+    "contracts": [
+      "contract:stage-artifact-handoff"
+    ],
+    "authority": {
+      "schema": "taskplane.stage-authority-binding/v1",
+      "run_id": "run-r0004",
+      "repository_id": "github.com/vdemkiv/taskplane",
+      "repository_key": "github.com-vdemkiv-taskplane-43a0a10bba",
+      "worktree_id": "t06-worktree",
+      "target_revision": "1111111111111111111111111111111111111111",
+      "worktree_revision": "2222222222222222222222222222222222222222",
+      "requirement_id": "R-0004",
+      "requirement_revision": "4",
+      "design_revision": "2",
+      "design_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "actor": "human:operator",
+      "session_id": "codex-thread-1",
+      "authority_revision": 7,
+      "authority_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "state": "active",
+    "outcome": null,
+    "default_consumable": true,
+    "terminal": null,
+    "created_at": "2026-08-21T18:00:00Z",
+    "aggregate_revision": 1
+  },
+  "expected_head_fingerprint": "9999999999999999999999999999999999999999999999999999999999999999",
   "expected_revision": 12,
   "operation_id": "build-to-evaluate-001",
   "outcome": "done",
@@ -1154,10 +1374,34 @@ validated objects or fingerprint):
     "declared-tests"
   ],
   "completion_evidence": [
-    "<portable artifact reference>"
+    {
+      "schema": "taskplane.artifact-reference/v1",
+      "kind": "test-report",
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 128,
+      "locator": "artifact://test-report/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "transport": "artifact-reference"
+    }
   ],
   "foreground": true,
-  "authority": "<exact taskplane.stage-authority-binding/v1 object>",
+  "authority": {
+    "schema": "taskplane.stage-authority-binding/v1",
+    "run_id": "run-r0004",
+    "repository_id": "github.com/vdemkiv/taskplane",
+    "repository_key": "github.com-vdemkiv-taskplane-43a0a10bba",
+    "worktree_id": "t06-worktree",
+    "target_revision": "1111111111111111111111111111111111111111",
+    "worktree_revision": "2222222222222222222222222222222222222222",
+    "requirement_id": "R-0004",
+    "requirement_revision": "4",
+    "design_revision": "2",
+    "design_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "actor": "human:operator",
+    "session_id": "codex-thread-1",
+    "authority_revision": 7,
+    "authority_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
   "declared_scope": {
     "scope_paths": [
       "taskplane/**"

@@ -74,13 +74,30 @@ HOOK_FILES = (
 
 STAGE_RUNTIME_FILES = (
     "taskplane/taskplane_lite.py",
+    "taskplane/loop.py",
+    "taskplane/tp.py",
     "taskplane/stage_entities.py",
     "taskplane/stage_handoff.py",
     "taskplane/stage_migration.py",
     "taskplane/loop_status.py",
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
+    "docs/cli-reference.md",
+    "skills/taskplane/SKILL.md",
+    "skills/taskplane/flow.json",
+    "skills/tp-build/SKILL.md",
+    "skills/tp-design/SKILL.md",
+    "skills/tp-design/flow.json",
+    "skills/tp-engineering/SKILL.md",
+    "skills/tp-engineering/flow.json",
     "skills/tp-go/SKILL.md",
+    "skills/tp-go/flow.json",
+    "skills/tp-go/references/parallel.md",
+    "skills/tp-go/references/retro.md",
+    "skills/tp-product/SKILL.md",
+    "skills/tp-product/flow.json",
+    "skills/tp-status/SKILL.md",
+    "skills/tp-status/flow.json",
 )
 
 SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})

@@ -20,19 +20,38 @@ STAGE_MATRIX_TESTS = (
     "taskplane/tests/test_stage_rollout.py",
     "taskplane/tests/test_stage_r0003_preservation.py",
     "taskplane/tests/test_stage_release_matrix.py",
+    "taskplane/tests/test_stage_loop_integration.py",
+    "taskplane/tests/test_stage_cli.py",
 )
 SHARED_RUNTIME_MEMBERS = (
     "hooks/hooks.json",
     "hooks/host-native.json",
     "hooks/host_native_runtime.py",
     "taskplane/taskplane_lite.py",
+    "taskplane/loop.py",
+    "taskplane/tp.py",
     "taskplane/stage_entities.py",
     "taskplane/stage_handoff.py",
     "taskplane/stage_migration.py",
     "taskplane/loop_status.py",
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
+    "docs/cli-reference.md",
+    "skills/taskplane/SKILL.md",
+    "skills/taskplane/flow.json",
+    "skills/tp-build/SKILL.md",
+    "skills/tp-design/SKILL.md",
+    "skills/tp-design/flow.json",
+    "skills/tp-engineering/SKILL.md",
+    "skills/tp-engineering/flow.json",
     "skills/tp-go/SKILL.md",
+    "skills/tp-go/flow.json",
+    "skills/tp-go/references/parallel.md",
+    "skills/tp-go/references/retro.md",
+    "skills/tp-product/SKILL.md",
+    "skills/tp-product/flow.json",
+    "skills/tp-status/SKILL.md",
+    "skills/tp-status/flow.json",
 )
 
 
@@ -114,6 +133,22 @@ def test_ci_runs_the_stage_release_contract_on_python_310_through_312() \
     assert entries["3.12"].count("              taskplane/tests") == 1
 
 
+def test_ci_builds_and_provenances_the_deterministic_claude_plugin() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8")
+
+    assert workflow.count(
+        "python scripts/package_claude.py --ext plugin") == 1
+    for output_dir in ("/tmp/tp-claude-plugin-a",
+                       "/tmp/tp-claude-plugin-b"):
+        command = ("python3 scripts/package_claude.py --ext plugin "
+                   f"--output-dir {output_dir}")
+        assert workflow.count(command) == 1
+    assert workflow.count(
+        '"/tmp/tp-claude-plugin-a/*.provenance.json"') == 1
+    assert "if len(found) != 3:" in workflow
+
+
 def test_post_21713_manifests_keep_parser_safe_hooks_and_supported_metadata() \
         -> None:
     codex = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
@@ -190,3 +225,29 @@ def test_package_bytes_are_deterministic_for_the_same_release_tree(
     assert first.read_bytes() == second.read_bytes()
     assert hashlib.sha256(first.read_bytes()).hexdigest() == \
         hashlib.sha256(second.read_bytes()).hexdigest()
+
+
+def test_claude_plugin_upload_is_deterministic_and_provenanced(
+        tmp_path: Path) -> None:
+    packager = _load_packager("package_claude.py")
+    output_dirs = (tmp_path / "first", tmp_path / "second")
+
+    for output_dir in output_dirs:
+        assert packager.main([
+            "--output-dir", str(output_dir),
+            "--ext", "plugin",
+            "--allow-dirty",
+        ]) == 0
+
+    filename = f"taskplane-{VERSION}.plugin"
+    first = output_dirs[0] / filename
+    second = output_dirs[1] / filename
+    assert first.read_bytes() == second.read_bytes()
+    assert first.with_suffix(".plugin.sha256").is_file()
+    assert second.with_suffix(".plugin.sha256").is_file()
+    for artifact in (first, second):
+        provenance = json.loads(artifact.with_suffix(
+            ".plugin.provenance.json").read_text(encoding="utf-8"))
+        assert provenance["archive"] == filename
+        assert provenance["sha256"] == hashlib.sha256(
+            artifact.read_bytes()).hexdigest()

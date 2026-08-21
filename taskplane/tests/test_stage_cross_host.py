@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -44,11 +45,13 @@ STARTUP_FIELDS = {
 }
 FORBIDDEN_RUNTIME_FIELDS = {
     "agents",
+    "actor",
     "conversations",
     "event_logs",
     "tool_transcripts",
     "leases",
     "runtime_state",
+    "session_id",
     "predecessor_roots",
 }
 
@@ -110,7 +113,8 @@ def _git(workspace: Path, *args: str) -> str:
 
 
 def _real_loop_stage(
-        tmp_path: Path,
+        tmp_path: Path, *, stage_kind: str = "product",
+        stage_id: str = "stage-product-cross-host",
         ) -> tuple[Path, run_store.RunStore, dict[str, object]]:
     workspace = tmp_path / "loop-workspace"
     workspace.mkdir()
@@ -207,15 +211,15 @@ def _real_loop_stage(
     )
     stage = stage_entities.create_stage(
         run_id=run_id,
-        stage_id="stage-product-cross-host",
+        stage_id=stage_id,
         requirement=handoff["requirement"],
         design=handoff["design"],
-        stage_kind="product",
+        stage_kind=stage_kind,
         parent_stage_ids=[],
         predecessor_stage_ids=[],
         input_manifest_ref=handoff_reference,
-        execution_root_id="execution-stage-product-cross-host",
-        deliverables=["product-decision"],
+        execution_root_id=f"execution-{stage_id}",
+        deliverables=[f"{stage_kind}-decision"],
         selected_artifacts=[selected],
         budget={"token_limit": 4_000, "attempt_limit": 2},
         dependencies=[],
@@ -238,7 +242,16 @@ def test_cross_host_surfaces_preserve_one_canonical_bounded_startup(
     assert isinstance(startup, dict)
     assert set(startup) == STARTUP_FIELDS
     assert startup["schema"] == "taskplane.stage-startup/v1"
-    assert startup["authority"] == stage["authority"]
+    authority_reference = {
+        "schema": "taskplane.stage-authority-reference/v1",
+        "fingerprint": hashlib.sha256(
+            taskplane_lite.canonical_json_bytes(stage["authority"])
+        ).hexdigest(),
+    }
+    assert startup["authority"] == authority_reference
+    assert startup["input_handoff"]["authorization"] == authority_reference
+    assert startup["input_handoff"]["schema"] == \
+        "taskplane.stage-handoff-dispatch/v1"
     assert startup["budget"] == stage["budget"]
     assert not (FORBIDDEN_RUNTIME_FIELDS & _all_keys(startup))
     for reference in startup["selected_artifacts"]:
@@ -385,6 +398,107 @@ def test_real_loop_journey_emits_one_bounded_dispatch_on_every_host(
         fingerprints.add(snapshot.fingerprint)
 
     assert len(fingerprints) == 1
+
+
+def test_parallel_wave_preserves_independent_stage_and_root_identity_on_hosts(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, store, parent = _real_loop_stage(
+        tmp_path, stage_kind="build", stage_id="stage-build-cross-host")
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    state = loop.init(
+        str(workspace), "dispatch two independent stage roots",
+        spec_path="specs/spec.md", requirement_id="R-0004", parallel=True)
+    assert "error" not in state, state
+    started = loop.stage_command(str(workspace), "start", {
+        "schema": "taskplane.stage-command/v1",
+        "stage": parent,
+        "expected_revision": 1,
+        "operation_id": "start-cross-host-build-wave",
+        "expected_predecessor_fingerprints": {},
+        "foreground": True,
+        "authority": parent["authority"],
+        "declared_scope": {
+            "scope_paths": ["left/**", "right/**"],
+            "out_of_scope_paths": ["taskplane/track.py"],
+        },
+    })
+    assert "error" not in started, started
+    state.update({
+        "step": "execute",
+        "tasks": [
+            {
+                "id": "t-left", "scope": ["left/**"], "tests": "true",
+                "deps": [], "status": "pending",
+            },
+            {
+                "id": "t-right", "scope": ["right/**"], "tests": "true",
+                "deps": [], "status": "pending",
+            },
+        ],
+    })
+    loop.save(str(workspace), state)
+
+    emitted = loop.wave(str(workspace))
+
+    assert "error" not in emitted, emitted
+    assert [entry["task"]["id"] for entry in emitted["wave"]] == [
+        "t-left", "t-right"]
+    identities: dict[str, tuple[str, str]] = {}
+    for entry in emitted["wave"]:
+        dispatch = entry["stage_runtime_dispatch"]
+        task_id = str(entry["task"]["id"])
+        stage_id = str(dispatch["startup"]["stage_id"])
+        root_id = str(
+            dispatch["startup"]["execution_claim"]["execution_root_id"])
+        assert root_id == f"execution-{stage_id}"
+        assert stage_id != parent["stage_id"]
+        assert root_id != parent["execution_root_id"]
+        identities[task_id] = (stage_id, root_id)
+
+        canonical = _snapshot(dispatch).to_dict()
+        for host, capability_status, expected_surface in HOST_CASES:
+            transported = json.loads(json.dumps(dispatch))
+            assert taskplane_lite.stage_startup_bytes(transported) == \
+                taskplane_lite.stage_startup_bytes(dispatch)
+            selection = negotiate_host_surfaces(
+                host=host,
+                host_version="2.17.13-compatible",
+                observations={
+                    "stage_runtime": Observation(
+                        status=capability_status,
+                        source=f"wave:{task_id}:{host}",
+                        confidence="high",
+                    ),
+                },
+                surfaces=STAGE_SURFACE,
+            )["stage_runtime"]
+            projected = _snapshot(transported).project(selection)
+            assert projected["canonical"] == canonical
+            assert projected["presentation"]["kind"] == expected_surface
+            runtime = projected["canonical"]["values"]["stage_runtime"]
+            assert runtime["startup"]["stage_id"] == stage_id
+            assert runtime["startup"]["execution_claim"][
+                "execution_root_id"] == root_id
+
+    assert len({stage_id for stage_id, _root in identities.values()}) == 2
+    assert len({root_id for _stage, root_id in identities.values()}) == 2
+    history = loop.stage_command(str(workspace), "history", {
+        "schema": "taskplane.stage-command/v1",
+        "run_id": parent["run_id"],
+        "limit": 10,
+    })
+    summaries = {row["stage_id"]: row for row in history["stages"]}
+    assert summaries[parent["stage_id"]]["state"] == "terminal"
+    assert summaries[parent["stage_id"]]["outcome"] == "closed"
+    for stage_id, root_id in identities.values():
+        assert summaries[stage_id]["state"] == "active"
+        assert summaries[stage_id]["parent_stage_ids"] == [parent["stage_id"]]
+        assert summaries[stage_id]["execution_root_id"] == root_id
+    projection = store.load(str(parent["run_id"]))[
+        "active_stage_projection"]
+    assert projection["foreground_stage_id"] is None
+    assert set(projection["active_stage_ids"]) == {
+        stage_id for stage_id, _root in identities.values()}
 
 
 @pytest.mark.parametrize("field", sorted(FORBIDDEN_RUNTIME_FIELDS))
