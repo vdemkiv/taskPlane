@@ -75,6 +75,12 @@ On Codex, if `next_action` is `install_codex_hooks`, run
 to start a new Codex task only for the host's one-time initial hook load; an
 existing loaded hook and stable launcher govern managed checkouts and follow
 later plugin versions without a restart.
+If `next_action` is `continue_advisory`, an existing loop is already bound to
+the workspace but this task has no live hook receipt. Do not ask for a new
+task. Keep enforcement visibly advisory and, after explicit human direction
+to continue here, pass `--advisory --by <human>` to the next governed command.
+This never upgrades the session to live enforcement; a new task remains an
+option only when the human requires live hook enforcement.
 Do not dispatch governed workers until the
 `codex_hooks` check is ready: marketplace skills do not themselves establish
 the repo-local lifecycle/write receipts required by taskplane provenance.

@@ -1,223 +1,210 @@
-# R-0004 Design — Stage-isolated delivery entities and bounded artifact handoffs
+# R-0006 Design — Five ratcheted remediation waves
 
-Status: proposed HOW, awaiting orchestrator gate and human approval. This document does not mutate the as-built dependency graph.
+Status: proposed HOW, awaiting the mechanical Design gate and explicit human approval. This is a design-only artifact. It does not implement a wave, mutate the as-built graph, approve itself, push, or release.
 
 ## Decision
 
-Extend `RunStore` with immutable stage aggregates, immutable handoff manifests, and a small projection/legacy adapter. The run manifest becomes the atomic index for stage heads, lineage, operation receipts, and a replaceable active-stage projection; it is not the stage history itself. Every stage receives its own execution root and starts from one bounded, versioned input manifest plus explicitly selected content-addressed artifacts.
+Deliver R-0006 as five irreversible-quality, reversible-behavior waves. Each wave adds its gate before relying on it, and the next wave cannot start until the prior wave's executable acceptance set is green:
 
-This is an additive `taskplane.run/v4` design. Existing v3 run receipts and the R-0003 enforcement, collision-isolation, worktree-registration, merge, and cleanup behavior remain regression obligations. Stage terminalization never implies worktree deletion. Existing cleanup remains a separate, fail-closed operation governed by its exact registered-worktree and merged-tip proofs.
+1. seal a fresh baseline and make `quick-only` a machine-readable review policy;
+2. restore and ratchet CPython 3.10–3.13 compatibility before any tests or stateful command runs;
+3. make graph and CLI degradation visible, put the zero-token corpus in CI, and distinguish local green from pushed-SHA green;
+4. land a measured import-cycle ratchet in its own earlier commit, then remove the S1/S2 edges through explicit inputs and one acyclic graph-primitives boundary;
+5. add bounded repeated evaluation, executable incomplete-work fixtures, selective corpus graph edges, and the narrowly labelled seeded-failure catch-rate.
+
+The design extends current modules and contracts. It adds four focused product modules (`taskplane/graph_primitives.py`, `taskplane/graph_decomposition.py`, `taskplane/import_cycles.py`, and `taskplane/eval_sampling.py`), an explicit eval impact map, and focused tests. It does not move existing packages, redesign components, consolidate schemas, change workspace/plugin identity, change model-tier policy, add attestation/MCP/OS isolation, or make any other wave-six bet.
 
 ## Current-state evidence
 
-- `taskplane/loop.py` persists and mutates one `loop.json`; `force` initialization replaces that file, and loop steps, tasks, submissions, gates, and approvals share the same mutable record.
-- `taskplane/track.py` represents one active track by moving the live `loop.json` to and from `tracks/<name>/loop.json` under a common lock. This preserves only singleton ownership, not immutable stage lineage or independent split children.
-- `taskplane/run_store.py` already provides revision-checked atomic manifest commits, journal entries, and durable R-0003 enforcement/interference/merge/cleanup receipts. It is the smallest existing transaction boundary on which to add stage indexes and idempotency receipts.
-- `taskplane/review_evidence.py` already provides confined, immutable, content-addressed canonical JSON artifacts with digest and byte-count verification. Stage handoffs can consume that contract rather than inventing a second artifact authority.
-- `taskplane/storage.py` resolves canonical external run roots and managed worktree registration. Execution roots and stage-object roots must use the same locator and must not be placed in the source checkout.
-- `taskplane/loop_status.py` and `taskplane/dashboard.py` currently project the singleton loop state. `taskplane/retro.py` currently loads all run trace events. They require a bounded stage-summary read seam so predecessor execution trees are never opened for normal status, review, sign-off, or Retro.
-- `docs/state-spec.md` documents external, run-scoped runtime state and the present singleton loop/track model. The stage schema, projection semantics, and migration require an explicit state-spec update.
+The Taskplane current-state inventory supplied to Design is empty, so none of its absence is treated as evidence. The design is instead grounded in the following repository and run sources:
 
-The captured dependency graph has 64 modules and 224 edges. Its baseline content fingerprint is `6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976`. The graph’s current-state inventory is empty, so the cited repository sources above are the current-state authority. R-0004 has exactly 11 acceptance criteria, no open questions, and a resolvable dependency on R-0003.
+- The active baseline graph has fingerprint `e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af`, six nodes, five requirement-to-contract edges, no source modules, and no `scanned_head`. Wave 1 must refresh it before any later impact claim.
+- `.github/workflows/ci.yml` declares CPython 3.10, 3.11, and 3.12, installs pytest, and runs tests without a preceding repository-wide compile/import step. It has no 3.13 compatibility leg and never invokes `scripts/ci_evals.py --corpus`.
+- `taskplane/stage_entities.py:1742-1744` embeds a multiline dictionary in an f-string expression. It fails `python3.11 -m py_compile` with `SyntaxError` and parses on 3.12/3.13 because it relies on PEP 701.
+- `taskplane/run_store.py:275-278`, `:728-731`, `:854-857`, and `:987-990` contain four lazy `stage_entities` import seams and catch only `ImportError`; syntax failure is therefore delayed until lineage/object work and is not translated to a Taskplane compatibility error.
+- `taskplane/decompose.py:61-65` deliberately fails open per module and returns `stats.degraded` plus `stats.error`; `taskplane/depgraph.py:1423-1434` catches decomposition failure but does not place a complete degradation record into the public scan result.
+- `taskplane/tp.py:7161-7203` already provides one user-layer error boundary and preserves tracebacks behind `TASKPLANE_DEBUG`; today only `taskplane_lite.StateError` and a missing Git executable are treated as known clean refusals.
+- `taskplane/lens.py:1312-1317` imports `review` for one context-note call. `taskplane/taskplane_lite.py:2431-2441` imports `depgraph` only to derive regression impact. `taskplane/depgraph.py:1424` imports `decompose`, while `taskplane/decompose.py` locally imports `depgraph` and `lens_signals` at several helper seams. These are the explicit-input boundaries wave 4 cuts.
+- `scripts/ci_evals.py:406-451` already has a deterministic zero-token corpus scorer and `:1486-1487` routes `--corpus` to it. CI simply does not call it.
+- `scripts/eval_skills.py:489-558` records one `native-current` run per skill and `:560-585` offers no repeat or threshold arguments. `scripts/eval_record.py:1395-1462` calls the driver once and freezes one record. The current negative corpus tests workflow misuse, not incomplete work.
+- `components.yaml` only contains scanner exclusions. There is no eval-corpus dependency map; `evals/*` data therefore has no selective relationship to the engine it validates.
+- `taskplane/retro.py` and `taskplane/dashboard.py` expose evaluation and graph projections but no `seeded-failure catch-rate` contract or zero-sample state.
+- The R-0004 design remains content-addressed in Git at revision `1464432a8b20620852ac23831517cdb28bc77206`: `design/design.md` SHA-256 `a5a682b3ebcefb6081b9600423ee0f8307ae0e56b21022626c84b948cabef5d8` and `design/contract.json` SHA-256 `577ae5048ceb0f1047c6cf691e1b4163351a016f99b711419b9be8614263c154`. Replacing the working files for R-0006 does not rewrite those committed blobs. Wave 1 verifies those exact historical objects and the external knowledge tree rather than incorrectly requiring the R-0006 working copy to remain byte-identical to R-0004.
 
-## Alternatives
+No accepted governing decision was supplied for R-0006. Earlier R-0004 approvals remain historical evidence, not authority to widen this requirement.
 
-### A. Extend the singleton move/restore model
+## Alternatives considered
 
-Add stage fields to `loop.json` and teach `track.py` to move more files between active and inactive directories.
+### A. Patch each defect independently and merge once
 
-This is the smallest superficial change and preserves current CLI shapes. It fails the core aggregate boundary: split children still contend for one mutable history, moving a record changes its address, terminal predecessors can be reclassified by restore, and successor startup remains coupled to a record containing predecessor tasks and submissions. Extra locks cannot turn the moved singleton into independently addressable immutable stages.
+Fix the f-string, print the degradation warning, add a CI line, remove imports, and add repeat flags without a cross-wave contract.
 
-Revisit only if R-0004 is narrowed to single-stage, single-child sequential execution without immutable lineage or bounded context.
+Gains: smallest apparent diff and fewest new records. Costs: it repeats the failure mode in the improvement register—feature work can land between fixes, cycle expectations can be updated after growth, local green can be mistaken for remote green, and evaluation reporting can drift across CLI, Retro, and dashboard. It cannot mechanically prove that the cycle ratchet preceded the cuts or that quick findings never promoted.
 
-### B. RunStore-backed immutable stage aggregates with a projection adapter — selected
+Revisit only if R-0006 is narrowed to one isolated defect with no sequencing, graph, CI-SHA, or reporting acceptance criteria.
 
-Store each stage revision, terminal summary, and handoff manifest as immutable content-addressed objects. Commit only references and bounded summaries into a revision-checked run index. Keep `loop.json` and track commands behind a compatibility adapter while migration is active; make new stage writes authoritative in `RunStore`.
+### B. Five contract-ratcheted waves — selected
 
-This reuses atomic file replacement, run locking, revision checks, canonical runtime roots, artifact verification, and R-0003 receipts. The cost is a deliberate v3-to-v4 schema migration and a temporary dual-reader. It provides explicit aggregate roots without requiring replay of all historical events.
+Add the narrow evidence/quality contracts first, then make behavior changes behind them. Reuse `preflight`, `depgraph`, the CLI boundary, existing eval recorder/rubric, Retro, dashboard, and the current CI workflow. Introduce only an acyclic graph primitive module and a sampling aggregate module where no incumbent owner can meet the requirement without recreating a cycle.
 
-Revisit if a future requirement needs multi-region writers, arbitrary temporal queries, or rebuilding every domain fact from an event log.
+Gains: every subsequent step is protected by a gate already present; rollback is wave-local; source-of-truth ownership is explicit; all 18 criteria map to executable checks; package and schema redesign stay deferred. Costs: requires multiple commits and temporary additive fields; the baseline/ratchet artifacts must be maintained; live evaluation takes N bounded model calls when explicitly invoked.
 
-### C. Full event-sourced stage graph
+Revisit when the five waves are green and the separately approved wave-six architecture decides whether to move packages, centralize schemas, or change trust/isolation boundaries.
 
-Represent every stage transition, split, handoff, and projection change as an event and reconstruct entities through replay plus snapshots.
+### C. Perform the broad package and governance redesign first
 
-This offers the richest temporal query surface and natural append-only audit. It also creates a new event schema, replay/upcaster/snapshot machinery, ordering rules, and compaction policy. It makes bounded startup and Retro harder to prove because consumers can accidentally replay predecessor history. Current local, revision-checked single-run writes do not justify that complexity.
+Move foundation/kernel/graph/review/orchestration/CLI packages, introduce a schema registry, and solve identity/attestation/isolation while repairing the defects.
 
-Revisit when independently writing coordinators or temporal audit queries become product requirements and snapshot governance is funded.
+Gains: may reduce later migration work and could eliminate more cycles. Costs: it mixes high-risk architecture and security decisions with a release-blocking parse defect, makes regression attribution poor, violates the explicit wave-six deferral, and requires decisions R-0006 does not authorize.
 
-## Aggregate and storage model
+Revisit only under the separate sixth-wave requirement after the compatibility, visibility, cycle, corpus, and sampling ratchets are green.
 
-### Immutable objects
+## Contract ownership
 
-`taskplane/stage_entities.py` owns `taskplane.stage/v1` and its state machine. A stage object contains:
+### Existing contracts changed
 
-- stable `stage_id` and `run_id`;
-- `requirement_id` and content fingerprint/revision, optional approved design fingerprint/revision, and `stage_kind` (`product`, `design`, `plan`, `build`, `evaluate`, `engineering`, `retro`, or extension kind);
-- sorted `parent_stage_ids` and `predecessor_stage_ids`;
-- an immutable `input_manifest_ref` and a unique `execution_root_id` resolved beneath the canonical run root;
-- declared deliverables, budget, dependencies, contracts, and authority binding;
-- lifecycle state (`active` or `terminal`) and exactly one terminal outcome (`done`, `closed`, or `discarded`) when terminal;
-- attribution, reason codes, timestamps, aggregate revision, and content fingerprint.
+- `contract:runtime.python-compatibility`: supported runtime is CPython 3.10–3.13; all shipped Python compiles, stage dependencies import at startup, and incompatibility refuses before governed-state mutation.
+- `contract:review.collection`: a requirement-bound `quick-only` policy emits quick slots only; substantive quick findings block/return and cannot create a deep promotion.
+- `contract:status.run-observability`: graph degradation, CI-SHA proof, evaluation sample state, and seeded-failure metrics have one machine record and text/Markdown/dashboard projections.
+- `contract:governance.enforcement-status`: compatibility, graph strictness, cycle bounds, and quick-only dispatch are visible as proven/degraded/refused evidence rather than silent best effort.
+- `contract:governance.delivery-authority`: `local_green` and `pushed_green` are distinct; only exact-SHA remote required checks plus zero commits ahead may be described as pushed green.
 
-Only an active aggregate can be terminalized. `done` is accepted only after every declared deliverable and completion-evidence reference verifies. `closed` requires actor, time, reason code, and text explaining why no further work is required. `discarded` requires actor, time, reason code, text explaining why results must not be consumed, and sets `default_consumable=false`. There is no reopen transition. Further work creates a successor stage.
+### Focused contracts provided
 
-Discarded and closed artifacts remain immutable and addressable for audit. Later reuse is possible only through a new attributable authorization that selects exact artifact fingerprints into a new handoff; this never changes the predecessor outcome and never treats a discarded stage result as default input.
+- `contract:governance-baseline/v1`: a read-only baseline record binds run id, branch/revision, source-graph fingerprint, active pointer status, prior Git blob identities, and external knowledge-tree fingerprint.
+- `contract:graph-scan-quality/v1`: scan output always carries `degraded`, affected modules, reasons, mode, and scanned revision; strict consumers refuse degraded evidence.
+- `contract:cli-error-envelope/v1`: known engine errors map to a stable headline, executable recovery, exit class, and optional debug cause.
+- `contract:import-cycle-ratchet/v1`: a checked-in file-level SCC inventory permits shrinkage, rejects new cyclic members/edges or larger member/edge/LOC bounds, and records before/after inventories.
+- `contract:evaluation-sample/v1`: one bounded sample owns N distinct trial records, pass threshold, observed scenario/model identity, completeness, and evaluation revision.
+- `contract:evaluation-corpus-impact/v1`: an explicit eval impact map creates selective corpus-to-engine validation edges and fails degraded when invalid.
+- `contract:seeded-failure-catch-rate/v1`: caught seeded failures divided by the declared seeded sample, never a production defect or universal reliability measure.
 
-### Handoff manifest
+## Wave 1 — Baseline and quick-only governance
 
-`taskplane/stage_handoff.py` owns `taskplane.stage-handoff/v1`. Its canonical form records:
+Extend `taskplane/preflight.py` with a read-only baseline projection over incumbent repository/run/storage facts. It emits one canonical record into the external run artifact store. It does not copy or rewrite Design or knowledge evidence.
 
-- producer stage id and terminal outcome;
-- requirement id/revision and design revision/fingerprint;
-- target identity and commit identity when applicable;
-- provided/consumed/changed contracts;
-- declared deliverables and verified evidence references;
-- each selected artifact kind, fingerprint, digest, byte count, and redacted canonical locator;
-- explicit exclusions, including predecessor agents, conversations, event logs, tool transcripts, leases, runtime state, undeclared paths, tools, secrets, and approvals;
-- authorization actor, authority record, time, and operation id.
+The authoritative knowledge store is the canonical `knowledge` root resolved from the active workspace locator/project identity (currently `/Users/vdemkiv/.taskplane/projects/github.com-vdemkiv-taskplane-43a0a10bba/knowledge`), never a caller-supplied or discovered lookalike directory. Before cleanup, a `taskplane.knowledge-preservation-manifest/v1` artifact binds repository/project identity, canonical resolved root identity, sorted relative paths, byte counts, per-file SHA-256 digests, explicit exclusions (locks only), and a canonical manifest digest. Baseline verification requires that pre-cleanup manifest identity as input. A missing/moved expected path, byte/digest mismatch, unexpected non-lock entry, root-identity mismatch, empty manifest for a previously non-empty store, or absent trusted pre-cleanup manifest blocks preservation; hashing an empty or wrong tree can never pass. For cleanup that predates R-0006, only a retained immutable audit artifact with the same closed manifest fields is acceptable—otherwise Wave 1 reports preservation as unproven and stops rather than reconstructing a false baseline.
 
-The canonical manifest is at most 64 KiB, contains at most 64 selected artifact references, and each bounded stage summary is at most 16 KiB. Artifact bodies are not inlined in startup; a stage resolves only selected verified references. A larger or incomplete manifest fails closed before a successor is created. Explicit content expansion needs a new attributed authorization and reason and is recorded as another selected artifact, never an implicit transcript import.
+The baseline record also contains the current branch and SHA, fresh governed run id and workspace locator, refreshed graph fingerprint/scanned SHA, absence of an active `plan/**` payload and obsolete run pointer, and Git object ids plus byte digests for prior committed Design files. Preservation means the prior Git objects remain readable with the same bytes and the canonical post-cleanup knowledge manifest matches the trusted pre-cleanup manifest under the closed rules; the new R-0006 Design is a later artifact, not a mutation of R-0004 history.
 
-### Run index and active projection
+Record enforcement independently as `status=live|unproven|advisory`, with enforcement evidence id, Codex session id, and a verified hook-path receipt (loaded hook/bridge path, content fingerprint, host observation, and observation time). Only `live` may be rendered as “enforced.” `unproven` blocks mutating wave work by default. A human may convert it only to `advisory` through an attributable record containing actor, reason, exact wave/scope, expiry, and accepted limitations; advisory work remains visibly advisory and never satisfies a live-enforcement claim. The current session's unproven receipt is therefore evidence of non-live enforcement, not permission to describe initialization as enforced.
 
-`RunStore` v4 adds:
+At the same time, carry `review_policy.depth=quick-only` from R-0006 into routing and collection. `lens.py` may emit only the single quick sweep slot (or equivalent quick slots); `review_progression` returns a substantive concern to correction instead of promoting; `review.py` rejects any `deep.*` slot in a manifest bound to this requirement. Product/Design reasoning effort is not a lens depth and is unaffected.
 
-- `stage_heads`: `stage_id -> immutable stage object reference + bounded summary`;
-- `lineage`: immutable parent/predecessor/child and handoff-reference tuples;
-- `stage_operations`: operation-id receipts for start, resume, terminalize, handoff, split, and migration;
-- `active_stage_projection`: a rebuildable object containing sorted active stage ids and an optional foreground stage id.
+Wave 1 passes only when the graph is refreshed at the current SHA, the active locator names the fresh run, the authoritative-root pre/post knowledge manifest and prior Design hashes match, no missing/moved/unexpected entry exists, no stale Plan authority is active, enforcement is honestly `live` or has a bounded attributable `advisory` authorization, and a seeded quick finding blocks without a deep dispatch.
 
-The projection is a cache, not authority. Its value must equal the active states in `stage_heads`; readers reject ambiguity and rebuild it under the run lock. History is derived from indexed immutable heads and lineage, never from the projection and never from directory location. A status page returns at most 100 summaries plus a cursor.
+## Wave 2 — CPython compatibility before state or tests
 
-### Independent execution trees
+First replace the PEP-701-only f-string in `stage_entities.py` with a precomputed request dictionary/fingerprint. Then make `run_store.py` load `stage_entities` at module startup through one dual package/script import seam. Convert `ImportError` or `SyntaxError` at that seam to one named `TaskplaneCompatibilityError` carrying the failing module, supported range, and recovery. Remove all four copied lazy imports at the lineage, commit-summary, put-object, and read-object seams.
 
-Every stage obtains `runs/<run-id>/stages/executions/<stage-id>/` through `storage.py`. The path is unique, confined, and never reused. A host dispatcher creates a fresh native agent/thread/tree for the stage and supplies only:
+The CLI catches that named error at its existing user boundary. Normal mode prints a concise compatibility headline and recovery and exits nonzero; `TASKPLANE_DEBUG=1` re-raises with the traceback. Because the eager import occurs before a RunStore instance or mutation path exists, the deliberate broken-dependency fixture can snapshot run, graph, contract, review, and requirement stores and prove no byte changed.
 
-1. the stage id and current authority binding;
-2. the verified input handoff manifest;
-3. explicitly selected artifact references;
-4. the stage’s own budget and declared scope.
+The CI matrix becomes CPython 3.10, 3.11, 3.12, and 3.13. Every leg runs, in this order:
 
-No predecessor conversation, agent identity, trace, event log, tool transcript, lease, meter, active contract, or runtime environment is inherited. Resume of an active stage creates a new attempt beneath the same isolated stage root from the same immutable input manifest; resuming a terminal stage is rejected and the caller must create a successor.
+1. a repository-wide in-memory compile over the exact NUL-safe result of `git ls-files '*.py'`, including tracked `evals/**`, `corpus/**`, scripts, generators, hooks, and tests—not a hand-maintained directory subset;
+2. a closed-set import smoke that statically discovers every production import of `stage_entities`, asserts the exact expected set (`run_store.py`, `loop.py`, `stage_migration.py`, and `taskplane_lite.py` around its stage-module seam), imports each consumer, then runs representative version, graph-read, status-read, stage/run-store, and corpus flows in an isolated temporary home;
+3. that leg's pytest suite.
 
-## Atomic commands and idempotency
+Workflow-order tests parse `ci.yml` and seed syntax errors both in `taskplane/` and in a tracked Python sentinel outside the formerly named four directories (under `corpus/`) in disposable checkouts, proving the exact tracked-file compile exits before a sentinel test command runs. Any newly tracked `.py` is included automatically. The plugin remains stdlib-only. No async path, background task, packaging namespace, dependency, or GIL/free-threading claim is added. The Python solution-design reference targets 3.14 language guidance; R-0006's runtime contract deliberately remains 3.10–3.13 and forbids 3.12-only syntax.
 
-Each command requires `run_id`, expected run revision, actor/authority, and an idempotency `operation_id`. Under the existing `RunStore` lock it:
+## Wave 3 — Visible degradation, clean CLI errors, zero-token CI, pushed-SHA truth
 
-1. returns the prior receipt when the operation id and request fingerprint match, or rejects reuse with different input;
-2. loads and validates the current indexed aggregate heads and authority;
-3. verifies all artifact references, declared evidence, lifecycle preconditions, and numeric bounds;
-4. writes immutable stage/handoff objects first; unreferenced objects are harmless and garbage collection is out of scope;
-5. commits in one atomic run-manifest revision the new heads, lineage, active projection, and operation receipt;
-6. appends the diagnostic journal entry after the authoritative commit.
+The base Python import scanner in `depgraph.scan` becomes the first producer of structured per-file parse failures, independent of component decomposition. Its record contains file, resolved module, parser, error class, bounded reason, and file fingerprint. When `decompose=False`, these producer failures still set `contract:graph-scan-quality/v1.degraded=true`. When `decompose=True`, decomposition contributes a second named producer section; `depgraph.scan` combines, never overwrites, base-scanner and decomposition failures. `decompose.derive` remains fail-open in normal scanning. `tp graph scan --strict` returns nonzero on any producer failure. Design/Plan readiness and applicable Review/DoD consume the same quality record and refuse degraded evidence; they do not re-derive quality privately. Normal scan remains successful but must print `degraded=true`, every file/module/producer/reason, and the strict recovery command. Fixtures run both with and without decomposition.
 
-A crash before step 5 leaves the prior lifecycle authoritative. A crash after step 5 is recovered by the stored receipt even if the diagnostic journal append was missed. Duplicate events, reconnects, and retries are therefore semantic no-ops. Revision conflicts reload and re-evaluate; they never merge lifecycle changes speculatively.
+`tp.py` keeps one CLI boundary and exports one public `PUBLIC_ENGINE_ERROR_REGISTRY` protocol: each entry binds an exception class to headline, executable recovery, exit class, and debug-cause policy. `KNOWN_ENGINE_ERRORS` is derived from that registry rather than separately authored. A drift fixture asserts exact class-set equality between the exported registry and `KNOWN_ENGINE_ERRORS`, then parameterizes every entry. Normal mode never prints a traceback for registered classes; debug mode re-raises. A separate unexpected-exception fixture proves unregistered defects retain the current exit-70 diagnostic traceback behavior.
 
-### Start and terminalize
+Add a credential-empty, no-egress CI job that runs `python3 scripts/ci_evals.py --corpus` under `env -i` with only an explicit non-secret allowlist (`PATH`, isolated `HOME`, locale, and a prepended no-egress `PYTHONPATH`). That path contains a `sitecustomize.py` loaded before scorer imports which makes process-wide socket creation/connect, `create_connection`, and DNS resolution fail and records any attempt. The job first proves an intentional connection and DNS lookup fail, then runs the valid corpus twice and requires byte-identical canonical output, then corrupts one temporary `expected.json` and requires nonzero. Clearing the whole environment rather than naming a few secrets removes model, cloud, proxy, and credential variables. Live model evaluation remains excluded from push/pull-request CI.
 
-Starting a successor requires a terminal predecessor plus a valid handoff authorization, except for a root stage. It writes the new active aggregate and updates lineage/projection in one commit. Terminalization writes exactly one terminal outcome and removes that stage from the projection in one commit. Creating a successor may be combined with terminalization only by the dedicated `terminalize_and_start` command, so there is no state in which a successor is active without a durable predecessor outcome and handoff.
+Required check names for Python 3.10–3.13 compatibility, graph/CLI fixtures, and the zero-token corpus are bound to `checked_sha`. After an explicit fetch, pushed-green requires exact equality `HEAD == refs/remotes/origin/main == checked_sha`, `origin/main..HEAD` count zero, `HEAD..origin/main` count zero, and every required-check receipt bound to that same SHA. Ahead, behind, diverged, stale-ref, local-only, or receipt-SHA mismatch remains `local_green`/refused and can never be labelled `pushed_green`. No release/tag/publish operation is added in this requirement.
 
-Non-build stages may terminalize `closed` or `discarded` with no successor. No implicit implementation stage is created.
+## Wave 4 — Cycle ratchet first, then four edge cuts
 
-### Split
+This wave has two ordered commits and CI verifies the ordering with full repository history.
 
-`split_stage` requires an active parent and at least two child specifications. One transaction:
+### Commit 4A: measurement and ratchet only
 
-- terminalizes the parent `closed` with `reason_code=split`, actor, time, and reason;
-- creates deterministic child ids from `run_id + parent_stage_id + operation_id + ordinal`;
-- binds each child to an explicit selected-artifact subset, dependency list, budget, input manifest, and unique execution root;
-- records child lineage and the parent-to-child handoffs;
-- replaces the active projection with the child set and stores one receipt.
+Add `taskplane/import_cycles.py`, a stdlib AST/Tarjan file-level scanner, and `taskplane/tests/fixtures/import-cycles.json`. The policy stores every SCC with more than one module, sorted member and internal-edge lists, member count, internal-edge count, physical LOC, and source revision. It permits a known SCC to shrink. It rejects a new cyclic member, a new SCC, or growth above any recorded member/edge/LOC bound. Its failure names affected modules, edges, and measured sizes.
 
-Children have separate aggregate heads. A child operation can name only that child’s expected head, so it cannot update its parent or siblings. Read-only artifact reference overlap is allowed; undeclared artifact inheritance is not.
+The first checked-in inventory is generated from the tree at the start of wave 4—not copied from the 2.17.14 report. CI runs the checker before structural tests. A history check proves the policy commit exists and passed while all four targeted deferred imports were still present.
 
-## Bounded read models
+### Commit 4B: S1/S2 cuts
 
-`loop_status.py`, dashboard, review, sign-off, and Retro consume `stage_summary_page` and `lineage_summary`; they do not open predecessor execution directories. A terminal summary includes stage id/kind/outcome, predecessor outcome, handoff fingerprint, child ids, bounded deliverable/evidence counts, pending human action, and timestamps. Text-first renderings expose the same fields and never rely on color or the visual.
+Add `taskplane/graph_primitives.py` below `depgraph`, `decompose`, and `lens_signals`, plus a focused `taskplane/graph_decomposition.py` algorithm owner. Graph primitives contains closed graph payload normalization, module-id resolution, floor/quality value records, and consuming-side protocols; it imports none of the higher owners. `graph_decomposition` consumes only graph primitives and contains the mechanically moved decomposition algorithm needed by the compatibility API.
 
-`retro.py` stops scanning all predecessor trace events. Terminalization produces the bounded metrics Retro needs, including outcome, duration, attempts, finding counts, selected artifact bytes, manifest bytes, startup tokens, explicit expansion reason, and graph/evidence fingerprints. Retro aggregates those summaries. Detailed execution data remains addressable for an explicit audit command, outside the default status/startup path.
+- `depgraph.scan(ws, decompose: bool=False)` keeps its public signature and return semantics. With `decompose=True` it calls `graph_decomposition.derive` (not the compatibility `decompose` module), so direct callers remain valid while `depgraph` no longer imports `decompose`. `tp.py` graph/review paths, `loop.py` refresh paths, and `retro.py` are named production composition roots and retain their current calls; `tp.py` and `retro.py` exercise the `True` path.
+- `decompose.derive` becomes a backward-compatible facade over `graph_decomposition.derive`. The algorithm consumes graph resolver/payload and low-level lens signal inputs from `graph_primitives`; `decompose` no longer imports `depgraph` or `lens_signals` in any scope.
+- `lens_signals` consumes the same graph-primitives contract. Golden graph/component payloads prove external meaning is byte-equivalent except for the additive quality fields from wave 3.
+- `review.py` and the `tp.py` standalone review adapter own `review → lens` context-note composition: every governed `dispatch_briefs` call supplies the already-rendered note (or an explicit empty note when no context exists). `lens_signals` parity probes also pass an explicit note. `lens.py` no longer imports `review`.
+- `loop.py` and `tp.py`, the only governed callers of `taskplane_lite.dod_check`, own `host/orchestrator → taskplane_lite` graph-impact composition and pass the exact graph result for non-sparse graphs. `taskplane_lite` no longer imports `depgraph`. Sparse fallback is permitted only when the supplied graph-quality record proves zero modules/edges or missing scan; omission on a non-sparse/complete graph is a DoD error, never an implicit fallback.
 
-The scaling invariant is mechanical: successor startup serialization reads the handoff object and selected artifact references only. A fixture constructs equivalent terminal stages with 10 and 100,000 irrelevant predecessor events and asserts byte-identical startup bytes, identical selected-ref reads, zero predecessor execution-tree opens, bounded manifest size, and startup/token counters independent of event count.
+After the cuts, regenerate the inventory with the same scanner. The build evidence contains complete before/after SCCs, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles. Direct `depgraph.scan(ws, decompose=True)` pre/post goldens prove backward compatibility, and caller audits prove every governed review/DoD composition input is supplied. Only decreases are accepted without a new human-approved Design change. No existing file is moved or renamed.
 
-## Legacy migration and compatibility
+## Wave 5 — Sampling, incomplete-work evidence, selective corpus impact, catch-rate
 
-`taskplane/stage_migration.py` performs an idempotent, non-destructive migration under the loop/run locks:
+Add `taskplane/eval_sampling.py` as the pure aggregate owner. `scripts/eval_skills.py` accepts `--repeat N` (1–100) and `--threshold T` (0.0–1.0), creates a stable sample id, and calls the existing recorder once per `(scenario, observed-model-version, trial-index)`. Each accepted trial has a distinct id and immutable record. Retrying the same exact key reuses a valid record; mismatched or duplicate evidence refuses. Missing/cancelled trials mark the sample incomplete and no pass rate is emitted as a passing result.
 
-1. fingerprint the exact singleton `loop.json`, `tracks.json`, stored track records, and associated requirements/tasks/decisions/evidence/commits/reviews/audit references;
-2. retain those source bytes as content-addressed migration artifacts before projecting anything;
-3. deterministically create v4 stage objects only for states whose identity, lifecycle, and evidence are unambiguous;
-4. preserve every ambiguous record as `taskplane.legacy-unknown/v1` with source fingerprint, explicit `unknown_reason`, and retained references—never guess `pending`, `done`, `closed`, or `discarded`;
-5. atomically commit stage indexes, lineage, projection, migration receipt, and source fingerprints;
-6. switch the adapter to stage-authoritative reads only after the receipt verifies.
+A trial passes only when the incumbent evaluation/rubric result is complete and non-blocking. A complete sample reports `pass_count / repeat_count`; ten fake deterministic trials with seven passes report `0.7` and fail threshold `0.9`. Ordinary CI uses fake drivers only. Live sampling is scheduled or explicitly invoked, never part of push/pull-request CI, and persists no credentials or transcript beyond existing bounded evidence.
 
-The unknown record is an audit/migration sentinel, not a stage terminal outcome. It cannot be selected as default successor input. Resolution creates an attributable new stage or handoff while retaining the sentinel unchanged.
+Extend the frozen evaluation record with closed incomplete-work evidence derived from the requirement, submission, suite result, and diff/test manifest. Add three executable negative fixtures with distinct refusal codes:
 
-During rollout, old CLI/status callers use `track.py` as a narrow projection adapter. They may read a v4 foreground projection and render legacy fields, but they may not move, restore, overwrite, or reclassify stage aggregates. New writes go only through stage commands. The original legacy artifacts remain retained and readable throughout rollback.
+- `incomplete.acceptance-coverage`: exactly three of five criteria are evidenced;
+- `incomplete.build-error`: a nonzero build result is followed by a completion claim;
+- `incomplete.test-deletion`: a failing test is deleted with no approved replacement evidence.
 
-## Authorization, evidence, and R-0003 preservation
+Each fixture must reach the intended completeness check, not fail earlier for ordering. The corpus scorer pins both the refusal code and explanatory evidence.
 
-The changed consolidated-authorization contract binds every lifecycle command and handoff authorization to the exact run, repository/worktree, requirement/design revision, actor/session, and current authority revision. Authority is re-resolved immediately before the atomic commit; stale or advisory-only authority cannot be silently upgraded.
+Add `evals/impact-map.json`, a closed selective mapping from corpus modules to exact engine/evaluator files. Each row has one canonical corpus prefix matching only `evals/<name>` or `evals/negative/<name>` (no wildcard, `..`, symlink escape, or repository root) and 1–32 exact tracked `.py` engine files under `taskplane/` or `scripts/`; the whole map has at most 128 file relations. Directory-only sources and any wildcard/prefix such as `taskplane/**`, `taskplane/`, `scripts/**`, or `**` are invalid. `depgraph` turns each row into `validates` edges; invalid, unmatched, duplicate, escaped, or over-bound entries mark graph scan quality degraded. Fixtures change mapped evaluation/governance files and also unrelated product (`stage_entities.py`), CLI (`tp.py`), and reporting (`dashboard.py`) files to prove no near-catch-all corpus blast radius.
 
-The consumed review-evidence-binding contract verifies review artifact identity and keeps evidence usable after an execution worktree is removed. Stage handoff code consumes the existing artifact reference verifier rather than interpreting arbitrary paths.
+`eval_sampling` computes `contract:seeded-failure-catch-rate/v1` over one explicit counted unit: a unique `(scenario_id, seeded_failure_id, observed_model_id, observed_model_version, trial_index, evaluation_revision)` trial. The denominator is the count of unique complete declared seeded units, the numerator is the subset for which the harness emitted the intended refusal, and `sample_size == denominator` is invariant. Repeated trials of the same scenario count separately only through distinct validated trial indexes; duplicates or mixed model/revision identity refuse. A fixture with five trials of one scenario and three of another, six caught, must report numerator 6, denominator/sample_size 8, rate 0.75. Zero samples produce `status=unavailable`, `reason=zero-sample`, and the label/identity only; numeric fields `numerator`, `denominator`, `sample_size`, `rate`, and `threshold` are omitted rather than set to zero. `retro.py` and `dashboard.py` consume the same record for machine, Markdown, text, and accessible HTML. The label is always `seeded-failure catch-rate`; no projection calls it production defect rate or model reliability.
 
-R-0003 automatic recovery remains bounded and does not gain stage authority. Recovery may replay an already authorized operation id or rebuild the active projection from immutable heads. It cannot choose a terminal outcome, add artifacts, reopen a stage, manufacture a child, approve a gate, or broaden worktree cleanup.
+## Failure, observability, and recovery
 
-Stage terminalization, migration, and retention never call cleanup. Existing post-merge cleanup may remove only an exact registered Taskplane-managed linked worktree after the recorded branch tip is proven an ancestor of the re-resolved primary `main` tip and every R-0003 last-moment eligibility check passes. Dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked/reparse-point, path-mismatched, missing-ref, ambiguous-main, primary/main, merge-in-progress, evidence-needed, or last-moment-uncertain worktrees remain retained. Cleanup is no-force, never broadens scope, deletes no branch/commit/requirement/design/plan/submission/test/review-evidence/audit/sign-off input, and records its outcome idempotently; a pre-merge-receipt crash retains, a post-receipt crash permits only one identical maintenance replay, and canonical EM/graph/evidence/Retro/status/sign-off records remain usable after an eligible removal.
+Every contract emits one canonical machine record before rendering. Signals include authoritative-root pre/post manifest identity and entry deltas; live/unproven/advisory enforcement plus evidence/session/hook receipt; exact tracked-Python and closed-consumer identities; per-producer/file graph failures in both scan modes; public-registry/known-error equality; fetched HEAD/origin/checked SHA with ahead and behind counts; SCC inventory and direct/caller parity; bounded corpus-impact selectivity; quick-only dispatch depth; eval trial/sample completeness; and counted-unit catch-rate arithmetic. Text and HTML remain usable without color.
 
-## Failure and negative-case policy
+Failures are fail-closed at the boundary they protect: a wrong/empty knowledge root, manifest delta, or unproven enforcement stops wave 1 unless an attributable bounded advisory receipt exists; compatibility stops before state/tests; any base-scanner or decomposition producer degradation stops strict readiness/review; CLI registry drift or swallowed unexpected errors fail fixtures; ahead/behind/stale/mismatched CI proof cannot become pushed-green; cycle growth, direct-API drift, or missing governed composition inputs stop merge; broad corpus mappings and inconsistent counted units refuse; incomplete samples cannot pass a threshold; zero seeded samples render unavailable with numeric fields absent; substantive quick findings return to correction without a deep worker.
 
-- Invalid schema, missing revision, oversized manifest, too many references, digest mismatch, undeclared path/tool/secret/approval, noncanonical execution root, or stale authority: reject before changing the run index.
-- Terminal transition requested twice: identical operation returns its receipt; a different request rejects because the head is terminal.
-- Start races terminalize: expected revision permits one commit; the loser reloads and can only return the matching receipt or fail.
-- Split child collision, fewer than two children, duplicate child spec, unresolved dependency, missing budget, or artifact outside its declared subset: reject the whole split.
-- Projection absent/corrupt/ambiguous: stop stage dispatch, rebuild from indexed heads under lock, and record the repair; never choose a foreground stage heuristically.
-- Crash around immutable writes: unindexed objects cannot affect lifecycle; a later maintenance tool may report them but does not delete them in this requirement.
-- Legacy ambiguity: preserve an explicit unknown sentinel and require attributed resolution.
-- Predecessor trace growth: startup and default read models never open it; a regression is a release blocker.
-- R-0003 worktree cleanup negatives: retain the worktree and record the exact failed predicate; never retry with force or broader path authority.
-
-## Observability
-
-Structured signals include stage id/kind/state/outcome, operation/receipt fingerprint, run revision, authority revision, predecessor/parent/child ids, handoff fingerprint, manifest bytes, selected-ref count and bytes, startup bytes/tokens, explicit expansion reason, projection repairs, lifecycle conflicts, migration source/result fingerprints, unknown reasons, and cleanup-preservation reason. Metadata is bounded and redacts host paths and secret-bearing values.
-
-Alerts fire for terminal-reopen attempts, ambiguous active projections, repeated operation-id mismatch, stage/handoff digest failure, successor startup opening a predecessor execution root, manifest bound violation, migration loss/count mismatch, and any destructive cleanup attempt lacking the complete R-0003 proof.
+Recovery is bounded and attributable. The named owner repairs the offending source/evidence and reruns the same deterministic check in both relevant modes; preservation cannot be reconstructed from a post-cleanup empty tree and enforcement cannot be relabelled. Cycle-bound increases, corpus catch-all edges, quick-to-deep promotion, and wave-six scope require a new human-approved Design change rather than an inline waiver.
 
 ## Rollout and rollback
 
-1. Ship v4 readers, schemas, immutable object storage, validation, and projection rebuild behind a disabled feature flag; retain v3 writes.
-2. Run shadow migrations and compare bounded legacy/v4 summaries, retained reference counts, lineage, and authority bindings without switching readers.
-3. Enable stage-native roots for new runs, then migrate existing runs only after the source-retention and conservation report passes. Keep legacy CLI reads through the adapter.
-4. Move dashboard/status/review/sign-off/Retro to bounded summaries and enforce zero predecessor-tree reads. Stop singleton move/restore writes only after coverage and migration telemetry are clean.
-5. Remove the write side of the adapter in a later requirement; retain legacy readers and source artifacts for audit.
+Roll out one wave at a time on `main`, with the preceding wave's gates required before the next branch/commit begins. Wave 4 is explicitly two commits: ratchet first, cuts second. Wave 5 fake-driver fixtures land before any scheduled live sample is trusted. The final push is accepted only after the exact remote SHA has every required check green.
 
-Rollback disables creation of new v4 stages and returns unmigrated callers to legacy reads. It does not delete immutable objects, erase receipts, collapse stage histories into one mutable loop, reopen terminal entities, guess unknown legacy state, or weaken R-0003 cleanup/evidence proofs. Migrated runs remain readable through v4 and may be resumed only when the stage feature is re-enabled or via an explicit forward migration; no lossy reverse migration is allowed.
+Rollback is additive and wave-local:
+
+- Wave 1 authoritative manifest evidence is immutable; disabling its projection does not delete or substitute prior evidence, and unproven/advisory enforcement is never relabelled live. Quick-only remains required for R-0006 and cannot be rolled back to deep promotion inside this requirement.
+- Wave 2 can revert the eager import/error adapter only together with the dependent stage changes; exact tracked-Python compilation and the closed four-consumer import smoke remain as the floor.
+- Wave 3 may revert rendering while retaining base/decomposition machine graph quality, the public error registry, no-egress corpus CI, and fetched exact-SHA proof; it may never relabel degraded/local/ahead/behind evidence as complete/pushed.
+- Wave 4 may revert a cut to the pre-cut tree only if the already-landed ratchet, direct `scan(..., decompose=True)` golden, and governed caller-input audits still pass. The ratchet itself is not removed in this wave.
+- Wave 5 can disable live repeat execution while retaining bounded impact mappings, counted trial records, arithmetic/selectivity fixtures, and zero-token fixtures; readers tolerate zero samples only by rendering unavailable with numeric fields omitted. No stored trial or sample is rewritten.
+
+There is no data migration, destructive conversion, external event cutover, or new service. All persistence additions are versioned, additive records. This makes rollback possible without fabricating history.
 
 ## Python solution-design application
 
 The Python solution-design reference was read in full and SHA-256 verified as `9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7`.
 
-| Lens concern | Design disposition |
+| Concern | Disposition |
 | --- | --- |
-| Supported runtime | Preserve the project’s Python 3.10–3.12 floor; parse, import, and smoke-test each version. No 3.14-only syntax or behavior. |
-| Sync/async/cancellation | Storage and CLI paths remain synchronous. No event loop or background task is introduced. Interruption is handled at the atomic commit boundary and by idempotent receipts. |
-| Boundary typing | Validate JSON dictionaries, enums, identifiers, byte/count bounds, environment-derived roots, Git identities, and artifact references at runtime. Use narrow typed records internally; do not rely on annotations as validation. |
-| Concurrency | Use explicit cross-process file locks and expected manifest revisions. Make no correctness claim based on the GIL. |
-| Resources/packaging | Schemas are represented in Python validators unless a data schema is added; any added resource must be included in the wheel/plugin and verified by clean-install import tests. Runtime state stays in canonical external roots. |
-| Exceptions/cleanup | Convert boundary errors to stable domain failures, preserve causal diagnostics without secrets, close descriptors through context managers, and never compensate with destructive deletion. |
-| Performance | Canonical JSON hashing and selected-reference reads are linear in the bounded manifest, not predecessor history. Benchmark 10 vs 100,000 predecessor events and assert byte identity and zero tree opens. |
-| Verification | Add lifecycle/property matrices, crash injection at every commit boundary, duplicate/retry/reconnect fixtures, migration conservation tests, malicious-path/reference tests, import-cycle checks, and clean-wheel tests. |
+| Runtime and packaging | Runtime support is CPython 3.10–3.13 despite the reference's 3.14 guidance target. The plugin remains stdlib-only; compile/import checks cover tracked package, script, lens-generator, and hook Python plus clean packaged entry points. |
+| Sync/async ownership | All added paths are synchronous. No event loop, task, cancellation, or `ExceptionGroup` contract is introduced. Live trial interruption leaves an incomplete sample and immutable completed trials. |
+| Boundary typing | Runtime-validate graph quality, impact-map JSON, trial/sample records, thresholds/repeats, CI proof, and catch-rate inputs. Type annotations never substitute for validation. |
+| Framework separation | Pure SCC and sample aggregation live in focused modules; CI/CLI/Retro/dashboard are adapters. No import-time settings, global client, or service locator is introduced. |
+| Concurrency and free threading | Trial ids and records are immutable and idempotent; no safety claim relies on the GIL. Existing atomic file/lock boundaries own concurrent persistence. |
+| Failure and cleanup | Compatibility/quality/sample failures refuse before governed mutation or reporting success. Temporary fixtures use isolated roots and existing cleanup; no destructive recovery is introduced. |
+| Verification | CPython matrix, compile-before-test sentinel, clean entry imports, AST cycle ratchet, graph payload goldens, fake 7/10 trials, incomplete-work corpus, impact selectivity, and projection parity are executable. |
 
-## Graph readiness and completion
+## Graph DoR and DoD
 
-The proposed graph overlay uses the captured depth policy: local depth 3, contract-only boundary traversal, contract depth 1, and requirement depth 1. Design entry is ready because the graph is pinned, R-0004’s dependency R-0003 resolves, all 11 criteria and six contract relations are present, current seams are cited, atomic ownership is assigned, and numeric/context boundaries are fixed.
+The overlay is bounded to local depth 3, `contract-only` boundaries, contract depth 1, and requirement depth 1. The baseline graph fingerprint is pinned even though its missing source scan is an explicit DoR warning. Wave 1 must refresh it and record the current scanned SHA before Plan/Build can claim source impact.
 
-Completion requires the implementation plan and engineering review to account for every proposed module, edge, and contract; a post-merge graph scan; exact lifecycle/handoff/split/migration and 10-vs-100,000-event fixtures; cross-host bounded-summary parity; Python/package checks; and explicit realization evidence for every scanner-invisible contract edge. Any drift returns to Design before sign-off.
+Design DoR is satisfied because R-0006 has exactly 18 criteria and no open questions; every current premise above cites repository or run evidence; module/contract ownership is named; numeric bounds are fixed; sequencing and rollback are settled; and wave six is explicit out of scope.
+
+Build/Review DoD requires realization evidence for every proposed edge and contract, a refreshed as-built graph, complete acceptance-map execution, before/after SCC inventories, exact-SHA CI proof, quick-only manifests, and zero unexplained design drift. Scanner-invisible contracts and eval validation edges need explicit recorded evidence. Any new module, cycle-bound increase, catch-all corpus mapping, deep lens slot, persistence replacement, or package move returns to Design.
 
 ## Deferred debt
 
-The compatibility read adapter and retained legacy singleton formats are intentional rollout debt. Once all supported workspaces have a verified v4 migration receipt, record removal as requirement-linked debt rather than deleting support inside this change:
+R-0006 intentionally leaves the remaining measured SCCs in place and adds a small explicit input seam rather than performing the package/component redesign. Record this after approval:
 
-`tp req debt "Remove the R-0004 singleton loop/track compatibility adapter after migration coverage reaches 100%" --req R-0004 --owner engineering --trigger "all supported persisted workspaces report verified v4 migration receipts"`
+`tp req debt "Resolve residual post-R-0006 import cycles in the separate wave-six architecture" --req R-0006 --reason "R-0006 ratchets and shrinks cycles but package moves and orchestration ownership are explicitly deferred" --follow-up "Approve the wave-six package/component design, then reduce every retained SCC without raising the ratchet" --files "taskplane/**/*.py"`
 
 No other design question remains open.

@@ -144,6 +144,11 @@ explicit approval in conversation. Never run the loop silently.
    convert authentication, tool installation, or storage authorization into a
    terminal handoff or a new-task instruction. `init_git` → offer to `git init && git add -A &&
    git commit` for them (gates need a snapshot); `tp_init` → run step 1.
+   `continue_advisory` → keep the current Codex task, state plainly that live
+   hook enforcement is unproven, and after the human explicitly directs
+   continuation here add `--advisory --by <human>` to the next governed
+   command. Never translate this action into a new-task requirement and never
+   describe advisory enforcement as live.
    The buttons drive this via `sendPrompt`. Don't guess a workspace — a
    governed run needs a real folder + a git commit, and this is where a
    brand-new user gets them in place.

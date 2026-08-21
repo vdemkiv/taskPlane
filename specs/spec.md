@@ -1,187 +1,285 @@
-# Specification — stage-isolated delivery entities and bounded artifact handoffs
+# Remediation waves 1–5: compatibility, observability, dependency ratchet, and evaluation confidence
 
 ## Problem
 
-Taskplane currently treats a delivery loop too much like one continuously
-evolving execution context. That makes stage completion, non-build termination,
-splitting, retry, audit, and long-running histories vulnerable to context bleed,
-mutable predecessor state, and successor startup costs that grow with irrelevant
-runtime history.
-
-Each Product, Design, Build, Review, Evaluation, and other delivery stage needs
-an independently addressable lifecycle. Successors should start from a bounded,
-versioned artifact handoff rather than inheriting agents, conversations, event
-logs, tool transcripts, leases, or runtime state from predecessor execution.
+Taskplane 2.17.14 can ship code that does not parse on declared Python
+versions, can hide degraded dependency analysis and known CLI refusals, and
+does not run its zero-token evaluation corpus in CI. Its largest import cycle
+has continued to grow, while live-model evaluation has neither repeat sampling
+nor fixtures and reporting that measure whether seeded incomplete work is
+caught. These gaps allow a locally successful release to overstate both runtime
+compatibility and governance confidence.
 
 ## Users and context
 
-Engineers, reviewers, product owners, orchestrators, and auditors need to know
-what stage is active, how it relates to prior work, why a stage ended, which
-artifacts were authorized for reuse, and whether a split or retry preserved
-history. The requirement extends the governed-delivery foundation in `R-0003`
-without changing its enforcement, collision-isolation, ReviewKernel evidence,
-or worktree-cleanup decisions.
+- Taskplane maintainers need a safe sequence that restores a trustworthy
+  baseline before structural changes begin.
+- Contributors need fast, deterministic CI failures for parse errors, graph
+  degradation, cycle growth, and evaluation-corpus regressions.
+- Operators need clean, actionable CLI refusals rather than raw tracebacks or
+  silently degraded graph results.
+- Release owners need the exact pushed commit to pass the supported Python and
+  zero-token evaluation gates before it can be treated as releasable.
+- People interpreting model-evaluation results need repeated samples,
+  incomplete-work fixtures, graph impact, and a clearly labelled
+  seeded-failure catch-rate rather than a generalized reliability claim.
+
+The primary review input is `taskplane improvement register — rev 2 — 2.17.14
+@ 1464432`, specifically B1–B4, P1–P2, S1–S2, S4, S7, and V1–V5. The human
+has required quick-sweep lens evidence only for this work: no deep lens worker
+may be dispatched or promoted, and any substantive quick finding still blocks
+or returns the affected work for correction.
 
 ## In scope
 
-- Stable stage entities for Product, Design, Build, Review, Evaluation, and
-  other governed stage kinds.
-- Explicit lineage, requirement/design revisions, bounded inputs, independent
-  execution trees, and exactly one terminal outcome per stage entity.
-- Terminal `done`, `closed`, and `discarded` semantics with evidence or
-  attributable reasons and no silent reactivation.
-- Versioned handoff manifests and explicitly selected content-addressed
-  artifacts as the only successor context from predecessor stages.
-- Non-build terminalization without an implementation stage.
-- Parent-to-children split semantics with explicit artifact subsets,
-  dependencies, budgets, and isolated child lifecycles.
-- An active-stage pointer that is only a projection over immutable stage
-  history and lineage.
-- Atomic, idempotent terminalization, handoff, split, resume, reconnect, and
-  retry behavior.
-- Bounded status, dashboard, review, sign-off, and Retro projections.
-- Successor startup whose payload, work, and token demand do not scale with
-  irrelevant predecessor execution history.
-- Lossless migration from singleton loop records, preserving ambiguity as an
-  explicit unknown state rather than guessing.
+The work is delivered in this order:
+
+1. Establish a fresh governed baseline from current `main`, remove stale Plan
+   projections from active authority, refresh the graph, and prove that prior
+   committed Design artifacts and external knowledge evidence were not altered.
+2. Correct B1 and B2, declare and enforce the supported CPython range, and add
+   P2 fail-fast compilation/import checks before filesystem mutation or tests.
+3. Surface B3 graph degradation and B4 known CLI errors cleanly, add the V1
+   zero-token evaluation-corpus CI gate, and enforce P1: push only after these
+   gates and the supported-version checks are green.
+4. Add the S4/S7 import-cycle ratchet before removing the S1 and S2 dependency
+   edges; report the resulting strongly connected components and prevent new
+   modules from silently joining them.
+5. Add V2 repeated model-evaluation sampling, V3 incomplete-work fixtures, V4
+   graph edges for evaluation corpora, and V5 seeded-failure catch-rate
+   reporting with sample size and model identity.
+
+Across all five waves, governed review uses quick sweeps only. There is no
+quick-to-deep promotion path for this requirement.
 
 ## Out of scope
 
-- Reusing or transferring live agents, conversations, event logs, tool
-  transcripts, leases, process state, or mutable worktrees between stages.
-- Reopening or rewriting a terminal stage, changing a predecessor outcome, or
-  allowing one child to mutate parent or sibling history.
-- Automatically creating Build when Product, Design, Review, Evaluation, or
-  another non-build stage closes or is discarded.
-- Replacing content-addressed artifacts with unversioned paths, implicit latest
-  state, whole predecessor directories, or model-selected hidden context.
-- Changing `R-0003` enforcement, collision screening, ReviewKernel provenance,
-  safe worktree-cleanup eligibility, final human sign-off, or orchestrator-only
-  gate authority.
-- A new distributed scheduler, remote artifact service, source-control model,
-  dependency-graph redesign, lens-catalog redesign, or release publication.
-- Guessing terminal outcomes or lineage during migration when legacy evidence
-  is missing or contradictory.
-- Loading predecessor execution trees merely to render status, dashboards,
-  review, sign-off, or Retro.
+- Package moves or renames, including S3 and the proposed foundation/kernel/
+  graph/knowledge/review/orchestration/render/CLI package layout.
+- Broad component partitioning or impact-walk redesign (S5), ownership redesign
+  of the orchestration core (S6), or arbitrary module-size targets.
+- Schema consolidation or a schema registry (M1).
+- Workspace/repository relocation identity (B5) and plugin install identity or
+  stable bundle naming (B6).
+- Model-tier observation or routing policy changes (M2).
+- Attestation or merge-boundary trust roots (E1), MCP enforcement surfaces
+  (E2), filesystem/OS isolation (E3), or coordination-cost taxonomy (E4).
+- Any other sixth-wave architecture or security bet, including broad contract
+  or persistence-schema redesign.
+- Deep lens dispatch, deep-lens promotion, or treating absence of a deep pass as
+  permission to ignore a substantive quick-sweep finding.
+- Live-model spending in ordinary push/pull-request CI; scheduled or explicitly
+  invoked live evaluation remains separate from the zero-token corpus gate.
+- Claiming seeded-failure catch-rate as production defect rate, universal model
+  reliability, or proof that unseeded failures cannot occur.
+- Publishing, release tagging, marketplace installation, or destructive remote
+  history changes beyond the explicit green-CI push boundary.
 
 ## Functional requirements
 
-1. Every governed stage is a stable entity with its own id, stage kind,
-   requirement revision, predecessor or parent links, bounded input manifest,
-   independent execution tree, and one terminal lifecycle outcome.
-2. Terminal outcomes distinguish completed deliverables (`done`), attributable
-   no-further-work decisions (`closed`), and attributable non-consumable results
-   (`discarded`); terminal entities cannot silently become active again.
-3. A successor always creates a new execution tree and receives only a
-   versioned manifest plus explicitly selected content-addressed artifacts.
-4. Every handoff identifies the producer and its outcome, requirement/design
-   revisions, target/commit when applicable, contracts, deliverables, evidence,
-   artifact fingerprints, exclusions, and continuation authority.
-5. Non-build work may end closed or discarded without creating an implementation
-   stage while retaining addressable audit artifacts.
-6. Splitting terminalizes the parent with an attributable split reason and
-   creates independently addressable children with bounded artifact subsets,
-   dependencies, budgets, and lifecycles.
-7. The active-stage pointer remains a replaceable projection; lifecycle actions
-   append or transition the addressed entity without reclassifying history.
-8. Terminalization, handoff creation, split creation, reconnect, duplicate event,
-   crash recovery, and retry are atomic and idempotent.
-9. Human and machine status surfaces render current stage, predecessor outcome,
-   handoff, and child lineage from bounded summaries alone.
-10. Default successor startup remains bounded and invariant as irrelevant
-    predecessor history grows by orders of magnitude.
-11. Legacy singleton loop records migrate without losing governed records or
-    inventing lifecycle facts that the evidence cannot prove.
+1. The governed baseline identifies one fresh run, current repository revision,
+   current graph fingerprint, and preserved prior Design/knowledge evidence.
+2. Every shipped Python and hook entry point either parses and runs on every
+   documented supported CPython minor or refuses before mutation with one named,
+   actionable compatibility error.
+3. Graph scanning and downstream gates expose degradation structurally and make
+   strict degradation a nonzero failure.
+4. User-facing CLI commands translate known engine refusals into a clean
+   headline and recovery action, retaining tracebacks only for an explicit debug
+   path.
+5. CI runs the zero-token evaluation corpus and fails on corpus regression before
+   release or push completion is accepted.
+6. A versioned import-cycle policy measures the real file-level graph, blocks
+   bound growth, and lands before the declared dependency-edge cuts.
+7. Live-model evaluation supports repeated trials, threshold comparison, and
+   per-trial evidence keyed by scenario and model version.
+8. The evaluation corpus includes seeded incomplete-work failures and participates
+   in the dependency graph so relevant governance changes route impact to it.
+9. Retro or dashboard output reports seeded-failure catch-rate, sample size,
+   threshold, scenario set, and model identity without overstating the metric.
+10. All applicable lens evidence for this requirement is produced by quick
+    sweeps only; a substantive quick finding blocks or returns the work for
+    correction without dispatching a deep worker.
 
 ## Acceptance criteria
 
-1. Every stage entity has a stable stage id, requirement revision, stage kind, parent or predecessor links, bounded input manifest, independent execution tree, and exactly one terminal outcome of done, closed, or discarded.
-2. Done requires the declared deliverables and completion evidence; closed requires an attributable reason explaining why no further work is required; discarded requires an attributable reason explaining why its results must not be consumed. No terminal entity can silently return to active.
-3. Starting a next stage creates a new execution tree and consumes only a versioned manifest plus explicitly selected content-addressed artifacts from predecessor stages; prior agents, conversations, event logs, tool transcripts, leases, and runtime state are not inherited as context.
-4. A handoff manifest records producer stage id and outcome, requirement and design revisions, target and commit identity where applicable, contracts, deliverables, evidence references, artifact fingerprints, exclusions, and the actor and time authorizing continuation.
-5. Product, Design, Review, Evaluation, and other non-build work can terminate closed or discarded without creating an implementation stage, while their retained artifacts remain addressable for audit or later explicit reuse.
-6. Splitting a deliverable closes the parent with a split reason and creates two or more independently addressable child stage entities with explicit artifact subsets, dependencies, budgets, and lifecycles; one child outcome cannot mutate sibling or parent history.
-7. The active-stage pointer is a replaceable projection only. Starting, resuming, splitting, or terminalizing a stage never overwrites or reclassifies a predecessor entity, and history lists every terminal and active entity with lineage.
-8. Crash, duplicate event, reconnect, and retry fixtures prove stage terminalization, handoff creation, and split creation are atomic and idempotent, with no duplicate child, lost artifact, reopened terminal stage, or ambiguous active pointer.
-9. Dashboard, status, review, sign-off, and Retro show the current stage, predecessor outcome, artifact handoff, and child lineage from bounded summaries without loading predecessor execution trees.
-10. As irrelevant predecessor history grows from ten to one hundred thousand events, the default successor startup payload remains byte-identical and bounded to the manifest plus explicitly selected artifacts; startup work and token use do not scale with predecessor runtime history.
-11. A migration converts singleton loop records into stage entities without losing requirements, tasks, decisions, evidence, commits, reviews, or audit history; ambiguous legacy state is preserved with an explicit unknown reason rather than guessed as pending, done, closed, or discarded.
+1. **Fresh baseline and preservation.** A baseline verification records the
+   current `main` revision, fresh governed run id, and refreshed graph
+   fingerprint; confirms no stale `plan/**` payload or obsolete run pointer is
+   active; and byte/fingerprint comparisons prove previously committed
+   `design/**` and external knowledge evidence are unchanged.
+2. **Supported Python execution.** CI proves all shipped Python modules and hook
+   entry points compile, import, and execute representative version, entry,
+   graph, status, and evaluation-corpus flows on CPython 3.10, 3.11, 3.12, and
+   3.13; if any minor is intentionally unsupported, the same matrix proves it
+   refuses nonzero before filesystem mutation and the documented support range
+   matches.
+3. **B1 regression closed.** A focused compatibility fixture compiles
+   `taskplane/stage_entities.py` and imports every direct consumer on each
+   supported minor, and the fixture fails against the 2.17.14 multiline
+   f-string defect.
+4. **B2 fails early and cleanly.** A deliberately unparseable stage dependency
+   is detected at entry/startup rather than first lineage validation; an
+   executable fixture asserts one named Taskplane compatibility error, no raw
+   traceback in normal mode, and no created or changed run, graph, contract,
+   review, or requirement state.
+5. **P2 is ordered before tests.** Workflow inspection asserts that every
+   supported Python matrix leg runs a repository-wide compile/import gate before
+   its test step, and a seeded syntax error makes that leg fail without running
+   the tests.
+6. **B3 degradation is visible and gateable.** With one unparseable graph module,
+   graph-scan JSON and text name the module and reason and mark `degraded=true`;
+   the normal documented fail-open mode remains honest, while strict scan,
+   Design/Plan readiness, and applicable Review/DoD fixtures refuse nonzero.
+7. **B4 CLI errors are actionable.** A parameterized CLI fixture covers every
+   known public engine-error class and asserts normal output contains a concise
+   headline plus executable recovery action and no Python traceback; an
+   explicit debug invocation retains diagnostic traceback access.
+8. **V1 zero-token corpus gates CI.** The push/pull-request workflow invokes
+   `scripts/ci_evals.py --corpus` without model credentials or network/model
+   calls; an intentionally failing corpus fixture fails the job and a valid
+   corpus passes deterministically.
+9. **P1 green-CI push boundary.** The exact commit accepted as pushed has no
+   local commits ahead of `origin/main`, and required checks for criteria 2–8
+   are green for that same SHA; automation or a release record cannot describe
+   an earlier local-only result as the pushed green result.
+10. **S4/S7 ratchet precedes cuts.** Repository history and CI configuration
+    prove the import-cycle measurement/bound is active before any S1/S2 edge cut;
+    a fixture that adds a module to an existing cycle or exceeds a declared SCC
+    bound fails and reports the affected modules, edges, and measured size.
+11. **S1 graph edges are absent.** File-level import-graph assertions prove
+    `taskplane/depgraph.py` and `taskplane/decompose.py` no longer import one
+    another in either direction or scope, and shared graph data has one
+    non-circular contract consumed by `depgraph`, `decompose`, and
+    `lens_signals` without changing their externally observed payload meaning.
+12. **S2 single-call edges are absent.** Static import assertions prove
+    `taskplane/lens.py` has no import edge to `taskplane/review.py` and
+    `taskplane/taskplane_lite.py` has no import edge to
+    `taskplane/depgraph.py`; focused behavior fixtures prove the former call
+    results remain available through explicit inputs or registered boundaries.
+13. **Post-cut cycle evidence is honest.** The ratchet emits the complete SCC
+    inventory before and after S1/S2, including the orchestration, lens, and
+    collision/regression/review-evidence/stage-handoff/taskplane-lite cycles;
+    checked-in expectations use measured current values rather than the stale
+    2.17.14 estimates, and CI blocks any unapproved growth.
+14. **V2 repeated sampling works.** An executable model-eval fixture runs ten
+    deterministic fake trials with seven passes, persists ten distinct
+    per-scenario/per-model-version results, reports pass rate `0.7`, and fails a
+    `0.9` threshold; invalid repeat counts, thresholds, and missing trials fail
+    with clean errors.
+15. **V3 catches incomplete work.** The negative corpus contains at least three
+    executable seeded cases: only three of five acceptance criteria completed,
+    a silently ignored build error, and a test deleted instead of fixed; the
+    harness refuses each case for the intended incomplete-work reason rather
+    than a generic workflow-order failure.
+16. **V4 corpus impact is connected.** Graph fixtures prove that a change to at
+    least one governance/evaluation engine file lists the relevant `evals/*`
+    corpus modules in impact and routes their validation, while unrelated
+    product changes do not acquire a catch-all corpus blast radius.
+17. **V5 reports the bounded claim.** Given a known mixture of caught and missed
+    seeded failures, Retro or dashboard machine, Markdown, and text projections
+    agree on the label `seeded-failure catch-rate`, numerator, denominator,
+    sample size, threshold, scenario set, model id/version, and evaluation
+    revision; zero-sample input reports unavailable rather than 0% or 100%.
+18. **Quick-only review policy is enforced.** Every governed lens dispatch
+    manifest for these waves contains only quick-sweep slots and no `deep.*`
+    slot or promotion; a seeded substantive quick finding prevents the affected
+    gate from passing and returns it for correction without creating a deep
+    worker.
 
 ## Non-functional requirements
 
-- `security`: Stage identity, revisions, lineage, handoff authorization, artifact
-  selection, and fingerprints are authenticated and least-privilege; successors
-  cannot inherit undeclared runtime context, consume discarded results, rewrite
-  terminal history, or bypass existing orchestrator and final-signoff authority.
-- `architecture`: One canonical stage-entity lifecycle, artifact-handoff
-  manifest, and delivery-lineage model serve every stage kind and projection;
-  the active pointer, dashboards, adapters, and legacy readers never become
-  competing sources of truth.
-- `data-safety`: Terminal outcomes, lineage, artifacts, exclusions, evidence,
-  splits, budgets, decisions, commits, reviews, and audits are immutable or
-  append-only as appropriate and survive crashes, retries, migration, closure,
-  and discard without loss, duplication, or silent reinterpretation.
-- `sre`: Lifecycle transitions, handoff creation, split creation, retries,
-  reconnects, and migration are atomic, idempotent, crash-recoverable, bounded,
-  and observable; a terminal entity never reopens through replay.
-- `dba`: Persisted entity, lineage, pointer, manifest, and migration schemas are
-  versioned and indexed for direct current-stage and lineage lookup; migration
-  is resumable and preserves explicit unknowns instead of lossy coercion.
-- `integrability`: Versioned stage, handoff, and lineage contracts remain
-  semantically portable across Product, Design, Build, Review, Evaluation,
-  status, dashboard, sign-off, Retro, supported hosts, and legacy readers.
-- `scalability`: Successor startup and default projections read only bounded
-  manifests, summaries, and selected artifacts; payload bytes, startup work,
-  and token use remain independent of predecessor event-history size through at
-  least one hundred thousand irrelevant events.
-- `cost-finops`: Stage transitions do not reload predecessor conversations,
-  logs, tools, leases, or execution trees; retained audit history does not add
-  model tokens or repeated runtime work to normal successor startup.
-- `privacy-compliance`: Handoffs include only explicitly declared artifacts and
-  minimum attributable metadata; conversations, tool transcripts, unrelated
-  logs, secrets, credentials, and personal data do not cross stage boundaries
-  unless a separately authorized artifact contract requires them.
-- `accessibility`: Dashboard, status, review, sign-off, and Retro expose current
-  stage, predecessor outcome, handoff, split lineage, and unknown migration
-  states with semantic labels, readable text independent of color, keyboard-
-  accessible navigation, and complete machine/Markdown equivalents.
+- `security`: Compatibility, graph, evaluation, and CLI failures cannot bypass
+  existing authority checks, mutate governed state before refusal, weaken
+  strict gates, fabricate evidence, or turn the quick-only policy into silent
+  acceptance of findings.
+- `architecture`: The import graph has one versioned measurement and ratchet;
+  shared graph concepts have an acyclic ownership boundary; CI, CLI, graph,
+  evaluation, Retro, and dashboard projections do not become competing sources
+  of truth.
+- `data-safety`: Baseline cleanup and refresh preserve prior committed Design
+  artifacts, external knowledge, requirements, decisions, and audit evidence;
+  failed compatibility, graph, or evaluation gates leave governed state
+  unchanged and retain per-trial evidence.
+- `sre`: Deterministic compilation, degradation, cycle, corpus, and fake-trial
+  fixtures fail fast with actionable diagnostics; live sampling is bounded,
+  resumable, and never required for ordinary zero-token CI.
+- `integrability`: The supported-version contract, CLI error shape, graph
+  degradation fields, evaluation trial records, and seeded-failure metrics are
+  versioned and consistent across supported hosts, CI, status, Retro, and
+  dashboard consumers.
+- `cost-finops`: Push/pull-request evaluation is zero-token; live repeat count
+  is explicit and bounded; retries do not duplicate accepted trials; reports
+  expose sample count so added model spend is attributable.
+- `privacy-compliance`: Persisted trial and catch-rate evidence contains only
+  declared scenario/model metadata and bounded results; it excludes credentials,
+  unrelated transcripts, hidden host configuration, and personal/private
+  knowledge content.
+- `accessibility`: CLI, status, Retro, and dashboard projections expose errors,
+  degradation, thresholds, and catch-rate in semantic text independent of
+  color, with machine-readable equivalents and complete labels.
 
 ## Contract handoff
 
 - `scope_paths`:
-  - `taskplane/loop.py`
-  - `taskplane/track.py`
+  - `.github/workflows/ci.yml`
+  - `taskplane/stage_entities.py`
   - `taskplane/run_store.py`
-  - `taskplane/storage.py`
-  - `taskplane/retro.py`
-  - `taskplane/dashboard.py`
+  - `taskplane/depgraph.py`
+  - `taskplane/decompose.py`
+  - `taskplane/lens.py`
+  - `taskplane/lens_signals.py`
+  - `taskplane/review.py`
   - `taskplane/taskplane_lite.py`
   - `taskplane/tp.py`
+  - `taskplane/eval_*.py`
+  - `taskplane/runtime_eval.py`
+  - `taskplane/retro.py`
+  - `taskplane/dashboard.py`
   - `taskplane/tests/**`
-  - `docs/**`
-  - `skills/**`
-- `out_of_scope`: live runtime-context inheritance, terminal-stage reopening or
-  rewriting, implicit Build creation, unversioned/implicit artifact transfer,
-  R-0003 governance changes, new scheduler/artifact/source-control systems,
-  graph/lens redesign, guessed migration outcomes, and publication.
-- `dod.test_command`: `python3 -m pytest -q taskplane/tests`
-- dependency:
-  - `R-0003`
+  - `scripts/ci_evals.py`
+  - `scripts/eval_skills.py`
+  - `scripts/eval_record.py`
+  - `evals/**`
+  - `components.yaml`
+  - `docs/model-evaluation.md`
+  - `docs/EVAL-DoR.md`
+  - `docs/configuration.md`
+- `out_of_scope`: package moves/renames; broad component, schema, orchestration,
+  workspace identity, plugin identity, model-tier, attestation, MCP, persistence,
+  or physical-isolation redesign; deep lens dispatch/promotion; ordinary-CI
+  live model calls; release/tag/marketplace work; and all other sixth-wave bets.
+- `dod.test_command`: `python3 -m pytest -q taskplane/tests && python3 scripts/ci_evals.py --corpus`
+- dependencies: none
 - contracts:
-  - `contract:stage-entity-lifecycle`
-  - `contract:stage-artifact-handoff`
-  - `contract:delivery-lineage`
-  - `contract:consolidated-authorization`
-  - `contract:automatic-recovery`
-  - `contract:review-evidence-binding`
+  - `contract:runtime.python-compatibility`
+  - `contract:review.collection`
+  - `contract:status.run-observability`
+  - `contract:governance.enforcement-status`
+  - `contract:governance.delivery-authority`
 - `contract_relations`:
-  - provides `contract:stage-entity-lifecycle`
-  - provides `contract:stage-artifact-handoff`
-  - provides `contract:delivery-lineage`
-  - changes `contract:consolidated-authorization`
-  - changes `contract:automatic-recovery`
-  - consumes `contract:review-evidence-binding`
+  - changes `contract:runtime.python-compatibility`
+  - changes `contract:review.collection`
+  - changes `contract:status.run-observability`
+  - changes `contract:governance.enforcement-status`
+  - changes `contract:governance.delivery-authority`
+- context files:
+  - `.github/workflows/ci.yml`
+  - `taskplane/stage_entities.py`
+  - `taskplane/run_store.py`
+  - `taskplane/depgraph.py`
+  - `taskplane/decompose.py`
+  - `taskplane/lens.py`
+  - `taskplane/lens_signals.py`
+  - `taskplane/taskplane_lite.py`
+  - `taskplane/tp.py`
+  - `scripts/ci_evals.py`
+  - `scripts/eval_skills.py`
+  - `scripts/eval_record.py`
+  - `evals/**`
+  - `components.yaml`
+  - `docs/model-evaluation.md`
+  - `docs/EVAL-DoR.md`
 
-This is a material cross-stage lifecycle and artifact-boundary change. It
-requires Design before Plan or Build, with no blocking Product questions.
+This is a cross-module, contract-changing, sequencing-sensitive requirement.
+It requires Design before Plan or Build. It has no blocking Product questions.

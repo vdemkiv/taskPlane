@@ -268,6 +268,54 @@ def _codex_hooks_report(ws: str) -> dict:
     }
 
 
+def _existing_loop_step(ws: str) -> str | None:
+    """Return the bounded current loop step without making it hook truth.
+
+    An existing loop proves continuation context, not that Codex hooks are
+    live.  Onboarding uses this only to expose the already-supported,
+    attributable advisory path instead of demanding a restart.
+    """
+    try:
+        import loop as loop_runtime
+        state = loop_runtime.load(ws)
+    except Exception:
+        return None
+    if not isinstance(state, dict):
+        return None
+    step = str(state.get("step") or "").strip()
+    return step[:64] or None
+
+
+def _prefer_existing_loop_advisory(ws: str, projection: dict) -> dict:
+    """Offer current-task advisory continuation for an established loop.
+
+    ``ready`` stays false and the effective path stays ``transitioning``: no
+    runtime receipt exists, so live enforcement remains unproven.  Only the
+    recovery recommendation changes to the explicit ``--advisory --by`` path
+    that governed commands already validate and persist.
+    """
+    if projection.get("next_action") != "start_new_session":
+        return projection
+    step = _existing_loop_step(ws)
+    if not step:
+        return projection
+    updated = dict(projection)
+    effective = dict(updated.get("effective_path") or {})
+    effective["reason"] = (
+        "an existing Taskplane loop can continue in this Codex task with "
+        "explicit --advisory --by attribution; start a new task only when "
+        "live hook enforcement is required")
+    updated["effective_path"] = effective
+    updated["next_action"] = "continue_advisory"
+    updated["continuation"] = {
+        "available": True,
+        "loop_step": step,
+        "status": "advisory",
+        "requires": ["--advisory", "--by <human>"],
+    }
+    return updated
+
+
 def _host_capability_snapshot(ws: str, install_context: str | None = None):
     """One capability snapshot for all onboarding host-path decisions."""
     context = install_context or _install_context()
@@ -718,8 +766,12 @@ def _onboard_report(ws: str) -> dict:
     if codex_hooks is not None:
         snapshot = _host_capability_snapshot(ws)
         host_capabilities = host_caps.onboarding_projection(snapshot)
+        host_capabilities = _prefer_existing_loop_advisory(
+            ws, host_capabilities)
         native_effective = (host_capabilities["effective_path"]["value"]
                             == "native_effective")
+        advisory_continuation = (
+            host_capabilities.get("next_action") == "continue_advisory")
         if native_effective:
             checks[0]["hint"] = (
                 "The loaded native Taskplane hook governs this checkout; "
@@ -758,6 +810,10 @@ def _onboard_report(ws: str) -> dict:
                          "receipt; no restart is required." if
                          host_capabilities["loaded_session"]["status"] ==
                          "supported" else
+                         "Continue the existing loop in this task with "
+                         "explicit --advisory --by attribution; start a new "
+                         "task only if live enforcement is required." if
+                         advisory_continuation else
                          "Start one new Codex task only after the initial "
                          "hook installation or a host policy change."),
             },

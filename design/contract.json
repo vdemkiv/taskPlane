@@ -1,596 +1,253 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0004",
-  "title": "Stage-isolated delivery entities and bounded artifact handoffs",
-  "summary": "Add immutable RunStore-backed stage aggregate roots, content-addressed bounded handoff manifests, a replaceable active-stage projection, and a non-destructive singleton migration adapter while preserving all R-0003 authority, evidence, and fail-closed worktree-cleanup invariants.",
+  "requirement": "R-0006",
+  "title": "Five ratcheted remediation waves for compatibility, observability, cycles, and evaluation confidence",
+  "summary": "Deliver R-0006 as five ordered waves that establish a preserved baseline and quick-only review policy, ratchet CPython compatibility before tests or mutation, expose graph/CLI/CI truth, land an import-cycle bound before four edge cuts, and add bounded repeated evaluation plus incomplete-work and seeded-failure evidence while deferring every wave-six architecture and security bet.",
   "current_state": {
-    "summary": "The product persists one mutable loop.json, track switching moves that singleton record, RunStore v3 already supplies revision-checked atomic manifests and R-0003 receipts, review_evidence already supplies confined content-addressed artifacts, and current status/Retro paths can read singleton or full-trace state. There is no independently addressable stage aggregate, immutable lineage, split transaction, bounded inter-stage manifest, or conservative singleton migration.",
+    "summary": "The active run graph contains only R-0006 and five recorded contract edges with no scanned source modules; CI tests 3.10-3.12 without a preceding compile/import gate or eval corpus; stage_entities contains a 3.12-only multiline f-string; run_store imports it lazily at copied seams; decomposition degradation is retained internally but not completely projected; the CLI has one partial clean-error boundary; four deferred imports form the selected S1/S2 cuts; eval recording is single-trial; and eval corpora have no selective graph edges or catch-rate projection.",
     "sources": [
-      "taskplane/loop.py: singleton loop state, transition contracts, atomic loop.json save",
-      "taskplane/track.py: common-lock singleton loop.json move/restore",
-      "taskplane/run_store.py: taskplane.run/v3 revision-checked atomic commit, journal, and R-0003 receipts",
-      "taskplane/review_evidence.py: confined immutable content-addressed artifact references",
-      "taskplane/storage.py: canonical external run roots and exact managed-worktree registrations",
-      "taskplane/loop_status.py: singleton human/status read model",
-      "taskplane/retro.py: current full trace-event read path",
-      "taskplane/dashboard.py: current loop and review projections",
-      "docs/state-spec.md: persisted loop/track and runtime placement contract",
-      "taskplane/tests/test_track_retro.py and taskplane/tests/test_v230_loop.py: singleton track safety regression floors",
-      "taskplane/tests/test_artifact_references.py: immutable artifact integrity regression floor"
+      "active run graph.json: fingerprint e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af, six nodes, five recorded edges, no source modules/scanned_head",
+      ".github/workflows/ci.yml: CPython 3.10/3.11/3.12 matrix runs pytest without repository compile/import and contains no ci_evals.py --corpus invocation",
+      "taskplane/stage_entities.py:1742-1744: PEP-701 multiline f-string expression; python3.11 py_compile fails",
+      "taskplane/run_store.py:275-278, 728-731, 854-857, 987-990: copied lazy stage_entities imports catch only ImportError",
+      "taskplane/decompose.py:61-65 and 688-795: fail-open contract plus degraded/error statistics",
+      "taskplane/depgraph.py:1418-1467: decomposition import/catch and public scan persistence/trace seam",
+      "taskplane/tp.py:5349-5445 and 7161-7203: graph CLI adapter and current clean/error/debug boundary",
+      "taskplane/lens.py:1312-1317 and taskplane/taskplane_lite.py:2431-2441: single deferred review and depgraph call seams; taskplane/taskplane_lite.py:2774-2778 is the fourth direct production stage_entities consumer",
+      "taskplane/decompose.py:209,220,630,653,666,703 and taskplane/depgraph.py:1424: graph/decomposition/lens deferred imports",
+      "scripts/ci_evals.py:406-451 and 1486-1487: deterministic zero-token corpus implementation",
+      "scripts/eval_skills.py:489-585 and scripts/eval_record.py:1395-1462: one driver call and no repeat/threshold CLI",
+      "components.yaml and evals/**: exclusions exist but no corpus-to-engine dependency map",
+      "taskplane/retro.py and taskplane/dashboard.py: no seeded-failure catch-rate projection",
+      "Git revision 1464432a8b20620852ac23831517cdb28bc77206: prior R-0004 design blobs SHA-256 a5a682b3ebcefb6081b9600423ee0f8307ae0e56b21022626c84b948cabef5d8 and 577ae5048ceb0f1047c6cf691e1b4163351a016f99b711419b9be8614263c154"
     ]
   },
   "alternatives": [
     {
-      "id": "singleton-extension",
-      "name": "Extend singleton move and restore",
-      "description": "Add lifecycle and handoff fields to loop.json and teach track.py to move a larger set of per-stage files.",
+      "id": "independent-patches",
+      "name": "Independent patches in one merge",
+      "description": "Patch the parse error, warning, CI call, deferred imports, and eval flags independently without cross-wave evidence contracts or an enforced landing sequence.",
       "tradeoffs": {
-        "gains": [
-          "Smallest superficial code and CLI change",
-          "Reuses the existing common loop lock"
-        ],
-        "costs": [
-          "A moved mutable record is not an independently addressable immutable aggregate",
-          "Split children still share one mutable history and one context-bearing loop record",
-          "Restore can reclassify predecessor state and cannot prove bounded successor startup"
-        ],
-        "revisit_when": "R-0004 is narrowed to strictly sequential single-child execution with no immutable lineage, split, or bounded-context requirements."
+        "gains": ["Smallest apparent diff", "Fewest new records and adapters"],
+        "costs": ["Cannot prove the cycle ratchet preceded the cuts", "Allows local green, degraded graph, and quick-to-deep drift to be misreported", "Repeats the register's observed defect-regeneration pattern"],
+        "revisit_when": "R-0006 is narrowed to one isolated defect with no sequencing, graph, exact-SHA, sampling, or review-depth acceptance criteria."
       }
     },
     {
-      "id": "runstore-stage-aggregates",
-      "name": "RunStore immutable stage aggregates with projection adapter",
-      "description": "Persist content-addressed stage and handoff objects, atomically index their heads/lineage/operation receipts in RunStore v4, derive a replaceable active projection, and temporarily adapt legacy loop/track readers.",
+      "id": "five-ratcheted-waves",
+      "name": "Five contract-ratcheted waves",
+      "description": "Extend incumbent preflight, graph, CLI, review, evaluation, Retro, dashboard, and CI seams; add each quality gate before dependent changes; introduce only focused graph-primitives and evaluation-sampling modules.",
       "tradeoffs": {
-        "gains": [
-          "Reuses existing revision checks, locks, atomic replacement, canonical run roots, and artifact verification",
-          "Makes terminal history, successors, and split children immutable and independently addressable",
-          "Makes successor startup and status depend only on bounded manifests and summaries"
-        ],
-        "costs": [
-          "Requires a deliberate v3-to-v4 migration and temporary dual-reader",
-          "Adds three focused domain modules and explicit projection-repair semantics"
-        ],
-        "revisit_when": "Multiple distributed writers or arbitrary temporal replay queries require an event log as the primary source of truth."
+        "gains": ["Each later wave is protected by already-landed executable gates", "Wave-local rollback and exact acceptance traceability", "Keeps package/schema/security redesign outside the release-blocking repair"],
+        "costs": ["Requires multiple ordered commits and additive records", "Live sampling costs an explicit bounded number of model calls", "Ratchet and impact-map expectations become maintained artifacts"],
+        "revisit_when": "All five waves are green and a separately approved wave-six requirement settles package, component, schema, identity, and trust-boundary changes."
       }
     },
     {
-      "id": "event-sourced-stage-graph",
-      "name": "Full event-sourced stage graph",
-      "description": "Make lifecycle, split, handoff, and projection changes append-only events and rebuild stage aggregates through replay and snapshots.",
+      "id": "architecture-first",
+      "name": "Broad architecture and security redesign first",
+      "description": "Move packages, centralize schemas, and change identity/attestation/isolation before repairing the registered defects.",
       "tradeoffs": {
-        "gains": [
-          "Rich temporal queries and a complete append-only transition stream",
-          "Natural extension point for future multi-writer coordination"
-        ],
-        "costs": [
-          "Requires ordering, replay, upcaster, snapshot, compaction, and migration governance",
-          "Creates new paths for startup, status, or Retro to accidentally scale with predecessor history",
-          "Disproportionate to current local revision-checked writers"
-        ],
-        "revisit_when": "Multi-region writers, temporal queries, or event-level external integrations are accepted product requirements and snapshot governance is funded."
+        "gains": ["Could eliminate more cycles and reduce a later migration", "Could centralize several cross-cutting policies"],
+        "costs": ["Mixes high-risk redesign with a release-blocking parse failure", "Violates the explicit wave-six deferral", "Requires product and security decisions absent from R-0006"],
+        "revisit_when": "A separate wave-six Design Contract is approved after R-0006's compatibility, visibility, cycle, corpus, and evaluation ratchets pass."
       }
     }
   ],
-  "selected_approach": "runstore-stage-aggregates",
-  "decision": "Select RunStore-backed immutable stage aggregates because they are the smallest existing transaction model that can make stage identity, terminal outcomes, lineage, splits, bounded handoffs, retry idempotency, and conservative migration mechanically true. Immutable objects are written before one authoritative manifest revision updates their index, lineage, active projection, and operation receipt. The active pointer and legacy loop/track shapes are projections only. Full event sourcing is deferred because it adds replay and snapshot complexity without improving R-0004's bounded default reads.",
+  "selected_approach": "five-ratcheted-waves",
+  "decision": "Select five contract-ratcheted waves because this is the smallest approach that can prove ordering and prevent recurrence: baseline and quick-only authority first; compile/import before tests or mutation; structured graph/CLI/CI truth before pushed-green claims; a measured SCC ratchet in an earlier commit before explicit-input cuts; then bounded trials, completeness fixtures, selective corpus edges, and one catch-rate record. It reuses existing owners and adds four focused product modules plus explicit policy data.",
   "modules": {
     "existing": [
-      "taskplane/run_store.py",
-      "taskplane/storage.py",
-      "taskplane/loop.py",
-      "taskplane/track.py",
-      "taskplane/review_evidence.py",
-      "taskplane/loop_status.py",
-      "taskplane/dashboard.py",
-      "taskplane/retro.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/tp.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/repository.py",
-      "taskplane/worktree_cleanup.py",
-      "taskplane/tests",
-      "docs",
-      "skills"
+      ".github/workflows/ci.yml", "taskplane/preflight.py", "taskplane/stage_entities.py", "taskplane/run_store.py", "taskplane/depgraph.py", "taskplane/decompose.py", "taskplane/lens.py", "taskplane/lens_signals.py", "taskplane/review.py", "taskplane/review_progression.py", "taskplane/taskplane_lite.py", "taskplane/tp.py", "taskplane/loop.py", "taskplane/eval_drivers.py", "taskplane/eval_rubric.py", "taskplane/eval_scenario.py", "taskplane/runtime_eval.py", "taskplane/retro.py", "taskplane/dashboard.py", "scripts/ci_evals.py", "scripts/eval_skills.py", "scripts/eval_record.py", "evals", "taskplane/tests", "docs"
     ],
     "new": [
-      "taskplane/stage_entities.py",
-      "taskplane/stage_handoff.py",
-      "taskplane/stage_migration.py"
+      "taskplane/graph_primitives.py", "taskplane/graph_decomposition.py", "taskplane/import_cycles.py", "taskplane/eval_sampling.py", "evals/impact-map.json", "taskplane/tests/fixtures/import-cycles.json"
     ]
   },
   "contracts": [
-    {
-      "relation": "provides",
-      "id": "contract:stage-entity-lifecycle",
-      "description": "taskplane.stage/v1 gives each stage a stable identity, isolated execution root, immutable indexed head, active-to-exactly-one-terminal transition, and idempotent lifecycle receipt."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:stage-artifact-handoff",
-      "description": "taskplane.stage-handoff/v1 is the sole default inter-stage context boundary and carries bounded authority-bound metadata plus explicitly selected verified content-addressed artifacts."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:delivery-lineage",
-      "description": "The immutable indexed predecessor, parent, child, handoff, and outcome relations are authoritative; the active-stage projection is rebuildable and non-authoritative."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:consolidated-authorization",
-      "description": "Every stage start, resume, terminalization, handoff, split, migration resolution, and explicit artifact reuse binds the exact run, repository/worktree, requirement/design revision, actor/session, and authority revision and re-resolves authority before commit."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:automatic-recovery",
-      "description": "Recovery may replay an identical authorized operation receipt or rebuild the active projection; it cannot select outcomes, add artifacts, reopen terminal stages, manufacture children, approve gates, or broaden R-0003 cleanup."
-    },
-    {
-      "relation": "consumes",
-      "id": "contract:review-evidence-binding",
-      "description": "Handoffs reuse the existing immutable review artifact identity, digest, byte-count, confinement, and canonical-run storage checks so evidence remains verifiable after a worker tree is removed."
-    }
+    {"relation":"changes","id":"contract:runtime.python-compatibility","description":"CPython 3.10-3.13 is compiled and import-smoked before tests; stage dependency incompatibility becomes one named pre-mutation refusal."},
+    {"relation":"changes","id":"contract:review.collection","description":"R-0006 manifests contain quick sweep slots only; substantive quick findings return to correction with no promotion."},
+    {"relation":"changes","id":"contract:status.run-observability","description":"Graph quality, exact-SHA CI state, evaluation samples, and seeded-failure metrics share canonical records across machine/text/Markdown/dashboard projections."},
+    {"relation":"changes","id":"contract:governance.enforcement-status","description":"Canonical live|unproven|advisory status binds evidence/session ids and hook-path receipt; only live is enforced, while attributable advisory never masquerades as live."},
+    {"relation":"changes","id":"contract:governance.delivery-authority","description":"Local green is distinct from pushed green; only zero-ahead exact-SHA required-check evidence authorizes the latter label."},
+    {"relation":"provides","id":"contract:governance-baseline","description":"taskplane.governance-baseline/v1 binds fresh run/SHA/graph, Plan authority, prior Design objects, canonical external knowledge root plus trusted pre-cleanup closed manifest, and honest enforcement receipt."},
+    {"relation":"provides","id":"contract:graph-scan-quality","description":"taskplane.graph-scan-quality/v1 combines structured base-scanner per-file parse failures and optional decomposition failures; strict consumers refuse any producer degradation."},
+    {"relation":"provides","id":"contract:cli-error-envelope","description":"An exported public engine-error registry is the source of KNOWN_ENGINE_ERRORS and maps exact classes to headline, executable recovery, exit class, and debug cause."},
+    {"relation":"provides","id":"contract:import-cycle-ratchet","description":"taskplane.import-cycle-ratchet/v1 stores measured file-level SCC membership, edges, counts, LOC, and revision and allows only shrinkage without a new approved design."},
+    {"relation":"provides","id":"contract:evaluation-sample","description":"taskplane.evaluation-sample/v1 binds 1-100 distinct trials, scenario, observed model/version, threshold, completeness, pass count/rate, and evaluation revision."},
+    {"relation":"provides","id":"contract:evaluation-corpus-impact","description":"taskplane.evaluation-corpus-impact/v1 allows bounded canonical corpus prefixes and exact tracked engine files only; broad/wildcard/escaped/over-bound mappings degrade."},
+    {"relation":"provides","id":"contract:seeded-failure-catch-rate","description":"taskplane.seeded-failure-catch-rate/v1 counts unique seeded scenario/failure/model/trial/revision units, enforces sample_size=denominator, and omits numeric fields when unavailable at zero samples."}
   ],
   "graph": {
-    "baseline_fingerprint": "6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976",
+    "baseline_fingerprint": "e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af",
     "proposed_modules": [
-      "taskplane/run_store.py",
-      "taskplane/storage.py",
-      "taskplane/loop.py",
-      "taskplane/track.py",
-      "taskplane/review_evidence.py",
-      "taskplane/loop_status.py",
-      "taskplane/dashboard.py",
-      "taskplane/retro.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/tp.py",
-      "taskplane/runtime_eval.py",
-      "taskplane/repository.py",
-      "taskplane/worktree_cleanup.py",
-      "taskplane/tests",
-      "docs",
-      "skills",
-      "taskplane/stage_entities.py",
-      "taskplane/stage_handoff.py",
-      "taskplane/stage_migration.py"
+      ".github/workflows/ci.yml", "taskplane/preflight.py", "taskplane/stage_entities.py", "taskplane/run_store.py", "taskplane/depgraph.py", "taskplane/decompose.py", "taskplane/lens.py", "taskplane/lens_signals.py", "taskplane/review.py", "taskplane/review_progression.py", "taskplane/taskplane_lite.py", "taskplane/tp.py", "taskplane/loop.py", "taskplane/eval_drivers.py", "taskplane/eval_rubric.py", "taskplane/eval_scenario.py", "taskplane/runtime_eval.py", "taskplane/retro.py", "taskplane/dashboard.py", "scripts/ci_evals.py", "scripts/eval_skills.py", "scripts/eval_record.py", "evals", "taskplane/tests", "docs", "taskplane/graph_primitives.py", "taskplane/graph_decomposition.py", "taskplane/import_cycles.py", "taskplane/eval_sampling.py", "evals/impact-map.json", "taskplane/tests/fixtures/import-cycles.json"
     ],
     "proposed_edges": [
-      {
-        "from": "taskplane/stage_entities.py",
-        "to": "contract:stage-entity-lifecycle",
-        "kind": "provides",
-        "reason": "Owns stage schema, validation, terminal outcomes, split invariants, and idempotent transition commands."
-      },
-      {
-        "from": "taskplane/stage_handoff.py",
-        "to": "contract:stage-artifact-handoff",
-        "kind": "provides",
-        "reason": "Owns bounded canonical manifests, exclusions, selected artifact references, and startup serialization."
-      },
-      {
-        "from": "taskplane/stage_entities.py",
-        "to": "contract:delivery-lineage",
-        "kind": "provides",
-        "reason": "Owns immutable predecessor, parent, child, outcome, and handoff relations plus projection rebuild."
-      },
-      {
-        "from": "taskplane/stage_entities.py",
-        "to": "contract:consolidated-authorization",
-        "kind": "changes",
-        "reason": "Requires and revalidates exact authority bindings for every lifecycle mutation."
-      },
-      {
-        "from": "taskplane/stage_entities.py",
-        "to": "contract:automatic-recovery",
-        "kind": "changes",
-        "reason": "Restricts recovery to exact receipt replay and deterministic projection rebuild."
-      },
-      {
-        "from": "taskplane/stage_handoff.py",
-        "to": "contract:review-evidence-binding",
-        "kind": "consumes",
-        "reason": "Verifies selected evidence through the existing canonical artifact binding instead of trusting paths."
-      },
-      {
-        "from": "taskplane/stage_entities.py",
-        "to": "taskplane/run_store.py",
-        "kind": "runtime",
-        "reason": "Commits stage heads, lineage, active projection, and operation receipts under one expected revision."
-      },
-      {
-        "from": "taskplane/stage_entities.py",
-        "to": "taskplane/stage_handoff.py",
-        "kind": "runtime",
-        "reason": "Validates immutable handoffs before successor or split-child creation."
-      },
-      {
-        "from": "taskplane/stage_handoff.py",
-        "to": "taskplane/review_evidence.py",
-        "kind": "runtime",
-        "reason": "Reuses content-addressed artifact put, verify, read, digest, byte-count, and confinement semantics."
-      },
-      {
-        "from": "taskplane/stage_handoff.py",
-        "to": "taskplane/storage.py",
-        "kind": "runtime",
-        "reason": "Resolves immutable stage objects and artifacts only inside the canonical run root."
-      },
-      {
-        "from": "taskplane/stage_entities.py",
-        "to": "taskplane/storage.py",
-        "kind": "runtime",
-        "reason": "Allocates one confined, non-reused execution root per stable stage id."
-      },
-      {
-        "from": "taskplane/stage_migration.py",
-        "to": "taskplane/stage_entities.py",
-        "kind": "runtime",
-        "reason": "Creates deterministic v4 aggregates or explicit immutable legacy-unknown sentinels."
-      },
-      {
-        "from": "taskplane/stage_migration.py",
-        "to": "taskplane/run_store.py",
-        "kind": "runtime",
-        "reason": "Atomically commits migrated indexes, lineage, projections, receipts, and conservation evidence."
-      },
-      {
-        "from": "taskplane/stage_migration.py",
-        "to": "taskplane/review_evidence.py",
-        "kind": "runtime",
-        "reason": "Retains exact legacy source bytes and references as immutable migration artifacts before projection."
-      },
-      {
-        "from": "taskplane/loop.py",
-        "to": "taskplane/stage_entities.py",
-        "kind": "runtime",
-        "reason": "Routes new-stage loop transitions through authoritative lifecycle commands rather than mutating predecessor loop state."
-      },
-      {
-        "from": "taskplane/track.py",
-        "to": "taskplane/stage_migration.py",
-        "kind": "runtime",
-        "reason": "Uses the compatibility projection/reader and stops move/restore writes after a verified migration receipt."
-      },
-      {
-        "from": "taskplane/tp.py",
-        "to": "taskplane/stage_entities.py",
-        "kind": "runtime",
-        "reason": "Exposes start, resume, terminalize, split, history, and explicit reuse commands with machine-readable failures."
-      },
-      {
-        "from": "taskplane/taskplane_lite.py",
-        "to": "taskplane/stage_entities.py",
-        "kind": "runtime",
-        "reason": "Binds stage-specific active contracts, meters, authority, and execution roots without predecessor runtime inheritance."
-      },
-      {
-        "from": "taskplane/loop_status.py",
-        "to": "contract:delivery-lineage",
-        "kind": "consumes",
-        "reason": "Reads paged bounded stage/lineage summaries and never opens predecessor execution trees."
-      },
-      {
-        "from": "taskplane/dashboard.py",
-        "to": "contract:delivery-lineage",
-        "kind": "consumes",
-        "reason": "Renders current stage, predecessor outcome, handoff, child lineage, and pending action in text-first form."
-      },
-      {
-        "from": "taskplane/retro.py",
-        "to": "contract:delivery-lineage",
-        "kind": "consumes",
-        "reason": "Aggregates bounded terminal summaries instead of scanning predecessor trace trees."
-      },
-      {
-        "from": "taskplane/runtime_eval.py",
-        "to": "contract:stage-artifact-handoff",
-        "kind": "consumes",
-        "reason": "Projects exact stage, predecessor outcome, handoff, and lineage evidence into review and sign-off."
-      },
-      {
-        "from": "taskplane/run_store.py",
-        "to": "contract:stage-entity-lifecycle",
-        "kind": "stores",
-        "reason": "Persists immutable object references, bounded heads, and exactly-once lifecycle receipts in taskplane.run/v4."
-      },
-      {
-        "from": "taskplane/run_store.py",
-        "to": "contract:delivery-lineage",
-        "kind": "stores",
-        "reason": "Persists authoritative immutable lineage and the rebuildable active-stage projection."
-      },
-      {
-        "from": "taskplane/repository.py",
-        "to": "contract:consolidated-authorization",
-        "kind": "consumes",
-        "reason": "Re-resolves exact repository, worktree, target, and commit identity before lifecycle commit and preserves R-0003 cleanup proof."
-      },
-      {
-        "from": "taskplane/worktree_cleanup.py",
-        "to": "contract:automatic-recovery",
-        "kind": "consumes",
-        "reason": "Preserves the separate R-0003 idempotent cleanup replay and every exact-worktree retention negative."
-      },
-      {
-        "from": "skills",
-        "to": "contract:stage-artifact-handoff",
-        "kind": "consumes",
-        "reason": "Starts each product/design/build/review/retro delivery entity from the bounded manifest rather than predecessor conversation state."
-      },
-      {
-        "from": "docs",
-        "to": "contract:stage-entity-lifecycle",
-        "kind": "defines",
-        "reason": "Documents immutable lifecycle, terminal semantics, storage, migration, rollback, and legacy adapter behavior."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:stage-entity-lifecycle",
-        "kind": "validates",
-        "reason": "Runs lifecycle, terminal outcome, split isolation, retry, crash, reconnect, and migration-conservation matrices."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:stage-artifact-handoff",
-        "kind": "validates",
-        "reason": "Runs schema, authority, digest, byte/ref bound, exclusion, malicious-path, and explicit-reuse tests."
-      },
-      {
-        "from": "taskplane/tests",
-        "to": "contract:delivery-lineage",
-        "kind": "validates",
-        "reason": "Runs projection-rebuild, sibling immutability, paged history, bounded-summary, and 10-versus-100000-event tests."
-      }
+      {"from":"taskplane/preflight.py","to":"contract:governance-baseline","kind":"provides","reason":"Resolves the authoritative knowledge root and compares trusted pre-cleanup and current closed manifests plus fresh run/revision/graph/Plan evidence."},
+      {"from":"taskplane/preflight.py","to":"contract:governance.enforcement-status","kind":"changes","reason":"Projects live|unproven|advisory with evidence/session identity and verified hook-path receipt; only live is enforced."},
+      {"from":"taskplane/lens.py","to":"contract:review.collection","kind":"changes","reason":"Emits quick-only briefs and accepts pre-rendered context instead of importing review."},
+      {"from":"taskplane/review_progression.py","to":"contract:review.collection","kind":"changes","reason":"Returns substantive quick findings to correction when promotion is forbidden."},
+      {"from":"taskplane/review.py","to":"contract:review.collection","kind":"changes","reason":"Rejects deep slots/promotions in R-0006 collection manifests."},
+      {"from":"taskplane/stage_entities.py","to":"contract:runtime.python-compatibility","kind":"changes","reason":"Removes the PEP-701-only f-string expression."},
+      {"from":"taskplane/run_store.py","to":"contract:runtime.python-compatibility","kind":"changes","reason":"Owns eager stage dependency import and named pre-mutation compatibility refusal."},
+      {"from":".github/workflows/ci.yml","to":"contract:runtime.python-compatibility","kind":"validates","reason":"Runs CPython 3.10-3.13 compile/import before each test leg."},
+      {"from":"taskplane/depgraph.py","to":"contract:graph-scan-quality","kind":"provides","reason":"Base scanner emits structured per-file parse failures even without decomposition and combines all producer failures into strict quality."},
+      {"from":"taskplane/decompose.py","to":"contract:graph-scan-quality","kind":"provides","reason":"Supplies bounded per-module degraded modules and reasons while retaining fail-open normal scan."},
+      {"from":"taskplane/tp.py","to":"contract:cli-error-envelope","kind":"provides","reason":"Exports the public error registry, derives KNOWN_ENGINE_ERRORS exactly, maps normal refusals, and retains unexpected/debug tracebacks."},
+      {"from":".github/workflows/ci.yml","to":"scripts/ci_evals.py","kind":"runtime","reason":"Runs the zero-token corpus under env-i and pre-import process-wide socket/DNS refusal; proves connection failure and byte-identical repeated output."},
+      {"from":".github/workflows/ci.yml","to":"contract:governance.delivery-authority","kind":"validates","reason":"After fetch, requires HEAD=origin/main=checked_sha, zero ahead/behind, and exact-SHA required-check receipts."},
+      {"from":"taskplane/import_cycles.py","to":"contract:import-cycle-ratchet","kind":"provides","reason":"Measures AST file imports with Tarjan and enforces SCC member/edge/LOC non-growth."},
+      {"from":"taskplane/tests/fixtures/import-cycles.json","to":"contract:import-cycle-ratchet","kind":"defines","reason":"Stores measured before/after expectations and source revision."},
+      {"from":".github/workflows/ci.yml","to":"taskplane/import_cycles.py","kind":"runtime","reason":"Runs the ratchet and history-order check before structural tests."},
+      {"from":"taskplane/depgraph.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes graph payload/quality types while retaining scan(ws,decompose=False) compatibility."},
+      {"from":"taskplane/depgraph.py","to":"taskplane/graph_decomposition.py","kind":"runtime","reason":"Implements direct scan(ws,decompose=True) without importing the decompose compatibility module."},
+      {"from":"taskplane/decompose.py","to":"taskplane/graph_decomposition.py","kind":"runtime","reason":"Re-exports the mechanically moved derive algorithm as a backward-compatible facade."},
+      {"from":"taskplane/graph_decomposition.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes low-level graph payload, resolution, floor, and lens-signal primitives without higher-module imports."},
+      {"from":"taskplane/decompose.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes public graph value contracts without importing depgraph or lens_signals."},
+      {"from":"taskplane/lens_signals.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes the same non-circular graph data contract."},
+      {"from":"taskplane/tp.py","to":"taskplane/depgraph.py","kind":"runtime","reason":"CLI/review composition root exercises direct scan including decompose=True and supplies exact graph impact to taskplane_lite."},
+      {"from":"taskplane/retro.py","to":"taskplane/depgraph.py","kind":"runtime","reason":"Retro composition root preserves direct scan(ws,decompose=components-present) behavior."},
+      {"from":"taskplane/loop.py","to":"taskplane/depgraph.py","kind":"runtime","reason":"Loop refresh composition roots preserve direct base scans and supply complete graph impact to DoD."},
+      {"from":"taskplane/review.py","to":"taskplane/lens.py","kind":"runtime","reason":"Governed review renders and injects context_note into every dispatch_briefs call."},
+      {"from":"taskplane/tp.py","to":"taskplane/lens.py","kind":"runtime","reason":"Standalone review adapter renders and injects context_note explicitly."},
+      {"from":"taskplane/loop.py","to":"taskplane/taskplane_lite.py","kind":"runtime","reason":"Governed task DoD supplies graph_impacted plus graph quality; omission on a complete graph is an error."},
+      {"from":"taskplane/tp.py","to":"taskplane/taskplane_lite.py","kind":"runtime","reason":"Standalone DoD adapter supplies graph_impacted plus graph quality; sparse fallback requires proven sparse evidence."},
+      {"from":"scripts/eval_skills.py","to":"taskplane/eval_sampling.py","kind":"runtime","reason":"Creates bounded samples and one immutable record per trial."},
+      {"from":"scripts/eval_record.py","to":"contract:evaluation-sample","kind":"provides","reason":"Persists distinct per-scenario/per-observed-model-version trial evidence."},
+      {"from":"taskplane/eval_sampling.py","to":"contract:evaluation-sample","kind":"provides","reason":"Validates repeat/threshold/completeness and computes the bounded aggregate."},
+      {"from":"taskplane/eval_sampling.py","to":"contract:seeded-failure-catch-rate","kind":"provides","reason":"Counts unique scenario/failure/model/trial/revision units, enforces sample_size=denominator, and omits numeric zero-sample fields."},
+      {"from":"taskplane/eval_rubric.py","to":"evals","kind":"runtime","reason":"Scores the three intended incomplete-work refusal codes and existing corpus."},
+      {"from":"evals/impact-map.json","to":"contract:evaluation-corpus-impact","kind":"defines","reason":"Declares bounded canonical corpus prefixes to exact tracked engine files only."},
+      {"from":"taskplane/depgraph.py","to":"contract:evaluation-corpus-impact","kind":"provides","reason":"Rejects wildcard/directory-wide/escaped/duplicate/over-bound maps and emits selective validates edges."},
+      {"from":"taskplane/retro.py","to":"contract:seeded-failure-catch-rate","kind":"consumes","reason":"Projects the canonical bounded metric to machine, Markdown, and text."},
+      {"from":"taskplane/dashboard.py","to":"contract:seeded-failure-catch-rate","kind":"consumes","reason":"Renders the same labelled metric accessibly and without color dependence."},
+      {"from":"taskplane/dashboard.py","to":"contract:status.run-observability","kind":"changes","reason":"Projects graph quality, exact-SHA CI state, sample completeness, and catch-rate from their canonical records."},
+      {"from":"taskplane/tests","to":"contract:governance.enforcement-status","kind":"validates","reason":"Executes all 18 acceptance mappings, quick-only negative, and fail-closed state snapshots."},
+      {"from":"docs","to":"contract:runtime.python-compatibility","kind":"defines","reason":"Documents CPython 3.10-3.13 support and fail-fast recovery."},
+      {"from":"docs","to":"contract:seeded-failure-catch-rate","kind":"defines","reason":"Documents the bounded claim and separates it from reliability/production defect rate."}
     ],
-    "depth_policy": {
-      "local_depth": 3,
-      "boundary_mode": "contract-only",
-      "contract_depth": 1,
-      "requirement_depth": 1
-    },
+    "depth_policy": {"local_depth":3,"boundary_mode":"contract-only","contract_depth":1,"requirement_depth":1},
     "dor": [
-      {
-        "check": "Requirement identity, dependency, and exact acceptance surface are ready",
-        "evidence": "R-0004 is canonical, depends on resolvable R-0003, contains exactly 11 acceptance criteria, six required contract relations, and no open questions; R-0005 is not substituted."
-      },
-      {
-        "check": "Baseline graph and design overlay are pinned",
-        "evidence": "Captured graph fingerprint is 6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976 with 64 modules and 224 edges; the design proposes an overlay only at local depth 3, contract-only boundary, contract depth 1, requirement depth 1."
-      },
-      {
-        "check": "Current state is repository-grounded despite the inventory warning",
-        "evidence": "loop.py, track.py, run_store.py, storage.py, review_evidence.py, loop_status.py, retro.py, dashboard.py, state-spec.md, and focused regression tests are cited; no empty inventory claim is treated as evidence."
-      },
-      {
-        "check": "Aggregate ownership and atomic boundaries are settled",
-        "evidence": "stage_entities owns lifecycle/lineage, stage_handoff owns the sole default context boundary, stage_migration owns non-destructive conversion, and one RunStore revision owns heads/lineage/projection/operation receipt."
-      },
-      {
-        "check": "Numeric and negative boundaries are settled",
-        "evidence": "Manifest <=64 KiB, <=64 selected references, summary <=16 KiB, history page <=100; no predecessor runtime inheritance; no terminal reopen; explicit legacy unknown; and every R-0003 cleanup retention negative remains fail-closed."
-      },
-      {
-        "check": "Python solution-design reference is applied",
-        "evidence": "python-solution-design.md SHA-256 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7; Python 3.10-3.12, synchronous I/O, explicit locks/revisions, runtime boundary validation, clean-package checks, and failure injection are specified."
-      }
+      {"check":"Requirement and acceptance surface are ready","evidence":"R-0006 is canonical, has no dependencies or open Product questions, and contains exactly 18 criteria plus five changed contract relations."},
+      {"check":"Baseline graph limitation is explicit","evidence":"Fingerprint e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af has six recorded nodes/five edges and no source scan; wave 1 refresh is a blocking prerequisite to later impact claims."},
+      {"check":"Current premises are repository-grounded","evidence":"CI, syntax, lazy imports, decompose/depgraph, CLI, deferred edges, eval recorder/corpus, components, Retro/dashboard, and prior Git blobs are cited by path/line or immutable identity."},
+      {"check":"Wave ownership and order are settled","evidence":"Preflight/review own authoritative-root preservation and enforcement in wave 1; stage/run-store/exact tracked-Python CI wave 2; base depgraph/tp/no-egress CI wave 3; import_cycles/graph_primitives/graph_decomposition plus named composition roots wave 4; bounded eval mapping/sampling/reporting wave 5."},
+      {"check":"Numeric and identity boundaries are settled","evidence":"CPython 3.10-3.13; exact git-tracked Python set; local depth 3; repeat 1-100; threshold 0.0-1.0; complete unique trial units; SCC non-growth; map rows 1-32 exact files/128 total; sample_size=denominator; zero-sample numeric omission."},
+      {"check":"Review depth override is settled","evidence":"All R-0006 lens work is quick-only, substantive findings block/return, and no deep slot or promotion is permitted; Product/Design reasoning tier is not lens depth."},
+      {"check":"Python reference is applied","evidence":"python-solution-design.md SHA-256 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7; runtime/package, sync ownership, validation, concurrency, cleanup, and executable verification are dispositioned."}
     ],
     "dod": [
-      {
-        "check": "Realized modules, edges, contracts, and graph depth conform",
-        "evidence": "Engineering records every proposed module, all 31 proposed edges, all six contract relations, explicit evidence for scanner-invisible boundary edges, an updated graph scan after merge, and conformant design metadata with empty drift."
-      },
-      {
-        "check": "All 11 acceptance mappings pass without reinterpretation",
-        "evidence": "The exact criterion strings in acceptance_map each have a named design element and executable validation; requirement-store equality and one-to-one coverage are checked mechanically."
-      },
-      {
-        "check": "Atomic lifecycle, handoff, split, and recovery matrices pass",
-        "evidence": "Crash injection before/after immutable writes, manifest commit, and journal append plus duplicate/reconnect/retry/race fixtures prove no duplicate child, lost artifact, reopened terminal stage, or ambiguous projection."
-      },
-      {
-        "check": "Bounded context and read-model performance pass",
-        "evidence": "Equivalent 10- and 100000-event predecessors yield byte-identical startup payloads, identical selected-reference reads, zero predecessor-tree opens, stable startup/token work, bounded manifests/summaries, and paged history."
-      },
-      {
-        "check": "Migration conserves legacy knowledge and uncertainty",
-        "evidence": "Requirements, tasks, decisions, evidence, commits, reviews, audit history, and source bytes have before/after conservation proofs; ambiguity creates an explicit immutable unknown sentinel and never a guessed lifecycle."
-      },
-      {
-        "check": "R-0003 authority, evidence, and cleanup regression floors remain exact",
-        "evidence": "Existing enforcement/collision/evidence/merge/cleanup tests pass; stage terminalization never invokes cleanup; only exact registered managed linked worktrees with recorded tip ancestor of re-resolved primary main remain eligible. Dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked/reparse-point, path-mismatched, missing-ref, ambiguous-main, primary/main, merge-in-progress, evidence-needed, and last-moment-uncertain trees retain. No force, broader scope, branch/commit/requirement/design/plan/submission/test/review-evidence/audit/sign-off deletion occurs."
-      },
-      {
-        "check": "Cross-host, accessibility, privacy, and package quality hold",
-        "evidence": "Codex, Claude, Slack-capable, managed, and legacy goldens use identical stage/manifest semantics; machine and text-first projections expose outcomes/lineage/actions; redaction and hostile input tests pass; Python 3.10/3.11/3.12 and clean-wheel/plugin import/resource tests pass."
-      },
-      {
-        "check": "Rollout and rollback preserve immutable history",
-        "evidence": "Shadow migration comparison, new-run canary, bounded-reader cutover, and rollback fixtures prove no reverse collapse, terminal reopen, unknown-state guess, artifact deletion, authority weakening, or cleanup broadening."
-      }
+      {"check":"Every proposed module, edge, and contract is realized","evidence":"Review records all proposed overlay rows, scanner-visible edges after refresh, explicit evidence for contract-only edges, and zero unexplained drift at local depth 3."},
+      {"check":"All 18 acceptance mappings pass exactly","evidence":"Named fixtures/commands below execute once per canonical criterion and fail if their design element is absent or wrong."},
+      {"check":"Wave order and history are proven","evidence":"Wave gates are green sequentially; history shows the import-cycle policy commit passing before a later S1/S2 cut commit; final required checks bind one remote SHA."},
+      {"check":"Baseline preservation and enforcement truth pass","evidence":"Canonical knowledge-root pre-cleanup manifest matches current relative paths/bytes/digests with no missing/moved/unexpected/empty-tree substitution; enforcement is live or bounded attributable advisory and never mislabeled."},
+      {"check":"Compatibility and pre-mutation refusal pass","evidence":"CPython 3.10-3.13 compiles the exact tracked Python set including an outside-directory sentinel; closed production stage consumer set includes taskplane_lite; seeded broken dependency proves named refusal and byte-identical stores."},
+      {"check":"Graph, CLI, and corpus truth pass","evidence":"Base scanner reports parse failures with decompose off/on, strict readiness refuses all producers, registry equals KNOWN_ENGINE_ERRORS, unexpected errors retain traceback, and env-i/pre-import no-egress corpus is byte-deterministic and blocking."},
+      {"check":"Cycle inventory and composition cuts remain compatible","evidence":"Same AST/Tarjan scanner emits full before/after SCC evidence; direct depgraph.scan(...,decompose=True) goldens match; tp, loop, retro, review, and standalone/loop DoD caller audits prove explicit inputs and restrict sparse fallback."},
+      {"check":"Evaluation sampling and completeness pass","evidence":"Fake 7/10 sample reports 0.7 and fails 0.9; invalid/missing trials refuse; three incomplete-work fixtures fail for their intended reason."},
+      {"check":"Impact and catch-rate projections agree","evidence":"Only bounded canonical corpus prefixes/exact engine files route; broad globs and unrelated product/CLI/reporting files do not. Repeated-scenario arithmetic proves unique counted units, sample_size=denominator, and zero-sample numeric omission across projections."},
+      {"check":"Quick-only and wave-six boundaries hold","evidence":"Every dispatch manifest lacks deep slots/promotions, seeded quick findings return to correction, and no package/component/schema/identity/model-tier/attestation/MCP/isolation change appears."}
     ]
   },
   "acceptance_map": [
-    {
-      "criterion": "Every stage entity has a stable stage id, requirement revision, stage kind, parent or predecessor links, bounded input manifest, independent execution tree, and exactly one terminal outcome of done, closed, or discarded.",
-      "design_element": "taskplane.stage/v1 aggregate schema, immutable indexed heads, unique canonical execution roots, 64 KiB input bound, and active-to-one-terminal state machine in stage_entities.py.",
-      "validation": "Schema/property tests generate every kind/link/outcome combination; reject missing/duplicate identities, reused roots, missing revisions, oversized inputs, zero/multiple outcomes, and any terminal-to-active transition."
-    },
-    {
-      "criterion": "Done requires the declared deliverables and completion evidence; closed requires an attributable reason explaining why no further work is required; discarded requires an attributable reason explaining why its results must not be consumed. No terminal entity can silently return to active.",
-      "design_element": "Outcome-specific terminal guards, immutable terminal head, attributable actor/time/reason, discarded default_consumable=false, and no reopen command.",
-      "validation": "Outcome matrix verifies done rejects missing deliverables/evidence, closed/discarded reject absent attribution or reasons, discarded input is excluded by default, and all later transition attempts reject without head mutation."
-    },
-    {
-      "criterion": "Starting a next stage creates a new execution tree and consumes only a versioned manifest plus explicitly selected content-addressed artifacts from predecessor stages; prior agents, conversations, event logs, tool transcripts, leases, and runtime state are not inherited as context.",
-      "design_element": "Fresh per-stage execution root and dispatcher payload serializer that accepts only taskplane.stage-handoff/v1 plus verified selected refs and an explicit exclusion list.",
-      "validation": "Cross-host startup goldens and hostile fixture seed predecessor agents/transcripts/logs/leases/runtime/secrets; successor bytes contain none, root id differs, and only declared verified fingerprints resolve."
-    },
-    {
-      "criterion": "A handoff manifest records producer stage id and outcome, requirement and design revisions, target and commit identity where applicable, contracts, deliverables, evidence references, artifact fingerprints, exclusions, and the actor and time authorizing continuation.",
-      "design_element": "taskplane.stage-handoff/v1 canonical schema, 64 KiB/64-ref bounds, content fingerprint, authority binding, target applicability rule, and artifact verifier.",
-      "validation": "Canonical schema matrix requires every named field, conditional target/commit identity, exact contract relations, digest/bytes, exclusions and attribution; tamper, omission, path escape, oversize and stale-authority cases fail closed."
-    },
-    {
-      "criterion": "Product, Design, Review, Evaluation, and other non-build work can terminate closed or discarded without creating an implementation stage, while their retained artifacts remain addressable for audit or later explicit reuse.",
-      "design_element": "Stage-kind-independent terminal command, optional successor, immutable artifact retention, and separately authorized explicit fingerprint reuse that does not mutate the predecessor outcome.",
-      "validation": "Per-kind tests close/discard without a build child, verify zero active successor and retained artifact reads, reject default discarded consumption, and permit exact later reuse only with new actor/time/authority/reason."
-    },
-    {
-      "criterion": "Splitting a deliverable closes the parent with a split reason and creates two or more independently addressable child stage entities with explicit artifact subsets, dependencies, budgets, and lifecycles; one child outcome cannot mutate sibling or parent history.",
-      "design_element": "Single split_stage RunStore transaction, deterministic child ids, >=2 child guard, explicit subsets/dependencies/budgets, separate heads/roots, and parent closed reason_code=split.",
-      "validation": "Property/concurrency/crash tests cover 2..N children, duplicate retry, subset violations and races; compare parent/sibling fingerprints before and after one child terminalizes and assert only that child's head changes."
-    },
-    {
-      "criterion": "The active-stage pointer is a replaceable projection only. Starting, resuming, splitting, or terminalizing a stage never overwrites or reclassifies a predecessor entity, and history lists every terminal and active entity with lineage.",
-      "design_element": "Authoritative stage_heads/lineage index, rebuildable active_stage_projection with sorted ids/optional foreground, immutable predecessor heads, and cursor-paged history summaries.",
-      "validation": "Delete/corrupt projection and rebuild from heads; mutation sequence compares every predecessor fingerprint, detects ambiguity rather than choosing, and lists all active/terminal entities with exact parent/predecessor/child/handoff links."
-    },
-    {
-      "criterion": "Crash, duplicate event, reconnect, and retry fixtures prove stage terminalization, handoff creation, and split creation are atomic and idempotent, with no duplicate child, lost artifact, reopened terminal stage, or ambiguous active pointer.",
-      "design_element": "Expected run revision, request-fingerprinted operation id, write-object-before-index protocol, one atomic heads/lineage/projection/receipt commit, and receipt-authoritative replay.",
-      "validation": "Failure injection at every write/replace/journal boundary plus duplicate/reconnect/race fixtures assert one receipt, one semantic transition, exact artifact conservation, deterministic children, terminal immutability, and projection=heads equality."
-    },
-    {
-      "criterion": "Dashboard, status, review, sign-off, and Retro show the current stage, predecessor outcome, artifact handoff, and child lineage from bounded summaries without loading predecessor execution trees.",
-      "design_element": "<=16 KiB terminal summary, <=100-row cursor page, lineage_summary API, text-first renderers, and Retro aggregation over terminal metrics rather than trace scans.",
-      "validation": "Instrument file opens and assert each surface renders all named fields and pending actions from summaries while predecessor execution roots raise if opened; test page bounds, text-only parity, and corrupt-summary failures."
-    },
-    {
-      "criterion": "As irrelevant predecessor history grows from ten to one hundred thousand events, the default successor startup payload remains byte-identical and bounded to the manifest plus explicitly selected artifacts; startup work and token use do not scale with predecessor runtime history.",
-      "design_element": "Pure canonical startup serializer over the handoff object and selected refs only, with manifest/ref/byte/token telemetry and zero predecessor-tree dependency.",
-      "validation": "10-vs-100000-event benchmark asserts identical SHA-256 and bytes, same read count, zero predecessor-root opens, <=64 KiB manifest, <=64 refs, and stable startup work/token estimate within fixed measurement tolerance."
-    },
-    {
-      "criterion": "A migration converts singleton loop records into stage entities without losing requirements, tasks, decisions, evidence, commits, reviews, or audit history; ambiguous legacy state is preserved with an explicit unknown reason rather than guessed as pending, done, closed, or discarded.",
-      "design_element": "Idempotent stage_migration source fingerprint, immutable legacy source artifacts, conservation manifest, deterministic known projections, taskplane.legacy-unknown/v1 sentinel, and verified receipt before adapter cutover.",
-      "validation": "Golden and generative legacy fixtures compare before/after identity/count/fingerprint sets for every named record class, replay identically after crashes, and require explicit unknown_reason for ambiguity with no guessed lifecycle or lost source bytes."
-    }
+    {"criterion":"Fresh baseline and preservation: a baseline verification records the current main revision, fresh governed run id, and refreshed graph fingerprint; confirms no stale plan/** payload or obsolete run pointer is active; and byte/fingerprint comparisons prove previously committed design/** and external knowledge evidence are unchanged.","design_element":"contract:governance-baseline plus contract:governance.enforcement-status via taskplane/preflight.py","validation":"Resolve the canonical locator/project knowledge root and require a trusted pre-cleanup closed path/bytes/digest manifest; reject wrong/empty root, missing/moved/unexpected/non-lock entries, manifest-digest mismatch, stale Plan pointer, or prior Git blob drift. Assert live|unproven|advisory, evidence/session ids, hook-path receipt, live-only enforced label, and bounded attributable advisory handling."},
+    {"criterion":"Supported Python execution: CI proves all shipped Python modules and hook entry points compile, import, and execute representative version, entry, graph, status, and evaluation-corpus flows on CPython 3.10, 3.11, 3.12, and 3.13; if any minor is intentionally unsupported, the same matrix proves it refuses nonzero before filesystem mutation and the documented support range matches.","design_element":"contract:runtime.python-compatibility and .github/workflows/ci.yml matrix","validation":"On all four minors compile the exact NUL-safe git ls-files '*.py' set, assert closed production stage consumer imports, run entry/version/graph/status/stage/corpus flows in an isolated home, then tests; include tracked evals/corpus Python and compare docs to matrix."},
+    {"criterion":"B1 regression closed: a focused compatibility fixture compiles taskplane/stage_entities.py and imports every direct consumer on each supported minor, and the fixture fails against the 2.17.14 multiline f-string defect.","design_element":"taskplane/stage_entities.py precomputed resume request fingerprint and closed-consumer compatibility fixture","validation":"AST-discover production stage_entities imports and assert exact set run_store.py, loop.py, stage_migration.py, taskplane_lite.py; on 3.10-3.13 compile stage_entities and import every member, then require the 2.17.14 snippet to fail the regression fixture."},
+    {"criterion":"B2 fails early and cleanly: a deliberately unparseable stage dependency is detected at entry/startup rather than first lineage validation; an executable fixture asserts one named Taskplane compatibility error, no raw traceback in normal mode, and no created or changed run, graph, contract, review, or requirement state.","design_element":"TaskplaneCompatibilityError at one run_store eager import plus removal of four lazy seams and contract:cli-error-envelope","validation":"Statically assert all four run_store lazy imports are absent; copy a broken dependency into an isolated package, snapshot every governed store, start the stage entry, and assert named nonzero normal output/recovery, no traceback, and identical bytes; debug shows cause."},
+    {"criterion":"P2 is ordered before tests: workflow inspection asserts that every supported Python matrix leg runs a repository-wide compile/import gate before its test step, and a seeded syntax error makes that leg fail without running the tests.","design_element":"exact tracked-Python compile/import-before-pytest order in .github/workflows/ci.yml","validation":"Parse every matrix leg; seed syntax errors separately in taskplane and a tracked corpus/*.py outside the former directory subset, run with a test sentinel, and require compile failure/absent sentinel; add a new tracked .py and prove automatic inclusion."},
+    {"criterion":"B3 degradation is visible and gateable: with one unparseable graph module, graph-scan JSON and text name the module and reason and mark degraded=true; the normal documented fail-open mode remains honest, while strict scan, Design/Plan readiness, and applicable Review/DoD fixtures refuse nonzero.","design_element":"contract:graph-scan-quality from base depgraph scanner plus optional decomposition producer and strict consumers","validation":"Seed bad Python AST and run JSON/text normal+strict with decompose=False and True; assert per-file/module/parser/reason and degraded from the base producer in both, additive decomposition failures when enabled, normal success, and strict/readiness/review/DoD nonzero."},
+    {"criterion":"B4 CLI errors are actionable: a parameterized CLI fixture covers every known public engine-error class and asserts normal output contains a concise headline plus executable recovery action and no Python traceback; an explicit debug invocation retains diagnostic traceback access.","design_element":"contract:cli-error-envelope PUBLIC_ENGINE_ERROR_REGISTRY-derived KNOWN_ENGINE_ERRORS in taskplane/tp.py","validation":"Assert exact class-set equality registry=KNOWN_ENGINE_ERRORS; raise every registered class through normal/debug boundaries for headline/recovery/nonzero/no-normal-traceback/causal-debug-traceback; separately raise an unexpected exception and require exit 70 plus traceback."},
+    {"criterion":"V1 zero-token corpus gates CI: the push/pull-request workflow invokes scripts/ci_evals.py --corpus without model credentials or network/model calls; an intentionally failing corpus fixture fails the job and a valid corpus passes deterministically.","design_element":"env-i plus pre-import process-wide no-egress zero-token corpus CI job","validation":"Launch with only PATH/isolated HOME/locale/no-egress PYTHONPATH; prove socket connect and DNS lookup fail before scorer imports, assert no other credential/proxy/cloud/model env survives, compare two successful canonical outputs byte-for-byte, and require corrupted expected.json nonzero."},
+    {"criterion":"P1 green-CI push boundary: the exact commit accepted as pushed has no local commits ahead of origin/main, and required checks for the supported-version, compile/import, graph/CLI, and zero-token corpus criteria are green for that same SHA; automation or a release record cannot describe an earlier local-only result as the pushed green result.","design_element":"contract:governance.delivery-authority fetched equality and exact-check-SHA rule","validation":"With a local bare remote and fake receipts, fetch then reject ahead, behind, diverged, stale-ref, local-only, mismatched checked_sha, and missing/failing checks; accept only HEAD=refs/remotes/origin/main=checked_sha, both ahead/behind counts zero, all named checks green for that SHA."},
+    {"criterion":"S4/S7 ratchet precedes cuts: repository history and CI configuration prove the import-cycle measurement and bound are active before any S1/S2 edge cut; a fixture that adds a module to an existing cycle or exceeds a declared SCC bound fails and reports the affected modules, edges, and measured size.","design_element":"contract:import-cycle-ratchet in taskplane/import_cycles.py and ordered 4A/4B commits","validation":"Run CI history check to find passing policy commit before cuts; in temporary trees add one cyclic member and one internal edge/LOC growth and require named SCC modules/edges/counts/LOC nonzero failures."},
+    {"criterion":"S1 graph edges are absent: file-level import-graph assertions prove taskplane/depgraph.py and taskplane/decompose.py no longer import one another in either direction or scope, and shared graph data has one non-circular contract consumed by depgraph, decompose, and lens_signals without changing externally observed payload meaning.","design_element":"graph_primitives plus graph_decomposition algorithm owner and backward-compatible depgraph/decompose facades","validation":"AST-scan forbidden mutual imports; assert depgraph/decompose/lens_signals consume graph_primitives and higher modules are absent below it; run direct depgraph.scan(ws,decompose=True) and decompose.derive pre/post goldens from tp and retro fixture paths with identical payload meaning except additive quality."},
+    {"criterion":"S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries.","design_element":"review/tp → lens context-note and loop/tp → taskplane_lite graph-impact composition edges","validation":"AST-scan both forbidden imports; audit every governed review dispatch and DoD caller for explicit inputs; compare briefs/regression selection to goldens; permit sparse fallback only with supplied proven-sparse graph quality and fail omitted impact on complete/non-sparse graphs."},
+    {"criterion":"Post-cut cycle evidence is honest: the ratchet emits the complete SCC inventory before and after S1/S2, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles; checked-in expectations use measured current values rather than stale 2.17.14 estimates, and CI blocks unapproved growth.","design_element":"measured before/after taskplane.import-cycle-ratchet/v1 inventories","validation":"Generate both inventories with the same scanner from exact commit trees; assert named cycle families are present, expectations equal measured members/edges/LOC, and any upward edit without approved design fails CI."},
+    {"criterion":"V2 repeated sampling works: an executable model-eval fixture runs ten deterministic fake trials with seven passes, persists ten distinct per-scenario/per-model-version results, reports pass rate 0.7, and fails a 0.9 threshold; invalid repeat counts, thresholds, and missing trials fail with clean errors.","design_element":"contract:evaluation-sample via taskplane/eval_sampling.py and scripts/eval_skills.py","validation":"Run fake outcomes PPPPPPPFFF with repeat=10/threshold=.9; assert ten unique observed-model-bound records, complete 7/10, 0.7, nonzero threshold result; parameterize repeats 0/101, thresholds outside 0..1, duplicates, and missing trial."},
+    {"criterion":"V3 catches incomplete work: the negative corpus contains at least three executable seeded cases—only three of five acceptance criteria completed, a silently ignored build error, and a test deleted instead of fixed—and the harness refuses each for the intended incomplete-work reason rather than a generic workflow-order failure.","design_element":"incomplete-work evidence checks in eval_rubric plus three evals/negative fixtures","validation":"Execute each fixture through the corpus scorer and assert its exact refusal code (acceptance-coverage, build-error, test-deletion), evidence fields, and absence of an earlier generic ordering failure."},
+    {"criterion":"V4 corpus impact is connected: graph fixtures prove that a change to at least one governance or evaluation engine file lists the relevant evals/* corpus modules in impact and routes their validation, while unrelated product changes do not acquire a catch-all corpus blast radius.","design_element":"bounded exact-file contract:evaluation-corpus-impact in evals/impact-map.json and depgraph","validation":"Accept only canonical evals/<name> or evals/negative/<name> prefixes and 1-32 exact tracked taskplane/scripts .py files (128 total); reject wildcards/taskplane/**/directory/escape/duplicate/over-bound rows; map eval_rubric/governance fixtures while unrelated stage_entities, tp, and dashboard changes route no corpus."},
+    {"criterion":"V5 reports the bounded claim: given a known mixture of caught and missed seeded failures, Retro or dashboard machine, Markdown, and text projections agree on the label seeded-failure catch-rate, numerator, denominator, sample size, threshold, scenario set, model id/version, and evaluation revision; zero-sample input reports unavailable rather than 0% or 100%.","design_element":"unique seeded trial-unit contract:seeded-failure-catch-rate consumed by retro/dashboard","validation":"Render a fixed mixture and a repeated-scenario fixture (5+3 unique trials, 6 caught) across projections; require numerator=6, denominator=sample_size=8, rate=.75, exact scenario/model/revision identity, duplicate rejection; zero sample is unavailable/zero-sample and omits numerator, denominator, sample_size, rate, threshold."},
+    {"criterion":"Quick-only review policy is enforced: every governed lens dispatch manifest for these waves contains only quick-sweep slots and no deep.* slot or promotion; a seeded substantive quick finding prevents the affected gate from passing and returns it for correction without creating a deep worker.","design_element":"contract:review.collection quick-only depth across lens, review_progression, and review","validation":"Generate manifests for every wave and assert all slots are quick and no deep/promotion fields; inject substantive quick finding and assert gate return/correction, zero deep expectations, dispatches, leases, or results."}
   ],
   "risks": [
-    {
-      "risk": "A projection is accidentally treated as lifecycle authority and revives or hides a stage.",
-      "mitigation": "All writes require immutable indexed heads; projection equality is verified/rebuilt under lock, ambiguity stops dispatch, and tests delete/corrupt it.",
-      "owner": "stage lifecycle engineering"
-    },
-    {
-      "risk": "The legacy adapter becomes a second writer and reintroduces singleton overwrite semantics.",
-      "mitigation": "After migration receipt, adapter APIs are read-only projections and every loop/track mutation routes through stage_entities; AST/runtime tests prohibit move/restore writes on v4 runs.",
-      "owner": "loop compatibility engineering"
-    },
-    {
-      "risk": "A handoff leaks predecessor transcript, secret, path, approval, or runtime authority.",
-      "mitigation": "Closed schema, redacted canonical refs, explicit exclusions, authority rebinding, byte/ref bounds, hostile-input tests, and startup serializers with no predecessor-tree handle.",
-      "owner": "security and privacy review"
-    },
-    {
-      "risk": "Split or retry creates duplicate children or partially terminalizes the parent.",
-      "mitigation": "Deterministic child ids and one request-fingerprinted expected-revision RunStore commit cover parent head, children, lineage, projection, and receipt.",
-      "owner": "run-store engineering"
-    },
-    {
-      "risk": "Legacy ambiguity is silently classified to make migration appear complete.",
-      "mitigation": "Unknown sentinel is the only allowed ambiguous projection, carries an explicit reason and retained source fingerprint, and cannot be default successor input.",
-      "owner": "migration engineering"
-    },
-    {
-      "risk": "Stage terminalization broadens or prematurely triggers destructive R-0003 worktree cleanup.",
-      "mitigation": "Lifecycle contains no cleanup call; cleanup remains a separate exact-registration/merged-tip/re-resolved-main proof with all retention negatives, no force, and durable outcomes.",
-      "owner": "repository safety review"
-    },
-    {
-      "risk": "Bounded summaries omit information needed by Review or Retro, causing a fallback to full predecessor traces.",
-      "mitigation": "Define all required review/retro metrics in the terminal summary, make predecessor-root opens fail in tests, and require an explicit audit command for details.",
-      "owner": "review and retro engineering"
-    }
+    {"risk":"A wrong or emptied knowledge tree hashes successfully and falsely proves preservation.","mitigation":"Resolve the root only from canonical locator/project identity and require a trusted pre-cleanup closed relative-path/bytes/digest manifest; reject root mismatch, empty substitution, missing/moved/unexpected entries, and manifest mismatch.","owner":"baseline/governance engineering"},
+    {"risk":"Unproven hook enforcement is presented as live or silently treated as sufficient.","mitigation":"Use only live|unproven|advisory with evidence/session/hook-path receipt; reserve enforced for live, block unproven mutations, and require actor/reason/scope/expiry for visibly advisory continuation.","owner":"enforcement governance"},
+    {"risk":"Baseline preservation is misread as keeping the new R-0006 working Design byte-identical to R-0004.","mitigation":"Bind preservation to immutable prior Git blobs and trusted pre-cleanup knowledge manifest; identify R-0006 as a later proposed artifact.","owner":"baseline/governance engineering"},
+    {"risk":"Eager compatibility probing mutates bytecode or runtime state before refusal.","mitigation":"Import at module startup before RunStore construction, set isolated no-bytecode fixtures, and byte-compare every governed store on failure.","owner":"runtime compatibility engineering"},
+    {"risk":"Only decomposition reports bad Python, so base scans remain falsely complete.","mitigation":"Make base depgraph parsing emit per-file producer failures independently; combine decomposition additively and test strict/normal modes with decompose off and on.","owner":"graph engineering"},
+    {"risk":"Known CLI error mapping hides unexpected defects.","mitigation":"Use a closed enumerated table only for known engine classes; unexpected exceptions retain exit 70 and traceback, debug always re-raises.","owner":"CLI engineering"},
+    {"risk":"Cycle expectations are updated to bless growth or copied from stale report estimates.","mitigation":"Generate with one checked-in scanner, require exact revision/member/edge/LOC evidence, allow shrinkage automatically, and require new approved Design for any upward bound.","owner":"architecture review"},
+    {"risk":"Explicit input inversion silently drops context/impact or breaks direct decompose scans.","mitigation":"Use named tp/review/loop/retro composition edges, audit every governed caller, require direct scan(decompose=True) goldens, and allow sparse fallback only with proven sparse quality; no global registry.","owner":"graph/review engineering"},
+    {"risk":"Repeated trials duplicate spend or report a partial sample as a rate.","mitigation":"Bound repeats 1-100, key immutable trials by sample/scenario/observed-model/index, reuse exact retries only, and refuse incomplete/duplicate sets.","owner":"evaluation engineering"},
+    {"risk":"A broad eval impact mapping turns every engine change into a corpus blast radius.","mitigation":"Allow canonical corpus prefixes and exact tracked files only with row/total bounds; reject wildcards/directories/escapes and test unrelated product, CLI, and reporting files.","owner":"graph and evaluation engineering"},
+    {"risk":"Seeded catch-rate double-counts repeats or is interpreted as production reliability.","mitigation":"Count unique scenario/failure/model/version/trial/revision units, enforce sample_size=denominator and duplicate rejection, hard-code the bounded label, and omit numeric fields when zero-sample unavailable.","owner":"evaluation product and reporting"},
+    {"risk":"Quick-only becomes silent acceptance when a finding would normally promote.","mitigation":"Promotion resolver returns correction/block, collection rejects deep slots, and a seeded substantive quick finding proves no deep worker is created.","owner":"review governance engineering"}
   ],
   "failure_modes": [
-    {
-      "mode": "Crash before the authoritative run-index commit",
-      "detection": "No matching stage_operations receipt and indexed heads retain the previous revision; optional immutable objects are unreferenced.",
-      "recovery": "Retry the same operation id; recompute and commit once. Do not delete orphan objects in R-0004."
-    },
-    {
-      "mode": "Crash after run-index commit but before diagnostic journal append",
-      "detection": "Matching request-fingerprinted receipt and new indexed heads exist while the non-authoritative journal entry is absent.",
-      "recovery": "Return the durable receipt and optionally append a deduplicated diagnostic entry; never repeat the semantic transition."
-    },
-    {
-      "mode": "Operation id is reused with different request bytes",
-      "detection": "Stored request fingerprint differs from the retry fingerprint.",
-      "recovery": "Fail closed with an operation-id collision; require a new id after the caller reconciles current heads."
-    },
-    {
-      "mode": "Active projection is missing, corrupt, stale, or ambiguous",
-      "detection": "Projection fails schema/fingerprint validation or differs from the active states in stage_heads.",
-      "recovery": "Stop dispatch and rebuild deterministically under the run lock; if foreground is not uniquely derivable, leave it unset and require attribution."
-    },
-    {
-      "mode": "Handoff artifact is missing, altered, outside the canonical store, or exceeds a declared bound",
-      "detection": "Artifact identity/digest/byte/confinement validation or manifest size/ref count validation fails before successor creation.",
-      "recovery": "Keep predecessor and projection unchanged; regenerate or explicitly reselect valid artifacts under a new authorization."
-    },
-    {
-      "mode": "Concurrent terminalize, successor, or split commands race",
-      "detection": "Expected RunStore revision or expected stage-head fingerprint conflicts.",
-      "recovery": "Reload heads and return an identical receipt only for the same request; otherwise reject without speculative merge."
-    },
-    {
-      "mode": "Legacy lifecycle or reference identity cannot be proven",
-      "detection": "Migration classifier cannot map all source facts to one valid stage state without inference.",
-      "recovery": "Retain source bytes and create an explicit legacy-unknown sentinel; require attributable forward resolution."
-    },
-    {
-      "mode": "Default status/startup path attempts to load a predecessor execution tree",
-      "detection": "Instrumented access guard and zero-tree-open telemetry fire; 10-vs-100000-event performance fixture diverges.",
-      "recovery": "Block release/canary, restore bounded summary/ref reader, and re-run byte-identity and cross-host tests."
-    },
-    {
-      "mode": "A stage transition reaches post-merge worktree cleanup without full R-0003 eligibility",
-      "detection": "Exact revalidation finds dirty, untracked, staged, unmerged, foreign, unregistered, selected-variant, failed, active, locked, symlinked/reparse-point, path-mismatched, missing-ref, ambiguous-main, primary/main, merge-in-progress, evidence-needed, last-moment-uncertain, branch/tip-mismatched, or recorded-tip-not-ancestor state.",
-      "recovery": "Retain the exact tree and registration plus branch, commits, requirement, design, plan, submissions, tests, review evidence, audit, and sign-off inputs; record the predicate; never force, broaden, delete a branch, or retry with stronger authority."
-    }
+    {"mode":"Authoritative knowledge preservation cannot be proven","detection":"baseline_verification signal reports canonical root mismatch, absent/untrusted pre-cleanup manifest, empty substitution, or missing/moved/unexpected/byte/digest entry delta.","recovery":"The orchestrator stops wave 1; baseline owner supplies the retained immutable closed manifest or restores the exact canonical evidence. If none exists, preservation remains unproven and cannot be reconstructed or waived as a pass."},
+    {"mode":"Enforcement is unproven or advisory","detection":"enforcement_status signal reports status, evidence/session ids, hook-path receipt, and any advisory authorization fields.","recovery":"Host owner establishes a live verified hook receipt before mutation, or a human records actor/reason/exact wave scope/expiry to continue visibly advisory; nobody may label it enforced."},
+    {"mode":"Unsupported syntax, incomplete tracked compile set, or stage dependency import failure","detection":"python_compatibility signal names interpreter, exact tracked-file-set fingerprint, closed stage-consumer set, module, phase=startup, and TaskplaneCompatibilityError before a store opens.","recovery":"Runtime/CI maintainer fixes source or enumeration and reruns all four exact-file compile/import legs including outside-directory sentinel; no governed mutation is replayed because none occurred."},
+    {"mode":"Base scan or decomposition producer is degraded","detection":"graph_scan_quality signal has degraded=true with producer, file/module/parser/reason and scanned SHA independent of decompose mode.","recovery":"Graph maintainer repairs the named source/producer and rescans both modes; normal users retain honest fail-open output while strict readiness/review stays blocked until every producer is complete."},
+    {"mode":"Public CLI error registry drifts or an unexpected exception is swallowed","detection":"cli_error_envelope signal/test reports registry/KNOWN set delta or unexpected-exception behavior mismatch.","recovery":"CLI owner restores one registry-derived exact set or unexpected exit-70 traceback behavior and reruns normal/debug/unexpected fixtures before merge."},
+    {"mode":"Green evidence belongs to an ahead, behind, diverged, stale, or different SHA","detection":"ci_commit_proof signal shows HEAD/origin/main/checked_sha inequality, ahead_count or behind_count nonzero, or missing/failing/mismatched receipt.","recovery":"Release owner fetches, reconciles to the intended exact commit, waits for all checks on that SHA, and regenerates proof; no prior record is relabelled."},
+    {"mode":"An SCC gains a member, edge, LOC, or a new cycle appears","detection":"import_cycle_inventory signal reports policy/current delta with affected modules, edges, counts, and LOC.","recovery":"Architecture owner removes the growth before merge or returns to human-approved Design for an explicit bound change; the ratchet is never bypassed inline."},
+    {"mode":"Direct decomposition or explicit composition input changes behavior","detection":"boundary_parity signal reports direct scan(decompose=True), Retro, context-note, graph-impact, governed-caller audit, or sparse-fallback mismatch.","recovery":"Owning engineer restores compatibility through graph_decomposition or the named consuming parameter and reruns direct/caller/parity plus SCC checks before accepting the cut."},
+    {"mode":"Evaluation trial is missing, duplicated, corrupt, or model-mismatched","detection":"evaluation_sample signal reports complete=false and the exact trial key/problem.","recovery":"Evaluation runner retries only the exact missing key or starts a new sample after reconciliation; it never fills a missing row or computes a passing partial rate."},
+    {"mode":"Eval impact map is broad, escaped, unmatched, duplicate, or over bound","detection":"evaluation_corpus_impact signal reports invalid prefix/exact-file relation, relation counts, or unrelated product/CLI/reporting impact.","recovery":"Graph/eval owner narrows the row to canonical corpus prefix and exact tracked files within 32/128 bounds, then reruns selectivity and strict graph checks before merge."},
+    {"mode":"Seeded-failure units are duplicated, arithmetically inconsistent, or empty","detection":"seeded_failure_catch_rate signal reports unit-identity duplicate, sample_size!=denominator, numerator bound failure, mixed identity, or unavailable zero-sample field violation.","recovery":"Evaluation owner reconciles unique complete units and reruns projections; zero sample remains unavailable with numeric fields omitted until real units exist."},
+    {"mode":"A substantive quick finding requests promotion","detection":"review_depth_policy signal reports correction_required with zero deep slots/expectations/leases.","recovery":"The orchestrator returns the affected work to its owner for bounded correction in the same wave and reruns the quick sweep; no deep worker is dispatched."}
   ],
   "observability": {
     "signals": [
-      "stage id, kind, lifecycle, terminal outcome, and aggregate fingerprint",
-      "run revision, operation id, request fingerprint, and receipt status",
-      "authority revision, actor/session identity, and revalidation result",
-      "predecessor, parent, child, handoff, and active-projection fingerprints",
-      "manifest bytes, selected-reference count/bytes, startup bytes/tokens, and explicit expansion reason",
-      "projection repair count/reason and lifecycle revision conflicts",
-      "migration source/result fingerprints, conservation counts, unknown reason, and adapter mode",
-      "bounded status/Retro page sizes and predecessor execution-tree open count",
-      "R-0003 cleanup eligibility, retention predicate, merge receipt, re-resolved main tip, and removal verification"
+      "baseline_verification: run id, branch/SHA, graph fingerprint/scanned SHA, Plan authority state, prior Design blob digests, authoritative knowledge-root identity, pre/post manifest ids and digests, entry count, missing/moved/unexpected/empty-tree flags",
+      "enforcement_status: live|unproven|advisory, enforcement evidence id, Codex session id, verified hook-path receipt, and—only for advisory—actor/reason/scope/expiry/accepted limitations",
+      "python_compatibility: interpreter minor, exact tracked-Python-set fingerprint, closed production stage-consumer set, module/entry, compile/import/flow phase, named error, mutation snapshot digest",
+      "graph_scan_quality: degraded boolean, producer, file/resolved module/parser/error class/bounded reason, decompose mode, scanned SHA, quality fingerprint",
+      "cli_error_envelope: command, public registry fingerprint, registry/KNOWN exact-set equality, public error class, mapping id, exit class, recovery id, unexpected-exception behavior, debug availability",
+      "ci_commit_proof: fetched ref and fetch receipt, HEAD SHA, refs/remotes/origin/main SHA, checked SHA, ahead count, behind count, required check names/conclusions and receipt SHAs",
+      "import_cycle_inventory: source revision, every SCC member/internal edge, member/edge/LOC counts, before/after delta",
+      "boundary_parity: direct depgraph.scan(decompose=True), tp/loop/retro composition-root coverage, review-to-lens context-note and host-to-taskplane_lite graph-impact caller coverage, graph payload and sparse-fallback proof fingerprints",
+      "review_depth_policy: requirement/wave, quick slots, deep slots, promotion attempts, correction/block outcome",
+      "evaluation_trial: sample/scenario/trial id, observed model id/version, evaluation revision, status and immutable record fingerprint",
+      "evaluation_sample: requested/completed/distinct trials, pass count/rate, threshold, completeness and refusal reason",
+      "evaluation_corpus_impact: canonical corpus prefix, exact tracked target files, row/total relation counts, invalid/escaped/unmatched/duplicate flags, unrelated product/CLI/reporting selectivity results",
+      "seeded_failure_catch_rate: exact label, counted-unit-set fingerprint, numerator, denominator, sample size, rate, threshold, scenario set, model id/version, evaluation revision, duplicate/mixed-identity flags, availability/reason and zero-sample numeric-field omission"
     ],
     "alerts": [
-      "Alert and block dispatch on a terminal-reopen attempt or ambiguous active projection.",
-      "Alert on operation-id/request-fingerprint mismatch or repeated lifecycle revision conflicts.",
-      "Alert and reject on stage/handoff/artifact digest, confinement, schema, or numeric-bound failure.",
-      "Alert and block release if a default startup/status/review/sign-off/Retro path opens a predecessor execution tree or the 10-vs-100000 startup invariant diverges.",
-      "Alert and stop migration on conservation mismatch, missing retained source bytes, or ambiguous state without explicit unknown_reason.",
-      "Alert and retain on any cleanup attempt without the complete R-0003 exact registered-worktree and merged-tip proof."
+      "Block wave entry on any baseline_verification authoritative-root/manifest mismatch, empty or wrong tree, missing/moved/unexpected entry, or active stale Plan authority.",
+      "Render enforced only for enforcement_status=live; block unproven mutation and require an attributable bounded advisory receipt for any advisory exception.",
+      "Block before mutation/tests on python_compatibility failure and name the supported-range recovery.",
+      "Warn visibly in normal graph mode and block strict/readiness/review on any base-scanner or decomposition producer with graph_scan_quality degraded=true.",
+      "Block CLI acceptance on public-registry/KNOWN exact-set drift or swallowed unexpected exceptions.",
+      "Block pushed_green unless fetched HEAD, refs/remotes/origin/main, checked_sha, and every receipt SHA are equal with ahead=0 and behind=0.",
+      "Block merge on import_cycle_inventory growth, direct decomposition parity failure, missing governed composition input, or unjustified sparse fallback.",
+      "Block sample success on evaluation_sample incomplete/duplicate/mismatched trials; never schedule live sampling in ordinary CI.",
+      "Block invalid or near-catch-all evaluation_corpus_impact rows, including wildcard/package-wide targets or unrelated product/CLI/reporting impact.",
+      "Block inconsistent or duplicate seeded-failure counted units; render zero-sample unavailable with numeric fields omitted and alert on projection disagreement.",
+      "Block/return on review_depth_policy substantive quick findings and alert if any deep slot/promotion artifact exists."
     ]
   },
   "rollout": {
-    "strategy": "Ship additive taskplane.run/v4 readers, validators, immutable objects, operation receipts, and projection repair behind a disabled flag. Run non-mutating shadow migrations and compare bounded legacy/v4 summaries and conservation sets. Enable stage-native execution for new runs, then verified migrations, then bounded dashboard/status/review/sign-off/Retro readers. Stop singleton move/restore writes only after migration/zero-tree-open telemetry and cross-host fixtures pass. Keep the legacy read adapter and retained source artifacts until a later requirement retires them.",
-    "rollback": "Disable new v4 stage creation and leave immutable stage/handoff/source objects and receipts intact. Unmigrated runs may return to legacy reads; migrated runs remain v4-readable and pause mutation until re-enabled. Never reverse-collapse stage history into loop.json, reopen terminal outcomes, guess legacy unknowns, delete artifacts/branches/evidence, weaken authority/evidence binding, or broaden/force R-0003 cleanup."
+    "strategy": "Land five sequential waves, requiring the prior wave's acceptance set before the next begins. Begin from the trusted authoritative-root manifest and honest live|unproven|advisory enforcement receipt. Make the exact tracked-Python/closed-consumer gate, base-scanner degradation, public CLI registry, no-egress corpus, and fetched exact-SHA proof prerequisites before the wave-4 two-commit ratchet-before-cuts sequence. Preserve direct depgraph.scan(decompose=True) and all named composition roots while cutting cycles. Land bounded impact-map and arithmetic fixtures before trusting live repeats. Push only after local gates, then accept completion only when required checks are green for HEAD == refs/remotes/origin/main == checked_sha with ahead=behind=0. Keep all changes additive, stdlib-only, synchronous, and scoped away from wave six.",
+    "rollback": "Rollback behavior within the affected wave while retaining every earlier quality floor: never delete or substitute authoritative baseline evidence, mislabel unproven/advisory enforcement as live, narrow the exact tracked-Python or closed-consumer sets, remove no-egress proof, hide base-scanner/decomposition degradation, fork the public CLI registry, remove/raise the cycle ratchet, break the direct scan API or governed input injection, broaden corpus impact mapping, relabel ahead/behind/stale CI proof, rewrite counted trial units, turn zero samples into a percentage, or permit deep promotion. Revert a wave-4 cut only if the retained ratchet and direct/caller parity pass. Disable live sampling by stopping new samples; existing immutable records remain readable. There is no destructive schema migration or external event cutover."
   },
   "visualization": {
     "required": true,
     "kind": "state-transition",
     "path": "design/visual.html",
-    "reason": "The active-to-terminal state machine, atomic successor/split transactions, bounded artifact flow, replaceable projection, and conservative legacy migration interact across multiple branches and are materially clearer as one accessible diagram."
+    "reason": "Five ordered gates, the two-commit ratchet-before-cuts sub-sequence, cross-wave invariants, and the separate wave-six boundary are materially clearer as one accessible dependency timeline."
   },
+  "open_questions": [],
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "Compared singleton extension, RunStore immutable aggregates, and full event sourcing; selected the smallest authoritative aggregate/transaction boundary; defined schemas, lifecycle and split state machines, 64 KiB/64-ref/16 KiB/100-row bounds, atomic crash semantics, exact 11-criterion verification, R-0003 cleanup retention negatives, migration conservation/unknown handling, bounded read models, rollout/rollback, and the full Python solution-design disposition. Required Python reference SHA-256 verified as 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7.",
-      "produced_by": "tp-designer self-attested solution-design application for R-0004",
-      "content_fingerprint": "28d8ae50217990462d79d6d43fae1e33bae8523cd31b66b034df4a295c1a51d6",
+      "evidence": "One bounded quick sweep grounded every premise in the active baseline graph and cited repository seams, compared independent patches, five ratcheted waves, and architecture-first, and selected the smallest ordered contract approach. The correction cycle closed every substantive quick finding: trusted authoritative-root manifest identity; honest live|unproven|advisory enforcement receipts; all four lazy imports and the closed four-consumer set; exact tracked-Python compilation with an outside-directory sentinel; base-scanner degradation in both modes; fetched exact-SHA/ahead/behind proof; process-wide no-egress and repeated-byte parity; one public CLI engine-error registry; backward-compatible direct decomposition plus every named composition root/input edge; bounded selective corpus impact; and unique counted-unit catch-rate arithmetic with zero-sample omission. All 18 criteria have executable validation, each failure has a named signal and bounded owner recovery, rollback remains additive, quick-only correction has zero deep slots/promotions, and wave six remains explicitly deferred. Python reference SHA-256 verified as 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7.",
+      "produced_by": "tp_step_designer_design_28973ea6",
+      "content_fingerprint": "4e4e035843bb2ba45b44bdd3d3ba80f6550cd26169ec537981e83427e7bf46da",
       "self_attested": true
     }
-  ],
-  "open_questions": []
+  ]
 }
