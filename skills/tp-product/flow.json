@@ -2,6 +2,17 @@
   "schema": "taskplane.skill-flow/v1",
   "skill": "tp-product",
   "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "stage_runtime": {
+    "dispatch_schema": "taskplane.stage-dispatch/v1",
+    "startup_schema": "taskplane.stage-startup/v1",
+    "handoff_schema": "taskplane.stage-handoff/v1",
+    "bounded_inputs": ["authority", "input_handoff", "selected_artifacts", "budget", "declared_scope", "execution_claim"],
+    "forbidden_inheritance": ["agents", "conversations", "event_logs", "tool_transcripts", "leases", "runtime_state", "predecessor_roots"],
+    "non_build_terminal_outcomes": ["closed", "discarded"],
+    "implicit_build": false,
+    "rollout_modes": ["new-run", "enabled"],
+    "rollback": "retain-v4-read-only-no-reverse-migration"
+  },
   "nodes": [
     {"id": "idea", "label": "idea / change request", "kind": "input"},
     {"id": "context", "label": "product context + decisions", "kind": "stage"},
@@ -10,7 +21,8 @@
     {"id": "dor", "label": "Product DoR definition", "kind": "parallel"},
     {"id": "review", "label": "product review", "kind": "stage"},
     {"id": "approval", "label": "human approve / sign-off", "kind": "gate"},
-    {"id": "build", "label": "trigger governed Build", "kind": "stage"}
+    {"id": "build", "label": "trigger governed Build", "kind": "stage"},
+    {"id": "terminal_handoff", "label": "done / closed / discarded (no implicit Build)", "kind": "stage"}
   ],
-  "edges": [["idea", "context"], ["context", "requirement"], ["requirement", "contracts"], ["contracts", "dor"], ["dor", "review"], ["review", "approval"], ["approval", "build"]]
+  "edges": [["idea", "context"], ["context", "requirement"], ["requirement", "contracts"], ["contracts", "dor"], ["dor", "review"], ["review", "approval"], ["approval", "build"], ["approval", "terminal_handoff"]]
 }

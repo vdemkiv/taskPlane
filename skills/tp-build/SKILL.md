@@ -21,6 +21,26 @@ Design, and Plan complete through mechanical fail-closed checks; the
 consolidated authorization, A/B selection when used, and final sign-off are
 the human stops. Retro is automatic after final approval.
 
+**Stage-isolated execution.** When stage-native delivery is enabled, every
+Product, Design, Plan, Build, Evaluate, Engineering, and Retro worker starts
+from the engine's `taskplane.stage-dispatch/v1` payload, which serializes the
+bounded `taskplane.stage-startup/v1`. Its complete startup context is the
+current stage authority, budget and declared scope, execution
+claim, one bounded versioned `taskplane.stage-handoff/v1` input handoff, and
+the explicitly selected content-addressed artifacts. Never carry predecessor
+agents, conversations, event logs, tool transcripts, leases, runtime state,
+or execution roots into the worker. A missing, corrupt, stale, or oversized
+dispatch or handoff is a blocker, not permission to recover context from the
+predecessor. This contract is host-neutral: Codex, Claude, managed,
+Slack-capable, and accessible text fallback rails transport the same bounded
+stage facts.
+
+A non-build stage may finish `closed` (no more work is required) or
+`discarded` (its result must not be consumed) without creating Build. Its
+immutable artifact references remain addressable for audit, but later reuse
+requires a new explicit handoff and current authority; it is never inferred
+from retained conversation state.
+
 When the goal names a local path, repository URL, ref, or pull request, first
 run `$TP repository prepare <target>`. Continue Build in the returned managed
 checkout. If preparation needs authentication, a tool, or storage permission,
@@ -101,7 +121,11 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    design → plan → consolidated human authorization → contracted build (TDD, budgets)
    → evaluate → selective engineering review → visual sign-off.
    Apply the mandatory native-dispatch rule above to every emitted role and
-   wait for each result before the orchestrator advances it.
+   wait for each result before the orchestrator advances it. When the action
+   carries `stage_runtime_dispatch`, pass that object unchanged as the sole
+   stage startup envelope; do not supplement it from an earlier worker or
+   task. The worker rejects authority, scope, budget, execution-claim,
+   stage-head, handoff, or selected-artifact mismatches before doing work.
    Evaluate and engineering review share one canonical review context per
    immutable change: diff, graph blast radius, requirements/contracts, DoR,
    DoD, and one complete lens disposition. Only the mapped deep lenses plus at
@@ -131,6 +155,24 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    records lessons and trues up the graph before `done`. Record chosen debt
    and commit the KB — the next feature starts smarter, and its contracts
    inherit an accurate map of who owns what.
+
+**Rollout and rollback.** `TASKPLANE_STAGE_NATIVE` is fail-closed and disabled
+by default. Only `new-run` (fresh-run canary) and `enabled` (verified migrated
+runs) enable v4 writes; arbitrary truthy values do not. Shadow migration
+compares bounded legacy/v4 summaries, retained-reference counts, lineage, and
+authority without changing readers. Cut bounded readers over only after the
+migration receipt and conservation proof verify. Rollback disables new v4
+mutations while retaining immutable stage objects, handoffs, receipts, source
+artifacts, and v4 reads for migrated runs. Never reverse-collapse history,
+reopen a terminal stage, guess an unknown legacy outcome, delete retained
+artifacts, weaken authority/evidence, or broaden/force R-0003 cleanup. A
+migrated run resumes only after the feature is re-enabled or an explicit
+forward migration succeeds; there is no lossy reverse migration.
+
+Stage terminalization and rollback never invoke worktree cleanup. The R-0003
+post-merge cleanup remains a separate, orchestrator-owned, fail-closed action
+requiring the exact registered managed worktree, merged-tip proof, re-resolved
+primary main, and every last-moment eligibility check.
 
 Human gates are non-negotiable: consolidated pre-implementation authorization,
 selection if A/B, and final sign-off with the feature rendered — never a diff

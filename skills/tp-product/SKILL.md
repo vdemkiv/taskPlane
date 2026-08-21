@@ -48,14 +48,33 @@ requirement's context files into the planned graph, so repeating those queries
 would create two sources of truth rather than more assurance.
 
 For a standalone Product request, the orchestrator owns the transition after
-approval: record the human's product decision, then initialize the governed
-Build loop with the SAME R-id. Run `$TP req signoff R-XXXX approve --by
-"<human words>"` first; only its successful Product DoR-backed result permits
-`$TP loop init --req R-XXXX "<goal>"` and the handoff to `/tp-go`. If the human
-requests changes, run `$TP req signoff R-XXXX changes --by "<human words>"`,
-revise the same R-record with `$TP req amend R-XXXX ...`, and re-run Product
-DoR; do not create a replacement requirement or trigger Build. tp-product
-itself remains read-only and never impersonates Build.
+approval: record the human's product decision. When implementation is
+authorized, initialize the governed Build loop with the SAME R-id. Run `$TP
+req signoff R-XXXX approve --by "<human words>"` first; only its successful
+Product DoR-backed result permits `$TP loop init --req R-XXXX "<goal>"` and
+the handoff to `/tp-go`. If the human requests changes, run `$TP req signoff
+R-XXXX changes --by "<human words>"`, revise the same R-record with `$TP req
+amend R-XXXX ...`, and re-run Product DoR; do not create a replacement
+requirement or trigger Build. tp-product itself remains read-only and never
+impersonates Build.
+
+### Non-build terminal handoff
+
+Product consumes only `taskplane.stage-handoff/v1`: a versioned bounded
+manifest, explicitly selected content-addressed artifacts, and the current
+stage authority, budget, and scope. Never inherit predecessor agents,
+conversations, event logs, tool transcripts, leases, runtime roots, or other
+mutable execution context.
+
+When the attributed human decision is to finish Product without
+implementation, terminalize the Product stage as `done`, `closed`, or
+`discarded` and create no implicit Build. `done` requires its declared
+deliverables and completion evidence; `closed` requires the attributable
+reason no further work is needed; `discarded` requires the attributable reason
+its result must not be consumed. Retain its immutable artifacts and handoff
+for audit. Later use of retained `closed` or `discarded` artifacts requires an
+explicit `stage reuse` operation, explicit new authority, and exact selected
+fingerprints; it never reopens or rewrites Product history.
 
 **Review continuation contract.** If a ReviewKernel payload is `needs_user`,
 use its `action.choices[*].command` verbatim. The stable launcher forms are

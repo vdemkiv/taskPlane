@@ -123,6 +123,24 @@ ends. For design-before-build it advances to Plan, whose DoR must cover the
 approved modules, contracts, graph depth, acceptance mapping, and every
 proposed edge via canonical task `design_edges` entries (`FROM->TO:KIND`).
 
+### Non-build terminal handoff
+
+Design consumes only `taskplane.stage-handoff/v1`: a versioned bounded
+manifest, explicitly selected content-addressed artifacts, and the current
+stage authority, budget, and scope. Never inherit predecessor agents,
+conversations, event logs, tool transcripts, leases, runtime roots, or other
+mutable execution context.
+
+For design-only work, or an attributed decision not to continue into
+implementation, terminalize the Design stage as `done`, `closed`, or
+`discarded` and create no implicit Build. `done` requires the declared Design
+deliverables and completion evidence; `closed` requires the attributable
+reason no further work is needed; `discarded` requires the attributable reason
+its result must not be consumed. Retain its immutable artifacts and handoff
+for audit. Later use of retained `closed` or `discarded` artifacts requires an
+explicit `stage reuse` operation, explicit new authority, and exact selected
+fingerprints; it never reopens or rewrites Design history.
+
 ## Downstream enforcement
 
 When an approved design exists:

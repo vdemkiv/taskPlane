@@ -110,6 +110,13 @@ not repeated in the tables.
 | `tp.py share push` | publish private decisions to the shared store |
 | `tp.py share set` | set the default visibility of new decisions |
 | `tp.py share status` | show what is private and what is shared |
+| `tp.py stage` | drive isolated stage lifecycle and bounded handoffs |
+| `tp.py stage history` | read a bounded page of immutable stage summaries |
+| `tp.py stage resume` | create a fresh attempt in an active stage root |
+| `tp.py stage reuse` | explicitly authorize non-default artifact reuse |
+| `tp.py stage split` | close a parent and atomically create isolated children |
+| `tp.py stage start` | start a root or verified successor stage |
+| `tp.py stage terminalize` | record one immutable terminal outcome |
 | `tp.py status` | show project loop status and the active contract |
 | `tp.py subagent-start` | SubagentStart lifecycle trace, bounded contract context, and leased review-child identity binding (stdin event) |
 | `tp.py subagent-stop` | SubagentStop lifecycle trace (stdin event; advisory, never a completion gate) |
@@ -1092,6 +1099,68 @@ show what is private and what is shared
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage`
+
+drive isolated stage lifecycle and bounded handoffs
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage history`
+
+read a bounded page of immutable stage summaries
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage resume`
+
+create a fresh attempt in an active stage root
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage reuse`
+
+explicitly authorize non-default artifact reuse
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage split`
+
+close a parent and atomically create isolated children
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage start`
+
+start a root or verified successor stage
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage terminalize`
+
+record one immutable terminal outcome
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py status`

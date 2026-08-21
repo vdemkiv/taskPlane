@@ -81,6 +81,22 @@ the repo-local lifecycle/write receipts required by taskplane provenance.
 
 ## Keep the harness internal
 
+### Stage-isolated handoffs
+
+Each governed specialist starts from `taskplane.stage-handoff/v1`: a versioned
+bounded manifest, explicitly selected content-addressed artifacts, and the
+current stage authority, budget, and scope. Never pass predecessor agents,
+conversations, event logs, tool transcripts, leases, runtime roots, or other
+mutable execution context to the successor.
+
+A non-build stage may end `done`, `closed`, or `discarded` with no implicit
+Build. Record the exact terminal outcome and its required evidence or
+attributable reason, retain the immutable artifacts and handoff for audit, and
+do not reopen or rewrite the stage. A later successor may use retained
+`closed` or `discarded` artifacts only through an explicit `stage reuse`
+operation with explicit new authority and exact selected fingerprints. Stage
+terminalization does not run worktree cleanup or weaken any R-0003 gate.
+
 For a delivery loop, obey the engine payload from `$TP loop next` exactly.
 Dispatch the named role with its full role-instruction file on either Claude or
 Codex; do not improvise a shorter worker prompt.

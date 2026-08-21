@@ -72,6 +72,19 @@ HOOK_FILES = (
     "hooks/host_native_runtime.py",
 )
 
+STAGE_RUNTIME_FILES = (
+    "taskplane/taskplane_lite.py",
+    "taskplane/stage_entities.py",
+    "taskplane/stage_handoff.py",
+    "taskplane/stage_migration.py",
+    "taskplane/loop_status.py",
+    "taskplane/dashboard.py",
+    "taskplane/runtime_eval.py",
+    "skills/tp-go/SKILL.md",
+)
+
+SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
+
 
 class PackageError(RuntimeError):
     """A marketplace package invariant failed."""
@@ -89,6 +102,30 @@ def load_manifest() -> dict:
         raise PackageError(f"cannot read {MANIFEST_PATH}: {exc}") from exc
     require(isinstance(manifest, dict), "plugin manifest must be a JSON object")
     return manifest
+
+
+def validate_hook_manifest(value: object) -> dict:
+    """Enforce the Codex hook parser's closed root schema.
+
+    Host-native discovery metadata is intentionally packaged separately in
+    ``hooks/host-native.json``.  Putting ``hostNative`` back at this root
+    recreates the 2.17.12 installation failure before any hook can run.
+    """
+    require(isinstance(value, dict), "hook manifest root must be an object")
+    require(set(value) <= SUPPORTED_HOOK_ROOT_FIELDS,
+            "hook manifest contains root fields rejected by Codex")
+    require(isinstance(value.get("hooks"), dict),
+            "hook manifest must declare hooks as an object")
+    return value
+
+
+def load_hook_manifest() -> dict:
+    path = ROOT / "hooks" / "hooks.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PackageError(f"cannot read hook manifest: {exc}") from exc
+    return validate_hook_manifest(value)
 
 
 def valid_https_url(value: object) -> bool:
@@ -225,6 +262,9 @@ def validate_manifest(manifest: dict) -> None:
     require(manifest.get("skills") == "./skills/", "skills must point to ./skills/")
     require("apps" not in manifest and "mcpServers" not in manifest,
             "skills-only packages cannot declare apps or MCP servers")
+    require("hostNative" not in manifest and
+            "hostNativeRuntime" not in manifest,
+            "Codex manifest cannot declare unsupported host-native fields")
     require("screenshots" not in interface, "skills-only packages cannot declare screenshots")
 
 
@@ -275,6 +315,8 @@ def add_tree(files: set[Path], base: Path, predicate) -> None:
 
 
 def package_files(manifest: dict) -> list[Path]:
+    validate_manifest(manifest)
+    load_hook_manifest()
     files: set[Path] = {MANIFEST_PATH}
     for relative in REQUIRED_FILES:
         path = ROOT / relative
@@ -366,6 +408,17 @@ def validate_archive(path: Path) -> tuple[int, int]:
             uncompressed += member.file_size
         require(roots == {ARCHIVE_ROOT}, "ZIP must have exactly one top-level taskplane/ directory")
         require(f"{ARCHIVE_ROOT}/.codex-plugin/plugin.json" in names, "ZIP is missing the Codex manifest")
+        try:
+            packaged_manifest = json.loads(
+                archive.read(f"{ARCHIVE_ROOT}/.codex-plugin/plugin.json"))
+        except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise PackageError(
+                "ZIP contains an unreadable Codex manifest") from exc
+        require(isinstance(packaged_manifest, dict),
+                "ZIP Codex manifest root must be an object")
+        require("hostNative" not in packaged_manifest and
+                "hostNativeRuntime" not in packaged_manifest,
+                "ZIP Codex manifest contains unsupported host-native fields")
         require(any(re.fullmatch(rf"{ARCHIVE_ROOT}/skills/[^/]+/SKILL\.md", name) for name in names),
                 "ZIP has no valid skills/<skill>/SKILL.md")
         require(not any(name.endswith("/.app.json") or name.endswith("/.mcp.json") for name in names),
@@ -381,17 +434,15 @@ def validate_archive(path: Path) -> tuple[int, int]:
         for required in HOOK_FILES:
             require(f"{ARCHIVE_ROOT}/{required}" in names,
                     f"ZIP is missing installed hook runtime member {required}")
+        for required in STAGE_RUNTIME_FILES:
+            require(f"{ARCHIVE_ROOT}/{required}" in names,
+                    f"ZIP is missing stage runtime member {required}")
         try:
             hook_manifest = json.loads(
                 archive.read(f"{ARCHIVE_ROOT}/hooks/hooks.json"))
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise PackageError("ZIP contains an unreadable hooks/hooks.json") from exc
-        require(isinstance(hook_manifest, dict),
-                "ZIP hook manifest root must be an object")
-        require(set(hook_manifest) <= {"description", "hooks"},
-                "ZIP hook manifest contains keys rejected by Codex")
-        require(isinstance(hook_manifest.get("hooks"), dict),
-                "ZIP hook manifest must declare hooks as an object")
+        validate_hook_manifest(hook_manifest)
         require(
             f"{ARCHIVE_ROOT}/docs/assets/taskplane-cowork-flow.gif" in names,
             "ZIP is missing the README flow-guide GIF",

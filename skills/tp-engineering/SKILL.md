@@ -14,12 +14,49 @@ learn. The loop's `em` step is this persona. Its counterpart,
 `/tp-product`, owns the requirement — deliberately separate seats so the
 grader never graded their own definition.
 
-`flow.json` is the approved Review graph: **pin target → derive one diff and
-graph impact → graph-quality gate → 26 dispositions → deep slots plus one
-light sweep → adaptive deep wave when sweep finds high risk → canonical
-collect → workflow/graph/findings dashboard → human
-approve or request changes**. Collection is not completion; the final human
-decision is mandatory for loop and standalone reviews.
+`flow.json` is the approved Review graph: **verify the bounded stage manifest
+→ pin target → derive one diff and graph impact → graph-quality gate → 26
+dispositions → deep slots plus one light sweep → adaptive deep wave when the
+sweep finds high risk → canonical collect → workflow/graph/findings dashboard
+→ human approve or request changes → terminalize the addressed Review or
+Engineering stage**. Collection is not completion; the final human decision is
+mandatory for loop and standalone reviews.
+
+## Stage-native review boundary
+
+When Taskplane supplies a `taskplane.stage-dispatch/v1` envelope, treat its
+verified `taskplane.stage-startup/v1` value as the complete execution context.
+It contains the current stage authority, budget, and scope, one
+`taskplane.stage-handoff/v1` versioned bounded manifest, explicitly selected
+content-addressed artifact references, execution claim, and attempt id.
+Use only those inputs. Do not import a predecessor conversation, event log,
+tool transcript, lease, meter, active contract, runtime environment, mutable
+worktree, or execution tree. Do not open a predecessor execution root to start
+Review, render findings, decide sign-off, or prepare Retro.
+
+The bounded read model for Review and sign-off must expose the current stage,
+predecessor outcome, handoff fingerprint, and child lineage. A missing,
+ambiguous, corrupt, oversized, or fingerprint-mismatched manifest or summary is
+a refusal, never permission to inspect predecessor runtime state or choose a
+stage heuristically. The dispatch's authority and declared scope still govern
+every review action; selected artifacts do not grant broader repository,
+approval, or cleanup authority.
+
+A Review, Evaluation, Engineering, or other non-build stage may finish
+`closed` or `discarded` with the required attributable reason and without an
+implementation child. Terminalization retains its content-addressed artifacts
+for audit, does not reopen or rewrite its predecessor, and never invokes
+worktree cleanup. Later reuse requires a new explicitly authorized handoff;
+`discarded` results are not consumable by default and require exact explicit
+nonconsumable-reuse authority. These lifecycle operations do not change R-0003
+enforcement, ReviewKernel evidence/provenance, collision
+isolation, orchestrator-only gates, final human sign-off, or exact-worktree
+cleanup eligibility.
+
+When stage-native execution is disabled or the run is an unmigrated legacy
+run, retain the existing ReviewKernel/loop behavior and legacy read adapter.
+Never synthesize a v4 lifecycle outcome, mutate a singleton record through a
+stage command, or weaken a legacy R-0003 proof to emulate stage-native mode.
 
 All review runs are read-only toward code under the contract created by the
 ReviewKernel. Do not activate a separate contract before opening the review.

@@ -1,0 +1,170 @@
+"""Release-matrix proof for the R-0004 stage-native rollout."""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import zipfile
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+VERSION = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
+    encoding="utf-8"))["version"]
+SUPPORTED_HOOK_ROOT_FIELDS = {"description", "hooks"}
+STAGE_MATRIX_TESTS = (
+    "taskplane/tests/test_stage_non_build_handoffs.py",
+    "taskplane/tests/test_stage_cross_host.py",
+    "taskplane/tests/test_stage_rollout.py",
+    "taskplane/tests/test_stage_r0003_preservation.py",
+    "taskplane/tests/test_stage_release_matrix.py",
+)
+SHARED_RUNTIME_MEMBERS = (
+    "hooks/hooks.json",
+    "hooks/host-native.json",
+    "hooks/host_native_runtime.py",
+    "taskplane/taskplane_lite.py",
+    "taskplane/stage_entities.py",
+    "taskplane/stage_handoff.py",
+    "taskplane/stage_migration.py",
+    "taskplane/loop_status.py",
+    "taskplane/dashboard.py",
+    "taskplane/runtime_eval.py",
+    "skills/tp-go/SKILL.md",
+)
+
+
+def _load_packager(name: str):
+    path = ROOT / "scripts" / name
+    spec = importlib.util.spec_from_file_location(
+        "_stage_release_" + name.removesuffix(".py"), path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _build_archives(tmp_path: Path) -> dict[str, Path]:
+    openai = _load_packager("package_openai.py")
+    claude = _load_packager("package_claude.py")
+    paths = {
+        "openai": tmp_path / "taskplane-openai.zip",
+        "claude": tmp_path / "taskplane-claude.zip",
+    }
+    openai.write_zip(openai.package_files(openai.load_manifest()),
+                     paths["openai"])
+    claude.write_zip(claude.package_files(), paths["claude"])
+    openai.validate_archive(paths["openai"])
+    claude.validate_archive(paths["claude"], VERSION)
+    return paths
+
+
+def _replace_hook_manifest(
+        source: Path, destination: Path, value: dict[str, object]) -> None:
+    member = "taskplane/hooks/hooks.json"
+    with zipfile.ZipFile(source) as archive:
+        entries = [(info, archive.read(info.filename))
+                   for info in archive.infolist()]
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED,
+                         compresslevel=9) as archive:
+        for info, body in entries:
+            archive.writestr(
+                info, json.dumps(value).encode("utf-8")
+                if info.filename == member else body)
+
+
+def test_ci_runs_the_stage_release_contract_on_python_310_through_312() \
+        -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8")
+    start_310 = workflow.index('- python: "3.10"')
+    start_311 = workflow.index('- python: "3.11"')
+    start_312 = workflow.index('- python: "3.12"')
+    python_310 = workflow[start_310:start_311]
+    python_311 = workflow[start_311:start_312]
+    python_312 = workflow[start_312:]
+
+    for test_file in STAGE_MATRIX_TESTS:
+        assert test_file in python_310
+        assert test_file in python_311
+    assert "taskplane/tests" in python_312
+
+
+def test_post_21713_manifests_keep_parser_safe_hooks_and_supported_metadata() \
+        -> None:
+    codex = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
+        encoding="utf-8"))
+    claude = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(
+        encoding="utf-8"))
+    marketplace = json.loads(
+        (ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+    hooks = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))
+
+    assert {codex["version"], claude["version"], marketplace["version"],
+            marketplace["plugins"][0]["version"]} == {VERSION}
+    assert tuple(int(part) for part in VERSION.split(".")[:3]) >= (2, 17, 13)
+    assert set(hooks) <= SUPPORTED_HOOK_ROOT_FIELDS
+    assert "hostNative" not in hooks
+    assert "hostNative" not in codex
+    assert claude["hostNative"] == "../hooks/host-native.json"
+
+
+def test_codex_and_claude_archives_ship_identical_stage_runtime_bytes(
+        tmp_path: Path) -> None:
+    paths = _build_archives(tmp_path)
+    payloads: dict[str, dict[str, bytes]] = {}
+    for host, path in paths.items():
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            payloads[host] = {
+                relative: archive.read("taskplane/" + relative)
+                for relative in SHARED_RUNTIME_MEMBERS
+            }
+            assert {"taskplane/" + relative
+                    for relative in SHARED_RUNTIME_MEMBERS} <= names
+            hooks = json.loads(payloads[host]["hooks/hooks.json"])
+            assert set(hooks) <= SUPPORTED_HOOK_ROOT_FIELDS
+            assert "hostNative" not in hooks
+
+    assert payloads["openai"] == payloads["claude"]
+    guidance = payloads["openai"]["skills/tp-go/SKILL.md"].decode("utf-8")
+    for rail in ("Codex", "Claude", "managed", "Slack-capable",
+                 "accessible text"):
+        assert rail in guidance
+
+
+@pytest.mark.parametrize("host", ("openai", "claude"))
+def test_each_archive_validator_rejects_the_21712_hostnative_hook_shape(
+        tmp_path: Path, host: str) -> None:
+    paths = _build_archives(tmp_path)
+    unsafe = tmp_path / f"unsafe-{host}.zip"
+    _replace_hook_manifest(paths[host], unsafe, {
+        "hostNative": "./host-native.json", "hooks": {}})
+    packager = _load_packager(
+        "package_openai.py" if host == "openai" else "package_claude.py")
+
+    with pytest.raises(packager.PackageError, match="hook manifest"):
+        if host == "openai":
+            packager.validate_archive(unsafe)
+        else:
+            packager.validate_archive(unsafe, VERSION)
+
+
+@pytest.mark.parametrize("host", ("openai", "claude"))
+def test_package_bytes_are_deterministic_for_the_same_release_tree(
+        tmp_path: Path, host: str) -> None:
+    packager = _load_packager(
+        "package_openai.py" if host == "openai" else "package_claude.py")
+    files = (packager.package_files(packager.load_manifest())
+             if host == "openai" else packager.package_files())
+    first = tmp_path / f"{host}-first.zip"
+    second = tmp_path / f"{host}-second.zip"
+
+    packager.write_zip(files, first)
+    packager.write_zip(files, second)
+
+    assert first.read_bytes() == second.read_bytes()
+    assert hashlib.sha256(first.read_bytes()).hexdigest() == \
+        hashlib.sha256(second.read_bytes()).hexdigest()

@@ -11,10 +11,41 @@ engine on every call. Otherwise set
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Gather compactly
 (skip empty sections):
 
-`flow.json` is the approved read-only graph: one status request fans out to
-loop/task state, requirements/debt, and dependency graph reads; those converge
-into one mission-control dashboard and one truthful action/no-action banner.
-This flow introduces no new gate and mutates no state.
+`flow.json` is the approved read-only graph: one status request fans out to a
+bounded stage/manifest/lineage read, loop/task state, requirements/debt, and
+dependency graph reads; those converge into one mission-control dashboard and
+one truthful action/no-action banner. This flow introduces no new gate and
+mutates no state.
+
+## Stage-native bounded status
+
+For a stage-native v4 run, the stage branch consumes only bounded stage
+summaries and the verified handoff projection. Show the current stage,
+predecessor outcome, handoff fingerprint, child lineage, and pending human
+action. Read no more than the returned page bound and cursor. Never open a
+predecessor execution root, conversation, event log, tool transcript, lease,
+meter, active contract, runtime environment, or mutable worktree merely to
+render status. A missing, corrupt, ambiguous, oversized, or
+fingerprint-mismatched projection stays visibly unavailable/fail-closed; never
+choose the first stage, infer an outcome, or recover by loading predecessor
+runtime context.
+
+For a `taskplane.stage-dispatch/v1` invocation, its verified bounded startup is
+the complete stage execution context: current stage authority, budget, and
+scope, one `taskplane.stage-handoff/v1` versioned bounded manifest, explicitly
+selected content-addressed artifact references, execution claim, and attempt
+id. Status may render bounded summaries about that context but may not expand its
+scope or treat an artifact reference as new authority. Retained terminal-stage
+artifacts remain addressable for audit; later reuse requires an explicitly
+authorized handoff with new authority, and discarded results are not
+consumable by default without exact explicit nonconsumable-reuse authority.
+
+Status never starts an implementation child, reopens a terminal stage, or
+invokes cleanup. Stage terminalization and status rendering do not change
+R-0003 enforcement, ReviewKernel evidence/provenance, collision isolation,
+orchestrator-only gates, final sign-off, or exact-worktree cleanup eligibility.
+When stage-native execution is disabled or the run is unmigrated, preserve the
+existing v3/legacy read behavior and do not synthesize stage lifecycle facts.
 
 When status concerns a managed repository/run, use `$TP repository status
 --run-id <id>` and the manifest's checkout/run/artifact paths rather than
@@ -28,7 +59,8 @@ action is a real pending human action and must be shown in the banner.
 - `$TP track list` — all tracks + which is active
 - `$TP req list` — requirements incl. open debt items
 - `$TP status` — project loop state plus the active contract, if any (what is
-  happening and who's governed right now)
+  happening and who's governed right now), with an additive bounded stage
+  projection when one is authoritative
 
 **Present it as the dashboard, not a wall of JSON.**
 

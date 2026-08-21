@@ -31,12 +31,22 @@ jobs:
               taskplane/tests/test_repository_preflight.py
               taskplane/tests/test_storage_kernel.py
               taskplane/tests/test_windows_portability.py
+              taskplane/tests/test_stage_non_build_handoffs.py
+              taskplane/tests/test_stage_cross_host.py
+              taskplane/tests/test_stage_rollout.py
+              taskplane/tests/test_stage_r0003_preservation.py
+              taskplane/tests/test_stage_release_matrix.py
           - python: "3.11"
             tests: >-
               taskplane/tests/test_r0002_reviewkernel_regression_floor.py
               taskplane/tests/test_repository_preflight.py
               taskplane/tests/test_storage_kernel.py
               taskplane/tests/test_windows_portability.py
+              taskplane/tests/test_stage_non_build_handoffs.py
+              taskplane/tests/test_stage_cross_host.py
+              taskplane/tests/test_stage_rollout.py
+              taskplane/tests/test_stage_r0003_preservation.py
+              taskplane/tests/test_stage_release_matrix.py
           - python: "3.12"
             tests: >-
               taskplane/tests
@@ -174,6 +184,9 @@ jobs:
           assert len(versions) == 1, f"version drift: {sorted(versions)}"
           assert cj["name"] == pj["name"] == mp["plugins"][0]["name"]
           assert cj["skills"] == "./skills/"
+          assert set(hooks) <= {"description", "hooks"}, \
+              f"Codex-rejected hooks root fields: {sorted(set(hooks) - {'description', 'hooks'})}"
+          assert "hostNative" not in hooks
           assert "PreToolUse" in hooks["hooks"]
           for f in glob.glob("skills/*/SKILL.md"):
               desc = re.search(r'description:\s*"(.*)"', open(f).read())

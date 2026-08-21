@@ -1,0 +1,251 @@
+"""Executable rollout and rollback contract for stage-native v4 runs.
+
+The rollout is deliberately one-way: shadow work is read-only, only a new-run
+canary may promote a pristine v3 run, and rollback pauses mutations without
+collapsing or deleting an already-migrated run.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from taskplane import loop, run_store, stage_migration, storage, taskplane_lite
+
+
+RUN_ID = "run-stage-rollout"
+NOW = "2026-08-21T16:00:00Z"
+
+
+def _store(tmp_path: Path) -> tuple[run_store.RunStore, dict[str, object]]:
+    identity = storage.identity_from_remote(
+        "https://github.com/example/project.git")
+    store = run_store.RunStore(home=str(tmp_path / "home"))
+    manifest = store.create(
+        identity,
+        run_id=RUN_ID,
+        checkout=str(tmp_path / "checkout"),
+        host={"kind": "codex", "session_id": "thread-rollout"},
+        target={"kind": "workspace", "revision": "1" * 40},
+    )
+    return store, manifest
+
+
+def _authority() -> dict[str, object]:
+    return {
+        "schema": "taskplane.stage-authority-binding/v1",
+        "run_id": RUN_ID,
+        "repository_id": "github.com/example/project",
+        "repository_key": "github.com-example-project",
+        "worktree_id": "legacy-workspace",
+        "target_revision": "1" * 40,
+        "worktree_revision": "1" * 40,
+        "requirement_id": "R-0004",
+        "requirement_revision": "4",
+        "design_revision": "2",
+        "design_fingerprint": "c" * 64,
+        "actor": "human:vdemkiv",
+        "session_id": "codex-thread-rollout",
+        "authority_revision": 7,
+        "authority_fingerprint": "d" * 64,
+    }
+
+
+def _legacy_sources(step: str = "execute") -> dict[str, bytes]:
+    loop_state = {
+        "governance_revision": 2,
+        "goal": "Retain the legacy delivery record",
+        "requirement_id": "R-0004",
+        "step": step,
+        "current_task": 0,
+        "tasks": [
+            {"id": "t01", "status": "passed", "commit": "a" * 40,
+             "reviews": [{"lens": "qa", "verdict": "pass"}],
+             "evidence": [{"kind": "suite", "fingerprint": "e" * 64}]},
+            {"id": "t02", "status": "running", "deps": ["t01"]},
+        ],
+        "decisions": [{"id": "D-1", "decision": "approved"}],
+        "audit_history": [{"event": "gate", "actor": "human:vdemkiv"}],
+    }
+    return {
+        "loop.json": (json.dumps(loop_state, indent=2) + "\n").encode(),
+        "tracks.json": b'{"active":"main","tracks":{}}\n',
+        "requirements/R-0004.json": b'{"id":"R-0004"}\n',
+    }
+
+
+def _migrate(
+        workspace: Path, store: run_store.RunStore, initial: dict[str, object],
+        *, step: str = "execute") -> dict[str, object]:
+    return stage_migration.migrate_singleton(
+        str(workspace), store=store, run_id=RUN_ID,
+        expected_revision=int(initial["revision"]),
+        operation_id=f"migrate-rollout-{step}",
+        authority=_authority(),
+        requirement={
+            "id": "R-0004", "revision": "4", "fingerprint": "b" * 64},
+        design={"revision": "2", "fingerprint": "c" * 64},
+        contracts=["contract:stage-entity-lifecycle"],
+        created_at=NOW,
+        legacy_sources=_legacy_sources(step),
+        authority_validator=lambda _expected, _current: None,
+    )
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, "disabled"),
+        ("", "disabled"),
+        ("true", "disabled"),
+        ("1", "disabled"),
+        ("NEW-RUN", "new-run"),
+        ("new-run", "new-run"),
+        ("enabled", "enabled"),
+    ],
+)
+def test_stage_rollout_requires_an_exact_explicit_mode(
+        raw: str | None, expected: str) -> None:
+    environment = {} if raw is None else {"TASKPLANE_STAGE_NATIVE": raw}
+
+    assert taskplane_lite.stage_native_mode(environment) == expected
+    assert taskplane_lite.stage_native_enabled(environment) is \
+        (expected != "disabled")
+
+
+def test_shadow_migration_compares_conservation_without_switching_readers(
+        tmp_path: Path) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    store, initial = _store(tmp_path)
+    sources = _legacy_sources()
+    before = _tree_bytes(Path(store.home) / "runs" / RUN_ID)
+
+    shadow = stage_migration.retain_legacy_sources(sources)
+
+    assert stage_migration.verify_retained_sources(shadow, sources)
+    assert shadow["conservation"]["tasks"]["count"] == 2
+    assert shadow["conservation"]["reviews"]["count"] == 1
+    assert shadow["conservation"]["evidence"]["count"] == 1
+    assert stage_migration.migration_projection(
+        str(workspace), store=store, run_id=RUN_ID) is None
+    assert store.load(RUN_ID) == initial
+    assert _tree_bytes(Path(store.home) / "runs" / RUN_ID) == before
+
+
+@pytest.mark.parametrize(
+    ("mode", "has_singleton", "migration_bound", "expected"),
+    [
+        ("disabled", False, False, "stage-native mutation is disabled"),
+        ("new-run", False, False, None),
+        ("new-run", True, False,
+         "new-run mode cannot promote an existing singleton or "
+         "migration-bound run; legacy read-only behavior remains active"),
+        ("new-run", False, True,
+         "new-run mode cannot promote an existing singleton or "
+         "migration-bound run; legacy read-only behavior remains active"),
+        ("enabled", False, False,
+         "unmigrated run requires TASKPLANE_STAGE_NATIVE=new-run; "
+         "legacy loop behavior remains active"),
+    ],
+)
+def test_new_run_canary_never_promotes_an_existing_singleton(
+        monkeypatch: pytest.MonkeyPatch, mode: str, has_singleton: bool,
+        migration_bound: bool, expected: str | None) -> None:
+    monkeypatch.setattr(
+        loop, "load", lambda _workspace: ({"step": "execute"}
+                                           if has_singleton else None))
+    manifest: dict[str, object] = {
+        "schema": "taskplane.run/v3", "run_id": RUN_ID}
+    if migration_bound:
+        manifest["migration_receipt"] = {"fingerprint": "f" * 64}
+
+    assert loop._stage_mutation_blocker(mode, manifest, "/workspace") == \
+        expected
+
+
+def test_verified_migration_is_the_reader_cutover_boundary(
+        tmp_path: Path) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    store, initial = _store(tmp_path)
+
+    assert stage_migration.migration_projection(
+        str(workspace), store=store, run_id=RUN_ID) is None
+
+    receipt = _migrate(workspace, store, initial)
+    projection = stage_migration.migration_projection(
+        str(workspace), store=store, run_id=RUN_ID)
+
+    assert receipt["result"]["classification"] == "stage"
+    assert projection is not None
+    assert projection["receipt"] == receipt
+    assert projection["foreground_stage_id"] == receipt["stage_ids"][0]
+    assert projection["stages"][receipt["stage_ids"][0]]["state"] == \
+        "active"
+
+
+def test_rollback_pauses_mutation_but_preserves_migrated_history_and_bytes(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    store, initial = _store(tmp_path)
+    receipt = _migrate(workspace, store, initial)
+    stage_id = receipt["stage_ids"][0]
+    run_root = Path(store.home) / "runs" / RUN_ID
+    before = _tree_bytes(run_root)
+    monkeypatch.setattr(loop, "_stage_store", lambda _ws, _run_id: store)
+    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
+
+    history = loop.stage_command(
+        str(workspace), "history", {"run_id": RUN_ID, "limit": 100})
+    refused = loop.stage_command(
+        str(workspace), "resume", {"run_id": RUN_ID, "stage_id": stage_id})
+
+    assert [row["stage_id"] for row in history["stages"]] == [stage_id]
+    assert history["stages"][0]["state"] == "active"
+    assert refused == {
+        "schema": "taskplane.stage-command-result/v1",
+        "command": "resume",
+        "run_id": RUN_ID,
+        "enabled": False,
+        "legacy": False,
+        "error": "stage-native mutation is disabled",
+    }
+    assert _tree_bytes(run_root) == before
+    assert loop._stage_mutation_blocker(
+        "enabled", store.load(RUN_ID), str(workspace)) is None
+
+
+def test_rollback_never_guesses_an_ambiguous_legacy_outcome(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    store, initial = _store(tmp_path)
+    receipt = _migrate(workspace, store, initial, step="mystery-state")
+    run_root = Path(store.home) / "runs" / RUN_ID
+    before = _tree_bytes(run_root)
+    monkeypatch.setattr(loop, "_stage_store", lambda _ws, _run_id: store)
+    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
+
+    projection = stage_migration.migration_projection(
+        str(workspace), store=store, run_id=RUN_ID)
+    history = loop.stage_command(
+        str(workspace), "history", {"run_id": RUN_ID, "limit": 100})
+
+    assert receipt["stage_ids"] == []
+    assert receipt["result"]["classification"] == "legacy-unknown"
+    assert receipt["result"]["unknown_reason"] == \
+        "unrecognized_loop_step:mystery-state"
+    assert projection is not None
+    assert projection["stages"] == {}
+    assert history["stages"] == []
+    assert _tree_bytes(run_root) == before

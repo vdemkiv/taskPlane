@@ -5,7 +5,7 @@ description: "Taskplane's governed Evaluate-Loop is distinct from Conductor/supa
 
 # /tp-go — goal in, governed delivery out
 
-Current workflow contract: **v2.16**. Review, Evaluate, and final Engineering
+Current workflow contract: **v2.17**. Review, Evaluate, and final Engineering
 all consume the same **canonical review context**; transport may differ by
 host, but the workflow and evidence contract do not.
 
@@ -47,6 +47,24 @@ DoR/DoD envelope, one complete 26-lens disposition, and leased results.
 Dispatch exactly the deep slots plus at most one light sweep. An
 `impact_incomplete` run dispatches nobody. Lenses consume scoped artifact
 references and never rederive diff, graph, routing, or runnability.
+
+**One bounded stage handoff.** With stage-native delivery enabled, each
+Product, Design, Plan, Build, Evaluate, Engineering, and Retro action creates
+or resumes an independently addressable stage. A worker's sole startup
+envelope is the engine-emitted `taskplane.stage-dispatch/v1`, which serializes
+the bounded `taskplane.stage-startup/v1`: current stage authority, budget and
+declared scope, execution claim, one bounded versioned
+`taskplane.stage-handoff/v1` input handoff, and explicitly selected
+content-addressed artifacts. Do not inherit or reconstruct predecessor agents,
+conversations, event logs, tool transcripts, leases, runtime state, or
+execution roots. Do not open a predecessor execution tree to fill a missing
+field. A missing, corrupt, stale, oversized, or authority-mismatched envelope
+blocks dispatch. Codex, Claude, managed, Slack-capable, and accessible text
+fallback rails all carry the same canonical stage and handoff semantics.
+
+Non-build stages may terminalize `closed` or `discarded` without creating an
+implementation stage. Their retained immutable artifacts remain auditable;
+later reuse is a new explicitly authorized handoff, never an implicit resume.
 
 **Model tiers.** Each `loop next` payload and each `lens dispatch` brief carries
 an exact Codex-safe `task_name`, the taskplane `role`/`agent`, a `model` (a
@@ -136,7 +154,11 @@ explicit approval in conversation. Never run the loop silently.
    `references/codex-native-dispatch.md`: use the exact `task_name`, model and
    `reasoning_effort`, standalone `role_marker`, and complete
    `role_instructions` file plus action payload. Wait with bounded native
-   waits and collect the final result. Do not perform the role inline, call
+   waits and collect the final result. If the action includes
+   `stage_runtime_dispatch`, pass it unchanged and make it the worker's only
+   stage startup context; reject mismatched stage heads, handoff fingerprints,
+   authority, scope, budget, execution claim, or selected artifacts. Do not
+   perform the role inline, call
    `loop next` again while it is running, or replace its contract. The PM
    worker returns one R-id; attach it on its mechanical gate with
    `$TP loop gate pass --req R-XXXX`. Product/planner return artifacts; only
@@ -221,3 +243,24 @@ explicit approval in conversation. Never run the loop silently.
    recommend optional user-started `/goal`; Goal mode never replaces a gate.
 6. **Finish:** after sign-off run the retro per `references/retro.md`,
    then `discipline/finishing-work.md` (debt, graph rescan, track close).
+
+**Stage rollout and rollback.** `TASKPLANE_STAGE_NATIVE` is disabled by
+default and accepts only two enabling modes: `new-run` for a pristine new-run
+canary, and `enabled` after verified migration. Other values fail closed, and
+`new-run` refuses an existing singleton or migration-bound run. Before
+cutover, shadow migration compares bounded legacy/v4 summaries,
+retained-reference counts, lineage, and authority without switching readers.
+Enable stage-native roots for new runs before migrating existing runs; keep
+legacy CLI reads available, and cut status/dashboard/review/sign-off/Retro to
+bounded readers only after the migration receipt and conservation proof
+verify. Rollback disables new v4 mutations but leaves migrated v4 history,
+immutable stage and handoff objects, receipts, and retained legacy sources
+readable. Never reverse-collapse history into `loop.json`, reopen terminal
+stages, guess unknown state, delete retained artifacts, weaken authority or
+evidence, or broaden/force R-0003 cleanup. Migrated runs resume only after
+re-enable or explicit forward migration; there is no lossy reverse migration.
+
+Stage terminalization is not cleanup. Post-merge worktree cleanup stays a
+separate orchestrator-only R-0003 maintenance action and remains eligible only
+after the exact registered managed worktree, merged-tip ancestry,
+re-resolved-primary-main, and last-moment fail-closed proofs all pass.

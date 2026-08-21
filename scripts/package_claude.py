@@ -79,10 +79,19 @@ MUST_CONTAIN = (
     "taskplane/tp.py",
     "taskplane/lens.py",
     "taskplane/lens_signals.py",
+    "taskplane/stage_entities.py",
+    "taskplane/stage_handoff.py",
+    "taskplane/stage_migration.py",
+    "taskplane/loop_status.py",
+    "taskplane/dashboard.py",
+    "taskplane/runtime_eval.py",
     "lenses/catalog.json",
     "skills/taskplane/SKILL.md",
+    "skills/tp-go/SKILL.md",
     "docs/assets/taskplane-cowork-flow.gif",
 )
+
+SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
 
 
 class PackageError(RuntimeError):
@@ -94,6 +103,25 @@ def require(condition: bool, message: str) -> None:
         raise PackageError(message)
 
 
+def validate_hook_manifest(value: object) -> dict:
+    """Reject the 2.17.12 hook shape on every marketplace artifact."""
+    require(isinstance(value, dict), "hook manifest root must be an object")
+    require(set(value) <= SUPPORTED_HOOK_ROOT_FIELDS,
+            "hook manifest contains root fields rejected by Codex")
+    require(isinstance(value.get("hooks"), dict),
+            "hook manifest must declare hooks as an object")
+    return value
+
+
+def load_hook_manifest() -> dict:
+    path = ROOT / "hooks" / "hooks.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PackageError(f"cannot read hook manifest: {exc}") from exc
+    return validate_hook_manifest(value)
+
+
 def add_tree(files: set, base: Path, predicate) -> None:
     require(base.is_dir(), f"required directory is missing: {base.name}")
     for path in base.rglob("*"):
@@ -102,6 +130,7 @@ def add_tree(files: set, base: Path, predicate) -> None:
 
 
 def package_files() -> list:
+    load_hook_manifest()
     files: set = {MANIFEST_PATH, MARKETPLACE_PATH}
     for relative in REQUIRED_FILES:
         path = ROOT / relative
@@ -178,6 +207,15 @@ def validate_archive(path: Path, version: str) -> tuple:
         require(manifest["version"] == version,
                 f"packaged manifest says {manifest['version']}, "
                 f"expected {version}")
+        require(manifest.get("hostNative") == "../hooks/host-native.json",
+                "Claude manifest must retain supported host-native metadata")
+        try:
+            hook_manifest = json.loads(
+                archive.read(f"{ARCHIVE_ROOT}/hooks/hooks.json"))
+        except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise PackageError(
+                "archive contains an unreadable hook manifest") from exc
+        validate_hook_manifest(hook_manifest)
         uncompressed = sum(i.file_size for i in archive.infolist())
     return len(names), uncompressed
 
@@ -208,6 +246,8 @@ def main(argv=None) -> int:
                 and marketplace["plugins"][0]["version"] == version,
                 "manifest and marketplace versions disagree — the release "
                 "is not single-sourced")
+        require(manifest.get("hostNative") == "../hooks/host-native.json",
+                "Claude manifest must retain supported host-native metadata")
         files = package_files()
         name = (f"taskplane-{version}-claude.zip" if args.ext == "zip"
                 else f"taskplane-{version}.plugin")

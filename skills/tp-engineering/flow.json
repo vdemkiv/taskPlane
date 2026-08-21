@@ -2,8 +2,10 @@
   "schema": "taskplane.skill-flow/v1",
   "skill": "tp-engineering",
   "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "stage_runtime": {"dispatch_schema":"taskplane.stage-dispatch/v1","startup_schema":"taskplane.stage-startup/v1","handoff_schema":"taskplane.stage-handoff/v1","bounded_inputs":["authority","input_handoff","selected_artifacts","budget","declared_scope","execution_claim"],"forbidden_inheritance":["agents","conversations","event_logs","tool_transcripts","leases","runtime_state","predecessor_roots"],"non_build_terminal_outcomes":["closed","discarded"],"implicit_build":false,"rollout_modes":["new-run","enabled"],"rollback":"retain-v4-read-only-no-reverse-migration"},
   "nodes": [
-    {"id": "target", "label": "target pinned", "kind": "input"},
+    {"id": "manifest", "label": "bounded stage manifest / legacy entry", "kind": "input"},
+    {"id": "target", "label": "target pinned", "kind": "stage"},
     {"id": "diff", "label": "one diff + graph impact", "kind": "stage"},
     {"id": "quality", "label": "graph-quality gate", "kind": "stage"},
     {"id": "route", "label": "26 lens dispositions", "kind": "stage"},
@@ -11,7 +13,8 @@
     {"id": "promote", "label": "high-risk light → bounded deep wave", "kind": "parallel"},
     {"id": "collect", "label": "canonical collection", "kind": "stage"},
     {"id": "dashboard", "label": "workflow + graph + findings", "kind": "visual"},
-    {"id": "signoff", "label": "approve / request changes", "kind": "gate"}
+    {"id": "signoff", "label": "approve / request changes", "kind": "gate"},
+    {"id": "terminal", "label": "stage terminal; no implicit child or cleanup", "kind": "stage"}
   ],
-  "edges": [["target", "diff"], ["diff", "quality"], ["quality", "route"], ["route", "wave"], ["wave", "promote"], ["promote", "collect"], ["collect", "dashboard"], ["dashboard", "signoff"]]
+  "edges": [["manifest", "target"], ["target", "diff"], ["diff", "quality"], ["quality", "route"], ["route", "wave"], ["wave", "promote"], ["promote", "collect"], ["collect", "dashboard"], ["dashboard", "signoff"], ["signoff", "terminal"]]
 }
