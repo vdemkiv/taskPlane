@@ -1,6 +1,7 @@
 """Deterministic managed repository and GitHub pull-request acquisition."""
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import hashlib
 import json
@@ -16,11 +17,114 @@ import recovery
 import taskplane_lite as tp
 
 
+STAGE_AUTHORITY_SCHEMA = "taskplane.stage-authority-binding/v1"
+_STAGE_AUTHORITY_FIELDS = frozenset({
+    "schema", "run_id", "repository_id", "repository_key", "worktree_id",
+    "target_revision", "worktree_revision", "requirement_id",
+    "requirement_revision", "design_revision", "design_fingerprint",
+    "actor", "session_id", "authority_revision", "authority_fingerprint",
+})
+_AUTHORITY_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_AUTHORITY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")
+_AUTHORITY_REPOSITORY_ID = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
+_AUTHORITY_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+_WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
 class RepositoryAcquisitionError(RuntimeError):
     def __init__(self, kind: str, detail: str):
         super().__init__(detail)
         self.kind = str(kind)
         self.detail = str(detail)
+
+
+def _authority_string(value: object, label: str, *,
+                      pattern: re.Pattern[str] | None = None,
+                      limit: int = 256) -> str:
+    if not isinstance(value, str) or not value or value != value.strip() or \
+            len(value) > limit or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in value) or os.path.isabs(value) or \
+            _WINDOWS_ABSOLUTE_PATH.match(value):
+        raise RepositoryAcquisitionError(
+            "authority", f"stage authority {label} is invalid")
+    if pattern is not None and not pattern.fullmatch(value):
+        raise RepositoryAcquisitionError(
+            "authority", f"stage authority {label} is invalid")
+    return value
+
+
+def _normalize_stage_authority(binding: object) -> dict:
+    """Validate the closed, path-free authority identity for one mutation."""
+    if not isinstance(binding, dict):
+        raise RepositoryAcquisitionError(
+            "authority", "stage authority binding must be an object")
+    keys = set(binding)
+    if keys != _STAGE_AUTHORITY_FIELDS:
+        raise RepositoryAcquisitionError(
+            "authority", "stage authority binding fields are incomplete")
+    if binding.get("schema") != STAGE_AUTHORITY_SCHEMA:
+        raise RepositoryAcquisitionError(
+            "authority", "stage authority binding schema is invalid")
+    normalized = copy.deepcopy(binding)
+    normalized["run_id"] = _authority_string(
+        binding.get("run_id"), "run id", pattern=_AUTHORITY_RUN_ID,
+        limit=128)
+    normalized["repository_id"] = _authority_string(
+        binding.get("repository_id"), "repository id",
+        pattern=_AUTHORITY_REPOSITORY_ID)
+    for field, label in (
+            ("repository_key", "repository key"),
+            ("worktree_id", "worktree id"),
+            ("requirement_id", "requirement id"),
+            ("actor", "actor"),
+            ("session_id", "session id")):
+        normalized[field] = _authority_string(
+            binding.get(field), label, pattern=_AUTHORITY_ID)
+    for field, label in (
+            ("target_revision", "target revision"),
+            ("worktree_revision", "worktree revision"),
+            ("requirement_revision", "requirement revision")):
+        normalized[field] = _authority_string(
+            binding.get(field), label, limit=256)
+    design_revision = binding.get("design_revision")
+    design_fingerprint = binding.get("design_fingerprint")
+    if (design_revision is None) != (design_fingerprint is None):
+        raise RepositoryAcquisitionError(
+            "authority", "stage authority design identity is incomplete")
+    if design_revision is not None:
+        normalized["design_revision"] = _authority_string(
+            design_revision, "design revision", limit=256)
+        normalized["design_fingerprint"] = _authority_string(
+            design_fingerprint, "design fingerprint",
+            pattern=_AUTHORITY_FINGERPRINT, limit=64)
+    revision = binding.get("authority_revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise RepositoryAcquisitionError(
+            "authority", "stage authority revision is invalid")
+    normalized["authority_fingerprint"] = _authority_string(
+        binding.get("authority_fingerprint"), "fingerprint",
+        pattern=_AUTHORITY_FINGERPRINT, limit=64)
+    return normalized
+
+
+def revalidate_stage_authority(expected_binding: dict,
+                               current_binding: dict) -> dict:
+    """Fail closed unless every stage-mutation authority fact is still exact.
+
+    The caller resolves ``current_binding`` at the last possible moment under
+    its run transaction lock.  This seam performs no advisory upgrade and
+    stores no host paths; any identity or revision drift is a stable authority
+    failure rather than a mergeable lifecycle conflict.
+    """
+    expected = _normalize_stage_authority(expected_binding)
+    current = _normalize_stage_authority(current_binding)
+    for field in sorted(_STAGE_AUTHORITY_FIELDS - {"schema"}):
+        if expected[field] != current[field]:
+            raise RepositoryAcquisitionError(
+                "authority", f"stage authority binding changed: {field}")
+    return copy.deepcopy(current)
 
 
 @dataclass(frozen=True)

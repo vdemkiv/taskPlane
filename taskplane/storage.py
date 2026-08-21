@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -24,6 +25,9 @@ _SCP_REMOTE = re.compile(
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMMIT_ID = re.compile(r"^[0-9a-fA-F]{40,64}$")
+_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+STAGE_EXECUTION_ROOT_CLAIM = ".taskplane-execution-root.json"
+STAGE_EXECUTION_ATTEMPT_CLAIM = ".taskplane-execution-attempt.json"
 LOCATOR = os.path.join("taskplane", "workspace.json")
 
 
@@ -197,9 +201,7 @@ def resolve_layout(identity: RepositoryIdentity, *, run_id: str,
     """Return every canonical root for one repository/run without writing."""
     root = taskplane_home(home)
     key = identity.key
-    run = str(run_id or "")
-    if not _RUN_ID.fullmatch(run) or run in {".", ".."}:
-        raise StorageIdentityError("run id is not a safe path component")
+    run = validate_stage_path_id(run_id, "run id")
     run_root = os.path.join(root, "runs", run)
     checkout_root = os.path.join(root, "checkouts", key)
     project_root = os.path.join(root, "projects", key)
@@ -335,6 +337,381 @@ def managed_path_allowed(checkout: str, path: str) -> bool:
     candidate = os.path.realpath(path)
     return any(os.path.commonpath((os.path.realpath(root), candidate)) ==
                os.path.realpath(root) for root in locator["paths"].values())
+
+
+def _path_component(value: object, pattern: re.Pattern[str],
+                    label: str) -> str:
+    if not isinstance(value, str):
+        raise StorageIdentityError(f"{label} is not a safe path component")
+    text = value
+    if text in {"", ".", ".."} or not pattern.fullmatch(text):
+        raise StorageIdentityError(f"{label} is not a safe path component")
+    return text
+
+
+def validate_stage_path_id(value: object, label: str = "stage id") -> str:
+    """Validate one portable run/stage/execution/attempt path identity."""
+    return _path_component(value, _RUN_ID, label)
+
+
+def _confined_stage_path(home: str, *parts: str,
+                         leaf_kind: str) -> str:
+    """Resolve one stage path and reject unsafe existing filesystem nodes.
+
+    Path construction is deliberately side-effect free.  The RunStore owns
+    directory and immutable-object creation under its lock.  Existing nodes
+    are inspected with ``lstat`` so a symlink is never silently resolved into
+    stage authority, even when its destination remains beneath Taskplane home.
+    """
+    root = taskplane_home(home)
+    path = os.path.abspath(os.path.join(root, *parts))
+    if os.path.commonpath((root, path)) != root:
+        raise StorageIdentityError("stage path escapes taskPlane home")
+    current = root
+    relative = os.path.relpath(path, root).split(os.sep)
+    for index, part in enumerate(relative):
+        current = os.path.join(current, part)
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            # A descendant cannot exist when its ancestor is absent.  Keep
+            # walking only to return the deterministic path without writing.
+            continue
+        except OSError as exc:
+            raise StorageIdentityError(
+                f"stage path is not safely inspectable: {exc}") from exc
+        if stat.S_ISLNK(mode):
+            raise StorageIdentityError("stage path uses an unsafe symlink")
+        is_leaf = index == len(relative) - 1
+        if not is_leaf and not stat.S_ISDIR(mode):
+            raise StorageIdentityError(
+                "stage path ancestor is not a directory")
+        if is_leaf and leaf_kind == "directory" and not stat.S_ISDIR(mode):
+            raise StorageIdentityError("stage execution root is not a directory")
+        if is_leaf and leaf_kind == "file" and not stat.S_ISREG(mode):
+            raise StorageIdentityError("stage object path is not a regular file")
+    return path
+
+
+def stage_object_path_for_run(home: str, run_id: str, stage_id: str,
+                              fingerprint: str) -> str:
+    """Canonical immutable stage-object path for an external run store."""
+    run = validate_stage_path_id(run_id, "run id")
+    stage = validate_stage_path_id(stage_id, "stage id")
+    digest = _path_component(fingerprint, _FINGERPRINT, "stage fingerprint")
+    return _confined_stage_path(
+        home, "runs", run, "stages", "objects", stage, f"{digest}.json",
+        leaf_kind="file")
+
+
+def _confined_directory_components(home: str,
+                                   directory: str) -> tuple[str, list[str]]:
+    root = taskplane_home(home)
+    target = os.path.abspath(directory)
+    if os.path.commonpath((root, target)) != root:
+        raise StorageIdentityError("stage directory escapes taskPlane home")
+    relative = os.path.relpath(target, root)
+    components = [] if relative == "." else relative.split(os.sep)
+    if any(part in {"", ".", ".."} for part in components):
+        raise StorageIdentityError("stage directory component is invalid")
+    return root, components
+
+
+def _open_confined_directory(home: str, directory: str, *,
+                             create: bool) -> int:
+    """Open a pinned directory chain using mkdirat/openat without links."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or \
+            os.open not in os.supports_dir_fd or \
+            os.mkdir not in os.supports_dir_fd:
+        raise StorageIdentityError(
+            "stage storage needs no-follow dir-fd support")
+    root, components = _confined_directory_components(home, directory)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(root, flags)
+    except OSError as exc:
+        raise StorageIdentityError(
+            f"taskPlane home is not safely inspectable: {exc}") from exc
+    try:
+        for part in components:
+            try:
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+                    try:
+                        os.fsync(descriptor)
+                    except OSError:
+                        pass
+                except FileExistsError:
+                    # A competing creator still needs the same openat proof.
+                    pass
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise StorageIdentityError("stage path is not a directory")
+        return descriptor
+    except StorageIdentityError:
+        os.close(descriptor)
+        raise
+    except OSError as exc:
+        os.close(descriptor)
+        raise StorageIdentityError(
+            f"stage directory is not safely accessible: {exc}") from exc
+
+
+def _create_claimed_directory(parent_fd: int, name: str, *,
+                              claim_name: str, payload: bytes) -> int:
+    """Create one directory leaf or verify its exact create-once claim."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    created = False
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        created = True
+        try:
+            os.fsync(parent_fd)
+        except OSError:
+            pass
+    except FileExistsError:
+        pass
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise StorageIdentityError(
+            "stage execution root is not a safe directory") from exc
+    claim_flags = os.O_RDONLY | os.O_NOFOLLOW
+    try:
+        try:
+            claim_fd = os.open(claim_name, claim_flags, dir_fd=descriptor)
+        except FileNotFoundError:
+            if not created:
+                raise StorageIdentityError(
+                    "existing stage execution root has no exact claim")
+            write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            try:
+                claim_fd = os.open(
+                    claim_name, write_flags, 0o600, dir_fd=descriptor)
+                with os.fdopen(claim_fd, "wb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.fsync(descriptor)
+            except OSError as exc:
+                raise StorageIdentityError(
+                    "stage execution-root claim could not be created") from exc
+            return descriptor
+        except OSError as exc:
+            raise StorageIdentityError(
+                "stage execution-root claim is not safely readable") from exc
+        with os.fdopen(claim_fd, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise StorageIdentityError(
+                    "stage execution-root claim is not a private regular file")
+            existing = handle.read(len(payload) + 1)
+        if existing != payload or metadata.st_size != len(payload):
+            raise StorageIdentityError(
+                "stage execution root belongs to another claim")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _canonical_claim_bytes(value: dict) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False, allow_nan=False) + "\n").encode(
+                           "utf-8")
+
+
+def _verify_execution_root_claim(directory_fd: int, *, claim_name: str,
+                                 payload: bytes) -> None:
+    """Verify exact private claim bytes through one pinned directory FD."""
+    try:
+        claim_fd = os.open(
+            claim_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except OSError as exc:
+        raise StorageIdentityError(
+            "stage execution-root claim is not safely readable") from exc
+    with os.fdopen(claim_fd, "rb") as handle:
+        metadata = os.fstat(handle.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise StorageIdentityError(
+                "stage execution-root claim is not a private regular file")
+        existing = handle.read(len(payload) + 1)
+    if existing != payload or metadata.st_size != len(payload):
+        raise StorageIdentityError(
+            "stage execution root belongs to another claim")
+
+
+def _reopen_execution_root_claim(
+        home: str, path: str, pinned_fd: int, *, claim_name: str,
+        payload: bytes) -> None:
+    """Bind a current canonical path to the exact inode already claimed."""
+    current_fd = _open_confined_directory(home, path, create=False)
+    try:
+        pinned = os.fstat(pinned_fd)
+        current = os.fstat(current_fd)
+        if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+            raise StorageIdentityError(
+                "stage execution root changed during claim")
+        _verify_execution_root_claim(
+            current_fd, claim_name=claim_name, payload=payload)
+    finally:
+        os.close(current_fd)
+
+
+def _root_claim(run_id: str, stage_id: str,
+                execution_root_id: str) -> dict:
+    return {
+        "schema": "taskplane.stage-execution-root-claim/v1",
+        "run_id": run_id,
+        "stage_id": stage_id,
+        "execution_root_id": execution_root_id,
+    }
+
+
+def _attempt_claim(run_id: str, stage_id: str, execution_root_id: str,
+                   attempt_id: str) -> dict:
+    return {
+        "schema": "taskplane.stage-execution-attempt-claim/v1",
+        "run_id": run_id,
+        "stage_id": stage_id,
+        "execution_root_id": execution_root_id,
+        "attempt_id": attempt_id,
+    }
+
+
+def _before_stage_execution_root_reopen(path: str) -> None:
+    """Deterministic no-op seam for rename/substitution regression tests."""
+
+
+def claim_stage_execution_root_for_run(
+        home: str, run_id: str, stage_id: str, execution_root_id: str,
+        attempt_id: str | None = None) -> dict:
+    """Create once or re-prove an exact isolated stage/attempt root claim."""
+    run = validate_stage_path_id(run_id, "run id")
+    stage = validate_stage_path_id(stage_id, "stage id")
+    execution = validate_stage_path_id(
+        execution_root_id, "execution root id")
+    attempt = (validate_stage_path_id(attempt_id, "attempt id")
+               if attempt_id is not None else None)
+    executions = _confined_stage_path(
+        home, "runs", run, "stages", "executions", leaf_kind="directory")
+    executions_fd = _open_confined_directory(home, executions, create=True)
+    root_claim = _root_claim(run, stage, execution)
+    root_payload = _canonical_claim_bytes(root_claim)
+    try:
+        stage_fd = _create_claimed_directory(
+            executions_fd, stage, claim_name=STAGE_EXECUTION_ROOT_CLAIM,
+            payload=root_payload)
+    finally:
+        os.close(executions_fd)
+    try:
+        stage_path = stage_execution_root_for_run(home, run, stage)
+        if attempt is None:
+            path = stage_path
+            _before_stage_execution_root_reopen(stage_path)
+            _reopen_execution_root_claim(
+                home, stage_path, stage_fd,
+                claim_name=STAGE_EXECUTION_ROOT_CLAIM,
+                payload=root_payload)
+            claim = root_claim
+        else:
+            attempt_claim = _attempt_claim(run, stage, execution, attempt)
+            attempt_payload = _canonical_claim_bytes(attempt_claim)
+            attempt_fd = _create_claimed_directory(
+                stage_fd, attempt,
+                claim_name=STAGE_EXECUTION_ATTEMPT_CLAIM,
+                payload=attempt_payload)
+            try:
+                path = stage_execution_root_for_run(home, run, stage, attempt)
+                _before_stage_execution_root_reopen(path)
+                _reopen_execution_root_claim(
+                    home, stage_path, stage_fd,
+                    claim_name=STAGE_EXECUTION_ROOT_CLAIM,
+                    payload=root_payload)
+                _reopen_execution_root_claim(
+                    home, path, attempt_fd,
+                    claim_name=STAGE_EXECUTION_ATTEMPT_CLAIM,
+                    payload=attempt_payload)
+            finally:
+                os.close(attempt_fd)
+            claim = attempt_claim
+        result = dict(claim)
+        result["root"] = path
+        return result
+    finally:
+        os.close(stage_fd)
+
+
+def _ensure_confined_directories(home: str, directory: str) -> None:
+    descriptor = _open_confined_directory(home, directory, create=True)
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def ensure_stage_object_parent_for_run(
+        home: str, run_id: str, stage_id: str, fingerprint: str) -> str:
+    """Safely create and return one immutable object's parent directory."""
+    path = stage_object_path_for_run(home, run_id, stage_id, fingerprint)
+    parent = os.path.dirname(path)
+    _ensure_confined_directories(home, parent)
+    # Revalidate after creation so a replaced ancestor never becomes an
+    # accepted object destination.
+    checked = stage_object_path_for_run(home, run_id, stage_id, fingerprint)
+    if checked != path:
+        raise StorageIdentityError("stage object path changed during creation")
+    return parent
+
+
+def stage_execution_root_for_run(home: str, run_id: str, stage_id: str,
+                                 attempt_id: str | None = None) -> str:
+    """Canonical isolated execution root, optionally for one resume attempt."""
+    run = validate_stage_path_id(run_id, "run id")
+    stage = validate_stage_path_id(stage_id, "stage id")
+    parts = ["runs", run, "stages", "executions", stage]
+    if attempt_id is not None:
+        parts.append(validate_stage_path_id(attempt_id, "attempt id"))
+    return _confined_stage_path(home, *parts, leaf_kind="directory")
+
+
+def _stage_locator(checkout: str) -> tuple[dict, str]:
+    root = os.path.realpath(os.path.abspath(checkout))
+    locator = load_workspace_locator(root)
+    if locator is None:
+        raise StorageIdentityError(
+            "stage storage requires a canonical external run locator")
+    return locator, root
+
+
+def stage_object_path(checkout: str, stage_id: str, fingerprint: str) -> str:
+    """Resolve an immutable stage object without falling back into source."""
+    locator, checkout_root = _stage_locator(checkout)
+    path = stage_object_path_for_run(
+        str(locator["home"]), str(locator["run_id"]), stage_id, fingerprint)
+    if os.path.commonpath((checkout_root, path)) == checkout_root:
+        raise StorageIdentityError("stage object path is inside source checkout")
+    return path
+
+
+def stage_execution_root(checkout: str, stage_id: str,
+                         attempt_id: str | None = None) -> str:
+    """Resolve an isolated stage tree without falling back into source."""
+    locator, checkout_root = _stage_locator(checkout)
+    path = stage_execution_root_for_run(
+        str(locator["home"]), str(locator["run_id"]), stage_id, attempt_id)
+    if os.path.commonpath((checkout_root, path)) == checkout_root:
+        raise StorageIdentityError(
+            "stage execution root is inside source checkout")
+    return path
 
 
 def evaluation_root(checkout: str) -> str:
