@@ -1,0 +1,622 @@
+{
+  "tasks": [
+    {
+      "id": "t01-wave1-baseline-authority",
+      "scope": [
+        "taskplane/preflight.py",
+        "taskplane/tests/test_r0006_baseline.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_baseline.py",
+      "req": "R-0006",
+      "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:governance-baseline",
+        "contract:governance.enforcement-status",
+        "contract:status.run-observability"
+      ],
+      "new_modules": [
+        "taskplane",
+        "taskplane/tests",
+        "taskplane/preflight.py"
+      ],
+      "design_edges": [
+        "taskplane/preflight.py->contract:governance-baseline:provides",
+        "taskplane/preflight.py->contract:governance.enforcement-status:changes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Fresh baseline and preservation: a baseline verification records the current main revision, fresh governed run id, and refreshed graph fingerprint; confirms no stale plan/** payload or obsolete run pointer is active; and byte/fingerprint comparisons prove previously committed design/** and external knowledge evidence are unchanged."
+      ],
+      "acceptance_refs": [
+        "Fresh baseline and preservation: a baseline verification records the current main revision, fresh governed run id, and refreshed graph fingerprint; confirms no stale plan/** payload or obsolete run pointer is active; and byte/fingerprint comparisons prove previously committed design/** and external knowledge evidence are unchanged."
+      ]
+    },
+    {
+      "id": "t02-wave1-quick-only-review-policy",
+      "scope": [
+        "taskplane/lens.py",
+        "taskplane/review_progression.py",
+        "taskplane/review.py",
+        "taskplane/tests/test_r0006_quick_only.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_quick_only.py",
+      "req": "R-0006",
+      "deps": [
+        "t01-wave1-baseline-authority"
+      ],
+      "type": "security",
+      "contracts": [
+        "contract:review.collection",
+        "contract:governance.enforcement-status"
+      ],
+      "new_modules": [
+        "taskplane/lens.py",
+        "taskplane/review_progression.py",
+        "taskplane/review.py"
+      ],
+      "design_edges": [
+        "taskplane/lens.py->contract:review.collection:changes",
+        "taskplane/review_progression.py->contract:review.collection:changes",
+        "taskplane/review.py->contract:review.collection:changes",
+        "taskplane/tests->contract:governance.enforcement-status:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Quick-only review policy is enforced: every governed lens dispatch manifest for these waves contains only quick-sweep slots and no deep.* slot or promotion; a seeded substantive quick finding prevents the affected gate from passing and returns it for correction without creating a deep worker."
+      ],
+      "acceptance_refs": [
+        "Quick-only review policy is enforced: every governed lens dispatch manifest for these waves contains only quick-sweep slots and no deep.* slot or promotion; a seeded substantive quick finding prevents the affected gate from passing and returns it for correction without creating a deep worker."
+      ]
+    },
+    {
+      "id": "t03-wave2-compatibility-refusal",
+      "scope": [
+        "taskplane/stage_entities.py",
+        "taskplane/run_store.py",
+        "taskplane/tp.py",
+        "taskplane/tests/test_r0006_python_compatibility.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_python_compatibility.py",
+      "req": "R-0006",
+      "deps": [
+        "t02-wave1-quick-only-review-policy"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:runtime.python-compatibility",
+        "contract:cli-error-envelope",
+        "contract:governance.enforcement-status"
+      ],
+      "new_modules": [
+        "taskplane/stage_entities.py",
+        "taskplane/run_store.py",
+        "taskplane/tp.py"
+      ],
+      "design_edges": [
+        "taskplane/stage_entities.py->contract:runtime.python-compatibility:changes",
+        "taskplane/run_store.py->contract:runtime.python-compatibility:changes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "B1 regression closed: a focused compatibility fixture compiles taskplane/stage_entities.py and imports every direct consumer on each supported minor, and the fixture fails against the 2.17.14 multiline f-string defect.",
+        "B2 fails early and cleanly: a deliberately unparseable stage dependency is detected at entry/startup rather than first lineage validation; an executable fixture asserts one named Taskplane compatibility error, no raw traceback in normal mode, and no created or changed run, graph, contract, review, or requirement state."
+      ],
+      "acceptance_refs": [
+        "B1 regression closed: a focused compatibility fixture compiles taskplane/stage_entities.py and imports every direct consumer on each supported minor, and the fixture fails against the 2.17.14 multiline f-string defect.",
+        "B2 fails early and cleanly: a deliberately unparseable stage dependency is detected at entry/startup rather than first lineage validation; an executable fixture asserts one named Taskplane compatibility error, no raw traceback in normal mode, and no created or changed run, graph, contract, review, or requirement state."
+      ]
+    },
+    {
+      "id": "t04-wave2-python-matrix",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "docs/configuration.md",
+        "taskplane/tests/test_r0006_python_matrix.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_python_matrix.py",
+      "req": "R-0006",
+      "deps": [
+        "t03-wave2-compatibility-refusal"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:runtime.python-compatibility"
+      ],
+      "new_modules": [
+        "(root)",
+        ".github/workflows",
+        ".github/workflows/ci.yml",
+        "docs"
+      ],
+      "design_edges": [
+        ".github/workflows/ci.yml->contract:runtime.python-compatibility:validates",
+        "docs->contract:runtime.python-compatibility:defines"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Supported Python execution: CI proves all shipped Python modules and hook entry points compile, import, and execute representative version, entry, graph, status, and evaluation-corpus flows on CPython 3.10, 3.11, 3.12, and 3.13; if any minor is intentionally unsupported, the same matrix proves it refuses nonzero before filesystem mutation and the documented support range matches.",
+        "P2 is ordered before tests: workflow inspection asserts that every supported Python matrix leg runs a repository-wide compile/import gate before its test step, and a seeded syntax error makes that leg fail without running the tests."
+      ],
+      "acceptance_refs": [
+        "Supported Python execution: CI proves all shipped Python modules and hook entry points compile, import, and execute representative version, entry, graph, status, and evaluation-corpus flows on CPython 3.10, 3.11, 3.12, and 3.13; if any minor is intentionally unsupported, the same matrix proves it refuses nonzero before filesystem mutation and the documented support range matches.",
+        "P2 is ordered before tests: workflow inspection asserts that every supported Python matrix leg runs a repository-wide compile/import gate before its test step, and a seeded syntax error makes that leg fail without running the tests."
+      ]
+    },
+    {
+      "id": "t05-wave3-graph-quality",
+      "scope": [
+        "taskplane/depgraph.py",
+        "taskplane/decompose.py",
+        "taskplane/tp.py",
+        "taskplane/tests/test_r0006_graph_quality.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_graph_quality.py",
+      "req": "R-0006",
+      "deps": [
+        "t04-wave2-python-matrix"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:graph-scan-quality",
+        "contract:status.run-observability",
+        "contract:governance.enforcement-status"
+      ],
+      "new_modules": [
+        "taskplane/depgraph.py",
+        "taskplane/decompose.py"
+      ],
+      "design_edges": [
+        "taskplane/depgraph.py->contract:graph-scan-quality:provides",
+        "taskplane/decompose.py->contract:graph-scan-quality:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "B3 degradation is visible and gateable: with one unparseable graph module, graph-scan JSON and text name the module and reason and mark degraded=true; the normal documented fail-open mode remains honest, while strict scan, Design/Plan readiness, and applicable Review/DoD fixtures refuse nonzero."
+      ],
+      "acceptance_refs": [
+        "B3 degradation is visible and gateable: with one unparseable graph module, graph-scan JSON and text name the module and reason and mark degraded=true; the normal documented fail-open mode remains honest, while strict scan, Design/Plan readiness, and applicable Review/DoD fixtures refuse nonzero."
+      ]
+    },
+    {
+      "id": "t06-wave3-cli-error-envelope",
+      "scope": [
+        "taskplane/tp.py",
+        "taskplane/tests/test_r0006_cli_errors.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_cli_errors.py",
+      "req": "R-0006",
+      "deps": [
+        "t05-wave3-graph-quality"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:cli-error-envelope"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/tp.py->contract:cli-error-envelope:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "B4 CLI errors are actionable: a parameterized CLI fixture covers every known public engine-error class and asserts normal output contains a concise headline plus executable recovery action and no Python traceback; an explicit debug invocation retains diagnostic traceback access."
+      ],
+      "acceptance_refs": [
+        "B4 CLI errors are actionable: a parameterized CLI fixture covers every known public engine-error class and asserts normal output contains a concise headline plus executable recovery action and no Python traceback; an explicit debug invocation retains diagnostic traceback access."
+      ]
+    },
+    {
+      "id": "t07-wave3-zero-token-and-pushed-sha",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "scripts/ci_evals.py",
+        "taskplane/tests/test_r0006_zero_token_ci.py",
+        "taskplane/tests/test_r0006_pushed_sha.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_zero_token_ci.py taskplane/tests/test_r0006_pushed_sha.py",
+      "req": "R-0006",
+      "deps": [
+        "t06-wave3-cli-error-envelope"
+      ],
+      "type": "security",
+      "contracts": [
+        "contract:governance.delivery-authority",
+        "contract:status.run-observability",
+        "contract:governance.enforcement-status"
+      ],
+      "new_modules": [
+        "scripts",
+        "scripts/ci_evals.py"
+      ],
+      "design_edges": [
+        ".github/workflows/ci.yml->scripts/ci_evals.py:runtime",
+        ".github/workflows/ci.yml->contract:governance.delivery-authority:validates"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "V1 zero-token corpus gates CI: the push/pull-request workflow invokes scripts/ci_evals.py --corpus without model credentials or network/model calls; an intentionally failing corpus fixture fails the job and a valid corpus passes deterministically.",
+        "P1 green-CI push boundary: the exact commit accepted as pushed has no local commits ahead of origin/main, and required checks for the supported-version, compile/import, graph/CLI, and zero-token corpus criteria are green for that same SHA; automation or a release record cannot describe an earlier local-only result as the pushed green result."
+      ],
+      "acceptance_refs": [
+        "V1 zero-token corpus gates CI: the push/pull-request workflow invokes scripts/ci_evals.py --corpus without model credentials or network/model calls; an intentionally failing corpus fixture fails the job and a valid corpus passes deterministically.",
+        "P1 green-CI push boundary: the exact commit accepted as pushed has no local commits ahead of origin/main, and required checks for the supported-version, compile/import, graph/CLI, and zero-token corpus criteria are green for that same SHA; automation or a release record cannot describe an earlier local-only result as the pushed green result."
+      ]
+    },
+    {
+      "id": "t08-wave4a-import-cycle-ratchet",
+      "scope": [
+        "taskplane/import_cycles.py",
+        "taskplane/tests/fixtures/import-cycles.json",
+        ".github/workflows/ci.yml",
+        "taskplane/tests/test_r0006_import_cycle_ratchet.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_import_cycle_ratchet.py",
+      "req": "R-0006",
+      "deps": [
+        "t07-wave3-zero-token-and-pushed-sha"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:import-cycle-ratchet",
+        "contract:governance.delivery-authority"
+      ],
+      "new_modules": [
+        "taskplane/import_cycles.py",
+        "taskplane/tests/fixtures/import-cycles.json"
+      ],
+      "design_edges": [
+        "taskplane/import_cycles.py->contract:import-cycle-ratchet:provides",
+        "taskplane/tests/fixtures/import-cycles.json->contract:import-cycle-ratchet:defines",
+        ".github/workflows/ci.yml->taskplane/import_cycles.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "S4/S7 ratchet precedes cuts: repository history and CI configuration prove the import-cycle measurement and bound are active before any S1/S2 edge cut; a fixture that adds a module to an existing cycle or exceeds a declared SCC bound fails and reports the affected modules, edges, and measured size."
+      ],
+      "acceptance_refs": [
+        "S4/S7 ratchet precedes cuts: repository history and CI configuration prove the import-cycle measurement and bound are active before any S1/S2 edge cut; a fixture that adds a module to an existing cycle or exceeds a declared SCC bound fails and reports the affected modules, edges, and measured size."
+      ]
+    },
+    {
+      "id": "t09-wave4b-graph-boundary-cuts",
+      "scope": [
+        "taskplane/graph_primitives.py",
+        "taskplane/graph_decomposition.py",
+        "taskplane/depgraph.py",
+        "taskplane/decompose.py",
+        "taskplane/lens_signals.py",
+        "taskplane/tp.py",
+        "taskplane/loop.py",
+        "taskplane/retro.py",
+        "taskplane/tests/test_r0006_graph_boundaries.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_graph_boundaries.py",
+      "req": "R-0006",
+      "deps": [
+        "t08-wave4a-import-cycle-ratchet"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:graph-scan-quality",
+        "contract:import-cycle-ratchet"
+      ],
+      "new_modules": [
+        "taskplane/graph_primitives.py",
+        "taskplane/graph_decomposition.py",
+        "taskplane/lens_signals.py",
+        "taskplane/loop.py",
+        "taskplane/retro.py"
+      ],
+      "design_edges": [
+        "taskplane/depgraph.py->taskplane/graph_primitives.py:runtime",
+        "taskplane/depgraph.py->taskplane/graph_decomposition.py:runtime",
+        "taskplane/decompose.py->taskplane/graph_decomposition.py:runtime",
+        "taskplane/graph_decomposition.py->taskplane/graph_primitives.py:runtime",
+        "taskplane/decompose.py->taskplane/graph_primitives.py:runtime",
+        "taskplane/lens_signals.py->taskplane/graph_primitives.py:runtime",
+        "taskplane/tp.py->taskplane/depgraph.py:runtime",
+        "taskplane/retro.py->taskplane/depgraph.py:runtime",
+        "taskplane/loop.py->taskplane/depgraph.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "S1 graph edges are absent: file-level import-graph assertions prove taskplane/depgraph.py and taskplane/decompose.py no longer import one another in either direction or scope, and shared graph data has one non-circular contract consumed by depgraph, decompose, and lens_signals without changing externally observed payload meaning."
+      ],
+      "acceptance_refs": [
+        "S1 graph edges are absent: file-level import-graph assertions prove taskplane/depgraph.py and taskplane/decompose.py no longer import one another in either direction or scope, and shared graph data has one non-circular contract consumed by depgraph, decompose, and lens_signals without changing externally observed payload meaning."
+      ]
+    },
+    {
+      "id": "t10-wave4b-review-context-input",
+      "scope": [
+        "taskplane/review.py",
+        "taskplane/lens.py",
+        "taskplane/tp.py",
+        "taskplane/tests/test_r0006_review_context_input.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_review_context_input.py",
+      "req": "R-0006",
+      "deps": [
+        "t09-wave4b-graph-boundary-cuts"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:review.collection",
+        "contract:import-cycle-ratchet"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/review.py->taskplane/lens.py:runtime",
+        "taskplane/tp.py->taskplane/lens.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
+      ],
+      "acceptance_refs": [
+        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
+      ]
+    },
+    {
+      "id": "t11-wave4b-dod-impact-input",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/tp.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/tests/test_r0006_dod_impact_input.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_dod_impact_input.py",
+      "req": "R-0006",
+      "deps": [
+        "t10-wave4b-review-context-input"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:graph-scan-quality",
+        "contract:import-cycle-ratchet"
+      ],
+      "new_modules": [
+        "taskplane/taskplane_lite.py"
+      ],
+      "design_edges": [
+        "taskplane/loop.py->taskplane/taskplane_lite.py:runtime",
+        "taskplane/tp.py->taskplane/taskplane_lite.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
+      ],
+      "acceptance_refs": [
+        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
+      ]
+    },
+    {
+      "id": "t12-wave4b-post-cut-inventory",
+      "scope": [
+        "taskplane/import_cycles.py",
+        "taskplane/tests/fixtures/import-cycles.json",
+        "taskplane/tests/test_r0006_post_cut_cycles.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_post_cut_cycles.py",
+      "req": "R-0006",
+      "deps": [
+        "t11-wave4b-dod-impact-input"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:import-cycle-ratchet"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Post-cut cycle evidence is honest: the ratchet emits the complete SCC inventory before and after S1/S2, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles; checked-in expectations use measured current values rather than stale 2.17.14 estimates, and CI blocks unapproved growth."
+      ],
+      "acceptance_refs": [
+        "Post-cut cycle evidence is honest: the ratchet emits the complete SCC inventory before and after S1/S2, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles; checked-in expectations use measured current values rather than stale 2.17.14 estimates, and CI blocks unapproved growth."
+      ]
+    },
+    {
+      "id": "t13-wave5-evaluation-sampling",
+      "scope": [
+        "taskplane/eval_sampling.py",
+        "taskplane/eval_drivers.py",
+        "taskplane/eval_scenario.py",
+        "taskplane/runtime_eval.py",
+        "scripts/eval_skills.py",
+        "scripts/eval_record.py",
+        "taskplane/tests/test_r0006_eval_sampling.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_eval_sampling.py",
+      "req": "R-0006",
+      "deps": [
+        "t12-wave4b-post-cut-inventory"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:evaluation-sample",
+        "contract:seeded-failure-catch-rate",
+        "contract:status.run-observability"
+      ],
+      "new_modules": [
+        "taskplane/eval_sampling.py",
+        "taskplane/eval_drivers.py",
+        "taskplane/eval_scenario.py",
+        "taskplane/runtime_eval.py",
+        "scripts/eval_skills.py",
+        "scripts/eval_record.py"
+      ],
+      "design_edges": [
+        "scripts/eval_skills.py->taskplane/eval_sampling.py:runtime",
+        "scripts/eval_record.py->contract:evaluation-sample:provides",
+        "taskplane/eval_sampling.py->contract:evaluation-sample:provides",
+        "taskplane/eval_sampling.py->contract:seeded-failure-catch-rate:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "V2 repeated sampling works: an executable model-eval fixture runs ten deterministic fake trials with seven passes, persists ten distinct per-scenario/per-model-version results, reports pass rate 0.7, and fails a 0.9 threshold; invalid repeat counts, thresholds, and missing trials fail with clean errors."
+      ],
+      "acceptance_refs": [
+        "V2 repeated sampling works: an executable model-eval fixture runs ten deterministic fake trials with seven passes, persists ten distinct per-scenario/per-model-version results, reports pass rate 0.7, and fails a 0.9 threshold; invalid repeat counts, thresholds, and missing trials fail with clean errors."
+      ]
+    },
+    {
+      "id": "t14-wave5-incomplete-corpus-impact",
+      "scope": [
+        "taskplane/eval_rubric.py",
+        "taskplane/eval_scenario.py",
+        "taskplane/depgraph.py",
+        "scripts/ci_evals.py",
+        "evals/impact-map.json",
+        "evals/negative/incomplete-acceptance-coverage/**",
+        "evals/negative/incomplete-build-error/**",
+        "evals/negative/incomplete-test-deletion/**",
+        "taskplane/tests/test_r0006_incomplete_work.py",
+        "taskplane/tests/test_r0006_eval_impact.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_incomplete_work.py taskplane/tests/test_r0006_eval_impact.py",
+      "req": "R-0006",
+      "deps": [
+        "t13-wave5-evaluation-sampling"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:evaluation-corpus-impact",
+        "contract:graph-scan-quality",
+        "contract:evaluation-sample"
+      ],
+      "new_modules": [
+        "evals",
+        "taskplane/eval_rubric.py",
+        "evals/impact-map.json"
+      ],
+      "design_edges": [
+        "taskplane/eval_rubric.py->evals:runtime",
+        "evals/impact-map.json->contract:evaluation-corpus-impact:defines",
+        "taskplane/depgraph.py->contract:evaluation-corpus-impact:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "V3 catches incomplete work: the negative corpus contains at least three executable seeded cases—only three of five acceptance criteria completed, a silently ignored build error, and a test deleted instead of fixed—and the harness refuses each for the intended incomplete-work reason rather than a generic workflow-order failure.",
+        "V4 corpus impact is connected: graph fixtures prove that a change to at least one governance or evaluation engine file lists the relevant evals/* corpus modules in impact and routes their validation, while unrelated product changes do not acquire a catch-all corpus blast radius."
+      ],
+      "acceptance_refs": [
+        "V3 catches incomplete work: the negative corpus contains at least three executable seeded cases—only three of five acceptance criteria completed, a silently ignored build error, and a test deleted instead of fixed—and the harness refuses each for the intended incomplete-work reason rather than a generic workflow-order failure.",
+        "V4 corpus impact is connected: graph fixtures prove that a change to at least one governance or evaluation engine file lists the relevant evals/* corpus modules in impact and routes their validation, while unrelated product changes do not acquire a catch-all corpus blast radius."
+      ]
+    },
+    {
+      "id": "t15-wave5-catch-rate-projections",
+      "scope": [
+        "taskplane/eval_sampling.py",
+        "taskplane/retro.py",
+        "taskplane/dashboard.py",
+        "docs/model-evaluation.md",
+        "docs/EVAL-DoR.md",
+        "taskplane/tests/test_r0006_catch_rate.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_catch_rate.py",
+      "req": "R-0006",
+      "deps": [
+        "t14-wave5-incomplete-corpus-impact"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:seeded-failure-catch-rate",
+        "contract:status.run-observability",
+        "contract:evaluation-sample"
+      ],
+      "new_modules": [
+        "taskplane/dashboard.py"
+      ],
+      "design_edges": [
+        "taskplane/retro.py->contract:seeded-failure-catch-rate:consumes",
+        "taskplane/dashboard.py->contract:seeded-failure-catch-rate:consumes",
+        "taskplane/dashboard.py->contract:status.run-observability:changes",
+        "docs->contract:seeded-failure-catch-rate:defines"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "V5 reports the bounded claim: given a known mixture of caught and missed seeded failures, Retro or dashboard machine, Markdown, and text projections agree on the label seeded-failure catch-rate, numerator, denominator, sample size, threshold, scenario set, model id/version, and evaluation revision; zero-sample input reports unavailable rather than 0% or 100%."
+      ],
+      "acceptance_refs": [
+        "V5 reports the bounded claim: given a known mixture of caught and missed seeded failures, Retro or dashboard machine, Markdown, and text projections agree on the label seeded-failure catch-rate, numerator, denominator, sample size, threshold, scenario set, model id/version, and evaluation revision; zero-sample input reports unavailable rather than 0% or 100%."
+      ]
+    }
+  ]
+}
