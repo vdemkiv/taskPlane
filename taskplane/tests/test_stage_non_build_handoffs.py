@@ -31,6 +31,11 @@ STAGE_RUNTIME = {
     "rollout_modes": ["new-run", "enabled"],
     "rollback": "retain-v4-read-only-no-reverse-migration",
 }
+STARTUP_RELATIONSHIP = (
+    "`taskplane.stage-dispatch/v1` contains "
+    "`taskplane.stage-startup/v1`; its `input_handoff` is the versioned "
+    "bounded `taskplane.stage-handoff/v1` manifest"
+)
 
 
 def _flow(name: str) -> dict[str, object]:
@@ -81,8 +86,7 @@ def test_product_and_design_keep_build_and_non_build_outcomes_distinct() \
 def test_non_build_skill_contracts_are_bounded_auditable_and_reusable_only_by_new_authority() \
         -> None:
     required = (
-        "taskplane.stage-handoff/v1",
-        "versioned bounded manifest",
+        STARTUP_RELATIONSHIP,
         "content-addressed artifacts",
         "stage authority, budget, and scope",
         "predecessor agents",
@@ -102,3 +106,5 @@ def test_non_build_skill_contracts_are_bounded_auditable_and_reusable_only_by_ne
         text = " ".join(path.read_text(encoding="utf-8").split())
         for phrase in required:
             assert phrase in text, f"{name} omits {phrase!r}"
+        assert "starts from `taskplane.stage-handoff/v1`" not in text
+        assert "consumes only `taskplane.stage-handoff/v1`" not in text

@@ -77,6 +77,18 @@ class TestGeneratedCliReference(unittest.TestCase):
             cli.cli_reference_markdown(parser)
         self.assertIn("--bare", str(raised.exception))
 
+    def test_generator_owns_the_closed_stage_request_contract(self):
+        generated = self._generate()
+        self.assertIn("### Closed stage-command request", generated)
+        self.assertIn("`taskplane.stage-command/v1`", generated)
+        self.assertIn("| `terminalize-and-start` |", generated)
+        self.assertIn("`predecessor_stage_id`", generated)
+        self.assertIn("`successor_stage`", generated)
+        self.assertIn(
+            "tp.py stage terminalize-and-start --request request.json",
+            generated,
+        )
+
 
 class TestReferencedDocumentation(unittest.TestCase):
     REFERENCE = re.compile(

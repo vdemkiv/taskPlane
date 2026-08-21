@@ -25,6 +25,7 @@ def _request_file(tmp_path: Path, value: dict[str, object]) -> Path:
         ("start", "start"),
         ("resume", "resume"),
         ("terminalize", "terminalize"),
+        ("terminalize-and-start", "terminalize-and-start"),
         ("split", "split"),
         ("history", "history"),
         ("reuse", "reuse"),
@@ -86,6 +87,32 @@ def test_stage_request_can_be_read_from_stdin(
     assert json.loads(capsys.readouterr().out) == {
         "workspace": str(tmp_path), "command": "resume", "request": request,
     }
+
+
+def test_terminalize_and_start_is_exposed_in_generated_help() -> None:
+    result = subprocess.run(
+        [sys.executable, str(Path(cli.__file__)), "help", "--md"],
+        text=True, capture_output=True, check=False,
+        encoding="utf-8", errors="replace",
+    )
+    assert result.returncode == 0, result.stderr
+    generated = result.stdout
+
+    assert "`tp.py stage terminalize-and-start`" in generated
+    assert "`taskplane.stage-command/v1`" in generated
+    assert "| `terminalize-and-start` |" in generated
+    assert "`predecessor_stage_id`" in generated
+    assert "`successor_stage`" in generated
+
+
+def test_generated_stage_request_fields_match_runtime_validator() -> None:
+    import loop
+
+    documented = {
+        command: frozenset(fields)
+        for command, fields in cli._CLI_STAGE_REQUEST_FIELDS.items()
+    }
+    assert documented == loop._STAGE_REQUEST_FIELDS
 
 
 def test_stage_history_uses_the_same_bounded_request_boundary(

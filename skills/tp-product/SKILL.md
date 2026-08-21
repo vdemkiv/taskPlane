@@ -60,11 +60,13 @@ impersonates Build.
 
 ### Non-build terminal handoff
 
-Product consumes only `taskplane.stage-handoff/v1`: a versioned bounded
-manifest, explicitly selected content-addressed artifacts, and the current
-stage authority, budget, and scope. Never inherit predecessor agents,
-conversations, event logs, tool transcripts, leases, runtime roots, or other
-mutable execution context.
+Product receives one bounded stage dispatch. `taskplane.stage-dispatch/v1`
+contains `taskplane.stage-startup/v1`; its `input_handoff` is the versioned
+bounded `taskplane.stage-handoff/v1` manifest. The startup also carries
+explicitly selected content-addressed artifacts and the current stage
+authority, budget, and scope. Never inherit predecessor agents, conversations,
+event logs, tool transcripts, leases, runtime roots, or other mutable execution
+context.
 
 When the attributed human decision is to finish Product without
 implementation, terminalize the Product stage as `done`, `closed`, or

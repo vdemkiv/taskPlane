@@ -16,6 +16,36 @@ from taskplane import loop, run_store, stage_migration, storage, taskplane_lite
 
 RUN_ID = "run-stage-rollout"
 NOW = "2026-08-21T16:00:00Z"
+ROOT = Path(__file__).resolve().parents[2]
+ROLLOUT_ABORT_SIGNALS = [
+    "predecessor_root_open",
+    "ambiguous_active_projection",
+    "terminal_reopen_attempt",
+    "handoff_integrity_failure",
+    "authority_mismatch",
+    "startup_bound_exceeded",
+    "migration_conservation_mismatch",
+    "r0003_cleanup_proof_failure",
+]
+ROLLOUT_POLICY = {
+    "canary": {
+        "mode": "new-run",
+        "exact_run_count": 1,
+        "named_owner_required": True,
+    },
+    "observation": {
+        "minimum_hours": 24,
+        "retro_required": True,
+    },
+    "abort": {
+        "threshold": 1,
+        "signals": ROLLOUT_ABORT_SIGNALS,
+    },
+    "rollback": {
+        "maximum_minutes": 15,
+        "action": "disable-v4-mutations-retain-v4-read-only",
+    },
+}
 
 
 def _store(tmp_path: Path) -> tuple[run_store.RunStore, dict[str, object]]:
@@ -98,6 +128,39 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in sorted(root.rglob("*")) if path.is_file()
     }
+
+
+def test_tp_go_flow_pins_the_complete_canary_and_rollback_policy() -> None:
+    flow = json.loads(
+        (ROOT / "skills/tp-go/flow.json").read_text(encoding="utf-8"))
+    policy = flow["rollout_policy"]
+
+    assert policy == ROLLOUT_POLICY
+    assert type(policy["canary"]["exact_run_count"]) is int
+    assert policy["canary"]["exact_run_count"] == 1
+    assert policy["canary"]["named_owner_required"] is True
+    assert policy["observation"] == {
+        "minimum_hours": 24, "retro_required": True}
+    assert policy["abort"]["threshold"] == 1
+    assert policy["abort"]["signals"] == ROLLOUT_ABORT_SIGNALS
+    assert len(policy["abort"]["signals"]) == len(
+        set(policy["abort"]["signals"]))
+    assert policy["rollback"]["maximum_minutes"] <= 15
+
+
+def test_tp_go_guidance_requires_owner_window_retro_abort_and_slo() -> None:
+    guidance = (ROOT / "skills/tp-go/SKILL.md").read_text(encoding="utf-8")
+
+    for required in (
+        "exactly one `new-run` canary",
+        "named,\naccountable owner",
+        "24-hour observation window",
+        "completed both a 24-hour observation window and its Retro",
+        "Every abort signal has threshold `1`",
+        "within at most 15 minutes",
+        "retaining v4 read access",
+    ):
+        assert required in guidance
 
 
 @pytest.mark.parametrize(

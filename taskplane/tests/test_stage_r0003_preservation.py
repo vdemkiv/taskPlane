@@ -8,10 +8,11 @@ from pathlib import Path
 import pytest
 
 import collision
+import loop
 from run_store import RunStore
-import stage_entities
 import stage_migration
 import storage
+import taskplane_lite
 import worktree_cleanup
 
 
@@ -131,10 +132,6 @@ def _seed_r0003_receipts(
     return manifest, ledger, merge, cleanup
 
 
-def _assert_authority(expected: dict, current: dict) -> None:
-    assert current == expected
-
-
 def _assert_migration_authority(expected: dict, manifest: dict) -> None:
     assert expected == _authority()
     assert manifest["run_id"] == RUN_ID
@@ -189,26 +186,32 @@ def test_migration_and_terminalization_preserve_r0003_receipts_without_cleanup(
     migrated = store.load(RUN_ID)
     stage_id = migration["stage_ids"][0]
     head = migrated["stage_heads"][stage_id]
-    lifecycle = stage_entities.StageLifecycle(
-        store,
-        authority_resolver=lambda _current: _authority(),
-        authority_validator=_assert_authority,
-    )
-    terminal = lifecycle.terminalize(
-        RUN_ID,
-        stage_id=stage_id,
-        expected_head_fingerprint=head["object"]["fingerprint"],
-        expected_revision=migrated["revision"],
-        operation_id=f"terminal-{outcome}",
-        outcome=outcome,
-        actor="human:vdemkiv",
-        terminalized_at="2026-08-21T14:10:00Z",
-        reason_code="bounded-stage-complete",
-        reason="The stage has no remaining authorized work.",
-    )
+    monkeypatch.setattr(loop, "_stage_store", lambda _ws, _run_id: store)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "enabled")
+    terminal = loop.stage_command(str(workspace), "terminalize", {
+        "schema": "taskplane.stage-command/v1",
+        "run_id": RUN_ID,
+        "stage_id": stage_id,
+        "expected_head_fingerprint": head["object"]["fingerprint"],
+        "expected_revision": migrated["revision"],
+        "operation_id": f"terminal-{outcome}",
+        "outcome": outcome,
+        "actor": "human:vdemkiv",
+        "terminalized_at": "2026-08-21T14:10:00Z",
+        "reason_code": "bounded-stage-complete",
+        "reason": "The stage has no remaining authorized work.",
+        "authority": _authority(),
+    })
+    assert "error" not in terminal, terminal
     committed = store.load(RUN_ID)
 
-    assert terminal["result"]["head"]["summary"]["outcome"] == outcome
+    assert terminal["receipt"]["result"]["head"]["summary"]["outcome"] == \
+        outcome
+    history = loop.stage_history(str(workspace), RUN_ID, limit=100)
+    assert [(row["stage_id"], row["outcome"])
+            for row in history["stages"]] == [(stage_id, outcome)]
+    assert set(committed["stage_heads"]) == {stage_id}
+    assert committed["active_stage_projection"]["active_stage_ids"] == []
     assert {key: committed[key] for key in r0003} == r0003
     assert cleanup_calls == []
     assert retained.read_text(encoding="utf-8") == "retain me\n"

@@ -5754,6 +5754,114 @@ _CLI_REVIEW_OPTION_NOTE = [
     "",
 ]
 
+# The stage CLI crosses argparse as one closed JSON object, so its field
+# surface cannot be discovered from argparse actions. Keep the documentation
+# schema beside the generator and pin it to loop._STAGE_REQUEST_FIELDS in the
+# focused CLI tests. This preserves tp.py's lazy stage-domain import boundary.
+_CLI_STAGE_REQUEST_FIELDS = {
+    "history": ("schema", "run_id", "cursor", "limit"),
+    "start": (
+        "schema", "stage", "expected_revision", "operation_id",
+        "expected_predecessor_fingerprints", "foreground", "authority",
+        "declared_scope",
+    ),
+    "reuse": (
+        "schema", "stage", "successor_stage", "expected_revision",
+        "operation_id", "expected_predecessor_fingerprints", "foreground",
+        "authority", "declared_scope", "reason", "actor",
+    ),
+    "resume": (
+        "schema", "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "attempt_id", "authority",
+        "declared_scope",
+    ),
+    "terminalize": (
+        "schema", "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "outcome", "actor",
+        "terminalized_at", "reason_code", "reason",
+        "completed_deliverables", "completion_evidence", "handoff_manifest",
+        "authority",
+    ),
+    "terminalize-and-start": (
+        "schema", "run_id", "predecessor_stage_id", "stage",
+        "successor_stage", "expected_head_fingerprint", "expected_revision",
+        "operation_id", "outcome", "actor", "terminalized_at",
+        "reason_code", "reason", "completed_deliverables",
+        "completion_evidence", "foreground", "authority", "declared_scope",
+    ),
+    "split": (
+        "schema", "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "child_specs", "actor",
+        "terminalized_at", "reason", "authority", "declared_scopes",
+    ),
+}
+
+_CLI_STAGE_SUCCESSOR_EXAMPLE = {
+    "schema": "taskplane.stage-command/v1",
+    "run_id": "run-r0004",
+    "predecessor_stage_id": "stage-build-001",
+    "successor_stage": "<complete taskplane.stage/v1 object>",
+    "expected_head_fingerprint": "<predecessor stage fingerprint>",
+    "expected_revision": 12,
+    "operation_id": "build-to-evaluate-001",
+    "outcome": "done",
+    "actor": "human:operator",
+    "terminalized_at": "2026-08-21T18:00:00Z",
+    "reason_code": "continued",
+    "reason": "Start evaluation from the bounded build handoff.",
+    "completed_deliverables": ["build-commit", "declared-tests"],
+    "completion_evidence": ["<portable artifact reference>"],
+    "foreground": True,
+    "authority": "<exact taskplane.stage-authority-binding/v1 object>",
+    "declared_scope": ["taskplane/**"],
+}
+
+
+def _cli_stage_request_note() -> list[str]:
+    """Generator-owned JSON boundary documentation for ``tp.py stage``."""
+    out = [
+        "### Closed stage-command request",
+        "",
+        "Every stage subcommand accepts one UTF-8 JSON object from",
+        "`--request FILE` or standard input with `--request -`. The object is",
+        "bounded to 1,048,576 bytes and may declare schema",
+        "`taskplane.stage-command/v1`. Unknown fields and predecessor runtime",
+        "context (agents, conversations, event logs, tool transcripts, leases,",
+        "runtime state, workspaces, paths, or execution roots) are rejected.",
+        "The table lists the exact allowed top-level fields; operation-specific",
+        "identity, authority, lifecycle, and artifact validation still applies.",
+        "",
+        "| Stage command | Allowed request fields |",
+        "| --- | --- |",
+    ]
+    for command, fields in _CLI_STAGE_REQUEST_FIELDS.items():
+        rendered = ", ".join(f"`{field}`" for field in fields)
+        out.append(f"| `{command}` | {rendered} |")
+    out += [
+        "",
+        "Atomic predecessor terminalization and successor startup use one",
+        "request and one receipt:",
+        "",
+        "```bash",
+        "tp.py stage terminalize-and-start --request request.json",
+        "```",
+        "",
+        "`request.json` (replace angle-bracket placeholders with the complete",
+        "validated objects or fingerprint):",
+        "",
+        "```json",
+        *json.dumps(
+            _CLI_STAGE_SUCCESSOR_EXAMPLE, indent=2, ensure_ascii=False,
+        ).splitlines(),
+        "```",
+        "",
+        "The command atomically records the predecessor's immutable terminal",
+        "outcome and starts the successor from its verified bounded handoff.",
+        "A validation or authority failure changes neither stage.",
+        "",
+    ]
+    return out
+
 
 def cli_reference_markdown(parser) -> str:
     """Render `parser`'s whole command tree as markdown, or refuse.
@@ -5829,6 +5937,8 @@ def cli_reference_markdown(parser) -> str:
         out += [f"## `{name}`", "", _cli_cell(help_text), ""]
         if name == "tp.py review option":
             out += _CLI_REVIEW_OPTION_NOTE
+        if name == "tp.py stage":
+            out += _cli_stage_request_note()
         positionals = _cli_positionals(par)
         if positionals:
             out.append("Positional arguments:")
@@ -6208,6 +6318,8 @@ def main(argv=None) -> int:
             ("start", "start a root or verified successor stage"),
             ("resume", "create a fresh attempt in an active stage root"),
             ("terminalize", "record one immutable terminal outcome"),
+            ("terminalize-and-start", "atomically terminalize a predecessor "
+                                      "and start its verified successor"),
             ("split", "close a parent and atomically create isolated children"),
             ("history", "read a bounded page of immutable stage summaries"),
             ("reuse", "explicitly authorize non-default artifact reuse")):

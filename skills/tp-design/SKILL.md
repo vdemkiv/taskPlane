@@ -125,11 +125,13 @@ proposed edge via canonical task `design_edges` entries (`FROM->TO:KIND`).
 
 ### Non-build terminal handoff
 
-Design consumes only `taskplane.stage-handoff/v1`: a versioned bounded
-manifest, explicitly selected content-addressed artifacts, and the current
-stage authority, budget, and scope. Never inherit predecessor agents,
-conversations, event logs, tool transcripts, leases, runtime roots, or other
-mutable execution context.
+Design receives one bounded stage dispatch. `taskplane.stage-dispatch/v1`
+contains `taskplane.stage-startup/v1`; its `input_handoff` is the versioned
+bounded `taskplane.stage-handoff/v1` manifest. The startup also carries
+explicitly selected content-addressed artifacts and the current stage
+authority, budget, and scope. Never inherit predecessor agents, conversations,
+event logs, tool transcripts, leases, runtime roots, or other mutable execution
+context.
 
 For design-only work, or an attributed decision not to continue into
 implementation, terminalize the Design stage as `done`, `closed`, or

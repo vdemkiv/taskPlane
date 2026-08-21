@@ -260,6 +260,19 @@ stages, guess unknown state, delete retained artifacts, weaken authority or
 evidence, or broaden/force R-0003 cleanup. Migrated runs resume only after
 re-enable or explicit forward migration; there is no lossy reverse migration.
 
+The initial release is exactly one `new-run` canary. Record a named,
+accountable owner before dispatch; an unnamed team or queue is not an owner.
+Do not start a second canary or switch general traffic to `enabled` until the
+single run has completed both a 24-hour observation window and its Retro.
+Every abort signal has threshold `1`: predecessor-root open, ambiguous active
+projection, terminal-reopen attempt, handoff-integrity failure, authority
+mismatch, startup-bound exceedance, migration-conservation mismatch, or
+R-0003 cleanup-proof failure. The first occurrence stops new stage dispatch
+and starts rollback. Disable v4 mutations within at most 15 minutes while
+retaining v4 read access, immutable history, evidence, receipts, and legacy
+sources. A clean 24-hour window without the completed Retro is not promotion
+evidence, and a completed Retro before 24 hours does not shorten the window.
+
 Stage terminalization is not cleanup. Post-merge worktree cleanup stays a
 separate orchestrator-only R-0003 maintenance action and remains eligible only
 after the exact registered managed worktree, merged-tip ancestry,

@@ -75,21 +75,43 @@ def _replace_hook_manifest(
                 if info.filename == member else body)
 
 
+def _python_matrix_entries(workflow: str) -> dict[str, tuple[str, ...]]:
+    """Return only the three bounded entries from the primary test matrix."""
+    lines = workflow.splitlines()
+    headers = {
+        version: f'          - python: "{version}"'
+        for version in ("3.10", "3.11", "3.12")
+    }
+    indexes: dict[str, int] = {}
+    for version, header in headers.items():
+        matches = [index for index, line in enumerate(lines)
+                   if line == header]
+        assert len(matches) == 1, \
+            f"expected one exact Python {version} test-matrix entry"
+        indexes[version] = matches[0]
+    assert indexes["3.10"] < indexes["3.11"] < indexes["3.12"]
+    step_boundaries = [index for index, line in enumerate(lines)
+                       if index > indexes["3.12"] and line == "    steps:"]
+    assert step_boundaries, "Python 3.12 matrix entry has no bounded end"
+    return {
+        "3.10": tuple(lines[indexes["3.10"]:indexes["3.11"]]),
+        "3.11": tuple(lines[indexes["3.11"]:indexes["3.12"]]),
+        "3.12": tuple(lines[indexes["3.12"]:step_boundaries[0]]),
+    }
+
+
 def test_ci_runs_the_stage_release_contract_on_python_310_through_312() \
         -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(
         encoding="utf-8")
-    start_310 = workflow.index('- python: "3.10"')
-    start_311 = workflow.index('- python: "3.11"')
-    start_312 = workflow.index('- python: "3.12"')
-    python_310 = workflow[start_310:start_311]
-    python_311 = workflow[start_311:start_312]
-    python_312 = workflow[start_312:]
+    entries = _python_matrix_entries(workflow)
 
-    for test_file in STAGE_MATRIX_TESTS:
-        assert test_file in python_310
-        assert test_file in python_311
-    assert "taskplane/tests" in python_312
+    for version in ("3.10", "3.11"):
+        for test_file in STAGE_MATRIX_TESTS:
+            selector = "              " + test_file
+            assert entries[version].count(selector) == 1, \
+                f"Python {version} must run exact selector {test_file}"
+    assert entries["3.12"].count("              taskplane/tests") == 1
 
 
 def test_post_21713_manifests_keep_parser_safe_hooks_and_supported_metadata() \

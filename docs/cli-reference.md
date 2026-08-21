@@ -117,6 +117,7 @@ not repeated in the tables.
 | `tp.py stage split` | close a parent and atomically create isolated children |
 | `tp.py stage start` | start a root or verified successor stage |
 | `tp.py stage terminalize` | record one immutable terminal outcome |
+| `tp.py stage terminalize-and-start` | atomically terminalize a predecessor and start its verified successor |
 | `tp.py status` | show project loop status and the active contract |
 | `tp.py subagent-start` | SubagentStart lifecycle trace, bounded contract context, and leased review-child identity binding (stdin event) |
 | `tp.py subagent-stop` | SubagentStop lifecycle trace (stdin event; advisory, never a completion gate) |
@@ -1105,6 +1106,70 @@ show what is private and what is shared
 
 drive isolated stage lifecycle and bounded handoffs
 
+### Closed stage-command request
+
+Every stage subcommand accepts one UTF-8 JSON object from
+`--request FILE` or standard input with `--request -`. The object is
+bounded to 1,048,576 bytes and may declare schema
+`taskplane.stage-command/v1`. Unknown fields and predecessor runtime
+context (agents, conversations, event logs, tool transcripts, leases,
+runtime state, workspaces, paths, or execution roots) are rejected.
+The table lists the exact allowed top-level fields; operation-specific
+identity, authority, lifecycle, and artifact validation still applies.
+
+| Stage command | Allowed request fields |
+| --- | --- |
+| `history` | `schema`, `run_id`, `cursor`, `limit` |
+| `start` | `schema`, `stage`, `expected_revision`, `operation_id`, `expected_predecessor_fingerprints`, `foreground`, `authority`, `declared_scope` |
+| `reuse` | `schema`, `stage`, `successor_stage`, `expected_revision`, `operation_id`, `expected_predecessor_fingerprints`, `foreground`, `authority`, `declared_scope`, `reason`, `actor` |
+| `resume` | `schema`, `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `attempt_id`, `authority`, `declared_scope` |
+| `terminalize` | `schema`, `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `reason_code`, `reason`, `completed_deliverables`, `completion_evidence`, `handoff_manifest`, `authority` |
+| `terminalize-and-start` | `schema`, `run_id`, `predecessor_stage_id`, `stage`, `successor_stage`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `reason_code`, `reason`, `completed_deliverables`, `completion_evidence`, `foreground`, `authority`, `declared_scope` |
+| `split` | `schema`, `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `child_specs`, `actor`, `terminalized_at`, `reason`, `authority`, `declared_scopes` |
+
+Atomic predecessor terminalization and successor startup use one
+request and one receipt:
+
+```bash
+tp.py stage terminalize-and-start --request request.json
+```
+
+`request.json` (replace angle-bracket placeholders with the complete
+validated objects or fingerprint):
+
+```json
+{
+  "schema": "taskplane.stage-command/v1",
+  "run_id": "run-r0004",
+  "predecessor_stage_id": "stage-build-001",
+  "successor_stage": "<complete taskplane.stage/v1 object>",
+  "expected_head_fingerprint": "<predecessor stage fingerprint>",
+  "expected_revision": 12,
+  "operation_id": "build-to-evaluate-001",
+  "outcome": "done",
+  "actor": "human:operator",
+  "terminalized_at": "2026-08-21T18:00:00Z",
+  "reason_code": "continued",
+  "reason": "Start evaluation from the bounded build handoff.",
+  "completed_deliverables": [
+    "build-commit",
+    "declared-tests"
+  ],
+  "completion_evidence": [
+    "<portable artifact reference>"
+  ],
+  "foreground": true,
+  "authority": "<exact taskplane.stage-authority-binding/v1 object>",
+  "declared_scope": [
+    "taskplane/**"
+  ]
+}
+```
+
+The command atomically records the predecessor's immutable terminal
+outcome and starts the successor from its verified bounded handoff.
+A validation or authority failure changes neither stage.
+
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
@@ -1157,6 +1222,15 @@ start a root or verified successor stage
 ## `tp.py stage terminalize`
 
 record one immutable terminal outcome
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage terminalize-and-start`
+
+atomically terminalize a predecessor and start its verified successor
 
 | Flag | Value | What it does |
 | --- | --- | --- |

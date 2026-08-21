@@ -13,6 +13,34 @@
     "rollout_modes": ["new-run", "enabled"],
     "rollback": "retain-v4-read-only-no-reverse-migration"
   },
+  "rollout_policy": {
+    "canary": {
+      "mode": "new-run",
+      "exact_run_count": 1,
+      "named_owner_required": true
+    },
+    "observation": {
+      "minimum_hours": 24,
+      "retro_required": true
+    },
+    "abort": {
+      "threshold": 1,
+      "signals": [
+        "predecessor_root_open",
+        "ambiguous_active_projection",
+        "terminal_reopen_attempt",
+        "handoff_integrity_failure",
+        "authority_mismatch",
+        "startup_bound_exceeded",
+        "migration_conservation_mismatch",
+        "r0003_cleanup_proof_failure"
+      ]
+    },
+    "rollback": {
+      "maximum_minutes": 15,
+      "action": "disable-v4-mutations-retain-v4-read-only"
+    }
+  },
   "nodes": [
     {"id": "goal", "label": "goal + loop init", "kind": "input"},
     {"id": "product", "label": "Product · WHAT", "kind": "stage"},
