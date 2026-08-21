@@ -44,11 +44,14 @@ from __future__ import annotations
 
 import fnmatch
 import ast
+import base64
 import hashlib
+import hmac
 import json
 import os
 import posixpath
 import re
+import secrets
 import shlex
 import subprocess
 import sys
@@ -2970,6 +2973,249 @@ SUBMISSION_CONTRACT_SCHEMA = "taskplane.submission-contract/v1"
 SUBMISSION_STATUS_SCHEMA = "taskplane.submission-status/v1"
 SUBMISSION_ARTIFACT_MAX_BYTES = 1024 * 1024
 
+REVIEW_CONTRACT_ACTION_SCHEMA = "taskplane.review-contract-action/v1"
+REVIEW_CONTRACT_AUTHORITY_SCHEMA = \
+    "taskplane.review-contract-authority/v1"
+REVIEW_CONTRACT_ACTION_TTL_SECONDS = 60 * 60
+_REVIEW_ACTION_FIELDS = frozenset({
+    "schema", "key_id", "action_id", "run_id", "task_id", "role_marker",
+    "worker_identity", "issued_at", "expires_at", "workspace_fingerprint",
+    "lease_identity", "producer_contract", "result_path", "signature",
+})
+_REVIEW_LEASE_IDENTITY_FIELDS = (
+    "schema", "slot_id", "lens_ids", "target_fingerprint",
+    "context_fingerprint", "view_fingerprint", "lease_fingerprint",
+    "canonical_revision",
+)
+
+
+def _review_contract_authority_path(workspace: str) -> str:
+    return os.path.join(tp_dir(workspace), "review-contract-authority.json")
+
+
+def _review_contract_authority(workspace: str, *, create: bool) -> dict:
+    """Load the local signing authority, creating it only in the issuer.
+
+    This file is control-plane trust material, never a worker contract.  A
+    producer consumes the signed action; an active slot file is merely an
+    enforcement cache derived after verification.
+    """
+    path = _review_contract_authority_path(workspace)
+    with file_lock(path):
+        authority = load_json(path, default=None,
+                              what="review contract signing authority")
+        if authority is None and create:
+            secret = secrets.token_bytes(32)
+            authority = {
+                "schema": REVIEW_CONTRACT_AUTHORITY_SCHEMA,
+                "key_id": hashlib.sha256(secret).hexdigest(),
+                "secret": base64.b64encode(secret).decode("ascii"),
+            }
+            atomic_write_json(path, authority, sort_keys=True)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        if not isinstance(authority, dict) or \
+                set(authority) != {"schema", "key_id", "secret"} or \
+                authority.get("schema") != REVIEW_CONTRACT_AUTHORITY_SCHEMA:
+            raise StateError(path, "review contract signing authority is invalid")
+        try:
+            secret = base64.b64decode(
+                str(authority.get("secret") or ""), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise StateError(path, "review contract signing authority is invalid") \
+                from exc
+        if len(secret) != 32 or authority.get("key_id") != \
+                hashlib.sha256(secret).hexdigest():
+            raise StateError(path, "review contract signing authority is invalid")
+        return {"key_id": authority["key_id"], "secret": secret}
+
+
+def _review_action_bytes(action: dict) -> bytes:
+    unsigned = {key: value for key, value in action.items()
+                if key != "signature"}
+    return json.dumps(unsigned, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _review_action_signature(secret: bytes, action: dict) -> str:
+    return hmac.new(secret, _review_action_bytes(action),
+                    hashlib.sha256).hexdigest()
+
+
+def _review_bootstrap_error(workspace: str, reason: str) -> StateError:
+    return StateError(
+        _review_contract_authority_path(workspace), reason,
+        "obtain a fresh exact signed ReviewKernel action; do not create or "
+        "broaden an active review slot manually")
+
+
+def _leased_review_result_path(workspace: str, value: object,
+                               lease_fingerprint: object) -> bool:
+    """Accept only the one canonical ReviewKernel result for this lease."""
+    path = str(value or "").replace("\\", "/")
+    fingerprint = str(lease_fingerprint or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint) or \
+            not path.endswith(f"/{fingerprint}.json"):
+        return False
+    if os.path.isabs(path):
+        marker = "/lenses/results/"
+        return marker in path and writable_target(path, [path], workspace)
+    return bool(re.fullmatch(
+        r"\.(?:eval|em-review)/kernel-v2/results/[0-9a-f]{64}\.json",
+        path)) and writable_target(path, [path], workspace)
+
+
+def issue_review_contract_action(
+        workspace: str, *, run_id: str, task_id: str, role_marker: str,
+        worker_identity: str, action_id: str, lease: dict,
+        producer_contract: dict, result_path: str, now: int | None = None,
+        ttl_seconds: int = REVIEW_CONTRACT_ACTION_TTL_SECONDS) -> dict:
+    """Sign one exact lease-to-contract bootstrap action for a fresh worker."""
+    if not isinstance(lease, dict) or \
+            lease.get("schema") != "taskplane.slot-lease/v1":
+        raise _review_bootstrap_error(workspace, "review lease is malformed")
+    missing = [field for field in _REVIEW_LEASE_IDENTITY_FIELDS
+               if field not in lease]
+    if missing:
+        raise _review_bootstrap_error(
+            workspace, "review lease identity is incomplete: " +
+            ", ".join(missing))
+    if not isinstance(producer_contract, dict) or \
+            set(producer_contract) != {
+                "task", "task_slot", "read_only", "write_allow"}:
+        raise _review_bootstrap_error(
+            workspace, "review producer contract schema is malformed")
+    write_allow = producer_contract.get("write_allow")
+    if producer_contract.get("read_only") is not True or \
+            not isinstance(write_allow, list) or \
+            write_allow != [result_path] or \
+            not _leased_review_result_path(
+                workspace, result_path, lease.get("lease_fingerprint")):
+        raise _review_bootstrap_error(
+            workspace, "review producer contract broadens write authority")
+    slot = str(producer_contract.get("task_slot") or "")
+    values = (run_id, task_id, role_marker, worker_identity, action_id,
+              producer_contract.get("task"), slot, result_path)
+    if not all(str(value or "").strip() for value in values) or \
+            not _TASK_SLOT_RE.fullmatch(slot) or \
+            not str(role_marker).startswith("taskplane-role:tp-"):
+        raise _review_bootstrap_error(
+            workspace, "review action identity is malformed")
+    issued_at = int(_time.time() if now is None else now)
+    ttl = int(ttl_seconds)
+    if ttl < 1 or ttl > REVIEW_CONTRACT_ACTION_TTL_SECONDS:
+        raise _review_bootstrap_error(workspace, "review action TTL is invalid")
+    authority = _review_contract_authority(workspace, create=True)
+    lease_identity = {field: lease[field]
+                      for field in _REVIEW_LEASE_IDENTITY_FIELDS}
+    action = {
+        "schema": REVIEW_CONTRACT_ACTION_SCHEMA,
+        "key_id": authority["key_id"],
+        "action_id": str(action_id), "run_id": str(run_id),
+        "task_id": str(task_id), "role_marker": str(role_marker),
+        "worker_identity": str(worker_identity),
+        "issued_at": issued_at, "expires_at": issued_at + ttl,
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        "lease_identity": lease_identity,
+        "producer_contract": json.loads(json.dumps(producer_contract)),
+        "result_path": str(result_path),
+    }
+    action["signature"] = _review_action_signature(
+        authority["secret"], action)
+    return action
+
+
+def activate_review_contract_action(
+        workspace: str, action: dict, *, run_id: str, task_id: str,
+        role_marker: str, worker_identity: str, action_id: str,
+        lens_ids: list[str], target_fingerprint: str,
+        lease_fingerprint: str, canonical_revision: int,
+        now: int | None = None) -> dict:
+    """Verify one signed action and derive its exact read-only slot.
+
+    Verification completes before any active file is opened or written.  The
+    resulting slot is a replaceable enforcement/cache projection and confers
+    no authority beyond the signed lease action.
+    """
+    if not isinstance(action, dict) or set(action) != _REVIEW_ACTION_FIELDS or \
+            action.get("schema") != REVIEW_CONTRACT_ACTION_SCHEMA:
+        raise _review_bootstrap_error(workspace, "review action schema is malformed")
+    authority = _review_contract_authority(workspace, create=False)
+    if action.get("key_id") != authority["key_id"] or \
+            not hmac.compare_digest(
+                str(action.get("signature") or ""),
+                _review_action_signature(authority["secret"], action)):
+        raise _review_bootstrap_error(workspace, "review action signature is invalid")
+    current = int(_time.time() if now is None else now)
+    try:
+        issued_at = int(action["issued_at"])
+        expires_at = int(action["expires_at"])
+    except (TypeError, ValueError) as exc:
+        raise _review_bootstrap_error(
+            workspace, "review action time bounds are malformed") from exc
+    if issued_at > current or expires_at < current or expires_at <= issued_at:
+        raise _review_bootstrap_error(workspace, "review action is stale or expired")
+    if action.get("workspace_fingerprint") != \
+            _workspace_identity_fingerprint(workspace):
+        raise _review_bootstrap_error(
+            workspace, "review action belongs to another workspace")
+    expected = {
+        "run_id": str(run_id), "task_id": str(task_id),
+        "role_marker": str(role_marker),
+        "worker_identity": str(worker_identity),
+        "action_id": str(action_id),
+    }
+    for field, value in expected.items():
+        if action.get(field) != value:
+            raise _review_bootstrap_error(
+                workspace, f"review action {field} identity mismatches worker")
+    lease_identity = action.get("lease_identity")
+    if not isinstance(lease_identity, dict) or \
+            set(lease_identity) != set(_REVIEW_LEASE_IDENTITY_FIELDS):
+        raise _review_bootstrap_error(workspace, "review lease identity is malformed")
+    expected_lease = {
+        "schema": "taskplane.slot-lease/v1",
+        "lens_ids": list(lens_ids),
+        "target_fingerprint": str(target_fingerprint),
+        "lease_fingerprint": str(lease_fingerprint),
+        "canonical_revision": int(canonical_revision),
+    }
+    for field, value in expected_lease.items():
+        if lease_identity.get(field) != value:
+            raise _review_bootstrap_error(
+                workspace, f"review action {field} identity mismatches lease")
+    producer = action.get("producer_contract")
+    result_path = action.get("result_path")
+    if not isinstance(producer, dict) or set(producer) != {
+            "task", "task_slot", "read_only", "write_allow"} or \
+            producer.get("read_only") is not True or \
+            producer.get("write_allow") != [result_path] or \
+            not _leased_review_result_path(
+                workspace, result_path,
+                lease_identity.get("lease_fingerprint")):
+        raise _review_bootstrap_error(
+            workspace, "review producer contract broadens write authority")
+    slot = str(producer.get("task_slot") or "")
+    if not _TASK_SLOT_RE.fullmatch(slot) or task_slot() != slot:
+        raise _review_bootstrap_error(
+            workspace, "review action task slot mismatches worker")
+    contract = build_contract(
+        str(producer.get("task") or ""), read_only=True,
+        write_allow=[str(result_path)])
+    contract.update({
+        "task_id": "review_action_" + hashlib.sha256(
+            str(action_id).encode("utf-8")).hexdigest()[:16],
+        "task_slot": slot, "authority_source": "signed_action",
+        "bootstrap_action_id": str(action_id),
+        "bootstrap_key_id": authority["key_id"],
+        "bootstrap_worker_identity": str(worker_identity),
+        "bootstrap_lease_fingerprint": str(lease_fingerprint),
+    })
+    return activate(workspace, contract, snapshot="auto",
+                    task_slot_override=slot)
+
 
 def _workspace_identity_fingerprint(workspace: str) -> str:
     """Opaque checkout identity used to bind lifecycle evidence.
@@ -3433,8 +3679,8 @@ def _active_contract_path(workspace: str) -> str:
     return active_contract_path(workspace)
 
 
-def _snapshot_path(workspace: str) -> str:
-    slot = task_slot()
+def _snapshot_path(workspace: str, slot: str | None = None) -> str:
+    slot = task_slot() if slot is None else slot
     if slot is None:
         return os.path.join(tp_dir(workspace), "snapshot")
     return os.path.join(tp_dir(workspace), "active", f"{slot}.snapshot")
@@ -3669,7 +3915,8 @@ def git_head(workspace: str) -> str | None:
 
 
 def activate(workspace: str, contract: dict,
-             snapshot: str | None = "auto") -> dict:
+             snapshot: str | None = "auto", *,
+             task_slot_override: str | None = None) -> dict:
     """Write the active contract + snapshot so the PreToolUse hook enforces
     it. Returns the contract. snapshot='auto' records git HEAD."""
     # This shared entry boundary covers CLI, loop, claim, and review adapters.
@@ -3708,10 +3955,15 @@ def activate(workspace: str, contract: dict,
     # is provably being reused. Never touches user data.
     _gc_runtime_artifacts(d)
     _gc_runtime_artifacts(os.path.join(d, "active"))
-    cpath = _active_contract_path(workspace)
+    selected_slot = task_slot() if task_slot_override is None \
+        else str(task_slot_override)
+    if selected_slot is not None and not _TASK_SLOT_RE.fullmatch(selected_slot):
+        raise StateError("TASKPLANE_TASK",
+                         f"invalid task slot {selected_slot!r}")
+    cpath = active_contract_path(workspace, selected_slot)
     os.makedirs(os.path.dirname(cpath), exist_ok=True)
     atomic_write_json(cpath, contract, indent=2)
-    spath = _snapshot_path(workspace)
+    spath = _snapshot_path(workspace, selected_slot)
     tmp = spath + f".tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(snapshot or "")
@@ -3721,7 +3973,7 @@ def activate(workspace: str, contract: dict,
           task=contract.get("task"), read_only=bool(contract.get("read_only")),
           scope=projection["scope_paths"],
           write_allow=contract.get("write_allow"), snapshot=snapshot,
-          slot=task_slot())
+          slot=selected_slot)
     return contract
 
 

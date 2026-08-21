@@ -170,6 +170,7 @@ def pass_em(ws):
 
 
 class TestLoop(unittest.TestCase):
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
@@ -177,6 +178,179 @@ class TestLoop(unittest.TestCase):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "add complete()")
         self.assertEqual(loop.load(ws)["step"], "pm")
+
+    def _setup_stateless_review_contract(self):
+        self.ws = git_ws(self.tmp, [TASK])
+        self.lease = {
+            "schema": "taskplane.slot-lease/v1",
+            "slot_id": "deep.security",
+            "lens_ids": ["security"],
+            "target_fingerprint": "1" * 64,
+            "context_fingerprint": "2" * 64,
+            "view_fingerprint": "3" * 64,
+            "canonical_revision": 4,
+            "lease_fingerprint": "4" * 64,
+        }
+        self.producer = {
+            "task": "review lens slot deep.security lease " + "4" * 64,
+            "task_slot": "review-" + "4" * 20,
+            "read_only": True,
+            "write_allow": [
+                ".eval/kernel-v2/results/" + "4" * 64 + ".json"
+            ],
+        }
+        self.bindings = {
+            "run_id": "run-review-4",
+            "task_id": "t1",
+            "role_marker": "taskplane-role:tp-security",
+            "worker_identity": "tp_lens_security_44444444",
+            "action_id": "review-action-4",
+            "lens_ids": ["security"],
+            "target_fingerprint": "1" * 64,
+            "lease_fingerprint": "4" * 64,
+            "canonical_revision": 4,
+        }
+
+    def _issue(self):
+        return tp.issue_review_contract_action(
+            self.ws, lease=self.lease, producer_contract=self.producer,
+            result_path=self.producer["write_allow"][0], now=100,
+            ttl_seconds=60, **{
+                key: self.bindings[key] for key in (
+                    "run_id", "task_id", "role_marker", "worker_identity",
+                    "action_id")
+            })
+
+    def _activate(self, action, **overrides):
+        expected = dict(self.bindings)
+        expected.update(overrides)
+        with unittest.mock.patch.dict(
+                os.environ,
+                {"TASKPLANE_TASK": self.producer["task_slot"]}):
+            return tp.activate_review_contract_action(
+                self.ws, action, now=101, **expected)
+
+    def _assert_fresh_worker_activates_without_hook_or_active_file(self):
+        self._setup_stateless_review_contract()
+        action = self._issue()
+        active_path = tp.active_contract_path(
+            self.ws, self.producer["task_slot"])
+        self.assertFalse(os.path.exists(active_path))
+
+        contract = self._activate(action)
+
+        self.assertTrue(contract["read_only"])
+        self.assertEqual(contract["write_allow"],
+                         self.producer["write_allow"])
+        self.assertEqual(tp.load_json(active_path)["bootstrap_action_id"],
+                         self.bindings["action_id"])
+        allowed, _ = tp.screen_tool(
+            contract, "Write", {"file_path": self.producer["write_allow"][0]},
+            self.ws)
+        refused, _ = tp.screen_tool(
+            contract, "Write", {"file_path": "taskplane/loop.py"}, self.ws)
+        self.assertTrue(allowed)
+        self.assertFalse(refused)
+
+    def _assert_tamper_stale_identity_replay_and_write_broadening_fail_closed(self):
+        self._setup_stateless_review_contract()
+        action = self._issue()
+        broad_producer = dict(self.producer, write_allow=["taskplane/loop.py"])
+        with self.assertRaises(tp.StateError):
+            tp.issue_review_contract_action(
+                self.ws, lease=self.lease,
+                producer_contract=broad_producer,
+                result_path="taskplane/loop.py", now=100,
+                ttl_seconds=60, **{
+                    key: self.bindings[key] for key in (
+                        "run_id", "task_id", "role_marker",
+                        "worker_identity", "action_id")
+                })
+        cases = []
+        altered = json.loads(json.dumps(action))
+        altered["task_id"] = "other-task"
+        cases.append((altered, {}, 101))
+        forged = json.loads(json.dumps(action))
+        forged["signature"] = "0" * 64
+        cases.append((forged, {}, 101))
+        unsigned = json.loads(json.dumps(action))
+        unsigned.pop("signature")
+        cases.append((unsigned, {}, 101))
+        broadened = json.loads(json.dumps(action))
+        broadened["producer_contract"]["write_allow"].append("taskplane/**")
+        cases.append((broadened, {}, 101))
+        malformed = json.loads(json.dumps(action))
+        malformed["schema"] = "taskplane.review-contract-action/v0"
+        cases.append((malformed, {}, 101))
+        cases.append((action, {}, 161))
+        cases.append((action, {"run_id": "another-run"}, 101))
+        cases.append((action, {"task_id": "another-task"}, 101))
+        cases.append((action, {"worker_identity": "another_worker"}, 101))
+        cases.append((action, {"role_marker": "taskplane-role:tp-qa"}, 101))
+        cases.append((action, {"lens_ids": ["qa"]}, 101))
+        cases.append((action, {"target_fingerprint": "9" * 64}, 101))
+        cases.append((action, {"lease_fingerprint": "8" * 64}, 101))
+        cases.append((action, {"canonical_revision": 5}, 101))
+        cases.append((action, {"action_id": "other-action"}, 101))
+
+        for candidate, overrides, now in cases:
+            with self.subTest(overrides=overrides, now=now,
+                              schema=candidate.get("schema")):
+                expected = dict(self.bindings)
+                expected.update(overrides)
+                with unittest.mock.patch.dict(
+                        os.environ,
+                        {"TASKPLANE_TASK": self.producer["task_slot"]}):
+                    with self.assertRaises(tp.StateError):
+                        tp.activate_review_contract_action(
+                            self.ws, candidate, now=now, **expected)
+        with unittest.mock.patch.dict(
+                os.environ, {"TASKPLANE_TASK": "review-wrong-worker"}):
+            with self.assertRaises(tp.StateError):
+                tp.activate_review_contract_action(
+                    self.ws, action, now=101, **self.bindings)
+
+    def _assert_loop_binds_worker_action_to_each_immutable_review_slot(self):
+        self._setup_stateless_review_contract()
+        import review_evidence
+
+        store = review_evidence.ArtifactStore(self.ws)
+        lease_ref = store.put("lease", self.lease)
+        brief_ref = store.put("lens-brief", {
+            "schema": "taskplane.lens-brief/v2",
+            "lease": lease_ref,
+            "result_path": self.producer["write_allow"][0],
+            "producer_contract": self.producer,
+            "role": {
+                "role_marker": self.bindings["role_marker"],
+                "task_name": self.bindings["worker_identity"],
+            },
+        })
+        manifest = {
+            "schema": "taskplane.review-start-manifest/v2",
+            "status": "ready", "run_id": self.bindings["run_id"],
+            "target_fingerprint": self.bindings["target_fingerprint"],
+            "slots": [{
+                "slot_id": self.lease["slot_id"],
+                "lens_ids": self.lease["lens_ids"],
+                "lease": lease_ref, "brief": brief_ref,
+                "result_path": self.producer["write_allow"][0],
+            }],
+        }
+
+        bound = loop._bind_stateless_review_contract_actions(
+            self.ws, manifest, task_id="t1", now=100)
+
+        bootstrap = bound["slots"][0]["contract_bootstrap"]
+        self.assertEqual(bootstrap["schema"],
+                         "taskplane.review-contract-bootstrap/v1")
+        self.assertEqual(bootstrap["environment"]["TASKPLANE_TASK"],
+                         self.producer["task_slot"])
+        self.assertEqual(bootstrap["action"]["lease_identity"]["lens_ids"],
+                         ["security"])
+        self.assertNotIn("conversation", json.dumps(bootstrap).lower())
+        self.assertFalse(os.path.exists(tp.active_contract_path(
+            self.ws, self.producer["task_slot"])))
 
     def test_existing_spec_skips_pm(self):
         ws = git_ws(self.tmp, [TASK])
@@ -1569,6 +1743,10 @@ class TestEngineSkewRefusal(unittest.TestCase):
         subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
                         "tp/t1"], cwd=ws)
         loop.claim(ws, "t1", agent_ws)
+        # t00 made the claimed worktree graph authoritative and removed the
+        # stale-primary fallback. This fixture must establish the same
+        # target-bound graph precondition as every real parallel evaluation.
+        depgraph.scan(agent_ws)
         submit_gate(ws, "pass", task_id="t1")       # built
         loop.next_action(ws)                        # → evaluate
         write_kernel_results(ws)
@@ -1727,3 +1905,19 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertEqual(_scrub(today_trace), _scrub(a4_trace))
         self.assertEqual([r for r in a4_trace
                           if r.get("reason") == "engine_skew"], [])
+
+
+class TestStatelessReviewContractBootstrap(unittest.TestCase):
+    """Focused selector for the stateless signed-action regression."""
+
+    setUp = TestLoop.setUp
+    _setup_stateless_review_contract = \
+        TestLoop._setup_stateless_review_contract
+    _issue = TestLoop._issue
+    _activate = TestLoop._activate
+    test_fresh_worker_activates_without_hook_or_active_file = \
+        TestLoop._assert_fresh_worker_activates_without_hook_or_active_file
+    test_tamper_stale_identity_replay_and_write_broadening_fail_closed = \
+        TestLoop._assert_tamper_stale_identity_replay_and_write_broadening_fail_closed
+    test_loop_binds_worker_action_to_each_immutable_review_slot = \
+        TestLoop._assert_loop_binds_worker_action_to_each_immutable_review_slot

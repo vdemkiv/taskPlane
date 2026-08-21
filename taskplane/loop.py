@@ -1179,6 +1179,83 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         "status": manifest.get("status"), "breadth": "routed"}})
 
 
+def _bind_stateless_review_contract_actions(
+        review_ws: str, manifest: dict, *, task_id: str,
+        now: int | None = None) -> dict:
+    """Attach one signed, self-activating contract action to every slot.
+
+    ReviewKernel's immutable brief and lease remain the source identities.
+    This projection adds no predecessor/session material and creates no active
+    slot: a fresh exact worker verifies the action, then derives its own
+    least-privilege read-only enforcement cache before evidence access.
+    """
+    import hashlib
+    import review_evidence
+
+    if not isinstance(manifest, dict) or manifest.get("status") != "ready":
+        return manifest
+    bound = json.loads(json.dumps(manifest))
+    store = review_evidence.ArtifactStore(review_ws)
+    run_id = str(bound.get("run_id") or "")
+    if not run_id or not str(task_id or "").strip():
+        raise ValueError("review contract bootstrap needs run and task identity")
+    for slot in bound.get("slots") or []:
+        if not isinstance(slot, dict):
+            raise ValueError("review contract bootstrap slot is malformed")
+        lease = store.read(slot.get("lease") or {})
+        brief = store.read(slot.get("brief") or {})
+        producer = brief.get("producer_contract")
+        role = brief.get("role") or {}
+        role_marker = str(role.get("role_marker") or "")
+        worker_identity = str(role.get("task_name") or "")
+        if not role_marker or not worker_identity:
+            raise ValueError(
+                "review contract bootstrap lacks exact worker identity")
+        action_material = {
+            "run_id": run_id, "task_id": str(task_id),
+            "slot_id": lease.get("slot_id"),
+            "lease_fingerprint": lease.get("lease_fingerprint"),
+            "worker_identity": worker_identity,
+        }
+        action_id = "review-action-" + hashlib.sha256(json.dumps(
+            action_material, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()[:24]
+        action = tp.issue_review_contract_action(
+            review_ws, run_id=run_id, task_id=str(task_id),
+            role_marker=role_marker, worker_identity=worker_identity,
+            action_id=action_id, lease=lease,
+            producer_contract=producer,
+            result_path=str(brief.get("result_path") or ""), now=now)
+        expected = {
+            "run_id": run_id, "task_id": str(task_id),
+            "role_marker": role_marker,
+            "worker_identity": worker_identity,
+            "action_id": action_id,
+            "lens_ids": list(lease.get("lens_ids") or []),
+            "target_fingerprint": str(
+                lease.get("target_fingerprint") or ""),
+            "lease_fingerprint": str(
+                lease.get("lease_fingerprint") or ""),
+            "canonical_revision": int(
+                lease.get("canonical_revision") or 0),
+        }
+        slot["contract_bootstrap"] = {
+            "schema": "taskplane.review-contract-bootstrap/v1",
+            "required_before_evidence": True,
+            "authority": "signed_action",
+            "active_slot_semantics": "derived_cache_not_authority",
+            "function": "taskplane_lite.activate_review_contract_action",
+            "environment": {
+                "TASKPLANE_TASK": producer["task_slot"],
+                "TASKPLANE_REVIEW_CONTRACT_ACTION": json.dumps(
+                    action, sort_keys=True, separators=(",", ":")),
+            },
+            "expected": expected,
+            "action": action,
+        }
+    return bound
+
+
 # --------------------------------------------------------------- parallel
 
 def _scopes_overlap(a, b) -> bool:
@@ -1806,6 +1883,10 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 ws, diff_ws, base=base_ref, step=step, task=task,
                 graph=depgraph.load(graph_ws), impact=imp or {},
                 requirement=req_rec, retry_context=retry_context)
+            review_kernel = _bind_stateless_review_contract_actions(
+                diff_ws, review_kernel,
+                task_id=str((task or {}).get("id") or
+                            "engineering-signoff"))
         except Exception as exc:
             review_kernel = {"status": "kernel_unavailable", "slots": [],
                              "reason": f"{exc.__class__.__name__}: {exc}"}
@@ -1988,7 +2069,12 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                     "hand. Then do what the engine cannot: prove each criterion "
                     "against real behavior, apply each ROUTED lens (prompt at "
                     "lenses/<id>.md) — inline ones yourself, one governed "
-                    "read-only subagent per subagent-mode lens — and disposition "
+                    "read-only subagent per subagent-mode lens. Pass each "
+                    "slot's contract_bootstrap unchanged; the exact worker "
+                    "must verify its signed action and derive its read-only "
+                    "contract before evidence access, without requiring a "
+                    "pre-existing active slot or hook lifecycle side effect. "
+                    "Then disposition "
                     "graph impact + affected requirements; reject stale Design "
                     f"evidence. Fill the empty slots in {evaluator_result} "
                     "(submitted unchanged, it is refused). Then `loop submit "
@@ -2003,7 +2089,10 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
         "em": "Run tp-engineering (read-only): `lenses` is the one complete "
               "26-lens routing decision. Run exact tier=deep slots and at "
               "most one bounded tier=light sweep; tier=n/a is evidence, "
-              "never a dispatch. Do not re-derive diff or impact per lens. "
+              "never a dispatch. Pass each slot's contract_bootstrap unchanged; "
+              "the exact worker verifies the signed action and derives its "
+              "read-only contract before evidence access. Do not re-derive "
+              "diff or impact per lens. "
               "Synthesize all verdicts + requirement-vs-implementation into "
               f"{os.path.join(review_root, 'report.md')} AND "
               f"{os.path.join(review_root, 'findings.json')} (including "

@@ -290,6 +290,61 @@ def test_documented_legacy_flows_keep_evidence_and_human_gates() -> None:
     assert "unavailable, not declined" in guidance
 
 
+class TestStatelessReviewContractBootstrap:
+    """Host packages are optional projections, never contract authority."""
+
+    @pytest.mark.parametrize("host", ("codex", "claude"))
+    def test_signed_action_bootstraps_with_no_hook_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str,
+    ) -> None:
+        from taskplane import taskplane_lite as tp
+
+        workspace = tmp_path / host
+        workspace.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+             "commit", "--allow-empty", "-qm", "init"],
+            cwd=workspace, check=True,
+        )
+        slot = "review-" + "a" * 20
+        result_path = ".eval/kernel-v2/results/" + "a" * 64 + ".json"
+        lease = {
+            "schema": "taskplane.slot-lease/v1", "slot_id": "deep.qa",
+            "lens_ids": ["qa"], "target_fingerprint": "b" * 64,
+            "context_fingerprint": "c" * 64,
+            "view_fingerprint": "d" * 64, "canonical_revision": 2,
+            "lease_fingerprint": "a" * 64,
+        }
+        action = tp.issue_review_contract_action(
+            str(workspace), run_id="run-host", task_id="t5",
+            role_marker="taskplane-role:tp-qa",
+            worker_identity="tp_lens_qa_aaaaaaaa",
+            action_id="host-action", lease=lease,
+            producer_contract={
+                "task": "review qa", "task_slot": slot,
+                "read_only": True, "write_allow": [result_path],
+            }, result_path=result_path, now=10, ttl_seconds=30,
+        )
+        monkeypatch.setenv("TASKPLANE_HOST", host)
+        monkeypatch.setenv("TASKPLANE_TASK", slot)
+        assert not Path(tp.active_contract_path(str(workspace), slot)).exists()
+
+        contract = tp.activate_review_contract_action(
+            str(workspace), action, run_id="run-host", task_id="t5",
+            role_marker="taskplane-role:tp-qa",
+            worker_identity="tp_lens_qa_aaaaaaaa",
+            action_id="host-action", lens_ids=["qa"],
+            target_fingerprint="b" * 64, lease_fingerprint="a" * 64,
+            canonical_revision=2, now=11,
+        )
+
+        assert contract["authority_source"] == "signed_action"
+        assert contract["read_only"] is True
+        assert contract["write_allow"] == [result_path]
+        assert not (workspace / "hooks" / "hooks.json").exists()
+
+
 def test_hooks_skills_and_agents_share_projection_not_authority_semantics() -> None:
     hook_contract = _runtime_module().discover_hook_contract(ROOT)
     assert hook_contract["canonicalModel"] == \
