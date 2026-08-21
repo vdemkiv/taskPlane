@@ -221,6 +221,69 @@ def test_normal_new_run_init_can_reach_the_public_stage_start(
     assert store.load(str(stage["run_id"]))["schema"] == "taskplane.run/v4"
 
 
+def test_new_run_refuses_legacy_dispatch_until_its_root_is_committed(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+
+    workspace, _store_value, stage = _real_loop_stage(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    initialized = loop.init(str(workspace), "start from one bounded root")
+    state_path = Path(loop._loop_path(str(workspace)))
+    pristine_bytes = state_path.read_bytes()
+
+    refused = loop.next_action.__wrapped__(str(workspace))
+
+    assert "committed root stage before dispatch" in refused["error"]
+    for legacy_field in (
+            "agent", "contract", "dispatch_path", "instruction",
+            "stage_runtime_dispatch"):
+        assert legacy_field not in refused
+    assert state_path.read_bytes() == pristine_bytes
+
+    started = loop.stage_command(str(workspace), "start", {
+        "schema": "taskplane.stage-command/v1",
+        "stage": stage,
+        "expected_revision": 1,
+        "operation_id": "start-before-first-loop-dispatch",
+        "expected_predecessor_fingerprints": {},
+        "foreground": True,
+        "authority": stage["authority"],
+    })
+    dispatched = loop.next_action.__wrapped__(str(workspace))
+
+    assert initialized["_stage_native_new_run_pristine"] is True
+    assert "error" not in started, started
+    assert "error" not in dispatched, dispatched
+    assert dispatched["stage_runtime_dispatch"]["startup"]["stage_id"] == \
+        stage["stage_id"]
+
+
+def test_structurally_pristine_singleton_without_new_run_marker_is_refused(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+
+    workspace, _store_value, stage = _real_loop_stage(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    state = loop.init(str(workspace), "do not infer canary authority")
+    state.pop("_stage_native_new_run_pristine")
+    loop.save(str(workspace), state)
+
+    refused = loop.stage_command(str(workspace), "start", {
+        "schema": "taskplane.stage-command/v1",
+        "stage": stage,
+        "expected_revision": 1,
+        "operation_id": "refuse-unmarked-structural-singleton",
+        "expected_predecessor_fingerprints": {},
+        "foreground": True,
+        "authority": stage["authority"],
+    })
+
+    assert refused["enabled"] is False
+    assert "cannot promote an existing singleton" in refused["error"]
+    assert _store_value.load(str(stage["run_id"]))["schema"] == \
+        "taskplane.run/v3"
+
+
 def test_shadow_migration_compares_conservation_without_switching_readers(
         tmp_path: Path) -> None:
     workspace = tmp_path / "checkout"
@@ -394,6 +457,52 @@ def test_disabled_migrated_v4_refuses_singleton_resolution_without_writes(
     assert refused["stage_native"] == "read-only"
     assert state_path.read_bytes() == before_state
     assert _tree_bytes(run_root) == before_run
+
+
+@pytest.mark.parametrize("corruption", ["locator", "manifest"])
+def test_disabled_rollback_refuses_mutation_when_stage_storage_is_corrupt(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        corruption: str) -> None:
+    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+
+    workspace, store, stage = _real_loop_stage(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    state = loop.init(str(workspace), "retain rollback authority")
+    started = loop.stage_command(str(workspace), "start", {
+        "schema": "taskplane.stage-command/v1",
+        "stage": stage,
+        "expected_revision": 1,
+        "operation_id": "start-before-rollback-corruption",
+        "expected_predecessor_fingerprints": {},
+        "foreground": True,
+        "authority": stage["authority"],
+    })
+    assert "error" not in started, started
+    state.update({
+        "step": "escalated",
+        "tasks": [{"id": "t01", "status": "failed", "fix_cycles": 2}],
+        "current_task": 0,
+    })
+    loop.save(str(workspace), state)
+    state_path = Path(loop._loop_path(str(workspace)))
+    before_state = state_path.read_bytes()
+    if corruption == "locator":
+        corrupted_path = Path(storage._locator_path(str(workspace)))
+    else:
+        corrupted_path = Path(store.home) / "runs" / str(
+            stage["run_id"]) / "manifest.json"
+    corrupted_path.write_text("{not-valid-json\n", encoding="utf-8")
+    before_corrupt_bytes = corrupted_path.read_bytes()
+    monkeypatch.delenv(taskplane_lite.STAGE_NATIVE_ENV, raising=False)
+
+    refused = loop.resolve(str(workspace), "abort")
+
+    assert "error" in refused
+    assert "read-only" in refused["error"] or \
+        "rollback" in refused["error"]
+    assert refused["stage_native"] == "read-only"
+    assert state_path.read_bytes() == before_state
+    assert corrupted_path.read_bytes() == before_corrupt_bytes
 
 
 def test_rollback_never_guesses_an_ambiguous_legacy_outcome(

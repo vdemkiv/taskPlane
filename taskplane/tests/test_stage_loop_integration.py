@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import copy
+import contextlib
+import hashlib
+import json
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -20,6 +24,58 @@ def _workspace(tmp_path):
         "user.email=taskplane@example.invalid", "commit", "-qm", "base",
     ], cwd=workspace, check=True)
     return str(workspace)
+
+
+def _start_real_stage_loop(tmp_path, monkeypatch, *, stage_kind="product",
+                           stage_id=None, goal="exercise the real stage loop"):
+    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stage_id = stage_id or f"stage-{stage_kind}-loop-root"
+    workspace, store, stage = _real_loop_stage(
+        tmp_path, stage_kind=stage_kind, stage_id=stage_id)
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+    initialized = loop.init(str(workspace), goal)
+    started = loop.stage_command(str(workspace), "start", {
+        "schema": "taskplane.stage-command/v1",
+        "stage": stage,
+        "expected_revision": 1,
+        "operation_id": f"start-{stage_id}",
+        "expected_predecessor_fingerprints": {},
+        "foreground": True,
+        "authority": stage["authority"],
+        "declared_scope": {
+            "scope_paths": ["README.md"],
+            "out_of_scope_paths": ["taskplane/loop.py"],
+        },
+    })
+    assert "error" not in initialized, initialized
+    assert "error" not in started, started
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "enabled")
+    return str(workspace), store, stage, started
+
+
+def _successor_handoff(ws, store, receipt):
+    successor_head = receipt["result"]["successor_head"]
+    successor_id = successor_head["summary"]["stage_id"]
+    manifest = store.load(successor_head["summary"]["run_id"])
+    successor = store.read_stage_object(
+        manifest["run_id"], manifest["stage_heads"][successor_id]["object"])
+    _entities, lifecycle = loop._stage_lifecycle(
+        ws, store, manifest, successor["authority"])
+    handoff = loop._verified_stage_handoff(
+        lifecycle, store, manifest, successor)
+    return successor, handoff
+
+
+def _handoff_payload_text(ws, handoff):
+    from taskplane import review_evidence
+
+    artifact_store = review_evidence.ArtifactStore(ws)
+    payloads = [artifact_store.read(reference) for reference in
+                handoff["selected_artifacts"] +
+                handoff["evidence_references"]]
+    return json.dumps(payloads, sort_keys=True)
 
 
 def test_disabled_loop_stage_context_does_not_open_a_locator(
@@ -88,9 +144,56 @@ def test_disabled_migrated_loop_refuses_mutation_without_state_change(
     assert loop.load(ws) == before
 
 
+@pytest.mark.parametrize("corruption", ["locator", "store"])
+def test_corrupt_stage_locator_or_store_refuses_without_singleton_mutation(
+        tmp_path, monkeypatch, corruption) -> None:
+    ws = _workspace(tmp_path)
+    state_root = tmp_path / "corrupt-state-root"
+    monkeypatch.setattr(
+        loop.tp, "external_store_root", lambda _ws: str(state_root))
+    loop.init(ws, "preserve singleton on stage metadata corruption")
+    specs = Path(ws) / "specs"
+    specs.mkdir()
+    (specs / "spec.md").write_text(
+        "# Product\n\nDo not mutate through corrupt stage state.\n",
+        encoding="utf-8")
+    before = copy.deepcopy(loop.load(ws))
+    state_path = Path(loop._loop_path(ws))
+    before_bytes = state_path.read_bytes()
+    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
+
+    if corruption == "locator":
+        monkeypatch.setattr(
+            loop.runtime_storage, "load_workspace_locator",
+            lambda _ws: (_ for _ in ()).throw(
+                RuntimeError("corrupt stage locator")))
+    else:
+        monkeypatch.setattr(
+            loop.runtime_storage, "load_workspace_locator",
+            lambda _ws: {"run_id": "run-corrupt", "home": "/run-store"})
+
+        class CorruptStore:
+            @staticmethod
+            def load(_run_id):
+                raise RuntimeError("corrupt stage manifest")
+
+        monkeypatch.setattr(
+            loop, "_stage_store", lambda *_args: CorruptStore())
+
+    refused = loop.gate.__wrapped__(ws, "pass")
+
+    assert "error" in refused
+    assert "stage" in refused["error"].lower()
+    assert "corrupt" in refused["error"].lower() or \
+        "unavailable" in refused["error"].lower()
+    assert loop.load(ws) == before
+    assert state_path.read_bytes() == before_bytes
+
+
 def test_new_run_can_start_after_normal_loop_init_and_replay_once(
         tmp_path, monkeypatch) -> None:
     ws = _workspace(tmp_path)
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
     initialized = loop.init(ws, "start the stage-native canary")
     stage = {
         "run_id": "run-r0004", "stage_id": "stage-product-root-001",
@@ -135,7 +238,6 @@ def test_new_run_can_start_after_normal_loop_init_and_replay_once(
                 })
             return receipt
 
-    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
     monkeypatch.setattr(loop, "_stage_store", lambda _ws, _run_id: Store())
     monkeypatch.setattr(
         loop, "_validate_stage_request", lambda _action, request: request)
@@ -159,9 +261,77 @@ def test_new_run_can_start_after_normal_loop_init_and_replay_once(
     second = loop.stage_command(ws, "start", request)
 
     assert initialized["step"] == "pm"
+    assert initialized["_stage_native_new_run_pristine"] is True
     assert "error" not in first
     assert second == first
     assert committed == ["start-root-once"]
+
+
+def test_pristine_new_run_commits_root_before_dispatch_and_refuses_late_start(
+        tmp_path, monkeypatch) -> None:
+    observed = []
+    real_dispatch = loop._stage_dispatch
+
+    def observe_committed_root(store, lifecycle, receipt, stage, **kwargs):
+        manifest = store.load(stage["run_id"])
+        summary = manifest["stage_heads"][stage["stage_id"]]["summary"]
+        assert manifest["schema"] == "taskplane.run/v4"
+        assert summary["state"] == "active"
+        assert manifest["stage_operations"][receipt["operation_id"]] == receipt
+        observed.append(stage["stage_id"])
+        return real_dispatch(
+            store, lifecycle, receipt, stage, **kwargs)
+
+    monkeypatch.setattr(loop, "_stage_dispatch", observe_committed_root)
+    ws, store, stage, started = _start_real_stage_loop(
+        tmp_path / "pristine", monkeypatch,
+        stage_id="stage-product-pristine-root")
+
+    assert observed == [stage["stage_id"]]
+    assert started["dispatch"]["startup"]["stage_id"] == stage["stage_id"]
+    assert store.load(stage["run_id"])["schema"] == "taskplane.run/v4"
+
+    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+
+    late_root = tmp_path / "late"
+    late_root.mkdir()
+    late_ws, late_store, _late_stage = _real_loop_stage(
+        late_root, stage_kind="product", stage_id="stage-product-late-root")
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+    loop.init(str(late_ws), "author Product before stage start")
+    specs = late_ws / "specs"
+    specs.mkdir()
+    (specs / "spec.md").write_text(
+        "# Product\n\nThe singleton has already produced Product output.\n",
+        encoding="utf-8")
+    refused_gate = loop.gate.__wrapped__(str(late_ws), "pass")
+
+    assert "committed root stage before" in refused_gate["error"]
+    assert loop.load(str(late_ws))["step"] == "pm"
+    assert late_store.load("run-cross-host-loop")["schema"] == \
+        "taskplane.run/v3"
+
+    unmarked_root = tmp_path / "unmarked"
+    unmarked_root.mkdir()
+    unmarked_ws, unmarked_store, unmarked_stage = _real_loop_stage(
+        unmarked_root, stage_kind="product",
+        stage_id="stage-product-unmarked-root")
+    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
+    loop.init(str(unmarked_ws), "pre-existing singleton")
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+
+    refused = loop.stage_command(str(unmarked_ws), "start", {
+        "schema": "taskplane.stage-command/v1", "stage": unmarked_stage,
+        "expected_revision": 1, "operation_id": "start-too-late",
+        "expected_predecessor_fingerprints": {}, "foreground": True,
+        "authority": unmarked_stage["authority"],
+    })
+
+    assert refused["enabled"] is False
+    assert "existing singleton" in refused["error"] or \
+        "pristine" in refused["error"]
+    assert unmarked_store.load(unmarked_stage["run_id"])["schema"] == \
+        "taskplane.run/v3"
 
 
 def test_dispatch_uses_one_deterministic_verified_resume_attempt(
@@ -516,6 +686,128 @@ def test_parallel_wave_uses_distinct_child_stage_roots_and_bound_foreground(
     assert context["stage"]["stage_id"] == "stage-build-t01"
 
 
+def test_real_wave_recovers_task_bindings_after_post_split_crash(
+        tmp_path, monkeypatch) -> None:
+    ws, store, stage, _started = _start_real_stage_loop(
+        tmp_path / "split-recovery", monkeypatch, stage_kind="build",
+        stage_id="stage-build-split-parent")
+    state = loop.load(ws)
+    ready = [
+        {"id": "t01", "scope": ["a/**"], "tests": "true",
+         "deps": [], "status": "pending"},
+        {"id": "t02", "scope": ["b/**"], "tests": "true",
+         "deps": [], "status": "pending"},
+    ]
+    state.update({
+        "step": "execute", "parallel": True, "current_task": 0,
+        "tasks": ready,
+    })
+    loop.save(ws, state)
+    real_mutate = loop.mutate
+
+    @contextlib.contextmanager
+    def crash_before_binding_commit(_workspace):
+        raise RuntimeError("crash after split before singleton binding")
+        yield
+
+    monkeypatch.setattr(loop, "mutate", crash_before_binding_commit)
+    with pytest.raises(RuntimeError, match="after split"):
+        loop._stage_loop_wave_dispatches(ws, state, ready)
+    split = store.load(stage["run_id"])
+    assert len(split["active_stage_projection"]["active_stage_ids"]) == 2
+    assert "_stage_bindings" not in loop.load(ws)
+
+    monkeypatch.setattr(loop, "mutate", real_mutate)
+    recovered = loop._stage_loop_wave_dispatches(
+        ws, loop.load(ws), ready)
+
+    assert set(recovered) == {"t01", "t02"}
+    bindings = loop.load(ws)["_stage_bindings"]
+    child_ids = {bindings[task_id]["build"] for task_id in recovered}
+    assert len(child_ids) == 2
+    assert child_ids == set(
+        store.load(stage["run_id"])["active_stage_projection"][
+            "active_stage_ids"])
+    assert {
+        dispatch["startup"]["stage_id"] for dispatch in recovered.values()
+    } == child_ids
+
+
+def test_interim_evaluate_terminalizes_only_without_starting_bogus_build(
+        tmp_path, monkeypatch) -> None:
+    ws, store, root, _started = _start_real_stage_loop(
+        tmp_path / "interim-evaluate", monkeypatch, stage_kind="build",
+        stage_id="stage-build-interim-parent")
+    tasks = [
+        {"id": "t01", "scope": ["README.md"], "tests": "true",
+         "deps": [], "status": "pending",
+         "target_commit": loop.tp.git_head(ws)},
+        {"id": "t02", "scope": ["b/**"], "tests": "true",
+         "deps": [], "status": "pending",
+         "target_commit": loop.tp.git_head(ws)},
+    ]
+    state = loop.load(ws)
+    state.update({
+        "step": "execute", "parallel": True, "current_task": 0,
+        "tasks": tasks,
+    })
+    loop.save(ws, state)
+    loop._stage_loop_wave_dispatches(ws, state, tasks)
+    workspace = Path(ws)
+    (workspace / "README.md").write_text(
+        "stage journey\nfirst task built\n", encoding="utf-8")
+    monkeypatch.setattr(
+        loop.runtime_eval, "guide_loop",
+        lambda *_a, **_k: {"status": "on_path", "recovered": False})
+    built_submission = loop.submit(ws, "pass", task_id="t01")
+    assert "error" not in built_submission, built_submission
+    build_state = loop.load(ws)
+    build_state["current_task"] = 0
+    build_completion = loop._stage_loop_gate_completion(
+        ws, build_state, step="execute", outcome="pass",
+        submission=built_submission["submission"])
+    build_receipt = loop._stage_loop_transition(
+        ws, build_state, from_step="execute", to_step="evaluate",
+        completion=build_completion)
+    evaluate_id = build_receipt["result"]["successor_head"]["summary"][
+        "stage_id"]
+
+    state = loop.load(ws)
+    state["step"] = "evaluate"
+    state["current_task"] = 0
+    state["tasks"][0]["status"] = "built"
+    state["tasks"][0].pop("_submission", None)
+    state["tasks"][1]["status"] = "pending"
+    state.setdefault("_stage_bindings", {}).setdefault("t01", {})[
+        "evaluate"] = evaluate_id
+    loop.save(ws, state)
+    evaluation_path = Path(loop.runtime_storage.evaluation_path(ws))
+    evaluation_path.parent.mkdir(parents=True, exist_ok=True)
+    evaluation_path.write_text(json.dumps({
+        "task": "t01", "requirement": "R-0004", "verdict": "pass",
+        "status": "complete", "findings": [],
+    }) + "\n", encoding="utf-8")
+    evaluated_submission = loop.submit(ws, "pass")
+    assert "error" not in evaluated_submission, evaluated_submission
+    monkeypatch.setattr(loop, "_evaluation_errors", lambda *_a, **_k: [])
+    monkeypatch.setattr(loop.tp, "engine_skew_refusal", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "_submission_staleness", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "_automatic_merge_cleanup", lambda *_a: None)
+
+    gated = loop.gate.__wrapped__(ws, "pass")
+
+    assert "error" not in gated, gated
+    assert gated["step"] == "execute"
+    assert gated["stage_transition"]["operation"] == "terminalize"
+    manifest = store.load(root["run_id"])
+    active_ids = manifest["active_stage_projection"]["active_stage_ids"]
+    assert active_ids == [loop.load(ws)["_stage_bindings"]["t02"]["build"]]
+    assert {
+        manifest["stage_heads"][stage_id]["summary"]["stage_kind"]
+        for stage_id in active_ids
+    } == {"build"}
+
+
 def test_gate_rolls_back_on_stage_failure_then_returns_transition_receipt(
         tmp_path, monkeypatch) -> None:
     ws = _workspace(tmp_path)
@@ -542,43 +834,215 @@ def test_gate_rolls_back_on_stage_failure_then_returns_transition_receipt(
     assert loop.load(ws)["step"] == "plan"
 
 
-def test_retro_terminalizes_stage_before_legacy_done_and_preserves_open_step(
+def test_real_product_gate_and_plan_approval_seal_exact_outputs(
         tmp_path, monkeypatch) -> None:
-    ws = _workspace(tmp_path)
-    state = loop.init(ws, "finish Retro atomically")
+    ws, store, _stage, _started = _start_real_stage_loop(
+        tmp_path / "gate-approve", monkeypatch,
+        stage_id="stage-product-gate-root")
+    spec_path = "specs/spec.md"
+    spec = "# Product\n\nShip the bounded stage journey.\n"
+    specs = Path(ws) / "specs"
+    specs.mkdir()
+    (specs / "spec.md").write_text(spec, encoding="utf-8")
+
+    gated = loop.gate.__wrapped__(ws, "pass")
+
+    assert "error" not in gated, gated
+    assert gated["step"] == "plan"
+    assert gated["stage_transition"]["operation"] == \
+        "terminalize_and_start"
+    _plan_stage, product_handoff = _successor_handoff(
+        ws, store, gated["stage_transition"])
+    product_payloads = _handoff_payload_text(ws, product_handoff)
+    assert spec_path in product_payloads
+    assert hashlib.sha256(spec.encode()).hexdigest() in product_payloads
+
+    plan_dir = Path(ws) / "plan"
+    plan_dir.mkdir()
+    plan_text = "# Plan\n\nImplement the bounded handoff.\n"
+    tasks_value = {"tasks": [{
+        "id": "t01", "scope": ["README.md"], "tests": "true",
+        "deps": [], "status": "pending",
+    }]}
+    (plan_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+    (plan_dir / "tasks.json").write_text(
+        json.dumps(tasks_value, sort_keys=True) + "\n", encoding="utf-8")
+    state = loop.load(ws)
+    state.update({
+        "step": "plan_approval", "tasks": tasks_value["tasks"],
+        "graph_dor": {"ready": True, "blockers": []},
+    })
+    loop.save(ws, state)
+    monkeypatch.setattr(loop, "_design_current_errors", lambda *_a: [])
+    monkeypatch.setattr(loop, "_refinement_report", lambda *_a: [])
+    monkeypatch.setattr(loop.tp, "plan_ordering_refusal", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "_consolidated_enabled", lambda: False)
+    monkeypatch.setattr(loop.kb, "record_decision", lambda *_a, **_k: {})
+
+    approved = loop.approve(ws, by="human:owner")
+
+    assert "error" not in approved, approved
+    assert approved["step"] == "execute"
+    assert approved["stage_transition"]["operation"] == \
+        "terminalize_and_start"
+    build_stage, plan_handoff = _successor_handoff(
+        ws, store, approved["stage_transition"])
+    plan_payloads = _handoff_payload_text(ws, plan_handoff)
+    assert build_stage["stage_kind"] == "build"
+    for path, content in (
+            ("plan/plan.md", plan_text),
+            ("plan/tasks.json", json.dumps(tasks_value, sort_keys=True) + "\n")):
+        assert path in plan_payloads
+        assert hashlib.sha256(content.encode()).hexdigest() in plan_payloads
+
+
+@pytest.mark.parametrize(
+    ("stage_kind", "from_step", "to_step", "outputs"), [
+        ("design", "design", "plan", {
+            "design/design.md": "# Design\n\nA bounded immutable stage.\n",
+            "design/contract.json": "{\"schema\":\"test-design\"}\n",
+        }),
+    ])
+def test_real_stage_completion_seals_design_outputs(
+        tmp_path, monkeypatch, stage_kind, from_step, to_step, outputs) -> None:
+    ws, store, _stage, _started = _start_real_stage_loop(
+        tmp_path / stage_kind, monkeypatch, stage_kind=stage_kind,
+        stage_id=f"stage-{stage_kind}-output-root")
+    workspace = Path(ws)
+    for relative, content in outputs.items():
+        path = workspace / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    state = loop.load(ws)
+    state["step"] = from_step
+    loop.save(ws, state)
+
+    completion = loop._stage_loop_gate_completion(
+        ws, state, step=from_step, outcome="pass")
+    receipt = loop._stage_loop_transition(
+        ws, state, from_step=from_step, to_step=to_step,
+        completion=completion)
+
+    assert receipt["operation"] == "terminalize_and_start"
+    successor, handoff = _successor_handoff(ws, store, receipt)
+    assert successor["stage_kind"] == "plan"
+    payloads = _handoff_payload_text(ws, handoff)
+    for relative, content in outputs.items():
+        assert relative in payloads
+        assert hashlib.sha256(content.encode()).hexdigest() in payloads
+
+
+def test_real_build_completion_propagates_exact_target_commit_and_outputs(
+        tmp_path, monkeypatch) -> None:
+    ws, store, stage, _started = _start_real_stage_loop(
+        tmp_path / "build-output", monkeypatch, stage_kind="build",
+        stage_id="stage-build-output-root")
+    workspace = Path(ws)
+    build_text = "stage journey\nreal build output\n"
+    (workspace / "README.md").write_text(build_text, encoding="utf-8")
+    target_commit = loop.tp.git_head(ws)
+    state = loop.load(ws)
+    state.update({
+        "step": "execute", "current_task": 0,
+        "tasks": [{
+            "id": "t01", "scope": ["README.md"], "tests": "true",
+            "deps": [], "status": "running", "target_commit": target_commit,
+        }],
+    })
+    loop.save(ws, state)
+    monkeypatch.setattr(
+        loop.runtime_eval, "guide_loop",
+        lambda *_a, **_k: {"status": "on_path", "recovered": False})
+    submitted = loop.submit(ws, "pass")
+    assert "error" not in submitted, submitted
+    state = loop.load(ws)
+
+    completion = loop._stage_loop_gate_completion(
+        ws, state, step="execute", outcome="pass",
+        submission=submitted["submission"])
+    receipt = loop._stage_loop_transition(
+        ws, state, from_step="execute", to_step="evaluate",
+        completion=completion)
+
+    assert receipt["operation"] == "terminalize_and_start"
+    successor, handoff = _successor_handoff(ws, store, receipt)
+    assert successor["stage_kind"] == "evaluate"
+    assert handoff["target"] is not None
+    assert handoff["commit"] is not None
+    assert handoff["commit"]["sha"] == target_commit
+    assert handoff["commit"]["target_fingerprint"] == \
+        handoff["target"]["fingerprint"]
+    payloads = _handoff_payload_text(ws, handoff)
+    assert "README.md" in payloads
+    assert hashlib.sha256(build_text.encode()).hexdigest() in payloads
+    assert stage["authority"]["target_revision"] == target_commit
+
+
+def test_retro_retries_sealed_report_after_real_terminalization_failure(
+        tmp_path, monkeypatch) -> None:
+    ws, store, stage, _started = _start_real_stage_loop(
+        tmp_path / "retro-retry", monkeypatch, stage_kind="retro",
+        stage_id="stage-retro-retry-root")
+    state = loop.load(ws)
     state["step"] = "retro"
     loop.save(ws, state)
-    before = copy.deepcopy(loop.load(ws))
     report = {"goal": state["goal"], "graph_true_up": {"changed": False}}
-    observed = []
+    computations = []
 
-    def legacy_run(workspace, *, mutate_state, **_kwargs):
+    def sealed_retro(workspace, *, load_state, mutate_state, **_kwargs):
+        current = load_state(workspace)
+        if (current.get("retro") or {}).get("status") == "complete":
+            return report
+        computations.append("computed")
         with mutate_state(workspace) as locked:
             locked["retro"] = {
                 "id": "retro-001", "status": "complete", "report": report,
             }
             locked["step"] = "done"
-        observed.append("legacy-prepared")
         return report
 
-    def refuse(workspace, _state, **kwargs):
-        observed.append("stage-terminalize")
-        assert loop.load(workspace)["step"] == "retro"
-        assert kwargs["from_step"] == "retro"
-        assert kwargs["to_step"] == "done"
-        assert kwargs["completion"] == report
-        raise RuntimeError("Retro stage refused")
+    real_lifecycle_factory = loop._stage_lifecycle
+    terminal_attempts = []
 
-    monkeypatch.setattr(loop.retro_engine, "run", legacy_run)
-    monkeypatch.setattr(loop, "_stage_loop_transition", refuse)
+    class FailOnceLifecycle:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
 
-    result = loop.retro(ws)
-    after = loop.load(ws)
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
 
-    assert "stage-native" in result["error"]
-    assert observed == ["legacy-prepared", "stage-terminalize"]
-    assert after["step"] == "retro"
-    assert {key: value for key, value in after.items() if key != "retro"} == \
-        before
-    assert after["retro"]["status"] == "complete"
-    assert after["retro"]["report"] == report
+        def terminalize(self, *args, **kwargs):
+            terminal_attempts.append(kwargs["operation_id"])
+            if len(terminal_attempts) == 1:
+                raise RuntimeError("simulated terminal store interruption")
+            return self._wrapped.terminalize(*args, **kwargs)
+
+    def lifecycle_factory(*args, **kwargs):
+        entities, lifecycle = real_lifecycle_factory(*args, **kwargs)
+        return entities, FailOnceLifecycle(lifecycle)
+
+    monkeypatch.setattr(loop.retro_engine, "run", sealed_retro)
+    monkeypatch.setattr(loop, "_stage_lifecycle", lifecycle_factory)
+
+    refused = loop.retro(ws)
+    prepared = loop.load(ws)
+
+    assert "stage-native" in refused["error"]
+    assert prepared["step"] == "retro"
+    assert prepared["_retro_terminal_step"] == "done"
+    assert prepared["retro"]["status"] == "complete"
+    assert prepared["retro"]["report"] == report
+    assert store.load(stage["run_id"])["active_stage_projection"][
+        "active_stage_ids"] == [stage["stage_id"]]
+
+    completed = loop.retro(ws)
+
+    assert "error" not in completed, completed
+    assert completed["stage_transition"]["operation"] == "terminalize"
+    assert loop.load(ws)["step"] == "done"
+    assert "_retro_terminal_step" not in loop.load(ws)
+    assert computations == ["computed"]
+    assert len(terminal_attempts) == 2
+    assert terminal_attempts[0] == terminal_attempts[1]
+    assert store.load(stage["run_id"])["active_stage_projection"][
+        "active_stage_ids"] == []

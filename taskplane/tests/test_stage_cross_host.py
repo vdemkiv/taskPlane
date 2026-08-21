@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -229,6 +230,48 @@ def _real_loop_stage(
     )
     assert initial["revision"] == 1
     return workspace, store, stage
+
+
+def _parallel_loop_wave(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        ) -> tuple[Path, run_store.RunStore, dict[str, object]]:
+    workspace, store, parent = _real_loop_stage(
+        tmp_path, stage_kind="build", stage_id="stage-build-cross-host")
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    state = loop.init(
+        str(workspace), "dispatch two independent stage roots",
+        spec_path="specs/spec.md", requirement_id="R-0004", parallel=True)
+    assert "error" not in state, state
+    started = loop.stage_command(str(workspace), "start", {
+        "schema": "taskplane.stage-command/v1",
+        "stage": parent,
+        "expected_revision": 1,
+        "operation_id": "start-cross-host-build-wave",
+        "expected_predecessor_fingerprints": {},
+        "foreground": True,
+        "authority": parent["authority"],
+        "declared_scope": {
+            "scope_paths": ["left/**", "right/**"],
+            "out_of_scope_paths": ["taskplane/track.py"],
+        },
+    })
+    assert "error" not in started, started
+    state.update({
+        "step": "execute",
+        "submission_required": False,
+        "tasks": [
+            {
+                "id": "t-left", "scope": ["left/**"], "tests": "true",
+                "deps": [], "status": "pending", "merge_on_pass": False,
+            },
+            {
+                "id": "t-right", "scope": ["right/**"], "tests": "true",
+                "deps": [], "status": "pending", "merge_on_pass": False,
+            },
+        ],
+    })
+    loop.save(str(workspace), state)
+    return workspace, store, parent
 
 
 def test_cross_host_surfaces_preserve_one_canonical_bounded_startup(
@@ -499,6 +542,108 @@ def test_parallel_wave_preserves_independent_stage_and_root_identity_on_hosts(
     assert projection["foreground_stage_id"] is None
     assert set(projection["active_stage_ids"]) == {
         stage_id for stage_id, _root in identities.values()}
+
+
+def test_parallel_wave_recovers_deterministic_bindings_after_split_interrupt(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    original_mutate = loop.mutate
+
+    @contextmanager
+    def interrupt_after_split(*_args, **_kwargs):
+        raise RuntimeError("simulated interruption after durable split")
+        yield  # pragma: no cover - makes this a context manager
+
+    monkeypatch.setattr(loop, "mutate", interrupt_after_split)
+    interrupted = loop.wave(str(workspace))
+    monkeypatch.setattr(loop, "mutate", original_mutate)
+    committed = store.load(str(parent["run_id"]))
+    active_after_interrupt = set(
+        committed["active_stage_projection"]["active_stage_ids"])
+    split_receipts = [
+        receipt for receipt in committed["stage_operations"].values()
+        if receipt.get("operation") == "split_stage"
+    ]
+
+    assert "simulated interruption after durable split" in \
+        interrupted["error"]
+    assert len(active_after_interrupt) == 2
+    assert len(split_receipts) == 1
+    assert "_stage_bindings" not in loop.load(str(workspace))
+
+    recovered = loop.wave(str(workspace))
+
+    assert "error" not in recovered, recovered
+    recovered_ids = {
+        str(entry["task"]["id"]):
+        str(entry["stage_runtime_dispatch"]["startup"]["stage_id"])
+        for entry in recovered["wave"]
+    }
+    assert set(recovered_ids.values()) == active_after_interrupt
+    current = loop.load(str(workspace))
+    assert {
+        task_id: binding["build"]
+        for task_id, binding in current["_stage_bindings"].items()
+    } == recovered_ids
+    after_recovery = store.load(str(parent["run_id"]))
+    assert after_recovery["active_stage_projection"] == \
+        committed["active_stage_projection"]
+    assert len([
+        receipt for receipt in after_recovery["stage_operations"].values()
+        if receipt.get("operation") == "split_stage"
+    ]) == 1
+
+
+def test_interim_parallel_evaluate_leaves_only_the_other_task_root_active(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    emitted = loop.wave(str(workspace))
+    assert "error" not in emitted, emitted
+    initial_state = loop.load(str(workspace))
+    build_bindings = {
+        task_id: binding["build"]
+        for task_id, binding in initial_state["_stage_bindings"].items()
+    }
+    monkeypatch.setattr(loop, "_task_dod_errors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        loop.runtime_storage, "refresh_task_worktree_tip",
+        lambda *_a, **_k: {"branch_tip": _git(workspace, "rev-parse", "HEAD")})
+
+    built = loop.gate.__wrapped__(
+        str(workspace), "pass", task_id="t-left")
+
+    assert "error" not in built, built
+    evaluating = loop.load(str(workspace))
+    evaluate_id = evaluating["_stage_bindings"]["t-left"]["evaluate"]
+    assert evaluate_id not in set(build_bindings.values())
+    evaluating["step"] = "evaluate"
+    evaluating["current_task"] = 0
+    loop.save(str(workspace), evaluating)
+    monkeypatch.setattr(loop, "_evaluation_errors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        loop.tp, "engine_skew_refusal", lambda *_a, **_k: None)
+
+    evaluated = loop.gate.__wrapped__(str(workspace), "pass")
+
+    assert "error" not in evaluated, evaluated
+    final_state = loop.load(str(workspace))
+    assert final_state["step"] == "execute"
+    assert final_state["tasks"][0]["status"] == "passed"
+    manifest = store.load(str(parent["run_id"]))
+    active_ids = set(manifest["active_stage_projection"][
+        "active_stage_ids"])
+    assert active_ids == {build_bindings["t-right"]}
+    summaries = {
+        stage_id: head["summary"]
+        for stage_id, head in manifest["stage_heads"].items()
+    }
+    assert summaries[build_bindings["t-left"]]["state"] == "terminal"
+    assert summaries[evaluate_id]["state"] == "terminal"
+    assert summaries[build_bindings["t-right"]]["state"] == "active"
+    assert not any(
+        summary["state"] == "active" and
+        summary["deliverables"] == ["t-left"]
+        for summary in summaries.values())
 
 
 @pytest.mark.parametrize("field", sorted(FORBIDDEN_RUNTIME_FIELDS))
