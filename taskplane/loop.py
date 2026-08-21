@@ -26,6 +26,7 @@ existing spec (→plan).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import contextlib
 import contextvars
 import json
@@ -985,27 +986,76 @@ def _current_task(state: dict):
     return tasks[i] if 0 <= i < len(tasks) else None
 
 
-def _parallel_evaluate_workspace(ws: str, state: dict,
-                                 task: dict) -> tuple[str | None, str | None]:
+def _parallel_evaluate_workspace(
+        ws: str, state: Mapping[str, object],
+        task: Mapping[str, object]) -> tuple[str | None, str | None]:
     """Resolve one unambiguous worker tree for parallel Evaluate.
 
     Falling back to the primary checkout here would pair worker target bytes
     with an unrelated primary graph.  Keep that identity failure explicit so
     missing or ambiguous worker state cannot silently weaken review routing.
     """
+    task_id = task.get("id")
+    if not isinstance(task_id, str) or not task_id:
+        return None, ("parallel Evaluate task worktree is ambiguous: task "
+                      "identity is missing")
     raw = str(task.get("workspace") or "").strip()
     if not raw or not os.path.isdir(raw):
         return None, ("parallel Evaluate task worktree is missing; restore "
                       "the exact claimed worktree and its graph before retry")
-    worker = os.path.realpath(raw)
+    expected_path = os.path.abspath(
+        runtime_storage.task_worktree_path(ws, task_id))
+    managed_root = os.path.realpath(os.path.dirname(expected_path))
+    expected = os.path.join(managed_root, os.path.basename(expected_path))
+    supplied = os.path.abspath(os.path.expanduser(raw))
+    worker = os.path.realpath(supplied)
+    try:
+        is_contained = os.path.commonpath((managed_root, worker)) == \
+            managed_root
+    except ValueError:
+        is_contained = False
+    if os.path.realpath(os.path.dirname(supplied)) != managed_root or \
+            os.path.basename(supplied) != os.path.basename(expected) or \
+            worker != expected or not is_contained or os.path.islink(supplied):
+        return None, ("parallel Evaluate task worktree is not the exact "
+                      "canonical managed task worktree for this task")
     if worker == os.path.realpath(ws):
         return None, ("parallel Evaluate task worktree is ambiguous: the "
                       "primary checkout cannot serve as task graph evidence")
+    try:
+        registration = runtime_storage.load_task_worktree_registration(
+            ws, task_id)
+        primary_identity = runtime_storage.resolve_repository_identity(ws)
+        worker_identity = runtime_storage.resolve_repository_identity(worker)
+        locator = runtime_storage.load_workspace_locator(ws)
+    except (OSError, ValueError, runtime_storage.StorageIdentityError) as exc:
+        return None, ("parallel Evaluate task worktree identity is invalid: "
+                      f"{exc}")
+    registered_repository = ((registration or {}).get("repository") or {})
+    if not isinstance(registered_repository, Mapping) or \
+            registration is None or \
+            registration.get("linked") is not True or \
+            os.path.realpath(str(
+                registration.get("primary_checkout") or "")) != \
+            os.path.realpath(ws) or \
+            os.path.realpath(str(
+                registration.get("path") or "")) != worker or \
+            registered_repository.get("repo_id") != \
+            primary_identity.repo_id or \
+            worker_identity.repo_id != primary_identity.repo_id:
+        return None, ("parallel Evaluate task worktree identity does not "
+                      "match this run and repository")
+    if locator is not None and registration.get("run_id") != \
+            locator.get("run_id"):
+        return None, ("parallel Evaluate task worktree identity does not "
+                      "match this run and repository")
+    tasks = state.get("tasks")
+    rows = tasks if isinstance(tasks, list) else []
     owners = sorted(str(row.get("id") or "")
-                    for row in (state.get("tasks") or [])
-                    if row.get("workspace") and
+                    for row in rows if isinstance(row, Mapping) and
+                    row.get("workspace") and
                     os.path.realpath(str(row["workspace"])) == worker)
-    if owners != [str(task.get("id") or "")]:
+    if owners != [task_id]:
         return None, ("parallel Evaluate task worktree is ambiguous: "
                       f"workspace is assigned to {', '.join(owners)}")
     return worker, None
