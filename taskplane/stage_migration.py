@@ -724,7 +724,7 @@ def legacy_track_projection(workspace: str) -> dict[str, object] | None:
     if projection is None:
         return None
     foreground_id = projection["foreground_stage_id"]
-    tracks = [{
+    tracks = {stage_id: {
             "name": stage_id,
             "goal": str((summary.get("requirement") or {}).get("id") or
                         summary.get("stage_kind") or stage_id),
@@ -733,5 +733,5 @@ def legacy_track_projection(workspace: str) -> dict[str, object] | None:
                        str(summary.get("outcome") or "closed")),
         }
         for stage_id, summary in projection["stages"].items()
-    ]
+    }
     return {"active": foreground_id, "tracks": tracks}

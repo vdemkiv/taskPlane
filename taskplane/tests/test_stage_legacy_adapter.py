@@ -82,6 +82,40 @@ def test_verified_receipt_uses_only_the_detached_stage_projection(
     assert observed == [ws, ws]
 
 
+def test_real_stage_projection_flows_into_the_legacy_track_consumer(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = str(tmp_path)
+    monkeypatch.setattr(
+        track._stage_migration, "migration_projection",
+        lambda _ws: {
+            "foreground_stage_id": "stage-build",
+            "stages": {
+                "stage-product": {
+                    "requirement": {"id": "R-0004"},
+                    "stage_kind": "product", "state": "terminal",
+                    "outcome": "done",
+                },
+                "stage-build": {
+                    "requirement": {"id": "R-0004"},
+                    "stage_kind": "build", "state": "active",
+                },
+            },
+        })
+
+    produced = track._stage_migration.legacy_track_projection(ws)
+    assert produced is not None
+    assert set(produced["tracks"]) == {"stage-build", "stage-product"}
+    assert track.list_(ws) == {
+        "active": "stage-build",
+        "tracks": [
+            {"name": "stage-build", "goal": "R-0004",
+             "requirement_id": "R-0004", "status": "open"},
+            {"name": "stage-product", "goal": "R-0004",
+             "requirement_id": "R-0004", "status": "done"},
+        ],
+    }
+
+
 def test_verified_receipt_makes_legacy_track_writes_read_only(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ws = str(tmp_path)
