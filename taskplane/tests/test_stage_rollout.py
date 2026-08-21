@@ -32,6 +32,7 @@ ROLLOUT_POLICY = {
         "mode": "new-run",
         "exact_run_count": 1,
         "named_owner_required": True,
+        "owner_source": "stage_authority.actor",
     },
     "observation": {
         "minimum_hours": 24,
@@ -139,6 +140,7 @@ def test_tp_go_flow_pins_the_complete_canary_and_rollback_policy() -> None:
     assert type(policy["canary"]["exact_run_count"]) is int
     assert policy["canary"]["exact_run_count"] == 1
     assert policy["canary"]["named_owner_required"] is True
+    assert policy["canary"]["owner_source"] == "stage_authority.actor"
     assert policy["observation"] == {
         "minimum_hours": 24, "retro_required": True}
     assert policy["abort"]["threshold"] == 1
@@ -153,7 +155,7 @@ def test_tp_go_guidance_requires_owner_window_retro_abort_and_slo() -> None:
 
     for required in (
         "exactly one `new-run` canary",
-        "named,\naccountable owner",
+        "named, accountable\nowner is exactly the human `stage_authority.actor` recorded for that run",
         "24-hour observation window",
         "completed both a 24-hour observation window and its Retro",
         "Every abort signal has threshold `1`",

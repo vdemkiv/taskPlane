@@ -17,7 +17,8 @@
     "canary": {
       "mode": "new-run",
       "exact_run_count": 1,
-      "named_owner_required": true
+      "named_owner_required": true,
+      "owner_source": "stage_authority.actor"
     },
     "observation": {
       "minimum_hours": 24,

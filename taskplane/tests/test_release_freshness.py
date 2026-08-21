@@ -78,6 +78,8 @@ class TestGeneratedCliReference(unittest.TestCase):
         self.assertIn("--bare", str(raised.exception))
 
     def test_generator_owns_the_closed_stage_request_contract(self):
+        import tp as cli
+
         generated = self._generate()
         self.assertIn("### Closed stage-command request", generated)
         self.assertIn("`taskplane.stage-command/v1`", generated)
@@ -87,6 +89,17 @@ class TestGeneratedCliReference(unittest.TestCase):
         self.assertIn(
             "tp.py stage terminalize-and-start --request request.json",
             generated,
+        )
+        example = cli._CLI_STAGE_SUCCESSOR_EXAMPLE
+        self.assertEqual(example["outcome"], "done")
+        self.assertNotIn("reason_code", example)
+        self.assertNotIn("reason", example)
+        self.assertEqual(
+            example["declared_scope"],
+            {
+                "scope_paths": ["taskplane/**"],
+                "out_of_scope_paths": [],
+            },
         )
 
 

@@ -260,8 +260,9 @@ stages, guess unknown state, delete retained artifacts, weaken authority or
 evidence, or broaden/force R-0003 cleanup. Migrated runs resume only after
 re-enable or explicit forward migration; there is no lossy reverse migration.
 
-The initial release is exactly one `new-run` canary. Record a named,
-accountable owner before dispatch; an unnamed team or queue is not an owner.
+The initial release is exactly one `new-run` canary. The named, accountable
+owner is exactly the human `stage_authority.actor` recorded for that run;
+an unnamed team or queue is not an owner. Record that owner before dispatch.
 Do not start a second canary or switch general traffic to `enabled` until the
 single run has completed both a 24-hour observation window and its Retro.
 Every abort signal has threshold `1`: predecessor-root open, ambiguous active

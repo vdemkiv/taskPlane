@@ -1149,8 +1149,6 @@ validated objects or fingerprint):
   "outcome": "done",
   "actor": "human:operator",
   "terminalized_at": "2026-08-21T18:00:00Z",
-  "reason_code": "continued",
-  "reason": "Start evaluation from the bounded build handoff.",
   "completed_deliverables": [
     "build-commit",
     "declared-tests"
@@ -1160,9 +1158,12 @@ validated objects or fingerprint):
   ],
   "foreground": true,
   "authority": "<exact taskplane.stage-authority-binding/v1 object>",
-  "declared_scope": [
-    "taskplane/**"
-  ]
+  "declared_scope": {
+    "scope_paths": [
+      "taskplane/**"
+    ],
+    "out_of_scope_paths": []
+  }
 }
 ```
 
