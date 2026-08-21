@@ -163,7 +163,22 @@ def _receipt(stage: dict[str, object], *, operation: str = "start_stage",
         "stage_ids": [stage["stage_id"]],
         "committed_revision": 10,
     }
-    if operation == "resume_stage":
+    if operation == "start_stage":
+        result = {"head": _committed_head(stage)}
+    elif operation == "terminalize_and_start":
+        receipt["stage_ids"] = sorted([
+            "stage-predecessor-001", str(stage["stage_id"]),
+        ])
+        result = {"successor_head": _committed_head(stage)}
+    elif operation == "split_stage":
+        receipt["stage_ids"] = sorted([
+            "stage-parent-001", str(stage["stage_id"]),
+        ])
+        result = {"child_heads": {
+            str(stage["stage_id"]): _committed_head(stage),
+        }}
+    else:
+        assert operation == "resume_stage"
         assert attempt_id is not None
         result = {
             "stage_id": stage["stage_id"],
@@ -178,10 +193,43 @@ def _receipt(stage: dict[str, object], *, operation: str = "start_stage",
             },
             "stage_fingerprint": stage["fingerprint"],
         }
-        receipt["result"] = result
-        receipt["result_fingerprint"] = hashlib.sha256(
-            taskplane_lite.canonical_json_bytes(result)).hexdigest()
+    receipt["result"] = result
+    _refresh_receipt_result(receipt)
     return receipt
+
+
+def _committed_head(stage: dict[str, object]) -> dict[str, object]:
+    payload = taskplane_lite.canonical_json_bytes(stage) + b"\n"
+    stage_id = str(stage["stage_id"])
+    fingerprint = str(stage["fingerprint"])
+    return {
+        "object": {
+            "schema": "taskplane.stage-object-ref/v1",
+            "stage_id": stage_id,
+            "fingerprint": fingerprint,
+            "digest": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+            "locator": f"stages/objects/{stage_id}/{fingerprint}.json",
+        },
+        "summary": stage_entities.bounded_stage_summary(stage),
+    }
+
+
+def _refresh_receipt_result(receipt: dict[str, object]) -> None:
+    receipt["result_fingerprint"] = hashlib.sha256(
+        taskplane_lite.canonical_json_bytes(receipt["result"])).hexdigest()
+
+
+def _dispatch(stage: dict[str, object], handoff: dict[str, object],
+              receipt: dict[str, object]) -> dict[str, object]:
+    attempt_id = None
+    if receipt["operation"] == "resume_stage":
+        result = receipt.get("result")
+        if isinstance(result, dict) and "attempt_id" in result:
+            attempt_id = str(result["attempt_id"])
+    return taskplane_lite.stage_runtime_dispatch(
+        stage, receipt, handoff, stage["selected_artifacts"],
+        attempt_id=attempt_id)
 
 
 def _all_keys(value: object) -> set[str]:
@@ -254,6 +302,119 @@ def test_stage_runtime_dispatch_rejects_unverified_or_hostile_context(
     with pytest.raises(taskplane_lite.StageDispatchError):
         taskplane_lite.stage_runtime_dispatch(
             stage, receipt, handoff, selected)
+
+
+@pytest.mark.parametrize("operation", [
+    "start_stage", "terminalize_and_start", "split_stage", "resume_stage",
+])
+def test_dispatchable_operations_require_a_bounded_result(
+        operation: str) -> None:
+    stage, handoff = _stage_and_handoff()
+    receipt = _receipt(
+        stage, operation=operation,
+        attempt_id="attempt-001" if operation == "resume_stage" else None)
+    receipt.pop("result")
+    receipt.pop("result_fingerprint")
+
+    with pytest.raises(taskplane_lite.StageDispatchError,
+                       match="no bounded result"):
+        _dispatch(stage, handoff, receipt)
+
+
+def _operation_head(result: dict[str, object], operation: str,
+                    stage_id: str) -> tuple[dict[str, object], str]:
+    if operation == "start_stage":
+        return result, "head"
+    if operation == "terminalize_and_start":
+        return result, "successor_head"
+    child_heads = result["child_heads"]
+    assert isinstance(child_heads, dict)
+    return child_heads, stage_id
+
+
+@pytest.mark.parametrize("operation", [
+    "start_stage", "terminalize_and_start", "split_stage",
+])
+@pytest.mark.parametrize("tamper", ["missing", "malformed", "wrong"])
+def test_dispatch_rejects_missing_malformed_or_wrong_operation_head(
+        operation: str, tamper: str) -> None:
+    stage, handoff = _stage_and_handoff()
+    receipt = _receipt(stage, operation=operation)
+    result = receipt["result"]
+    assert isinstance(result, dict)
+    container, key = _operation_head(result, operation, str(stage["stage_id"]))
+    if tamper == "missing":
+        container.pop(key)
+    elif tamper == "malformed":
+        container[key] = {"object": "not-a-reference", "summary": {}}
+    else:
+        wrong = copy.deepcopy(_committed_head(stage))
+        wrong["object"]["fingerprint"] = "0" * 64
+        container[key] = wrong
+    _refresh_receipt_result(receipt)
+
+    with pytest.raises(taskplane_lite.StageDispatchError,
+                       match="committed head does not match stage"):
+        _dispatch(stage, handoff, receipt)
+
+
+@pytest.mark.parametrize("operation", [
+    "start_stage", "terminalize_and_start", "split_stage",
+])
+def test_dispatch_rejects_same_id_head_for_an_altered_aggregate(
+        operation: str) -> None:
+    stage, handoff = _stage_and_handoff()
+    receipt = _receipt(stage, operation=operation)
+    altered = copy.deepcopy(stage)
+    altered["budget"]["token_limit"] = 8_001
+    altered["fingerprint"] = stage_entities.stage_fingerprint(altered)
+    altered = stage_entities.validate_stage(altered)
+    result = receipt["result"]
+    assert isinstance(result, dict)
+    container, key = _operation_head(result, operation, str(stage["stage_id"]))
+    container[key] = _committed_head(altered)
+    _refresh_receipt_result(receipt)
+
+    with pytest.raises(taskplane_lite.StageDispatchError,
+                       match="committed head does not match stage"):
+        _dispatch(stage, handoff, receipt)
+
+
+@pytest.mark.parametrize("mismatch", [
+    "actor", "session_id", "authority_revision", "authority_fingerprint",
+])
+def test_dispatch_binds_handoff_authorization_to_stage_authority(
+        mismatch: str) -> None:
+    stage, handoff = _stage_and_handoff()
+    authorization = handoff["authorization"]
+    assert isinstance(authorization, dict)
+    authority_record = authorization["authority_record"]
+    assert isinstance(authority_record, dict)
+    if mismatch == "actor":
+        authorization["actor"] = "human:other"
+    elif mismatch == "session_id":
+        authorization["session_id"] = "codex-thread-other"
+    elif mismatch == "authority_revision":
+        authority_record["revision"] = 8
+    else:
+        authority_record["fingerprint"] = "e" * 64
+    handoff["fingerprint"] = stage_handoff.manifest_fingerprint(handoff)
+    manifest_fingerprint = str(handoff["fingerprint"])
+    input_reference = stage["input_manifest_ref"]
+    assert isinstance(input_reference, dict)
+    input_reference.update({
+        "fingerprint": manifest_fingerprint,
+        "digest": manifest_fingerprint,
+        "bytes": len(taskplane_lite.canonical_json_bytes(handoff)),
+        "locator": f"artifact://stage-handoff/{manifest_fingerprint}",
+    })
+    stage["fingerprint"] = stage_entities.stage_fingerprint(stage)
+    stage = stage_entities.validate_stage(stage)
+    receipt = _receipt(stage)
+
+    with pytest.raises(taskplane_lite.StageDispatchError,
+                       match="does not match stage authority"):
+        _dispatch(stage, handoff, receipt)
 
 
 def test_resume_gets_a_fresh_attempt_claim_under_the_same_stage_root() -> None:

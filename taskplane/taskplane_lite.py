@@ -2905,6 +2905,48 @@ def verify_stage_receipt(receipt: dict, *, expected_operation: str | None = None
     return checked
 
 
+def _expected_dispatch_head(stage: dict, stage_entities) -> dict:
+    payload = canonical_json_bytes(stage) + b"\n"
+    stage_id = str(stage["stage_id"])
+    fingerprint = str(stage["fingerprint"])
+    return {
+        "object": {
+            "schema": "taskplane.stage-object-ref/v1",
+            "stage_id": stage_id,
+            "fingerprint": fingerprint,
+            "digest": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+            "locator": f"stages/objects/{stage_id}/{fingerprint}.json",
+        },
+        "summary": stage_entities.bounded_stage_summary(stage),
+    }
+
+
+def _verify_dispatch_result(stage: dict, receipt: dict,
+                            stage_entities) -> None:
+    """Bind a dispatch to the operation's exact committed active head."""
+    result = receipt.get("result")
+    if not isinstance(result, dict):
+        raise StageDispatchError("stage dispatch receipt has no bounded result")
+    operation = receipt["operation"]
+    if operation == "resume_stage":
+        # Resume has no new head.  _dispatch_claim validates its exact stage,
+        # fingerprint, execution root, attempt id, and attempt claim below.
+        return
+    stage_id = str(stage["stage_id"])
+    if operation == "start_stage":
+        head = result.get("head")
+    elif operation == "terminalize_and_start":
+        head = result.get("successor_head")
+    else:
+        child_heads = result.get("child_heads")
+        head = (child_heads.get(stage_id)
+                if isinstance(child_heads, dict) else None)
+    if head != _expected_dispatch_head(stage, stage_entities):
+        raise StageDispatchError(
+            "stage dispatch receipt committed head does not match stage")
+
+
 def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
                                    selected_artifacts: list) -> dict:
     if not isinstance(handoff, dict) or set(handoff) != _STAGE_HANDOFF_FIELDS:
@@ -2948,8 +2990,10 @@ def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
                         if isinstance(authorization, dict) else None)
     revision = (authority_record.get("revision")
                 if isinstance(authority_record, dict) else None)
+    authority = stage.get("authority")
     if not isinstance(authorization, dict) or \
             not isinstance(authority_record, dict) or \
+            not isinstance(authority, dict) or \
             authority_record.get("schema") != \
             "taskplane.authority-record-reference/v1" or \
             authority_record.get("authority_schema") != \
@@ -2959,6 +3003,13 @@ def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
                 str(authority_record.get("fingerprint") or "")):
         raise StageDispatchError(
             "verified handoff authority record is invalid")
+    if authorization.get("actor") != authority.get("actor") or \
+            authorization.get("session_id") != authority.get("session_id") or \
+            revision != authority.get("authority_revision") or \
+            authority_record.get("fingerprint") != \
+            authority.get("authority_fingerprint"):
+        raise StageDispatchError(
+            "verified handoff authorization does not match stage authority")
     input_reference = stage.get("input_manifest_ref")
     if not isinstance(input_reference, dict) or \
             input_reference.get("fingerprint") != expected:
@@ -3064,6 +3115,8 @@ def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
     if checked_receipt["operation"] not in _STAGE_DISPATCH_RECEIPTS:
         raise StageDispatchError(
             "receipt operation does not create or resume stage execution")
+    _verify_dispatch_result(
+        checked_stage, checked_receipt, stage_entities)
     checked_handoff = _verified_handoff_for_dispatch(
         checked_stage, handoff, selected_artifacts)
     claim, attempt = _dispatch_claim(
@@ -3119,7 +3172,10 @@ def stage_dispatch_payload(stage: dict, verified_handoff: dict,
     if not isinstance(claim, dict):
         raise StageDispatchError("stage execution claim must be an object")
     operation = "resume_stage" if attempt_id is not None else "start_stage"
-    result = None
+    stage_entities, _ = _stage_modules()
+    checked_stage = stage_entities.validate_stage(stage)
+    result = {"head": _expected_dispatch_head(
+        checked_stage, stage_entities)}
     if operation == "resume_stage":
         result = {
             "stage_id": stage.get("stage_id"),
@@ -3138,10 +3194,9 @@ def stage_dispatch_payload(stage: dict, verified_handoff: dict,
         "stage_ids": [stage.get("stage_id")],
         "committed_revision": 1,
     }
-    if result is not None:
-        receipt["result"] = result
-        receipt["result_fingerprint"] = hashlib.sha256(
-            canonical_json_bytes(result)).hexdigest()
+    receipt["result"] = result
+    receipt["result_fingerprint"] = hashlib.sha256(
+        canonical_json_bytes(result)).hexdigest()
     dispatch = stage_runtime_dispatch(
         stage, receipt, verified_handoff, selected_artifacts,
         attempt_id=attempt_id, declared_scope=declared_scope)
