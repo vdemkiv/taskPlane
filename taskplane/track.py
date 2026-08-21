@@ -9,13 +9,18 @@ tracks — that's the point: track 7 recalls what track 2 decided.
 
 from __future__ import annotations
 
+import copy
 import os
 import shutil
 
 import loop as _loop
+import stage_migration as _stage_migration
 import taskplane_lite as tp
 
 LOOP_FILE = "loop.json"
+_READ_ONLY_ERROR = (
+    "legacy track writes are read-only after verified stage migration; "
+    "use stage commands")
 
 
 def _state_dir(ws: str) -> str:
@@ -59,9 +64,19 @@ def _live_loop(ws: str) -> str:
     return _loop._loop_path(ws)
 
 
+def _legacy_write_error(ws: str) -> dict | None:
+    """Fail closed once the migration receipt makes stages authoritative."""
+    if _stage_migration.legacy_track_projection(ws) is None:
+        return None
+    return {"error": _READ_ONLY_ERROR}
+
+
 def new(ws: str, name: str, goal: str, requirement_id: str | None = None) -> dict:
     """Register a track. It becomes active only via switch (or if first)."""
     with tp.file_lock(_live_loop(ws)):
+        blocked = _legacy_write_error(ws)
+        if blocked is not None:
+            return blocked
         reg = _registry(ws)
         if name in reg["tracks"]:
             return {"error": f"track '{name}' already exists"}
@@ -78,6 +93,16 @@ def new(ws: str, name: str, goal: str, requirement_id: str | None = None) -> dic
 
 
 def list_(ws: str) -> dict:
+    projected = _stage_migration.legacy_track_projection(ws)
+    if projected is not None:
+        # The migration module verifies the operation receipt before exposing
+        # this seam.  Return a detached, legacy-shaped read model and never
+        # fall through to tracks.json once v4 stages are authoritative.
+        return {
+            "active": projected["active"],
+            "tracks": sorted(copy.deepcopy(projected["tracks"]).values(),
+                             key=lambda item: item["name"]),
+        }
     reg = _registry(ws)
     return {"active": reg["active"],
             "tracks": sorted(reg["tracks"].values(),
@@ -92,6 +117,9 @@ def switch(ws: str, name: str) -> dict:
     interleave with a live gate's read-modify-write.
     """
     with tp.file_lock(_live_loop(ws)):
+        blocked = _legacy_write_error(ws)
+        if blocked is not None:
+            return blocked
         reg = _registry(ws)
         if name not in reg["tracks"]:
             return {"error": f"no track '{name}' — `tp track new` first"}
@@ -113,6 +141,9 @@ def switch(ws: str, name: str) -> dict:
 
 def close(ws: str, name: str, status: str = "done") -> dict:
     with tp.file_lock(_live_loop(ws)):
+        blocked = _legacy_write_error(ws)
+        if blocked is not None:
+            return blocked
         reg = _registry(ws)
         if name not in reg["tracks"]:
             return {"error": f"no track '{name}'"}

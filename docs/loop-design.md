@@ -134,6 +134,61 @@ all gates are taskplane's; the agent only supplies the per-step reasoning.
 existing `tp.py new/ready/dod/clear` per step. Simpler to build, weaker
 guarantee. This is decision #1 below.)
 
+## Stage-native lifecycle and legacy-track compatibility
+
+R-0004 makes the singleton loop record a compatibility input rather than the
+authority for migrated runs. Each Product, Design, Plan, Build, Evaluate,
+Engineering, Retro, or extension stage has a stable `taskplane.stage/v1`
+aggregate, its own execution root, immutable indexed revisions, explicit
+lineage, and at most one terminal outcome. The run manifest commits stage
+heads, lineage, operation receipts, and a rebuildable active-stage projection
+as one revision. The foreground stage is an explicit projection choice; an
+adapter must never guess it from the first active stage or from a track name.
+
+The handoff between stages is the versioned bounded manifest plus explicitly
+selected verified artifact references. Starting or resuming a stage creates a
+fresh execution tree from those inputs. Prior conversations, agents, events,
+tool transcripts, leases, process state, worktrees, and unselected artifacts
+do not become successor context. Terminal history is not reopened to continue
+work; continuation creates a successor stage.
+
+### Conservative migration transaction
+
+Migration of an existing `loop.json`/track collection is deliberately
+one-way, non-destructive, and idempotent:
+
+- First retain the exact bytes of the live singleton, registry, archived track
+  records, and their governed requirement/task/decision/evidence/commit/review
+  and audit references as content-addressed migration evidence. Parsed JSON is
+  not a substitute for byte-exact retention.
+- Create deterministic stage objects only where legacy identity, lifecycle,
+  and evidence are unambiguous. Ambiguity is represented by an immutable
+  `taskplane.legacy-unknown/v1` sentinel with a source fingerprint, retained
+  references, and explicit `unknown_reason`; it is never guessed as `pending`,
+  `done`, `closed`, or `discarded` and is not default successor input.
+- Commit the stage index, lineage, projection, source fingerprints,
+  conservation report, and migration receipt in one run-manifest revision.
+  The conservation report must account for every discovered source and record
+  exactly once. A partial or mismatched projection fails without switching
+  authority.
+- Replaying the same operation and source returns the prior receipt. Reusing
+  its operation id for different bytes or parameters is rejected. Before the
+  atomic commit, the old singleton remains authoritative; after it, recovery
+  verifies the receipt rather than repeating or heuristically completing the
+  conversion.
+
+The legacy `track.py` path has an explicit authority boundary. With no
+verified migration receipt, existing behavior does not change: switching a
+track moves the live `loop.json`, closing an active track archives it, and the
+common loop lock prevents interleaved engine mutations. Only after the receipt
+verifies its source and result fingerprints and its conservation report does
+the adapter read the v4 foreground projection. In that mode it may render
+legacy-shaped status, but it is read-only: it cannot move/restore singleton
+files as stage authority, overwrite a head, reopen or reclassify a terminal
+stage, or choose an ambiguous foreground. New writes use stage lifecycle
+commands. The retained singleton bytes and unknown sentinels remain immutable
+and available for audit and rollback; no lossy reverse migration exists.
+
 ## The inputs *you* provide
 
 Per run, the loop needs (some from you, some the PM can derive):

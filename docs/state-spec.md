@@ -95,7 +95,9 @@ plain `git add` picks up exactly the shared store and nothing else. Committing
 | Path | Contents | Why local |
 | --- | --- | --- |
 | `~/.taskplane/runs/<run-id>/state/control/` | active contracts, snapshot ref, meter and trace for a managed run | enforcement is run-scoped and cannot pollute or be spoofed by the source checkout |
-| `~/.taskplane/runs/<run-id>/{graph,evidence,lenses,artifacts}/` | graph, immutable evidence/views, leased results, reports/dashboards | private run products stay distinct from source and shared knowledge |
+| `~/.taskplane/runs/<run-id>/stages/objects/<stage-id>/` | immutable, content-addressed `taskplane.stage/v1` aggregate revisions | stage history remains independently addressable and is never inferred from a mutable active pointer; legacy-unknown sentinels are migration artifacts, not stage objects |
+| `~/.taskplane/runs/<run-id>/stages/executions/<stage-id>/` | one claimed execution root per stable stage, with fresh attempt roots beneath it | successor and resumed-stage execution cannot inherit a predecessor's mutable runtime tree |
+| `~/.taskplane/runs/<run-id>/{graph,evidence,lenses,artifacts}/` | graph, immutable evidence/views, leased results, reports/dashboards, and byte-exact migration sources plus `taskplane.legacy-unknown/v1` sentinels referenced by migration receipts | private run products stay distinct from source and shared knowledge |
 | `.taskplane/` | legacy unmanaged-workspace contract/meter/trace | compatibility only; managed runs relocate this control state externally |
 | `.taskplane/active_contract.json` | the legacy SINGLE active contract (when no per-task slots are in use) | one governed process per workspace, the common case |
 | `.taskplane/active/<slot>.json` | PER-TASK contract slots (v2.3.1) | when several governed agents share one workspace (a parallel wave, a fanned-out lens review), each exports `TASKPLANE_TASK=<slot>` and gets its OWN contract file, so agents can't overwrite each other's governance. A process with `TASKPLANE_TASK` set is bound to exactly its slot (a missing/corrupt slot fails closed); with it unset, the process is governed by the **most-restrictive union** of every active slot plus the legacy file — never left ungoverned, never governed by one slot picked arbitrarily |
@@ -169,6 +171,61 @@ Changing them later makes Plan, Evaluate, and Review fail closed until the
 loop returns through Design and receives a new human approval. Proposed graph
 edges remain an overlay in the contract; the persistent as-built graph is not
 changed during Design.
+
+### Stage authority and conservative singleton migration (R-0004)
+
+For a stage-native run, the `taskplane.run/v4` manifest is the atomic index of
+immutable `taskplane.stage/v1` heads, lineage, operation receipts, and the
+replaceable active-stage projection. The projection is a cache, not history or
+lifecycle authority: it must agree with the states in the indexed heads and is
+rebuilt under the run lock when missing or stale. A terminal predecessor is
+never reopened or reclassified to make an old singleton caller work.
+
+Existing singleton state is migrated non-destructively and conservatively:
+
+1. Under the existing loop lock and run lock, migration reads the live
+   `loop.json`, `tracks.json`, each stored `tracks/<name>/loop.json`, and the
+   referenced requirements, tasks, decisions, evidence, commits, reviews, and
+   audit records. It fingerprints the complete source set and retains every
+   source file as byte-exact content-addressed evidence before creating a
+   projection. Retention is of the original bytes, not parsed-and-reserialized
+   JSON.
+2. A `taskplane.stage/v1` aggregate and lineage are produced only when the
+   legacy identity, lifecycle, and evidence have exactly one deterministic
+   interpretation. Migration never infers a terminal result from a current
+   step, status label, missing field, directory position, or track name.
+3. Every ambiguous record instead produces an immutable
+   `taskplane.legacy-unknown/v1` sentinel containing its source fingerprint,
+   retained references, and an explicit `unknown_reason`. The sentinel is not
+   a stage outcome and is never default-consumable. Later resolution creates a
+   new attributable stage or handoff; it does not edit or delete the sentinel.
+4. One run-manifest transaction commits the migrated heads, lineage, active
+   projection, source fingerprints, conservation report, and migration
+   operation receipt. Conservation accounts for every discovered legacy
+   record and retained byte source exactly once as either an unambiguous stage
+   input or an unknown sentinel. Missing, duplicated, or mismatched entries
+   reject the whole commit.
+5. An identical retry returns the stored receipt and makes no lifecycle
+   change. Reusing an operation id with different source bytes or parameters
+   fails closed. A crash before the manifest commit leaves singleton behavior
+   authoritative; a crash after it is recovered from the verified receipt.
+
+`track.py` is the compatibility boundary during rollout. Before a verified
+migration receipt exists, its behavior is unchanged: the active track owns the
+live `loop.json`, `track switch` archives and restores that file under the
+common loop lock, and `track close` archives the active loop before clearing
+the singleton pointer. After the receipt verifies against the retained source
+fingerprint, committed result fingerprint, and conservation report, the
+adapter becomes read-only. It may render legacy-shaped fields from the v4
+foreground-stage projection, but must reject attempts to move, restore,
+overwrite, close, or reclassify stage aggregates. All new lifecycle writes go
+through the stage commands.
+
+Rollback therefore has two safe modes: an unmigrated run continues to use its
+unchanged singleton files, while a migrated run remains readable from its v4
+objects and retained legacy evidence. There is no lossy reverse migration and
+no deletion of singleton bytes, unknown sentinels, stage objects, lineage, or
+migration receipts.
 
 ## Migration from an in-repo knowledge base
 
