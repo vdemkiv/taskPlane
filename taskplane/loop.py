@@ -985,6 +985,32 @@ def _current_task(state: dict):
     return tasks[i] if 0 <= i < len(tasks) else None
 
 
+def _parallel_evaluate_workspace(ws: str, state: dict,
+                                 task: dict) -> tuple[str | None, str | None]:
+    """Resolve one unambiguous worker tree for parallel Evaluate.
+
+    Falling back to the primary checkout here would pair worker target bytes
+    with an unrelated primary graph.  Keep that identity failure explicit so
+    missing or ambiguous worker state cannot silently weaken review routing.
+    """
+    raw = str(task.get("workspace") or "").strip()
+    if not raw or not os.path.isdir(raw):
+        return None, ("parallel Evaluate task worktree is missing; restore "
+                      "the exact claimed worktree and its graph before retry")
+    worker = os.path.realpath(raw)
+    if worker == os.path.realpath(ws):
+        return None, ("parallel Evaluate task worktree is ambiguous: the "
+                      "primary checkout cannot serve as task graph evidence")
+    owners = sorted(str(row.get("id") or "")
+                    for row in (state.get("tasks") or [])
+                    if row.get("workspace") and
+                    os.path.realpath(str(row["workspace"])) == worker)
+    if owners != [str(task.get("id") or "")]:
+        return None, ("parallel Evaluate task worktree is ambiguous: "
+                      f"workspace is assigned to {', '.join(owners)}")
+    return worker, None
+
+
 def _edge_nudges(ws: str, changed, base: str) -> list:
     """Spot side-effect channels the import scanner cannot see (v2.0.0):
     SQL/migrations, HTTP calls, queue/topic messaging in the diff. Each
@@ -1457,8 +1483,16 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # Per-task steps run in the task's own workspace when one was claimed.
     act_ws = ws
     if step in ("evaluate", "fix") and state.get("parallel"):
-        tws = (_current_task(state) or {}).get("workspace")
-        act_ws = tws if tws and os.path.isdir(tws) else ws
+        current = _current_task(state) or {}
+        if step == "evaluate":
+            act_ws, workspace_error = _parallel_evaluate_workspace(
+                ws, state, current)
+            if workspace_error:
+                return {"error": workspace_error, "step": step,
+                        "status": status(ws)}
+        else:
+            tws = current.get("workspace")
+            act_ws = tws if tws and os.path.isdir(tws) else ws
 
     if step == "design" and not state.get("design_approved"):
         # H3 (v2.2.1): until the design is human-approved, the graph
@@ -1564,6 +1598,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # that is parallel-gated, so a serial loop would name the PROJECT tree.
     wtree = (task or {}).get("workspace") or ""
     wtree = wtree if os.path.isdir(wtree) else ws
+    graph_ws = (wtree if step == "evaluate" and state.get("parallel")
+                else ws)
     query_files = (task or {}).get("scope") or []
     query_tags = ([task["id"]] if task else []) + [state["goal"][:24]]
     recalled = kb.retrieve(ws, files=query_files, tags=query_tags, limit=5)
@@ -1617,7 +1653,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
 
     def heads():                    # lazy: only an emitting branch pays
         return {"head": tp.git_head(ws if step == "em" else wtree),
-                "scanned_head": (depgraph.load(ws).get("meta")
+                "scanned_head": (depgraph.load(graph_ws).get("meta")
                                  or {}).get("scanned_head")}
     # Blast radius from the persistent dependency graph — the reviewer sees
     # what the change can break WITHOUT re-deriving dependencies (no tokens).
@@ -1631,11 +1667,11 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             review_policy = (_aggregate_impact_policy(state.get("tasks") or [])
                              if step == "em" else
                              depgraph.impact_policy(task or {}))
-            imp = depgraph.impact(ws, changed, policy=review_policy)
+            imp = depgraph.impact(graph_ws, changed, policy=review_policy)
             # Product side of the blast radius: which OTHER requirements'
             # surface this diff touches (their criteria may need re-checking)
             # and which requirements depend on the affected ones.
-            prod = depgraph.product_impact(ws, changed)
+            prod = depgraph.product_impact(graph_ws, changed)
             own = (task or {}).get("req") or state.get("requirement_id")
             own = depgraph.req_node(own) if own else None
             imp["affected_requirements"] = [
@@ -1708,7 +1744,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 if step == "evaluate" else None)
             review_kernel, routing = _review_kernel(
                 ws, diff_ws, base=base_ref, step=step, task=task,
-                graph=depgraph.load(ws), impact=imp or {},
+                graph=depgraph.load(graph_ws), impact=imp or {},
                 requirement=req_rec, retry_context=retry_context)
         except Exception as exc:
             review_kernel = {"status": "kernel_unavailable", "slots": [],

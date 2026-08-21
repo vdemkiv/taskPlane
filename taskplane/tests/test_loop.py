@@ -952,6 +952,7 @@ class TestParallelExecution(unittest.TestCase):
             subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
                             f"tp/{tid}"], cwd=ws)
             loop.claim(ws, tid, agent_ws)
+            depgraph.scan(agent_ws)
         out = submit_gate(ws, "pass", task_id="t1")
         self.assertEqual(out["still_running"], ["t2"])
         submit_gate(ws, "pass", task_id="t2")
@@ -973,6 +974,11 @@ class TestParallelExecution(unittest.TestCase):
 
     def test_all_passed_reaches_em(self):
         ws = self._ws()
+        agent_ws = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
+                        "tp/t1-final-evaluate"], cwd=ws, check=True)
+        loop.claim(ws, "t1", agent_ws)
+        depgraph.scan(agent_ws)
         st = loop.load(ws)
         for t in st["tasks"]:
             t["status"] = "passed"
@@ -986,6 +992,125 @@ class TestParallelExecution(unittest.TestCase):
     def test_gate_requires_task_id_in_parallel_execute(self):
         ws = self._ws()
         self.assertIn("error", loop.gate(ws, "pass"))
+
+
+class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
+    """Parallel Evaluate must judge task bytes with that task's graph."""
+
+    def _park_at_evaluate(self):
+        ws = TestParallelExecution._ws(TestParallelExecution())
+        worker = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(
+            ["git", "worktree", "add", "-q", worker, "-b",
+             "tp/graph-bound-evaluate"], cwd=ws, check=True)
+        loop.claim(ws, "t1", worker)
+        changed = os.path.join(worker, "src", "a", "m.py")
+        with open(changed, "w", encoding="utf-8") as stream:
+            stream.write("x=2\n")
+        subprocess.run(["git", "add", "-A"], cwd=worker, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+             "commit", "-qm", "worker graph target"],
+            cwd=worker, check=True)
+        state = loop.load(ws)
+        state["current_task"] = 0
+        state["step"] = "evaluate"
+        state["graph_governance"] = True
+        loop.save(ws, state)
+        return ws, worker
+
+    @staticmethod
+    def _graph(head, fingerprint, *, module="a"):
+        return {
+            "modules": {module: {"kind": "module", "files": 1}},
+            "edges": [],
+            "files": {"src/a/m.py": {
+                "module": module, "hash": fingerprint[:16]}},
+            "recorded": [],
+            "meta": {
+                "schema": 2,
+                "scanned_head": head,
+                "content_fingerprint": fingerprint,
+                "source_counts": {"scanner": 0},
+            },
+        }
+
+    def test_kernel_uses_only_exact_task_graph_and_leaves_primary_untouched(self):
+        ws, worker = self._park_at_evaluate()
+        primary_graph = self._graph(tp.git_head(ws), "1" * 64,
+                                    module="primary-only")
+        task_graph = self._graph(tp.git_head(worker), "2" * 64)
+        primary_before = json.dumps(primary_graph, sort_keys=True)
+        reads = []
+
+        def load_graph(workspace):
+            resolved = os.path.realpath(workspace)
+            reads.append(resolved)
+            if resolved == os.path.realpath(worker):
+                return task_graph
+            if resolved == os.path.realpath(ws):
+                return primary_graph
+            self.fail(f"unexpected graph workspace: {workspace}")
+
+        with unittest.mock.patch.object(
+                depgraph, "load", side_effect=load_graph), \
+                unittest.mock.patch.object(depgraph, "scan") as scan_graph:
+            action = getattr(loop.next_action, "__wrapped__", loop.next_action)(ws)
+
+        self.assertEqual(action["review_kernel"]["status"], "ready")
+        self.assertEqual((action["impact"]["graph"] or {})[
+            "content_fingerprint"], "2" * 64)
+        self.assertEqual(set(reads), {os.path.realpath(worker)})
+        scan_graph.assert_not_called()
+        self.assertEqual(json.dumps(primary_graph, sort_keys=True),
+                         primary_before)
+
+    def test_missing_or_revision_mismatched_task_graph_never_falls_back(self):
+        cases = (
+            ("missing", {"modules": {}, "edges": [], "files": {},
+                         "recorded": [], "meta": {}}),
+            ("revision-mismatched",
+             self._graph("f" * 40, "3" * 64)),
+        )
+        for label, task_graph in cases:
+            with self.subTest(label=label):
+                ws, worker = self._park_at_evaluate()
+                primary_graph = self._graph(tp.git_head(worker), "4" * 64)
+                reads = []
+
+                def load_graph(workspace):
+                    resolved = os.path.realpath(workspace)
+                    reads.append(resolved)
+                    if resolved == os.path.realpath(worker):
+                        return task_graph
+                    if resolved == os.path.realpath(ws):
+                        return primary_graph
+                    self.fail(f"unexpected graph workspace: {workspace}")
+
+                with unittest.mock.patch.object(
+                        depgraph, "load", side_effect=load_graph), \
+                        unittest.mock.patch.object(depgraph, "scan") as scan_graph:
+                    action = getattr(
+                        loop.next_action, "__wrapped__", loop.next_action)(ws)
+
+                self.assertEqual(action["review_kernel"]["status"],
+                                 "impact_incomplete")
+                self.assertEqual(action["review_kernel"]["slots"], [])
+                self.assertEqual(set(reads), {os.path.realpath(worker)})
+                scan_graph.assert_not_called()
+
+    def test_primary_checkout_is_not_an_unambiguous_task_graph_workspace(self):
+        ws, _ = self._park_at_evaluate()
+        state = loop.load(ws)
+        state["tasks"][0]["workspace"] = ws
+        loop.save(ws, state)
+
+        with unittest.mock.patch.object(depgraph, "load") as load_graph:
+            action = getattr(loop.next_action, "__wrapped__", loop.next_action)(ws)
+
+        self.assertIn("error", action)
+        self.assertIn("task worktree", action["error"])
+        load_graph.assert_not_called()
 
 
 class TestParallelCommitDiscipline(unittest.TestCase):
