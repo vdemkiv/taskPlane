@@ -1037,6 +1037,7 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
 
     def test_kernel_uses_only_exact_task_graph_and_leaves_primary_untouched(self):
         ws, worker = self._park_at_evaluate()
+        canonical_worker = os.path.realpath(worker)
         primary_graph = self._graph(tp.git_head(ws), "1" * 64,
                                     module="primary-only")
         task_graph = self._graph(tp.git_head(worker), "2" * 64)
@@ -1044,11 +1045,10 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
         reads = []
 
         def load_graph(workspace):
-            resolved = os.path.realpath(workspace)
-            reads.append(resolved)
-            if resolved == os.path.realpath(worker):
+            reads.append(workspace)
+            if workspace == canonical_worker:
                 return task_graph
-            if resolved == os.path.realpath(ws):
+            if workspace == os.path.realpath(ws):
                 return primary_graph
             self.fail(f"unexpected graph workspace: {workspace}")
 
@@ -1060,10 +1060,62 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
         self.assertEqual(action["review_kernel"]["status"], "ready")
         self.assertEqual((action["impact"]["graph"] or {})[
             "content_fingerprint"], "2" * 64)
-        self.assertEqual(set(reads), {os.path.realpath(worker)})
+        self.assertEqual(set(reads), {canonical_worker})
         scan_graph.assert_not_called()
         self.assertEqual(json.dumps(primary_graph, sort_keys=True),
                          primary_before)
+
+    def test_validated_workspace_is_only_downstream_evidence_authority(self):
+        ws, worker = self._park_at_evaluate()
+        canonical_worker = os.path.realpath(worker)
+        task_graph = self._graph(tp.git_head(worker), "5" * 64)
+        alias_root = tempfile.mkdtemp()
+        alias_parent = os.path.join(alias_root, "tasks")
+        os.symlink(os.path.dirname(canonical_worker), alias_parent)
+        alias = os.path.join(alias_parent, os.path.basename(canonical_worker))
+        graph_reads = []
+        diff_reads = []
+        review_reads = []
+        original_diff = loop._diff_files
+        original_kernel = loop._review_kernel
+
+        def validate_workspace(_ws, _state, task):
+            task["workspace"] = alias
+            return canonical_worker, None
+
+        def load_graph(workspace):
+            graph_reads.append(workspace)
+            if workspace != canonical_worker:
+                self.fail(f"noncanonical graph workspace: {workspace}")
+            return task_graph
+
+        def diff_files(workspace, base):
+            diff_reads.append(workspace)
+            return original_diff(workspace, base)
+
+        def review_kernel(primary, diff_ws, **kwargs):
+            review_reads.append(diff_ws)
+            return original_kernel(primary, diff_ws, **kwargs)
+
+        with unittest.mock.patch.object(
+                loop, "_parallel_evaluate_workspace",
+                side_effect=validate_workspace), \
+                unittest.mock.patch.object(
+                    depgraph, "load", side_effect=load_graph), \
+                unittest.mock.patch.object(
+                    loop, "_diff_files", side_effect=diff_files), \
+                unittest.mock.patch.object(
+                    loop, "_review_kernel", side_effect=review_kernel):
+            action = getattr(
+                loop.next_action, "__wrapped__", loop.next_action)(ws)
+
+        self.assertEqual(action["review_kernel"]["status"], "ready")
+        self.assertTrue(graph_reads)
+        self.assertTrue(diff_reads)
+        self.assertTrue(review_reads)
+        self.assertEqual(set(graph_reads), {canonical_worker})
+        self.assertEqual(set(diff_reads), {canonical_worker})
+        self.assertEqual(set(review_reads), {canonical_worker})
 
     def test_missing_or_revision_mismatched_task_graph_never_falls_back(self):
         cases = (
@@ -1127,7 +1179,7 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
                                 dict)
 
     def test_workspace_resolver_rejects_noncanonical_and_symlink_paths(self):
-        cases = ("foreign", "mismatched", "symlink")
+        cases = ("foreign", "mismatched", "symlink", "parent-symlink")
         for case in cases:
             with self.subTest(case=case):
                 ws, worker = self._park_at_evaluate()
@@ -1136,9 +1188,16 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
                 elif case == "mismatched":
                     candidate = os.path.join(ws, ".tp-work", "t2")
                     os.makedirs(candidate)
-                else:
+                elif case == "symlink":
                     candidate = os.path.join(ws, ".tp-work", "t1-alias")
                     os.symlink(worker, candidate)
+                else:
+                    alias_root = tempfile.mkdtemp()
+                    alias_parent = os.path.join(alias_root, "tasks")
+                    os.symlink(os.path.dirname(os.path.realpath(worker)),
+                               alias_parent)
+                    candidate = os.path.join(
+                        alias_parent, os.path.basename(worker))
                 state = loop.load(ws)
                 task = state["tasks"][0]
                 task["workspace"] = candidate

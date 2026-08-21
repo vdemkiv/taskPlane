@@ -1014,7 +1014,9 @@ def _parallel_evaluate_workspace(
             managed_root
     except ValueError:
         is_contained = False
-    if os.path.realpath(os.path.dirname(supplied)) != managed_root or \
+    if os.path.normcase(os.path.normpath(supplied)) != \
+            os.path.normcase(expected) or \
+            os.path.realpath(os.path.dirname(supplied)) != managed_root or \
             os.path.basename(supplied) != os.path.basename(expected) or \
             worker != expected or not is_contained or os.path.islink(supplied):
         return None, ("parallel Evaluate task worktree is not the exact "
@@ -1361,7 +1363,7 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     enforcement = ((state.get("enforcement") or {}).get("current"))
     if enforcement:
         contract["enforcement"] = enforcement
-    agent_ws = os.path.abspath(agent_ws)
+    agent_ws = os.path.realpath(os.path.abspath(agent_ws))
     locator_error = runtime_storage.worker_locator_error(ws, agent_ws, task_id)
     if locator_error: return {"error": locator_error, "task": task_id}
     contract = _bind_worker_submission(
@@ -1532,14 +1534,18 @@ def next_action(ws: str, rid: str | None = None) -> dict:
 
     # Per-task steps run in the task's own workspace when one was claimed.
     act_ws = ws
+    is_parallel_evaluate = step == "evaluate" and bool(state.get("parallel"))
     if step in ("evaluate", "fix") and state.get("parallel"):
         current = _current_task(state) or {}
         if step == "evaluate":
-            act_ws, workspace_error = _parallel_evaluate_workspace(
+            resolved_ws, workspace_error = _parallel_evaluate_workspace(
                 ws, state, current)
-            if workspace_error:
-                return {"error": workspace_error, "step": step,
+            if workspace_error or resolved_ws is None:
+                return {"error": workspace_error or
+                        "parallel Evaluate task worktree is unresolved",
+                        "step": step,
                         "status": status(ws)}
+            act_ws = resolved_ws
         else:
             tws = current.get("workspace")
             act_ws = tws if tws and os.path.isdir(tws) else ws
@@ -1644,12 +1650,16 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # Inject the handful of prior decisions relevant to this step's work, so
     # the role starts with context instead of re-deriving it (token savings).
     task = _current_task(state)
-    # The worker's tree — where a claimed task's change lands. NOT act_ws:
-    # that is parallel-gated, so a serial loop would name the PROJECT tree.
-    wtree = (task or {}).get("workspace") or ""
-    wtree = wtree if os.path.isdir(wtree) else ws
-    graph_ws = (wtree if step == "evaluate" and state.get("parallel")
-                else ws)
+    # Evaluate uses only the canonical workspace returned by the resolver.
+    # Re-reading task["workspace"] here would create a second path authority
+    # after validation and reopen alias/retarget races for graph evidence.
+    if is_parallel_evaluate or (
+            step == "fix" and state.get("parallel")):
+        wtree = act_ws
+    else:
+        candidate_ws = (task or {}).get("workspace") or ""
+        wtree = candidate_ws if os.path.isdir(candidate_ws) else ws
+    graph_ws = act_ws if is_parallel_evaluate else ws
     query_files = (task or {}).get("scope") or []
     query_tags = ([task["id"]] if task else []) + [state["goal"][:24]]
     recalled = kb.retrieve(ws, files=query_files, tags=query_tags, limit=5)
@@ -1709,7 +1719,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # what the change can break WITHOUT re-deriving dependencies (no tokens).
     imp = None
     if step in ("evaluate", "em"):
-        diff_ws = wtree if step == "evaluate" else ws
+        diff_ws = act_ws if step == "evaluate" else ws
         changed = [f for f in _diff_files(
             diff_ws, state.get("baseline") or "HEAD")
             if not f.startswith(lens_router.LOOP_OWNED)]
@@ -1785,8 +1795,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     review_kernel = None
     review_workspace = None
     if step in ("evaluate", "em"):
-        diff_ws = wtree if step == "evaluate" and state.get("parallel") else ws
-        review_workspace = os.path.realpath(diff_ws)
+        diff_ws = act_ws if is_parallel_evaluate else ws
+        review_workspace = diff_ws
         base_ref = state.get("baseline") or "HEAD"
         try:
             retry_context = (review_retry.incremental_context(
