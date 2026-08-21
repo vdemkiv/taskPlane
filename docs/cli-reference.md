@@ -607,6 +607,7 @@ Positional arguments:
 | `--max-fix-cycles` | MAX_FIX_CYCLES | fix cycles the loop may run before it escalates to the human (default 2) |
 | `--parallel` | flag | execute waves of scope-disjoint tasks concurrently, one governed agent per task |
 | `--req` | REQ | anchor the loop to a requirement R-id; TASKPLANE_STAGE_NATIVE=new-run requires an exact existing requirement |
+| `--reuse-approved-design` | flag | start at Plan from an unchanged completed design-only loop with the same requirement/spec and attributable `--by` authority |
 | `--spec` | SPEC | path to an existing spec (skips PM) |
 
 ## `tp.py loop next`

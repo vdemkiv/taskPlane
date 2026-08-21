@@ -2595,7 +2595,9 @@ def cmd_loop(a) -> int:
                           requirement_id=a.req, parallel=a.parallel,
                           design=a.design, design_only=a.design_only,
                           force=getattr(a, "force", False),
-                          by=getattr(a, "by", None))
+                          by=getattr(a, "by", None),
+                          reuse_approved_design=getattr(
+                              a, "reuse_approved_design", False))
         if isinstance(st, dict) and not st.get("error") and enforcement:
             loopmod.record_enforcement(ws, enforcement)
         # Only collapse to the success summary when the engine did NOT refuse.
@@ -6508,6 +6510,10 @@ def main(argv=None) -> int:
     li.add_argument("--design-only", action="store_true",
                     help="stop after the human approves the Design Contract "
                          "instead of continuing to Plan/Build/Review")
+    li.add_argument("--reuse-approved-design", action="store_true",
+                    help="start at Plan from an unchanged completed "
+                         "design-only loop with the same requirement/spec "
+                         "and attributable --by authority")
     li.add_argument("--force", action="store_true",
                     help="replace an in-flight loop (the old loop.json is "
                          "archived first — without this flag re-init refuses)")

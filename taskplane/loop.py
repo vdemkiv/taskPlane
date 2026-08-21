@@ -3040,7 +3040,8 @@ def init(ws: str, goal: str, spec_path: str | None = None,
          max_fix_cycles: int = 2, checkpoints=None,
          requirement_id: str | None = None, parallel: bool = False,
          design: bool = False, design_only: bool = False,
-         force: bool = False, by: str | None = None) -> dict:
+         force: bool = False, by: str | None = None,
+         reuse_approved_design: bool = False) -> dict:
     if _stage_mode() == "new-run":
         try:
             prior_singleton = _load_raw(ws)
@@ -3072,8 +3073,47 @@ def init(ws: str, goal: str, spec_path: str | None = None,
     # approvals and baseline. `force` discards deliberately, and even then
     # the prior state file is archived (visible, recoverable), never erased.
     existing = load(ws)
+    reused_design = {}
     archived_to = None
-    if existing and existing.get("step") not in TERMINAL_STEPS:
+    if reuse_approved_design:
+        blockers = []
+        if not existing:
+            blockers.append("no prior loop exists")
+        elif existing.get("step") != "done" or not existing.get(
+                "design_only"):
+            blockers.append("prior loop is not a completed design-only run")
+        elif not existing.get("design_fingerprint"):
+            blockers.append("prior design has no approved fingerprint")
+        if not str(by or "").strip():
+            blockers.append("reuse needs --by with attributable human authority")
+        if existing and requirement_id != existing.get("requirement_id"):
+            blockers.append("requirement does not match the approved design")
+        if existing and spec_path != existing.get("spec_path"):
+            blockers.append("spec path does not match the approved design")
+        if existing and existing.get("design_fingerprint"):
+            blockers.extend(_design_current_errors(ws, existing))
+        if blockers:
+            return {"error": "approved Design reuse refused", "refused": True,
+                    "blockers": blockers,
+                    "step": existing.get("step") if existing else None}
+        reused_design = {
+            "design_fingerprint": existing["design_fingerprint"],
+            "design_approved_by": existing.get("design_approved_by"),
+            **({"design_graph_fingerprint":
+                existing["design_graph_fingerprint"]}
+               if existing.get("design_graph_fingerprint") else {}),
+            "design_reused_by": str(by).strip(),
+        }
+        src = _loop_path(ws) if os.path.exists(_loop_path(ws)) \
+            else _legacy_loop_path(ws)
+        archived_to = _loop_path(ws) + time.strftime(
+            ".continued-%Y%m%d-%H%M%S") + f".{os.getpid()}"
+        os.makedirs(_state_dir(ws), exist_ok=True)
+        os.replace(src, archived_to)
+        tp.trace(ws, "loop_design_reused", prior_step=existing.get("step"),
+                 archived_to=archived_to,
+                 fingerprint=existing["design_fingerprint"], by=by)
+    elif existing and existing.get("step") not in TERMINAL_STEPS:
         if not force:
             return {"error": "an active loop already exists at step="
                              f"'{existing.get('step')}' — refusing to discard "
@@ -3097,19 +3137,22 @@ def init(ws: str, goal: str, spec_path: str | None = None,
         "graph_governance": True,
         "goal": goal,
         "parallel": bool(parallel),
-        "design_required": bool(design or design_only),
+        "design_required": bool(design or design_only
+                                or reuse_approved_design),
         "design_only": bool(design_only),
         "requirement_id": requirement_id,
         "spec_path": spec_path,
         "max_fix_cycles": int(max_fix_cycles),
         "checkpoints": checkpoints,
-        "step": ("design" if spec_path and (design or design_only)
+        "step": ("plan" if reuse_approved_design else
+                 "design" if spec_path and (design or design_only)
                  else "plan" if spec_path else "pm"),
         "tasks": None,
         "current_task": 0,
         "consumed_host_decisions": {},
         "consumed_host_events": {},
         "authority_effect_outbox": {},
+        **reused_design,
         # This marker is minted only by an attributable new-run init.  The
         # first `loop next` consumes it while atomically committing the exact
         # root; arbitrary pre-existing singleton history is never inferred to
@@ -3126,7 +3169,10 @@ def init(ws: str, goal: str, spec_path: str | None = None,
     out = dict(state)
     if archived_to:
         out["previous_loop_archived"] = archived_to
-        out["note"] = f"previous in-flight loop archived to {archived_to}"
+        out["note"] = (
+            f"approved Design reused; prior terminal loop archived to "
+            f"{archived_to}" if reuse_approved_design else
+            f"previous in-flight loop archived to {archived_to}")
     # v2.0.0: point the driver at prior gate snapshots (context cache) -
     # read the published state instead of re-deriving it.
     with contextlib.suppress(Exception):

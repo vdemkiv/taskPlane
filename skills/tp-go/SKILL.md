@@ -174,7 +174,11 @@ explicit approval in conversation. Never run the loop silently.
    complex/risky/contract-changing or explicitly requested proposed-HOW phase;
    add `--design-only` when the deliverable is the approved design itself;
    add `--parallel` when the plan will have independent tasks; use `--spec
-   path` only for an existing complete spec.
+   path` only for an existing complete spec. When a completed design-only loop
+   must continue into delivery, use `--reuse-approved-design --by <human>`
+   with the exact same requirement and spec; the engine verifies unchanged
+   Design bytes, preserves its approved fingerprint, archives the terminal
+   loop, and starts at Plan without rerunning or silently dropping Design.
 3. **Dispatch, never impersonate:** call `$TP loop next` once for the current
    step and dispatch the named role under its already-active contract. On
    Codex, follow

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
@@ -314,6 +315,51 @@ class TestInitOverInflight(unittest.TestCase):
         out = loop.init(ws, "second goal")
         self.assertNotIn("refused", out)
         self.assertEqual(loop.load(ws)["goal"], "second goal")
+
+    def test_completed_design_only_can_seed_plan_with_exact_approval(self):
+        ws = git_ws()
+        loop.save(ws, {
+            "step": "done", "goal": "design", "design_only": True,
+            "design_required": True, "requirement_id": "R-0006",
+            "spec_path": "specs/spec.md", "design_fingerprint": "f" * 64,
+            "design_approved_by": "human:vdemkiv",
+        })
+
+        with mock.patch.object(loop, "_design_current_errors",
+                               return_value=[]):
+            out = loop.init(
+                ws, "build", spec_path="specs/spec.md",
+                requirement_id="R-0006", parallel=True,
+                by="human:vdemkiv", reuse_approved_design=True)
+
+        state = loop.load(ws)
+        self.assertEqual(state["step"], "plan")
+        self.assertTrue(state["design_required"])
+        self.assertFalse(state["design_only"])
+        self.assertEqual(state["design_fingerprint"], "f" * 64)
+        self.assertEqual(state["design_reused_by"], "human:vdemkiv")
+        self.assertTrue(os.path.exists(out["previous_loop_archived"]))
+
+    def test_design_reuse_refuses_requirement_drift_without_mutation(self):
+        ws = git_ws()
+        prior = {
+            "step": "done", "goal": "design", "design_only": True,
+            "design_required": True, "requirement_id": "R-0006",
+            "spec_path": "specs/spec.md", "design_fingerprint": "f" * 64,
+            "design_approved_by": "human:vdemkiv",
+        }
+        loop.save(ws, prior)
+
+        with mock.patch.object(loop, "_design_current_errors",
+                               return_value=[]):
+            out = loop.init(
+                ws, "build", spec_path="specs/spec.md",
+                requirement_id="R-9999", by="human:vdemkiv",
+                reuse_approved_design=True)
+
+        self.assertTrue(out["refused"])
+        self.assertIn("requirement does not match", " ".join(out["blockers"]))
+        self.assertEqual(loop.load(ws), prior)
 
 
 class TestNextActionLockedRMW(unittest.TestCase):
