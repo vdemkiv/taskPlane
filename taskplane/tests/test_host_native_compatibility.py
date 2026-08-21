@@ -81,6 +81,8 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     assert not (ROOT / ".claude-plugin/host-native.json").exists()
 
     hooks = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))
+    assert set(hooks) <= {"description", "hooks"}
+    assert "hostNative" not in hooks
     commands = [hook["command"] for entry in hooks["hooks"]["SessionStart"]
                 for hook in entry["hooks"]]
     assert any("host_native_runtime.py\" check --host claude" in command
@@ -90,6 +92,16 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     )
     assert "hostNative" not in codex_manifest
     assert "hostNativeRuntime" not in codex_manifest
+
+    # The compatibility wrapper is deliberately independent of hooks.json:
+    # Codex rejects custom root keys there, so discovery is package-owned.
+    fixed_only = tmp_path / "fixed-only" / "hooks"
+    fixed_only.mkdir(parents=True)
+    shutil.copy2(ROOT / "hooks/host-native.json",
+                 fixed_only / "host-native.json")
+    (fixed_only / "hooks.json").write_text(
+        "{not a discovery manifest", encoding="utf-8")
+    assert runtime.discover_hook_contract(fixed_only.parent) == hook_contract
 
     # Exercise the commands from a copied install layout, not the source paths
     # that authored the declarations.

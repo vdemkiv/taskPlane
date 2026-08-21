@@ -61,6 +61,15 @@ REQUIRED_FILES = (
     "docs/authority-matrix.md",
     "docs/loop-design.md",
     "docs/state-spec.md",
+    "hooks/hooks.json",
+    "hooks/host-native.json",
+    "hooks/host_native_runtime.py",
+)
+
+HOOK_FILES = (
+    "hooks/hooks.json",
+    "hooks/host-native.json",
+    "hooks/host_native_runtime.py",
 )
 
 
@@ -279,7 +288,6 @@ def package_files(manifest: dict) -> list[Path]:
         lambda path: path.relative_to(ROOT / "skills").parts[0]
         not in OPENAI_EXCLUDED_SKILLS,
     )
-    add_tree(files, ROOT / "hooks", lambda path: path.name == "hooks.json")
     add_tree(files, ROOT / "agents", lambda path: path.suffix == ".md")
     add_tree(files, ROOT / "discipline", lambda path: path.suffix == ".md")
     # Ship the public documentation as a complete set. Skills and the stdlib
@@ -370,6 +378,20 @@ def validate_archive(path: Path) -> tuple[int, int]:
         for required in ("README.md", "CHANGELOG.md"):
             require(f"{ARCHIVE_ROOT}/{required}" in names,
                     f"ZIP is missing {required}")
+        for required in HOOK_FILES:
+            require(f"{ARCHIVE_ROOT}/{required}" in names,
+                    f"ZIP is missing installed hook runtime member {required}")
+        try:
+            hook_manifest = json.loads(
+                archive.read(f"{ARCHIVE_ROOT}/hooks/hooks.json"))
+        except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise PackageError("ZIP contains an unreadable hooks/hooks.json") from exc
+        require(isinstance(hook_manifest, dict),
+                "ZIP hook manifest root must be an object")
+        require(set(hook_manifest) <= {"description", "hooks"},
+                "ZIP hook manifest contains keys rejected by Codex")
+        require(isinstance(hook_manifest.get("hooks"), dict),
+                "ZIP hook manifest must declare hooks as an object")
         require(
             f"{ARCHIVE_ROOT}/docs/assets/taskplane-cowork-flow.gif" in names,
             "ZIP is missing the README flow-guide GIF",

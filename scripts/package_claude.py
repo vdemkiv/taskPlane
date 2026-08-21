@@ -62,6 +62,8 @@ REQUIRED_FILES = (
     "SUPPORT.md",
     "TERMS.md",
     "hooks/hooks.json",
+    "hooks/host-native.json",
+    "hooks/host_native_runtime.py",
 )
 
 # A member here is one whose absence breaks the INSTALLED experience, not
@@ -71,6 +73,8 @@ MUST_CONTAIN = (
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
     "hooks/hooks.json",
+    "hooks/host-native.json",
+    "hooks/host_native_runtime.py",
     "taskplane/taskplane_lite.py",
     "taskplane/tp.py",
     "taskplane/lens.py",

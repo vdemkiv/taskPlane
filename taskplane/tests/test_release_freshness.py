@@ -145,6 +145,49 @@ class TestReferencedDocumentation(unittest.TestCase):
         self.assertFalse(any(name.startswith("taskplane/workflows/") for name in names))
 
 
+class TestInstalledHookPackaging(unittest.TestCase):
+    HOOK_MEMBERS = {
+        "taskplane/hooks/hooks.json",
+        "taskplane/hooks/host-native.json",
+        "taskplane/hooks/host_native_runtime.py",
+    }
+
+    @staticmethod
+    def _load_packager(name: str):
+        path = os.path.join(ROOT, "scripts", name)
+        spec = importlib.util.spec_from_file_location(
+            f"_release_{name.replace('.', '_')}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_openai_archive_has_parser_safe_install_complete_hooks(self):
+        packager = self._load_packager("package_openai.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "taskplane-openai.zip"
+            packager.write_zip(
+                packager.package_files(packager.load_manifest()), archive_path)
+            packager.validate_archive(archive_path)
+            with zipfile.ZipFile(archive_path) as archive:
+                names = set(archive.namelist())
+                hooks = json.loads(archive.read(
+                    "taskplane/hooks/hooks.json"))
+        self.assertTrue(self.HOOK_MEMBERS <= names)
+        self.assertTrue(set(hooks) <= {"description", "hooks"})
+        self.assertNotIn("hostNative", hooks)
+
+    def test_claude_archive_has_install_complete_hooks(self):
+        packager = self._load_packager("package_claude.py")
+        manifest = json.loads(_read(".claude-plugin/plugin.json"))
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "taskplane-claude.zip"
+            packager.write_zip(packager.package_files(), archive_path)
+            packager.validate_archive(archive_path, manifest["version"])
+            with zipfile.ZipFile(archive_path) as archive:
+                names = set(archive.namelist())
+        self.assertTrue(self.HOOK_MEMBERS <= names)
+
+
 class TestSkillIdentity(unittest.TestCase):
     @staticmethod
     def _frontmatter_name(text: str) -> str | None:

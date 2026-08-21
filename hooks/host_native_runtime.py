@@ -1,9 +1,9 @@
 """Package-owned discovery and recovery for optional host-native surfaces.
 
 The host UI is deliberately a projection of canonical Taskplane snapshots.
-This module is shipped through Claude's plugin manifest and the shared hook
-manifest. Codex consumes the hook declaration because its marketplace manifest
-schema deliberately rejects custom runtime fields.
+This module is shipped with a fixed package-owned declaration. Claude resolves
+that declaration through its plugin manifest; Codex uses the fixed bundled
+path because its hook manifest schema accepts only hook configuration fields.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "closed"})
 _HOST_MANIFESTS = {
     "claude": Path(".claude-plugin/plugin.json"),
 }
+_BUNDLED_CONTRACT = Path("hooks/host-native.json")
 
 
 def project_progress_surface(
@@ -98,19 +99,14 @@ def discover_host_native_contract(root: Path | str, host: str) -> dict:
 
 
 def discover_hook_contract(root: Path | str) -> dict:
-    """Resolve the same declaration through Claude's runtime hook manifest."""
+    """Compatibility wrapper for the fixed package-owned declaration."""
     root = Path(root).resolve()
-    manifest_path = root / "hooks/hooks.json"
-    manifest = _load_json(manifest_path)
-    relative = manifest.get("hostNative")
-    if not isinstance(relative, str) or not relative.strip():
-        raise ValueError("hook manifest has no hostNative declaration")
-    declaration_path = (manifest_path.parent / relative).resolve()
-    if declaration_path.parent != manifest_path.parent.resolve():
-        raise ValueError("hook declaration must remain inside hooks")
+    declaration_path = (root / _BUNDLED_CONTRACT).resolve()
+    if root not in declaration_path.parents:
+        raise ValueError("bundled host-native declaration escaped plugin root")
     declaration = _load_json(declaration_path)
     if declaration.get("schema") != PACKAGE_SCHEMA:
-        raise ValueError("unsupported hook host-native package schema")
+        raise ValueError("unsupported bundled host-native package schema")
     return declaration
 
 

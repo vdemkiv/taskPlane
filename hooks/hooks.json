@@ -1,5 +1,4 @@
 {
-  "hostNative": "./host-native.json",
   "hooks": {
     "PreToolUse": [
       {
