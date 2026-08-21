@@ -10,6 +10,7 @@ from __future__ import annotations
 import builtins
 import copy
 import html
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -24,6 +25,7 @@ if str(TASKPLANE) not in sys.path:
     sys.path.insert(0, str(TASKPLANE))
 
 import dashboard  # noqa: E402
+import kb  # noqa: E402
 import loop  # noqa: E402
 import loop_status  # noqa: E402
 import retro  # noqa: E402
@@ -525,3 +527,73 @@ def test_retro_v4_aggregates_summaries_without_predecessor_trace_roots(
     assert report["stage_metrics"]["terminal"] >= 1
     assert report["stage_metrics"]["outcomes"]["closed"] >= 1
     assert report["trace_scope"]["source"] == "bounded-stage-view"
+
+
+@pytest.mark.parametrize("projection_status", ["corrupt", "ambiguous"])
+def test_retro_invalid_stage_projection_fails_closed_before_side_effects(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        projection_status: str) -> None:
+    workspace, store, manifest = _seed_v4(
+        tmp_path,
+        monkeypatch,
+        foreground=None if projection_status == "ambiguous" else CURRENT_ID,
+        include_child=False,
+        sibling_active=projection_status == "ambiguous",
+        step="retro",
+    )
+    if projection_status == "corrupt":
+        manifest["active_stage_projection"]["fingerprint"] = "0" * 64
+        run_store._atomic_write_json(store._manifest_path(RUN_ID), manifest)
+    _forbid_deep_stage_reads(monkeypatch)
+
+    def forbidden(name: str):
+        def fail(*_args, **_kwargs):
+            raise AssertionError(
+                f"Retro performed {name} after an invalid stage projection")
+        return fail
+
+    monkeypatch.setattr(retro, "_events_for_run", forbidden("event reads"))
+    monkeypatch.setattr(retro, "_findings", forbidden("finding reads"))
+    monkeypatch.setattr(retro.depgraph, "load", forbidden("graph reads"))
+    monkeypatch.setattr(retro.depgraph, "scan", forbidden("graph writes"))
+    monkeypatch.setattr(
+        retro, "_existing_decision", forbidden("decision reads"))
+    monkeypatch.setattr(
+        retro.kb, "record_decision", forbidden("decision writes"))
+    monkeypatch.setattr(retro, "_trace_seen", forbidden("receipt reads"))
+    monkeypatch.setattr(retro.tp, "trace", forbidden("receipt writes"))
+    monkeypatch.setattr(retro, "_write_report", forbidden("report writes"))
+
+    first = retro.run(
+        str(workspace),
+        load_state=loop.load,
+        mutate_state=loop.mutate,
+        loop_path=loop._loop_path(str(workspace)),
+        normalize_severity=loop.normalize_severity,
+    )
+    second = retro.run(
+        str(workspace),
+        load_state=loop.load,
+        mutate_state=loop.mutate,
+        loop_path=loop._loop_path(str(workspace)),
+        normalize_severity=loop.normalize_severity,
+    )
+
+    assert first == second
+    assert first["step"] == "retro"
+    assert first["stage_projection"]["status"] == projection_status
+    assert first["stage_projection"]["available"] is False
+    assert first["retro_id"]
+    state = loop.load(str(workspace))
+    assert state["step"] == "retro"
+    assert state["retro"]["status"] == "prepared"
+    assert state["retro"]["id"] == first["retro_id"]
+    assert "report" not in state["retro"]
+    assert kb.list_decisions(str(workspace)) == []
+    assert not (Path(workspace) / ".taskplane" / "retro.md").exists()
+    trace_path = Path(workspace) / ".taskplane" / "trace.jsonl"
+    receipts = [] if not trace_path.exists() else [
+        json.loads(line) for line in trace_path.read_text(
+            encoding="utf-8").splitlines() if line.strip()
+    ]
+    assert not any(row.get("event") == "loop_retro" for row in receipts)

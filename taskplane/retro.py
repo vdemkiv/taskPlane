@@ -258,6 +258,28 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
         stage_native = stage_projection is not None
         if stage_native:
             stage_view, stage_metrics = stage_projection
+            stage_status = stage_metrics["status"]
+            if (not stage_metrics["available"]
+                    or stage_status in {"corrupt", "ambiguous"}):
+                detail = str(
+                    stage_view.get("error")
+                    or "bounded stage lineage is unavailable"
+                )[:512]
+                return {
+                    "error": ("retro requires an available bounded stage "
+                              "projection — loop remains open"),
+                    "detail": detail,
+                    "stage_projection": {
+                        "schema": "taskplane.retro-stage-projection-error/v1",
+                        "status": stage_status,
+                        "available": False,
+                        "run_id": stage_view.get("run_id"),
+                        "revision": stage_view.get("revision"),
+                        "error": detail,
+                    },
+                    "step": "retro",
+                    "retro_id": retro_id,
+                }
             events, trace_from = [], None
         else:
             stage_view, stage_metrics = None, None
@@ -310,12 +332,6 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                 "headline": False, "total": 0, "counts": {},
                 "identities": [], "state_roots": []}
         lessons = []
-        if stage_native and not stage_metrics["available"]:
-            detail = str(stage_view.get("error") or
-                         "bounded stage lineage is unavailable")[:240]
-            lessons.append(
-                f"stage lineage projection {stage_metrics['status']}: "
-                + detail)
         if foreign_interference.get("headline"):
             lessons.append(
                 f"foreign interference observed {foreign_interference['total']} "
