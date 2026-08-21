@@ -7,12 +7,213 @@ their historical signatures without creating an import cycle.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
 
 import progress
 import taskplane_lite as tp
+
+
+BOUNDED_STAGE_VIEW_SCHEMA = "taskplane.bounded-stage-view/v1"
+BOUNDED_STAGE_VIEW_MAX_ITEMS = 100
+
+
+def _empty_stage_view(*, limit: int, mode: str, status: str,
+                      error: str | None = None,
+                      run_id: str | None = None) -> dict:
+    """Return the stable, non-authoritative stage read-model envelope."""
+    return {
+        "schema": BOUNDED_STAGE_VIEW_SCHEMA,
+        "mode": mode,
+        "status": status,
+        "available": False,
+        "run_id": run_id,
+        "revision": None,
+        "current_stage": None,
+        "predecessor_stages": [],
+        "child_stage_ids": [],
+        "handoff_fingerprint": None,
+        "history": [],
+        "lineage": [],
+        "limits": {
+            "history": limit,
+            "lineage": limit,
+            "requested": limit,
+            "maximum": BOUNDED_STAGE_VIEW_MAX_ITEMS,
+        },
+        "error": error,
+    }
+
+
+def _stage_view_error(exc: Exception) -> str:
+    """Bound diagnostics without interpreting persisted values as markup."""
+    message = f"{exc.__class__.__name__}: {exc}"
+    encoded = message.encode("utf-8", errors="replace")
+    if len(encoded) <= 512:
+        return message
+    return encoded[:509].decode("utf-8", errors="ignore") + "..."
+
+
+def _lineage_sort_key(row: dict) -> tuple:
+    return (
+        str(row.get("child_stage_id") or ""),
+        str(row.get("parent_stage_id") or ""),
+        tuple(str(value) for value in
+              (row.get("predecessor_stage_ids") or [])),
+        str(row.get("fingerprint") or ""),
+    )
+
+
+def bounded_stage_view(ws: str, *, limit: int = 100) -> dict:
+    """Return a bounded v4 stage/index projection for default read surfaces.
+
+    Only the locator-bound run manifest is opened.  Stage objects, execution
+    roots, trace/transcript data, meters, and paginated history are outside
+    this read boundary.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or not (
+            1 <= limit <= BOUNDED_STAGE_VIEW_MAX_ITEMS):
+        raise ValueError(
+            f"stage view limit must be 1..{BOUNDED_STAGE_VIEW_MAX_ITEMS}")
+
+    import loop
+
+    try:
+        locator = loop.runtime_storage.load_workspace_locator(ws)
+    except Exception as exc:
+        return _empty_stage_view(
+            limit=limit, mode="v4", status="corrupt",
+            error=_stage_view_error(exc))
+    if not isinstance(locator, dict):
+        return _empty_stage_view(
+            limit=limit, mode="legacy", status="legacy")
+
+    run_id = locator.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return _empty_stage_view(
+            limit=limit, mode="v4", status="corrupt",
+            error="workspace stage locator has no valid run id")
+    try:
+        store = loop._stage_store(ws, run_id)
+        manifest = store.load(run_id)
+    except Exception as exc:
+        return _empty_stage_view(
+            limit=limit, mode="v4", status="corrupt", run_id=run_id,
+            error=_stage_view_error(exc))
+
+    if manifest.get("schema") == "taskplane.run/v3":
+        return _empty_stage_view(
+            limit=limit, mode="legacy", status="legacy", run_id=run_id)
+    if manifest.get("schema") != "taskplane.run/v4":
+        return _empty_stage_view(
+            limit=limit, mode="v4", status="corrupt", run_id=run_id,
+            error="run manifest schema is not taskplane.run/v4")
+
+    try:
+        # RunStore.load owns the exact locator-bound manifest read; its index
+        # validator proves summary/lineage/receipt fingerprints and the
+        # active-projection binding without following any object reference.
+        try:
+            if __package__:
+                from . import run_store as stage_run_store
+            else:
+                import run_store as stage_run_store
+        except ImportError:  # pragma: no cover - direct script import mode
+            import run_store as stage_run_store
+        if manifest.get("run_id") != run_id:
+            raise stage_run_store.RunStoreError(
+                "run manifest identity does not match the workspace locator")
+        stage_run_store._validate_stage_index(manifest)
+
+        heads = manifest["stage_heads"]
+        projection = manifest["active_stage_projection"]
+        active_ids = list(projection["active_stage_ids"])
+        foreground_id = projection["foreground_stage_id"]
+        if foreground_id is not None:
+            current_id = foreground_id
+            view_status = "v4"
+            available = True
+            view_error = None
+        elif len(active_ids) == 1:
+            current_id = active_ids[0]
+            view_status = "v4"
+            available = True
+            view_error = None
+        elif len(active_ids) > 1:
+            current_id = None
+            view_status = "ambiguous"
+            available = False
+            view_error = ("active stage projection has several active "
+                          "stages and no foreground stage")
+        else:
+            current_id = None
+            view_status = "v4"
+            available = True
+            view_error = None
+
+        stage_ids = sorted(heads)
+        history_ids = stage_ids[:limit]
+        history = [copy.deepcopy(heads[stage_id]["summary"])
+                   for stage_id in history_ids]
+        history_id_set = set(history_ids)
+        lineage_rows = sorted(
+            (row for row in manifest["lineage"]
+             if row["child_stage_id"] in history_id_set),
+            key=_lineage_sort_key,
+        )[:limit]
+        lineage = [copy.deepcopy(row) for row in lineage_rows]
+
+        current = (copy.deepcopy(heads[current_id]["summary"])
+                   if current_id is not None else None)
+        if current is None:
+            predecessor_stages = []
+            child_stage_ids = []
+            handoff_fingerprint = None
+        else:
+            predecessor_ids = list(current["predecessor_stage_ids"])
+            predecessor_stages = [
+                copy.deepcopy(heads[stage_id]["summary"])
+                for stage_id in predecessor_ids[:limit]
+            ]
+            children = {
+                row["child_stage_id"] for row in manifest["lineage"]
+                if row["parent_stage_id"] == current_id or
+                current_id in row["predecessor_stage_ids"]
+            }
+            child_stage_ids = sorted(children)[:limit]
+            handoff_fingerprint = current["input_manifest_fingerprint"]
+
+        return {
+            "schema": BOUNDED_STAGE_VIEW_SCHEMA,
+            "mode": "v4",
+            "status": view_status,
+            "available": available,
+            "run_id": run_id,
+            "revision": manifest.get("revision"),
+            "current_stage": current,
+            "predecessor_stages": predecessor_stages,
+            "child_stage_ids": child_stage_ids,
+            "handoff_fingerprint": handoff_fingerprint,
+            "history": history,
+            "lineage": lineage,
+            "limits": {
+                "history": limit,
+                "lineage": limit,
+                "requested": limit,
+                "maximum": BOUNDED_STAGE_VIEW_MAX_ITEMS,
+            },
+            "error": view_error,
+        }
+    except Exception as exc:
+        return _empty_stage_view(
+            limit=limit, mode="v4", status="corrupt", run_id=run_id,
+            error=_stage_view_error(exc))
+
+
+def _include_stage_view(view: dict) -> bool:
+    return view.get("status") in {"v4", "ambiguous", "corrupt"}
 
 
 def load_tasks(ws: str, state: dict) -> None:
@@ -42,9 +243,14 @@ def load_tasks(ws: str, state: dict) -> None:
 def status(ws: str) -> dict:
     import loop
 
+    stage_view = bounded_stage_view(ws)
     state = loop.load(ws)
     if state is None:
-        return {"loop": "none"}
+        return {
+            "loop": "none",
+            **({"stage_view": stage_view}
+               if _include_stage_view(stage_view) else {}),
+        }
     tasks = state.get("tasks") or []
     out = {
         "step": state["step"], "goal": state["goal"],
@@ -73,6 +279,8 @@ def status(ws: str) -> dict:
         out["selection"] = state["selection"]
     out["live_progress"] = progress.read_workspace_status(
         ws, now=time.time(), state_dir=tp.tp_dir(ws))
+    if _include_stage_view(stage_view):
+        out["stage_view"] = stage_view
     return out
 
 
@@ -81,11 +289,14 @@ def user_summary(ws: str, host: str | None = None,
     """Human control-plane read model over existing durable artifacts."""
     import loop
 
+    stage_view = bounded_stage_view(ws)
     state = loop.load(ws)
     if state is None:
         return {"state": "not_started", "action_required": False,
                 "headline": "No active taskplane run.",
-                "next": "Tell taskplane what to build or review."}
+                "next": "Tell taskplane what to build or review.",
+                **({"stage_view": stage_view}
+                   if _include_stage_view(stage_view) else {})}
     tasks = state.get("tasks") or []
     settled = sum(1 for task in tasks
                   if task.get("status") in loop.SETTLED)
@@ -160,6 +371,8 @@ def user_summary(ws: str, host: str | None = None,
         "submission_pending_validation": bool(
             state.get("_submission")
             or any(task.get("_submission") for task in tasks)),
+        **({"stage_view": stage_view}
+           if _include_stage_view(stage_view) else {}),
     }
 
 

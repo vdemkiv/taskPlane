@@ -16,8 +16,12 @@ import uuid
 
 import depgraph
 import kb
+import loop_status
 import taskplane_lite as tp
 import storage as runtime_storage
+
+
+_STAGE_VIEW_LIMIT = 100
 
 
 def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
@@ -71,8 +75,17 @@ def _existing_decision(ws: str, retro_id: str) -> dict | None:
     return None
 
 
-def _trace_seen(ws: str, retro_id: str) -> bool:
-    for path in tp.trace_paths(ws):
+def _trace_seen(ws: str, retro_id: str, *, include_archives: bool = True) \
+        -> bool:
+    if include_archives:
+        paths = tp.trace_paths(ws)
+    else:
+        # Stage-native Retro never mines predecessor trace history.  The
+        # active control-plane tail is sufficient to deduplicate and verify
+        # the receipt written by this resumable operation.
+        active = os.path.join(tp.tp_dir(ws), "trace.jsonl")
+        paths = [active] if os.path.exists(active) else []
+    for path in paths:
         with contextlib.suppress(OSError):
             with open(path, encoding="utf-8") as f:
                 for line in f:
@@ -83,6 +96,61 @@ def _trace_seen(ws: str, retro_id: str) -> bool:
                                 and row.get("retro_id") == retro_id):
                             return True
     return False
+
+
+def _bounded_stage_projection(ws: str) -> tuple[dict, dict] | None:
+    """Return the v4 report projection, or ``None`` for an exact v3 run.
+
+    ``bounded_stage_view`` owns discovery and validation.  In particular,
+    ambiguous and corrupt v4 state are data, not permission to fall back to
+    the singleton trace archive.  The defensive slices keep this report
+    bounded even if a future producer accidentally relaxes its own limit.
+    """
+    resolver = getattr(loop_status, "bounded_stage_view", None)
+    if not callable(resolver):
+        # Additive rollout compatibility: an older loop_status module means
+        # this process has no stage-native reader and remains legacy-only.
+        return None
+    try:
+        raw = resolver(ws, limit=_STAGE_VIEW_LIMIT)
+    except Exception as exc:
+        raw = {
+            "schema": "taskplane.bounded-stage-view/v1",
+            "status": "corrupt", "available": False,
+            "run_id": None, "revision": None, "current_stage": None,
+            "predecessor_stages": [], "child_stage_ids": [],
+            "handoff_fingerprint": None, "history": [], "lineage": [],
+            "limits": {"history": _STAGE_VIEW_LIMIT,
+                       "lineage": _STAGE_VIEW_LIMIT},
+            "error": (f"{exc.__class__.__name__}: {exc}")[:512],
+        }
+    if raw.get("status") == "legacy":
+        return None
+
+    view = dict(raw)
+    for key in ("predecessor_stages", "child_stage_ids", "history",
+                "lineage"):
+        rows = view.get(key)
+        view[key] = list(rows[:_STAGE_VIEW_LIMIT]) \
+            if isinstance(rows, list) else []
+    history = view["history"]
+    terminal = [row for row in history
+                if isinstance(row, dict) and row.get("state") == "terminal"]
+    outcomes = {}
+    for row in terminal:
+        outcome = str(row.get("outcome") or "unknown")
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    metrics = {
+        "status": str(view.get("status") or "corrupt"),
+        "available": bool(view.get("available")),
+        "history": len(history),
+        "lineage": len(view["lineage"]),
+        "predecessors": len(view["predecessor_stages"]),
+        "children": len(view["child_stage_ids"]),
+        "terminal": len(terminal),
+        "outcomes": dict(sorted(outcomes.items())),
+    }
+    return view, metrics
 
 
 def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
@@ -101,6 +169,28 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
                           foreign.get("identities") or []),
                       "- signed roots: " + ", ".join(
                           foreign.get("state_roots") or [])])
+    stage = report.get("stage_view")
+    stage_metrics = report.get("stage_metrics") or {}
+    if isinstance(stage, dict):
+        current = stage.get("current_stage")
+        current_id = (current.get("stage_id")
+                      if isinstance(current, dict) else None)
+        lines.extend([
+            "", "## Stage lineage", "",
+            f"- status: {stage_metrics.get('status')}",
+            f"- available: {str(bool(stage_metrics.get('available'))).lower()}",
+            f"- current stage: {current_id or 'none'}",
+            "- predecessors / children / history / lineage: "
+            f"{stage_metrics.get('predecessors', 0)} / "
+            f"{stage_metrics.get('children', 0)} / "
+            f"{stage_metrics.get('history', 0)} / "
+            f"{stage_metrics.get('lineage', 0)}",
+            f"- terminal: {stage_metrics.get('terminal', 0)}",
+            "- terminal outcomes: " + json.dumps(
+                stage_metrics.get("outcomes") or {}, sort_keys=True),
+        ])
+        if stage.get("error"):
+            lines.append("- error: " + str(stage["error"])[:512])
     lines.extend(["",
              "## Graph true-up", "",
              f"- fingerprint: {graph['content_fingerprint']}",
@@ -164,7 +254,14 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                 }
             state = load_state(ws)
 
-        events, trace_from = _events_for_run(ws, state)
+        stage_projection = _bounded_stage_projection(ws)
+        stage_native = stage_projection is not None
+        if stage_native:
+            stage_view, stage_metrics = stage_projection
+            events, trace_from = [], None
+        else:
+            stage_view, stage_metrics = None, None
+            events, trace_from = _events_for_run(ws, state)
         denies = [row for row in events if row.get("event") == "hook_deny"]
         gates = [row for row in events
                  if row.get("event") == "refinement_gate"]
@@ -213,6 +310,12 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                 "headline": False, "total": 0, "counts": {},
                 "identities": [], "state_roots": []}
         lessons = []
+        if stage_native and not stage_metrics["available"]:
+            detail = str(stage_view.get("error") or
+                         "bounded stage lineage is unavailable")[:240]
+            lessons.append(
+                f"stage lineage projection {stage_metrics['status']}: "
+                + detail)
         if foreign_interference.get("headline"):
             lessons.append(
                 f"foreign interference observed {foreign_interference['total']} "
@@ -278,6 +381,13 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "trace_scope": {"from_ts": trace_from, "events": len(events)},
             "lessons": lessons,
         }
+        if stage_native:
+            report["stage_view"] = stage_view
+            report["stage_metrics"] = stage_metrics
+            report["trace_scope"] = {
+                "source": "bounded-stage-view", "from_ts": None,
+                "events": 0,
+            }
         scope = sorted({glob for task in tasks for glob in task.get("scope", [])})
         decision = _existing_decision(ws, retro_id)
         if decision is None:
@@ -292,12 +402,12 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                        "graph": graph_true_up["content_fingerprint"]})
         report["decision_id"] = decision.get("id")
 
-        if not _trace_seen(ws, retro_id):
+        if not _trace_seen(ws, retro_id, include_archives=not stage_native):
             tp.trace(ws, "loop_retro", retro_id=retro_id,
                      lessons=len(lessons), denials=len(denies),
                      routes=len(routing), findings=len(finding_rows),
                      graph_fingerprint=graph_true_up["content_fingerprint"])
-        if not _trace_seen(ws, retro_id):
+        if not _trace_seen(ws, retro_id, include_archives=not stage_native):
             return {"error": "retro trace receipt was not recorded — loop "
                     "remains open", "step": "retro", "retro_id": retro_id}
 

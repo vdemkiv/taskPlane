@@ -452,11 +452,13 @@ def render(ws: str, out: str | None = None) -> str:
              + stat(counts["debt"], "open debt")
              + stat(f'<span class="{"hot" if denials else ""}">{denials}</span>',
                     "hook blocks"))
+    stage_lineage = render_stage_lineage(_bounded_stage_view(ws))
 
     html = _TEMPLATE.replace("__GOAL__", _esc(goal[:80])) \
         .replace("__STEP__", _esc(step)) \
         .replace("__MODE__", "parallel waves" if parallel else "serial") \
         .replace("__NOTICE__", _trace_notice(tstats)) \
+        .replace("__STAGE_LINEAGE__", stage_lineage) \
         .replace("__PIPE__", pipe) \
         .replace("__AGENTS__", "".join(agent_cards)) \
         .replace("__ROSTER__", roster) \
@@ -559,6 +561,7 @@ padding:9px 16px;text-align:center;min-width:96px}
 <b style="color:#eda100">__STEP__</b> · __MODE__</span></h1>
 <div class="goal">goal: <b>__GOAL__</b></div>
 __NOTICE__
+__STAGE_LINEAGE__
 <div class="pipe">__PIPE__</div>
 <div class="grid">
  <div class="card"><h2>Agents &amp; contracts</h2>__AGENTS____ROSTER__</div>
@@ -630,6 +633,192 @@ def _attr(s: str) -> str:
     # escape for a quoted HTML attribute (NOT a JS-string context — see
     # _jsattr). HTML-entity encoding is correct for plain attribute values.
     return _esc(s).replace('"', "&quot;").replace("'", "&#39;")
+
+
+def _bounded_stage_view(ws: str) -> dict:
+    """Load the bounded stage projection without creating an import cycle.
+
+    The dashboard deliberately knows nothing about stage storage, immutable
+    objects, execution roots, or predecessor traces.  ``loop_status`` owns
+    that read boundary; this adapter only makes a projection failure visible
+    rather than letting an informational render take down the loop.
+    """
+    try:
+        import loop_status
+        view = loop_status.bounded_stage_view(ws, limit=100)
+        if isinstance(view, dict):
+            return view
+        error = "bounded stage view returned an invalid projection"
+    except Exception as exc:
+        error = f"bounded stage view unavailable: {exc.__class__.__name__}: {exc}"
+    return {
+        "schema": "taskplane.bounded-stage-view/v1",
+        "status": "corrupt",
+        "available": False,
+        "current_stage": None,
+        "predecessor_stages": [],
+        "child_stage_ids": [],
+        "handoff_fingerprint": None,
+        "history": [],
+        "lineage": [],
+        "limits": {"history": 0, "lineage": 0},
+        "error": error[:512],
+    }
+
+
+def _stage_summary_label(summary) -> str:
+    """Text-only label for one already-bounded stage summary."""
+    if not isinstance(summary, dict):
+        return _esc(summary)
+    stage_id = summary.get("stage_id") or "\u2014"
+    kind = summary.get("stage_kind") or "\u2014"
+    state = summary.get("state") or "\u2014"
+    outcome = summary.get("outcome") or "in progress"
+    reason = summary.get("reason")
+    reason_text = f' \u00b7 reason {_esc(reason)}' if reason else ""
+    return (f'<code>{_esc(stage_id)}</code> \u00b7 {_esc(kind)} \u00b7 '
+            f'{_esc(state)} \u00b7 outcome {_esc(outcome)}{reason_text}')
+
+
+def _stage_lineage_label(row) -> str:
+    """Text-only label for one already-bounded immutable lineage row."""
+    if not isinstance(row, dict):
+        return _esc(row)
+    parent = row.get("parent_stage_id")
+    predecessors = row.get("predecessor_stage_ids")
+    predecessor_ids = (predecessors if isinstance(predecessors, list)
+                       else [])
+    sources = ([parent] if parent is not None else []) + predecessor_ids
+    source_text = ", ".join(_esc(value) for value in sources) or "root"
+    child = _esc(row.get("child_stage_id") or "\u2014")
+    operation = row.get("split_operation_id")
+    operation_text = (f' \u00b7 operation <code>{_esc(operation)}</code>'
+                      if operation else "")
+    return (f'{source_text} {_arrow()} <code>{child}</code>'
+            f'{operation_text}')
+
+
+def render_stage_lineage(view) -> str:
+    """Render the shared bounded stage/lineage projection as plain text.
+
+    All repository reads happen before this function in
+    ``loop_status.bounded_stage_view``.  Keeping this renderer projection-only
+    is the scaling and isolation guarantee: no predecessor stage object,
+    execution root, or trace can be opened while painting the dashboard.
+    """
+    if not isinstance(view, dict):
+        view = {"status": "corrupt", "available": False,
+                "error": "invalid bounded stage projection"}
+    status = str(view.get("status") or "corrupt")
+    mode = view.get("mode")
+    available = bool(view.get("available"))
+    raw_error = view.get("error")
+    error = str(raw_error)[:512] if raw_error else None
+    warning = status in {"ambiguous", "corrupt"}
+    role = "alert" if warning else "status"
+    accent = ("var(--text-danger,#e34948)" if warning
+              else "var(--border-strong,#55554a)")
+    status_text = _esc(status)
+    if mode:
+        status_text += f' \u00b7 mode {_esc(mode)}'
+    run_bits = []
+    if view.get("run_id") is not None:
+        run_bits.append(f'run <code>{_esc(view.get("run_id"))}</code>')
+    if view.get("revision") is not None:
+        run_bits.append(f'revision {_esc(view.get("revision"))}')
+    run_text = (" \u00b7 " + " \u00b7 ".join(run_bits)) if run_bits else ""
+
+    body = []
+    current = view.get("current_stage")
+    if available and isinstance(current, dict):
+        body.append(
+            '<div class="tp-stage-current"><strong>Current stage</strong> \u00b7 '
+            + _stage_summary_label(current) + '</div>')
+    elif available:
+        body.append('<div class="tp-stage-current"><strong>Current stage'
+                    '</strong> \u00b7 none active</div>')
+    else:
+        body.append(
+            '<div class="tp-stage-current"><strong>Stage lineage '
+            f'unavailable</strong> \u00b7 {_esc(status)}</div>')
+
+    predecessors = view.get("predecessor_stages")
+    predecessor_rows = predecessors if isinstance(predecessors, list) else []
+    if predecessor_rows:
+        items = "".join(
+            f'<li>{_stage_summary_label(row)}</li>'
+            for row in predecessor_rows[:100])
+        body.append(
+            '<div class="tp-stage-group"><strong>Predecessors</strong>'
+            f'<ul>{items}</ul></div>')
+    elif isinstance(current, dict):
+        predecessor_ids = current.get("predecessor_stage_ids")
+        if isinstance(predecessor_ids, list) and predecessor_ids:
+            items = "".join(
+                f'<li><code>{_esc(stage_id)}</code> \u00b7 outcome \u2014</li>'
+                for stage_id in predecessor_ids[:100])
+            body.append(
+                '<div class="tp-stage-group"><strong>Predecessors</strong>'
+                f'<ul>{items}</ul></div>')
+
+    handoff = view.get("handoff_fingerprint")
+    body.append(
+        '<div class="tp-stage-group"><strong>Handoff fingerprint</strong> '
+        f'\u00b7 <code>{_esc(handoff or "—")}</code></div>')
+
+    children = view.get("child_stage_ids")
+    child_ids = children if isinstance(children, list) else []
+    if child_ids:
+        items = "".join(
+            f'<li><code>{_esc(stage_id)}</code></li>'
+            for stage_id in child_ids[:100])
+        body.append(
+            '<div class="tp-stage-group"><strong>Child stages</strong>'
+            f'<ul>{items}</ul></div>')
+
+    lineage = view.get("lineage")
+    lineage_rows = lineage if isinstance(lineage, list) else []
+    if lineage_rows:
+        items = "".join(
+            f'<li>{_stage_lineage_label(row)}</li>'
+            for row in lineage_rows[:100])
+        body.append(
+            '<div class="tp-stage-group"><strong>Child lineage</strong>'
+            f'<ul>{items}</ul></div>')
+
+    history = view.get("history")
+    history_rows = history if isinstance(history, list) else []
+    if history_rows:
+        items = "".join(
+            f'<li>{_stage_summary_label(row)}</li>'
+            for row in history_rows[:100])
+        body.append(
+            '<details class="tp-stage-group"><summary><strong>Bounded stage '
+            f'history</strong> \u00b7 {len(history_rows[:100])}</summary>'
+            f'<ul>{items}</ul></details>')
+
+    limits = view.get("limits")
+    if isinstance(limits, dict):
+        body.append(
+            '<div class="tp-stage-limits">projection limits \u00b7 history '
+            f'{_esc(limits.get("history", "—"))} \u00b7 lineage '
+            f'{_esc(limits.get("lineage", "—"))}</div>')
+    if error:
+        body.append(
+            f'<div class="tp-stage-error"><strong>{_esc(status)} stage '
+            f'state</strong> \u00b7 {_esc(error)}</div>')
+
+    return (
+        f'<section id="tp-stage-lineage" class="tp-stage-lineage" '
+        f'role="{role}" aria-labelledby="tp-stage-lineage-title" style="'
+        f'border:1px solid {accent};border-inline-start:4px solid {accent};'
+        f'border-radius:6px;padding:10px 13px;margin-bottom:14px">'
+        '<div style="display:flex;justify-content:space-between;gap:12px;'
+        'flex-wrap:wrap;margin-bottom:7px"><strong '
+        'id="tp-stage-lineage-title">Stage &amp; lineage</strong>'
+        f'<span>status: {status_text}{run_text}</span></div>'
+        '<div style="font-size:12px;line-height:1.55">'
+        + "".join(body) + '</div></section>')
 
 
 def _jsattr(s: str) -> str:
@@ -2715,7 +2904,7 @@ def render_onboarding(report, out=None):
     if foreign:
         foreign_html = (
             '<div role="alert" style="border:1px solid var(--text-danger);'
-            'border-left:4px solid var(--text-danger);border-radius:8px;'
+            'border-inline-start:4px solid var(--text-danger);border-radius:8px;'
             'padding:10px 13px;margin-bottom:16px;font-size:12.5px">'
             '<strong>Competing orchestrator state detected</strong><br>'
             + '<br>'.join(_esc(str(row.get("plugin"))) + ' at <code>'
@@ -4508,6 +4697,7 @@ def _widget_parts(ws: str) -> dict:
     same parts into ordered pages under the byte budget — one source of
     truth for both render paths."""
     state = _load_loop(ws)
+    stage_lineage = render_stage_lineage(_bounded_stage_view(ws))
     contract = tp.load_active(ws)
     step = (state or {}).get("step", "—")
     goal = _esc((state or {}).get("goal", "no active loop"))[:80]
@@ -4534,7 +4724,7 @@ def _widget_parts(ws: str) -> dict:
     evidence_id = str(enforcement.get("evidence_id") or "")
     assurance = (
         f'<div role="status" style="border:1px solid var(--border-strong);'
-        f'border-left:4px solid var(--text-primary);border-radius:6px;'
+        f'border-inline-start:4px solid var(--text-primary);border-radius:6px;'
         f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
         f'<strong>screen enforcement: {_esc(enforcement_status)}</strong>'
         + (f' · acknowledged by {_esc(actor)} at {_esc(when)}'
@@ -4559,7 +4749,7 @@ def _widget_parts(ws: str) -> dict:
     if foreign_total:
         interference = (
             f'<div role="alert" style="border:1px solid var(--text-danger);'
-            f'border-left:4px solid var(--text-danger);border-radius:6px;'
+            f'border-inline-start:4px solid var(--text-danger);border-radius:6px;'
             f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
             f'<strong>foreign interference: {foreign_total}</strong> · '
             f'{_esc(json.dumps(foreign_counts, sort_keys=True))}'
@@ -4580,7 +4770,7 @@ def _widget_parts(ws: str) -> dict:
             if row.get("outcome") in {"preserved", "manual-attention"})
         cleanup_alert = (
             f'<div role="alert" style="border:1px solid var(--text-danger);'
-            f'border-left:4px solid var(--text-danger);border-radius:6px;'
+            f'border-inline-start:4px solid var(--text-danger);border-radius:6px;'
             f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
             f'<strong>worktree cleanup needs attention</strong> · '
             f'{_esc(reasons)}</div>')
@@ -4704,6 +4894,7 @@ def _widget_parts(ws: str) -> dict:
         "sr": sr, "header": header, "notice": notice,
         "assurance": assurance, "interference": interference,
         "cleanup_alert": cleanup_alert, "hero": hero,
+        "stage_lineage": stage_lineage,
         "gatebar": gatebar, "dor": dor_html, "stats": stats_html,
         "pipe_s": pipe_s, "pipe_d": pipe_d,
         "journey_s": journey_s, "journey_d": journey_d,
@@ -4755,6 +4946,7 @@ def widget(ws: str) -> str:
         + p["assurance"]
         + p["interference"]
         + p["cleanup_alert"]
+        + p["stage_lineage"]
         + p["hero"]
         + p["gatebar"]
         + p["dor"]
@@ -4805,6 +4997,7 @@ def report_widget(ws: str) -> str:
           'color:var(--text-primary)">' + header
         + p["notice"] + p["assurance"] + p["interference"]
         + p["cleanup_alert"]
+        + p["stage_lineage"]
         + p["hero"] + p["dor"] + p["stats"]
         + p["workflow"] + p["graph"] + execution + context
         + p["gatebar"] + '</div>' + _WIDGET_JS)
@@ -5162,6 +5355,7 @@ def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
     p1_body = (p["header"] + p["notice"] + p["assurance"]
                + p["interference"]
                + p["cleanup_alert"]
+               + p["stage_lineage"]
                + p["hero"] + p["gatebar"]
                + p["dor"] + p["stats"] + p["pipe_s"] + p["harness_panel"])
     p1_body = _fit_page(p1_body, max(256, budget - p1_fixed_bytes))
