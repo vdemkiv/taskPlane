@@ -63,6 +63,10 @@ _STAGE_RECEIPT_FIELDS = frozenset({
     "schema", "operation_id", "request_fingerprint", "operation",
     "stage_ids", "committed_revision", "result", "result_fingerprint",
 })
+_EMPTY_STAGE_ID_OPERATIONS = frozenset({
+    "migrate_singleton",
+    "rebuild_active_stage_projection",
+})
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -391,7 +395,7 @@ def _operation_receipt(value: object, *, operation_id: str,
             not isinstance(value, str) or not value
             for value in raw_stage_ids):
         raise StageStateError("stage operation stage_ids must be a list")
-    if not raw_stage_ids and operation != "rebuild_active_stage_projection":
+    if not raw_stage_ids and operation not in _EMPTY_STAGE_ID_OPERATIONS:
         raise StageStateError("stage operation stage_ids must not be empty")
     stage_ids = sorted(set(raw_stage_ids))
     if len(stage_ids) != len(raw_stage_ids):
@@ -452,8 +456,8 @@ def _validate_operation_receipt(value: object, *, operation_id: str,
     if stage_ids != sorted(set(stage_ids)):
         raise StageStateError(
             "stored stage operation stage ids must be sorted and unique")
-    if not stage_ids and value.get("operation") != \
-            "rebuild_active_stage_projection":
+    if not stage_ids and value.get("operation") not in \
+            _EMPTY_STAGE_ID_OPERATIONS:
         raise StageStateError("stored stage operation stage ids are empty")
     revision = value.get("committed_revision")
     if isinstance(revision, bool) or not isinstance(revision, int) or \

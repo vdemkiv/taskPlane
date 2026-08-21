@@ -191,6 +191,42 @@ def test_operation_id_reuse_with_different_request_is_rejected_first(
     assert store.load(RUN_ID) == committed
 
 
+def test_ambiguous_singleton_migration_can_commit_receipt_without_stage_head(
+        tmp_path: Path) -> None:
+    store, initial = _store(tmp_path)
+
+    receipt = store.commit_stage_operation(
+        RUN_ID,
+        expected_revision=initial["revision"],
+        operation_id="migrate-ambiguous",
+        request_fingerprint="9" * 64,
+        mutate=_mutation(
+            operation="migrate_singleton", marker="legacy-unknown"),
+        validate_authority=lambda _current: None,
+    )
+
+    committed = store.load(RUN_ID)
+    assert receipt["operation"] == "migrate_singleton"
+    assert receipt["stage_ids"] == []
+    assert committed["stage_heads"] == {}
+    assert committed["stage_operations"]["migrate-ambiguous"] == receipt
+
+
+def test_unrelated_operation_cannot_commit_receipt_without_stage_head(
+        tmp_path: Path) -> None:
+    store, initial = _store(tmp_path)
+
+    with pytest.raises(run_store.StageStateError, match="must not be empty"):
+        store.commit_stage_operation(
+            RUN_ID,
+            expected_revision=initial["revision"],
+            operation_id="empty-split",
+            request_fingerprint="8" * 64,
+            mutate=_mutation(operation="split", marker="invalid"),
+            validate_authority=lambda _current: None,
+        )
+
+
 def test_post_commit_journal_crash_reconnects_through_stored_receipt(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store, initial = _store(tmp_path)
