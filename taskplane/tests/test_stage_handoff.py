@@ -1,15 +1,9 @@
 """Canonical stage handoff manifests preserve the complete bounded contract."""
 from __future__ import annotations
 
-import os
-import sys
-
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import review_evidence  # noqa: E402
-import stage_handoff  # noqa: E402
+from taskplane import review_evidence, stage_handoff
 
 
 def _authority(revision: int = 7) -> dict[str, object]:
@@ -98,7 +92,9 @@ def test_canonical_manifest_is_deterministic_and_content_addressed(tmp_path) -> 
     first_ref = stage_handoff.store_manifest(store, first)
     second_ref = stage_handoff.store_manifest(store, second)
     assert first_ref == second_ref
-    assert stage_handoff.read_manifest(store, first_ref) == first
+    assert stage_handoff.read_manifest(
+        store, first_ref, expected_authority_revision=7,
+        expected_authority_fingerprint="a" * 64) == first
 
 
 def test_target_and_commit_are_jointly_optional(tmp_path) -> None:
@@ -127,3 +123,39 @@ def test_closed_schema_rejects_unknown_or_incomplete_input(tmp_path) -> None:
     with pytest.raises(stage_handoff.HandoffValidationError,
                        match="missing fields"):
         stage_handoff.validate_manifest(store, manifest)
+
+
+@pytest.mark.parametrize("outcome", ["closed", "discarded"])
+def test_explicit_nonconsumable_reuse_survives_shared_store_and_read(
+        tmp_path, outcome: str) -> None:
+    store = review_evidence.ArtifactStore(str(tmp_path))
+    manifest = _manifest(
+        store, producer_outcome=outcome, allow_nonconsumable_reuse=True)
+
+    assert manifest["authorization"]["nonconsumable_reuse"] == {
+        "schema": "taskplane.nonconsumable-reuse-authorization/v1",
+        "producer_outcome": outcome,
+        "authority_fingerprint": "a" * 64,
+    }
+    reference = review_evidence.store_stage_handoff(store, manifest)
+    with pytest.raises(stage_handoff.HandoffValidationError,
+                       match="cannot be consumed by default"):
+        review_evidence.read_stage_handoff(
+            store, reference, expected_authority_revision=7,
+            expected_authority_fingerprint="a" * 64)
+    assert review_evidence.read_stage_handoff(
+        store, reference, expected_authority_revision=7,
+        expected_authority_fingerprint="a" * 64,
+        allow_nonconsumable_reuse=True) == manifest
+
+
+def test_new_module_constants_have_pinned_quality_annotations() -> None:
+    expected = {
+        "SCHEMA", "MAX_MANIFEST_BYTES", "MAX_ARTIFACT_REFERENCES",
+        "TERMINAL_OUTCOMES", "REQUIRED_EXCLUSIONS", "_IDENTIFIER",
+        "_REPOSITORY_ID", "_FINGERPRINT", "_COMMIT", "_CONTRACT",
+        "_MANIFEST_FIELDS", "_AUTHORITY_FIELDS",
+        "_AUTHORITY_RECORD_FIELDS", "_NONCONSUMABLE_REUSE_FIELDS",
+    }
+
+    assert expected <= set(stage_handoff.__annotations__)

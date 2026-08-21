@@ -9,17 +9,23 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 import re
-from typing import TypeAlias
+from typing import Final, TypeAlias
 
-import review_evidence
-import storage as runtime_storage
+if __package__:
+    from . import review_evidence
+    from . import storage as runtime_storage
+else:
+    import review_evidence
+    import storage as runtime_storage
 
 
-SCHEMA = "taskplane.stage-handoff/v1"
-MAX_MANIFEST_BYTES = 64 * 1024
-MAX_ARTIFACT_REFERENCES = 64
-TERMINAL_OUTCOMES = frozenset({"done", "closed", "discarded"})
-REQUIRED_EXCLUSIONS = frozenset({
+SCHEMA: Final[str] = "taskplane.stage-handoff/v1"
+MAX_MANIFEST_BYTES: Final[int] = 64 * 1024
+MAX_ARTIFACT_REFERENCES: Final[int] = 64
+TERMINAL_OUTCOMES: Final[frozenset[str]] = frozenset({
+    "done", "closed", "discarded",
+})
+REQUIRED_EXCLUSIONS: Final[frozenset[str]] = frozenset({
     "predecessor-agents",
     "predecessor-conversations",
     "predecessor-event-logs",
@@ -33,22 +39,29 @@ REQUIRED_EXCLUSIONS = frozenset({
 })
 
 JsonObject: TypeAlias = dict[str, object]
-_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
-_REPOSITORY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
-_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
-_COMMIT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
-_CONTRACT = re.compile(r"^contract:[a-z][a-z0-9-]{0,127}$")
-_MANIFEST_FIELDS = frozenset({
+_IDENTIFIER: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_REPOSITORY_ID: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
+_FINGERPRINT: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT: Final[re.Pattern[str]] = re.compile(
+    r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_CONTRACT: Final[re.Pattern[str]] = re.compile(
+    r"^contract:[a-z][a-z0-9-]{0,127}$")
+_MANIFEST_FIELDS: Final[frozenset[str]] = frozenset({
     "schema", "producer", "requirement", "design", "target", "commit",
     "contracts", "deliverables", "evidence_references",
     "selected_artifacts", "exclusions", "authorization", "fingerprint",
 })
-_AUTHORITY_FIELDS = frozenset({
+_AUTHORITY_FIELDS: Final[frozenset[str]] = frozenset({
     "actor", "session_id", "authorized_at", "operation_id",
-    "authority_record",
+    "authority_record", "nonconsumable_reuse",
 })
-_AUTHORITY_RECORD_FIELDS = frozenset({
+_AUTHORITY_RECORD_FIELDS: Final[frozenset[str]] = frozenset({
     "schema", "authority_schema", "revision", "fingerprint",
+})
+_NONCONSUMABLE_REUSE_FIELDS: Final[frozenset[str]] = frozenset({
+    "schema", "producer_outcome", "authority_fingerprint",
 })
 
 
@@ -138,6 +151,34 @@ def _portable_references(
                                            str(row["fingerprint"])))
 
 
+def _bounded_reference_inputs(
+        evidence_references: Iterable[dict[str, object]],
+        selected_artifacts: Iterable[dict[str, object]],
+        ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Collect at most the first 65 combined references before rejecting."""
+    groups = (
+        ("evidence references", evidence_references),
+        ("selected artifacts", selected_artifacts),
+    )
+    collected: list[list[dict[str, object]]] = [[], []]
+    count = 0
+    for index, (label, references) in enumerate(groups):
+        if isinstance(references, (str, bytes, Mapping)):
+            raise HandoffValidationError(f"{label} must be a list")
+        try:
+            iterator = iter(references)
+        except TypeError as exc:
+            raise HandoffValidationError(f"{label} must be a list") from exc
+        for reference in iterator:
+            count += 1
+            if count > MAX_ARTIFACT_REFERENCES:
+                raise HandoffValidationError(
+                    f"handoff contains at most {MAX_ARTIFACT_REFERENCES} "
+                    "artifact references")
+            collected[index].append(reference)
+    return collected[0], collected[1]
+
+
 def _validate_timestamp(value: object) -> str:
     text = str(value or "").strip()
     try:
@@ -167,12 +208,14 @@ def create_manifest(
         exclusions: Iterable[str],
         authorization: Mapping[str, object],
         allow_nonconsumable_reuse: bool = False) -> JsonObject:
-    """Create and fully verify one deterministic stage handoff manifest."""
-    evidence_rows = list(evidence_references)
-    artifact_rows = list(selected_artifacts)
-    if len(evidence_rows) + len(artifact_rows) > MAX_ARTIFACT_REFERENCES:
-        raise HandoffValidationError(
-            f"handoff contains at most {MAX_ARTIFACT_REFERENCES} artifact references")
+    """Create and fully verify one deterministic stage handoff manifest.
+
+    Closed or discarded results require the explicit reuse flag.  That
+    decision is persisted inside the attributable authorization record so a
+    later store/read cycle cannot lose it or infer it from the outcome.
+    """
+    evidence_rows, artifact_rows = _bounded_reference_inputs(
+        evidence_references, selected_artifacts)
     contract_rows = _closed(
         contracts, frozenset({"provided", "consumed", "changed"}),
         "contracts")
@@ -187,10 +230,28 @@ def create_manifest(
         store, evidence_rows, "evidence references")
     portable_artifacts = _portable_references(
         store, artifact_rows, "selected artifacts")
+    outcome = str(producer_outcome)
+    if allow_nonconsumable_reuse and outcome not in {"closed", "discarded"}:
+        raise HandoffValidationError(
+            "nonconsumable reuse applies only to closed or discarded stages")
+    canonical_authorization = dict(authorization)
+    authority_record = canonical_authorization.get("authority_record")
+    authority_fingerprint = (
+        authority_record.get("fingerprint")
+        if isinstance(authority_record, Mapping) else None
+    )
+    canonical_authorization["nonconsumable_reuse"] = (
+        {
+            "schema": "taskplane.nonconsumable-reuse-authorization/v1",
+            "producer_outcome": outcome,
+            "authority_fingerprint": authority_fingerprint,
+        }
+        if allow_nonconsumable_reuse else None
+    )
     body: JsonObject = {
         "schema": SCHEMA,
         "producer": {"stage_id": str(producer_stage_id),
-                     "outcome": str(producer_outcome)},
+                     "outcome": outcome},
         "requirement": dict(requirement),
         "design": dict(design) if design is not None else None,
         "target": dict(target) if target is not None else None,
@@ -200,7 +261,7 @@ def create_manifest(
         "evidence_references": portable_evidence,
         "selected_artifacts": portable_artifacts,
         "exclusions": canonical_exclusions,
-        "authorization": dict(authorization),
+        "authorization": canonical_authorization,
     }
     body["fingerprint"] = manifest_fingerprint(body)
     return validate_manifest(
@@ -259,9 +320,6 @@ def validate_manifest(
     outcome = str(producer.get("outcome") or "")
     if outcome not in TERMINAL_OUTCOMES:
         raise HandoffValidationError("producer outcome is not terminal")
-    if outcome in {"closed", "discarded"} and not allow_nonconsumable_reuse:
-        raise HandoffValidationError(
-            f"{outcome} stage results cannot be consumed by default")
 
     requirement = _closed(
         row.get("requirement"), frozenset({"id", "revision", "fingerprint"}),
@@ -353,6 +411,27 @@ def validate_manifest(
             authority_fingerprint != expected_authority_fingerprint:
         raise StaleAuthorityError("handoff authority fingerprint is stale")
 
+    reuse_authorization = authority.get("nonconsumable_reuse")
+    if reuse_authorization is not None:
+        reuse_row = _closed(
+            reuse_authorization, _NONCONSUMABLE_REUSE_FIELDS,
+            "nonconsumable reuse authorization")
+        if reuse_row.get("schema") != \
+                "taskplane.nonconsumable-reuse-authorization/v1" or \
+                reuse_row.get("producer_outcome") != outcome or \
+                reuse_row.get("authority_fingerprint") != \
+                authority_fingerprint or \
+                outcome not in {"closed", "discarded"}:
+            raise HandoffValidationError(
+                "nonconsumable reuse authorization is invalid")
+    if outcome in {"closed", "discarded"}:
+        if reuse_authorization is None:
+            raise HandoffValidationError(
+                f"{outcome} stage results lack explicit reuse authorization")
+        if not allow_nonconsumable_reuse:
+            raise HandoffValidationError(
+                f"{outcome} stage results cannot be consumed by default")
+
     size = len(review_evidence.canonical_bytes(row))
     if size > MAX_MANIFEST_BYTES:
         raise HandoffValidationError(
@@ -362,18 +441,24 @@ def validate_manifest(
 
 def store_manifest(store: review_evidence.ArtifactStore,
                    manifest: Mapping[str, object]) -> dict[str, object]:
-    """Persist a verified manifest under its semantic fingerprint."""
-    validated = validate_manifest(store, manifest)
+    """Persist a structurally valid manifest without consuming its results."""
+    validated = validate_manifest(
+        store, manifest, allow_nonconsumable_reuse=True)
     return store.put("stage-handoff", validated,
                      fingerprint=str(validated["fingerprint"]))
 
 
 def read_manifest(store: review_evidence.ArtifactStore,
                   reference: Mapping[str, object], *,
-                  expected_authority_revision: int | None = None) -> JsonObject:
-    """Read and verify a stored handoff plus every selected artifact."""
+                  expected_authority_revision: int,
+                  expected_authority_fingerprint: str,
+                  allow_nonconsumable_reuse: bool = False) -> JsonObject:
+    """Consume a handoff bound to a separately trusted authority identity."""
     value = store.read(dict(reference))
     if not isinstance(value, Mapping):
         raise HandoffValidationError("stored handoff manifest must be an object")
     return validate_manifest(
-        store, value, expected_authority_revision=expected_authority_revision)
+        store, value,
+        expected_authority_revision=expected_authority_revision,
+        expected_authority_fingerprint=expected_authority_fingerprint,
+        allow_nonconsumable_reuse=allow_nonconsumable_reuse)

@@ -1,18 +1,13 @@
 """Handoff validation fails closed at every untrusted artifact boundary."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 import copy
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import review_evidence  # noqa: E402
-import stage_handoff  # noqa: E402
-
-from taskplane.tests.test_stage_handoff import _manifest  # noqa: E402
+from taskplane import review_evidence, stage_handoff
+from taskplane.tests.test_stage_handoff import _manifest
 
 
 def test_tampered_artifact_digest_and_byte_count_are_rejected(tmp_path) -> None:
@@ -80,6 +75,28 @@ def test_reference_count_and_manifest_bytes_are_bounded(tmp_path) -> None:
                                       for index in range(400)])
 
 
+def test_reference_generator_stops_at_the_pre_materialization_bound(
+        tmp_path) -> None:
+    store = review_evidence.ArtifactStore(str(tmp_path))
+    reference = store.put("delivery", {"value": 1})
+    pulled = 0
+
+    def unbounded_references() -> Iterator[dict[str, object]]:
+        nonlocal pulled
+        while True:
+            pulled += 1
+            if pulled > stage_handoff.MAX_ARTIFACT_REFERENCES + 1:
+                raise AssertionError("reference iterator was over-consumed")
+            yield reference
+
+    with pytest.raises(stage_handoff.HandoffValidationError,
+                       match="at most 64"):
+        _manifest(store, selected_artifacts=unbounded_references())
+    # _manifest supplies one evidence reference, so the 64th selected
+    # artifact is the 65th combined entry and triggers rejection immediately.
+    assert pulled == stage_handoff.MAX_ARTIFACT_REFERENCES
+
+
 def test_stale_authority_and_discarded_default_consumption_are_rejected(
         tmp_path) -> None:
     store = review_evidence.ArtifactStore(str(tmp_path))
@@ -93,6 +110,24 @@ def test_stale_authority_and_discarded_default_consumption_are_rejected(
     with pytest.raises(stage_handoff.HandoffValidationError,
                        match="discarded"):
         _manifest(store, producer_outcome="discarded")
+
+
+def test_read_requires_matching_trusted_authority_fingerprint(tmp_path) -> None:
+    store = review_evidence.ArtifactStore(str(tmp_path))
+    manifest = _manifest(store)
+    reference = stage_handoff.store_manifest(store, manifest)
+
+    with pytest.raises(TypeError, match="expected_authority_fingerprint"):
+        stage_handoff.read_manifest(
+            store, reference, expected_authority_revision=7)
+    with pytest.raises(stage_handoff.StaleAuthorityError,
+                       match="authority fingerprint"):
+        stage_handoff.read_manifest(
+            store, reference, expected_authority_revision=7,
+            expected_authority_fingerprint="f" * 64)
+    assert stage_handoff.read_manifest(
+        store, reference, expected_authority_revision=7,
+        expected_authority_fingerprint="a" * 64) == manifest
 
 
 def test_manifest_fingerprint_tampering_is_rejected_before_use(tmp_path) -> None:

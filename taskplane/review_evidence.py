@@ -12,10 +12,14 @@ import json
 import os
 import re
 import tempfile
-from typing import Any, Iterable, Iterator, TypeAlias, TypedDict
+from typing import Any, Iterable, Iterator, Mapping, TypeAlias, TypedDict
 
-import storage as runtime_storage
-import taskplane_lite as tp
+if __package__:
+    from . import storage as runtime_storage
+    from . import taskplane_lite as tp
+else:
+    import storage as runtime_storage
+    import taskplane_lite as tp
 
 
 MAX_SCOPED_VIEW_BYTES = 16 * 1024
@@ -436,6 +440,39 @@ def verify_portable_artifact_reference(
     native = {key: reference[key] for key in (
         "schema", "kind", "fingerprint", "digest", "bytes", "transport")}
     return store.verify(native)
+
+
+def store_stage_handoff(
+        store: ArtifactStore,
+        manifest: Mapping[str, object]) -> dict[str, object]:
+    """Persist a stage handoff through the shared production artifact API.
+
+    The local import keeps the artifact kernel independent at import time;
+    every host and stage adapter already shares this module and can use this
+    single integration point instead of rebuilding storage semantics.
+    """
+    if __package__:
+        from . import stage_handoff
+    else:
+        import stage_handoff
+    return stage_handoff.store_manifest(store, manifest)
+
+
+def read_stage_handoff(
+        store: ArtifactStore, reference: Mapping[str, object], *,
+        expected_authority_revision: int,
+        expected_authority_fingerprint: str,
+        allow_nonconsumable_reuse: bool = False) -> dict[str, object]:
+    """Consume a stored handoff using trusted control-plane authority."""
+    if __package__:
+        from . import stage_handoff
+    else:
+        import stage_handoff
+    return stage_handoff.read_manifest(
+        store, reference,
+        expected_authority_revision=expected_authority_revision,
+        expected_authority_fingerprint=expected_authority_fingerprint,
+        allow_nonconsumable_reuse=allow_nonconsumable_reuse)
 
 
 def retained_cleanup_evidence(primary_workspace: str, worker_workspace: str,
