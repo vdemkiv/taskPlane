@@ -23,6 +23,7 @@ _SCP_REMOTE = re.compile(
     r"(?P<path>[^/].*)$")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_COMMIT_ID = re.compile(r"^[0-9a-fA-F]{40,64}$")
 LOCATOR = os.path.join("taskplane", "workspace.json")
 
 
@@ -417,6 +418,204 @@ def _worktree_branch_tip(checkout: str) -> tuple[str | None, str | None]:
     branch = _git_value(checkout, "symbolic-ref", "--quiet", "HEAD")
     tip = _git_value(checkout, "rev-parse", "HEAD")
     return branch, tip
+
+
+def _git_common_dir(checkout: str) -> str | None:
+    common = _git_value(checkout, "rev-parse", "--git-common-dir")
+    if not common:
+        return None
+    return os.path.realpath(
+        common if os.path.isabs(common) else os.path.join(checkout, common))
+
+
+def _linked_worktree_record(primary: str, worker: str) -> dict | None:
+    """Return the one exact Git worktree-list record for ``worker``."""
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"], cwd=primary,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace", timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    matches = []
+    for block in result.stdout.strip().split("\n\n"):
+        record = {}
+        for line in block.splitlines():
+            key, _, value = line.partition(" ")
+            if key in {"worktree", "HEAD", "branch"}:
+                record[key] = value
+        if os.path.realpath(record.get("worktree") or "") == worker:
+            matches.append(record)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _registration_candidates(home: str, worker: str,
+                             task_id: str) -> list[tuple[str, str, dict]]:
+    """Find exact-path registrations without trusting a checkout locator."""
+    runs = os.path.join(home, "runs")
+    try:
+        entries = sorted(os.scandir(runs), key=lambda item: item.name)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise StorageIdentityError(
+            f"managed worktree registrations are unreadable: {exc}") from exc
+    token = _worktree_token(task_id) + ".json"
+    candidates = []
+    for entry in entries:
+        if not _RUN_ID.fullmatch(entry.name) or \
+                not entry.is_dir(follow_symlinks=False):
+            continue
+        path = os.path.join(entry.path, "state", "worktree-registrations",
+                            token)
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path) or os.path.realpath(path) != \
+                os.path.abspath(path):
+            raise StorageIdentityError(
+                "managed worktree registration uses an unsafe symlink")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                value = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise StorageIdentityError(
+                f"managed worktree registration is unreadable: {exc}") \
+                from exc
+        if not isinstance(value, dict):
+            raise StorageIdentityError(
+                "managed worktree registration is invalid")
+        # Historical runs may reuse the same task id. Only a registration
+        # claiming this exact worker can authorize reconstruction.
+        if os.path.realpath(str(value.get("path") or "")) == worker:
+            candidates.append((entry.name, path, value))
+    return candidates
+
+
+def validate_task_worktree_registration(
+        primary_checkout: str, worker_checkout: str, task_id: str,
+        *, target_commit: str, registration: dict) -> dict:
+    """Re-prove a registered linked worktree at one independent target."""
+    primary = os.path.realpath(os.path.abspath(primary_checkout))
+    supplied = os.path.abspath(os.path.expanduser(worker_checkout))
+    worker = os.path.realpath(supplied)
+    if supplied != worker or worker == primary or "\n" in worker:
+        raise StorageIdentityError(
+            "managed worktree path uses an unsafe alias or symlink")
+    target = str(target_commit or "")
+    if not _COMMIT_ID.fullmatch(target):
+        raise StorageIdentityError("managed worktree target commit is invalid")
+    if not isinstance(registration, dict) or registration.get("schema") != \
+            "taskplane.managed-task-worktree/v1":
+        raise StorageIdentityError("managed worktree registration is invalid")
+    run_id = str(registration.get("run_id") or "")
+    if not _RUN_ID.fullmatch(run_id) or run_id == "legacy":
+        raise StorageIdentityError("managed worktree run identity is invalid")
+    identity = resolve_repository_identity(primary)
+    worker_identity = resolve_repository_identity(worker)
+    repository = registration.get("repository") or {}
+    if not isinstance(repository, dict) or \
+            repository.get("repo_id") != identity.repo_id or \
+            registration.get("repository_key") != identity.key or \
+            worker_identity.repo_id != identity.repo_id:
+        raise StorageIdentityError("managed worktree repository changed")
+    registered_primary = os.path.realpath(str(
+        registration.get("primary_checkout") or ""))
+    registered_worker = os.path.realpath(str(registration.get("path") or ""))
+    if registration.get("linked") is not True or \
+            registration.get("task_id") != str(task_id) or \
+            registered_primary != primary or registered_worker != worker:
+        raise StorageIdentityError("managed worktree registration identity mismatch")
+    primary_common = _git_common_dir(primary)
+    worker_common = _git_common_dir(worker)
+    if not primary_common or worker_common != primary_common:
+        raise StorageIdentityError("worker is not linked to the primary repository")
+    branch, head = _worktree_branch_tip(worker)
+    branch_ref = str(registration.get("branch_ref") or "")
+    if not branch_ref.startswith("refs/heads/") or "\n" in branch_ref or \
+            not branch or branch != branch_ref:
+        raise StorageIdentityError("managed task branch changed")
+    resolved_target = _git_value(worker, "rev-parse", "--verify",
+                                 f"{target}^{{commit}}")
+    primary_tip = _git_value(primary, "rev-parse", branch_ref)
+    if resolved_target != target or head != target or primary_tip != target or \
+            registration.get("branch_tip") != target:
+        raise StorageIdentityError(
+            "managed task target commit and current HEAD differ")
+    linked = _linked_worktree_record(primary, worker)
+    if not linked or linked.get("HEAD") != target or \
+            linked.get("branch") != branch_ref:
+        raise StorageIdentityError("managed linked-worktree identity changed")
+    return registration
+
+
+def reconstruct_worker_locator(
+        primary_checkout: str, worker_checkout: str, task_id: str, *,
+        target_commit: str, home: str | None = None) -> str:
+    """Restore a missing worker locator from one exact durable registration.
+
+    This recovery is intentionally narrower than ``bind_worker_locator``:
+    the primary must have no locator; an existing worker locator is accepted
+    only when byte-equivalent in meaning to the reconstructed value. No run is
+    inferred from branch names, paths, or conversation state.
+    """
+    primary = os.path.realpath(os.path.abspath(primary_checkout))
+    supplied = os.path.abspath(os.path.expanduser(worker_checkout))
+    worker = os.path.realpath(supplied)
+    if load_workspace_locator(primary) is not None:
+        raise StorageIdentityError(
+            "primary locator exists; managed reconstruction is not applicable")
+    worker_locator = _locator_path(worker)
+    root = taskplane_home(home)
+    candidates = _registration_candidates(root, worker, task_id)
+    if len(candidates) != 1:
+        label = "missing" if not candidates else "ambiguous"
+        raise StorageIdentityError(
+            f"managed worktree registration is {label}")
+    run_dir, _, registration = candidates[0]
+    if registration.get("run_id") != run_dir:
+        raise StorageIdentityError(
+            "managed worktree registration run identity mismatch")
+    validate_task_worktree_registration(
+        primary, supplied, task_id, target_commit=target_commit,
+        registration=registration)
+    identity = resolve_repository_identity(primary)
+    layout = resolve_layout(identity, home=root, run_id=run_dir)
+    token = _worktree_token(task_id)
+    expected = os.path.realpath(os.path.join(
+        layout.checkout_root, "worktrees", "tasks", run_dir, token))
+    if worker != expected:
+        raise StorageIdentityError(
+            "managed worktree path is not canonical for its registered run")
+    git_dir = _git_value(worker, "rev-parse", "--git-dir")
+    if not git_dir:
+        raise StorageIdentityError("managed worktree Git directory is missing")
+    git_root = os.path.realpath(
+        git_dir if os.path.isabs(git_dir) else os.path.join(worker, git_dir))
+    if os.path.commonpath((git_root, worker_locator)) != git_root:
+        raise StorageIdentityError("worker locator path escapes its Git directory")
+    paths = {area: os.path.join(root_path, "worktrees", token)
+             for area, root_path in {
+                 "state": layout.state_root, "graph": layout.graph_root,
+                 "evidence": layout.evidence_root,
+                 "lenses": layout.lens_root,
+                 "artifacts": layout.artifact_root,
+             }.items()}
+    value = {
+        "schema": "taskplane.workspace/v1", "run_id": run_dir,
+        "repo_id": identity.repo_id, "repository_key": identity.key,
+        "checkout": worker, "primary_checkout": primary,
+        "home": root, "paths": paths,
+    }
+    if os.path.lexists(worker_locator):
+        existing = load_workspace_locator(worker)
+        if existing != value:
+            raise StorageIdentityError(
+                "existing worker locator does not match the exact registration")
+        return worker_locator
+    _atomic_json(worker_locator, value)
+    return worker_locator
 
 
 def load_task_worktree_registration(primary_checkout: str,

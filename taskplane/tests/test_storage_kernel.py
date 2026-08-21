@@ -268,6 +268,152 @@ class TestStorageLayout(unittest.TestCase):
         self.assertFalse(worker.startswith(os.path.realpath(checkout) + os.sep))
 
 
+class TestRunLocalWorkspaceLocatorReconstruction(unittest.TestCase):
+    """A durable registration can restore only its exact run-local worker."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="tp-reconstruct-home-")
+        self.primary = tempfile.mkdtemp(prefix="tp-reconstruct-primary-")
+        _git(self.primary, "init", "-q")
+        _git(self.primary, "config", "user.email", "t@example.com")
+        _git(self.primary, "config", "user.name", "T")
+        _git(self.primary, "remote", "add", "origin",
+             "https://github.com/Example/Project.git")
+        with open(os.path.join(self.primary, "a.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("value = 1\n")
+        _git(self.primary, "add", "a.py")
+        self.assertEqual(_git(self.primary, "commit", "-qm", "base").returncode,
+                         0)
+        self.identity = storage.resolve_repository_identity(self.primary)
+        self.run_id = "run-123"
+        self.task_id = "t1"
+        self.layout = storage.resolve_layout(
+            self.identity, home=self.home, run_id=self.run_id)
+        storage.write_workspace_locator(
+            self.primary, identity=self.identity, layout=self.layout,
+            run_id=self.run_id)
+        self.worker = storage.task_worktree_path(self.primary, self.task_id)
+        os.makedirs(os.path.dirname(self.worker), exist_ok=True)
+        result = _git(self.primary, "worktree", "add", "-b", "tp/t1",
+                      self.worker, "HEAD")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        storage.bind_worker_locator(self.primary, self.worker, self.task_id)
+        with open(os.path.join(self.worker, "a.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("value = 2\n")
+        _git(self.worker, "add", "a.py")
+        self.assertEqual(_git(self.worker, "commit", "-qm", "target").returncode,
+                         0)
+        self.target = _git(self.worker, "rev-parse", "HEAD").stdout.strip()
+        storage.refresh_task_worktree_tip(self.primary, self.task_id)
+        self.registration_path = storage.task_worktree_registration_path(
+            self.primary, self.task_id)
+        self.worker_locator_path = storage._locator_path(self.worker)
+        self.primary_locator_path = storage._locator_path(self.primary)
+
+    def _remove_locators(self):
+        os.unlink(self.worker_locator_path)
+        os.unlink(self.primary_locator_path)
+
+    def _recover(self, **overrides):
+        values = {
+            "primary_checkout": self.primary,
+            "worker_checkout": self.worker,
+            "task_id": self.task_id,
+            "target_commit": self.target,
+            "home": self.home,
+        }
+        values.update(overrides)
+        return storage.reconstruct_worker_locator(**values)
+
+    def test_registration_reconstructs_locator_and_scan_is_run_local(self):
+        primary_graph = os.path.join(self.layout.graph_root, "graph.json")
+        shared_graph = os.path.join(
+            self.home, "projects", self.identity.key, "knowledge",
+            "graph.json")
+        for path, marker in ((primary_graph, "primary"),
+                             (shared_graph, "shared")):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"meta": {"marker": marker}}, handle,
+                          sort_keys=True)
+        with open(primary_graph, "rb") as handle:
+            primary_before = handle.read()
+        with open(shared_graph, "rb") as handle:
+            shared_before = handle.read()
+        self._remove_locators()
+
+        locator_path = self._recover()
+        graph = depgraph.scan(self.worker)
+
+        locator = storage.load_workspace_locator(self.worker)
+        token = storage._worktree_token(self.task_id)
+        self.assertEqual(locator_path, self.worker_locator_path)
+        self.assertEqual(locator["run_id"], self.run_id)
+        self.assertEqual(locator["paths"]["graph"], os.path.join(
+            self.layout.graph_root, "worktrees", token))
+        self.assertEqual(graph["meta"]["scanned_head"], self.target)
+        self.assertTrue(os.path.isfile(os.path.join(
+            locator["paths"]["graph"], "graph.json")))
+        with open(primary_graph, "rb") as handle:
+            self.assertEqual(handle.read(), primary_before)
+        with open(shared_graph, "rb") as handle:
+            self.assertEqual(handle.read(), shared_before)
+        self.assertIsNone(storage.load_workspace_locator(self.primary))
+
+    def test_missing_ambiguous_or_mismatched_registration_fails_closed(self):
+        self._remove_locators()
+        with open(self.registration_path, encoding="utf-8") as handle:
+            original = json.load(handle)
+
+        cases = {
+            "run": {"run_id": "sibling-run"},
+            "repository": {"repository_key": "foreign-repository"},
+            "path": {"path": self.primary},
+            "branch": {"branch_ref": "refs/heads/tp/other"},
+            "task": {"task_id": "t2"},
+            "target": {"branch_tip": "f" * 40},
+            "linked": {"linked": False},
+        }
+        for label, change in cases.items():
+            with self.subTest(label=label):
+                value = dict(original)
+                value.update(change)
+                with open(self.registration_path, "w", encoding="utf-8") as h:
+                    json.dump(value, h)
+                with self.assertRaises(storage.StorageIdentityError):
+                    self._recover()
+                self.assertFalse(os.path.exists(self.worker_locator_path))
+
+        with open(self.registration_path, "w", encoding="utf-8") as handle:
+            json.dump(original, handle)
+        sibling = os.path.join(
+            self.home, "runs", "sibling-run", "state",
+            "worktree-registrations", os.path.basename(self.registration_path))
+        os.makedirs(os.path.dirname(sibling), exist_ok=True)
+        with open(sibling, "w", encoding="utf-8") as handle:
+            json.dump(original, handle)
+        with self.assertRaises(storage.StorageIdentityError):
+            self._recover()
+
+    def test_head_and_unsafe_symlink_inputs_fail_closed(self):
+        self._remove_locators()
+        with open(os.path.join(self.worker, "a.py"), "a",
+                  encoding="utf-8") as handle:
+            handle.write("value = 3\n")
+        _git(self.worker, "add", "a.py")
+        self.assertEqual(_git(self.worker, "commit", "-qm", "moved").returncode,
+                         0)
+        with self.assertRaises(storage.StorageIdentityError):
+            self._recover()
+        alias_root = tempfile.mkdtemp(prefix="tp-worker-alias-")
+        alias = os.path.join(alias_root, "worker")
+        os.symlink(self.worker, alias)
+        with self.assertRaises(storage.StorageIdentityError):
+            self._recover(worker_checkout=alias)
+
+
 class TestRunStore(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="tp-run-store-")

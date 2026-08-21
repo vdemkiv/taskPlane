@@ -1003,12 +1003,66 @@ def _parallel_evaluate_workspace(
     if not raw or not os.path.isdir(raw):
         return None, ("parallel Evaluate task worktree is missing; restore "
                       "the exact claimed worktree and its graph before retry")
-    expected_path = os.path.abspath(
-        runtime_storage.task_worktree_path(ws, task_id))
-    managed_root = os.path.realpath(os.path.dirname(expected_path))
-    expected = os.path.join(managed_root, os.path.basename(expected_path))
     supplied = os.path.abspath(os.path.expanduser(raw))
     worker = os.path.realpath(supplied)
+    tasks = state.get("tasks")
+    rows = tasks if isinstance(tasks, list) else []
+    owners = sorted(str(row.get("id") or "")
+                    for row in rows if isinstance(row, Mapping) and
+                    row.get("workspace") and
+                    os.path.realpath(str(row["workspace"])) == worker)
+    if owners != [task_id]:
+        return None, ("parallel Evaluate task worktree is ambiguous: "
+                      f"workspace is assigned to {', '.join(owners)}")
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+        recovered = False
+        if locator is None:
+            legacy_expected = os.path.realpath(os.path.join(
+                ws, ".tp-work", task_id))
+            if worker == legacy_expected:
+                expected_path = legacy_expected
+            else:
+                identity = runtime_storage.resolve_repository_identity(ws)
+                managed_tasks = os.path.realpath(os.path.join(
+                    runtime_storage.taskplane_home(), "checkouts",
+                    identity.key, "worktrees", "tasks"))
+                worker_parent = os.path.dirname(worker)
+                run_parent = os.path.dirname(worker_parent)
+                is_managed_shape = (
+                    os.path.realpath(run_parent) == managed_tasks and
+                    os.path.basename(worker) ==
+                    runtime_storage._worktree_token(task_id))
+                if not is_managed_shape:
+                    return None, ("parallel Evaluate task worktree is not "
+                                  "the exact canonical managed task "
+                                  "worktree for this task")
+                target_commit = str(task.get("target_commit") or "")
+                if not target_commit:
+                    return None, ("parallel Evaluate task worktree target "
+                                  "commit is missing; the execute gate must "
+                                  "bind the registered branch tip before "
+                                  "evaluation")
+                runtime_storage.reconstruct_worker_locator(
+                    ws, supplied, task_id, target_commit=target_commit)
+                worker_locator = runtime_storage.load_workspace_locator(worker)
+                if worker_locator is None:
+                    raise runtime_storage.StorageIdentityError(
+                        "reconstructed worker locator is missing")
+                expected_path = os.path.join(
+                    worker_locator["home"], "checkouts",
+                    worker_locator["repository_key"], "worktrees", "tasks",
+                    str(worker_locator["run_id"]),
+                    runtime_storage._worktree_token(task_id))
+                recovered = True
+        else:
+            expected_path = runtime_storage.task_worktree_path(ws, task_id)
+    except (OSError, ValueError, runtime_storage.StorageIdentityError) as exc:
+        return None, ("parallel Evaluate task worktree identity is invalid: "
+                      f"{exc}")
+    expected_path = os.path.abspath(expected_path)
+    managed_root = os.path.realpath(os.path.dirname(expected_path))
+    expected = os.path.join(managed_root, os.path.basename(expected_path))
     try:
         is_contained = os.path.commonpath((managed_root, worker)) == \
             managed_root
@@ -1025,16 +1079,16 @@ def _parallel_evaluate_workspace(
         return None, ("parallel Evaluate task worktree is ambiguous: the "
                       "primary checkout cannot serve as task graph evidence")
     try:
-        registration = runtime_storage.load_task_worktree_registration(
-            ws, task_id)
+        registration = (None if recovered else
+                        runtime_storage.load_task_worktree_registration(
+                            ws, task_id))
         primary_identity = runtime_storage.resolve_repository_identity(ws)
         worker_identity = runtime_storage.resolve_repository_identity(worker)
-        locator = runtime_storage.load_workspace_locator(ws)
     except (OSError, ValueError, runtime_storage.StorageIdentityError) as exc:
         return None, ("parallel Evaluate task worktree identity is invalid: "
                       f"{exc}")
     registered_repository = ((registration or {}).get("repository") or {})
-    if not isinstance(registered_repository, Mapping) or \
+    if not recovered and (not isinstance(registered_repository, Mapping) or \
             registration is None or \
             registration.get("linked") is not True or \
             os.path.realpath(str(
@@ -1044,22 +1098,13 @@ def _parallel_evaluate_workspace(
                 registration.get("path") or "")) != worker or \
             registered_repository.get("repo_id") != \
             primary_identity.repo_id or \
-            worker_identity.repo_id != primary_identity.repo_id:
+            worker_identity.repo_id != primary_identity.repo_id):
         return None, ("parallel Evaluate task worktree identity does not "
                       "match this run and repository")
-    if locator is not None and registration.get("run_id") != \
+    if not recovered and locator is not None and registration.get("run_id") != \
             locator.get("run_id"):
         return None, ("parallel Evaluate task worktree identity does not "
                       "match this run and repository")
-    tasks = state.get("tasks")
-    rows = tasks if isinstance(tasks, list) else []
-    owners = sorted(str(row.get("id") or "")
-                    for row in rows if isinstance(row, Mapping) and
-                    row.get("workspace") and
-                    os.path.realpath(str(row["workspace"])) == worker)
-    if owners != [task_id]:
-        return None, ("parallel Evaluate task worktree is ambiguous: "
-                      f"workspace is assigned to {', '.join(owners)}")
     return worker, None
 
 
@@ -3157,8 +3202,20 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     return {"error": stale + " during gate validation — "
                                      "submit the final state again",
                             "step": step}
+            prepared_registration = None
+            if outcome == "pass":
+                try:
+                    prepared_registration = \
+                        runtime_storage.refresh_task_worktree_tip(
+                            ws, str(task_id))
+                except runtime_storage.StorageIdentityError as exc:
+                    return {"error": f"task {task_id}: managed worktree "
+                                     f"target binding failed: {exc}",
+                            "step": step}
             tp.clear(t.get("workspace") or ws)
             t["status"] = "built"
+            if prepared_registration is not None:
+                t["target_commit"] = prepared_registration["branch_tip"]
             verified_suite = ((state.get("_validated_suite_evidence") or {})
                               .get(t["id"]))
             if verified_suite:
