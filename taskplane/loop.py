@@ -60,6 +60,19 @@ LOOP_FILE = "loop.json"
 STAGE_COMMAND_SCHEMA = "taskplane.stage-command-result/v1"
 STAGE_HISTORY_SCHEMA = "taskplane.stage-history-page/v1"
 STAGE_HISTORY_MAX_ITEMS = 100
+_STAGE_RUN_BINDING_SCHEMA = "taskplane.loop-stage-run-binding/v1"
+_STAGE_ROOT_AUTHORITY_SCHEMA = \
+    "taskplane.loop-root-bootstrap-authority/v1"
+_STAGE_RUN_BINDING_FIELDS = frozenset({
+    "schema", "run_id", "repository_id", "repository_key", "run_schema",
+    "root_stage_id",
+})
+_STAGE_ROOT_AUTHORITY_FIELDS = frozenset({
+    "schema", "run_id", "repository_id", "repository_key", "worktree_id",
+    "target_revision", "worktree_revision", "requirement_id",
+    "requirement_revision", "requirement_fingerprint", "actor",
+    "session_id", "authority_revision", "fingerprint",
+})
 _STAGE_RUNTIME_FIELDS = frozenset({
     "agent", "agents", "conversation", "conversations", "environment",
     "env", "event", "events", "eventlog", "eventlogs", "lease", "leases",
@@ -206,6 +219,132 @@ def _stage_mode() -> str:
     return "disabled"
 
 
+def _stage_read_run_binding(state: object) -> dict | None:
+    """Validate the singleton's non-optional migrated-run identity."""
+    if not isinstance(state, Mapping) or "_stage_run_binding" not in state:
+        return None
+    raw = state.get("_stage_run_binding")
+    if not isinstance(raw, Mapping) or set(raw) != _STAGE_RUN_BINDING_FIELDS:
+        raise ValueError("stage-native run binding is invalid")
+    binding = dict(raw)
+    if binding.get("schema") != _STAGE_RUN_BINDING_SCHEMA or \
+            binding.get("run_schema") != "taskplane.run/v4":
+        raise ValueError("stage-native run binding is invalid")
+    for field in ("run_id", "repository_id", "repository_key",
+                  "root_stage_id"):
+        value = binding.get(field)
+        if not isinstance(value, str) or not value.strip() or \
+                value != value.strip():
+            raise ValueError("stage-native run binding is invalid")
+    return binding
+
+
+def _stage_bound_run_refusal(ws: str, state: object) -> dict | None:
+    """Prove the exact locator/store for a singleton already bound to v4."""
+    try:
+        binding = _stage_read_run_binding(state)
+    except Exception as exc:
+        return {
+            "error": "stage-native migrated run binding is invalid: "
+                     f"{exc}",
+            "stage_native": "read-only",
+        }
+    if binding is None:
+        return None
+    run_id = str(binding["run_id"])
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception as exc:
+        return {
+            "error": "stage-native bound run locator is unreadable: "
+                     f"{exc.__class__.__name__}: {exc}",
+            "stage_native": "read-only", "run_id": run_id,
+        }
+    if not isinstance(locator, Mapping):
+        return {
+            "error": ("stage-native bound run locator is missing; migrated "
+                      "v4 history is read-only until the exact locator is "
+                      "restored"),
+            "stage_native": "read-only", "run_id": run_id,
+        }
+    expected_locator = {
+        "run_id": binding["run_id"],
+        "repo_id": binding["repository_id"],
+        "repository_key": binding["repository_key"],
+    }
+    if any(locator.get(key) != value
+           for key, value in expected_locator.items()):
+        return {
+            "error": "stage-native bound run locator identity changed",
+            "stage_native": "read-only", "run_id": run_id,
+        }
+    try:
+        manifest = _stage_store(ws, run_id).load(run_id)
+    except Exception as exc:
+        return {
+            "error": "stage-native bound run store is unavailable: "
+                     f"{exc.__class__.__name__}: {exc}",
+            "stage_native": "read-only", "run_id": run_id,
+        }
+    repository = manifest.get("repository")
+    heads = manifest.get("stage_heads")
+    if manifest.get("schema") != "taskplane.run/v4" or \
+            manifest.get("run_id") != run_id or \
+            not isinstance(repository, Mapping) or \
+            repository.get("repo_id") != binding["repository_id"] or \
+            not isinstance(heads, Mapping) or \
+            binding["root_stage_id"] not in heads:
+        return {
+            "error": "stage-native bound v4 run identity is invalid",
+            "stage_native": "read-only", "run_id": run_id,
+        }
+    return None
+
+
+def _stage_run_binding_value(
+        locator: Mapping[str, object], manifest: Mapping[str, object],
+        root_stage_id: str) -> dict:
+    """Create the closed path-free binding persisted beside loop state."""
+    repository = manifest.get("repository")
+    if manifest.get("schema") != "taskplane.run/v4" or \
+            not isinstance(repository, Mapping):
+        raise ValueError("stage-native root did not produce a v4 run")
+    value = {
+        "schema": _STAGE_RUN_BINDING_SCHEMA,
+        "run_id": str(manifest.get("run_id") or ""),
+        "repository_id": str(locator.get("repo_id") or ""),
+        "repository_key": str(locator.get("repository_key") or ""),
+        "run_schema": "taskplane.run/v4",
+        "root_stage_id": str(root_stage_id or ""),
+    }
+    if repository.get("repo_id") != value["repository_id"] or \
+            locator.get("run_id") != value["run_id"] or \
+            value["root_stage_id"] not in (manifest.get("stage_heads") or {}):
+        raise ValueError("stage-native root binding identity is invalid")
+    _stage_read_run_binding({"_stage_run_binding": value})
+    return value
+
+
+def _persist_stage_run_binding(
+        ws: str, store: object, *, root_stage_id: str) -> dict:
+    """Persist the verified v4 identity before returning any dispatch."""
+    locator = runtime_storage.load_workspace_locator(ws)
+    if not isinstance(locator, Mapping):
+        raise ValueError("stage-native root locator is missing")
+    run_id = str(locator.get("run_id") or "")
+    manifest = store.load(run_id)
+    value = _stage_run_binding_value(locator, manifest, root_stage_id)
+    with mutate(ws) as locked:
+        if locked is None:
+            raise ValueError("stage-native root singleton is missing")
+        prior = _stage_read_run_binding(locked)
+        if prior is not None and prior != value:
+            raise ValueError("stage-native run binding changed")
+        locked["_stage_run_binding"] = value
+        locked.pop("_stage_native_new_run_pristine", None)
+    return value
+
+
 def _stage_mutation_blocker(mode: str, manifest: Mapping[str, object],
                             ws: str) \
         -> str | None:
@@ -231,7 +370,7 @@ def _stage_mutation_blocker(mode: str, manifest: Mapping[str, object],
             and singleton.get("step") in {"pm", "design", "plan"}
             and not any(key in singleton for key in (
                 "baseline", "selection", "replan_history", "retro")))
-        if (singleton is not None and not pristine_new_run) or migration_fields:
+        if not pristine_new_run or migration_fields:
             return ("new-run mode cannot promote an existing singleton or "
                     "migration-bound run; legacy read-only behavior remains "
                     "active")
@@ -240,14 +379,38 @@ def _stage_mutation_blocker(mode: str, manifest: Mapping[str, object],
     return None
 
 
-def _stage_loop_mutation_refusal(ws: str) -> dict | None:
+def _stage_loop_mutation_refusal(
+        ws: str, *, allow_new_run_bootstrap: bool = False) -> dict | None:
     """Pause singleton writes when rollback leaves a migrated v4 readable.
 
     An unmigrated v3 run remains on the byte-identical legacy path.  The
     locator and manifest are opened only by mutation entry points; disabled
     legacy reads therefore retain the old no-locator behavior.
     """
-    if _stage_mode() != "disabled":
+    try:
+        singleton = _load_raw(ws)
+    except Exception as exc:
+        return {
+            "error": "stage-native singleton authority is unreadable: "
+                     f"{exc.__class__.__name__}: {exc}",
+            "stage_native": "read-only",
+        }
+    if refusal := _stage_bound_run_refusal(ws, singleton):
+        return refusal
+    mode = _stage_mode()
+    bootstrap_record = (singleton.get("_stage_native_root_authority")
+                        if isinstance(singleton, Mapping) else None)
+    if bootstrap_record is not None and _stage_read_run_binding(
+            singleton) is None:
+        if mode == "new-run" and allow_new_run_bootstrap:
+            return None
+        return {
+            "error": ("stage-native initialized run requires its first "
+                      "`loop next` in TASKPLANE_STAGE_NATIVE=new-run mode "
+                      "before any other mutation"),
+            "stage_native": "read-only",
+        }
+    if mode != "disabled":
         return None
     try:
         locator = runtime_storage.load_workspace_locator(ws)
@@ -477,6 +640,201 @@ def _preflight_stage_dispatch(stage: dict, handoff: dict,
         declared_scope=declared_scope)
 
 
+def _stage_bootstrap_pristine_root(
+        ws: str, state: Mapping[str, object]) -> dict | None:
+    """Commit the attributable first root before normal loop dispatch.
+
+    The root is derived only from init-captured authority and the retained
+    requirement. Content-addressed inputs make a crash between the v4 commit
+    and singleton binding replay the same lifecycle operation.
+    """
+    if _stage_mode() != "new-run" or _stage_read_run_binding(state) is not None:
+        return None
+    if state.get("_stage_native_new_run_pristine") is not True:
+        return None
+    raw_authority = state.get("_stage_native_root_authority")
+    if not isinstance(raw_authority, Mapping) or \
+            set(raw_authority) != _STAGE_ROOT_AUTHORITY_FIELDS:
+        raise ValueError("stage-native root bootstrap authority is invalid")
+    root_authority = dict(raw_authority)
+
+    try:
+        if __package__:
+            from . import design_contract as stage_design_contract
+            from . import review_evidence, stage_handoff
+        else:
+            import design_contract as stage_design_contract
+            import review_evidence
+            import stage_handoff
+    except ImportError:
+        import design_contract as stage_design_contract
+        import review_evidence
+        import stage_handoff
+
+    authority_material = dict(root_authority)
+    authority_fingerprint = str(authority_material.pop("fingerprint", ""))
+    if root_authority.get("schema") != _STAGE_ROOT_AUTHORITY_SCHEMA or \
+            review_evidence.content_fingerprint(
+                authority_material) != authority_fingerprint:
+        raise ValueError("stage-native root bootstrap authority is invalid")
+    session_id = str(
+        os.environ.get("TASKPLANE_SESSION_ID") or
+        os.environ.get("CODEX_THREAD_ID") or
+        os.environ.get("CLAUDE_SESSION_ID") or "").strip()
+    if session_id != root_authority.get("session_id"):
+        raise ValueError("stage-native root bootstrap session changed")
+
+    locator = runtime_storage.load_workspace_locator(ws)
+    if not isinstance(locator, Mapping):
+        raise ValueError("stage-native root bootstrap locator is missing")
+    run_id = str(root_authority["run_id"])
+    if locator.get("run_id") != run_id or \
+            locator.get("repo_id") != root_authority["repository_id"] or \
+            locator.get("repository_key") != root_authority["repository_key"]:
+        raise ValueError("stage-native root bootstrap locator changed")
+    store = _stage_store(ws, run_id)
+    manifest = store.load(run_id)
+    repository = manifest.get("repository")
+    target = manifest.get("target")
+    target_revision = (target.get("revision") or target.get("head")
+                       if isinstance(target, Mapping) else None)
+    if manifest.get("schema") not in {"taskplane.run/v3", "taskplane.run/v4"} or \
+            not isinstance(repository, Mapping) or \
+            repository.get("repo_id") != root_authority["repository_id"] or \
+            target_revision != root_authority["target_revision"] or \
+            tp.git_head(ws) != root_authority["worktree_revision"]:
+        raise ValueError("stage-native root bootstrap authority changed")
+
+    requirement_id = str(root_authority["requirement_id"])
+    requirement = reqs.get_requirement(ws, requirement_id)
+    if requirement is None or state.get("requirement_id") != requirement_id:
+        raise ValueError("stage-native root bootstrap requirement is missing")
+    requirement_fingerprint = stage_design_contract.requirement_fingerprint(
+        ws, requirement_id)
+    if requirement_fingerprint != root_authority["requirement_revision"] or \
+            requirement_fingerprint != root_authority[
+                "requirement_fingerprint"]:
+        raise ValueError("stage-native root bootstrap requirement changed")
+
+    step = str(state.get("step") or "")
+    kind = _LOOP_STAGE_KINDS.get(step)
+    if kind not in {"product", "design", "plan"}:
+        raise ValueError("stage-native root bootstrap step is invalid")
+    requirement_identity = {
+        "id": requirement_id,
+        "revision": requirement_fingerprint,
+        "fingerprint": requirement_fingerprint,
+    }
+    contract_groups = {"provided": [], "consumed": [], "changed": []}
+    contracts = []
+    for row in requirement.get("contracts") or []:
+        if not isinstance(row, Mapping) or not isinstance(row.get("id"), str):
+            continue
+        contract_id = str(row["id"])
+        contracts.append(contract_id)
+        relation = str(row.get("relation") or "").lower()
+        group = ("provided" if "provide" in relation else
+                 "changed" if "change" in relation else "consumed")
+        contract_groups[group].append(contract_id)
+    contract_groups = {
+        key: sorted(set(values)) for key, values in contract_groups.items()
+    }
+    contracts = sorted(set(contracts))
+    root_input = {
+        "schema": "taskplane.loop-root-input/v1",
+        "run_id": run_id,
+        "step": step,
+        "stage_kind": kind,
+        "goal": str(state.get("goal") or ""),
+        "spec_path": state.get("spec_path"),
+        "requirement": dict(requirement),
+    }
+    artifact_store = review_evidence.ArtifactStore(ws)
+    selected_native = artifact_store.put("root-input", root_input)
+    authority_native = artifact_store.put("root-authority", {
+        "schema": "taskplane.loop-root-authority-evidence/v1",
+        "authority": root_authority,
+    })
+    selected = review_evidence.portable_artifact_reference(
+        artifact_store, selected_native)
+    authorized_at = f"{str(requirement.get('date') or '1970-01-01')}T00:00:00Z"
+    handoff = stage_handoff.create_manifest(
+        artifact_store, producer_stage_id=f"input-{run_id}",
+        producer_outcome="done", requirement=requirement_identity,
+        design=None, target=None, commit=None, contracts=contract_groups,
+        deliverables=["root-input"],
+        evidence_references=[authority_native],
+        selected_artifacts=[selected_native],
+        exclusions=sorted(stage_handoff.REQUIRED_EXCLUSIONS),
+        authorization={
+            "actor": root_authority["actor"],
+            "session_id": root_authority["session_id"],
+            "authorized_at": authorized_at,
+            "operation_id": "authorize-root-" + authority_fingerprint[:32],
+            "authority_record": {
+                "schema": "taskplane.authority-record-reference/v1",
+                "authority_schema": "taskplane.consolidated-authorization/v1",
+                "revision": root_authority["authority_revision"],
+                "fingerprint": authority_fingerprint,
+            },
+            "nonconsumable_reuse": None,
+        })
+    input_ref = review_evidence.portable_artifact_reference(
+        artifact_store, stage_handoff.store_manifest(artifact_store, handoff))
+
+    stage_authority = {
+        "schema": "taskplane.stage-authority-binding/v1",
+        **{key: root_authority[key] for key in (
+            "run_id", "repository_id", "repository_key", "worktree_id",
+            "target_revision", "worktree_revision", "requirement_id",
+            "requirement_revision", "actor", "session_id",
+            "authority_revision")},
+        "design_revision": None,
+        "design_fingerprint": None,
+        "authority_fingerprint": authority_fingerprint,
+    }
+    root_identity = {
+        "schema": "taskplane.loop-root-stage-identity/v1",
+        "run_id": run_id, "stage_kind": kind,
+        "requirement": requirement_identity,
+        "input_manifest_fingerprint": input_ref["fingerprint"],
+        "authority_fingerprint": authority_fingerprint,
+    }
+    root_token = review_evidence.content_fingerprint(root_identity)[:32]
+    stage_id = f"stage-{kind}-root-{root_token}"
+    stage_entities, lifecycle = _stage_lifecycle(
+        ws, store, manifest, stage_authority)
+    stage = stage_entities.create_stage(
+        run_id=run_id, stage_id=stage_id,
+        requirement=requirement_identity, design=None, stage_kind=kind,
+        parent_stage_ids=[], predecessor_stage_ids=[],
+        input_manifest_ref=input_ref,
+        execution_root_id=f"execution-{stage_id}",
+        deliverables=_stage_loop_deliverables(kind, state),
+        selected_artifacts=[selected],
+        budget={"attempt_limit": max(
+            1, int(state.get("max_fix_cycles") or 0) + 1)},
+        dependencies=sorted(set(str(value) for value in
+                                (requirement.get("depends_on") or []))),
+        contracts=contracts, authority=stage_authority,
+        created_at=authorized_at)
+    root_contract = _step_contract(step, dict(state), ws)
+    declared_scope = _stage_loop_scope(
+        root_contract["coding"]["scope_paths"],
+        root_contract["coding"].get("out_of_scope_paths") or [])
+    _preflight_stage_dispatch(stage, handoff, declared_scope)
+    operation_id = "bootstrap-root-" + stage["fingerprint"][:32]
+    receipt = lifecycle.start_stage(
+        stage, expected_revision=int(manifest["revision"]),
+        operation_id=operation_id,
+        expected_predecessor_fingerprints={}, foreground=True)
+    checked = tp.verify_stage_receipt(
+        receipt, expected_operation="start_stage",
+        expected_stage_id=stage_id)
+    _persist_stage_run_binding(ws, store, root_stage_id=stage_id)
+    return checked
+
+
 _LOOP_STAGE_KINDS = {
     "pm": "product", "design": "design", "design_approval": "design",
     "plan": "plan", "plan_approval": "plan", "execute": "build",
@@ -665,6 +1023,95 @@ def _stage_loop_completion_reference(
         artifact_store, native)
 
 
+def _stage_loop_has_symlink_component(path: str) -> bool:
+    """Reject aliases in every existing component, not only the leaf."""
+    absolute = os.path.abspath(path)
+    drive, tail = os.path.splitdrive(absolute)
+    current = drive + os.sep if absolute.startswith(os.sep) else drive
+    for component in tail.split(os.sep):
+        if not component:
+            continue
+        current = os.path.join(current, component)
+        try:
+            if stat.S_ISLNK(os.lstat(current).st_mode):
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def _stage_loop_managed_evidence_paths(
+        source_workspace: str, completion: Mapping[str, object],
+        output: Mapping[str, object]) -> set[str]:
+    """Prove exact external evidence paths from the validated submission."""
+    step = str(output.get("managed_evidence_step") or "")
+    submission = completion.get("submission")
+    if step not in {"evaluate", "em"}:
+        return set()
+    if not isinstance(submission, Mapping) or not str(
+            submission.get("fingerprint") or ""):
+        raise ValueError("managed completion evidence lacks its submission")
+    locator = runtime_storage.load_workspace_locator(source_workspace)
+    if not isinstance(locator, Mapping):
+        raise ValueError("managed completion evidence lacks its run locator")
+    paths = locator.get("paths")
+    if not isinstance(paths, Mapping):
+        raise ValueError("managed completion evidence roots are unavailable")
+    roots = []
+    for key in (("evidence",) if step == "evaluate" else ("artifacts",)):
+        raw_root = str(paths.get(key) or "").strip()
+        if not raw_root or not os.path.isabs(raw_root):
+            raise ValueError("managed completion evidence root is unavailable")
+        supplied_root = os.path.abspath(raw_root)
+        if not os.path.isdir(supplied_root) or \
+                supplied_root != os.path.realpath(
+                supplied_root) or _stage_loop_has_symlink_component(
+                    supplied_root):
+            raise ValueError("managed completion evidence root is not canonical")
+        roots.append(supplied_root)
+    allowed = set()
+    for expected in runtime_storage.submission_evidence_paths(
+            source_workspace, step):
+        canonical = os.path.abspath(str(expected))
+        if canonical != os.path.realpath(canonical) or \
+                _stage_loop_has_symlink_component(canonical):
+            raise ValueError("managed completion evidence path is not canonical")
+        try:
+            contained = any(os.path.commonpath((root, canonical)) == root
+                            for root in roots)
+        except ValueError:
+            contained = False
+        if not contained:
+            raise ValueError("managed completion evidence escaped its run root")
+        allowed.add(canonical)
+    return allowed
+
+
+def _stage_loop_decision_completion(
+        ws: str, *, schema: str, step: str, outcome: str,
+        result: Mapping[str, object]) -> dict:
+    """Create one bounded, file-free artifact for a control decision."""
+    try:
+        encoded = json.dumps(
+            dict(result), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("stage control decision is not canonical JSON") \
+            from exc
+    if len(encoded.encode("utf-8")) > 16 * 1024:
+        raise ValueError("stage control decision exceeds its 16 KiB bound")
+    detached = json.loads(encoded)
+    return {
+        "schema": str(schema), "step": str(step),
+        "outcome": str(outcome), "workspace_revision": tp.git_head(ws),
+        **detached,
+        "_stage_output": {
+            "source_workspace": os.path.abspath(ws),
+            "sources": [], "values": {"decision": detached},
+        },
+    }
+
+
 def _stage_loop_completion_outputs(
         lifecycle: object, completion: Mapping[str, object]) \
         -> tuple[dict, list[dict], dict | None, dict | None]:
@@ -674,10 +1121,17 @@ def _stage_loop_completion_outputs(
     output = completion.get("_stage_output")
     if not isinstance(output, Mapping):
         raise ValueError("stage completion output declaration is missing")
-    source_workspace = os.path.realpath(str(
-        output.get("source_workspace") or ""))
-    if not source_workspace or not os.path.isdir(source_workspace):
+    raw_workspace = str(output.get("source_workspace") or "").strip()
+    if not raw_workspace or not os.path.isabs(raw_workspace):
         raise ValueError("stage completion output workspace is unavailable")
+    supplied_workspace = os.path.abspath(os.path.expanduser(raw_workspace))
+    source_workspace = os.path.realpath(supplied_workspace)
+    if not source_workspace or supplied_workspace != source_workspace or \
+            not os.path.isdir(source_workspace) or \
+            _stage_loop_has_symlink_component(source_workspace):
+        raise ValueError("stage completion output workspace is unavailable")
+    managed_evidence = _stage_loop_managed_evidence_paths(
+        source_workspace, completion, output)
 
     snapshots = []
     seen = set()
@@ -687,30 +1141,45 @@ def _stage_loop_completion_outputs(
         supplied = str(raw.get("path") or "").strip()
         if not supplied:
             raise ValueError("stage completion output path is missing")
-        path = supplied if os.path.isabs(supplied) else os.path.join(
-            source_workspace, *supplied.replace("\\", "/").split("/"))
-        path = os.path.abspath(path)
+        if os.path.isabs(supplied):
+            path = os.path.abspath(supplied)
+            if path not in managed_evidence:
+                raise ValueError(
+                    "absolute stage completion output path is unauthorized")
+        else:
+            normalized = supplied.replace("\\", "/")
+            components = normalized.split("/")
+            if any(component in {"", ".", ".."} for component in components):
+                raise ValueError(
+                    "stage completion output path is not canonical")
+            path = os.path.abspath(os.path.join(
+                source_workspace, *components))
+            try:
+                contained = os.path.commonpath(
+                    (source_workspace, path)) == source_workspace
+            except ValueError:
+                contained = False
+            if not contained:
+                raise ValueError(
+                    "stage completion output escaped its source workspace")
+        if path != os.path.realpath(path) or \
+                _stage_loop_has_symlink_component(path):
+            raise ValueError("stage completion output path is not canonical")
         if not os.path.isfile(path):
             if raw.get("required") is True:
                 raise ValueError(
                     f"required stage completion output is missing: {supplied}")
             continue
-        if os.path.islink(path):
-            raise ValueError("stage completion output cannot be a symlink")
         logical = str(raw.get("logical_path") or "").strip()
         if not logical:
-            try:
-                within = os.path.commonpath(
-                    (source_workspace, os.path.realpath(path))) == \
-                    source_workspace
-            except ValueError:
-                within = False
             logical = (os.path.relpath(path, source_workspace)
-                       if within else
+                       if not os.path.isabs(supplied) else
                        f"evidence/{index:03d}-{os.path.basename(path)}")
         logical = logical.replace("\\", "/")
-        if os.path.isabs(logical) or logical == ".." or \
-                logical.startswith("../") or not logical:
+        logical_components = logical.split("/")
+        if os.path.isabs(logical) or not logical or any(
+                component in {"", ".", ".."}
+                for component in logical_components):
             raise ValueError("stage completion output path is not relative")
         if logical in seen:
             continue
@@ -808,6 +1277,15 @@ def _stage_loop_transition(
         "run_id": context["run_id"], "from_step": str(from_step),
         "to_step": str(to_step), "from_kind": from_kind,
         "to_kind": to_kind, "outcome": terminal_outcome,
+        # Repeated recovery routes can have the same semantic loop fields.
+        # The lifecycle operation is nevertheless for one exact immutable
+        # predecessor head; omitting this identity let a later replan replay
+        # the receipt from an earlier Build stage instead of transitioning
+        # the current one.
+        "predecessor_stage_id": (
+            stage.get("stage_id") if isinstance(stage, Mapping) else None),
+        "predecessor_head_fingerprint": (
+            stage.get("fingerprint") if isinstance(stage, Mapping) else None),
         "task_id": current_task.get("id"),
         "fix_cycles": int(current_task.get("fix_cycles") or 0),
         "terminal_only": bool(terminal_only),
@@ -1029,6 +1507,19 @@ def stage_command(ws: str, command: str, request: object) -> dict:
     try:
         data = _validate_stage_request(action, _stage_request(request))
         run_id = _stage_run_id(action, data)
+        if action != "history":
+            try:
+                singleton = _load_raw(ws)
+            except Exception as exc:
+                return _stage_command_error(action, exc)
+            if refusal := _stage_bound_run_refusal(ws, singleton):
+                return {
+                    "schema": STAGE_COMMAND_SCHEMA,
+                    "command": action, "run_id": run_id,
+                    "enabled": False, "legacy": False,
+                    "error": refusal["error"],
+                    "stage_native": "read-only",
+                }
         store = _stage_store(ws, run_id)
         if action == "history":
             return _stage_history(store, run_id, data)
@@ -1110,6 +1601,9 @@ def stage_command(ws: str, command: str, request: object) -> dict:
             checked = tp.verify_stage_receipt(
                 receipt, expected_operation="start_stage",
                 expected_stage_id=str(stage["stage_id"]))
+            if manifest.get("schema") == "taskplane.run/v3":
+                _persist_stage_run_binding(
+                    ws, store, root_stage_id=str(stage["stage_id"]))
             if action == "reuse":
                 tp.trace(
                     ws, "stage_nondefault_reuse", run_id=run_id,
@@ -2095,13 +2589,130 @@ def cleanup_replay(ws: str) -> dict:
             "attempted": len(outcomes), "outcomes": outcomes}
 
 
+def _stage_native_init_authority(
+        ws: str, requirement_id: str | None, by: str | None) -> dict | None:
+    """Capture explicit, attributable authority before new-run state exists."""
+    if _stage_mode() != "new-run":
+        return None
+    rid = str(requirement_id or "").strip()
+    if not rid:
+        raise ValueError(
+            "stage-native new-run init requires --req <R-id> for an "
+            "existing requirement")
+    requirement = reqs.get_requirement(ws, rid)
+    if requirement is None:
+        raise ValueError(
+            f"stage-native new-run init requirement '{rid}' does not exist")
+    actor = str(by or "").strip()
+    if not actor:
+        raise ValueError(
+            "stage-native new-run init requires --by <human identity>")
+    session_id = str(
+        os.environ.get("TASKPLANE_SESSION_ID") or
+        os.environ.get("CODEX_THREAD_ID") or
+        os.environ.get("CLAUDE_SESSION_ID") or "").strip()
+    if not session_id:
+        raise ValueError(
+            "stage-native new-run init requires TASKPLANE_SESSION_ID, "
+            "CODEX_THREAD_ID, or CLAUDE_SESSION_ID")
+    if any(not value or len(value.encode("utf-8")) > 256 or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in value) for value in (actor, session_id)):
+        raise ValueError(
+            "stage-native new-run init actor/session identity is invalid")
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception as exc:
+        raise ValueError(
+            "stage-native new-run init requires a governed RunStore "
+            f"workspace locator: {exc}") from exc
+    if not isinstance(locator, Mapping):
+        raise ValueError(
+            "stage-native new-run init requires a governed RunStore "
+            "workspace locator")
+    run_id = str(locator.get("run_id") or "")
+    if not run_id:
+        raise ValueError(
+            "stage-native new-run init requires a governed RunStore "
+            "workspace locator")
+    manifest = _stage_store(ws, run_id).load(run_id)
+    if manifest.get("schema") != "taskplane.run/v3" or any(
+            "migration" in str(key).lower() and value not in (
+                None, False, "", [], {})
+            for key, value in manifest.items()):
+        raise ValueError(
+            "stage-native new-run init requires an unmigrated v3 run")
+    repository = manifest.get("repository")
+    if not isinstance(repository, Mapping) or \
+            repository.get("repo_id") != locator.get("repo_id") or \
+            not locator.get("repository_key"):
+        raise ValueError(
+            "stage-native new-run init repository identity is invalid")
+    target = manifest.get("target")
+    target_revision = (target.get("revision") or target.get("head")
+                       if isinstance(target, Mapping) else None)
+    if not isinstance(target_revision, str) or not target_revision.strip():
+        raise ValueError(
+            "stage-native new-run init requires an exact target revision")
+    worktree_revision = str(tp.git_head(ws) or "").strip()
+    if not worktree_revision or worktree_revision == "unknown":
+        raise ValueError(
+            "stage-native new-run init requires an exact target revision")
+    try:
+        if __package__:
+            from . import design_contract as stage_design_contract
+            from . import review_evidence
+        else:
+            import design_contract as stage_design_contract
+            import review_evidence
+    except ImportError:
+        import design_contract as stage_design_contract
+        import review_evidence
+    requirement_fingerprint = stage_design_contract.requirement_fingerprint(
+        ws, rid)
+    worktree_id = "worktree-" + review_evidence.content_fingerprint({
+        "run_id": run_id,
+        "repository_id": locator["repo_id"],
+        "repository_key": locator["repository_key"],
+        "target_revision": target_revision,
+        "worktree_revision": worktree_revision,
+    })[:24]
+    record = {
+        "schema": _STAGE_ROOT_AUTHORITY_SCHEMA,
+        "run_id": run_id,
+        "repository_id": str(locator["repo_id"]),
+        "repository_key": str(locator["repository_key"]),
+        "worktree_id": worktree_id,
+        "target_revision": str(target_revision),
+        "worktree_revision": worktree_revision,
+        "requirement_id": rid,
+        # The current requirement store is content-versioned rather than
+        # counter-versioned.  Its exact retained content fingerprint is the
+        # immutable revision consumed by the root stage.
+        "requirement_revision": requirement_fingerprint,
+        "requirement_fingerprint": requirement_fingerprint,
+        "actor": actor,
+        "session_id": session_id,
+        "authority_revision": 1,
+    }
+    record["fingerprint"] = review_evidence.content_fingerprint(record)
+    if set(record) != _STAGE_ROOT_AUTHORITY_FIELDS:
+        raise ValueError("stage-native root bootstrap authority is invalid")
+    return record
+
+
 def init(ws: str, goal: str, spec_path: str | None = None,
          max_fix_cycles: int = 2, checkpoints=None,
          requirement_id: str | None = None, parallel: bool = False,
          design: bool = False, design_only: bool = False,
-         force: bool = False) -> dict:
+         force: bool = False, by: str | None = None) -> dict:
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
+    try:
+        root_authority = _stage_native_init_authority(
+            ws, requirement_id, by)
+    except Exception as exc:
+        return {"error": str(exc), "refused": True}
     checkpoints = list(checkpoints if checkpoints is not None else
                        ["plan", "em"])
     # v2.3.0: init over an IN-FLIGHT loop refuses by default — one mistyped
@@ -2147,12 +2758,13 @@ def init(ws: str, goal: str, spec_path: str | None = None,
         "consumed_host_decisions": {},
         "consumed_host_events": {},
         "authority_effect_outbox": {},
-        # This marker is minted only by an explicit new-run init.  It lets
-        # the caller submit the exact root aggregate through `stage start`
-        # without treating arbitrary pre-existing singleton history as a
-        # canary.  The first v4 operation makes the marker irrelevant.
-        **({"_stage_native_new_run_pristine": True}
-           if _stage_mode() == "new-run" else {}),
+        # This marker is minted only by an attributable new-run init.  The
+        # first `loop next` consumes it while atomically committing the exact
+        # root; arbitrary pre-existing singleton history is never inferred to
+        # be a canary.  The verified v4 binding replaces this eligibility.
+        **({"_stage_native_new_run_pristine": True,
+            "_stage_native_root_authority": root_authority}
+           if root_authority is not None else {}),
     }
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,
@@ -2566,7 +3178,9 @@ def _scopes_overlap(a, b) -> bool:
 
 
 def _verified_stage_loop_wave_split(
-        ws: str, ready: list[dict]) -> dict[str, str] | None:
+        ws: str, ready: list[dict], *,
+        known_bindings: Mapping[str, str] | None = None) \
+        -> dict[str, str] | None:
     """Recover one exact, still-current loop wave split.
 
     The RunStore commit and ``loop.json`` binding are separate durability
@@ -2603,6 +3217,14 @@ def _verified_stage_loop_wave_split(
     task_ids = [str(task.get("id") or "") for task in ready]
     if not all(task_ids) or len(set(task_ids)) != len(task_ids):
         raise ValueError("stage-native wave task identity is invalid")
+    expected_bindings = ({str(key): str(value)
+                          for key, value in known_bindings.items()}
+                         if isinstance(known_bindings, Mapping) else {})
+    if expected_bindings and set(expected_bindings) != set(task_ids):
+        raise ValueError("stage-native wave bindings are partial")
+    read_object = getattr(store, "read_stage_object", None)
+    if not callable(read_object):
+        raise ValueError("stage store cannot verify split child heads")
     candidates: list[dict[str, str]] = []
     for raw in operations.values():
         if not isinstance(raw, dict) or raw.get("operation") != "split_stage":
@@ -2624,37 +3246,50 @@ def _verified_stage_loop_wave_split(
         if not isinstance(parent_summary, Mapping):
             raise ValueError("loop wave split parent head is invalid")
         parent_id = str(parent_summary.get("stage_id") or "")
-        if not parent_id or len(child_heads) != len(task_ids):
+        if not parent_id:
             continue
         expected_ids = [stage_entities.split_child_id(
             run_id, parent_id, operation_id, ordinal)
-            for ordinal in range(len(task_ids))]
+            for ordinal in range(len(child_heads))]
         if set(child_heads) != set(expected_ids):
             raise ValueError(
                 "loop wave split child identity does not match its receipt")
         if checked.get("stage_ids") != sorted([parent_id, *expected_ids]):
             raise ValueError("loop wave split receipt stage set is invalid")
 
-        # Only the immediate, unchanged post-split projection is recoverable.
-        # A later lifecycle operation needs its own receipt-driven recovery;
-        # reusing this binding after such an operation would be stale.
-        if int(manifest.get("revision") or 0) != int(
-                checked["committed_revision"]) or \
-                projection != receipt_projection:
+        if heads.get(parent_id) != parent_head:
             continue
-        if heads.get(parent_id) != parent_head or any(
-                heads.get(child_id) != child_heads.get(child_id)
-                for child_id in expected_ids):
-            continue
-
         parent = _indexed_stage(store, manifest, run_id, parent_id)
         if parent.get("stage_kind") != "build" or \
                 parent.get("state") != "terminal" or \
                 parent.get("outcome") != "closed":
             raise ValueError("loop wave split parent is not closed Build")
+        receipt_lineage = result.get("lineage") or []
+        manifest_lineage = manifest.get("lineage") or []
+        lineage_fingerprints = {
+            str(row.get("fingerprint")) for row in manifest_lineage
+            if isinstance(row, Mapping)}
+        if not isinstance(receipt_lineage, list) or any(
+                not isinstance(row, Mapping) or
+                str(row.get("fingerprint")) not in lineage_fingerprints
+                for row in receipt_lineage):
+            raise ValueError("loop wave split lineage is not current")
+
         bindings: dict[str, str] = {}
         roots: list[str] = []
-        for ordinal, task_id in enumerate(task_ids):
+        for ordinal, child_id in enumerate(expected_ids):
+            original_head = child_heads[child_id]
+            if not isinstance(original_head, Mapping) or not isinstance(
+                    original_head.get("object"), Mapping):
+                raise ValueError("loop wave split child head is invalid")
+            original = read_object(run_id, dict(original_head["object"]))
+            deliverables = list(original.get("deliverables") or [])
+            if len(deliverables) != 1:
+                raise ValueError(
+                    "loop wave split child deliverable is not singular")
+            task_id = str(deliverables[0])
+            if task_id in bindings:
+                raise ValueError("loop wave split task binding is duplicated")
             child_id = expected_ids[ordinal]
             child = _indexed_stage(store, manifest, run_id, child_id)
             if child.get("stage_kind") != "build" or \
@@ -2664,12 +3299,37 @@ def _verified_stage_loop_wave_split(
                     list(child.get("deliverables") or []) != [task_id]:
                 raise ValueError(
                     "loop wave split child does not match its task binding")
+            stable_fields = (
+                "run_id", "stage_id", "stage_kind", "requirement", "design",
+                "parent_stage_ids", "predecessor_stage_ids",
+                "input_manifest_ref", "execution_root_id", "deliverables",
+                "selected_artifacts", "budget", "dependencies", "contracts",
+                "authority", "created_at")
+            if any(child.get(field) != original.get(field)
+                   for field in stable_fields) or int(
+                       child.get("aggregate_revision") or 0) < int(
+                           original.get("aggregate_revision") or 0):
+                raise ValueError(
+                    "loop wave split child identity advanced incompatibly")
             roots.append(str(child.get("execution_root_id") or ""))
             bindings[task_id] = child_id
         if not all(roots) or len(set(roots)) != len(roots) or \
                 str(parent.get("execution_root_id") or "") in roots:
             raise ValueError("loop wave split execution roots are not unique")
-        candidates.append(bindings)
+        if expected_bindings:
+            if any(bindings.get(task_id) != child_id
+                   for task_id, child_id in expected_bindings.items()):
+                continue
+            candidates.append(dict(expected_bindings))
+        elif list(bindings) == task_ids and \
+                int(manifest.get("revision") or 0) == int(
+                    checked["committed_revision"]) and \
+                projection == receipt_projection:
+            # Without a persisted singleton binding, only the exact
+            # post-split state is safe to reconstruct.  Once a child has
+            # dispatched, the durable binding is required to identify which
+            # split owns the remaining work.
+            candidates.append(bindings)
     if len(candidates) > 1:
         raise ValueError("stage-native wave split recovery is ambiguous")
     return candidates[0] if candidates else None
@@ -2690,12 +3350,64 @@ def _persist_stage_loop_wave_bindings(
                locked_tasks[task_id].get("status") != "pending"
                for task_id in task_ids):
             raise ValueError("stage-native wave changed during split binding")
-        current = _verified_stage_loop_wave_split(ws, ready)
+        current = _verified_stage_loop_wave_split(
+            ws, ready, known_bindings=bindings)
         if current != dict(bindings):
             raise ValueError("stage-native wave split changed before binding")
         table = locked.setdefault("_stage_bindings", {})
         for task_id, child_id in bindings.items():
+            existing = table.get(task_id)
+            if isinstance(existing, Mapping) and existing.get("build") not in {
+                    None, child_id}:
+                raise ValueError("stage-native wave binding conflicts")
             table.setdefault(task_id, {})["build"] = child_id
+
+
+def _stage_loop_resumed_wave_children(
+        ws: str, bindings: Mapping[str, str]) -> set[str]:
+    """Return bound task ids that already have a verified runtime dispatch."""
+    if not bindings:
+        return set()
+    locator = runtime_storage.load_workspace_locator(ws)
+    if not isinstance(locator, Mapping) or not locator.get("run_id"):
+        raise ValueError("stage-native wave run identity is unavailable")
+    run_id = str(locator["run_id"])
+    manifest = _stage_store(ws, run_id).load(run_id)
+    operations = manifest.get("stage_operations") or {}
+    if not isinstance(operations, Mapping):
+        raise ValueError("stage-native resume operation index is invalid")
+    by_child = {str(child_id): str(task_id)
+                for task_id, child_id in bindings.items()}
+    roots = {
+        child_id: str(_indexed_stage(
+            _stage_store(ws, run_id), manifest, run_id,
+            child_id).get("execution_root_id") or "")
+        for child_id in by_child
+    }
+    resumed: set[str] = set()
+    for raw in operations.values():
+        if not isinstance(raw, dict) or raw.get("operation") != "resume_stage":
+            continue
+        checked = tp.verify_stage_receipt(
+            raw, expected_operation="resume_stage")
+        if not str(checked.get("operation_id") or "").startswith(
+                "loop-dispatch-"):
+            continue
+        result = checked.get("result") or {}
+        child_id = str(result.get("stage_id") or "")
+        if child_id not in by_child:
+            continue
+        claim = result.get("claim")
+        attempt_id = str(result.get("attempt_id") or "")
+        if not isinstance(claim, Mapping) or claim != {
+                "schema": "taskplane.stage-execution-attempt-claim/v1",
+                "run_id": run_id, "stage_id": child_id,
+                "execution_root_id": roots[child_id],
+                "attempt_id": attempt_id,
+        } or checked.get("stage_ids") != [child_id]:
+            raise ValueError("loop wave resume receipt is invalid")
+        resumed.add(by_child[child_id])
+    return resumed
 
 
 def _stage_loop_wave_dispatches(
@@ -2703,9 +3415,22 @@ def _stage_loop_wave_dispatches(
     """Bind each parallel entry to its own immutable stage/root."""
     if not ready:
         return {}
-    recovered = _verified_stage_loop_wave_split(ws, ready)
+    table = state.get("_stage_bindings") or {}
+    known = {
+        str(task["id"]): str(binding["build"])
+        for task in ready
+        for binding in [table.get(str(task["id"]))
+                        if isinstance(table, Mapping) else None]
+        if isinstance(binding, Mapping) and binding.get("build")
+    }
+    if known and len(known) != len(ready):
+        raise ValueError(
+            "stage-native wave has partial persisted split bindings")
+    recovered = _verified_stage_loop_wave_split(
+        ws, ready, known_bindings=(known or None))
     if recovered is not None:
         _persist_stage_loop_wave_bindings(ws, state, ready, recovered)
+        resumed = _stage_loop_resumed_wave_children(ws, recovered)
         current = load(ws) or dict(state)
         return {
             str(task["id"]): _stage_loop_dispatch(
@@ -2713,7 +3438,7 @@ def _stage_loop_wave_dispatches(
                 declared_scope=_stage_loop_scope(
                     task.get("scope"), tp.DEFAULT_OUT_OF_SCOPE),
                 stage_id=recovered[str(task["id"])])
-            for task in ready
+            for task in ready if str(task["id"]) not in resumed
         }
     context = _stage_loop_context(ws, state)
     if context is None:
@@ -2903,6 +3628,18 @@ def wave(ws: str) -> dict:
                 f"{exc.__class__.__name__}: {exc}",
                 "step": "execute", "parallel": True}
 
+    # A recovered split can already have verified resume receipts for some
+    # children.  The dispatch helper returns only the still-undispatched task
+    # ids; do not turn omitted children into fresh legacy/root dispatches.
+    post_stage_state = load(ws) or state
+    post_bindings = post_stage_state.get("_stage_bindings") or {}
+    if ready and isinstance(post_bindings, Mapping) and all(
+            isinstance(post_bindings.get(str(task["id"])), Mapping) and
+            post_bindings[str(task["id"])].get("build")
+            for task in ready):
+        ready = [task for task in ready
+                 if str(task["id"]) in stage_dispatches]
+
     entries = []
     for t in ready:
         dispatch = tp.dispatch_fields(
@@ -3090,16 +3827,12 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
 def next_action(ws: str, rid: str | None = None) -> dict:
     """Advance to the current step's work: activate its contract and return
     what the driver should run. Human steps pause without activating."""
-    if refusal := _stage_loop_mutation_refusal(ws):
+    if refusal := _stage_loop_mutation_refusal(
+            ws, allow_new_run_bootstrap=True):
         return refusal
     state = load(ws)
     if state is None:
         return {"error": "no active loop — run `tp.py loop init` first"}
-    if _stage_mode() == "new-run":
-        try:
-            _stage_loop_context(ws, state)
-        except Exception as exc:
-            return {"error": f"{exc}", "step": state.get("step")}
     # v2.3.0 wiring: attach a requirement BEFORE the design DoR evaluates —
     # the sanctioned mid-loop exit for a loop started without --req. The
     # validator (design_contract.design_attach_requirement) enforces the same
@@ -3115,6 +3848,15 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             return {"error": "requirement attach failed",
                     "blockers": attach_errors}
         state = load(ws)
+    try:
+        _stage_bootstrap_pristine_root(ws, state)
+    except Exception as exc:
+        return {"error": "stage-native root bootstrap failed closed: "
+                f"{exc.__class__.__name__}: {exc}",
+                "step": state.get("step")}
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop — run `tp.py loop init` first"}
     step = state["step"]
 
     if step == "retro":
@@ -4763,6 +5505,10 @@ def _stage_loop_gate_completion(
     result["_stage_output"] = {
         "source_workspace": source_workspace,
         "sources": sources, "values": values,
+        **({"managed_evidence_step": str(step)}
+           if isinstance(submission, Mapping) and
+           submission.get("evidence_paths") and step in {"evaluate", "em"}
+           else {}),
         **({"build": {"target_commit": build_commit}}
            if step in {"execute", "fix"} else {}),
     }
@@ -6030,11 +6776,11 @@ def select(ws: str, choice: str, note: str = "") -> dict:
                 "tags": ["ab-selection"], "context_files": context_files,
                 "links": {"loop": "selection"},
             })
-        state["_stage_completion"] = {
-            "schema": "taskplane.loop-selection-result/v1",
-            "choice": selection, "note": str(note or "")[:1024],
-            "workspace_revision": current_revision,
-        }
+        state["_stage_completion"] = _stage_loop_decision_completion(
+            ws, schema="taskplane.loop-selection-result/v1",
+            step="selection", outcome="selected",
+            result={"choice": selection, "note": str(note or "")[:1024],
+                    "selected_revision": current_revision})
         try:
             stage_transition = _stage_loop_transition(
                 ws, state, from_step="selection", to_step=state["step"])
@@ -6092,6 +6838,7 @@ def resolve(ws: str, decision: str) -> dict:
     if state is None or state["step"] != "escalated":
         return {"error": "nothing escalated to resolve"}
     t = _current_task(state)
+    cascaded = []
     if decision == "retry":
         evaluation = t.get("evaluation") or {}
         retry_evaluation = (
@@ -6151,11 +6898,13 @@ def resolve(ws: str, decision: str) -> dict:
         state["step"] = "failed"
     else:
         return {"error": "decision must be retry|skip|defer|abort"}
-    state["_stage_completion"] = {
-        "schema": "taskplane.loop-resolution-result/v1",
-        "decision": decision, "task_id": t.get("id"),
-        "resulting_status": t.get("status"),
-    }
+    state["_stage_completion"] = _stage_loop_decision_completion(
+        ws, schema="taskplane.loop-resolution-result/v1",
+        step="escalated", outcome="resolved",
+        result={"decision": decision, "task_id": t.get("id"),
+                "resulting_status": t.get("status"),
+                "resulting_step": state["step"],
+                "cascaded_task_ids": list(cascaded)})
     stage_transition = None
     with mutate(ws) as locked:                       # v2.3.1: locked commit
         if locked.get("step") != "escalated":
@@ -6189,11 +6938,13 @@ def replan(ws: str, by: str, reason: str) -> dict:
             yield locked
             if locked is None or locked.get("step") == from_step:
                 return
-            locked["_stage_completion"] = {
-                "schema": "taskplane.loop-replan-result/v1",
-                "from_step": from_step, "by": str(by),
-                "reason": str(reason),
-            }
+            locked["_stage_completion"] = _stage_loop_decision_completion(
+                workspace, schema="taskplane.loop-replan-result/v1",
+                step=from_step, outcome="replanned",
+                result={"from_step": from_step,
+                        "to_step": str(locked["step"]),
+                        "by": str(by)[:256],
+                        "reason": str(reason)[:1024]})
             locked["_stage_force_transition"] = True
             try:
                 _stage_loop_transition(

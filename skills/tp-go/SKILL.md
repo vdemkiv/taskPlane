@@ -143,7 +143,10 @@ explicit approval in conversation. Never run the loop silently.
 2. **Initialize once:** when the user supplied an existing R-id, run
    `$TP loop init --req R-XXXX "<goal>"`. Otherwise run `$TP loop init
    "<goal>"`; the PM step owns the first requirement/spec. Never run a
-   standalone `req new` before this loop. Add `--design` for a
+   standalone `req new` before this loop. The `new-run` canary is the explicit
+   exception: it requires an exact existing R-id and accountable human, so run
+   `$TP loop init --req R-XXXX --by "<human>" "<goal>"` with a stable session
+   identity already exported. Add `--design` for a
    complex/risky/contract-changing or explicitly requested proposed-HOW phase;
    add `--design-only` when the deliverable is the approved design itself;
    add `--parallel` when the plan will have independent tasks; use `--spec
@@ -248,6 +251,30 @@ explicit approval in conversation. Never run the loop silently.
 default and accepts only two enabling modes: `new-run` for a pristine new-run
 canary, and `enabled` after verified migration. Other values fail closed, and
 `new-run` refuses an existing singleton or migration-bound run. Before
+starting a canary, set `TASKPLANE_STAGE_NATIVE=new-run` and then run normal
+`loop init` with `--req <R-id>` resolving an exact existing requirement and
+`--by <human identity>` naming the accountable human who becomes the root
+stage `authority.actor`. A stable session identity must already be present in
+`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`. The
+workspace must already have a governed locator bound to an unmigrated v3 run
+with an exact target revision. Only a successful init with all of those facts
+mints the private pristine-new-run marker. The first normal `loop next`
+automatically creates, commits, and dispatches one deterministic root through
+the internal lifecycle, deriving its authority from verified governed run
+facts and storing its bounded input handoff internally. Replays reuse the
+committed operation. Do not create stage JSON, authority JSON, handoff
+artifacts, or a separate `stage start` request for this loop bootstrap.
+`loop wave` never bootstraps a root: it requires the already-bound v4 journey
+and fails closed when that binding is missing.
+
+Enabling `new-run` only after init, copying or inferring the marker, any prior
+legacy mutation or progress, a non-pristine singleton, or a missing,
+mismatched, or corrupt bound locator/run/store identity refuses without
+singleton or stage mutation. Init also refuses when `--req`, its exact
+requirement, `--by`, stable session identity, the unmigrated v3 run, or its
+exact target revision is missing. After the root commits, the singleton
+retains a durable run binding; locator/store loss remains a fail-closed refusal rather
+than permission to fall back to legacy dispatch. Before
 cutover, shadow migration compares bounded legacy/v4 summaries,
 retained-reference counts, lineage, and authority without switching readers.
 Enable stage-native roots for new runs before migrating existing runs; keep

@@ -134,6 +134,29 @@ class TestGeneratedCliReference(unittest.TestCase):
             for field in allowed:
                 self.assertIn(field, documentation, (command, field))
 
+    def test_new_run_bootstrap_docs_match_the_automatic_loop_boundary(self):
+        generated = self._generate()
+        skill = _read("skills/tp-go/SKILL.md")
+
+        for text in (generated, skill):
+            self.assertIn("TASKPLANE_STAGE_NATIVE=new-run", text)
+            self.assertIn("pristine-new-run marker", text)
+            self.assertIn("loop next", text)
+            self.assertIn("loop wave", text)
+            self.assertIn("never bootstraps a root", text)
+            self.assertIn("deterministic root", text)
+            self.assertIn("bound locator", text)
+            self.assertIn("singleton or stage mutation", text)
+            self.assertIn("TASKPLANE_SESSION_ID", text)
+            self.assertIn("CODEX_THREAD_ID", text)
+            self.assertIn("CLAUDE_SESSION_ID", text)
+            self.assertIn("exact existing requirement", text)
+            self.assertIn("authority.actor", text)
+        self.assertIn(
+            "must not create stage JSON, authority JSON", generated)
+        self.assertIn(
+            "Do not create stage JSON, authority JSON", skill)
+
 
 class TestReferencedDocumentation(unittest.TestCase):
     REFERENCE = re.compile(

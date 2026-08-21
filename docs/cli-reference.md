@@ -599,14 +599,14 @@ Positional arguments:
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--advisory` | flag | continue with visibly advisory screen enforcement |
-| `--by` | BY | human identity required with --advisory |
+| `--by` | BY | human identity required with --advisory and with TASKPLANE_STAGE_NATIVE=new-run; the new-run value becomes the root stage authority.actor |
 | `--checkpoints` | CHECKPOINTS | comma list: plan,em (default both) |
 | `--design` | flag | run the Design Contract + human design approval before implementation planning |
 | `--design-only` | flag | stop after the human approves the Design Contract instead of continuing to Plan/Build/Review |
 | `--force` | flag | replace an in-flight loop (the old loop.json is archived first — without this flag re-init refuses) |
 | `--max-fix-cycles` | MAX_FIX_CYCLES | fix cycles the loop may run before it escalates to the human (default 2) |
 | `--parallel` | flag | execute waves of scope-disjoint tasks concurrently, one governed agent per task |
-| `--req` | REQ | anchor the loop to a requirement R-id |
+| `--req` | REQ | anchor the loop to a requirement R-id; TASKPLANE_STAGE_NATIVE=new-run requires an exact existing requirement |
 | `--spec` | SPEC | path to an existing spec (skips PM) |
 
 ## `tp.py loop next`
@@ -1128,6 +1128,41 @@ and artifact validation.
 | `terminalize` | `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `authority` | `schema`, `reason_code` + `reason` (required for closed/discarded; forbidden for done), `completed_deliverables` + `completion_evidence` (all deliverables and non-empty evidence required for done), `handoff_manifest` |
 | `terminalize-and-start` | `predecessor_stage_id`, `stage` OR `successor_stage`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `outcome`, `actor`, `terminalized_at`, `authority` | `schema`, `run_id`, `reason_code` + `reason` (required for closed/discarded; forbidden for done), `completed_deliverables` + `completion_evidence` (all deliverables and non-empty evidence required for done), `foreground`, `declared_scope` |
 | `split` | `run_id`, `stage_id`, `expected_head_fingerprint`, `expected_revision`, `operation_id`, `child_specs`, `actor`, `terminalized_at`, `reason`, `authority` | `schema`, `declared_scopes` |
+
+#### Automatic pristine new-run bootstrap
+
+Set `TASKPLANE_STAGE_NATIVE=new-run` before `tp.py loop init`. Supply
+an exact existing requirement with `--req` and the accountable human
+with `--by`; that human becomes the root stage `authority.actor`. A
+stable session identity must already be present in
+`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.
+The workspace must already have a governed locator bound to an
+unmigrated v3 run with an exact target revision.
+
+Only that successful normal initialization mints the private
+pristine-new-run marker; do not add, copy, or infer the marker later.
+
+The first normal `tp.py loop next` atomically creates, commits, and
+dispatches one deterministic root stage through the internal
+lifecycle. It derives root authority from verified governed run facts
+and stores the bounded input handoff
+internally. Replaying the same call reuses the committed operation.
+The loop caller must not create stage JSON, authority JSON, a handoff
+artifact, or a separate `tp.py stage start` request.
+`tp.py loop wave` never bootstraps a root: it requires the already
+bound v4 journey and fails closed when that binding is missing.
+
+Initialization refuses without singleton or stage mutation when the
+requirement is missing or unknown, `--by` is missing, stable session
+identity is missing, the governed locator is missing, the bound run is
+not unmigrated v3, or its exact target revision is unavailable.
+Bootstrap also refuses when `new-run` was enabled only after init, the
+private marker is absent, the singleton is no longer structurally
+pristine, legacy progress exists, or the bound locator/run/store
+identity becomes mismatched or corrupt. After the v4 root commit, the
+singleton retains a durable run binding; losing or corrupting its
+locator or store remains a
+fail-closed refusal rather than a fallback to legacy dispatch.
 
 #### Closed nested shapes
 

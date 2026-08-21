@@ -12,6 +12,7 @@ import pytest
 
 from taskplane import (
     loop,
+    requirements,
     review_evidence,
     run_store,
     stage_entities,
@@ -111,6 +112,55 @@ def _git(workspace: Path, *args: str) -> str:
         ["git", *args], cwd=workspace, text=True, capture_output=True,
         check=True)
     return result.stdout.strip()
+
+
+def _real_pristine_run(
+        tmp_path: Path,
+        ) -> tuple[Path, run_store.RunStore, dict[str, object]]:
+    """Create only public run infrastructure, never stage/handoff objects."""
+    workspace = tmp_path / "pristine-loop-workspace"
+    workspace.mkdir()
+    _git(workspace, "init", "-q", "-b", "main")
+    _git(workspace, "config", "user.email", "test@example.com")
+    _git(workspace, "config", "user.name", "Test")
+    (workspace / ".gitignore").write_text(
+        ".taskplane/\n", encoding="utf-8")
+    (workspace / "README.md").write_text(
+        "pristine stage journey\n", encoding="utf-8")
+    _git(workspace, "add", ".")
+    _git(workspace, "commit", "-qm", "base")
+    _git(
+        workspace, "remote", "add", "origin",
+        "https://github.com/example/taskplane-pristine.git")
+    revision = _git(workspace, "rev-parse", "HEAD")
+    run_id = "run-cross-host-pristine"
+    identity = storage.resolve_repository_identity(str(workspace))
+    store = run_store.RunStore(home=str(tmp_path / "pristine-home"))
+    initial = store.create(
+        identity,
+        run_id=run_id,
+        checkout=str(workspace),
+        host={"kind": "codex", "session_id": "pristine-session"},
+        target={"kind": "workspace", "revision": revision},
+    )
+    layout = storage.resolve_layout(
+        identity, home=store.home, run_id=run_id)
+    storage.write_workspace_locator(
+        str(workspace), identity=identity, layout=layout, run_id=run_id)
+    return workspace, store, initial
+
+
+def _record_bootstrap_requirement(
+        workspace: Path, *, ordinal: int = 1) -> dict[str, object]:
+    records = [
+        requirements.record_requirement(
+            str(workspace), f"stage bootstrap requirement {index}",
+            functional=["bounded stage dispatch starts without caller JSON"],
+            acceptance=["the exact run owns one immutable root stage"],
+        )
+        for index in range(1, ordinal + 1)
+    ]
+    return records[-1]
 
 
 def _real_loop_stage(
@@ -235,42 +285,59 @@ def _real_loop_stage(
 def _parallel_loop_wave(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         ) -> tuple[Path, run_store.RunStore, dict[str, object]]:
-    workspace, store, parent = _real_loop_stage(
-        tmp_path, stage_kind="build", stage_id="stage-build-cross-host")
+    workspace, store, initial = _real_pristine_run(tmp_path)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    tasks = [
+        {
+            "id": "t-left", "scope": ["left/**"], "tests": "true",
+            "deps": [], "status": "pending", "merge_on_pass": False,
+        },
+        {
+            "id": "t-right", "scope": ["right/**"], "tests": "true",
+            "deps": [], "status": "pending", "merge_on_pass": False,
+        },
+    ]
+    plan_dir = workspace / "plan"
+    plan_dir.mkdir(exist_ok=True)
+    (plan_dir / "plan.md").write_text(
+        "# Parallel delivery plan\n\nBuild the two independent tasks.\n",
+        encoding="utf-8",
+    )
+    (plan_dir / "tasks.json").write_text(
+        json.dumps({"tasks": tasks}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     state = loop.init(
         str(workspace), "dispatch two independent stage roots",
-        spec_path="specs/spec.md", requirement_id="R-0004", parallel=True)
+        spec_path="specs/spec.md",
+        requirement_id=str(requirement["id"]), parallel=True,
+        by="human:vdemkiv")
     assert "error" not in state, state
-    started = loop.stage_command(str(workspace), "start", {
-        "schema": "taskplane.stage-command/v1",
-        "stage": parent,
-        "expected_revision": 1,
-        "operation_id": "start-cross-host-build-wave",
-        "expected_predecessor_fingerprints": {},
-        "foreground": True,
-        "authority": parent["authority"],
-        "declared_scope": {
-            "scope_paths": ["left/**", "right/**"],
-            "out_of_scope_paths": ["taskplane/track.py"],
-        },
-    })
-    assert "error" not in started, started
-    state.update({
-        "step": "execute",
-        "submission_required": False,
-        "tasks": [
-            {
-                "id": "t-left", "scope": ["left/**"], "tests": "true",
-                "deps": [], "status": "pending", "merge_on_pass": False,
-            },
-            {
-                "id": "t-right", "scope": ["right/**"], "tests": "true",
-                "deps": [], "status": "pending", "merge_on_pass": False,
-            },
-        ],
-    })
+    bootstrapped = loop.next_action.__wrapped__(str(workspace))
+    assert "error" not in bootstrapped, bootstrapped
+    monkeypatch.setattr(
+        loop, "_load_tasks",
+        lambda _ws, current: current.update({"tasks": copy.deepcopy(tasks)}))
+    monkeypatch.setattr(loop, "_plan_dor_errors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        loop.tp, "plan_ordering_refusal", lambda *_a, **_k: None)
+    advanced = loop.gate.__wrapped__(str(workspace), "pass")
+    assert "error" not in advanced, advanced
+    assert advanced["step"] == "plan_approval"
+    approved = loop.approve.__wrapped__(
+        str(workspace), force=True, by="human:vdemkiv")
+    assert "error" not in approved, approved
+    assert approved["step"] == "execute"
+    state = loop.load(str(workspace))
+    state["submission_required"] = False
     loop.save(str(workspace), state)
+    manifest = store.load(str(initial["run_id"]))
+    parent_id = manifest["active_stage_projection"]["foreground_stage_id"]
+    parent = store.read_stage_object(
+        str(initial["run_id"]), manifest["stage_heads"][parent_id]["object"])
+    assert parent["stage_kind"] == "build"
     return workspace, store, parent
 
 
@@ -370,6 +437,13 @@ def test_real_loop_journey_emits_one_bounded_dispatch_on_every_host(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, store, stage = _real_loop_stage(tmp_path)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "cross-host-session")
+    requirement = _record_bootstrap_requirement(workspace, ordinal=4)
+    assert requirement["id"] == "R-0004"
+    initialized = loop.init(
+        str(workspace), "exercise a real host stage",
+        requirement_id="R-0004", by="human:vdemkiv")
+    assert "error" not in initialized, initialized
 
     started = loop.stage_command(str(workspace), "start", {
         "schema": "taskplane.stage-command/v1",
@@ -445,41 +519,7 @@ def test_real_loop_journey_emits_one_bounded_dispatch_on_every_host(
 
 def test_parallel_wave_preserves_independent_stage_and_root_identity_on_hosts(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace, store, parent = _real_loop_stage(
-        tmp_path, stage_kind="build", stage_id="stage-build-cross-host")
-    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
-    state = loop.init(
-        str(workspace), "dispatch two independent stage roots",
-        spec_path="specs/spec.md", requirement_id="R-0004", parallel=True)
-    assert "error" not in state, state
-    started = loop.stage_command(str(workspace), "start", {
-        "schema": "taskplane.stage-command/v1",
-        "stage": parent,
-        "expected_revision": 1,
-        "operation_id": "start-cross-host-build-wave",
-        "expected_predecessor_fingerprints": {},
-        "foreground": True,
-        "authority": parent["authority"],
-        "declared_scope": {
-            "scope_paths": ["left/**", "right/**"],
-            "out_of_scope_paths": ["taskplane/track.py"],
-        },
-    })
-    assert "error" not in started, started
-    state.update({
-        "step": "execute",
-        "tasks": [
-            {
-                "id": "t-left", "scope": ["left/**"], "tests": "true",
-                "deps": [], "status": "pending",
-            },
-            {
-                "id": "t-right", "scope": ["right/**"], "tests": "true",
-                "deps": [], "status": "pending",
-            },
-        ],
-    })
-    loop.save(str(workspace), state)
+    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
 
     emitted = loop.wave(str(workspace))
 
@@ -591,6 +631,95 @@ def test_parallel_wave_recovers_deterministic_bindings_after_split_interrupt(
     assert len([
         receipt for receipt in after_recovery["stage_operations"].values()
         if receipt.get("operation") == "split_stage"
+    ]) == 1
+
+
+def test_pristine_new_run_wave_refuses_legacy_or_implicit_root_dispatch(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    state = loop.init(
+        str(workspace), "bootstrap a parallel build wave", parallel=True,
+        requirement_id=str(requirement["id"]), by="human:vdemkiv")
+    state.update({
+        "step": "execute",
+        "tasks": [
+            {
+                "id": "t-left", "scope": ["left/**"], "tests": "true",
+                "deps": [], "status": "pending",
+            },
+            {
+                "id": "t-right", "scope": ["right/**"], "tests": "true",
+                "deps": [], "status": "pending",
+            },
+        ],
+    })
+    loop.save(str(workspace), state)
+    state_path = Path(loop._loop_path(str(workspace)))
+    before_state = state_path.read_bytes()
+    before_run = copy.deepcopy(store.load(str(initial["run_id"])))
+
+    refused = loop.wave(str(workspace))
+
+    assert "error" in refused
+    assert "stage-native" in refused["error"]
+    assert "first `loop next`" in refused["error"]
+    assert "wave" not in refused or refused["wave"] == []
+    assert store.load(str(initial["run_id"])) == before_run
+    assert state_path.read_bytes() == before_state
+
+
+def test_wave_recovers_after_first_child_resume_without_resplitting(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    original_dispatch = loop._stage_loop_dispatch
+    observed: list[str] = []
+
+    def interrupt_second_dispatch(*args, **kwargs):
+        stage_id = str(kwargs.get("stage_id") or "")
+        observed.append(stage_id)
+        if len(observed) == 2:
+            raise RuntimeError("simulated crash after first child resume")
+        return original_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(loop, "_stage_loop_dispatch", interrupt_second_dispatch)
+    interrupted = loop.wave(str(workspace))
+    monkeypatch.setattr(loop, "_stage_loop_dispatch", original_dispatch)
+    committed = store.load(str(parent["run_id"]))
+    bindings_before = copy.deepcopy(
+        loop.load(str(workspace))["_stage_bindings"])
+    active_before = set(
+        committed["active_stage_projection"]["active_stage_ids"])
+
+    assert "simulated crash after first child resume" in interrupted["error"]
+    assert len(observed) == 2
+    assert set(observed) == active_before
+    assert len([
+        row for row in committed["stage_operations"].values()
+        if row.get("operation") == "split_stage"
+    ]) == 1
+
+    recovered = loop.wave(str(workspace))
+
+    assert "error" not in recovered, recovered
+    recovered_ids = {
+        entry["task"]["id"]:
+        entry["stage_runtime_dispatch"]["startup"]["stage_id"]
+        for entry in recovered["wave"]
+    }
+    assert recovered_ids == {
+        task_id: binding["build"]
+        for task_id, binding in bindings_before.items()
+        if binding["build"] != observed[0]
+    }
+    after = store.load(str(parent["run_id"]))
+    assert set(after["active_stage_projection"][
+        "active_stage_ids"]) == active_before
+    assert len([
+        row for row in after["stage_operations"].values()
+        if row.get("operation") == "split_stage"
     ]) == 1
 
 

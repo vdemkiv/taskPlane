@@ -26,21 +26,46 @@ def _workspace(tmp_path):
     return str(workspace)
 
 
-def _start_real_stage_loop(tmp_path, monkeypatch, *, stage_kind="product",
-                           stage_id=None, goal="exercise the real stage loop"):
-    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+def _initialize_real_new_run(tmp_path, monkeypatch, *, stage_kind="product",
+                             stage_id=None,
+                             goal="exercise the real stage loop",
+                             parallel=False):
+    from taskplane import requirements as reqs
+    from taskplane.tests.test_stage_cross_host import (
+        _real_loop_stage, _record_bootstrap_requirement)
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     stage_id = stage_id or f"stage-{stage_kind}-loop-root"
     workspace, store, stage = _real_loop_stage(
         tmp_path, stage_kind=stage_kind, stage_id=stage_id)
+    requirement = _record_bootstrap_requirement(workspace, ordinal=4)
+    requirement = reqs.amend_requirement(
+        str(workspace), requirement["id"],
+        nfr={
+            "reliability": "stage transitions fail closed without evidence",
+            "security": "stage output stays inside governed storage",
+            "architecture": "the immutable stage aggregate owns transitions",
+        })
+    assert requirement["id"] == stage["requirement"]["id"] == "R-0004"
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
-    initialized = loop.init(str(workspace), goal)
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "cross-host-session")
+    initialized = loop.init(
+        str(workspace), goal, requirement_id=requirement["id"],
+        parallel=parallel, by=stage["authority"]["actor"])
+    assert "error" not in initialized, initialized
+    return str(workspace), store, stage, initialized
+
+
+def _start_real_stage_loop(tmp_path, monkeypatch, *, stage_kind="product",
+                           stage_id=None, goal="exercise the real stage loop"):
+    workspace, store, stage, _initialized = _initialize_real_new_run(
+        tmp_path, monkeypatch, stage_kind=stage_kind, stage_id=stage_id,
+        goal=goal)
     started = loop.stage_command(str(workspace), "start", {
         "schema": "taskplane.stage-command/v1",
         "stage": stage,
         "expected_revision": 1,
-        "operation_id": f"start-{stage_id}",
+        "operation_id": f"start-{stage['stage_id']}",
         "expected_predecessor_fingerprints": {},
         "foreground": True,
         "authority": stage["authority"],
@@ -49,7 +74,6 @@ def _start_real_stage_loop(tmp_path, monkeypatch, *, stage_kind="product",
             "out_of_scope_paths": ["taskplane/loop.py"],
         },
     })
-    assert "error" not in initialized, initialized
     assert "error" not in started, started
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "enabled")
     return str(workspace), store, stage, started
@@ -192,83 +216,34 @@ def test_corrupt_stage_locator_or_store_refuses_without_singleton_mutation(
 
 def test_new_run_can_start_after_normal_loop_init_and_replay_once(
         tmp_path, monkeypatch) -> None:
-    ws = _workspace(tmp_path)
+    ws, store, stage, first = _start_real_stage_loop(
+        tmp_path / "explicit-replay", monkeypatch,
+        stage_id="stage-product-explicit-replay")
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
-    initialized = loop.init(ws, "start the stage-native canary")
-    stage = {
-        "run_id": "run-r0004", "stage_id": "stage-product-root-001",
-        "stage_kind": "product", "fingerprint": "f" * 64,
-        "predecessor_stage_ids": [], "selected_artifacts": [],
-        "execution_root_id": "execution-stage-product-root-001",
-        "authority": {"actor": "human:owner"},
-    }
-    receipt = {
-        "schema": "taskplane.stage-operation-receipt/v1",
-        "operation": "start_stage", "operation_id": "start-root-once",
-        "stage_ids": [stage["stage_id"]],
-    }
-    manifest = {
-        "schema": "taskplane.run/v3", "run_id": "run-r0004",
-        "revision": 3,
-    }
-    committed = []
-
-    class Store:
-        @staticmethod
-        def load(run_id):
-            assert run_id == "run-r0004"
-            return copy.deepcopy(manifest)
-
-    class StageEntities:
-        @staticmethod
-        def validate_stage(value):
-            assert value == stage
-            return value
-
-    class Lifecycle:
-        @staticmethod
-        def start_stage(candidate, **kwargs):
-            assert candidate == stage
-            assert kwargs["operation_id"] == "start-root-once"
-            if not committed:
-                committed.append("start-root-once")
-                manifest.update({
-                    "schema": "taskplane.run/v4", "revision": 4,
-                    "stage_operations": {"start-root-once": receipt},
-                })
-            return receipt
-
-    monkeypatch.setattr(loop, "_stage_store", lambda _ws, _run_id: Store())
-    monkeypatch.setattr(
-        loop, "_validate_stage_request", lambda _action, request: request)
-    monkeypatch.setattr(
-        loop, "_stage_lifecycle",
-        lambda *_args: (StageEntities, Lifecycle()))
-    monkeypatch.setattr(loop, "_verified_stage_handoff", lambda *_a: {})
-    monkeypatch.setattr(loop, "_preflight_stage_dispatch", lambda *_a, **_k: None)
-    monkeypatch.setattr(loop.tp, "verify_stage_receipt", lambda value, **_k: value)
-    monkeypatch.setattr(
-        loop, "_stage_dispatch",
-        lambda *_a, **_k: {"schema": "taskplane.stage-dispatch/v1"})
     request = {
-        "stage": stage, "expected_revision": 3,
-        "operation_id": "start-root-once",
-        "expected_predecessor_fingerprints": {},
+        "schema": "taskplane.stage-command/v1", "stage": stage,
+        "expected_revision": 1,
+        "operation_id": "start-stage-product-explicit-replay",
+        "expected_predecessor_fingerprints": {}, "foreground": True,
         "authority": stage["authority"],
+        "declared_scope": {
+            "scope_paths": ["README.md"],
+            "out_of_scope_paths": ["taskplane/loop.py"],
+        },
     }
-
-    first = loop.stage_command(ws, "start", request)
     second = loop.stage_command(ws, "start", request)
 
-    assert initialized["step"] == "pm"
-    assert initialized["_stage_native_new_run_pristine"] is True
-    assert "error" not in first
     assert second == first
-    assert committed == ["start-root-once"]
+    manifest = store.load(stage["run_id"])
+    assert list(manifest["stage_operations"]).count(
+        "start-stage-product-explicit-replay") == 1
 
 
-def test_pristine_new_run_commits_root_before_dispatch_and_refuses_late_start(
+def test_pristine_new_run_next_bootstraps_once_before_public_dispatch(
         tmp_path, monkeypatch) -> None:
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement)
+
     observed = []
     real_dispatch = loop._stage_dispatch
 
@@ -283,33 +258,52 @@ def test_pristine_new_run_commits_root_before_dispatch_and_refuses_late_start(
             store, lifecycle, receipt, stage, **kwargs)
 
     monkeypatch.setattr(loop, "_stage_dispatch", observe_committed_root)
-    ws, store, stage, started = _start_real_stage_loop(
-        tmp_path / "pristine", monkeypatch,
-        stage_id="stage-product-pristine-root")
-
-    assert observed == [stage["stage_id"]]
-    assert started["dispatch"]["startup"]["stage_id"] == stage["stage_id"]
-    assert store.load(stage["run_id"])["schema"] == "taskplane.run/v4"
-
-    from taskplane.tests.test_stage_cross_host import _real_loop_stage
-
-    late_root = tmp_path / "late"
-    late_root.mkdir()
-    late_ws, late_store, _late_stage = _real_loop_stage(
-        late_root, stage_kind="product", stage_id="stage-product-late-root")
+    pristine = tmp_path / "pristine"
+    pristine.mkdir()
+    workspace, store, initial = _real_pristine_run(pristine)
+    requirement = _record_bootstrap_requirement(workspace)
+    ws = str(workspace)
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
-    loop.init(str(late_ws), "author Product before stage start")
-    specs = late_ws / "specs"
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    initialized = loop.init(
+        ws, "bootstrap Product without caller stage JSON", parallel=True,
+        requirement_id=requirement["id"], by="human:vdemkiv")
+    assert "error" not in initialized, initialized
+    specs = workspace / "specs"
     specs.mkdir()
     (specs / "spec.md").write_text(
-        "# Product\n\nThe singleton has already produced Product output.\n",
+        "# Product\n\nBootstrap Product before any stage dispatch.\n",
         encoding="utf-8")
-    refused_gate = loop.gate.__wrapped__(str(late_ws), "pass")
+    refused_wave = loop.wave(ws)
 
-    assert "committed root stage before" in refused_gate["error"]
-    assert loop.load(str(late_ws))["step"] == "pm"
-    assert late_store.load("run-cross-host-loop")["schema"] == \
-        "taskplane.run/v3"
+    assert "first `loop next`" in refused_wave["error"]
+    assert store.load(initial["run_id"])["schema"] == "taskplane.run/v3"
+    assert initialized["_stage_native_new_run_pristine"] is True
+    assert initialized["_stage_native_root_authority"]["actor"] == \
+        "human:vdemkiv"
+
+    first = loop.next_action.__wrapped__(ws)
+
+    assert "error" not in first, first
+    dispatch = first["stage_runtime_dispatch"]
+    root_id = dispatch["startup"]["stage_id"]
+    assert observed == [root_id]
+    manifest = store.load(initial["run_id"])
+    assert manifest["schema"] == "taskplane.run/v4"
+    assert manifest["stage_heads"][root_id]["summary"]["state"] == "active"
+    assert loop.load(ws)["_stage_run_binding"]["root_stage_id"] == root_id
+
+    second = loop.next_action.__wrapped__(ws)
+
+    assert "error" not in second, second
+    assert second["stage_runtime_dispatch"]["startup"]["stage_id"] == root_id
+    assert store.load(initial["run_id"])["active_stage_projection"][
+        "active_stage_ids"] == [root_id]
+
+
+def test_new_run_refuses_unmarked_existing_singleton(
+        tmp_path, monkeypatch) -> None:
+    from taskplane.tests.test_stage_cross_host import _real_loop_stage
 
     unmarked_root = tmp_path / "unmarked"
     unmarked_root.mkdir()
@@ -1046,3 +1040,322 @@ def test_retro_retries_sealed_report_after_real_terminalization_failure(
     assert terminal_attempts[0] == terminal_attempts[1]
     assert store.load(stage["run_id"])["active_stage_projection"][
         "active_stage_ids"] == []
+
+
+@pytest.mark.parametrize("mode", ["enabled", "disabled"])
+def test_bound_v4_missing_locator_refuses_mutation_byte_identically(
+        tmp_path, monkeypatch, mode) -> None:
+    ws, store, _stage, _started = _start_real_stage_loop(
+        tmp_path / mode, monkeypatch,
+        stage_id=f"stage-product-bound-{mode}")
+    specs = Path(ws) / "specs"
+    specs.mkdir()
+    (specs / "spec.md").write_text(
+        "# Product\n\nPreserve a bound v4 singleton.\n",
+        encoding="utf-8")
+    state = loop.load(ws)
+    assert state["_stage_run_binding"]["run_schema"] == \
+        "taskplane.run/v4"
+    state_path = Path(loop._loop_path(ws))
+    before = state_path.read_bytes()
+
+    state_root = state_path.parents[2]
+    monkeypatch.setattr(
+        loop.tp, "external_store_root", lambda _ws: str(state_root))
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", mode)
+    monkeypatch.setattr(
+        loop.runtime_storage, "load_workspace_locator", lambda _ws: None)
+
+    refused = loop.gate.__wrapped__(ws, "pass")
+
+    assert "error" in refused
+    assert "locator" in refused["error"].lower()
+    assert state_path.read_bytes() == before
+
+
+def test_selection_transition_seals_the_declared_control_output(
+        tmp_path, monkeypatch) -> None:
+    ws, store, _stage, _started = _start_real_stage_loop(
+        tmp_path / "selection-output", monkeypatch, stage_kind="evaluate",
+        stage_id="stage-evaluate-selection-root")
+    revision = loop.tp.git_head(ws)
+    state = loop.load(ws)
+    state.update({
+        "step": "selection", "ab": True, "baseline": revision,
+        "tasks": [
+            {"id": "variant-a", "variant": "A", "scope": ["a/**"],
+             "status": "passed"},
+            {"id": "variant-b", "variant": "B", "scope": ["b/**"],
+             "status": "passed"},
+        ],
+    })
+    loop.save(ws, state)
+    monkeypatch.setattr(loop, "reconcile_authority_effects", lambda _ws: {})
+    monkeypatch.setattr(loop, "status", lambda _ws: {})
+    monkeypatch.setattr(
+        loop.authority_engine, "build_selection",
+        lambda *_a, **_k: {"authorized": True, "reasons": []})
+
+    selected = loop.select(ws, "A", note="ship the bounded winner")
+
+    assert "error" not in selected, selected
+    assert selected["stage_transition"]["operation"] == \
+        "terminalize_and_start"
+    successor, handoff = _successor_handoff(
+        ws, store, selected["stage_transition"])
+    assert successor["stage_kind"] == "engineering"
+    payloads = _handoff_payload_text(ws, handoff)
+    assert "taskplane.loop-selection-result/v1" in payloads
+    assert "variant-a" in payloads
+    assert "ship the bounded winner" in payloads
+
+
+def test_resolve_transition_seals_the_declared_control_output(
+        tmp_path, monkeypatch) -> None:
+    ws, store, _stage, _started = _start_real_stage_loop(
+        tmp_path / "resolve-output", monkeypatch,
+        stage_kind="engineering", stage_id="stage-engineering-resolve-root")
+    state = loop.load(ws)
+    state.update({
+        "step": "escalated", "current_task": 0,
+        "tasks": [{
+            "id": "t01", "scope": ["README.md"], "status": "failed",
+            "fix_cycles": 3,
+        }],
+    })
+    loop.save(ws, state)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "status", lambda _ws: {})
+
+    resolved = loop.resolve(ws, "retry")
+
+    assert "error" not in resolved, resolved
+    assert resolved["stage_transition"]["operation"] == \
+        "terminalize_and_start"
+    successor, handoff = _successor_handoff(
+        ws, store, resolved["stage_transition"])
+    assert successor["stage_kind"] == "build"
+    payloads = _handoff_payload_text(ws, handoff)
+    assert "taskplane.loop-resolution-result/v1" in payloads
+    assert '"decision": "retry"' in payloads
+    assert '"resulting_step": "fix"' in payloads
+
+
+def test_replan_transition_seals_the_declared_control_output(
+        tmp_path, monkeypatch) -> None:
+    ws, store, _stage, _started = _start_real_stage_loop(
+        tmp_path / "replan-output", monkeypatch, stage_kind="build",
+        stage_id="stage-build-replan-root")
+    state = loop.load(ws)
+    state.update({
+        "step": "execute", "baseline": loop.tp.git_head(ws),
+        "current_task": 0,
+        "tasks": [{
+            "id": "t01", "scope": ["README.md"], "status": "running",
+        }],
+    })
+    loop.save(ws, state)
+    monkeypatch.setattr(loop.tp, "clear", lambda _ws: None)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop.kb, "record_decision", lambda *_a, **_k: {})
+
+    replanned = loop.replan(
+        ws, by="human:owner", reason="replace the invalid task graph")
+
+    assert "error" not in replanned, replanned
+    manifest = store.load("run-cross-host-loop")
+    receipts = [receipt for receipt in manifest["stage_operations"].values()
+                if receipt.get("operation") == "terminalize_and_start"]
+    assert len(receipts) == 1
+    successor, handoff = _successor_handoff(ws, store, receipts[0])
+    assert successor["stage_kind"] == "plan"
+    payloads = _handoff_payload_text(ws, handoff)
+    assert "taskplane.loop-replan-result/v1" in payloads
+    assert "replace the invalid task graph" in payloads
+    assert '"to_step": "plan"' in payloads
+
+
+@pytest.mark.parametrize(
+    "source_case", ["absolute", "outside", "intermediate-symlink"])
+def test_stage_output_sealing_rejects_untrusted_sources_without_capture(
+        tmp_path, monkeypatch, source_case) -> None:
+    from taskplane import review_evidence
+
+    ws, store, stage, _started = _start_real_stage_loop(
+        tmp_path / source_case, monkeypatch, stage_kind="engineering",
+        stage_id=f"stage-engineering-hostile-{source_case}")
+    workspace = Path(ws)
+    if source_case == "absolute":
+        source = str(workspace / "README.md")
+    elif source_case == "outside":
+        outside = workspace.parent / "outside.txt"
+        outside.write_text("outside stage output\n", encoding="utf-8")
+        source = "../outside.txt"
+    else:
+        outside = workspace.parent / "linked-output"
+        outside.mkdir()
+        (outside / "secret.txt").write_text(
+            "symlinked stage output\n", encoding="utf-8")
+        (workspace / "linked").symlink_to(outside, target_is_directory=True)
+        source = "linked/secret.txt"
+
+    state = loop.load(ws)
+    state["step"] = "em"
+    loop.save(ws, state)
+    artifact_store = review_evidence.ArtifactStore(ws)
+    before = artifact_store.references("stage-output")
+    manifest_before = copy.deepcopy(store.load(stage["run_id"]))
+    completion = loop._stage_loop_decision_completion(
+        ws, schema="taskplane.loop-test-decision/v1",
+        step="em", outcome="approved", result={"approved": True})
+    completion["_stage_output"]["sources"] = [{
+        "path": source, "required": True,
+    }]
+
+    with pytest.raises(ValueError):
+        loop._stage_loop_transition(
+            ws, state, from_step="em", to_step="retro",
+            completion=completion)
+
+    assert artifact_store.references("stage-output") == before
+    assert store.load(stage["run_id"]) == manifest_before
+
+
+def test_replan_transition_identity_includes_each_predecessor_head(
+        tmp_path, monkeypatch) -> None:
+    ws, _store, _stage, _started = _start_real_stage_loop(
+        tmp_path / "replan-heads", monkeypatch, stage_kind="build",
+        stage_id="stage-build-replan-head-one")
+    state = loop.load(ws)
+    state.update({
+        "step": "execute", "current_task": 0,
+        "tasks": [{
+            "id": "t01", "scope": ["README.md"], "tests": "true",
+            "deps": [], "status": "running",
+        }],
+    })
+    loop.save(ws, state)
+    replan_completion = loop._stage_loop_decision_completion(
+        ws, schema="taskplane.loop-replan-result/v1",
+        step="execute", outcome="replan",
+        result={"from_step": "execute", "to_step": "plan",
+                "by": "human:owner", "reason": "replace invalid graph"})
+
+    first = loop._stage_loop_transition(
+        ws, state, from_step="execute", to_step="plan",
+        completion=replan_completion, force=True)
+    state.update({"step": "plan", "tasks": None, "current_task": 0})
+    loop.save(ws, state)
+
+    plan_dir = Path(ws) / "plan"
+    plan_dir.mkdir()
+    (plan_dir / "plan.md").write_text(
+        "# Plan\n\nTry the corrected graph.\n", encoding="utf-8")
+    tasks = [{
+        "id": "t01", "scope": ["README.md"], "tests": "true",
+        "deps": [], "status": "running",
+    }]
+    (plan_dir / "tasks.json").write_text(
+        json.dumps({"tasks": tasks}, sort_keys=True) + "\n",
+        encoding="utf-8")
+    state.update({"step": "plan", "tasks": tasks, "current_task": 0})
+    loop.save(ws, state)
+    plan_completion = loop._stage_loop_gate_completion(
+        ws, state, step="plan", outcome="pass")
+    advanced = loop._stage_loop_transition(
+        ws, state, from_step="plan", to_step="execute",
+        completion=plan_completion)
+    state["step"] = "execute"
+    loop.save(ws, state)
+
+    second = loop._stage_loop_transition(
+        ws, state, from_step="execute", to_step="plan",
+        completion=replan_completion, force=True)
+
+    assert first["operation_id"] != second["operation_id"]
+    assert first["result"]["predecessor_head"]["summary"]["stage_id"] == \
+        "stage-build-replan-head-one"
+    assert second["result"]["predecessor_head"]["summary"]["stage_id"] == \
+        advanced["result"]["successor_head"]["summary"]["stage_id"]
+
+
+def test_partial_wave_split_retry_reuses_children_and_resumes_only_missing(
+        tmp_path, monkeypatch) -> None:
+    ws, store, stage, _started = _start_real_stage_loop(
+        tmp_path / "partial-split", monkeypatch, stage_kind="build",
+        stage_id="stage-build-partial-split-parent")
+    ready = [
+        {"id": "t01", "scope": ["a/**"], "tests": "true",
+         "deps": [], "status": "pending"},
+        {"id": "t02", "scope": ["b/**"], "tests": "true",
+         "deps": [], "status": "pending"},
+    ]
+    state = loop.load(ws)
+    state.update({
+        "step": "execute", "parallel": True, "current_task": 0,
+        "tasks": ready,
+    })
+    loop.save(ws, state)
+    real_dispatch = loop._stage_loop_dispatch
+    attempted = []
+
+    def interrupt_second_dispatch(*args, **kwargs):
+        attempted.append(str(kwargs.get("stage_id") or ""))
+        if len(attempted) == 2:
+            raise RuntimeError("crash after the first child resume")
+        return real_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(
+        loop, "_stage_loop_dispatch", interrupt_second_dispatch)
+    with pytest.raises(RuntimeError, match="first child resume"):
+        loop._stage_loop_wave_dispatches(ws, state, ready)
+
+    after_crash = store.load(stage["run_id"])
+    bindings = copy.deepcopy(loop.load(ws)["_stage_bindings"])
+    child_ids = {bindings[task_id]["build"] for task_id in ("t01", "t02")}
+    roots = {
+        child_id: store.read_stage_object(
+            stage["run_id"], after_crash["stage_heads"][child_id]["object"]
+        )["execution_root_id"]
+        for child_id in child_ids
+    }
+    split_operations = {
+        operation_id for operation_id, receipt in
+        after_crash["stage_operations"].items()
+        if receipt.get("operation") == "split_stage"
+    }
+    resumed_before_retry = {
+        operation_id for operation_id, receipt in
+        after_crash["stage_operations"].items()
+        if receipt.get("operation") == "resume_stage"
+    }
+    assert len(split_operations) == 1
+    assert len(resumed_before_retry) == 1
+
+    monkeypatch.setattr(loop, "_stage_loop_dispatch", real_dispatch)
+    retried = loop._stage_loop_wave_dispatches(
+        ws, loop.load(ws), ready)
+
+    assert set(retried) == {"t02"}
+    final = store.load(stage["run_id"])
+    assert loop.load(ws)["_stage_bindings"] == bindings
+    assert set(final["active_stage_projection"]["active_stage_ids"]) == \
+        child_ids
+    assert {
+        child_id: store.read_stage_object(
+            stage["run_id"], final["stage_heads"][child_id]["object"]
+        )["execution_root_id"]
+        for child_id in child_ids
+    } == roots
+    assert {
+        operation_id for operation_id, receipt in
+        final["stage_operations"].items()
+        if receipt.get("operation") == "split_stage"
+    } == split_operations
+    resumed_after_retry = {
+        operation_id for operation_id, receipt in
+        final["stage_operations"].items()
+        if receipt.get("operation") == "resume_stage"
+    }
+    assert resumed_before_retry < resumed_after_retry
+    assert len(resumed_after_retry) == 2

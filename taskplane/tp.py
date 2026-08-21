@@ -2538,7 +2538,8 @@ def cmd_loop(a) -> int:
                           checkpoints=[c for c in checkpoints if c],
                           requirement_id=a.req, parallel=a.parallel,
                           design=a.design, design_only=a.design_only,
-                          force=getattr(a, "force", False))
+                          force=getattr(a, "force", False),
+                          by=getattr(a, "by", None))
         if isinstance(st, dict) and not st.get("error") and enforcement:
             loopmod.record_enforcement(ws, enforcement)
         # Only collapse to the success summary when the engine did NOT refuse.
@@ -5986,6 +5987,41 @@ def _cli_stage_request_note() -> list[str]:
         out.append(f"| `{command}` | {required} | {optional} |")
     out += [
         "",
+        "#### Automatic pristine new-run bootstrap",
+        "",
+        "Set `TASKPLANE_STAGE_NATIVE=new-run` before `tp.py loop init`. Supply",
+        "an exact existing requirement with `--req` and the accountable human",
+        "with `--by`; that human becomes the root stage `authority.actor`. A",
+        "stable session identity must already be present in",
+        "`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.",
+        "The workspace must already have a governed locator bound to an",
+        "unmigrated v3 run with an exact target revision.",
+        "",
+        "Only that successful normal initialization mints the private",
+        "pristine-new-run marker; do not add, copy, or infer the marker later.",
+        "",
+        "The first normal `tp.py loop next` atomically creates, commits, and",
+        "dispatches one deterministic root stage through the internal",
+        "lifecycle. It derives root authority from verified governed run facts",
+        "and stores the bounded input handoff",
+        "internally. Replaying the same call reuses the committed operation.",
+        "The loop caller must not create stage JSON, authority JSON, a handoff",
+        "artifact, or a separate `tp.py stage start` request.",
+        "`tp.py loop wave` never bootstraps a root: it requires the already",
+        "bound v4 journey and fails closed when that binding is missing.",
+        "",
+        "Initialization refuses without singleton or stage mutation when the",
+        "requirement is missing or unknown, `--by` is missing, stable session",
+        "identity is missing, the governed locator is missing, the bound run is",
+        "not unmigrated v3, or its exact target revision is unavailable.",
+        "Bootstrap also refuses when `new-run` was enabled only after init, the",
+        "private marker is absent, the singleton is no longer structurally",
+        "pristine, legacy progress exists, or the bound locator/run/store",
+        "identity becomes mismatched or corrupt. After the v4 root commit, the",
+        "singleton retains a durable run binding; losing or corrupting its",
+        "locator or store remains a",
+        "fail-closed refusal rather than a fallback to legacy dispatch.",
+        "",
         "#### Closed nested shapes",
         "",
         "A `taskplane.stage/v1` request value is a closed active-stage object.",
@@ -6400,7 +6436,9 @@ def main(argv=None) -> int:
                     help="fix cycles the loop may run before it escalates "
                          "to the human (default 2)")
     li.add_argument("--checkpoints", help="comma list: plan,em (default both)")
-    li.add_argument("--req", help="anchor the loop to a requirement R-id")
+    li.add_argument("--req", help="anchor the loop to a requirement R-id; "
+                    "TASKPLANE_STAGE_NATIVE=new-run requires an exact "
+                    "existing requirement")
     li.add_argument("--parallel", action="store_true",
                     help="execute waves of scope-disjoint tasks concurrently, "
                          "one governed agent per task")
@@ -6416,7 +6454,9 @@ def main(argv=None) -> int:
     li.add_argument("--advisory", action="store_true",
                     help="continue with visibly advisory screen enforcement")
     li.add_argument("--by", default=None,
-                    help="human identity required with --advisory")
+                    help="human identity required with --advisory and with "
+                         "TASKPLANE_STAGE_NATIVE=new-run; the new-run value "
+                         "becomes the root stage authority.actor")
     ln = lsub.add_parser("next", help="print the next stage brief for the active loop")
     ln.add_argument("--req", help="attach requirement R-id to the loop "
                     "before DoR evaluation (design anchor)")

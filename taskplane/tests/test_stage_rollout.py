@@ -192,14 +192,18 @@ def test_normal_new_run_init_can_reach_the_public_stage_start(
     # Importing the public-journey fixture locally keeps this rollout module
     # independent from cross-host collection while exercising the same real
     # RunStore/lifecycle boundary used by host adapters.
-    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+    from taskplane.tests.test_stage_cross_host import (
+        _real_loop_stage, _record_bootstrap_requirement)
 
     workspace, store, stage = _real_loop_stage(tmp_path)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "cross-host-session")
+    requirement = _record_bootstrap_requirement(workspace, ordinal=4)
+    assert requirement["id"] == "R-0004"
 
     initialized = loop.init(
         str(workspace), "exercise the stage-native canary",
-        requirement_id="R-0004")
+        requirement_id="R-0004", by="human:vdemkiv")
     started = loop.stage_command(str(workspace), "start", {
         "schema": "taskplane.stage-command/v1",
         "stage": stage,
@@ -221,51 +225,55 @@ def test_normal_new_run_init_can_reach_the_public_stage_start(
     assert store.load(str(stage["run_id"]))["schema"] == "taskplane.run/v4"
 
 
-def test_new_run_refuses_legacy_dispatch_until_its_root_is_committed(
+def test_new_run_next_bootstraps_and_replays_one_stage_root_without_artifacts(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement)
 
-    workspace, _store_value, stage = _real_loop_stage(tmp_path)
+    workspace, store, initial = _real_pristine_run(tmp_path)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
-    initialized = loop.init(str(workspace), "start from one bounded root")
-    state_path = Path(loop._loop_path(str(workspace)))
-    pristine_bytes = state_path.read_bytes()
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    initialized = loop.init(
+        str(workspace), "start from one bounded root",
+        requirement_id=str(requirement["id"]), by="human:vdemkiv")
+    first = loop.next_action.__wrapped__(str(workspace))
+    committed = store.load(str(initial["run_id"]))
+    second = loop.next_action.__wrapped__(str(workspace))
 
-    refused = loop.next_action.__wrapped__(str(workspace))
-
-    assert "committed root stage before dispatch" in refused["error"]
-    for legacy_field in (
-            "agent", "contract", "dispatch_path", "instruction",
-            "stage_runtime_dispatch"):
-        assert legacy_field not in refused
-    assert state_path.read_bytes() == pristine_bytes
-
-    started = loop.stage_command(str(workspace), "start", {
-        "schema": "taskplane.stage-command/v1",
-        "stage": stage,
-        "expected_revision": 1,
-        "operation_id": "start-before-first-loop-dispatch",
-        "expected_predecessor_fingerprints": {},
-        "foreground": True,
-        "authority": stage["authority"],
-    })
-    dispatched = loop.next_action.__wrapped__(str(workspace))
-
-    assert initialized["_stage_native_new_run_pristine"] is True
-    assert "error" not in started, started
-    assert "error" not in dispatched, dispatched
-    assert dispatched["stage_runtime_dispatch"]["startup"]["stage_id"] == \
-        stage["stage_id"]
+    assert "error" not in initialized, initialized
+    assert "error" not in first, first
+    assert "error" not in second, second
+    first_stage_id = first["stage_runtime_dispatch"]["startup"]["stage_id"]
+    assert second["stage_runtime_dispatch"]["startup"]["stage_id"] == \
+        first_stage_id
+    assert committed["schema"] == "taskplane.run/v4"
+    assert set(committed["stage_heads"]) == {first_stage_id}
+    assert committed["stage_heads"][first_stage_id]["summary"][
+        "stage_kind"] == "product"
+    assert first_stage_id in json.dumps(
+        loop.load(str(workspace))["_stage_run_binding"], sort_keys=True)
+    assert len([
+        receipt for receipt in committed["stage_operations"].values()
+        if receipt.get("operation") == "start_stage"
+    ]) == 1
 
 
 def test_structurally_pristine_singleton_without_new_run_marker_is_refused(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+    from taskplane.tests.test_stage_cross_host import (
+        _real_loop_stage, _record_bootstrap_requirement)
 
     workspace, _store_value, stage = _real_loop_stage(tmp_path)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
-    state = loop.init(str(workspace), "do not infer canary authority")
-    state.pop("_stage_native_new_run_pristine")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "cross-host-session")
+    requirement = _record_bootstrap_requirement(workspace, ordinal=4)
+    assert requirement["id"] == "R-0004"
+    state = loop.init(
+        str(workspace), "do not infer canary authority",
+        requirement_id="R-0004", by="human:vdemkiv")
+    state.pop("_stage_native_new_run_pristine", None)
+    state.pop("_stage_native_root_authority", None)
     loop.save(str(workspace), state)
 
     refused = loop.stage_command(str(workspace), "start", {
@@ -305,34 +313,28 @@ def test_shadow_migration_compares_conservation_without_switching_readers(
 
 
 @pytest.mark.parametrize(
-    ("mode", "has_singleton", "migration_bound", "expected"),
+    ("mode", "singleton", "migration_bound", "expected_substring"),
     [
         ("disabled", False, False, "stage-native mutation is disabled"),
-        ("new-run", False, False, None),
-        ("new-run", True, False,
-         "new-run mode cannot promote an existing singleton or "
-         "migration-bound run; legacy read-only behavior remains active"),
-        ("new-run", False, True,
-         "new-run mode cannot promote an existing singleton or "
-         "migration-bound run; legacy read-only behavior remains active"),
-        ("enabled", False, False,
-         "unmigrated run requires TASKPLANE_STAGE_NATIVE=new-run; "
-         "legacy loop behavior remains active"),
+        ("new-run", False, False, "new-run"),
+        ("new-run", True, False, "cannot promote an existing singleton"),
+        ("new-run", False, True, "migration-bound"),
+        ("enabled", False, False, "requires TASKPLANE_STAGE_NATIVE=new-run"),
     ],
 )
 def test_new_run_canary_never_promotes_an_existing_singleton(
-        monkeypatch: pytest.MonkeyPatch, mode: str, has_singleton: bool,
-        migration_bound: bool, expected: str | None) -> None:
-    monkeypatch.setattr(
-        loop, "load", lambda _workspace: ({"step": "execute"}
-                                           if has_singleton else None))
+        monkeypatch: pytest.MonkeyPatch, mode: str,
+        singleton: bool, migration_bound: bool,
+        expected_substring: str) -> None:
+    state = {"step": "execute"} if singleton else None
+    monkeypatch.setattr(loop, "load", lambda _workspace: state)
     manifest: dict[str, object] = {
         "schema": "taskplane.run/v3", "run_id": RUN_ID}
     if migration_bound:
         manifest["migration_receipt"] = {"fingerprint": "f" * 64}
 
-    assert loop._stage_mutation_blocker(mode, manifest, "/workspace") == \
-        expected
+    blocker = loop._stage_mutation_blocker(mode, manifest, "/workspace")
+    assert expected_substring in str(blocker)
 
 
 def test_verified_migration_is_the_reader_cutover_boundary(
@@ -463,21 +465,19 @@ def test_disabled_migrated_v4_refuses_singleton_resolution_without_writes(
 def test_disabled_rollback_refuses_mutation_when_stage_storage_is_corrupt(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         corruption: str) -> None:
-    from taskplane.tests.test_stage_cross_host import _real_loop_stage
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement)
 
-    workspace, store, stage = _real_loop_stage(tmp_path)
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    monkeypatch.setenv("TASKPLANE_HOME", store.home)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
-    state = loop.init(str(workspace), "retain rollback authority")
-    started = loop.stage_command(str(workspace), "start", {
-        "schema": "taskplane.stage-command/v1",
-        "stage": stage,
-        "expected_revision": 1,
-        "operation_id": "start-before-rollback-corruption",
-        "expected_predecessor_fingerprints": {},
-        "foreground": True,
-        "authority": stage["authority"],
-    })
-    assert "error" not in started, started
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    state = loop.init(
+        str(workspace), "retain rollback authority",
+        requirement_id=str(requirement["id"]), by="human:vdemkiv")
+    dispatched = loop.next_action.__wrapped__(str(workspace))
+    assert "error" not in dispatched, dispatched
     state.update({
         "step": "escalated",
         "tasks": [{"id": "t01", "status": "failed", "fix_cycles": 2}],
@@ -490,7 +490,7 @@ def test_disabled_rollback_refuses_mutation_when_stage_storage_is_corrupt(
         corrupted_path = Path(storage._locator_path(str(workspace)))
     else:
         corrupted_path = Path(store.home) / "runs" / str(
-            stage["run_id"]) / "manifest.json"
+            initial["run_id"]) / "manifest.json"
     corrupted_path.write_text("{not-valid-json\n", encoding="utf-8")
     before_corrupt_bytes = corrupted_path.read_bytes()
     monkeypatch.delenv(taskplane_lite.STAGE_NATIVE_ENV, raising=False)
@@ -498,11 +498,55 @@ def test_disabled_rollback_refuses_mutation_when_stage_storage_is_corrupt(
     refused = loop.resolve(str(workspace), "abort")
 
     assert "error" in refused
-    assert "read-only" in refused["error"] or \
-        "rollback" in refused["error"]
+    assert "stage-native" in refused["error"]
     assert refused["stage_native"] == "read-only"
     assert state_path.read_bytes() == before_state
     assert corrupted_path.read_bytes() == before_corrupt_bytes
+
+
+@pytest.mark.parametrize("mode", ["disabled", "enabled"])
+def test_migrated_new_run_refuses_mutation_after_locator_is_missing(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement)
+
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    monkeypatch.setenv("TASKPLANE_HOME", store.home)
+    monkeypatch.setenv("TASKPLANE_STORE", "repo")
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    initialized = loop.init(
+        str(workspace), "retain lost locator authority",
+        requirement_id=str(requirement["id"]), by="human:vdemkiv")
+    dispatched = loop.next_action.__wrapped__(str(workspace))
+    assert "error" not in initialized, initialized
+    assert "error" not in dispatched, dispatched
+    assert store.load(str(initial["run_id"]))["schema"] == \
+        "taskplane.run/v4"
+    state = loop.load(str(workspace))
+    state.update({
+        "step": "escalated",
+        "tasks": [{"id": "t01", "status": "failed", "fix_cycles": 2}],
+        "current_task": 0,
+    })
+    loop.save(str(workspace), state)
+    state_path = Path(loop._loop_path(str(workspace)))
+    before_state = state_path.read_bytes()
+    locator_path = Path(storage._locator_path(str(workspace)))
+    locator_path.unlink()
+    if mode == "disabled":
+        monkeypatch.delenv(taskplane_lite.STAGE_NATIVE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "enabled")
+
+    refused = loop.resolve(str(workspace), "abort")
+
+    assert "error" in refused
+    assert "locator" in refused["error"] or "read-only" in refused["error"]
+    assert refused["stage_native"] == "read-only"
+    assert state_path.read_bytes() == before_state
+    assert not locator_path.exists()
 
 
 def test_rollback_never_guesses_an_ambiguous_legacy_outcome(
