@@ -1,4 +1,4 @@
-# R-0004 implementation plan — stage-isolated delivery entities and bounded artifact handoffs
+# R-0004 recovery replan — stage-isolated delivery entities and bounded artifact handoffs
 
 ## Approved Design bootstrap binding
 
@@ -14,9 +14,19 @@ This binding fixes only the legacy approval-handoff bootstrap. It does not self-
 
 R-0004 depends on the resolved R-0003 foundation. All 11 acceptance criteria and all six requirement contract ids are present, with no open questions. Autonomous-after-design execution and broader workflow simplification are explicitly deferred and out of scope.
 
+## Replan evidence and committed t01 recovery
+
+Parallel Evaluate currently resolves the governed task worktree for its target, diff, contract, and evidence, but then calls `depgraph.load`, `depgraph.impact`, and product-impact logic against the shared primary checkout. That split identity makes ReviewKernel judge a valid task revision against an unrelated stale primary graph. The observed task graph at commit `44415b6c92976e4ab9f6730c449607109a4aeebf` is complete with 41 modules, 153 edges, and 500 files; the shared primary graph at Design commit `5fc8dfb6a8bf86bf02318d71cf44f6fb400a664b` instead produces `impact_incomplete` / `stale_graph` for the task evaluation.
+
+The new `t00-parallel-evaluate-worktree-graph-binding` prerequisite repairs only that harness seam. ReviewKernel graph head, impact, product impact, routing inputs, and emitted graph evidence must use the exact governed worktree and target revision already selected for parallel Evaluate. The regression creates distinct primary and task graph states, proves the evaluator reads the task graph, proves the primary graph bytes and metadata are neither read as task evidence nor overwritten, and preserves fail-closed results for a missing, stale, revision-mismatched, or ambiguous task graph. No depgraph/storage module is added because the required dependency is a workspace-selection correction inside `taskplane/loop.py`.
+
+The already-built handoff implementation is an immutable reusable artifact, not work to rewrite: branch `tp/t01-bounded-handoff-artifact-boundary` points to commit `44415b6c92976e4ab9f6730c449607109a4aeebf`, whose parent is `0fa1b3e0810fcebe5e83cc4f30be9c6278ab139e` and whose diff is exactly the four preserved t01 scope files: `taskplane/review_evidence.py`, `taskplane/stage_handoff.py`, `taskplane/tests/test_stage_handoff.py`, and `taskplane/tests/test_stage_handoff_security.py`. Its 14 focused tests already pass.
+
+After t00 independently passes and the orchestrator merges that repair, Taskplane claims a fresh governed t01 worktree from the repaired primary baseline. Inside that claimed worktree only, recover the immutable artifact by cherry-picking commit `44415b6c92976e4ab9f6730c449607109a4aeebf`; retain the original branch and commit unchanged, verify the recovered diff still contains exactly those four files, rescan the recovered task worktree graph at its new target commit, and rerun t01's declared command. The original t01 branch is not merged directly or prematurely into primary, and no ungoverned copy/rewrite substitutes for the commit.
+
 ## Bounded impact and depth policy
 
-The single required impact query covered all 19 approved module identifiers in one comma-separated `--files` value. It returned 28 in-policy impacted modules, no unknown surfaces, affected requirements R-0002/R-0003/R-0004, dependent requirement R-0005, and graph fingerprint `6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976`. The result was policy-truncated but not depth-truncated: requirement traversal stopped at the approved requirement-depth boundary, while local depth and contract coverage remained complete.
+The single required replan impact query used one comma-separated value for the revised paths `taskplane/loop.py,taskplane/tests/test_loop.py`. It returned 29 in-policy impacted modules, no unknown surfaces, affected requirements R-0002/R-0003/R-0004, dependent requirement R-0005, current primary graph fingerprint `edd1bee36c3e1168f9fac33dc9d36acde833e0f91d2ec88f412a6e489d482d6e`, and scanned head `5fc8dfb6a8bf86bf02318d71cf44f6fb400a664b`. The result was policy-truncated but not depth-truncated: requirement traversal stopped at the approved requirement-depth boundary, while local depth and contract coverage remained complete. The approved Design overlay remains pinned separately to baseline `6c66052b6ca3b237ce3be38f744e41551ead9f9c118c94a82e6439ac000fe976`.
 
 Every task carries the approved typed impact policy:
 
@@ -25,7 +35,7 @@ Every task carries the approved typed impact policy:
 - contract depth: 1
 - requirement depth: 1
 
-The task set covers exactly 19/19 proposed modules, 31/31 proposed edges, 6/6 contract ids, and 11/11 verbatim acceptance criteria.
+The seven-task set preserves exactly 19/19 proposed modules, 31/31 proposed edges, 6/6 contract ids, and 11/11 unique verbatim acceptance criteria. There are 12 criterion assignments because Plan DoR requires every prerequisite to carry a criterion: t00 shares AC9 solely as the harness that makes its Review/sign-off evidence target-correct, while t05 retains the approved product-delivery ownership.
 
 ## Design locks
 
@@ -43,14 +53,23 @@ The implementation must preserve these settled boundaries:
 
 | Order | Task | Dependencies | Type / model | Criteria | Proposed modules | Edges |
 | --- | --- | --- | --- | --- | ---: | ---: |
-| 1 | `t01-bounded-handoff-artifact-boundary` | none | security / deep | AC4 | 2 | 4 |
+| 0 | `t00-parallel-evaluate-worktree-graph-binding` | none | reliability / deep | AC9 shared, validation-enabling | 0 | 0 |
+| 1 | `t01-bounded-handoff-artifact-boundary` | t00 | security / deep | AC4 | 2 | 4 |
 | 2 | `t02-atomic-stage-lifecycle-and-lineage` | t01 | reliability / deep | AC1, AC2, AC6, AC7, AC8 | 6 | 14 |
 | 3a | `t03-isolated-stage-dispatch-and-cli` | t02 | integration / standard | AC3 | 3 | 3 |
 | 3b | `t04-conservative-singleton-migration` | t02 | data / deep | AC11 | 3 | 5 |
-| 4 | `t05-bounded-lineage-projections-and-scaling` | t03 | performance / deep | AC9, AC10 | 4 | 4 |
+| 4 | `t05-bounded-lineage-projections-and-scaling` | t03 | performance / deep | AC9 product, AC10 | 4 | 4 |
 | 5 | `t06-cross-host-rollout-and-r0003-preservation` | t04, t05 | integration / deep | AC5 | 1 | 1 |
 
-t03 and t04 have disjoint writable scopes and may execute in parallel after the atomic domain core is proven. t06 joins migration and bounded-reader evidence before cross-host enablement. No task writes another task's scope.
+t03 and t04 retain disjoint writable scopes and may execute in parallel after the atomic domain core is proven. t06 joins migration and bounded-reader evidence before cross-host enablement. The six approved delivery scopes are unchanged. The only overlap introduced by the prerequisite is `taskplane/loop.py` with downstream t03; the transitive chain t00 → t01 → t02 → t03 serializes that overlap honestly.
+
+### t00 — parallel Evaluate worktree graph binding
+
+Bind every ReviewKernel graph-quality, head, impact, product-impact, and evidence read for parallel Evaluate to the exact governed task worktree and target revision. Do not scan, load as task evidence, publish into, or overwrite the unrelated primary graph. Missing, stale, mismatched, or ambiguous task graphs remain blocking; no fallback to the primary graph is allowed. `TestParallelEvaluateWorktreeGraphBinding` is a planned new behavioral class in the scoped existing owner, not an assumed existing selector.
+
+Scope: `taskplane/loop.py`, `taskplane/tests/test_loop.py`.
+
+Verification: `python3 -m pytest -q taskplane/tests/test_loop.py::TestParallelEvaluateWorktreeGraphBinding taskplane/tests/test_eval_graph_compliance.py`
 
 ### t01 — bounded handoff and artifact boundary
 
@@ -110,7 +129,7 @@ Verification: `python3 -m pytest -q taskplane/tests/test_stage_non_build_handoff
 6. **t02:** Splitting a deliverable closes the parent with a split reason and creates two or more independently addressable child stage entities with explicit artifact subsets, dependencies, budgets, and lifecycles; one child outcome cannot mutate sibling or parent history.
 7. **t02:** The active-stage pointer is a replaceable projection only. Starting, resuming, splitting, or terminalizing a stage never overwrites or reclassifies a predecessor entity, and history lists every terminal and active entity with lineage.
 8. **t02:** Crash, duplicate event, reconnect, and retry fixtures prove stage terminalization, handoff creation, and split creation are atomic and idempotent, with no duplicate child, lost artifact, reopened terminal stage, or ambiguous active pointer.
-9. **t05:** Dashboard, status, review, sign-off, and Retro show the current stage, predecessor outcome, artifact handoff, and child lineage from bounded summaries without loading predecessor execution trees.
+9. **t00 (validation-enabling) and t05 (product delivery):** Dashboard, status, review, sign-off, and Retro show the current stage, predecessor outcome, artifact handoff, and child lineage from bounded summaries without loading predecessor execution trees.
 10. **t05:** As irrelevant predecessor history grows from ten to one hundred thousand events, the default successor startup payload remains byte-identical and bounded to the manifest plus explicitly selected artifacts; startup work and token use do not scale with predecessor runtime history.
 11. **t04:** A migration converts singleton loop records into stage entities without losing requirements, tasks, decisions, evidence, commits, reviews, or audit history; ambiguous legacy state is preserved with an explicit unknown reason rather than guessed as pending, done, closed, or discarded.
 
@@ -118,6 +137,7 @@ Verification: `python3 -m pytest -q taskplane/tests/test_stage_non_build_handoff
 
 The machine plan uses only the six exact contract ids, never relation-prefixed pseudo-ids: `contract:stage-entity-lifecycle`, `contract:stage-artifact-handoff`, `contract:delivery-lineage`, `contract:consolidated-authorization`, `contract:automatic-recovery`, and `contract:review-evidence-binding`.
 
+- t00 adds no Design module; it repairs the existing `taskplane/loop.py` evaluation harness under `contract:consolidated-authorization` and `contract:review-evidence-binding`.
 - t01 owns `taskplane/stage_handoff.py` and `taskplane/review_evidence.py`.
 - t02 owns `taskplane/stage_entities.py`, `taskplane/run_store.py`, `taskplane/storage.py`, `taskplane/repository.py`, `taskplane/worktree_cleanup.py`, and `taskplane/tests`.
 - t03 owns `taskplane/loop.py`, `taskplane/taskplane_lite.py`, and `taskplane/tp.py`.
@@ -186,11 +206,13 @@ Cleanup stays no-force and exact-path only. It never broadens scope, deletes a b
 
 ## Rollout, rollback, and deferred work
 
-1. t01/t02 ship additive v4 schemas, readers, immutable storage, validation, receipts, and projection repair behind a disabled feature flag while v3 writes remain available.
-2. t04 runs non-mutating shadow migration and compares legacy/v4 summaries, lineage, retained references, source fingerprints, and conservation sets without switching readers.
-3. t03 enables stage-native roots only for new-run canaries. Existing runs migrate only after t04 conservation evidence passes; the legacy adapter remains readable.
-4. t05 cuts status/dashboard/review/sign-off/Retro to bounded summaries only after zero-predecessor-tree-open and 10-vs-100000 invariants pass.
-5. t06 enables cross-host stage handoffs only after migration, bounded readers, package/runtime parity, non-build closure, and every R-0003 preservation test pass.
+1. t00 binds parallel evaluation to the exact governed task worktree graph and proves fail-closed isolation from primary graph state.
+2. t01 is recovered from immutable commit `44415b6c92976e4ab9f6730c449607109a4aeebf` into a fresh post-t00 governed worktree, rescanned, rerun, and independently reevaluated before any merge.
+3. t01/t02 ship additive v4 schemas, readers, immutable storage, validation, receipts, and projection repair behind a disabled feature flag while v3 writes remain available.
+4. t04 runs non-mutating shadow migration and compares legacy/v4 summaries, lineage, retained references, source fingerprints, and conservation sets without switching readers.
+5. t03 enables stage-native roots only for new-run canaries. Existing runs migrate only after t04 conservation evidence passes; the legacy adapter remains readable.
+6. t05 cuts status/dashboard/review/sign-off/Retro to bounded summaries only after zero-predecessor-tree-open and 10-vs-100000 invariants pass.
+7. t06 enables cross-host stage handoffs only after migration, bounded readers, package/runtime parity, non-build closure, and every R-0003 preservation test pass.
 
 Rollback disables new v4 stage creation and leaves immutable stage, handoff, source, evidence, and receipt objects intact. Unmigrated callers may use legacy reads; migrated runs remain v4-readable and pause mutation until re-enabled. Rollback never reverse-collapses stage history, reopens a terminal outcome, guesses an unknown state, deletes artifacts or branches, weakens authority/evidence, or broadens/forces cleanup.
 

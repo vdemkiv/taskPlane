@@ -1,6 +1,33 @@
 {
   "tasks": [
     {
+      "id": "t00-parallel-evaluate-worktree-graph-binding",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py::TestParallelEvaluateWorktreeGraphBinding taskplane/tests/test_eval_graph_compliance.py",
+      "req": "R-0004",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:consolidated-authorization",
+        "contract:review-evidence-binding"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Dashboard, status, review, sign-off, and Retro show the current stage, predecessor outcome, artifact handoff, and child lineage from bounded summaries without loading predecessor execution trees."
+      ],
+      "model": "deep"
+    },
+    {
       "id": "t01-bounded-handoff-artifact-boundary",
       "scope": [
         "taskplane/stage_handoff.py",
@@ -10,7 +37,9 @@
       ],
       "tests": "python3 -m pytest -q taskplane/tests/test_stage_handoff.py taskplane/tests/test_stage_handoff_security.py taskplane/tests/test_artifact_references.py",
       "req": "R-0004",
-      "deps": [],
+      "deps": [
+        "t00-parallel-evaluate-worktree-graph-binding"
+      ],
       "type": "security",
       "contracts": [
         "contract:stage-artifact-handoff",
