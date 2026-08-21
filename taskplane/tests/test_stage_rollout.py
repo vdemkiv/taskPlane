@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -257,6 +258,118 @@ def test_new_run_next_bootstraps_and_replays_one_stage_root_without_artifacts(
         receipt for receipt in committed["stage_operations"].values()
         if receipt.get("operation") == "start_stage"
     ]) == 1
+
+
+def test_new_run_init_force_refuses_existing_singleton_without_archiving(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement)
+
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    initialized = loop.init(
+        str(workspace), "retain the attributable singleton",
+        requirement_id=str(requirement["id"]), by="human:vdemkiv")
+    assert "error" not in initialized, initialized
+    state_path = Path(loop._loop_path(str(workspace)))
+    state_before = state_path.read_bytes()
+    workspace_before = _tree_bytes(workspace / ".taskplane")
+    store_before = _tree_bytes(
+        Path(store.home) / "runs" / str(initial["run_id"]))
+
+    refused = loop.init(
+        str(workspace), "do not replace governed history",
+        requirement_id=str(requirement["id"]), force=True,
+        by="human:vdemkiv")
+
+    assert refused["refused"] is True
+    assert "refuses existing singleton/history" in refused["error"]
+    assert "fresh governed run" in refused["error"]
+    assert state_path.read_bytes() == state_before
+    assert _tree_bytes(workspace / ".taskplane") == workspace_before
+    assert _tree_bytes(
+        Path(store.home) / "runs" / str(initial["run_id"])) == store_before
+    assert list(state_path.parent.glob(state_path.name + ".replaced-*")) == []
+
+
+@pytest.mark.parametrize("mode", ["new-run", "disabled"])
+def test_bound_new_run_refuses_a_cloned_store_with_the_same_run_identity(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement)
+
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    initialized = loop.init(
+        str(workspace), "bind one exact store",
+        requirement_id=str(requirement["id"]), by="human:vdemkiv")
+    bootstrapped = loop.next_action.__wrapped__(str(workspace))
+    assert "error" not in initialized, initialized
+    assert "error" not in bootstrapped, bootstrapped
+
+    clone_home = tmp_path / "cloned-home"
+    shutil.copytree(store.home, clone_home)
+    identity = storage.resolve_repository_identity(str(workspace))
+    layout = storage.resolve_layout(
+        identity, home=str(clone_home), run_id=str(initial["run_id"]))
+    storage.write_workspace_locator(
+        str(workspace), identity=identity, layout=layout,
+        run_id=str(initial["run_id"]))
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, mode)
+    state_path = Path(loop._loop_path(str(workspace)))
+    state_before = state_path.read_bytes()
+    original_before = _tree_bytes(
+        Path(store.home) / "runs" / str(initial["run_id"]))
+    clone_before = _tree_bytes(
+        clone_home / "runs" / str(initial["run_id"]))
+
+    refused = loop.resolve(str(workspace), "abort")
+
+    assert "stage-native bound run store identity changed" in refused["error"]
+    assert refused["stage_native"] == "read-only"
+    assert state_path.read_bytes() == state_before
+    assert _tree_bytes(
+        Path(store.home) / "runs" / str(initial["run_id"])) == original_before
+    assert _tree_bytes(
+        clone_home / "runs" / str(initial["run_id"])) == clone_before
+
+
+@pytest.mark.parametrize("mode", ["new-run", "disabled"])
+def test_bootstrapped_new_run_refuses_public_mutation_without_run_binding(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement)
+
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    requirement = _record_bootstrap_requirement(workspace)
+    initialized = loop.init(
+        str(workspace), "require the persisted run binding",
+        requirement_id=str(requirement["id"]), by="human:vdemkiv")
+    bootstrapped = loop.next_action.__wrapped__(str(workspace))
+    assert "error" not in initialized, initialized
+    assert "error" not in bootstrapped, bootstrapped
+    state = loop.load(str(workspace))
+    state.pop("_stage_run_binding")
+    loop.save(str(workspace), state)
+    monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, mode)
+    state_path = Path(loop._loop_path(str(workspace)))
+    state_before = state_path.read_bytes()
+    store_before = _tree_bytes(
+        Path(store.home) / "runs" / str(initial["run_id"]))
+
+    refused = loop.resolve(str(workspace), "abort")
+
+    assert "stage-native migrated run binding is missing" in refused["error"]
+    assert refused["stage_native"] == "read-only"
+    assert state_path.read_bytes() == state_before
+    assert _tree_bytes(
+        Path(store.home) / "runs" / str(initial["run_id"])) == store_before
 
 
 def test_structurally_pristine_singleton_without_new_run_marker_is_refused(

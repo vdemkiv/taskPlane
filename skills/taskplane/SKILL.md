@@ -126,6 +126,31 @@ dependencies, acceptance mapping, NFRs, graph evidence, or required lenses
 block with a named non-human reason. Their complete evidence is presented
 together in the single consolidated pre-implementation authorization packet.
 
+### Fixture-first validation discipline
+
+When a production interface, schema, return shape, or failure order changes,
+update its directly affected fixtures and assertions in the same bounded work
+slice. Do not wait for a long suite to rediscover an already-known fixture
+change. Freeze the shared interface before production and test owners finish,
+and keep their file ownership disjoint.
+
+Validate in increasing cost order: static/diff checks, the exact changed
+selectors with fail-fast enabled, the changed-file suite, then one
+proportional declared suite after production and fixtures are stable. Do not
+start aggregate or full-repository suites while concurrent edits are still in
+flight. When a run fails, classify the failure before changing production. A
+fixture/setup/assertion defect is corrected as a test defect and reruns only
+its exact selector; it is not evidence of a product regression and does not
+automatically restart the aggregate run. Run a broader suite again only when
+the correction can affect behavior outside that selector or a release gate
+explicitly requires a clean aggregate receipt.
+
+For slow integration tests, use fail-fast on the first proportional pass and
+capture the exact selector immediately. Preserve already-green receipts and
+avoid repeating unchanged layers. Run review/lens sweeps only against a
+stable committed target, after code and fixtures agree, so review findings do
+not reflect transient test scaffolding.
+
 At every human checkpoint, render the engine-provided dashboard fragment
 inline through the host widget so its approval controls remain interactive.
 Use the standalone HTML path only as a fallback when inline rendering fails.

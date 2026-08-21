@@ -31,6 +31,7 @@ import contextlib
 import contextvars
 import json
 import os
+import re
 import stat
 import time
 
@@ -65,7 +66,7 @@ _STAGE_ROOT_AUTHORITY_SCHEMA = \
     "taskplane.loop-root-bootstrap-authority/v1"
 _STAGE_RUN_BINDING_FIELDS = frozenset({
     "schema", "run_id", "repository_id", "repository_key", "run_schema",
-    "root_stage_id",
+    "root_stage_id", "store_identity_fingerprint",
 })
 _STAGE_ROOT_AUTHORITY_FIELDS = frozenset({
     "schema", "run_id", "repository_id", "repository_key", "worktree_id",
@@ -73,6 +74,8 @@ _STAGE_ROOT_AUTHORITY_FIELDS = frozenset({
     "requirement_revision", "requirement_fingerprint", "actor",
     "session_id", "authority_revision", "fingerprint",
 })
+_STAGE_ACTOR_IDENTIFIER = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _STAGE_RUNTIME_FIELDS = frozenset({
     "agent", "agents", "conversation", "conversations", "environment",
     "env", "event", "events", "eventlog", "eventlogs", "lease", "leases",
@@ -236,7 +239,42 @@ def _stage_read_run_binding(state: object) -> dict | None:
         if not isinstance(value, str) or not value.strip() or \
                 value != value.strip():
             raise ValueError("stage-native run binding is invalid")
+    fingerprint = binding.get("store_identity_fingerprint")
+    if not isinstance(fingerprint, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", fingerprint):
+        raise ValueError("stage-native run binding is invalid")
     return binding
+
+
+def _stage_store_identity_fingerprint(
+        locator: Mapping[str, object], *, store_home: object = None) -> str:
+    """Bind the singleton to one exact canonical locator/run-store root."""
+    run_id = str(locator.get("run_id") or "")
+    repository_id = str(locator.get("repo_id") or "")
+    repository_key = str(locator.get("repository_key") or "")
+    locator_home = os.path.realpath(str(locator.get("home") or ""))
+    actual_home = os.path.realpath(str(store_home or locator_home))
+    if not all((run_id, repository_id, repository_key, locator_home)) or \
+            not os.path.isabs(locator_home) or actual_home != locator_home:
+        raise ValueError("stage-native run store identity is invalid")
+    run_path = os.path.realpath(os.path.join(actual_home, "runs", run_id))
+    if os.path.commonpath((actual_home, run_path)) != actual_home:
+        raise ValueError("stage-native run store identity is invalid")
+    try:
+        if __package__:
+            from . import review_evidence
+        else:
+            import review_evidence
+    except ImportError:
+        import review_evidence
+    return review_evidence.content_fingerprint({
+        "schema": "taskplane.loop-stage-store-identity/v1",
+        "home": actual_home,
+        "run_path": run_path,
+        "run_id": run_id,
+        "repository_id": repository_id,
+        "repository_key": repository_key,
+    })
 
 
 def _stage_bound_run_refusal(ws: str, state: object) -> dict | None:
@@ -279,7 +317,16 @@ def _stage_bound_run_refusal(ws: str, state: object) -> dict | None:
             "stage_native": "read-only", "run_id": run_id,
         }
     try:
-        manifest = _stage_store(ws, run_id).load(run_id)
+        store = _stage_store(ws, run_id)
+        current_store_fingerprint = _stage_store_identity_fingerprint(
+            locator, store_home=getattr(store, "home", None))
+        if current_store_fingerprint != binding[
+                "store_identity_fingerprint"]:
+            return {
+                "error": "stage-native bound run store identity changed",
+                "stage_native": "read-only", "run_id": run_id,
+            }
+        manifest = store.load(run_id)
     except Exception as exc:
         return {
             "error": "stage-native bound run store is unavailable: "
@@ -303,7 +350,7 @@ def _stage_bound_run_refusal(ws: str, state: object) -> dict | None:
 
 def _stage_run_binding_value(
         locator: Mapping[str, object], manifest: Mapping[str, object],
-        root_stage_id: str) -> dict:
+        root_stage_id: str, *, store_home: object = None) -> dict:
     """Create the closed path-free binding persisted beside loop state."""
     repository = manifest.get("repository")
     if manifest.get("schema") != "taskplane.run/v4" or \
@@ -316,6 +363,8 @@ def _stage_run_binding_value(
         "repository_key": str(locator.get("repository_key") or ""),
         "run_schema": "taskplane.run/v4",
         "root_stage_id": str(root_stage_id or ""),
+        "store_identity_fingerprint": _stage_store_identity_fingerprint(
+            locator, store_home=store_home),
     }
     if repository.get("repo_id") != value["repository_id"] or \
             locator.get("run_id") != value["run_id"] or \
@@ -333,7 +382,9 @@ def _persist_stage_run_binding(
         raise ValueError("stage-native root locator is missing")
     run_id = str(locator.get("run_id") or "")
     manifest = store.load(run_id)
-    value = _stage_run_binding_value(locator, manifest, root_stage_id)
+    value = _stage_run_binding_value(
+        locator, manifest, root_stage_id,
+        store_home=getattr(store, "home", None))
     with mutate(ws) as locked:
         if locked is None:
             raise ValueError("stage-native root singleton is missing")
@@ -402,8 +453,14 @@ def _stage_loop_mutation_refusal(
                         if isinstance(singleton, Mapping) else None)
     if bootstrap_record is not None and _stage_read_run_binding(
             singleton) is None:
-        if mode == "new-run" and allow_new_run_bootstrap:
+        pristine = singleton.get("_stage_native_new_run_pristine") is True
+        if pristine and mode == "new-run" and allow_new_run_bootstrap:
             return None
+        if not pristine:
+            return {
+                "error": "stage-native migrated run binding is missing",
+                "stage_native": "read-only",
+            }
         return {
             "error": ("stage-native initialized run requires its first "
                       "`loop next` in TASKPLANE_STAGE_NATIVE=new-run mode "
@@ -1023,31 +1080,160 @@ def _stage_loop_completion_reference(
         artifact_store, native)
 
 
-def _stage_loop_has_symlink_component(path: str) -> bool:
-    """Reject aliases in every existing component, not only the leaf."""
+_STAGE_OUTPUT_MAX_SOURCES = 64
+_STAGE_OUTPUT_MAX_FILE_BYTES = 8 * 1024 * 1024
+_STAGE_OUTPUT_MAX_TOTAL_BYTES = 16 * 1024 * 1024
+
+
+def _before_stage_output_component_open(
+        root: str, relative_path: str, component_index: int) -> None:
+    """Deterministic no-op seam for substitution regression tests."""
+
+
+def _stage_loop_open_directory_no_follow(path: str) -> int:
+    """Open an absolute directory one no-follow component at a time."""
+    if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+        raise ValueError("race-safe stage output open is unavailable")
     absolute = os.path.abspath(path)
     drive, tail = os.path.splitdrive(absolute)
-    current = drive + os.sep if absolute.startswith(os.sep) else drive
-    for component in tail.split(os.sep):
-        if not component:
-            continue
-        current = os.path.join(current, component)
-        try:
-            if stat.S_ISLNK(os.lstat(current).st_mode):
-                return True
-        except FileNotFoundError:
-            continue
-    return False
+    anchor = drive + os.sep if absolute.startswith(os.sep) else drive
+    if not anchor:
+        raise ValueError("stage output root is not absolute")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | \
+        getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(anchor, flags)
+    try:
+        for component in [part for part in tail.split(os.sep) if part]:
+            opened = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = opened
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _stage_loop_read_output_no_follow(
+        root: str, relative_path: str, *, required: bool,
+        remaining_bytes: int) -> bytes | None:
+    """Read one regular file through a descriptor-relative confined walk."""
+    components = relative_path.split("/")
+    if not components or any(part in {"", ".", ".."}
+                             for part in components):
+        raise ValueError("stage completion output path is not canonical")
+    root_fd = _stage_loop_open_directory_no_follow(root)
+    descriptor = root_fd
+    try:
+        for index, component in enumerate(components):
+            _before_stage_output_component_open(root, relative_path, index)
+            flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+            if index < len(components) - 1:
+                flags |= os.O_DIRECTORY
+            try:
+                opened = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not required:
+                    return None
+                raise ValueError(
+                    f"required stage completion output is missing: "
+                    f"{relative_path}") from None
+            if descriptor != root_fd:
+                os.close(descriptor)
+            descriptor = opened
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("stage completion output is not a regular file")
+        limit = min(_STAGE_OUTPUT_MAX_FILE_BYTES, remaining_bytes)
+        if before.st_size > limit:
+            raise ValueError("stage completion output exceeds its byte bound")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(128 * 1024, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise ValueError(
+                    "stage completion output exceeds its byte bound")
+        after = os.fstat(descriptor)
+        stable = (
+            stat.S_ISREG(after.st_mode) and before.st_dev == after.st_dev and
+            before.st_ino == after.st_ino and before.st_size == after.st_size and
+            before.st_mtime_ns == after.st_mtime_ns and total == after.st_size)
+        if not stable:
+            raise ValueError("stage completion output changed while sealing")
+        return b"".join(chunks)
+    except OSError as exc:
+        raise ValueError(
+            f"stage completion output could not be opened safely: {exc}") \
+            from exc
+    finally:
+        if descriptor != root_fd:
+            os.close(descriptor)
+        os.close(root_fd)
+
+
+def _stage_loop_trusted_output_workspace(
+        lifecycle: object, completion: Mapping[str, object],
+        output: Mapping[str, object]) -> tuple[str, object]:
+    """Derive the capture root from stage storage and registered submission."""
+    artifact_store = lifecycle._artifact_store()  # noqa: SLF001
+    current_workspace = os.path.abspath(str(artifact_store.workspace))
+    raw = str(output.get("source_workspace") or "").strip()
+    if not raw or not os.path.isabs(raw) or os.path.normpath(raw) != raw:
+        raise ValueError("stage completion output workspace is unavailable")
+    claimed = os.path.abspath(raw)
+    if claimed == current_workspace:
+        return claimed, artifact_store
+
+    submission = completion.get("submission")
+    task_id = str(completion.get("task_id") or "")
+    if not isinstance(submission, Mapping) or not str(
+            submission.get("fingerprint") or "") or not task_id or \
+            str(submission.get("task") or "") != task_id:
+        raise ValueError("stage completion output workspace is unauthorized")
+    expected = os.path.abspath(runtime_storage.task_worktree_path(
+        current_workspace, task_id))
+    if claimed != expected:
+        raise ValueError("stage completion output workspace is unauthorized")
+    current_locator = runtime_storage.load_workspace_locator(current_workspace)
+    source_locator = runtime_storage.load_workspace_locator(claimed)
+    registration = runtime_storage.load_task_worktree_registration(
+        current_workspace, task_id)
+    identity = ("run_id", "repo_id", "repository_key")
+    if not isinstance(current_locator, Mapping) or \
+            not isinstance(source_locator, Mapping) or \
+            not isinstance(registration, Mapping) or any(
+                current_locator.get(key) != source_locator.get(key)
+                for key in identity) or \
+            registration.get("run_id") != current_locator.get("run_id") or \
+            registration.get("task_id") != task_id or \
+            os.path.abspath(str(registration.get("path") or "")) != claimed or \
+            os.path.abspath(str(
+                registration.get("primary_checkout") or "")) != \
+            current_workspace:
+        raise ValueError("stage completion submission workspace is unbound")
+    step = str(submission.get("step") or "")
+    if step not in {"execute", "fix", "evaluate", "em"}:
+        raise ValueError("stage completion submission step is invalid")
+    evidence_paths = runtime_storage.submission_evidence_paths(claimed, step)
+    if tp.workspace_fingerprint(
+            claimed, submission.get("snapshot"),
+            extra_paths=evidence_paths) != submission.get("fingerprint"):
+        raise ValueError("stage completion submission workspace is stale")
+    return claimed, artifact_store
 
 
 def _stage_loop_managed_evidence_paths(
         source_workspace: str, completion: Mapping[str, object],
-        output: Mapping[str, object]) -> set[str]:
+        output: Mapping[str, object]) -> dict[str, tuple[str, str]]:
     """Prove exact external evidence paths from the validated submission."""
     step = str(output.get("managed_evidence_step") or "")
     submission = completion.get("submission")
     if step not in {"evaluate", "em"}:
-        return set()
+        return {}
     if not isinstance(submission, Mapping) or not str(
             submission.get("fingerprint") or ""):
         raise ValueError("managed completion evidence lacks its submission")
@@ -1063,18 +1249,14 @@ def _stage_loop_managed_evidence_paths(
         if not raw_root or not os.path.isabs(raw_root):
             raise ValueError("managed completion evidence root is unavailable")
         supplied_root = os.path.abspath(raw_root)
-        if not os.path.isdir(supplied_root) or \
-                supplied_root != os.path.realpath(
-                supplied_root) or _stage_loop_has_symlink_component(
-                    supplied_root):
+        if os.path.normpath(supplied_root) != supplied_root:
             raise ValueError("managed completion evidence root is not canonical")
         roots.append(supplied_root)
-    allowed = set()
+    allowed = {}
     for expected in runtime_storage.submission_evidence_paths(
             source_workspace, step):
         canonical = os.path.abspath(str(expected))
-        if canonical != os.path.realpath(canonical) or \
-                _stage_loop_has_symlink_component(canonical):
+        if os.path.normpath(canonical) != canonical:
             raise ValueError("managed completion evidence path is not canonical")
         try:
             contained = any(os.path.commonpath((root, canonical)) == root
@@ -1083,7 +1265,10 @@ def _stage_loop_managed_evidence_paths(
             contained = False
         if not contained:
             raise ValueError("managed completion evidence escaped its run root")
-        allowed.add(canonical)
+        root = next(root for root in roots
+                    if os.path.commonpath((root, canonical)) == root)
+        relative = os.path.relpath(canonical, root).replace(os.sep, "/")
+        allowed[canonical] = (root, relative)
     return allowed
 
 
@@ -1121,21 +1306,19 @@ def _stage_loop_completion_outputs(
     output = completion.get("_stage_output")
     if not isinstance(output, Mapping):
         raise ValueError("stage completion output declaration is missing")
-    raw_workspace = str(output.get("source_workspace") or "").strip()
-    if not raw_workspace or not os.path.isabs(raw_workspace):
-        raise ValueError("stage completion output workspace is unavailable")
-    supplied_workspace = os.path.abspath(os.path.expanduser(raw_workspace))
-    source_workspace = os.path.realpath(supplied_workspace)
-    if not source_workspace or supplied_workspace != source_workspace or \
-            not os.path.isdir(source_workspace) or \
-            _stage_loop_has_symlink_component(source_workspace):
-        raise ValueError("stage completion output workspace is unavailable")
+    source_workspace, artifact_store = _stage_loop_trusted_output_workspace(
+        lifecycle, completion, output)
     managed_evidence = _stage_loop_managed_evidence_paths(
         source_workspace, completion, output)
 
     snapshots = []
     seen = set()
-    for index, raw in enumerate(output.get("sources") or []):
+    sources = output.get("sources") or []
+    if not isinstance(sources, list) or \
+            len(sources) > _STAGE_OUTPUT_MAX_SOURCES:
+        raise ValueError("stage completion output source count is invalid")
+    captured_bytes = 0
+    for index, raw in enumerate(sources):
         if not isinstance(raw, Mapping):
             raise ValueError("stage completion output source is invalid")
         supplied = str(raw.get("path") or "").strip()
@@ -1146,34 +1329,17 @@ def _stage_loop_completion_outputs(
             if path not in managed_evidence:
                 raise ValueError(
                     "absolute stage completion output path is unauthorized")
+            root, relative = managed_evidence[path]
         else:
             normalized = supplied.replace("\\", "/")
             components = normalized.split("/")
             if any(component in {"", ".", ".."} for component in components):
                 raise ValueError(
                     "stage completion output path is not canonical")
-            path = os.path.abspath(os.path.join(
-                source_workspace, *components))
-            try:
-                contained = os.path.commonpath(
-                    (source_workspace, path)) == source_workspace
-            except ValueError:
-                contained = False
-            if not contained:
-                raise ValueError(
-                    "stage completion output escaped its source workspace")
-        if path != os.path.realpath(path) or \
-                _stage_loop_has_symlink_component(path):
-            raise ValueError("stage completion output path is not canonical")
-        if not os.path.isfile(path):
-            if raw.get("required") is True:
-                raise ValueError(
-                    f"required stage completion output is missing: {supplied}")
-            continue
+            root, relative = source_workspace, normalized
         logical = str(raw.get("logical_path") or "").strip()
         if not logical:
-            logical = (os.path.relpath(path, source_workspace)
-                       if not os.path.isabs(supplied) else
+            logical = (relative if not os.path.isabs(supplied) else
                        f"evidence/{index:03d}-{os.path.basename(path)}")
         logical = logical.replace("\\", "/")
         logical_components = logical.split("/")
@@ -1184,8 +1350,12 @@ def _stage_loop_completion_outputs(
         if logical in seen:
             continue
         seen.add(logical)
-        with open(path, "rb") as stream:
-            data = stream.read()
+        data = _stage_loop_read_output_no_follow(
+            root, relative, required=raw.get("required") is True,
+            remaining_bytes=_STAGE_OUTPUT_MAX_TOTAL_BYTES - captured_bytes)
+        if data is None:
+            continue
+        captured_bytes += len(data)
         import base64
         import hashlib
         try:
@@ -1209,7 +1379,6 @@ def _stage_loop_completion_outputs(
         "files": sorted(snapshots, key=lambda row: row["path"]),
         "values": dict(output.get("values") or {}),
     }
-    artifact_store = lifecycle._artifact_store()  # noqa: SLF001
     native = artifact_store.put("stage-output", bundle)
     try:
         if __package__:
@@ -1249,6 +1418,171 @@ def _stage_loop_completion_outputs(
     return public, artifacts, target, commit
 
 
+def _stage_loop_transition_operation_material(
+        state: Mapping[str, object], *, run_id: str, from_step: str,
+        to_step: str, from_kind: str, to_kind: str | None,
+        terminal_outcome: str, terminal_only: bool,
+        predecessor_stage_id: object,
+        predecessor_head_fingerprint: object) -> dict:
+    """Bind one loop transition to its exact immutable predecessor head."""
+    current_task = _current_task(dict(state)) or {}
+    return {
+        "schema": "taskplane.loop-stage-transition/v1",
+        "run_id": str(run_id), "from_step": str(from_step),
+        "to_step": str(to_step), "from_kind": str(from_kind),
+        "to_kind": to_kind, "outcome": str(terminal_outcome),
+        "predecessor_stage_id": predecessor_stage_id,
+        "predecessor_head_fingerprint": predecessor_head_fingerprint,
+        "task_id": current_task.get("id"),
+        "fix_cycles": int(current_task.get("fix_cycles") or 0),
+        "terminal_only": bool(terminal_only),
+    }
+
+
+def _stage_loop_replayed_transition(
+        ws: str, state: Mapping[str, object], *, from_step: str,
+        to_step: str, from_kind: str, to_kind: str | None,
+        terminal_outcome: str, terminal_only: bool,
+        completion: Mapping[str, object] | None) -> dict | None:
+    """Recover an exact stage commit made before singleton persistence.
+
+    The active foreground is already the successor after
+    ``terminalize_and_start``.  Deriving a fresh operation id from that head
+    would both miss the committed receipt and fail kind validation.  Instead,
+    verify the predecessor completion artifact, reconstruct the original
+    predecessor-bound identity, and accept only the receipt whose current
+    heads and lineage still match the durable aggregate.
+    """
+    if _stage_mode() == "disabled" or not isinstance(completion, Mapping):
+        return None
+    locator = runtime_storage.load_workspace_locator(ws)
+    if not isinstance(locator, Mapping) or not locator.get("run_id"):
+        return None
+    run_id = str(locator["run_id"])
+    store = _stage_store(ws, run_id)
+    manifest = store.load(run_id)
+    if manifest.get("schema") != "taskplane.run/v4":
+        return None
+    try:
+        if __package__:
+            from . import stage_entities as stage_entities_module
+        else:
+            import stage_entities as stage_entities_module
+    except ImportError:
+        import stage_entities as stage_entities_module
+    operations = manifest.get("stage_operations") or {}
+    heads = manifest.get("stage_heads") or {}
+    if not isinstance(operations, Mapping) or not isinstance(heads, Mapping):
+        raise ValueError("stage transition operation index is invalid")
+    expected_operation = (
+        "terminalize" if to_kind is None or terminal_only
+        else "terminalize_and_start")
+    candidates: list[dict] = []
+    for raw in operations.values():
+        if not isinstance(raw, dict) or raw.get("operation") != \
+                expected_operation or not str(
+                    raw.get("operation_id") or "").startswith(
+                        "loop-transition-"):
+            continue
+        checked = tp.verify_stage_receipt(
+            raw, expected_operation=expected_operation)
+        result = checked.get("result") or {}
+        predecessor_head = (result.get("head")
+                            if expected_operation == "terminalize" else
+                            result.get("predecessor_head"))
+        if not isinstance(predecessor_head, Mapping) or not isinstance(
+                predecessor_head.get("summary"), Mapping):
+            raise ValueError("stage transition predecessor receipt is invalid")
+        predecessor_id = str(
+            predecessor_head["summary"].get("stage_id") or "")
+        if not predecessor_id or heads.get(predecessor_id) != predecessor_head:
+            continue
+        predecessor = _indexed_stage(
+            store, manifest, run_id, predecessor_id)
+        if predecessor.get("stage_kind") != from_kind or \
+                predecessor.get("state") != "terminal" or \
+                predecessor.get("outcome") != terminal_outcome:
+            continue
+        terminal = predecessor.get("terminal") or {}
+        evidence = terminal.get("completion_evidence") or []
+        if not isinstance(evidence, list):
+            raise ValueError("stage transition completion evidence is invalid")
+        _entities, lifecycle = _stage_lifecycle(
+            ws, store, manifest, predecessor.get("authority"))
+        processed, _artifacts, _target, _commit = \
+            _stage_loop_completion_outputs(lifecycle, completion)
+        artifact_store = lifecycle._artifact_store()  # noqa: SLF001
+        completion_rows = []
+        for reference in evidence:
+            try:
+                value = artifact_store.read(reference)
+            except Exception:
+                continue
+            if isinstance(value, Mapping) and value.get("schema") == \
+                    "taskplane.loop-stage-completion/v1":
+                completion_rows.append(value)
+        exact = [row for row in completion_rows
+                 if row.get("run_id") == run_id and
+                 row.get("stage_id") == predecessor_id and
+                 row.get("from_step") == from_step and
+                 row.get("to_step") == to_step and
+                 row.get("result") == processed]
+        if len(exact) != 1:
+            continue
+        predecessor_fingerprint = str(
+            exact[0].get("stage_fingerprint") or "")
+        material = _stage_loop_transition_operation_material(
+            state, run_id=run_id, from_step=from_step, to_step=to_step,
+            from_kind=from_kind, to_kind=to_kind,
+            terminal_outcome=terminal_outcome,
+            terminal_only=terminal_only,
+            predecessor_stage_id=predecessor_id,
+            predecessor_head_fingerprint=predecessor_fingerprint)
+        operation_id = _stage_loop_identity(
+            stage_entities_module, "loop-transition-", material)
+        if operation_id != checked.get("operation_id"):
+            continue
+        if expected_operation == "terminalize":
+            if checked.get("stage_ids") != [predecessor_id] or \
+                    manifest.get("active_stage_projection") != \
+                    result.get("active_stage_projection"):
+                continue
+        else:
+            successor_head = result.get("successor_head")
+            if not isinstance(successor_head, Mapping) or not isinstance(
+                    successor_head.get("summary"), Mapping):
+                raise ValueError("stage transition successor receipt is invalid")
+            successor_id = str(
+                successor_head["summary"].get("stage_id") or "")
+            if not successor_id or heads.get(successor_id) != successor_head or \
+                    checked.get("stage_ids") != sorted(
+                        [predecessor_id, successor_id]) or \
+                    manifest.get("active_stage_projection") != \
+                    result.get("active_stage_projection"):
+                continue
+            successor = _indexed_stage(
+                store, manifest, run_id, successor_id)
+            if successor.get("stage_kind") != to_kind or \
+                    successor.get("state") != "active" or \
+                    list(successor.get("predecessor_stage_ids") or []) != [
+                        predecessor_id]:
+                continue
+            receipt_lineage = result.get("lineage") or []
+            manifest_lineage = manifest.get("lineage") or []
+            current_lineage = {
+                str(row.get("fingerprint")) for row in manifest_lineage
+                if isinstance(row, Mapping)}
+            if not isinstance(receipt_lineage, list) or any(
+                    not isinstance(row, Mapping) or
+                    str(row.get("fingerprint")) not in current_lineage
+                    for row in receipt_lineage):
+                continue
+        candidates.append(checked)
+    if len(candidates) > 1:
+        raise ValueError("stage transition crash recovery is ambiguous")
+    return candidates[0] if candidates else None
+
+
 def _stage_loop_transition(
         ws: str, state: Mapping[str, object], *, from_step: str,
         to_step: str, terminal_outcome: str = "done",
@@ -1263,33 +1597,30 @@ def _stage_loop_transition(
         terminal_outcome = "discarded"
     from_kind = _LOOP_STAGE_KINDS.get(str(from_step))
     to_kind = _LOOP_STAGE_KINDS.get(str(to_step))
-    if from_kind is None or (from_kind == to_kind and not force):
+    if from_kind is None or (
+            from_kind == to_kind and not force and not completion):
         return None
+    replayed = _stage_loop_replayed_transition(
+        ws, state, from_step=from_step, to_step=to_step,
+        from_kind=from_kind, to_kind=to_kind,
+        terminal_outcome=terminal_outcome, terminal_only=terminal_only,
+        completion=completion)
+    if replayed is not None:
+        return replayed
     context = _stage_loop_context(ws, state)
     if context is None:
         return None
-    current_task = _current_task(dict(state)) or {}
     stage_entities = context.get("stage_entities")
     stage = context.get("stage")
     manifest = context["manifest"]
-    operation_material = {
-        "schema": "taskplane.loop-stage-transition/v1",
-        "run_id": context["run_id"], "from_step": str(from_step),
-        "to_step": str(to_step), "from_kind": from_kind,
-        "to_kind": to_kind, "outcome": terminal_outcome,
-        # Repeated recovery routes can have the same semantic loop fields.
-        # The lifecycle operation is nevertheless for one exact immutable
-        # predecessor head; omitting this identity let a later replan replay
-        # the receipt from an earlier Build stage instead of transitioning
-        # the current one.
-        "predecessor_stage_id": (
+    operation_material = _stage_loop_transition_operation_material(
+        state, run_id=str(context["run_id"]), from_step=from_step,
+        to_step=to_step, from_kind=from_kind, to_kind=to_kind,
+        terminal_outcome=terminal_outcome, terminal_only=terminal_only,
+        predecessor_stage_id=(
             stage.get("stage_id") if isinstance(stage, Mapping) else None),
-        "predecessor_head_fingerprint": (
-            stage.get("fingerprint") if isinstance(stage, Mapping) else None),
-        "task_id": current_task.get("id"),
-        "fix_cycles": int(current_task.get("fix_cycles") or 0),
-        "terminal_only": bool(terminal_only),
-    }
+        predecessor_head_fingerprint=(
+            stage.get("fingerprint") if isinstance(stage, Mapping) else None))
     # Crash recovery: the stage commit may precede the loop.json commit.
     operations = manifest.get("stage_operations") or {}
     if stage_entities is None:
@@ -2607,6 +2938,10 @@ def _stage_native_init_authority(
     if not actor:
         raise ValueError(
             "stage-native new-run init requires --by <human identity>")
+    if _STAGE_ACTOR_IDENTIFIER.fullmatch(actor) is None:
+        raise ValueError(
+            "stage-native new-run init --by actor must match "
+            "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
     session_id = str(
         os.environ.get("TASKPLANE_SESSION_ID") or
         os.environ.get("CODEX_THREAD_ID") or
@@ -2706,6 +3041,23 @@ def init(ws: str, goal: str, spec_path: str | None = None,
          requirement_id: str | None = None, parallel: bool = False,
          design: bool = False, design_only: bool = False,
          force: bool = False, by: str | None = None) -> dict:
+    if _stage_mode() == "new-run":
+        try:
+            prior_singleton = _load_raw(ws)
+        except Exception as exc:
+            return {
+                "error": "stage-native new-run init cannot verify existing "
+                         f"singleton/history: {exc.__class__.__name__}: {exc}",
+                "refused": True,
+            }
+        if prior_singleton is not None:
+            return {
+                "error": ("stage-native new-run init refuses existing "
+                          "singleton/history; start a fresh governed run "
+                          "instead of --force replacement"),
+                "refused": True,
+                "step": prior_singleton.get("step"),
+            }
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     try:
@@ -3346,9 +3698,15 @@ def _persist_stage_loop_wave_bindings(
             raise ValueError("stage-native wave advanced during split binding")
         locked_tasks = {str(task.get("id")): task
                         for task in (locked.get("tasks") or [])}
-        if any(task_id not in locked_tasks or
-               locked_tasks[task_id].get("status") != "pending"
-               for task_id in task_ids):
+        existing_table = locked.get("_stage_bindings") or {}
+        if any(
+                task_id not in locked_tasks or
+                locked_tasks[task_id].get("status") not in {"pending", "running"} or
+                (locked_tasks[task_id].get("status") == "running" and not (
+                    isinstance(existing_table, Mapping) and
+                    isinstance(existing_table.get(task_id), Mapping) and
+                    existing_table[task_id].get("build") == bindings[task_id]))
+                for task_id in task_ids):
             raise ValueError("stage-native wave changed during split binding")
         current = _verified_stage_loop_wave_split(
             ws, ready, known_bindings=bindings)
@@ -3361,53 +3719,6 @@ def _persist_stage_loop_wave_bindings(
                     None, child_id}:
                 raise ValueError("stage-native wave binding conflicts")
             table.setdefault(task_id, {})["build"] = child_id
-
-
-def _stage_loop_resumed_wave_children(
-        ws: str, bindings: Mapping[str, str]) -> set[str]:
-    """Return bound task ids that already have a verified runtime dispatch."""
-    if not bindings:
-        return set()
-    locator = runtime_storage.load_workspace_locator(ws)
-    if not isinstance(locator, Mapping) or not locator.get("run_id"):
-        raise ValueError("stage-native wave run identity is unavailable")
-    run_id = str(locator["run_id"])
-    manifest = _stage_store(ws, run_id).load(run_id)
-    operations = manifest.get("stage_operations") or {}
-    if not isinstance(operations, Mapping):
-        raise ValueError("stage-native resume operation index is invalid")
-    by_child = {str(child_id): str(task_id)
-                for task_id, child_id in bindings.items()}
-    roots = {
-        child_id: str(_indexed_stage(
-            _stage_store(ws, run_id), manifest, run_id,
-            child_id).get("execution_root_id") or "")
-        for child_id in by_child
-    }
-    resumed: set[str] = set()
-    for raw in operations.values():
-        if not isinstance(raw, dict) or raw.get("operation") != "resume_stage":
-            continue
-        checked = tp.verify_stage_receipt(
-            raw, expected_operation="resume_stage")
-        if not str(checked.get("operation_id") or "").startswith(
-                "loop-dispatch-"):
-            continue
-        result = checked.get("result") or {}
-        child_id = str(result.get("stage_id") or "")
-        if child_id not in by_child:
-            continue
-        claim = result.get("claim")
-        attempt_id = str(result.get("attempt_id") or "")
-        if not isinstance(claim, Mapping) or claim != {
-                "schema": "taskplane.stage-execution-attempt-claim/v1",
-                "run_id": run_id, "stage_id": child_id,
-                "execution_root_id": roots[child_id],
-                "attempt_id": attempt_id,
-        } or checked.get("stage_ids") != [child_id]:
-            raise ValueError("loop wave resume receipt is invalid")
-        resumed.add(by_child[child_id])
-    return resumed
 
 
 def _stage_loop_wave_dispatches(
@@ -3430,15 +3741,17 @@ def _stage_loop_wave_dispatches(
         ws, ready, known_bindings=(known or None))
     if recovered is not None:
         _persist_stage_loop_wave_bindings(ws, state, ready, recovered)
-        resumed = _stage_loop_resumed_wave_children(ws, recovered)
         current = load(ws) or dict(state)
+        claimed = {
+            str(task.get("id")) for task in (current.get("tasks") or [])
+            if isinstance(task, Mapping) and task.get("status") == "running"}
         return {
             str(task["id"]): _stage_loop_dispatch(
                 ws, current, slot=str(task["id"]),
                 declared_scope=_stage_loop_scope(
                     task.get("scope"), tp.DEFAULT_OUT_OF_SCOPE),
                 stage_id=recovered[str(task["id"])])
-            for task in ready if str(task["id"]) not in resumed
+            for task in ready if str(task["id"]) not in claimed
         }
     context = _stage_loop_context(ws, state)
     if context is None:

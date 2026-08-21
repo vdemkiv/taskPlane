@@ -48,6 +48,25 @@ Dispatch exactly the deep slots plus at most one light sweep. An
 `impact_incomplete` run dispatches nobody. Lenses consume scoped artifact
 references and never rederive diff, graph, routing, or runnability.
 
+**Update fixtures with the interface, then test from narrow to broad.** When
+code changes a schema, signature, payload, failure order, or persisted state,
+the owner of the affected tests updates those fixtures and assertions during
+the same bounded change; do not wait for an aggregate suite to reveal known
+drift. Freeze the shared contract before owners finish and keep file ownership
+disjoint. Run static/diff checks, exact changed selectors with fail-fast, the
+changed-file suite, and only then one proportional declared suite after all
+code and fixtures are stable. Never launch a broad suite while parallel edits
+are still moving.
+
+Classify every failure before touching production. If it is a fixture,
+setup, variable-name, or stale-assertion defect, fix the test and rerun only
+that selector; do not present it as a product finding or automatically restart
+the long aggregate command. Preserve the green receipt from unchanged layers.
+Repeat the broader suite only when the test correction changes shared
+behavior or the release gate specifically requires a clean aggregate receipt.
+Run lens sweeps only on a stable committed target, never on transient
+production/test combinations.
+
 **One bounded stage handoff.** With stage-native delivery enabled, each
 Product, Design, Plan, Build, Evaluate, Engineering, and Retro action creates
 or resumes an independently addressable stage. A worker's sole startup
@@ -145,7 +164,7 @@ explicit approval in conversation. Never run the loop silently.
    "<goal>"`; the PM step owns the first requirement/spec. Never run a
    standalone `req new` before this loop. The `new-run` canary is the explicit
    exception: it requires an exact existing R-id and accountable human, so run
-   `$TP loop init --req R-XXXX --by "<human>" "<goal>"` with a stable session
+   `$TP loop init --req R-XXXX --by "human:owner" "<goal>"` with a stable session
    identity already exported. Add `--design` for a
    complex/risky/contract-changing or explicitly requested proposed-HOW phase;
    add `--design-only` when the deliverable is the approved design itself;
@@ -250,11 +269,14 @@ explicit approval in conversation. Never run the loop silently.
 **Stage rollout and rollback.** `TASKPLANE_STAGE_NATIVE` is disabled by
 default and accepts only two enabling modes: `new-run` for a pristine new-run
 canary, and `enabled` after verified migration. Other values fail closed, and
-`new-run` refuses an existing singleton or migration-bound run. Before
+`new-run` refuses any existing singleton or migration-bound run, including
+terminal history and attempts using `--force`. Before
 starting a canary, set `TASKPLANE_STAGE_NATIVE=new-run` and then run normal
 `loop init` with `--req <R-id>` resolving an exact existing requirement and
-`--by <human identity>` naming the accountable human who becomes the root
-stage `authority.actor`. A stable session identity must already be present in
+`--by human:owner` naming the accountable human who becomes the root stage
+`authority.actor`. The actor must match
+`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`; spaces are not accepted. A stable
+session identity must already be present in
 `TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`. The
 workspace must already have a governed locator bound to an unmigrated v3 run
 with an exact target revision. Only a successful init with all of those facts

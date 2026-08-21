@@ -704,15 +704,17 @@ def test_wave_recovers_after_first_child_resume_without_resplitting(
     recovered = loop.wave(str(workspace))
 
     assert "error" not in recovered, recovered
-    recovered_ids = {
-        entry["task"]["id"]:
-        entry["stage_runtime_dispatch"]["startup"]["stage_id"]
+    recovered_identities = {
+        entry["task"]["id"]: (
+            entry["stage_runtime_dispatch"]["startup"]["stage_id"],
+            entry["stage_runtime_dispatch"]["startup"]["execution_claim"][
+                "execution_root_id"],
+        )
         for entry in recovered["wave"]
     }
-    assert recovered_ids == {
-        task_id: binding["build"]
+    assert recovered_identities == {
+        task_id: (binding["build"], f"execution-{binding['build']}")
         for task_id, binding in bindings_before.items()
-        if binding["build"] != observed[0]
     }
     after = store.load(str(parent["run_id"]))
     assert set(after["active_stage_projection"][

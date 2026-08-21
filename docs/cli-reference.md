@@ -599,7 +599,7 @@ Positional arguments:
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--advisory` | flag | continue with visibly advisory screen enforcement |
-| `--by` | BY | human identity required with --advisory and with TASKPLANE_STAGE_NATIVE=new-run; the new-run value becomes the root stage authority.actor |
+| `--by` | BY | human identity required with --advisory and with TASKPLANE_STAGE_NATIVE=new-run; the new-run value becomes the root stage authority.actor and must use identifier syntax (for example human:vdemkiv; no spaces) |
 | `--checkpoints` | CHECKPOINTS | comma list: plan,em (default both) |
 | `--design` | flag | run the Design Contract + human design approval before implementation planning |
 | `--design-only` | flag | stop after the human approves the Design Contract instead of continuing to Plan/Build/Review |
@@ -1133,7 +1133,9 @@ and artifact validation.
 
 Set `TASKPLANE_STAGE_NATIVE=new-run` before `tp.py loop init`. Supply
 an exact existing requirement with `--req` and the accountable human
-with `--by`; that human becomes the root stage `authority.actor`. A
+with `--by`; use stage identifier syntax such as
+`human:vdemkiv` (letters, digits, `.`, `_`, `:`, or `-`; no spaces).
+That value becomes the root stage `authority.actor`. A
 stable session identity must already be present in
 `TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.
 The workspace must already have a governed locator bound to an
@@ -1152,6 +1154,8 @@ artifact, or a separate `tp.py stage start` request.
 `tp.py loop wave` never bootstraps a root: it requires the already
 bound v4 journey and fails closed when that binding is missing.
 
+New-run initialization also refuses any existing singleton history,
+including terminal history and `--force`; use a fresh governed run.
 Initialization refuses without singleton or stage mutation when the
 requirement is missing or unknown, `--by` is missing, stable session
 identity is missing, the governed locator is missing, the bound run is
