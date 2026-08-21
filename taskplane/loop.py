@@ -57,6 +57,698 @@ import yield_meter
 
 LOOP_FILE = "loop.json"
 
+STAGE_COMMAND_SCHEMA = "taskplane.stage-command-result/v1"
+STAGE_HISTORY_SCHEMA = "taskplane.stage-history-page/v1"
+STAGE_HISTORY_MAX_ITEMS = 100
+_STAGE_RUNTIME_FIELDS = frozenset({
+    "agent", "agents", "conversation", "conversations", "environment",
+    "env", "event", "events", "eventlog", "eventlogs", "lease", "leases",
+    "log", "logs", "path", "root", "runtime", "runtimestate", "tool",
+    "tools", "tooltranscript", "tooltranscripts", "transcript",
+    "transcripts", "workspace",
+})
+_STAGE_REQUEST_FIELDS = {
+    "history": frozenset({"schema", "run_id", "cursor", "limit"}),
+    "start": frozenset({
+        "schema", "stage", "expected_revision", "operation_id",
+        "expected_predecessor_fingerprints", "foreground", "authority",
+        "declared_scope",
+    }),
+    "reuse": frozenset({
+        "schema", "stage", "successor_stage", "expected_revision",
+        "operation_id", "expected_predecessor_fingerprints", "foreground",
+        "authority", "declared_scope", "reason", "actor",
+    }),
+    "resume": frozenset({
+        "schema", "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "attempt_id", "authority",
+        "declared_scope",
+    }),
+    "terminalize": frozenset({
+        "schema", "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "outcome", "actor",
+        "terminalized_at", "reason_code", "reason",
+        "completed_deliverables", "completion_evidence", "handoff_manifest",
+        "authority",
+    }),
+    "terminalize-and-start": frozenset({
+        "schema", "run_id", "predecessor_stage_id", "stage",
+        "successor_stage", "expected_head_fingerprint", "expected_revision",
+        "operation_id", "outcome", "actor", "terminalized_at",
+        "reason_code", "reason", "completed_deliverables",
+        "completion_evidence", "foreground", "authority", "declared_scope",
+    }),
+    "split": frozenset({
+        "schema", "run_id", "stage_id", "expected_head_fingerprint",
+        "expected_revision", "operation_id", "child_specs", "actor",
+        "terminalized_at", "reason", "authority", "declared_scopes",
+    }),
+}
+
+
+def _stage_command_error(command: object, exc: Exception) -> dict:
+    """Return a stable CLI error without changing legacy loop state."""
+    return {
+        "schema": STAGE_COMMAND_SCHEMA,
+        "command": str(command or ""),
+        "error": f"{exc.__class__.__name__}: {exc}",
+    }
+
+
+def _stage_request(request: object) -> dict:
+    """Copy one JSON stage request before it crosses the lifecycle seam."""
+    if not isinstance(request, Mapping):
+        raise ValueError("stage request must be a JSON object")
+    if any(not isinstance(key, str) for key in request):
+        raise ValueError("stage request field names must be strings")
+    # A canonical JSON round-trip both detaches caller-owned mutable values
+    # and rejects Python-only values before an operation fingerprint is made.
+    try:
+        return json.loads(json.dumps(
+            request, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("stage request must be canonical JSON") from exc
+
+
+def _reject_stage_runtime_fields(value: object, label: str) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            normalized = "".join(character for character in key.lower()
+                                 if character not in "-_. ")
+            if normalized in _STAGE_RUNTIME_FIELDS:
+                raise ValueError(
+                    f"{label} contains forbidden runtime field {key!r}")
+            _reject_stage_runtime_fields(child, label)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_stage_runtime_fields(child, label)
+
+
+def _validate_stage_request(action: str, request: dict) -> dict:
+    allowed = _STAGE_REQUEST_FIELDS[action]
+    unknown = set(request) - allowed
+    if unknown:
+        raise ValueError(
+            "stage request has unknown fields: " + ", ".join(sorted(unknown)))
+    schema = request.get("schema")
+    if schema is not None and schema != "taskplane.stage-command/v1":
+        raise ValueError("stage request schema is invalid")
+    _reject_stage_runtime_fields(request, "stage request")
+    return request
+
+
+def _stage_run_id(command: str, request: Mapping[str, object]) -> str:
+    stage = request.get("stage")
+    if command in {"reuse", "terminalize-and-start"} and stage is None:
+        stage = request.get("successor_stage")
+    if command in {"start", "reuse", "terminalize-and-start"}:
+        if not isinstance(stage, Mapping):
+            raise ValueError(f"{command} requires stage")
+        run_id = stage.get("run_id")
+    else:
+        run_id = request.get("run_id")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError(f"{command} requires run_id")
+    return run_id
+
+
+def _stage_store(ws: str, run_id: str):
+    """Open the exact locator-bound RunStore, with a legacy test fallback."""
+    try:
+        if __package__:
+            from . import run_store as stage_run_store
+        else:
+            import run_store as stage_run_store
+    except ImportError:
+        import run_store as stage_run_store
+    locator = runtime_storage.load_workspace_locator(ws)
+    if isinstance(locator, Mapping):
+        if locator.get("run_id") != run_id:
+            raise ValueError("workspace belongs to a different stage run")
+        home = locator.get("home")
+        if not isinstance(home, str) or not home:
+            raise ValueError("workspace stage store is unavailable")
+        return stage_run_store.RunStore(home=home)
+    return stage_run_store.RunStore()
+
+
+def _stage_mode() -> str:
+    """Resolve the fail-closed v4 rollout mode through the lite kernel."""
+    resolver = getattr(tp, "stage_native_mode", None)
+    if callable(resolver):
+        return str(resolver())
+    raw = os.environ.get("TASKPLANE_STAGE_NATIVE", "").strip().lower()
+    if raw == "new-run":
+        return "new-run"
+    if raw in {"1", "true", "yes", "on", "enabled"}:
+        return "enabled"
+    return "disabled"
+
+
+def _stage_mutation_blocker(mode: str, manifest: Mapping[str, object],
+                            ws: str) \
+        -> str | None:
+    """Keep rollback readable while pausing every stage-native mutation."""
+    schema = manifest.get("schema")
+    if mode == "disabled":
+        return "stage-native mutation is disabled"
+    if schema == "taskplane.run/v3" and mode != "new-run":
+        return ("unmigrated run requires TASKPLANE_STAGE_NATIVE=new-run; "
+                "legacy loop behavior remains active")
+    if schema == "taskplane.run/v3":
+        migration_fields = [
+            key for key, value in manifest.items()
+            if "migration" in str(key).lower() and value not in (
+                None, False, "", [], {})
+        ]
+        if load(ws) is not None or migration_fields:
+            return ("new-run mode cannot promote an existing singleton or "
+                    "migration-bound run; legacy read-only behavior remains "
+                    "active")
+    if schema not in {"taskplane.run/v3", "taskplane.run/v4"}:
+        return "run is not stage-capable"
+    return None
+
+
+def _current_stage_authority(
+        ws: str, manifest: Mapping[str, object], expected: object) -> dict:
+    """Re-resolve repository/worktree facts for the exact supplied binding.
+
+    Actor/session and consolidated-authority revision are immutable receipt
+    identities, so they remain from the request.  Facts owned by the current
+    run manifest or checkout are replaced with their live values immediately
+    before ``StageLifecycle`` commits and the repository validator compares
+    the result with the indexed stage's expected binding.
+    """
+    if not isinstance(expected, Mapping):
+        raise ValueError("stage command requires an authority binding")
+    current = dict(expected)
+    current["run_id"] = manifest.get("run_id")
+
+    repository = manifest.get("repository")
+    if isinstance(repository, Mapping):
+        if repository.get("repo_id"):
+            current["repository_id"] = repository.get("repo_id")
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception:
+        locator = None
+    if isinstance(locator, Mapping):
+        if locator.get("repo_id"):
+            current["repository_id"] = locator.get("repo_id")
+        if locator.get("repository_key"):
+            current["repository_key"] = locator.get("repository_key")
+        if locator.get("run_id") != manifest.get("run_id"):
+            raise ValueError("workspace belongs to a different stage run")
+
+    # A non-Git test/legacy checkout has no live revision to substitute.  A
+    # real governed checkout always does, and any head drift then fails the
+    # exact repository authority comparison rather than being advisory.
+    live_revision = tp.git_head(ws)
+    if live_revision and live_revision != "unknown":
+        current["worktree_revision"] = live_revision
+
+    target = manifest.get("target")
+    if isinstance(target, Mapping):
+        target_revision = (target.get("revision") or target.get("commit") or
+                           target.get("head"))
+        if target_revision:
+            current["target_revision"] = target_revision
+    return current
+
+
+def _stage_lifecycle(ws: str, store: object, manifest: Mapping[str, object],
+                     authority: object):
+    """Lazy-load the t02 kernel; importing loop.py alone stays legacy-safe."""
+    try:
+        if __package__:
+            from . import repository as stage_repository
+            from . import stage_entities
+        else:
+            import repository as stage_repository
+            import stage_entities
+    except ImportError:
+        # Package-style imports are not reliable when tp.py is executed as a
+        # script from inside taskplane/.  Mirror the repository's established
+        # dual-import convention without making stage_entities eager.
+        import repository as stage_repository
+        import stage_entities
+
+    return stage_entities, stage_entities.StageLifecycle(
+        store, workspace=ws,
+        authority_resolver=lambda _current: _current_stage_authority(
+            ws, _current, authority),
+        authority_validator=stage_repository.revalidate_stage_authority)
+
+
+def _indexed_stage(store: object, manifest: Mapping[str, object],
+                   run_id: str, stage_id: str) -> dict:
+    heads = manifest.get("stage_heads")
+    if not isinstance(heads, Mapping) or stage_id not in heads:
+        raise ValueError("stage is not indexed")
+    head = heads[stage_id]
+    if not isinstance(head, Mapping) or not isinstance(
+            head.get("object"), Mapping):
+        raise ValueError("stage head is invalid")
+    read = getattr(store, "read_stage_object", None)
+    if not callable(read):
+        raise ValueError("stage store cannot read immutable objects")
+    return read(run_id, dict(head["object"]))
+
+
+def _verified_stage_handoff(lifecycle: object, store: object,
+                            manifest: Mapping[str, object], stage: dict) \
+        -> dict | None:
+    """Resolve only the successor's selected, authority-bound handoff."""
+    predecessors = list(stage.get("predecessor_stage_ids") or [])
+    if not predecessors:
+        # Root stages still cross the same bounded input boundary.  They have
+        # no producer aggregate to compare, but their immutable reference is
+        # verified against exact stage authority and selected artifacts before
+        # the root is dispatchable.
+        try:
+            if __package__:
+                from . import stage_handoff
+            else:
+                import stage_handoff
+        except ImportError:
+            import stage_handoff
+        authority = stage.get("authority")
+        if not isinstance(authority, Mapping):
+            raise ValueError("root stage authority is invalid")
+        return stage_handoff.read_manifest(
+            lifecycle._artifact_store(),  # noqa: SLF001
+            stage["input_manifest_ref"],
+            expected_authority_revision=int(authority["authority_revision"]),
+            expected_authority_fingerprint=str(
+                authority["authority_fingerprint"]))
+    failures: list[Exception] = []
+    for predecessor_id in predecessors:
+        try:
+            producer = _indexed_stage(
+                store, manifest, str(stage["run_id"]), str(predecessor_id))
+            # StageLifecycle owns the producer/consumer binding checks.  This
+            # read is deliberately after a successful receipt and does not
+            # inspect an execution tree or any predecessor runtime record.
+            return lifecycle._read_handoff(  # noqa: SLF001
+                stage["input_manifest_ref"], producer=producer,
+                consumer=stage)
+        except Exception as exc:
+            failures.append(exc)
+    raise ValueError("no verified predecessor handoff is dispatchable") \
+        from failures[-1]
+
+
+def _stage_dispatch(store: object, lifecycle: object,
+                    receipt: Mapping[str, object], stage: dict, *,
+                    attempt_id: str | None = None,
+                    declared_scope: object = None) -> dict:
+    """Build the path-free, bounded runtime envelope for a fresh attempt."""
+    verify = getattr(tp, "verify_stage_receipt", None)
+    runtime = getattr(tp, "stage_runtime_dispatch", None)
+    if not callable(verify) or not callable(runtime):
+        raise ValueError("stage runtime serializer is unavailable")
+    operation = str(receipt.get("operation") or "")
+    checked_receipt = verify(
+        receipt, expected_operation=operation,
+        expected_stage_id=str(stage["stage_id"]))
+    current = store.load(str(stage["run_id"]))
+    handoff = _verified_stage_handoff(
+        lifecycle, store, current, stage)
+    return runtime(
+        stage, checked_receipt, handoff,
+        stage.get("selected_artifacts") or [], attempt_id=attempt_id,
+        declared_scope=declared_scope)
+
+
+def _preflight_stage_dispatch(stage: dict, handoff: dict,
+                              declared_scope: object = None) -> None:
+    """Prove bounded startup serialization before committing a new head."""
+    compatibility = getattr(tp, "stage_dispatch_payload", None)
+    if not callable(compatibility):
+        raise ValueError("stage runtime serializer is unavailable")
+    claim = {
+        "schema": "taskplane.stage-execution-root-claim/v1",
+        "run_id": stage["run_id"],
+        "stage_id": stage["stage_id"],
+        "execution_root_id": stage["execution_root_id"],
+    }
+    compatibility(
+        stage, handoff, stage.get("selected_artifacts") or [], claim,
+        declared_scope=declared_scope)
+
+
+def stage_history(ws: str, run_id: str, *, cursor: object = None,
+                  limit: int = STAGE_HISTORY_MAX_ITEMS) -> dict:
+    """Public bounded read helper used by non-CLI host adapters."""
+    try:
+        return _stage_history(_stage_store(ws, run_id), run_id, {
+            "cursor": cursor, "limit": limit,
+        })
+    except Exception as exc:
+        return _stage_command_error("history", exc)
+
+
+def _stage_history(store: object, run_id: str, request: Mapping[str, object]) \
+        -> dict:
+    manifest = store.load(run_id)
+    if manifest.get("schema") != "taskplane.run/v4":
+        return {
+            "schema": STAGE_HISTORY_SCHEMA,
+            "run_id": run_id,
+            "legacy": True,
+            "stages": [],
+            "lineage": [],
+            "next_cursor": None,
+        }
+    raw_limit = request.get("limit", STAGE_HISTORY_MAX_ITEMS)
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or \
+            not 1 <= raw_limit <= STAGE_HISTORY_MAX_ITEMS:
+        raise ValueError(
+            f"history limit must be 1..{STAGE_HISTORY_MAX_ITEMS}")
+    raw_cursor = request.get("cursor")
+    if raw_cursor is None:
+        offset = 0
+    elif isinstance(raw_cursor, str) and raw_cursor.isdigit():
+        offset = int(raw_cursor)
+    elif isinstance(raw_cursor, int) and not isinstance(raw_cursor, bool):
+        offset = raw_cursor
+    else:
+        raise ValueError("history cursor is invalid")
+    if offset < 0:
+        raise ValueError("history cursor is invalid")
+
+    heads = manifest.get("stage_heads")
+    if not isinstance(heads, Mapping):
+        raise ValueError("stage history is unavailable")
+    stage_ids = sorted(str(stage_id) for stage_id in heads)
+    page_ids = stage_ids[offset:offset + raw_limit]
+    items = []
+    for stage_id in page_ids:
+        head = heads[stage_id]
+        if not isinstance(head, Mapping) or not isinstance(
+                head.get("summary"), Mapping):
+            raise ValueError("stage history contains an invalid head")
+        # Return the already bounded summary.  Do not open the stage object,
+        # predecessor tree, trace, transcript, lease, or meter.
+        items.append(dict(head["summary"]))
+    next_offset = offset + len(page_ids)
+    page_set = set(page_ids)
+    lineage = [dict(row) for row in manifest.get("lineage") or []
+               if isinstance(row, Mapping) and
+               str(row.get("child_stage_id") or "") in page_set]
+    # One page is bounded independently from the persisted lineage fan-in.
+    lineage = lineage[:STAGE_HISTORY_MAX_ITEMS]
+    return {
+        "schema": STAGE_HISTORY_SCHEMA,
+        "run_id": run_id,
+        "revision": manifest.get("revision"),
+        "stages": items,
+        "lineage": lineage,
+        "cursor": str(offset),
+        "next_cursor": (str(next_offset)
+                        if next_offset < len(stage_ids) else None),
+    }
+
+
+def stage_command(ws: str, command: str, request: object) -> dict:
+    """Run one explicit stage command without touching ``loop next/wave``.
+
+    Stage entities are an additive rollout.  History remains readable for a
+    migrated v4 run during rollback, while every mutation pauses when the
+    feature is disabled.  A v3 run is auto-promoted by t02 only in the
+    ``new-run`` canary mode; existing unmigrated callers stay on loop.json.
+    """
+    action = str(command or "").strip().lower()
+    allowed = {"start", "resume", "terminalize", "terminalize-and-start",
+               "split", "history", "reuse"}
+    if action not in allowed:
+        return _stage_command_error(
+            action, ValueError("unknown stage command"))
+    try:
+        data = _validate_stage_request(action, _stage_request(request))
+        run_id = _stage_run_id(action, data)
+        store = _stage_store(ws, run_id)
+        if action == "history":
+            return _stage_history(store, run_id, data)
+
+        manifest = store.load(run_id)
+        blocker = _stage_mutation_blocker(_stage_mode(), manifest, ws)
+        if blocker:
+            return {
+                "schema": STAGE_COMMAND_SCHEMA,
+                "command": action,
+                "run_id": run_id,
+                "enabled": False,
+                "legacy": manifest.get("schema") == "taskplane.run/v3",
+                "error": blocker,
+            }
+        stage_entities, lifecycle = _stage_lifecycle(
+            ws, store, manifest, data.get("authority"))
+
+        if action in {"start", "reuse"}:
+            stage_value = data.get("stage") or data.get("successor_stage")
+            if not isinstance(stage_value, Mapping):
+                raise ValueError(f"{action} requires stage")
+            stage = stage_entities.validate_stage(stage_value)
+            current = store.load(run_id)
+            predecessors = [
+                _indexed_stage(store, current, run_id, str(stage_id))
+                for stage_id in stage["predecessor_stage_ids"]
+            ]
+            verified_handoff = _verified_stage_handoff(
+                lifecycle, store, current, stage)
+            if action == "reuse":
+                reason = data.get("reason")
+                if not isinstance(reason, str) or not reason.strip() or \
+                        reason != reason.strip() or \
+                        len(reason.encode("utf-8")) > 4 * 1024 or any(
+                            ord(character) < 32 or ord(character) == 127
+                            for character in reason):
+                    raise ValueError("reuse requires an attributable reason")
+                if not stage.get("predecessor_stage_ids"):
+                    raise ValueError("reuse requires a predecessor stage")
+                producer = verified_handoff.get("producer")
+                producer_id = (producer.get("stage_id")
+                               if isinstance(producer, Mapping) else None)
+                selected_producers = [
+                    predecessor for predecessor in predecessors
+                    if predecessor.get("stage_id") == producer_id
+                ]
+                if not selected_producers or any(
+                        predecessor.get("outcome") not in {
+                            "closed", "discarded"
+                        } for predecessor in selected_producers):
+                    raise ValueError(
+                        "reuse requires a closed or discarded predecessor")
+                authorization = verified_handoff.get("authorization")
+                reuse_authorization = (authorization.get(
+                    "nonconsumable_reuse")
+                    if isinstance(authorization, Mapping) else None)
+                actor = data.get("actor")
+                if not isinstance(reuse_authorization, Mapping) or \
+                        not isinstance(actor, str) or not actor.strip() or \
+                        actor != authorization.get("actor") or \
+                        actor != stage["authority"].get("actor"):
+                    raise ValueError(
+                        "reuse requires exact non-default handoff authority")
+            elif any(predecessor.get("outcome") in {
+                    "closed", "discarded"} for predecessor in predecessors):
+                raise ValueError(
+                    "closed or discarded predecessor requires reuse command")
+            _preflight_stage_dispatch(
+                stage, verified_handoff,
+                declared_scope=data.get("declared_scope"))
+            receipt = lifecycle.start_stage(
+                stage,
+                expected_revision=data.get("expected_revision"),
+                operation_id=data.get("operation_id"),
+                expected_predecessor_fingerprints=data.get(
+                    "expected_predecessor_fingerprints"),
+                foreground=data.get("foreground", True))
+            checked = tp.verify_stage_receipt(
+                receipt, expected_operation="start_stage",
+                expected_stage_id=str(stage["stage_id"]))
+            if action == "reuse":
+                tp.trace(
+                    ws, "stage_nondefault_reuse", run_id=run_id,
+                    stage_id=stage["stage_id"], actor=data["actor"],
+                    reason=data["reason"], operation_id=data["operation_id"],
+                    receipt_fingerprint=checked.get("result_fingerprint"))
+            dispatch = _stage_dispatch(
+                store, lifecycle, checked, stage,
+                declared_scope=data.get("declared_scope"))
+            return {"schema": STAGE_COMMAND_SCHEMA, "command": action,
+                    "run_id": run_id, "receipt": checked,
+                    "dispatch": dispatch}
+
+        if action == "resume":
+            current = store.load(run_id)
+            active_stage = _indexed_stage(
+                store, current, run_id, str(data.get("stage_id") or ""))
+            verified_handoff = _verified_stage_handoff(
+                lifecycle, store, current, active_stage)
+            requested_attempt = data.get("attempt_id")
+            if requested_attempt is None:
+                requested_attempt = "attempt-" + \
+                    stage_entities.request_fingerprint({
+                        "run_id": run_id,
+                        "stage_id": data.get("stage_id"),
+                        "operation_id": data.get("operation_id"),
+                    })[:24]
+            compatibility = getattr(tp, "stage_dispatch_payload", None)
+            if not callable(compatibility):
+                raise ValueError("stage runtime serializer is unavailable")
+            compatibility(
+                active_stage, verified_handoff,
+                active_stage.get("selected_artifacts") or [], {
+                    "schema": "taskplane.stage-execution-attempt-claim/v1",
+                    "run_id": active_stage["run_id"],
+                    "stage_id": active_stage["stage_id"],
+                    "execution_root_id": active_stage["execution_root_id"],
+                    "attempt_id": requested_attempt,
+                }, attempt_id=requested_attempt,
+                declared_scope=data.get("declared_scope"))
+            receipt = lifecycle.resume_stage(
+                run_id, stage_id=data.get("stage_id"),
+                expected_head_fingerprint=data.get(
+                    "expected_head_fingerprint"),
+                expected_revision=data.get("expected_revision"),
+                operation_id=data.get("operation_id"),
+                attempt_id=data.get("attempt_id"))
+            checked = tp.verify_stage_receipt(
+                receipt, expected_operation="resume_stage",
+                expected_stage_id=str(data.get("stage_id") or ""))
+            result = checked.get("result") or {}
+            attempt_id = str(result.get("attempt_id") or "")
+            current = store.load(run_id)
+            stage = _indexed_stage(
+                store, current, run_id, str(data.get("stage_id") or ""))
+            dispatch = _stage_dispatch(
+                store, lifecycle, checked, stage, attempt_id=attempt_id,
+                declared_scope=data.get("declared_scope"))
+            return {"schema": STAGE_COMMAND_SCHEMA, "command": action,
+                    "run_id": run_id, "receipt": checked,
+                    "dispatch": dispatch}
+
+        if action == "terminalize":
+            receipt = lifecycle.terminalize(
+                run_id, stage_id=data.get("stage_id"),
+                expected_head_fingerprint=data.get(
+                    "expected_head_fingerprint"),
+                expected_revision=data.get("expected_revision"),
+                operation_id=data.get("operation_id"),
+                outcome=data.get("outcome"), actor=data.get("actor"),
+                terminalized_at=data.get("terminalized_at"),
+                reason_code=data.get("reason_code"),
+                reason=data.get("reason"),
+                completed_deliverables=data.get(
+                    "completed_deliverables") or (),
+                completion_evidence=data.get("completion_evidence") or (),
+                handoff_manifest=data.get("handoff_manifest"))
+            checked = tp.verify_stage_receipt(
+                receipt, expected_operation="terminalize",
+                expected_stage_id=str(data.get("stage_id") or ""))
+            return {"schema": STAGE_COMMAND_SCHEMA, "command": action,
+                    "run_id": run_id, "receipt": checked}
+
+        if action == "terminalize-and-start":
+            successor_value = data.get("stage") or data.get(
+                "successor_stage")
+            if not isinstance(successor_value, Mapping):
+                raise ValueError("terminalize-and-start requires stage")
+            successor = stage_entities.validate_stage(successor_value)
+            current = store.load(run_id)
+            predecessor = _indexed_stage(
+                store, current, run_id,
+                str(data.get("predecessor_stage_id") or ""))
+            prospective_terminal = stage_entities.terminalize_stage(
+                predecessor, outcome=data.get("outcome"),
+                actor=data.get("actor"),
+                terminalized_at=data.get("terminalized_at"),
+                reason_code=data.get("reason_code"),
+                reason=data.get("reason"),
+                completed_deliverables=data.get(
+                    "completed_deliverables") or (),
+                completion_evidence=data.get("completion_evidence") or ())
+            verified_handoff = lifecycle._read_handoff(  # noqa: SLF001
+                successor["input_manifest_ref"],
+                producer=prospective_terminal, consumer=successor)
+            _preflight_stage_dispatch(
+                successor, verified_handoff,
+                declared_scope=data.get("declared_scope"))
+            receipt = lifecycle.terminalize_and_start(
+                data.get("predecessor_stage_id"), successor,
+                expected_head_fingerprint=data.get(
+                    "expected_head_fingerprint"),
+                expected_revision=data.get("expected_revision"),
+                operation_id=data.get("operation_id"),
+                outcome=data.get("outcome"), actor=data.get("actor"),
+                terminalized_at=data.get("terminalized_at"),
+                reason_code=data.get("reason_code"),
+                reason=data.get("reason"),
+                completed_deliverables=data.get(
+                    "completed_deliverables") or (),
+                completion_evidence=data.get("completion_evidence") or (),
+                foreground=data.get("foreground", True))
+            checked = tp.verify_stage_receipt(
+                receipt, expected_operation="terminalize_and_start",
+                expected_stage_id=str(successor["stage_id"]))
+            dispatch = _stage_dispatch(
+                store, lifecycle, checked, successor,
+                declared_scope=data.get("declared_scope"))
+            return {"schema": STAGE_COMMAND_SCHEMA, "command": action,
+                    "run_id": run_id, "receipt": checked,
+                    "dispatch": dispatch}
+
+        current = store.load(run_id)
+        parent = _indexed_stage(
+            store, current, run_id, str(data.get("stage_id") or ""))
+        prospective_split = stage_entities.create_split(
+            parent, operation_id=data.get("operation_id"),
+            child_specs=data.get("child_specs") or (),
+            actor=data.get("actor"),
+            terminalized_at=data.get("terminalized_at"),
+            reason=data.get("reason"))
+        scopes = data.get("declared_scopes") or {}
+        if not isinstance(scopes, Mapping):
+            raise ValueError("split declared scopes must be an object")
+        for child in prospective_split["children"]:
+            verified_handoff = lifecycle._read_handoff(  # noqa: SLF001
+                child["input_manifest_ref"],
+                producer=prospective_split["parent"], consumer=child)
+            _preflight_stage_dispatch(
+                child, verified_handoff,
+                declared_scope=scopes.get(child["stage_id"]))
+        receipt = lifecycle.split_stage(
+            run_id, stage_id=data.get("stage_id"),
+            expected_head_fingerprint=data.get(
+                "expected_head_fingerprint"),
+            expected_revision=data.get("expected_revision"),
+            operation_id=data.get("operation_id"),
+            child_specs=data.get("child_specs") or (),
+            actor=data.get("actor"),
+            terminalized_at=data.get("terminalized_at"),
+            reason=data.get("reason"))
+        checked = tp.verify_stage_receipt(
+            receipt, expected_operation="split_stage")
+        current = store.load(run_id)
+        child_heads = ((checked.get("result") or {}).get("child_heads") or {})
+        if not isinstance(child_heads, Mapping):
+            raise ValueError("split receipt has no child heads")
+        dispatches = []
+        for child_id in sorted(str(value) for value in child_heads):
+            child = _indexed_stage(store, current, run_id, child_id)
+            dispatches.append(_stage_dispatch(
+                store, lifecycle, checked, child,
+                declared_scope=scopes.get(child_id)))
+        return {"schema": STAGE_COMMAND_SCHEMA, "command": action,
+                "run_id": run_id, "receipt": checked,
+                "dispatches": dispatches}
+    except Exception as exc:
+        return _stage_command_error(action, exc)
+
 # R-0006 row 1: the EVALUATE step routes lenses with the BUILD stage
 # profile (route v2: build-profile candidates, R-0001 budget 5-7/cap-8
 # inherited verbatim, component assembly from R-0003). ONE constant feeds

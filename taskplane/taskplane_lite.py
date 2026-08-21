@@ -2721,6 +2721,477 @@ def canonical_json_bytes(value) -> bytes:
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
+# ------------------------------------------------------- stage runtime seam
+
+STAGE_NATIVE_ENV = "TASKPLANE_STAGE_NATIVE"
+STAGE_DISPATCH_SCHEMA = "taskplane.stage-dispatch/v1"
+STAGE_STARTUP_SCHEMA = "taskplane.stage-startup/v1"
+STAGE_RECEIPT_SCHEMA = "taskplane.stage-operation-receipt/v1"
+MAX_STAGE_STARTUP_BYTES = 128 * 1024
+MAX_STAGE_RECEIPT_BYTES = 2 * 1024 * 1024
+_STAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_STAGE_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+_STAGE_RECEIPT_FIELDS = frozenset({
+    "schema", "operation_id", "request_fingerprint", "operation",
+    "stage_ids", "committed_revision", "result", "result_fingerprint",
+})
+_STAGE_HANDOFF_FIELDS = frozenset({
+    "schema", "producer", "requirement", "design", "target", "commit",
+    "contracts", "deliverables", "evidence_references",
+    "selected_artifacts", "exclusions", "authorization", "fingerprint",
+})
+_STAGE_DISPATCH_RECEIPTS = frozenset({
+    "start_stage", "terminalize_and_start", "split_stage", "resume_stage",
+})
+_STAGE_RUNTIME_FORBIDDEN_KEYS = frozenset({
+    "activecontract", "agent", "agents", "approval", "approvals", "argv",
+    "command", "commands", "conversation", "conversations", "credential",
+    "credentials", "cwd", "environment", "env", "event", "events",
+    "eventlog", "eventlogs", "hostpath", "lease", "leases", "log", "logs",
+    "meter", "meters", "path", "process", "prompt", "prompts",
+    "relativepath", "absolutepath", "root", "runtime", "runtimeenvironment",
+    "runtimestate", "secret", "secrets", "tool", "tools",
+    "tooltranscript", "tooltranscripts", "trace", "traces", "transcript",
+    "transcripts", "workspace",
+})
+
+
+class StageDispatchError(ValueError):
+    """A stage receipt or bounded startup value is unsafe to dispatch."""
+
+
+def _stage_modules():
+    """Import the optional v4 stage surface only at a native-stage call.
+
+    ``taskplane_lite`` is also the legacy enforcement kernel.  Importing the
+    stage modules at module load would make disabled and unmigrated v3 flows
+    depend on the new runtime, defeating the rollout boundary.
+    """
+    try:
+        from . import stage_entities, stage_handoff
+    except (ImportError, ValueError):  # direct ``taskplane_lite`` import
+        import stage_entities
+        import stage_handoff
+    return stage_entities, stage_handoff
+
+
+def stage_native_mode(env=None) -> str:
+    """Return the fail-closed stage rollout mode.
+
+    Only the two documented explicit values enable mutations.  Missing,
+    boolean, numeric, and convenient truthy spellings deliberately remain
+    disabled so upgrading the plugin cannot silently migrate an existing
+    singleton run.
+    """
+    source = os.environ if env is None else env
+    try:
+        raw = source.get(STAGE_NATIVE_ENV)
+    except AttributeError:
+        return "disabled"
+    if not isinstance(raw, str):
+        return "disabled"
+    value = raw.lower()
+    return value if value in {"new-run", "enabled"} else "disabled"
+
+
+def stage_native_enabled(env=None) -> bool:
+    """Whether native stage mutation is explicitly enabled in this process.
+
+    Callers that distinguish new v3 canaries from already-v4 runs use
+    :func:`stage_native_mode`; both modes enable the v4 runtime itself.
+    """
+    return stage_native_mode(env) != "disabled"
+
+
+def _json_detach(value, label: str):
+    try:
+        return json.loads(canonical_json_bytes(value).decode("utf-8"))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise StageDispatchError(f"{label} must be canonical JSON") from exc
+
+
+def _stage_identifier(value, label: str) -> str:
+    if not isinstance(value, str) or value.strip() != value or \
+            not _STAGE_ID_RE.fullmatch(value):
+        raise StageDispatchError(f"{label} is invalid")
+    return value
+
+
+def _stage_fingerprint(value, label: str) -> str:
+    if not isinstance(value, str) or not _STAGE_FINGERPRINT_RE.fullmatch(value):
+        raise StageDispatchError(f"{label} is invalid")
+    return value
+
+
+def _reject_runtime_context(value, label: str) -> None:
+    """Reject predecessor/host runtime channels at the serialization seam."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise StageDispatchError(f"{label} has a non-string field")
+            normalized = re.sub(r"[-_. ]", "", key).lower()
+            if normalized in _STAGE_RUNTIME_FORBIDDEN_KEYS:
+                raise StageDispatchError(
+                    f"{label} contains forbidden runtime field {key!r}")
+            _reject_runtime_context(child, label)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_runtime_context(child, label)
+
+
+def verify_stage_receipt(receipt: dict, *, expected_operation: str | None = None,
+                         expected_stage_id: str | None = None) -> dict:
+    """Verify and detach one persisted v4 operation receipt.
+
+    The RunStore is authoritative for durability.  This boundary rechecks its
+    closed schema and content fingerprint immediately before a lifecycle
+    result is allowed to become executable startup context.
+    """
+    if not isinstance(receipt, dict):
+        raise StageDispatchError("stage receipt must be an object")
+    required = _STAGE_RECEIPT_FIELDS - {"result", "result_fingerprint"}
+    optional = {"result", "result_fingerprint"}
+    if not required.issubset(receipt) or set(receipt) - (required | optional):
+        raise StageDispatchError("stage receipt fields are invalid")
+    if ("result" in receipt) != ("result_fingerprint" in receipt):
+        raise StageDispatchError("stage receipt result fields are incomplete")
+    if receipt.get("schema") != STAGE_RECEIPT_SCHEMA:
+        raise StageDispatchError("stage receipt schema is invalid")
+    _stage_identifier(receipt.get("operation_id"), "stage receipt operation id")
+    _stage_fingerprint(
+        receipt.get("request_fingerprint"), "stage receipt request fingerprint")
+    operation = _stage_identifier(
+        receipt.get("operation"), "stage receipt operation")
+    if expected_operation is not None and operation != expected_operation:
+        raise StageDispatchError(
+            f"stage receipt operation is {operation}, expected "
+            f"{expected_operation}")
+    stage_ids = receipt.get("stage_ids")
+    if not isinstance(stage_ids, list) or any(
+            not isinstance(stage_id, str) for stage_id in stage_ids):
+        raise StageDispatchError("stage receipt stage ids are invalid")
+    checked_ids = [_stage_identifier(value, "stage receipt stage id")
+                   for value in stage_ids]
+    if checked_ids != sorted(set(checked_ids)):
+        raise StageDispatchError(
+            "stage receipt stage ids must be sorted and unique")
+    if not checked_ids and operation != "rebuild_active_stage_projection":
+        raise StageDispatchError("stage receipt stage ids are empty")
+    if expected_stage_id is not None:
+        expected = _stage_identifier(expected_stage_id, "expected stage id")
+        if expected not in checked_ids:
+            raise StageDispatchError(
+                "stage receipt does not bind the expected stage")
+    revision = receipt.get("committed_revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or \
+            revision < 1:
+        raise StageDispatchError(
+            "stage receipt committed revision is invalid")
+    if "result" in receipt:
+        try:
+            result_bytes = canonical_json_bytes(receipt["result"])
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise StageDispatchError(
+                "stage receipt result must be canonical JSON") from exc
+        if len(result_bytes) > MAX_STAGE_RECEIPT_BYTES:
+            raise StageDispatchError("stage receipt result exceeds its bound")
+        expected_result = hashlib.sha256(result_bytes).hexdigest()
+        if receipt.get("result_fingerprint") != expected_result:
+            raise StageDispatchError(
+                "stage receipt result fingerprint mismatch")
+    checked = _json_detach(receipt, "stage receipt")
+    if len(canonical_json_bytes(checked)) > MAX_STAGE_RECEIPT_BYTES:
+        raise StageDispatchError("stage receipt exceeds its bound")
+    return checked
+
+
+def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
+                                   selected_artifacts: list) -> dict:
+    if not isinstance(handoff, dict) or set(handoff) != _STAGE_HANDOFF_FIELDS:
+        raise StageDispatchError("verified handoff fields are invalid")
+    if handoff.get("schema") != "taskplane.stage-handoff/v1":
+        raise StageDispatchError("verified handoff schema is invalid")
+    _, stage_handoff = _stage_modules()
+    try:
+        expected = stage_handoff.manifest_fingerprint(handoff)
+    except (TypeError, ValueError) as exc:
+        raise StageDispatchError("verified handoff is not canonical JSON") \
+            from exc
+    if handoff.get("fingerprint") != expected:
+        raise StageDispatchError("verified handoff fingerprint mismatch")
+    if len(canonical_json_bytes(handoff)) > 64 * 1024:
+        raise StageDispatchError("verified handoff exceeds its bound")
+    producer = handoff.get("producer")
+    if not isinstance(producer, dict) or set(producer) != {
+            "stage_id", "outcome"} or \
+            producer.get("outcome") not in {"done", "closed", "discarded"}:
+        raise StageDispatchError("verified handoff producer is invalid")
+    _stage_identifier(producer.get("stage_id"), "handoff producer stage id")
+    predecessors = stage.get("predecessor_stage_ids") or []
+    if predecessors and producer.get("stage_id") not in predecessors:
+        raise StageDispatchError(
+            "verified handoff producer is not a stage predecessor")
+    if handoff.get("requirement") != stage.get("requirement") or \
+            handoff.get("design") != stage.get("design"):
+        raise StageDispatchError(
+            "verified handoff revision does not match stage")
+    exclusions = handoff.get("exclusions")
+    if not isinstance(exclusions, list) or exclusions != sorted(set(exclusions)) \
+            or not stage_handoff.REQUIRED_EXCLUSIONS.issubset(exclusions):
+        raise StageDispatchError("verified handoff exclusions are invalid")
+    evidence = handoff.get("evidence_references")
+    if not isinstance(evidence, list) or not evidence:
+        raise StageDispatchError(
+            "verified handoff evidence references are incomplete")
+    authorization = handoff.get("authorization")
+    authority_record = (authorization.get("authority_record")
+                        if isinstance(authorization, dict) else None)
+    revision = (authority_record.get("revision")
+                if isinstance(authority_record, dict) else None)
+    if not isinstance(authorization, dict) or \
+            not isinstance(authority_record, dict) or \
+            authority_record.get("schema") != \
+            "taskplane.authority-record-reference/v1" or \
+            authority_record.get("authority_schema") != \
+            "taskplane.consolidated-authorization/v1" or \
+            isinstance(revision, bool) or not isinstance(revision, int) or \
+            revision < 0 or not _STAGE_FINGERPRINT_RE.fullmatch(
+                str(authority_record.get("fingerprint") or "")):
+        raise StageDispatchError(
+            "verified handoff authority record is invalid")
+    input_reference = stage.get("input_manifest_ref")
+    if not isinstance(input_reference, dict) or \
+            input_reference.get("fingerprint") != expected:
+        raise StageDispatchError(
+            "stage input does not bind the verified handoff")
+    if not isinstance(selected_artifacts, list):
+        raise StageDispatchError("selected artifacts must be a list")
+    detached = _json_detach(selected_artifacts, "selected artifacts")
+    if detached != stage.get("selected_artifacts") or \
+            detached != handoff.get("selected_artifacts"):
+        raise StageDispatchError(
+            "selected artifacts do not match stage and handoff")
+    _reject_runtime_context(handoff, "verified handoff")
+    _reject_runtime_context(detached, "selected artifacts")
+    return _json_detach(handoff, "verified handoff")
+
+
+def _dispatch_claim(stage: dict, receipt: dict,
+                    attempt_id: str | None) -> tuple[dict, str | None]:
+    run_id = str(stage["run_id"])
+    stage_id = str(stage["stage_id"])
+    execution_root_id = str(stage["execution_root_id"])
+    operation = str(receipt["operation"])
+    if operation == "resume_stage":
+        result = receipt.get("result")
+        if not isinstance(result, dict):
+            raise StageDispatchError("resume receipt has no bounded result")
+        claim = result.get("claim")
+        recorded_attempt = result.get("attempt_id")
+        if not isinstance(claim, dict):
+            raise StageDispatchError("resume receipt has no attempt claim")
+        attempt = _stage_identifier(
+            recorded_attempt, "resume receipt attempt id")
+        if attempt_id is not None and \
+                _stage_identifier(attempt_id, "stage attempt id") != attempt:
+            raise StageDispatchError("resume receipt attempt id mismatch")
+        if result.get("stage_id") != stage_id or \
+                result.get("execution_root_id") != execution_root_id or \
+                result.get("stage_fingerprint") != stage.get("fingerprint"):
+            raise StageDispatchError("resume receipt does not match stage")
+        expected_claim = {
+            "schema": "taskplane.stage-execution-attempt-claim/v1",
+            "run_id": run_id,
+            "stage_id": stage_id,
+            "execution_root_id": execution_root_id,
+            "attempt_id": attempt,
+        }
+        if claim != expected_claim:
+            raise StageDispatchError("resume receipt attempt claim is invalid")
+        return expected_claim, attempt
+    if attempt_id is not None:
+        raise StageDispatchError(
+            "only a verified resume receipt may select an attempt")
+    return {
+        "schema": "taskplane.stage-execution-root-claim/v1",
+        "run_id": run_id,
+        "stage_id": stage_id,
+        "execution_root_id": execution_root_id,
+    }, None
+
+
+def _declared_stage_scope(value) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+            "scope_paths", "out_of_scope_paths"}:
+        raise StageDispatchError(
+            "declared scope needs scope_paths and out_of_scope_paths")
+    checked: dict[str, list[str]] = {}
+    for field in ("scope_paths", "out_of_scope_paths"):
+        rows = value.get(field)
+        if not isinstance(rows, list) or len(rows) > 64 or any(
+                not isinstance(row, str) or not row.strip() or
+                row.strip() != row or len(row.encode("utf-8")) > 512
+                for row in rows):
+            raise StageDispatchError(f"declared {field} is invalid")
+        if rows != sorted(set(rows)):
+            raise StageDispatchError(
+                f"declared {field} must be sorted and unique")
+        checked[field] = list(rows)
+    _reject_runtime_context(checked, "declared scope")
+    return checked
+
+
+def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
+                           selected_artifacts: list, *,
+                           attempt_id: str | None = None,
+                           declared_scope: dict | None = None) -> dict:
+    """Build the sole bounded context admitted to a native stage worker.
+
+    No workspace path or predecessor execution state is accepted as input.
+    The exact startup bytes are obtained with :func:`stage_startup_bytes`.
+    """
+    stage_entities, _ = _stage_modules()
+    try:
+        checked_stage = stage_entities.validate_stage(stage)
+    except (TypeError, ValueError) as exc:
+        raise StageDispatchError(f"stage is invalid: {exc}") from exc
+    if checked_stage.get("state") != "active":
+        raise StageDispatchError("only an active stage can be dispatched")
+    checked_receipt = verify_stage_receipt(
+        receipt, expected_stage_id=str(checked_stage["stage_id"]))
+    if checked_receipt["operation"] not in _STAGE_DISPATCH_RECEIPTS:
+        raise StageDispatchError(
+            "receipt operation does not create or resume stage execution")
+    checked_handoff = _verified_handoff_for_dispatch(
+        checked_stage, handoff, selected_artifacts)
+    claim, attempt = _dispatch_claim(
+        checked_stage, checked_receipt, attempt_id)
+    scope = _declared_stage_scope(declared_scope)
+    startup = {
+        "schema": STAGE_STARTUP_SCHEMA,
+        "stage_id": checked_stage["stage_id"],
+        "authority": checked_stage["authority"],
+        "input_handoff": checked_handoff,
+        "selected_artifacts": _json_detach(
+            selected_artifacts, "selected artifacts"),
+        "budget": checked_stage["budget"],
+        "execution_claim": claim,
+        "attempt_id": attempt,
+    }
+    if scope is not None:
+        startup["declared_scope"] = scope
+    _reject_runtime_context(startup, "stage startup")
+    startup = _json_detach(startup, "stage startup")
+    serialized = canonical_json_bytes(startup)
+    if len(serialized) > MAX_STAGE_STARTUP_BYTES:
+        raise StageDispatchError(
+            f"stage startup exceeds {MAX_STAGE_STARTUP_BYTES} bytes")
+    selected_bytes = sum(int(reference.get("bytes") or 0)
+                         for reference in startup["selected_artifacts"])
+    telemetry = {
+        "startup_bytes": len(serialized),
+        # This is a deterministic budgeting estimate, not provider usage.
+        "startup_tokens": (len(serialized) + 3) // 4,
+        "selected_ref_count": len(startup["selected_artifacts"]),
+        "selected_ref_bytes": selected_bytes,
+        "predecessor_root_opens": 0,
+    }
+    return {
+        "schema": STAGE_DISPATCH_SCHEMA,
+        "startup": startup,
+        "startup_sha256": hashlib.sha256(serialized).hexdigest(),
+        "telemetry": telemetry,
+    }
+
+
+def stage_dispatch_payload(stage: dict, verified_handoff: dict,
+                           selected_artifacts: list, claim: dict, *,
+                           attempt_id: str | None = None,
+                           declared_scope: dict | None = None) -> dict:
+    """Preflight bounded startup against one proposed path-free claim.
+
+    This compatibility seam exists only so the loop can prove serialization
+    before it commits a lifecycle mutation.  The post-commit dispatch path
+    uses :func:`stage_runtime_dispatch` with the durable RunStore receipt.
+    """
+    if not isinstance(claim, dict):
+        raise StageDispatchError("stage execution claim must be an object")
+    operation = "resume_stage" if attempt_id is not None else "start_stage"
+    result = None
+    if operation == "resume_stage":
+        result = {
+            "stage_id": stage.get("stage_id"),
+            "attempt_id": attempt_id,
+            "execution_root_id": stage.get("execution_root_id"),
+            "claim": claim,
+            "stage_fingerprint": stage.get("fingerprint"),
+        }
+    receipt = {
+        "schema": STAGE_RECEIPT_SCHEMA,
+        "operation_id": "bounded-startup-preflight",
+        "request_fingerprint": hashlib.sha256(canonical_json_bytes({
+            "stage": stage.get("fingerprint"), "claim": claim,
+        })).hexdigest(),
+        "operation": operation,
+        "stage_ids": [stage.get("stage_id")],
+        "committed_revision": 1,
+    }
+    if result is not None:
+        receipt["result"] = result
+        receipt["result_fingerprint"] = hashlib.sha256(
+            canonical_json_bytes(result)).hexdigest()
+    dispatch = stage_runtime_dispatch(
+        stage, receipt, verified_handoff, selected_artifacts,
+        attempt_id=attempt_id, declared_scope=declared_scope)
+    if claim != dispatch["startup"]["execution_claim"]:
+        raise StageDispatchError("stage execution claim is invalid")
+    return dispatch
+
+
+def stage_startup_bytes(dispatch: dict) -> bytes:
+    """Return and re-verify the byte-identical bounded startup serialization."""
+    if not isinstance(dispatch, dict) or set(dispatch) != {
+            "schema", "startup", "startup_sha256", "telemetry"} or \
+            dispatch.get("schema") != STAGE_DISPATCH_SCHEMA:
+        raise StageDispatchError("stage dispatch envelope is invalid")
+    startup = dispatch.get("startup")
+    if not isinstance(startup, dict) or \
+            startup.get("schema") != STAGE_STARTUP_SCHEMA:
+        raise StageDispatchError("stage startup payload is invalid")
+    required = {
+        "schema", "stage_id", "authority", "input_handoff",
+        "selected_artifacts", "budget", "execution_claim", "attempt_id",
+    }
+    fields = frozenset(startup)
+    if fields not in {frozenset(required),
+                      frozenset(required | {"declared_scope"})}:
+        raise StageDispatchError("stage startup fields are invalid")
+    _reject_runtime_context(startup, "stage startup")
+    serialized = canonical_json_bytes(startup)
+    if len(serialized) > MAX_STAGE_STARTUP_BYTES:
+        raise StageDispatchError("stage startup exceeds its bound")
+    if dispatch.get("startup_sha256") != \
+            hashlib.sha256(serialized).hexdigest():
+        raise StageDispatchError("stage startup fingerprint mismatch")
+    selected = startup.get("selected_artifacts")
+    if not isinstance(selected, list):
+        raise StageDispatchError("stage startup selected artifacts are invalid")
+    expected_telemetry = {
+        "startup_bytes": len(serialized),
+        "startup_tokens": (len(serialized) + 3) // 4,
+        "selected_ref_count": len(selected),
+        "selected_ref_bytes": sum(int(row.get("bytes") or 0)
+                                  for row in selected
+                                  if isinstance(row, dict)),
+        "predecessor_root_opens": 0,
+    }
+    if dispatch.get("telemetry") != expected_telemetry:
+        raise StageDispatchError("stage startup telemetry mismatch")
+    return serialized
+
+
 def review_execution_root_identity(workspace: str) -> dict:
     """Return repository and exact-worktree identity without storing paths.
 

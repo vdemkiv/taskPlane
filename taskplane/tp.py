@@ -2683,6 +2683,52 @@ def cmd_loop(a) -> int:
     return 1 if isinstance(out, dict) and out.get("error") else 0
 
 
+_MAX_STAGE_COMMAND_BYTES = 1024 * 1024
+
+
+def _stage_command_request(source: str) -> tuple[dict | None, dict | None]:
+    """Read one closed, bounded JSON object from a file or standard input."""
+    try:
+        if source == "-":
+            body = sys.stdin.read(_MAX_STAGE_COMMAND_BYTES + 1)
+        else:
+            with open(source, encoding="utf-8") as handle:
+                body = handle.read(_MAX_STAGE_COMMAND_BYTES + 1)
+    except (OSError, UnicodeError) as exc:
+        return None, {"error": f"stage request is unavailable: {exc}"}
+    if len(body.encode("utf-8")) > _MAX_STAGE_COMMAND_BYTES:
+        return None, {
+            "error": "stage request exceeds the 1048576-byte bound",
+        }
+    try:
+        request = json.loads(body)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        return None, {"error": f"stage request must be valid JSON: {exc}"}
+    if not isinstance(request, dict):
+        return None, {"error": "stage request must be a JSON object"}
+    return request, None
+
+
+def cmd_stage(a) -> int:
+    """Drive stage-native lifecycle commands through one JSON boundary.
+
+    ``stage_entities`` remains a lazy runtime dependency: importing the CLI
+    and using legacy ``loop next``/``loop wave`` never loads the stage domain.
+    The loop adapter owns rollout gating, receipt validation and dispatch.
+    """
+    request, error = _stage_command_request(a.request)
+    if error is not None:
+        print(json.dumps(error, indent=2))
+        return 1
+    import loop as loopmod
+    out = loopmod.stage_command(
+        _workspace(a.workspace), a.stage_action, request)
+    if not isinstance(out, dict):
+        out = {"error": "stage runtime returned a non-object result"}
+    print(json.dumps(out, indent=2))
+    return 1 if out.get("error") else 0
+
+
 def workflow_available(ws) -> dict:
     """Can this host run plugin Dynamic Workflows? CONSERVATIVE, env-based.
 
@@ -6153,6 +6199,25 @@ def main(argv=None) -> int:
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "
                     "used the models the briefs resolved (tier routing)")
     lp.set_defaults(fn=cmd_loop)
+
+    sg = sub.add_parser(
+        "stage", help="drive isolated stage lifecycle and bounded handoffs")
+    sg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    sgsub = sg.add_subparsers(dest="stage_action", required=True)
+    for action, help_text in (
+            ("start", "start a root or verified successor stage"),
+            ("resume", "create a fresh attempt in an active stage root"),
+            ("terminalize", "record one immutable terminal outcome"),
+            ("split", "close a parent and atomically create isolated children"),
+            ("history", "read a bounded page of immutable stage summaries"),
+            ("reuse", "explicitly authorize non-default artifact reuse")):
+        command = sgsub.add_parser(action, help=help_text)
+        command.add_argument(
+            "--request", required=True, metavar="FILE|-",
+            help="closed stage-command JSON object; '-' reads standard input")
+        command.add_argument(
+            "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    sg.set_defaults(fn=cmd_stage)
 
     ln = sub.add_parser("lens", help="route lenses for a change")
     lnsub = ln.add_subparsers(dest="lens_action", required=True)
