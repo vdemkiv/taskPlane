@@ -12,10 +12,14 @@ import json
 import os
 import re
 import tempfile
-from typing import Any, Iterable, Iterator, TypeAlias, TypedDict
+from typing import Any, Iterable, Iterator, Mapping, TypeAlias, TypedDict
 
-import storage as runtime_storage
-import taskplane_lite as tp
+if __package__:
+    from . import storage as runtime_storage
+    from . import taskplane_lite as tp
+else:
+    import storage as runtime_storage
+    import taskplane_lite as tp
 
 
 MAX_SCOPED_VIEW_BYTES = 16 * 1024
@@ -375,6 +379,100 @@ class ArtifactStore:
                 kind, name[:-5], hashlib.sha256(data).hexdigest(),
                 len(data), path))
         return refs
+
+
+PORTABLE_ARTIFACT_REFERENCE_FIELDS = frozenset({
+    "schema", "kind", "fingerprint", "digest", "bytes", "locator",
+    "transport",
+})
+
+
+def portable_artifact_reference(
+        store: ArtifactStore,
+        reference: dict[str, object]) -> dict[str, object]:
+    """Verify and redact one artifact reference for an inter-stage handoff.
+
+    Worktree and host paths are routing details, not portable authority.  The
+    kind/fingerprint tuple is the canonical locator and the digest/byte count
+    continue to bind the exact stored bytes.
+    """
+    artifact = reference.get("artifact") \
+        if isinstance(reference, dict) and isinstance(
+            reference.get("artifact"), dict) else reference
+    if not isinstance(artifact, dict):
+        raise ArtifactIntegrityError("artifact reference must be an object")
+    store.verify(artifact)
+    kind = str(artifact.get("kind") or "")
+    fingerprint = str(artifact.get("fingerprint") or "")
+    return {
+        "schema": "taskplane.artifact-reference/v1",
+        "kind": kind,
+        "fingerprint": fingerprint,
+        "digest": str(artifact.get("digest") or ""),
+        "bytes": int(artifact.get("bytes")),
+        "locator": f"artifact://{kind}/{fingerprint}",
+        "transport": "artifact-reference",
+    }
+
+
+def verify_portable_artifact_reference(
+        store: ArtifactStore, reference: dict[str, object]) -> bool:
+    """Verify the closed, path-free form used by stage handoff manifests."""
+    if not isinstance(reference, dict):
+        raise ArtifactIntegrityError("portable artifact reference must be an object")
+    unknown = set(reference) - PORTABLE_ARTIFACT_REFERENCE_FIELDS
+    missing = PORTABLE_ARTIFACT_REFERENCE_FIELDS - set(reference)
+    if unknown:
+        raise ArtifactIntegrityError(
+            "portable artifact reference has unknown fields: " +
+            ", ".join(sorted(unknown)))
+    if missing:
+        raise ArtifactIntegrityError(
+            "portable artifact reference has missing fields: " +
+            ", ".join(sorted(missing)))
+    if reference.get("schema") != "taskplane.artifact-reference/v1" or \
+            reference.get("transport") != "artifact-reference":
+        raise ArtifactIntegrityError("portable artifact reference schema is invalid")
+    kind = str(reference.get("kind") or "")
+    fingerprint = str(reference.get("fingerprint") or "")
+    if reference.get("locator") != f"artifact://{kind}/{fingerprint}":
+        raise ArtifactIntegrityError("portable artifact locator mismatch")
+    native = {key: reference[key] for key in (
+        "schema", "kind", "fingerprint", "digest", "bytes", "transport")}
+    return store.verify(native)
+
+
+def store_stage_handoff(
+        store: ArtifactStore,
+        manifest: Mapping[str, object]) -> dict[str, object]:
+    """Persist a stage handoff through the shared production artifact API.
+
+    The local import keeps the artifact kernel independent at import time;
+    every host and stage adapter already shares this module and can use this
+    single integration point instead of rebuilding storage semantics.
+    """
+    if __package__:
+        from . import stage_handoff
+    else:
+        import stage_handoff
+    return stage_handoff.store_manifest(store, manifest)
+
+
+def read_stage_handoff(
+        store: ArtifactStore, reference: Mapping[str, object], *,
+        expected_authority_revision: int,
+        expected_authority_fingerprint: str,
+        allow_nonconsumable_reuse: bool = False) -> dict[str, object]:
+    """Consume a stored handoff using trusted control-plane authority."""
+    if __package__:
+        from . import stage_handoff
+    else:
+        import stage_handoff
+    return stage_handoff.read_manifest(
+        store, reference,
+        expected_authority_revision=expected_authority_revision,
+        expected_authority_fingerprint=expected_authority_fingerprint,
+        allow_nonconsumable_reuse=allow_nonconsumable_reuse)
 
 
 def retained_cleanup_evidence(primary_workspace: str, worker_workspace: str,
