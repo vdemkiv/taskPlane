@@ -352,6 +352,94 @@ class TestLoop(unittest.TestCase):
         self.assertFalse(os.path.exists(tp.active_contract_path(
             self.ws, self.producer["task_slot"])))
 
+    def _assert_managed_worktree_result_is_exact_and_fail_closed(self):
+        """Parallel Evaluate binds only this worktree's leased result."""
+        self._setup_stateless_review_contract()
+        import review_evidence
+
+        fingerprint = self.lease["lease_fingerprint"]
+        run_root = os.path.join(self.tmp, "run")
+        lenses_root = os.path.join(
+            run_root, "lenses", "worktrees", "t1-worktree-key")
+        paths = {
+            "state": os.path.join(run_root, "state", "worktrees", "t1"),
+            "graph": os.path.join(run_root, "graph", "worktrees", "t1"),
+            "evidence": os.path.join(
+                run_root, "evidence", "worktrees", "t1"),
+            "lenses": lenses_root,
+            "artifacts": os.path.join(
+                run_root, "artifacts", "worktrees", "t1"),
+        }
+        locator = {"paths": paths}
+        canonical = os.path.join(
+            lenses_root, "results", f"{fingerprint}.json")
+        self.producer["write_allow"] = [canonical]
+
+        with unittest.mock.patch(
+                "storage.load_workspace_locator", return_value=locator):
+            action = self._issue()
+            contract = self._activate(action)
+            self.assertEqual(contract["write_allow"], [canonical])
+
+            store = review_evidence.ArtifactStore(self.ws)
+            lease_ref = store.put("lease", self.lease)
+            brief_ref = store.put("lens-brief", {
+                "schema": "taskplane.lens-brief/v2",
+                "lease": lease_ref,
+                "result_path": canonical,
+                "producer_contract": self.producer,
+                "role": {
+                    "role_marker": self.bindings["role_marker"],
+                    "task_name": self.bindings["worker_identity"],
+                },
+            })
+            bound = loop._bind_stateless_review_contract_actions(
+                self.ws, {
+                    "schema": "taskplane.review-start-manifest/v2",
+                    "status": "ready",
+                    "run_id": self.bindings["run_id"],
+                    "target_fingerprint":
+                        self.bindings["target_fingerprint"],
+                    "slots": [{
+                        "slot_id": self.lease["slot_id"],
+                        "lens_ids": self.lease["lens_ids"],
+                        "lease": lease_ref,
+                        "brief": brief_ref,
+                        "result_path": canonical,
+                    }],
+                }, task_id=self.bindings["task_id"], now=100)
+            self.assertEqual(
+                bound["slots"][0]["contract_bootstrap"]["action"]
+                     ["result_path"], canonical)
+
+            invalid_paths = {
+                "sibling": os.path.join(
+                    run_root, "lenses", "worktrees", "sibling", "results",
+                    f"{fingerprint}.json"),
+                "forged_lease": os.path.join(
+                    lenses_root, "results", f"{'9' * 64}.json"),
+                "broadened": os.path.join(
+                    lenses_root, "results", "nested",
+                    f"{fingerprint}.json"),
+                "shared_parent": os.path.join(
+                    run_root, "lenses", "results",
+                    f"{fingerprint}.json"),
+            }
+            for name, result_path in invalid_paths.items():
+                with self.subTest(name=name):
+                    producer = dict(
+                        self.producer, write_allow=[result_path])
+                    with self.assertRaises(tp.StateError):
+                        tp.issue_review_contract_action(
+                            self.ws, lease=self.lease,
+                            producer_contract=producer,
+                            result_path=result_path, now=100,
+                            ttl_seconds=60, **{
+                                key: self.bindings[key] for key in (
+                                    "run_id", "task_id", "role_marker",
+                                    "worker_identity", "action_id")
+                            })
+
     def test_existing_spec_skips_pm(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
@@ -1921,3 +2009,5 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
         TestLoop._assert_tamper_stale_identity_replay_and_write_broadening_fail_closed
     test_loop_binds_worker_action_to_each_immutable_review_slot = \
         TestLoop._assert_loop_binds_worker_action_to_each_immutable_review_slot
+    test_managed_worktree_result_is_exact_and_fail_closed = \
+        TestLoop._assert_managed_worktree_result_is_exact_and_fail_closed

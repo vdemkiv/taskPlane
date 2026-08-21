@@ -3060,8 +3060,21 @@ def _leased_review_result_path(workspace: str, value: object,
             not path.endswith(f"/{fingerprint}.json"):
         return False
     if os.path.isabs(path):
-        marker = "/lenses/results/"
-        return marker in path and writable_target(path, [path], workspace)
+        # A managed task worktree gets an isolated lenses root beneath
+        # ``lenses/worktrees/<worktree-key>``.  Derive the one permitted
+        # result from that checkout's validated locator instead of matching a
+        # shared path fragment: the latter rejected real parallel workers and
+        # would make accepting the worktree shape broad enough to admit a
+        # sibling worktree.
+        try:
+            import storage as _runtime_storage
+            expected = _runtime_storage.managed_path(
+                workspace, "lenses", "results", f"{fingerprint}.json")
+        except Exception:
+            return False
+        return bool(expected) and _same_path(
+            os.path.realpath(path), os.path.realpath(expected)
+        ) and writable_target(path, [path], workspace)
     return bool(re.fullmatch(
         r"\.(?:eval|em-review)/kernel-v2/results/[0-9a-f]{64}\.json",
         path)) and writable_target(path, [path], workspace)
