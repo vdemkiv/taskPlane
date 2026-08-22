@@ -1721,10 +1721,9 @@ def _checkout_bound_main(workspace: str, args) -> None:
         "taskplane", loader=None, is_package=True)
     package.__spec__.submodule_search_locations = package.__path__
     sys.modules["taskplane"] = package
-    if package_path not in sys.path:
-        sys.path.insert(0, package_path)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    # Reprioritize checkout paths even when PYTHONPATH already contains them.
+    sys.path[:] = [p for p in sys.path if p not in (root, package_path)]
+    sys.path[:0] = [root, package_path]
 
     original_popen = subprocess.Popen
 

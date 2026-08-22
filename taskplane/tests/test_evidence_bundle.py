@@ -501,6 +501,30 @@ class TestTheSuiteIsCitedNotRerun(_AtEvaluate):
             env={**os.environ, "PYTHONPATH": polluted})
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
+    def test_nested_binding_reprioritizes_checkout_already_on_pythonpath(self):
+        checkout = tempfile.mkdtemp()
+        package = os.path.join(checkout, "taskplane")
+        tests = os.path.join(package, "tests")
+        os.makedirs(tests)
+        with open(os.path.join(package, "decompose.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("ORIGIN = 'task-checkout'\n")
+        with open(os.path.join(tests, "test_nested_precedence.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write(
+                "import subprocess,sys\n"
+                "def test_nested_top_level_module_uses_task_checkout():\n"
+                "    child = subprocess.run([sys.executable, '-c', "
+                "'import decompose; assert decompose.ORIGIN == "
+                "\"task-checkout\"'], capture_output=True, text=True)\n"
+                "    assert child.returncode == 0, child.stderr\n")
+        proc = tp.run_suite_command(
+            checkout,
+            "python -m pytest -q -p no:cacheprovider "
+            "taskplane/tests/test_nested_precedence.py",
+            env={**os.environ, "PYTHONPATH": package})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
     def test_no_record_bundle_executes_checkout_bound_python_fallback(self):
         state = loop.load(self.ws)
         state.pop("_suite_evidence", None)
