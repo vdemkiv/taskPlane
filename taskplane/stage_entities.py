@@ -1737,11 +1737,14 @@ class StageLifecycle:
         expected = _fingerprint(
             expected_head_fingerprint, "expected stage fingerprint")
         operation = _identifier(operation_id, "stage operation id")
+        attempt_material = {
+            "run_id": run,
+            "stage_id": stage,
+            "operation_id": operation,
+        }
         attempt = (_path_id(attempt_id, "stage attempt id")
                    if attempt_id is not None else
-                   f"attempt-{request_fingerprint({
-                       'run_id': run, 'stage_id': stage,
-                       'operation_id': operation})[:24]}")
+                   f"attempt-{request_fingerprint(attempt_material)[:24]}")
         request = request_fingerprint({
             "operation": "resume_stage", "operation_id": operation,
             "run_id": run, "stage_id": stage,

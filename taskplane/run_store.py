@@ -4,10 +4,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 import copy
 import hashlib
+import importlib
 import json
 import os
 import re
 import stat
+import sys
 import time
 import uuid
 
@@ -33,6 +35,36 @@ class OperationConflict(RunStoreError):
 
 class StageStateError(RunStoreError):
     """The v4 stage index or requested stage mutation is invalid."""
+
+
+class TaskplaneCompatibilityError(RunStoreError):
+    """A required engine dependency cannot run on this interpreter."""
+
+
+_STAGE_ENTITIES_MODULE = None
+
+
+def _stage_entities_module():
+    """Load the stage value contract through one named failure boundary."""
+    global _STAGE_ENTITIES_MODULE
+    if _STAGE_ENTITIES_MODULE is not None:
+        return _STAGE_ENTITIES_MODULE
+    try:
+        module = importlib.import_module(
+            ".stage_entities", package=__package__) if __package__ else \
+            importlib.import_module("stage_entities")
+    except (ImportError, SyntaxError) as exc:
+        raise TaskplaneCompatibilityError(
+            "required stage dependency 'stage_entities' cannot load on "
+            f"Python {sys.version_info.major}.{sys.version_info.minor}") \
+            from exc
+    _STAGE_ENTITIES_MODULE = module
+    return module
+
+
+def ensure_stage_compatibility() -> None:
+    """Eagerly verify the stage dependency before any run state is opened."""
+    _stage_entities_module()
 
 
 _RUN_SCHEMAS = frozenset({"taskplane.run/v3", "taskplane.run/v4"})
@@ -272,10 +304,7 @@ def _validate_lineage(lineage: object) -> list[dict]:
         raise StageStateError("lineage must be a list")
     if len(lineage) > _MAX_STAGE_INDEX_ENTRIES:
         raise StageStateError("lineage exceeds its persisted bound")
-    try:
-        from . import stage_entities
-    except ImportError:  # pragma: no cover - direct script import mode
-        import stage_entities
+    stage_entities = _stage_entities_module()
     rows: list[dict] = []
     for row in lineage:
         if not isinstance(row, dict):
@@ -519,6 +548,7 @@ class RunStore:
     """Persist canonical run identity, state, and artifact ownership."""
 
     def __init__(self, *, home: str | None = None):
+        ensure_stage_compatibility()
         self.home = storage.taskplane_home(home)
 
     def _manifest_path(self, run_id: str) -> str:
@@ -725,10 +755,7 @@ class RunStore:
             changed_heads = sorted(
                 stage_id for stage_id, head in new_heads.items()
                 if old_heads.get(stage_id) != head)
-            try:
-                from . import stage_entities
-            except ImportError:  # pragma: no cover - direct script mode
-                import stage_entities
+            stage_entities = _stage_entities_module()
             for changed_stage_id in changed_heads:
                 changed_head = new_heads[changed_stage_id]
                 indexed_stage = self.read_stage_object(
@@ -851,10 +878,7 @@ class RunStore:
     def put_stage_object(self, run_id: str, stage: dict) -> dict:
         """Write one validated content-addressed stage object create-once."""
         run_id = _run_id(run_id)
-        try:
-            from . import stage_entities
-        except ImportError:  # pragma: no cover - direct script import mode
-            import stage_entities
+        stage_entities = _stage_entities_module()
 
         checked = stage_entities.validate_stage(copy.deepcopy(stage))
         if not isinstance(checked, dict):
@@ -983,10 +1007,7 @@ class RunStore:
             raise StageStateError("stage object JSON is invalid") from exc
         if _canonical_json_bytes(value) + b"\n" != payload:
             raise StageStateError("stage object bytes are not canonical")
-        try:
-            from . import stage_entities
-        except ImportError:  # pragma: no cover - direct script import mode
-            import stage_entities
+        stage_entities = _stage_entities_module()
         checked = stage_entities.validate_stage(value)
         if checked.get("run_id") != run_id or \
                 checked.get("stage_id") != stage_id or \
