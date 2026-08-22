@@ -10,10 +10,9 @@ importing depgraph or lens_signals.
 """
 from __future__ import annotations
 
-import importlib
-
 import graph_decomposition as _engine
 import graph_primitives
+import path_roles
 
 
 # Public constants and long-standing direct helpers.
@@ -31,7 +30,15 @@ _DerivationError = _engine._DerivationError
 _syntax_error = _engine._syntax_error
 _unreadable_error = _engine._unreadable_error
 _read_text = _engine._read_text
-_parse_components_yaml = _engine._parse_components_yaml
+
+
+def _parse_components_yaml(text: str) -> dict:
+    """Preserve the facade's visible one-parser compatibility seam."""
+    cfg = path_roles.parse_components_yaml(text)
+    return {key: value for key, value in cfg["floors"].items()
+            if key in _engine._FLOOR_KEYS}
+
+
 load_floors = _engine.load_floors
 floors_hash = _engine.floors_hash
 _sanitize = _engine._sanitize
@@ -56,8 +63,6 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
     and embedders.  Reflect the facade's current callable for the duration of
     this direct invocation; scanner-owned calls use the engine directly.
     """
-    if not graph_primitives.lens_router_registered():
-        importlib.import_module("lens_signals")
     original = _engine._read_text
     _engine._read_text = _read_text
     try:

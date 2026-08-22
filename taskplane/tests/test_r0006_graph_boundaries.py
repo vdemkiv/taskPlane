@@ -18,6 +18,8 @@ import depgraph  # noqa: E402
 import graph_decomposition  # noqa: E402
 import graph_primitives  # noqa: E402
 import import_cycles  # noqa: E402
+import lens_signals  # noqa: E402
+import tp as cli  # noqa: E402
 
 
 def _imports(path: Path) -> set[str]:
@@ -28,6 +30,19 @@ def _imports(path: Path) -> set[str]:
             found.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             found.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Call) and node.args:
+            target = None
+            if (isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "importlib"
+                    and node.func.attr == "import_module"):
+                target = node.args[0]
+            elif (isinstance(node.func, ast.Name)
+                  and node.func.id == "__import__"):
+                target = node.args[0]
+            if isinstance(target, ast.Constant) and isinstance(
+                    target.value, str):
+                found.add(target.value.split(".")[0])
     return found
 
 
@@ -60,6 +75,18 @@ def test_boundary_imports_follow_the_approved_non_circular_contract() -> None:
                 & imports["graph_decomposition"])
     assert not ({"depgraph", "decompose", "lens_signals"}
                 & _imports(TASKPLANE / "graph_primitives.py"))
+    assert "lens_signals" in _imports(TASKPLANE / "tp.py")
+
+
+def test_forbidden_import_check_includes_dynamic_forms(tmp_path: Path) -> None:
+    probe = tmp_path / "dynamic_imports.py"
+    probe.write_text(
+        "import importlib\n"
+        "importlib.import_module('lens_signals.routing')\n"
+        "__import__('depgraph.store')\n",
+        encoding="utf-8",
+    )
+    assert {"importlib", "lens_signals", "depgraph"} <= _imports(probe)
 
 
 def test_decompose_remains_a_compatibility_facade() -> None:
@@ -98,6 +125,32 @@ def test_shared_graph_payload_preserves_dependency_and_boundary_meaning() -> Non
         "module_ids": {"packages/ui": "@acme/ui"},
         "module_dependents": {"@acme/ui": 1},
     }
+
+
+def test_registered_graph_loader_resolves_the_live_depgraph_seam(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = {
+        "meta": {},
+        "edges": [{"from": "api", "to": "auth", "kind": "imports"}],
+    }
+    monkeypatch.setattr(depgraph, "load", lambda _workspace: fake)
+
+    assert lens_signals._graph_payload("/unused", ["src/auth/a.py"])[
+        "module_dependents"] == {"auth": 1}
+
+
+def test_production_composition_activates_successful_lens_maps(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(graph_primitives, "_LENS_ROUTER", None)
+    cli._activate_graph_decomposition()
+    workspace = tmp_path / "composed"
+    _write_fixture(workspace)
+
+    graph = depgraph.scan(str(workspace), decompose=True)
+
+    assert graph["components"]
+    assert all(component["lens_map"] for component in graph["components"])
+    assert depgraph.scan_quality(graph)["degraded"] is False
 
 
 def test_boundary_cut_shrinks_to_the_measured_residual_sccs() -> None:

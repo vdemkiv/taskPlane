@@ -26,7 +26,6 @@ import contextvars
 import copy
 import gzip
 import hashlib
-import importlib
 import subprocess
 import sys as _sys
 import json
@@ -302,7 +301,7 @@ def load(ws: str) -> dict:
 
 # Lens projection reads graph state through the persistence owner's callable,
 # keeping lens_signals below depgraph without copying path/store semantics.
-graph_primitives.register_graph_loader(load)
+graph_primitives.register_graph_loader(lambda workspace: load(workspace))
 
 
 def save(ws: str, g: dict) -> None:
@@ -1336,13 +1335,6 @@ def _scan_locked(ws: str, into: dict | None = None,
     dstats = None
     if decompose:
         try:
-            if not graph_primitives.lens_router_registered():
-                # Explicit composition boundary: lens_signals registers its
-                # live router thunk in graph_primitives.  Import by provider
-                # name only when the additive component layer is requested;
-                # the provider itself imports no scanner, so this cannot
-                # recreate the graph/decomposition cycle.
-                importlib.import_module("lens_signals")
             comps, dstats = graph_decomposition.derive(ws, g, prev)
             g["components"] = comps
             g["meta"]["decompose"] = {"floors": dstats.get("floors_hash", "")}
