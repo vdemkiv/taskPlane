@@ -67,6 +67,8 @@ import datetime
 import io
 import json
 import os
+import re
+import subprocess
 import sys
 
 for _s in (sys.stdout, sys.stderr):
@@ -478,6 +480,200 @@ ROLE_MARKER_PREFIX = "taskplane-role:"
 # a run nobody observed. The two are kept apart so "there is no baseline yet"
 # never reads in CI as "the quality dropped".
 EXIT_OK, EXIT_BLOCKED, EXIT_USAGE = 0, 1, 2
+
+# Stable logical checks, deliberately independent of mutable workflow step
+# labels.  The workflow records the aggregate compatibility matrix, the
+# focused graph/CLI contract job, and the credential-empty corpus job against
+# one workflow SHA.  A release/delivery caller must provide this exact set.
+PUSHED_GREEN_REQUIRED_CHECKS = (
+    "python compatibility (3.10-3.13)",
+    "R-0006 graph + CLI contracts",
+    "zero-token corpus (credential-empty, no-egress)",
+)
+CI_COMMIT_PROOF_SCHEMA = "taskplane.ci-commit-proof/v1"
+_FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def classify_ci_commit_proof(*, fetch_receipt, head_sha, remote_sha,
+                             checked_sha, ahead_count, behind_count,
+                             receipts):
+    """Classify immutable CI evidence without performing I/O.
+
+    ``pushed_green`` is intentionally a narrow conjunction.  Every other
+    shape remains local evidence or a refusal; no caller can rename an ahead,
+    behind, stale, fetchless, or receipt-mismatched result after the fact.
+    """
+    errors = []
+    malformed = False
+    fetch = dict(fetch_receipt) if isinstance(fetch_receipt, dict) else {}
+
+    if fetch.get("performed") is not True:
+        errors.append("explicit fetch was not performed")
+        malformed = True
+    elif fetch.get("ok") is not True:
+        errors.append("explicit fetch failed")
+        malformed = True
+    if fetch.get("remote") != "origin":
+        errors.append("fetch receipt does not name remote origin")
+        malformed = True
+    if fetch.get("ref") != "refs/remotes/origin/main":
+        errors.append("fetch receipt does not name refs/remotes/origin/main")
+        malformed = True
+
+    sha_values = (("HEAD", head_sha), ("origin/main", remote_sha),
+                  ("checked_sha", checked_sha))
+    for label, value in sha_values:
+        if not isinstance(value, str) or not _FULL_SHA.fullmatch(value):
+            errors.append(f"{label} is not a full commit SHA")
+            malformed = True
+    if head_sha != checked_sha:
+        errors.append("HEAD does not equal checked_sha")
+    if remote_sha != checked_sha:
+        errors.append("origin/main does not equal checked_sha")
+
+    for label, count in (("ahead", ahead_count), ("behind", behind_count)):
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            errors.append(f"{label} count is unavailable or malformed")
+            malformed = True
+        elif count:
+            errors.append(f"{label} count is {count}, expected 0")
+
+    by_name = {}
+    if not isinstance(receipts, list):
+        errors.append("check receipts must be a JSON list")
+        malformed = True
+        receipt_rows = []
+    else:
+        receipt_rows = receipts
+    required = set(PUSHED_GREEN_REQUIRED_CHECKS)
+    for index, row in enumerate(receipt_rows):
+        if not isinstance(row, dict):
+            errors.append(f"check receipt {index} is malformed")
+            malformed = True
+            continue
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            errors.append(f"check receipt {index} has no valid name")
+            malformed = True
+            continue
+        if name not in required:
+            errors.append(f"unknown required check receipt: {name}")
+            malformed = True
+            continue
+        if name in by_name:
+            errors.append(f"duplicate required check receipt: {name}")
+            malformed = True
+            continue
+        by_name[name] = {
+            "name": name,
+            "sha": row.get("sha"),
+            "conclusion": row.get("conclusion"),
+        }
+
+    ordered_receipts = []
+    for name in PUSHED_GREEN_REQUIRED_CHECKS:
+        row = by_name.get(name)
+        if row is None:
+            errors.append(f"missing required check: {name}")
+            malformed = True
+            continue
+        ordered_receipts.append(row)
+        if row["sha"] != checked_sha:
+            errors.append(f"required check receipt SHA mismatch: {name}")
+        if row["conclusion"] != "success":
+            errors.append(f"required check is not successful: {name}")
+
+    status = "pushed_green" if not errors else (
+        "refused" if malformed else "local_green"
+    )
+    return {
+        "schema": CI_COMMIT_PROOF_SCHEMA,
+        "status": status,
+        "fetch_receipt": fetch,
+        "head_sha": head_sha,
+        "remote_sha": remote_sha,
+        "checked_sha": checked_sha,
+        "ahead_count": ahead_count,
+        "behind_count": behind_count,
+        "required_check_names": list(PUSHED_GREEN_REQUIRED_CHECKS),
+        "required_checks": ordered_receipts,
+        "errors": errors,
+    }
+
+
+def _git_fact(root, *args):
+    result = subprocess.run(
+        ["git", "-C", root, *args], text=True, encoding="utf-8",
+        errors="replace", capture_output=True,
+    )
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def prove_pushed_sha(root, checked_sha, receipts_path):
+    """Fetch origin/main and bind repository topology plus check receipts."""
+    remote_ref = "refs/remotes/origin/main"
+    code, _out, err = _git_fact(
+        root, "fetch", "--no-tags", "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+    )
+    fetch_receipt = {
+        "performed": True,
+        "ok": code == 0,
+        "remote": "origin",
+        "ref": remote_ref,
+        "returncode": code,
+    }
+    head_sha = remote_sha = None
+    ahead_count = behind_count = None
+    head_code, head_out, _ = _git_fact(root, "rev-parse", "--verify",
+                                       "HEAD^{commit}")
+    if head_code == 0:
+        head_sha = head_out
+    # A cached tracking ref is never freshness evidence.  Resolve and compare
+    # it only after the fetch in this operation succeeded.
+    if code == 0:
+        remote_code, remote_out, _ = _git_fact(
+            root, "rev-parse", "--verify", remote_ref + "^{commit}")
+        if remote_code == 0:
+            remote_sha = remote_out
+        if head_sha and remote_sha:
+            ahead_code, ahead_out, _ = _git_fact(
+                root, "rev-list", "--count", remote_ref + "..HEAD")
+            behind_code, behind_out, _ = _git_fact(
+                root, "rev-list", "--count", "HEAD.." + remote_ref)
+            if ahead_code == 0 and ahead_out.isdigit():
+                ahead_count = int(ahead_out)
+            if behind_code == 0 and behind_out.isdigit():
+                behind_count = int(behind_out)
+
+    try:
+        with io.open(receipts_path, encoding="utf-8") as handle:
+            receipts = json.load(handle)
+    except (OSError, ValueError):
+        receipts = None
+
+    return classify_ci_commit_proof(
+        fetch_receipt=fetch_receipt,
+        head_sha=head_sha,
+        remote_sha=remote_sha,
+        checked_sha=checked_sha,
+        ahead_count=ahead_count,
+        behind_count=behind_count,
+        receipts=receipts,
+    )
+
+
+def _report_ci_commit_proof(proof, as_json=False):
+    if as_json:
+        print(json.dumps(proof, indent=2, sort_keys=True))
+        return
+    print(f"ci commit proof: {proof['status']}")
+    print(f"  HEAD:        {proof['head_sha']}")
+    print(f"  origin/main: {proof['remote_sha']}")
+    print(f"  checked SHA: {proof['checked_sha']}")
+    print(f"  ahead/behind: {proof['ahead_count']}/{proof['behind_count']}")
+    for error in proof["errors"]:
+        print(f"  - {error}")
 
 # --- the transition table -------------------------------------------------
 # The gate is per rubric ITEM. A scalar bar is rejected outright, and
@@ -1453,6 +1649,12 @@ def _parser():
                    help="write evals/baselines/NAME.json from a run record")
     p.add_argument("--gate", action="store_true",
                    help="block on any rubric item that dropped from a pass")
+    p.add_argument("--prove-pushed-sha", action="store_true",
+                   help="fetch and prove exact pushed-SHA CI evidence")
+    p.add_argument("--checked-sha", metavar="SHA",
+                   help="full commit SHA whose required checks were observed")
+    p.add_argument("--check-receipts", metavar="FILE",
+                   help="JSON required-check receipts for --prove-pushed-sha")
     p.add_argument("--run", metavar="DIR",
                    help="grade this run record instead of the newest")
     p.add_argument("--root", metavar="DIR", default=ROOT,
@@ -1469,7 +1671,8 @@ def main(argv=None) -> int:
               (("--corpus", args.corpus), ("--skill", bool(args.skill)),
                ("--all-skills", args.all_skills),
                ("--set-baseline", bool(args.set_baseline)),
-               ("--gate", args.gate)) if on]
+               ("--gate", args.gate),
+               ("--prove-pushed-sha", args.prove_pushed_sha)) if on]
     if "--corpus" in picked and len(picked) > 1:
         print(f"evals: --corpus scores the frozen corpus and nothing else; "
               f"it cannot be combined with {', '.join(picked[1:])}",
@@ -1482,6 +1685,23 @@ def main(argv=None) -> int:
         print("evals: --run names one recorded run, so it needs --skill or "
               "--set-baseline to say which rubric to grade it against",
               file=sys.stderr)
+        return EXIT_USAGE
+    if args.prove_pushed_sha:
+        if len(picked) != 1:
+            print("evals: --prove-pushed-sha cannot be combined with another "
+                  "scoring mode", file=sys.stderr)
+            return EXIT_USAGE
+        if not args.checked_sha or not args.check_receipts:
+            print("evals: --prove-pushed-sha requires --checked-sha and "
+                  "--check-receipts", file=sys.stderr)
+            return EXIT_USAGE
+        proof = prove_pushed_sha(root, args.checked_sha,
+                                 args.check_receipts)
+        _report_ci_commit_proof(proof, args.json)
+        return EXIT_OK if proof["status"] == "pushed_green" else EXIT_BLOCKED
+    if args.checked_sha or args.check_receipts:
+        print("evals: --checked-sha and --check-receipts require "
+              "--prove-pushed-sha", file=sys.stderr)
         return EXIT_USAGE
     if args.corpus:
         return _score_corpus(os.path.join(root, "evals"))
