@@ -27,12 +27,13 @@ MODULE_RELATIVE = Path("taskplane/import_cycles.py")
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
 
-# These are the four deferred edges recorded in the R-0006 source analysis.
-# The history proof requires all four in the activation commit; later commits
+# These are the five S1/S2 edges recorded in the R-0006 accepted design.
+# The history proof requires all five in the activation commit; later commits
 # may remove them, but cannot claim that the ratchet landed after a cut.
 TARGET_CUT_EDGES = (
     ("taskplane.lens", "taskplane.review"),
     ("taskplane.depgraph", "taskplane.decompose"),
+    ("taskplane.decompose", "taskplane.depgraph"),
     ("taskplane.decompose", "taskplane.lens_signals"),
     ("taskplane.taskplane_lite", "taskplane.depgraph"),
 )
@@ -538,6 +539,55 @@ def _condition_is_unconditional(value: str) -> bool:
     return normalized.lower() == "true"
 
 
+def _defaults_run_shell(
+        rows: Sequence[tuple[int, str]], start: int, end: int,
+        *, defaults_indent: int) -> tuple[str | None, str | None]:
+    """Read one ``defaults.run.shell`` mapping at the requested scope."""
+    defaults_rows = [
+        index for index in range(start, end)
+        if rows[index][0] == defaults_indent
+        and _yaml_key_value(rows[index][1], "defaults") is not None
+    ]
+    if not defaults_rows:
+        return None, None
+    if len(defaults_rows) != 1:
+        return None, "multiple defaults mappings are not trusted"
+    defaults_index = defaults_rows[0]
+    defaults_value = _yaml_key_value(rows[defaults_index][1], "defaults")
+    if defaults_value:
+        return None, "inline defaults mapping is not trusted"
+    defaults_end = defaults_index + 1
+    while defaults_end < end and rows[defaults_end][0] > defaults_indent:
+        defaults_end += 1
+    run_indent = defaults_indent + 2
+    run_rows = [
+        index for index in range(defaults_index + 1, defaults_end)
+        if rows[index][0] == run_indent
+        and _yaml_key_value(rows[index][1], "run") is not None
+    ]
+    if not run_rows:
+        return None, None
+    if len(run_rows) != 1:
+        return None, "multiple defaults.run mappings are not trusted"
+    run_index = run_rows[0]
+    if _yaml_key_value(rows[run_index][1], "run"):
+        return None, "inline defaults.run mapping is not trusted"
+    run_end = run_index + 1
+    while run_end < defaults_end and rows[run_end][0] > run_indent:
+        run_end += 1
+    shell_rows = [
+        _yaml_key_value(rows[index][1], "shell")
+        for index in range(run_index + 1, run_end)
+        if rows[index][0] == run_indent + 2
+        and _yaml_key_value(rows[index][1], "shell") is not None
+    ]
+    if not shell_rows:
+        return None, None
+    if len(shell_rows) != 1 or not shell_rows[0]:
+        return None, "defaults.run.shell must be one non-empty scalar"
+    return shell_rows[0].strip().strip('"\''), None
+
+
 def _run_invokes_ratchet(command: str) -> bool:
     scalar = command.strip()
     if len(scalar) >= 2 and scalar[0] == scalar[-1] \
@@ -585,8 +635,12 @@ def _workflow_ratchet_error(source: str) -> str | None:
         (index for index, (_, content) in enumerate(rows)
          if content == "jobs:"), None)
     blocks: list[tuple[int, int, int]] = []
+    workflow_shell = None
+    workflow_shell_error = None
     if jobs_index is not None:
         jobs_indent = rows[jobs_index][0]
+        workflow_shell, workflow_shell_error = _defaults_run_shell(
+            rows, 0, len(rows), defaults_indent=jobs_indent)
         job_indent = jobs_indent + 2
         starts = [
             index for index in range(jobs_index + 1, len(rows))
@@ -600,6 +654,8 @@ def _workflow_ratchet_error(source: str) -> str | None:
             end = starts[position + 1] if position + 1 < len(starts) \
                 else len(rows)
             blocks.append((start, end, job_indent))
+    if workflow_shell_error is not None:
+        return f"workflow shell is not trusted: {workflow_shell_error}"
 
     disabled_candidates = []
     for start, end, job_indent in blocks:
@@ -612,6 +668,12 @@ def _workflow_ratchet_error(source: str) -> str | None:
         if check_names != [RATCHET_CHECK_NAME]:
             disabled_candidates.append(
                 f"check name must be {RATCHET_CHECK_NAME!r}")
+            continue
+        job_shell, job_shell_error = _defaults_run_shell(
+            rows, start + 1, end, defaults_indent=job_indent + 2)
+        if job_shell_error is not None:
+            disabled_candidates.append(
+                f"job shell is not trusted: {job_shell_error}")
             continue
         job_conditions = [
             value for indent, content in rows[start:end]
@@ -655,15 +717,21 @@ def _workflow_ratchet_error(source: str) -> str | None:
                 step_end += 1
             step_conditions = [
                 value for indent, candidate in rows[step_start:step_end]
-                if indent in {step_indent, run_indent}
+                if indent in {step_indent, step_indent + 2, run_indent}
                 if (value := _yaml_key_value(candidate, "if")) is not None
             ]
             ignored_failures = [
                 value for indent, candidate in rows[step_start:step_end]
-                if indent in {step_indent, run_indent}
+                if indent in {step_indent, step_indent + 2, run_indent}
                 if (value := _yaml_key_value(
                     candidate, "continue-on-error")) is not None
                 and value.strip().strip('"\'').lower() != "false"
+            ]
+            step_shells = [
+                value.strip().strip('"\'')
+                for indent, candidate in rows[step_start:step_end]
+                if indent in {step_indent, step_indent + 2, run_indent}
+                if (value := _yaml_key_value(candidate, "shell")) is not None
             ]
             conditions = job_conditions + step_conditions
             if conditions and not all(
@@ -673,6 +741,16 @@ def _workflow_ratchet_error(source: str) -> str | None:
             if ignored_failures:
                 disabled_candidates.extend(
                     f"continue-on-error: {value}" for value in ignored_failures)
+                continue
+            if len(step_shells) > 1 or (step_shells and not step_shells[0]):
+                disabled_candidates.append(
+                    "step shell must be one non-empty scalar")
+                continue
+            effective_shell = step_shells[0] if step_shells else (
+                job_shell if job_shell is not None else workflow_shell)
+            if effective_shell not in {None, "bash"}:
+                disabled_candidates.append(
+                    f"effective shell is not trusted: {effective_shell!r}")
                 continue
             return None
 

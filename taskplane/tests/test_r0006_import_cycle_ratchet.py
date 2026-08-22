@@ -111,17 +111,32 @@ def _start_history_fixture(root: Path) -> tuple[Path, Path, str]:
     return policy, workflow, active
 
 
-def _workflow_variant(step_fields: list[str], *, job_if: str | None = None) -> str:
+def _workflow_variant(
+        step_fields: list[str], *, job_if: str | None = None,
+        job_shell: str | None = None,
+        workflow_shell: str | None = None) -> str:
+    workflow_defaults = (
+        "defaults:\n"
+        "  run:\n"
+        f"    shell: {workflow_shell}\n"
+        if workflow_shell is not None else "")
     job_condition = f"    if: {job_if}\n" if job_if is not None else ""
+    job_defaults = (
+        "    defaults:\n"
+        "      run:\n"
+        f"        shell: {job_shell}\n"
+        if job_shell is not None else "")
     fields = "\n".join(
         [f"      - {step_fields[0]}"]
         + [f"        {field}" for field in step_fields[1:]])
     return (
+        f"{workflow_defaults}"
         "jobs:\n"
         "  wave3-contracts:\n"
         "    name: R-0006 graph + CLI contracts\n"
         f"{job_condition}"
         "    runs-on: ubuntu-latest\n"
+        f"{job_defaults}"
         "    steps:\n"
         f"{fields}\n"
     )
@@ -343,14 +358,24 @@ def test_checked_in_policy_is_exact_measured_wave4_start_inventory() -> None:
         ROOT, cycles.git_revision(ROOT)))["status"] == "pass"
 
 
-def test_history_proof_finds_activation_before_all_four_cuts(
+def test_target_cut_edge_set_is_exactly_closed() -> None:
+    assert cycles.TARGET_CUT_EDGES == (
+        ("taskplane.lens", "taskplane.review"),
+        ("taskplane.depgraph", "taskplane.decompose"),
+        ("taskplane.decompose", "taskplane.depgraph"),
+        ("taskplane.decompose", "taskplane.lens_signals"),
+        ("taskplane.taskplane_lite", "taskplane.depgraph"),
+    )
+
+
+def test_history_proof_finds_activation_before_all_five_cuts(
         tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write_modules(tmp_path, {
         "lens": "def f():\n    import review\n",
         "review": "import lens\n",
         "depgraph": "def f():\n    import decompose\n",
-        "decompose": "def f():\n    import lens_signals\n",
+        "decompose": "import depgraph\ndef f():\n    import lens_signals\n",
         "lens_signals": "import depgraph\n",
         "taskplane_lite": "def f():\n    import depgraph\n",
     })
@@ -386,12 +411,34 @@ def test_history_proof_finds_activation_before_all_four_cuts(
     assert cycles.verify_history(tmp_path, policy_path)["status"] == "pass"
 
 
+def test_history_proof_handles_no_ff_cut_merge(tmp_path: Path) -> None:
+    policy, _, _ = _start_history_fixture(tmp_path)
+    base_branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=tmp_path, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "-qc", "cut-branch"], cwd=tmp_path,
+                   check=True)
+    (tmp_path / "taskplane" / "lens.py").write_text(
+        "def f():\n    return None\n", encoding="utf-8")
+    _commit(tmp_path, "cut target edge on branch")
+    subprocess.run(["git", "switch", "-q", base_branch], cwd=tmp_path,
+                   check=True)
+    subprocess.run(
+        ["git", "merge", "--no-ff", "-qm", "merge protected cut",
+         "cut-branch"],
+        cwd=tmp_path, check=True,
+    )
+
+    assert cycles.verify_history(tmp_path, policy)["status"] == "pass"
+
+
 def test_history_proof_rejects_policy_bound_raise(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write_modules(tmp_path, {
         "lens": "import review\n", "review": "import lens\n",
         "depgraph": "import decompose\n",
-        "decompose": "import lens_signals\n",
+        "decompose": "import depgraph\nimport lens_signals\n",
         "lens_signals": "import depgraph\n",
         "taskplane_lite": "import depgraph\n",
     })
@@ -422,7 +469,7 @@ def test_history_proof_rejects_intermediate_raise_then_restore(
     _write_modules(tmp_path, {
         "lens": "import review\n", "review": "import lens\n",
         "depgraph": "import decompose\n",
-        "decompose": "import lens_signals\n",
+        "decompose": "import depgraph\nimport lens_signals\n",
         "lens_signals": "import depgraph\n",
         "taskplane_lite": "import depgraph\n",
     })
@@ -464,7 +511,7 @@ def test_history_proof_rejects_a_cut_in_the_activation_commit(
     _write_modules(tmp_path, {
         "lens": "import review\n", "review": "import lens\n",
         "depgraph": "import decompose\n",
-        "decompose": "import lens_signals\n",
+        "decompose": "import depgraph\nimport lens_signals\n",
         "lens_signals": "import depgraph\n",
         "taskplane_lite": "import depgraph\n",
     })
@@ -568,6 +615,41 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
             "run: python3 taskplane/import_cycles.py --check --verify-history",
         ]),
     ),
+    (
+        "inert-true-shell",
+        _workflow_variant([
+            "name: disabled by custom shell",
+            "shell: true {0}",
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ]),
+    ),
+    (
+        "inert-echo-shell",
+        _workflow_variant([
+            "name: disabled by custom shell",
+            "shell: echo {0}",
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ]),
+    ),
+    (
+        "unknown-step-shell",
+        _workflow_variant([
+            "shell: unknown-shell {0}",
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ]),
+    ),
+    (
+        "inert-job-default-shell",
+        _workflow_variant([
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ], job_shell="true {0}"),
+    ),
+    (
+        "inert-workflow-default-shell",
+        _workflow_variant([
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ], workflow_shell="echo {0}"),
+    ),
 ])
 def test_history_proof_rejects_inert_workflow_text_before_cut(
         tmp_path: Path, case: str, disabled_workflow: str) -> None:
@@ -586,6 +668,28 @@ def test_history_proof_rejects_inert_workflow_text_before_cut(
         cycles.verify_history(tmp_path, policy)
 
 
+@pytest.mark.parametrize("workflow", [
+    ACTIVE_WORKFLOW,
+    _workflow_variant([
+        "shell: bash",
+        "run: python3 taskplane/import_cycles.py --check --verify-history",
+    ]),
+    _workflow_variant([
+        "run: python3 taskplane/import_cycles.py --check --verify-history",
+    ], job_shell="bash"),
+    _workflow_variant([
+        "run: python3 taskplane/import_cycles.py --check --verify-history",
+    ], workflow_shell="bash"),
+    _workflow_variant([
+        "shell: bash",
+        "run: python3 taskplane/import_cycles.py --check --verify-history",
+    ], job_shell="echo {0}", workflow_shell="true {0}"),
+])
+def test_workflow_parser_accepts_closed_safe_effective_shells(
+        workflow: str) -> None:
+    assert cycles._workflow_ratchet_error(workflow) is None
+
+
 def test_history_proof_rejects_noop_scanner_cut_restore_gap(
         tmp_path: Path) -> None:
     policy, _, _ = _start_history_fixture(tmp_path)
@@ -595,6 +699,24 @@ def test_history_proof_rejects_noop_scanner_cut_restore_gap(
     (tmp_path / "taskplane" / "lens.py").write_text(
         "def f():\n    return None\n", encoding="utf-8")
     cut = _commit(tmp_path, "cut target edge under no-op scanner")
+    scanner.write_text(ACTIVE_SCANNER, encoding="utf-8")
+    _commit(tmp_path, "restore trusted scanner")
+
+    with pytest.raises(
+            cycles.CycleHistoryError,
+            match=rf"protected cut revision {cut}.*trusted HEAD scanner blob"):
+        cycles.verify_history(tmp_path, policy)
+
+
+def test_history_proof_rejects_noop_scanner_reverse_edge_cut_restore(
+        tmp_path: Path) -> None:
+    policy, _, _ = _start_history_fixture(tmp_path)
+    scanner = tmp_path / "taskplane" / "import_cycles.py"
+    scanner.write_text(MARKER_PRESERVING_NOOP_SCANNER, encoding="utf-8")
+    _commit(tmp_path, "replace scanner with marker-preserving no-op")
+    (tmp_path / "taskplane" / "decompose.py").write_text(
+        "import lens_signals\n", encoding="utf-8")
+    cut = _commit(tmp_path, "cut decompose to depgraph under no-op scanner")
     scanner.write_text(ACTIVE_SCANNER, encoding="utf-8")
     _commit(tmp_path, "restore trusted scanner")
 

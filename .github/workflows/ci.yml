@@ -331,7 +331,7 @@ jobs:
         with:
           python-version: "3.12"
       # The ratchet runs before structural tests and proves from full history
-      # that all four target edges still existed when it was activated.
+      # that all five target edges still existed when it was activated.
       - name: Import-cycle inventory, bounds, and activation order
         run: >-
           python3 taskplane/import_cycles.py
