@@ -38,6 +38,18 @@ def test_push_and_pull_request_run_a_dedicated_zero_token_corpus_gate():
     assert "ANTHROPIC" not in job
 
 
+def test_zero_token_checkout_does_not_persist_credentials():
+    source = WORKFLOW.read_text(encoding="utf-8")
+    job = _job(source, "zero-token-corpus", "wave3-contracts")
+
+    assert re.search(
+        r"(?m)^      - uses: actions/checkout@[^\n]+\n"
+        r"        with:\n"
+        r"          persist-credentials: false$",
+        job,
+    )
+
+
 def test_no_egress_guard_loads_before_intentional_socket_and_dns_probes():
     source = WORKFLOW.read_text(encoding="utf-8")
     job = _job(source, "zero-token-corpus", "wave3-contracts")
