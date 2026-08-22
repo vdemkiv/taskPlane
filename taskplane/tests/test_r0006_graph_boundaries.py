@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -18,8 +21,6 @@ import depgraph  # noqa: E402
 import graph_decomposition  # noqa: E402
 import graph_primitives  # noqa: E402
 import import_cycles  # noqa: E402
-import lens_signals  # noqa: E402
-import tp as cli  # noqa: E402
 
 
 def _imports(path: Path) -> set[str]:
@@ -60,9 +61,27 @@ def _write_fixture(workspace: Path, *, broken: bool = False) -> None:
     )
 
 
+def _fresh_python(source: str, *args: str) -> dict:
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONPATH"] = str(TASKPLANE)
+    env["TASKPLANE_STORE"] = "repo"
+    completed = subprocess.run(
+        [sys.executable, "-c", source, *args],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
 def test_boundary_imports_follow_the_approved_non_circular_contract() -> None:
     imports = {name: _imports(TASKPLANE / f"{name}.py") for name in (
-        "depgraph", "decompose", "graph_decomposition", "lens_signals")}
+        "depgraph", "decompose", "graph_decomposition", "graph_primitives",
+        "lens_signals", "tp")}
 
     assert "decompose" not in imports["depgraph"]
     assert "depgraph" not in imports["decompose"]
@@ -74,8 +93,11 @@ def test_boundary_imports_follow_the_approved_non_circular_contract() -> None:
     assert not ({"depgraph", "decompose", "lens_signals"}
                 & imports["graph_decomposition"])
     assert not ({"depgraph", "decompose", "lens_signals"}
-                & _imports(TASKPLANE / "graph_primitives.py"))
-    assert "lens_signals" in _imports(TASKPLANE / "tp.py")
+                & imports["graph_primitives"])
+    assert "review_progression" not in imports["graph_primitives"]
+    assert "lens_signals" not in imports["tp"]
+    assert not any(hasattr(graph_primitives, name) for name in (
+        "_LENS_ROUTER", "register_lens_router", "lens_router_registered"))
 
 
 def test_forbidden_import_check_includes_dynamic_forms(tmp_path: Path) -> None:
@@ -129,6 +151,8 @@ def test_shared_graph_payload_preserves_dependency_and_boundary_meaning() -> Non
 
 def test_registered_graph_loader_resolves_the_live_depgraph_seam(
         monkeypatch: pytest.MonkeyPatch) -> None:
+    import lens_signals
+
     fake = {
         "meta": {},
         "edges": [{"from": "api", "to": "auth", "kind": "imports"}],
@@ -139,18 +163,69 @@ def test_registered_graph_loader_resolves_the_live_depgraph_seam(
         "module_dependents"] == {"auth": 1}
 
 
-def test_production_composition_activates_successful_lens_maps(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(graph_primitives, "_LENS_ROUTER", None)
-    cli._activate_graph_decomposition()
-    workspace = tmp_path / "composed"
+def test_fresh_direct_depgraph_scan_owns_successful_lens_maps(
+        tmp_path: Path) -> None:
+    workspace = tmp_path / "direct-depgraph"
     _write_fixture(workspace)
+    direct = _fresh_python(
+        "import json,sys,depgraph\n"
+        "before='lens_signals' in sys.modules\n"
+        "graph=depgraph.scan(sys.argv[1],decompose=True)\n"
+        "quality=depgraph.scan_quality(graph)\n"
+        "print(json.dumps({'before':before,"
+        "'after':'lens_signals' in sys.modules,"
+        "'maps':[c.get('lens_map') for c in graph.get('components') or []],"
+        "'degraded':quality.get('degraded')},sort_keys=True))\n",
+        str(workspace),
+    )
+    assert direct["before"] is False
+    assert direct["after"] is False
+    assert direct["maps"] and all(direct["maps"])
+    assert direct["degraded"] is False
 
-    graph = depgraph.scan(str(workspace), decompose=True)
+    composed_workspace = tmp_path / "facade-depgraph"
+    _write_fixture(composed_workspace)
+    composed = _fresh_python(
+        "import json,sys,lens_signals,depgraph\n"
+        "graph=depgraph.scan(sys.argv[1],decompose=True)\n"
+        "print(json.dumps({'maps':[c.get('lens_map') "
+        "for c in graph.get('components') or []],"
+        "'degraded':depgraph.scan_quality(graph).get('degraded')},"
+        "sort_keys=True))\n",
+        str(composed_workspace),
+    )
+    assert composed == {"maps": direct["maps"], "degraded": False}
 
-    assert graph["components"]
-    assert all(component["lens_map"] for component in graph["components"])
-    assert depgraph.scan_quality(graph)["degraded"] is False
+
+def test_fresh_direct_decompose_owns_successful_lens_maps(
+        tmp_path: Path) -> None:
+    workspace = tmp_path / "direct-decompose"
+    _write_fixture(workspace)
+    source = (
+        "import json,sys,decompose\n"
+        "before='lens_signals' in sys.modules\n"
+        "graph={'files':{'src/auth/session.py':{'hash':'a'},"
+        "'src/payments/charge.py':{'hash':'b'}},"
+        "'edges':[{'from':'auth','to':'payments','kind':'imports'}],"
+        "'meta':{}}\n"
+        "components,stats=decompose.derive(sys.argv[1],graph)\n"
+        "print(json.dumps({'before':before,"
+        "'after':'lens_signals' in sys.modules,"
+        "'maps':[c.get('lens_map') for c in components],"
+        "'degraded':stats.get('degraded')},sort_keys=True))\n"
+    )
+    direct = _fresh_python(source, str(workspace))
+    assert direct["before"] is False
+    assert direct["after"] is False
+    assert direct["maps"] and all(direct["maps"])
+    assert direct["degraded"] == []
+
+    composed = _fresh_python(
+        "import lens_signals\n" + source,
+        str(workspace),
+    )
+    assert composed["maps"] == direct["maps"]
+    assert composed["degraded"] == []
 
 
 def test_boundary_cut_shrinks_to_the_measured_residual_sccs() -> None:

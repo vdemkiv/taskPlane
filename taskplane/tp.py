@@ -2621,14 +2621,6 @@ def _loop_evidence_workspaces(loopmod, workspace: str,
                      f"task {task.get('id')!r}"}
     return authority, evidence_ws, None
 
-def _activate_graph_decomposition() -> None:
-    """Wire the detector provider at the production composition root."""
-    import graph_primitives
-    import lens_signals
-    graph_primitives.register_lens_router(
-        lambda *args, **kwargs: lens_signals.route_verdicts(*args, **kwargs))
-
-
 def cmd_loop(a) -> int:
     """Drive the taskplane-owned Evaluate-Loop state machine."""
     import loop as loopmod
@@ -2774,7 +2766,6 @@ def cmd_loop(a) -> int:
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
-        _activate_graph_decomposition()
         out = loopmod.retro(ws)
         if isinstance(out, dict) and not out.get("error"):
             try:
@@ -5604,8 +5595,6 @@ def cmd_graph(a) -> int:
     ws = _workspace(a.workspace)
     if a.graph_action == "scan":
         dec = bool(getattr(a, "decompose", False))
-        if dec:
-            _activate_graph_decomposition()
         g = dg.scan(ws, decompose=dec)
         quality = dg.scan_quality(g)
         out = {"modules": len(g["modules"]),

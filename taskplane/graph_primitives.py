@@ -1,12 +1,14 @@
-"""Dependency-free graph identities, edge semantics, and context records.
+"""Lower-owned graph identities, context records, and lens applicability.
 
-This module is the single lower-layer contract shared by the graph scanner,
-component decomposition, and lens routing.  It intentionally knows nothing
-about graph persistence, scanning, decomposition, or lens execution.
+This module is the single dependency-free contract shared by the graph
+scanner, component decomposition, and lens facade.  It owns the deterministic
+component lens engine so direct graph APIs need no higher-layer activation.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import posixpath
 import re
 
@@ -28,7 +30,6 @@ DEPENDENCY_EDGE_KINDS = frozenset({
 
 _FIXTURE_SEGMENTS = frozenset({"fixtures", "testdata", "goldens"})
 _GRAPH_LOADER = None
-_LENS_ROUTER = None
 
 
 def register_graph_loader(loader) -> None:
@@ -46,24 +47,6 @@ def load_graph(workspace: str) -> dict:
     if _GRAPH_LOADER is None:
         raise RuntimeError("graph loader is not registered")
     return _GRAPH_LOADER(workspace)
-
-
-def register_lens_router(router) -> None:
-    """Register the detector-owned component lens-map boundary."""
-    global _LENS_ROUTER
-    _LENS_ROUTER = router
-
-
-def lens_router_registered() -> bool:
-    """Whether the composition root has activated the detector boundary."""
-    return _LENS_ROUTER is not None
-
-
-def route_verdicts(*args, **kwargs):
-    """Invoke the registered lens router without importing its owner."""
-    if _LENS_ROUTER is None:
-        raise RuntimeError("lens router is not registered")
-    return _LENS_ROUTER(*args, **kwargs)
 
 
 def is_fixture_module(module: str) -> bool:
@@ -263,3 +246,1323 @@ def graph_payload(graph: dict, modules,
 # Compatibility aliases retained for depgraph's historically internal names.
 _node_kind = node_kind
 _is_boundary = is_boundary
+
+
+def _is_test_path(path: str) -> bool:
+    """Lower-owned QA path predicate used by the applicability engine."""
+    normalized = str(path or "").replace("\\", "/")
+    if os.sep != "/":
+        normalized = normalized.replace(os.sep, "/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return False
+    test_directories = {
+        "test", "tests", "spec", "specs", "__tests__", "testing",
+        "e2e", "cypress", "playwright", "integration-tests",
+    }
+    if any(part.lower() in test_directories for part in parts[:-1]):
+        return True
+    raw_name = parts[-1]
+    name = raw_name.lower()
+    if name == "conftest.py" or any(
+            token in name for token in (".test.", ".spec.")):
+        return True
+    raw_stem = raw_name.rsplit(".", 1)[0] if "." in raw_name else raw_name
+    if re.search(r"[a-z0-9](?:Test|Tests|Spec|Specs)$", raw_stem):
+        return True
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return (stem in {"test", "tests", "spec", "specs"}
+            or stem.startswith(("test_", "test-", "spec_", "spec-"))
+            or stem.endswith(("_test", "-test", "_tests", "-tests",
+                              "_spec", "-spec")))
+
+
+def _change_adds_no_test(files, code_extensions) -> bool:
+    """Return whether changed code carries no recognized test path."""
+    paths = [str(path) for path in files or []]
+    has_code = any(any(path.lower().endswith(str(ext).lower())
+                       for ext in code_extensions or ())
+                   for path in paths)
+    if os.environ.get("TASKPLANE_QA_BASELINE", "").strip().lower() in {
+            "1", "true", "yes", "on"}:
+        return has_code
+    return has_code and not any(_is_test_path(path) for path in paths)
+
+
+class _NoReviewProgression:
+    """Conservative lower-layer fallback for review-only document signals."""
+
+    @staticmethod
+    def document_evidence_uncertainty(_files, _content_by_file=None):
+        return "documentation evidence provider unavailable"
+
+    @staticmethod
+    def document_lens_signals(_files, _content_by_file=None):
+        return {}
+
+    @staticmethod
+    def apply_document_signals(vmap, _files, _content_by_file=None):
+        return vmap
+
+
+_NO_REVIEW_PROGRESSION = _NoReviewProgression()
+
+
+# ---------------------------------------------------------------- thresholds
+
+DEEP = 0.6            # score >= DEEP  -> "deep"
+LIGHT = 0.2           # score >= LIGHT -> "light"; below -> "n/a"
+DEEP_CAP = 8          # hard cap on the deep set (overflow demoted to light)
+DEEP_TARGET = (5, 7)  # desired deep band (informational; never manufactured)
+
+MAX_FILE_BYTES = 64 * 1024   # per-file content-scan bound
+MAX_FILES = 200              # max files content-scanned per ctx
+
+# signal weights (sum is clamped to 1.0)
+W_PATH = 0.35      # a changed path matches the lens's surface globs
+W_CONTENT = 0.3    # a content marker fires in a changed file
+W_DENSITY = 0.25   # density-style content signal (e.g. user-facing strings)
+W_KEYWORD = 0.15   # the requirement text mentions the lens's concern
+W_GRAPH = 0.35     # graph flag (hub module / boundary contract in impact)
+
+_HUB_DEPENDENTS = 3   # >= this many direct dependents -> hub signal fires
+
+# ------------------------------------------- fixtures-path discount (D-0002)
+#
+# Checked-in test fixtures LOOK like the surfaces they imitate (a locale
+# file under tests/fixtures/ scores like a real locale file), so fixture-only
+# diffs inflated i18n/mobile to deep (D-0002). Path/content/density signal
+# hits whose ONLY support is fixture-class files are RE-WEIGHTED x0.25 —
+# never suppressed: the evidence line survives and names the discount
+# (honesty: the evidence says why the score is low), n/a semantics are
+# untouched, and the floors still apply after scoring. A hit with any real
+# product-file support keeps full weight.
+
+FIXTURE_DISCOUNT = 0.25
+_FIXTURE_SEGMENTS = frozenset({"fixtures", "testdata", "goldens"})
+_FIXTURE_EXTENSIONS = (".golden",)
+_DISCOUNT_NOTE = f"(fixture-path discount x{FIXTURE_DISCOUNT})"
+
+
+def is_fixture_path(path: str) -> bool:
+    """True when the path is fixture-class: any path segment named
+    fixtures/testdata/goldens (at any depth), or a .golden extension."""
+    p = str(path).replace(os.sep, "/")
+    if any(seg.lower() in _FIXTURE_SEGMENTS for seg in p.split("/") if seg):
+        return True
+    return p.lower().endswith(_FIXTURE_EXTENSIONS)
+
+
+# B5 (R-0008): the classifier above keys off the PATH alone, so a REAL
+# product directory literally named `fixtures/` was discounted — the
+# dangerous direction (under-routing). The discount APPLICATION point now
+# consults a graph-informed exemption computed at ctx construction: a
+# fixture-classed path whose containing graph MODULE has at least
+# FIXTURE_EXEMPT_MIN_DEPENDENTS dependents is real product code (nothing
+# depends on a test-fixture tree), keeps FULL weight, and says so in the
+# evidence line. The exemption can only ever RESTORE weight — the
+# discounted set strictly shrinks, never grows — and is_fixture_path()
+# itself is untouched, so every other caller sees the same classification.
+#
+# TWO guards keep that premise TRUE, because the first cut of this exemption
+# repealed D-0002 on this very repository:
+#
+#  1. WHAT COUNTS AS A DEPENDENT — only depgraph.DEPENDENCY_EDGE_KINDS
+#     ("from NEEDS to"). `module_dependents` used to count EVERY incoming
+#     edge, including the STRUCTURAL `defined_in` edge a docker-compose file
+#     emits ABOUT ITS OWN module. This repo's
+#     taskplane/tests/fixtures/detectors/architecture/positive/
+#     docker-compose.yml therefore handed module `taskplane/tests` two
+#     "dependents" that were the fixtures themselves. Filtered in
+#     _graph_payload here AND in decompose._graph_payload, so cached
+#     component maps and live routing agree.
+#
+#  2. AT WHAT GRANULARITY — a graph module id is at most a few segments
+#     (`taskplane/tests`) while is_fixture_path classifies the FULL path
+#     (`taskplane/tests/fixtures/detectors/i18n/positive/locales/en.json`).
+#     An ancestor module id must never speak for a fixture subtree nested
+#     below it, so the exemption fires only when the fixture classification
+#     is visible AT the module boundary that carries the dependent count —
+#     is_fixture_path(module) is itself True (`fixtures`, `tests/fixtures`,
+#     …). When the fixture-marking segment lies BELOW the module id, the
+#     dependents belong to the module, not to the fixture tree, and the
+#     discount stands. On this repo all 102 fixture-classed tracked paths
+#     map to non-fixture-classed modules (taskplane/tests, src, api,
+#     components, auth), so the whole corpus stays discounted.
+#
+# Both guards only SHRINK the exemption, and the exemption only ever restores
+# weight, so behaviour stays between "always discounted" (base) and the
+# unguarded version: it can never route anything more narrowly than base.
+FIXTURE_EXEMPT_MIN_DEPENDENTS = 1
+
+
+def _module_is_fixture_classed(module: str) -> bool:
+    """Guard 2: the fixture marking must be visible at the module boundary
+    that carries the dependent count, not somewhere deeper in the path."""
+    return is_fixture_module(module)
+
+
+def _module_of(path: str, manifests: dict | None = None) -> str:
+    """The graph module id owning ``path`` through the shared contract."""
+    p = str(path).replace(os.sep, "/")
+    try:
+        return module_of(p, manifests)
+    except Exception:
+        d = os.path.dirname(p)
+        return "/".join(d.split("/")[:2]) if d else "(root)"
+
+
+def _fixture_exemptions(files, graph) -> dict:
+    """{path: reason} — the fixture-classed paths that keep FULL weight.
+
+    Guard 2 (granularity) is applied here; guard 1 (dependency-edge kinds)
+    is applied where `module_dependents` is BUILT (_graph_payload)."""
+    deps = (graph or {}).get("module_dependents")
+    if not isinstance(deps, dict) or not deps:
+        return {}
+    ids = (graph or {}).get("module_ids") or None
+    out: dict = {}
+    for rel in files:
+        if not is_fixture_path(rel):
+            continue
+        module = _module_of(rel, ids)
+        if not _module_is_fixture_classed(module):
+            # the fixture segment sits BELOW the module boundary: this
+            # module's dependents do not describe the fixture tree
+            continue
+        try:
+            n = int(deps.get(module, 0) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n >= FIXTURE_EXEMPT_MIN_DEPENDENTS:
+            out[rel] = (f"product-dir exemption: {rel} is in module "
+                        f"{module}, which has {n} dependent(s) — real "
+                        "product code, not a test fixture")
+    return out
+
+
+# ------------------------------------------------------------------- catalog
+
+_CATALOG_CACHE: dict = {}
+
+
+def _plugin_root() -> str:
+    # lenses/ sits at the plugin root, one level up from taskplane/
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_catalog(root: str | None = None) -> dict:
+    """Load lenses/catalog.json (cached per root). Self-contained on purpose:
+    lens.py will import THIS module in t2, so importing lens here would set
+    up an import cycle."""
+    key = root or _plugin_root()
+    if key not in _CATALOG_CACHE:
+        with open(os.path.join(key, "lenses", "catalog.json"), encoding="utf-8") as f:
+            _CATALOG_CACHE[key] = json.load(f)
+    return _CATALOG_CACHE[key]
+
+
+# -------------------------------------------------------------- glob matcher
+
+def _match(path: str, glob: str) -> bool:
+    """Path/glob match supporting '**' as 'any directories' (same semantics
+    as lens._match; duplicated to avoid the lens<->lens_signals cycle)."""
+    if fnmatch.fnmatch(path, glob):
+        return True
+    if glob.startswith("**/"):
+        tail = glob[3:]
+        if fnmatch.fnmatch(path, tail) or fnmatch.fnmatch(
+                os.path.basename(path), tail):
+            return True
+        parts = path.split("/")
+        for i in range(len(parts)):
+            if fnmatch.fnmatch("/".join(parts[i:]), tail):
+                return True
+    return False
+
+
+def _glob_hit(files, globs):
+    """First (file, glob) pair that matches, or None. files/globs iterated
+    in the given (already sorted) order -> deterministic."""
+    for g in globs:
+        for f in files:
+            if _match(f, g):
+                return (f, g)
+    return None
+
+
+def _is_code(path: str, code_ext) -> bool:
+    return any(path.endswith(e) for e in code_ext)
+
+
+# ------------------------------------------------------------------- context
+
+class Ctx:
+    """Everything a detector may look at. Bounded, cached, deterministic.
+
+    files            changed paths relative to workspace (sorted, deduped)
+    workspace        absolute-ish root used to read file contents
+    requirement_text lowercased requirement/acceptance-criteria blob
+    graph            {"hub_dependents": int, "boundary_contracts": [str],
+                      "modules": [str], "module_dependents": {mod: int}}
+    stage            loop stage (carried for the router; unused by detectors)
+    fixture_exempt   {path: reason} — fixture-classed paths that keep FULL
+                     weight because their graph module has dependents (B5,
+                     R-0008); computed HERE, at ctx construction
+    """
+
+    __slots__ = ("workspace", "files", "requirement_text", "graph", "stage",
+                 "fixture_exempt", "_contents", "_content_by_file",
+                 "_review_risk", "_review_progression")
+
+    def __init__(self, workspace, files, requirement_text, graph, stage,
+                 content_by_file=None, review_progression=None):
+        self.workspace = workspace
+        self.files = sorted({str(f).replace(os.sep, "/") for f in files or []})
+        if isinstance(requirement_text, (list, tuple)):
+            requirement_text = "\n".join(str(x) for x in requirement_text)
+        self.requirement_text = (requirement_text or "").lower()
+        self.graph = graph or {"hub_dependents": 0,
+                               "boundary_contracts": [], "modules": []}
+        self.stage = stage
+        self.fixture_exempt = _fixture_exemptions(self.files, self.graph)
+        self._content_by_file = (
+            {str(path).replace(os.sep, "/"): str(text)
+             for path, text in content_by_file.items()
+             if str(path).replace(os.sep, "/") in self.files}
+            if isinstance(content_by_file, dict) else None)
+        self._contents = None
+        self._review_risk = None
+        self._review_progression = review_progression
+
+    def is_discounted(self, path: str) -> bool:
+        """True when the D-0002 fixture discount APPLIES to `path`: it is
+        fixture-class AND not graph-exempt (B5). A strict subset of
+        is_fixture_path() — the exemption can only restore weight."""
+        p = str(path).replace(os.sep, "/")
+        return is_fixture_path(p) and p not in self.fixture_exempt
+
+    def exemption_note(self, path: str) -> str:
+        """' (reason)' when `path` is exempt from the discount, else ''."""
+        reason = self.fixture_exempt.get(str(path).replace(os.sep, "/"))
+        return f" ({reason})" if reason else ""
+
+    def read(self, relpath: str) -> str | None:
+        """Bounded read of one changed file: at most MAX_FILE_BYTES bytes,
+        decoded utf-8 with replacement. Missing/unreadable -> None (changed
+        lists legitimately contain deletions)."""
+        p = os.path.join(self.workspace, relpath)
+        try:
+            # Containment (EM v3): changed-file lists come from git, but a
+            # crafted relpath ('../..') or a symlink pointing outside the
+            # workspace must not let a detector read foreign files. Resolve
+            # and require the real target stays under the real workspace.
+            root = os.path.realpath(self.workspace)
+            real = os.path.realpath(p)
+            if real != root and not real.startswith(root + os.sep):
+                return None
+            with open(real, "rb") as f:
+                text = f.read(MAX_FILE_BYTES).decode("utf-8", "replace")
+            # Read as bytes (deliberately — no locale codec, no newline
+            # translation), then normalize line endings ourselves. Detector
+            # regexes are line-anchored and the scores they produce are
+            # frozen in goldens; a file checked out with CRLF must score
+            # identically to the same file with LF, or the same diff routes
+            # differently on Windows than it does in CI.
+            return text.replace("\r\n", "\n").replace("\r", "\n")
+        except OSError:
+            return None
+
+    def contents(self):
+        """[(relpath, text)] for the first MAX_FILES sorted changed files
+        that exist. Cached: the corpus is read once per ctx, then every
+        detector scans the same in-memory snapshot."""
+        if self._contents is None:
+            out = []
+            for rel in self.files:
+                if len(out) >= MAX_FILES:
+                    break
+                if self._content_by_file is not None:
+                    text = self._content_by_file.get(rel)
+                    if text is not None:
+                        text = text.encode("utf-8")[:MAX_FILE_BYTES].decode(
+                            "utf-8", "replace")
+                else:
+                    text = self.read(rel)
+                if text is not None:
+                    out.append((rel, text))
+            self._contents = out
+        return self._contents
+
+
+def make_ctx(workspace, files, requirement_text=None, graph=None,
+             stage=None, content_by_file=None,
+             review_progression=None) -> Ctx:
+    """Build a detector context. graph=None -> derive a payload from the
+    dependency graph (hub dependents + boundary contracts adjacent to the
+    touched modules); any graph failure degrades to an empty payload rather
+    than blocking routing (the security floor still fires on path evidence,
+    and route v2 fails open to breadth=all at the router seam — t2)."""
+    if graph is None:
+        graph = _graph_payload(workspace, files)
+    return Ctx(workspace, files, requirement_text, graph, stage,
+               content_by_file=content_by_file,
+               review_progression=review_progression)
+
+
+def _graph_payload(workspace, files) -> dict:
+    try:
+        g = load_graph(workspace)
+        # the graph's own declared ids, or the fixture-exemption and
+        # dependent-count lookups below miss every workspace module
+        _ids = declared_module_ids(g)
+        touched = sorted({module_of(
+                              str(f).replace(os.sep, "/"), _ids)
+                          for f in files or []})
+        return graph_payload(
+            g, touched,
+            fixture_module_predicate=is_fixture_module)
+    except Exception:
+        return {"hub_dependents": 0, "boundary_contracts": [], "modules": [],
+                "module_dependents": {}}
+
+
+# --------------------------------------------------------- signal-spec table
+#
+# One spec per catalog lens. Shape:
+#   paths:    extra surface globs ON TOP of the lens's catalog globs
+#             (the catalog globs are always part of the path signal)
+#   code:     True -> the path signal also fires on any code-extension file
+#             (baseline lenses: their surface IS "code changed")
+#   content:  [(label, regex_pattern)] scanned over the bounded corpus;
+#             each distinct rule that fires adds W_CONTENT
+#   density:  (label, threshold) -> user-facing string-literal density rule
+#   graph:    subset of {"hub", "boundary"}
+#   keywords: substrings looked up in the lowercased requirement text
+#   absent:   negative-evidence phrases, joined into
+#             "0 <lens> signals: no X, no Y, ..." when nothing fires
+
+_STR_LIT = re.compile(r"""["']([A-Za-z][A-Za-z,.!?'-]*(?:\s+[A-Za-z][A-Za-z,.!?'-]*){2,})["']""")
+
+SPECS: dict[str, dict] = {
+    "product": {
+        "content": [("spec/acceptance markers",
+                     r"(?im)^#+.*(acceptance criteria|user stor|requirement)")],
+        "keywords": ["user journey", "acceptance", "success metric",
+                     "user value"],
+        "absent": ["no spec/requirements files", "no acceptance-criteria "
+                   "markers", "no product keywords in the requirement"],
+    },
+    "security": {
+        "paths": ["**/hooks/**", "**/taskplane_lite.py", "**/*login*",
+                  "**/*permission*", "**/*.pem", "**/*credential*"],
+        "content": [
+            ("auth/secret markers",
+             r"(?i)(password|passwd|secret[_a-z]*\s*=|api[_-]?key|"
+             r"bearer\s|jwt|oauth|csrf|bcrypt|hmac|authenticat|authoriz|"
+             r"permission|session[_ ]token)"),
+            ("unsafe-input surface",
+             r"(?i)(\beval\(|\bexec\(|subprocess|os\.system|pickle\.loads|"
+             r"yaml\.load\(|innerHTML|dangerouslySetInnerHTML|"
+             r"shell\s*=\s*True)"),
+        ],
+        "graph": ["boundary"],
+        "keywords": ["auth", "security", "secret", "permission", "vulnerab",
+                     "enforc", "injection"],
+        "absent": ["no auth/secrets/enforcement paths", "no auth or secret "
+                   "markers", "no unsafe-input surface", "no boundary "
+                   "contracts in impact", "no security keywords in the "
+                   "requirement"],
+    },
+    "code-quality": {
+        "code": True,
+        "content": [("code constructs",
+                     r"(?m)^\s*(def |class |function\b|const |public |"
+                     r"private |fn |func )")],
+        "absent": ["no code files changed", "no code constructs in scope"],
+    },
+    "testability": {
+        "code": True,
+        "paths": ["**/tests/**", "**/*.test.*", "**/conftest*"],
+        "content": [("non-determinism/seam markers",
+                     r"(?i)(time\.time|datetime\.now|random\.|monkeypatch|"
+                     r"\bmock|singleton|\bglobal )")],
+        "keywords": ["testab", "coverage", "determinis", "mockab"],
+        "absent": ["no code files changed", "no test files", "no seam or "
+                   "non-determinism markers"],
+    },
+    "design": {
+        "content": [("UI markup",
+                     r"(?m)(<[A-Za-z][^>\n]*>|className=|class=\"|"
+                     r"<template|styled\.)")],
+        "keywords": ["ux", "usability", "visual", "layout", "empty state", "loading state"],
+        "absent": ["no UI component files", "no UI markup",
+                   "no UX keywords in the requirement"],
+    },
+    "scalability": {
+        "content": [
+            ("SQL query surface",
+             r"(?i)(select\s+.+\s+from|insert\s+into|\bjoin\b|group\s+by)"),
+            ("HTTP/queue clients",
+             r"(?i)(requests\.(get|post|put|delete)|urllib\.request|"
+             r"\bfetch\(|axios|http\.client|aiohttp|kafka|rabbitmq|\bsqs\b|"
+             r"pub/?sub|celery)"),
+            ("loops over remote calls",
+             r"(?is)\b(for|while)\b[^\n]*\n[^\n]{0,200}?"
+             r"(select\s|\.execute\(|requests\.|fetch\(|\.query\()"),
+        ],
+        "graph": ["hub"],
+        "keywords": ["scale", "scalab", "throughput", "latency", "hot path",
+                     "load"],
+        "absent": ["no api/db/services paths", "no query or client code",
+                   "no remote calls in loops", "no hub module in the graph",
+                   "no scalability keywords in the requirement"],
+    },
+    "integrability": {
+        "content": [("contract/schema markers",
+                     r"(?i)(openapi|swagger|protobuf|proto3|json[- ]?schema|"
+                     r"content-type|api[_-]?version|/v[0-9]+/)")],
+        "graph": ["boundary"],
+        "keywords": ["contract", "api version", "integrat", "error code"],
+        "absent": ["no api/schema/contract paths", "no contract or schema "
+                   "markers", "no boundary contracts in impact"],
+    },
+    "data-safety": {
+        "content": [("migration/DDL markers",
+                     r"(?i)(alter\s+table|drop\s+(table|column)|"
+                     r"add\s+column|backfill|\bmigration|not\s+null|"
+                     r"on\s+delete\s+cascade)")],
+        "keywords": ["migration", "rollback", "backfill", "cascade"],
+        "absent": ["no migration/schema files", "no DDL or backfill markers",
+                   "no migration keywords in the requirement"],
+    },
+    "tech-writer": {
+        "content": [("doc structure",
+                     r"(?m)^#{1,3}\s|^\.\. |^=====")],
+        "keywords": ["readme", "changelog", "documentation", "adr"],
+        "absent": ["no docs/markdown files", "no document structure",
+                   "no documentation keywords in the requirement"],
+    },
+    "qa": {
+        # D5. The qa spec carried NO path globs of its own, so the only
+        # surfaces it recognized were the catalog's (`**/tests/**`,
+        # `**/*.test.*`, `**/*.spec.*`, e2e/cypress/playwright/__tests__) —
+        # none of which a Go repo's `pkg/cache/cache_test.go` matches. A
+        # field review of a diff MADE of Go test files therefore reported
+        # "no test files": an n/a that ASSERTS there was nothing to check,
+        # which is the coverage-honesty feature inverted. These are the
+        # by-convention test surfaces of the languages the catalog's own
+        # code_extensions already admit.
+        "paths": ["**/*_test.go",                      # Go
+                  "**/test_*.py", "**/*_test.py",      # Python
+                  "**/*.test.*", "**/*.spec.*",        # JS/TS
+                  "**/*Test.java",                     # Java
+                  "**/*Tests.cs",                      # C#
+                  "**/*_spec.rb",                      # Ruby
+                  "**/tests/**", "**/test/**", "**/spec/**"],
+        # D5, second half: the construct regex was lowercase-only, so
+        # Ginkgo/Gomega (`Describe(`, `It(`, `Expect(`), xUnit's `Assert`
+        # and every other capitalized dialect read as prose. `i` here and
+        # nowhere else — the flags are per-pattern.
+        "content": [("test constructs",
+                     r"(?im)(\bassert\b|expect\(|\bit\(|describe\(|"
+                     r"@pytest|unittest)")],
+        "keywords": ["regression", "edge case", "e2e", "test strategy"],
+        "absent": ["no test files", "no test constructs",
+                   "no QA keywords in the requirement"],
+    },
+    "devops": {
+        "content": [("pipeline/build markers",
+                     r"(?im)^(FROM |RUN |jobs:|steps:|stages:|pipeline\b|"
+                     r"\s+uses:\s)")],
+        "keywords": ["pipeline", "ci/cd", "deploy", "reproducib", "iac"],
+        "absent": ["no CI/container/IaC files", "no pipeline or build "
+                   "markers", "no devops keywords in the requirement"],
+    },
+    "dba": {
+        "content": [
+            ("DDL/index markers",
+             r"(?i)(create\s+(table|index|unique\s+index)|alter\s+table|"
+             r"foreign\s+key|primary\s+key|partition\s+by)"),
+            ("query patterns",
+             r"(?i)(select\s+.+\s+from|\bjoin\s|group\s+by|order\s+by)"),
+            ("ORM/model markers",
+             r"(?i)(models\.Model|@Entity|prisma|ActiveRecord|sqlalchemy|"
+             r"@Table)"),
+        ],
+        "keywords": ["index", "query plan", "schema", "normaliz",
+                     "partition"],
+        "absent": ["no sql/models/schema files", "no DDL or index markers",
+                   "no query patterns", "no ORM models"],
+    },
+    "sre": {
+        "content": [("observability/resilience markers",
+                     r"(?i)(retry|timeout|circuit[ _-]?breaker|backoff|"
+                     r"prometheus|\balert|\bslo\b|healthcheck|"
+                     r"health[_ ]check|runbook|pagerduty)")],
+        "keywords": ["observab", "alert", "incident", "reliab", "slo",
+                     "on-call"],
+        "absent": ["no monitoring/alerts/runbook files", "no observability "
+                   "or resilience markers", "no SRE keywords in the "
+                   "requirement"],
+    },
+    "project-management": {
+        "content": [("plan/rollout structure",
+                     r"(?im)^(##\s*(milestone|timeline|rollout|risk|wave)|"
+                     r"- \[ \])")],
+        "keywords": ["timeline", "milestone", "cross-team", "rollout plan"],
+        "absent": ["no plan/roadmap files", "no milestone or rollout "
+                   "structure", "no delivery keywords in the requirement"],
+    },
+    "frontend": {
+        "content": [
+            ("component markup",
+             r"(<[A-Z][A-Za-z0-9]*[\s/>]|className=|useState|useEffect|"
+             r"v-if=|@Component)"),
+            ("state management",
+             r"(?i)(redux|zustand|vuex|pinia|useReducer|createStore)"),
+            ("render/bundle perf",
+             r"(?i)(React\.lazy|import\(|\bmemo\(|debounce|"
+             r"requestAnimationFrame)"),
+        ],
+        "keywords": ["frontend", "component", "browser", "bundle"],
+        "absent": ["no frontend files", "no component markup",
+                   "no state management", "no render/bundle-perf markers"],
+    },
+    "backend": {
+        "content": [
+            ("route/handler markers",
+             r"(?i)(@app\.(get|post|put|delete)|@router\.|app\.(get|post)\(|"
+             r"HandleFunc|express\(\)|def\s+handle_)"),
+            ("transaction/idempotency markers",
+             r"(?i)(transaction|idempoten|\brollback\b|commit\(\)|"
+             r"exactly[- ]once)"),
+            ("concurrency primitives",
+             r"(?i)(threading\.|asyncio|multiprocessing|semaphore|mutex|"
+             r"\block\(\)|async\s+def|goroutine|sync\.WaitGroup)"),
+        ],
+        "graph": ["boundary"],
+        "keywords": ["endpoint", "service boundar", "idempoten",
+                     "business logic", "backend"],
+        "absent": ["no api/services/handlers paths", "no route handlers",
+                   "no transaction or idempotency markers",
+                   "no concurrency primitives"],
+    },
+    "tradeoffs": {
+        "content": [("alternatives/decision markers",
+                     r"(?i)(trade[- ]?off|alternative|option [ab]\b|"
+                     r"\bpros\b|\bcons\b|revisit (if|when)|we chose)")],
+        "keywords": ["tradeoff", "trade-off", "alternative", "hidden cost"],
+        "absent": ["no adr/design/plan files", "no alternatives or decision "
+                   "markers", "no trade-off keywords in the requirement"],
+    },
+    "solution-design": {
+        "content": [("design-contract markers",
+                     r"(?i)(design contract|module boundar|"
+                     r"proposed (module|graph|edge)|contract ownership|"
+                     r"component diagram)")],
+        "keywords": ["solution design", "design contract", "module boundar"],
+        "absent": ["no design/ files", "no design-contract markers",
+                   "no solution-design keywords in the requirement"],
+    },
+    "services-selection": {
+        "content": [("dependency-manifest markers",
+                     r"(?i)(\"dependencies\"|install_requires|"
+                     r"\[dependencies\]|\brequire\s+['\"]|implementation\s|"
+                     r"new (service|vendor|dependency))")],
+        "keywords": ["vendor", "lock-in", "self-host", "managed service",
+                     "new dependency"],
+        "absent": ["no dependency manifests", "no dependency additions",
+                   "no selection keywords in the requirement"],
+    },
+    "time-to-market": {
+        "content": [("scope/phasing markers",
+                     r"(?i)(\bmvp\b|phase [0-9]|defer(red)?\b|"
+                     r"critical path|cut scope|later release)")],
+        "keywords": ["deadline", "mvp", "time to market", "defer", "launch"],
+        "absent": ["no plan/spec files", "no scope or phasing markers",
+                   "no time-to-market keywords in the requirement"],
+    },
+    "architecture": {
+        "content": [
+            ("infra topology",
+             r"(?im)^(services:|apiVersion:|resource\s+\"|module\s+\")"),
+            ("architecture docs",
+             r"(?i)(\badr\b|architecture|\bc4\b|component diagram|"
+             r"data flow|coupling)"),
+            ("service-boundary code",
+             r"(?i)(grpc|proto3|message\s+\w+\s*\{|event bus|pub/?sub|"
+             r"\bqueue\b)"),
+        ],
+        "graph": ["hub", "boundary"],
+        "keywords": ["architect", "decompos", "coupling", "consistency",
+                     "boundar"],
+        "absent": ["no architecture/adr/infra files", "no infra topology",
+                   "no architecture docs", "no service-boundary code",
+                   "no hub module or boundary contract in the graph"],
+    },
+    "mobile": {
+        "content": [
+            ("platform APIs",
+             r"(?i)(UIKit|SwiftUI|UIViewController|UIApplication|"
+             r"android\.(os|app|content)|\bActivity\b|\bFragment\b|"
+             r"\bIntent\b|CoreData|WorkManager)"),
+            ("lifecycle/permissions",
+             r"(?i)(onCreate|onResume|viewDidLoad|requestPermissions|"
+             r"uses-permission|NSLocationWhenInUse|Info\.plist)"),
+            ("offline/battery",
+             r"(?i)(offline|sync adapter|battery|\bdoze\b|reachability)"),
+        ],
+        "keywords": ["ios", "android", "mobile", "offline", "app store"],
+        "absent": ["no ios/android files", "no platform APIs",
+                   "no lifecycle or permission markers",
+                   "no offline/battery markers"],
+    },
+    "accessibility": {
+        "content": [("a11y markers",
+                     r"(?i)(aria-[a-z]+|role=|alt=|tabindex|screen reader|"
+                     r"wcag|focus management|contrast)")],
+        "keywords": ["accessib", "wcag", "aria", "keyboard nav"],
+        "absent": ["no UI files", "no ARIA/alt/focus markers",
+                   "no accessibility keywords in the requirement"],
+    },
+    "privacy-compliance": {
+        "content": [("PII/consent markers",
+                     r"(?i)(\bpii\b|gdpr|ccpa|consent|personal data|"
+                     r"data retention|anonymi[sz]|email[_ ]address|"
+                     r"\btracking\b|\banalytics\b)")],
+        "keywords": ["privacy", "pii", "gdpr", "consent", "retention"],
+        "absent": ["no privacy/analytics/consent paths", "no PII or consent "
+                   "markers", "no privacy keywords in the requirement"],
+    },
+    "cost-finops": {
+        "content": [("provisioning/cost markers",
+                     r"(?im)(instance_type|autoscal|reserved|\begress\b|"
+                     r"provisioned|^\s*(cpu|memory):\s|replicas:)")],
+        "keywords": ["cost", "spend", "finops", "over-provision", "budget"],
+        "absent": ["no IaC/k8s files", "no provisioning or cost markers",
+                   "no cost keywords in the requirement"],
+    },
+    "i18n": {
+        "content": [
+            ("i18n imports",
+             r"(?i)(import\s+[^\n]*i18n|require\(['\"](i18n|i18next)|"
+             r"react-intl|formatjs|\bgettext\b|ngettext|from\s+['\"]i18n)"),
+            ("locale data",
+             r"(?i)(\"locale\"|\blang=|LC_ALL|setlocale|\bmsgid\b|"
+             r"pluraliz|\brtl\b)"),
+        ],
+        "density": ("user-facing string literals", 5),
+        "keywords": ["i18n", "locale", "translat", "localiz", "rtl"],
+        "absent": ["no locale files", "no i18n imports",
+                   "no user-facing string literals in scope"],
+    },
+}
+
+
+# ------------------------------------------------------------ detector build
+
+def _compiled(spec: dict):
+    """Compile a spec's content rules once (cached on the spec dict)."""
+    key = "_compiled"
+    if key not in spec:
+        spec[key] = [(label, re.compile(pat))
+                     for label, pat in spec.get("content", ())]
+    return spec[key]
+
+
+# D-0006. A content regex is a proxy for "this code DOES x". Run it over
+# prose and it becomes a proxy for "this document MENTIONS x", which is a
+# different claim and usually a false one. Editing five of this repo's own
+# documentation files fired seventeen lenses — `dba` went DEEP because
+# routing-and-flows.md explains query patterns, and `data-safety` fired on
+# the privacy LENS DEFINITION, a file whose entire job is to describe
+# migration markers so a reviewer can spot them.
+#
+# The fix is not "never score markdown": tech-writer, product and
+# solution-design have documentation as their real surface. It is that a
+# content marker in a prose file only counts for a lens whose OWN declared
+# surface admits that file. tech-writer's globs say `**/*.md`, so it keeps
+# scoring; dba's say nothing of the sort, so it stops. Path and requirement
+# signals are untouched — a doc that a lens's globs claim still routes it.
+PROSE_EXT = (".md", ".mdx", ".markdown", ".rst", ".txt", ".adoc")
+
+
+def _is_prose(rel: str) -> bool:
+    return str(rel or "").lower().endswith(PROSE_EXT)
+
+
+def _density_hits(ctx: Ctx, code_ext) -> tuple[int, int, int, str]:
+    """(count, files, real_count, real_rel) of user-facing-looking string
+    literals (>= 3 words) across changed code files; real_count counts only
+    files the D-0002 discount does NOT apply to (fixture-class and not
+    B5-exempt), and real_rel names the first such file."""
+    total, nfiles, real, real_rel = 0, 0, 0, ""
+    for rel, text in ctx.contents():
+        if not _is_code(rel, code_ext):
+            continue
+        n = len(_STR_LIT.findall(text))
+        if n:
+            total += n
+            nfiles += 1
+            if not ctx.is_discounted(rel):
+                real += n
+                real_rel = real_rel or rel
+    return total, nfiles, real, real_rel
+
+
+def _spec_detect(lens_id: str, spec: dict, catalog_lens: dict,
+                 cat: dict, ctx: Ctx) -> dict:
+    evidence = []
+    score = 0.0
+
+    # -- path signal: catalog globs + spec extras (+ code extensions when
+    #    the lens's surface is "any code change")
+    globs = sorted(set((catalog_lens.get("globs") or [])
+                       + list(spec.get("paths", ()))))
+    # `is_discounted` is `is_fixture_path` minus the B5 product-dir
+    # exemption, so full-weight support is a SUPERSET of what it was.
+    real_files = [f for f in ctx.files if not ctx.is_discounted(f)]
+    hit = _glob_hit(ctx.files, globs) if globs else None
+    if hit:
+        real_hit = _glob_hit(real_files, globs)
+        if real_hit:
+            evidence.append(f"path: {hit[0]} matches {hit[1]}"
+                            + ctx.exemption_note(real_hit[0]))
+            score += W_PATH
+        else:   # ONLY fixture-class support -> re-weight, never suppress
+            evidence.append(f"path: {hit[0]} matches {hit[1]} "
+                            f"{_DISCOUNT_NOTE}")
+            score += W_PATH * FIXTURE_DISCOUNT
+    elif spec.get("code"):
+        code_ext = cat.get("code_extensions") or []
+        code_files = [f for f in ctx.files if _is_code(f, code_ext)]
+        if code_files:
+            label = (f"path: code change ({code_files[0]}"
+                     + (f" +{len(code_files) - 1} more" if
+                        len(code_files) > 1 else "") + ")")
+            real_code = [f for f in code_files if not ctx.is_discounted(f)]
+            if real_code:
+                evidence.append(label + ctx.exemption_note(real_code[0]))
+                score += W_PATH
+            else:
+                evidence.append(f"{label} {_DISCOUNT_NOTE}")
+                score += W_PATH * FIXTURE_DISCOUNT
+
+    # Lenses 2.0: absence can itself be applicability evidence. QA must see
+    # a production-code change that carries no test path; adding the reason
+    # only in lens.route was too late because this engine had already
+    # returned n/a. Give the trigger normal path-signal weight so it routes
+    # light without manufacturing a deep verdict.
+    if (catalog_lens.get("untested_trigger")
+            and _change_adds_no_test(ctx.files,
+                                    cat.get("code_extensions") or [])):
+        evidence.append("change shape: code changed with no test file")
+        score += W_PATH
+
+    # -- content signals (bounded corpus, first hit per rule)
+    #
+    # D-0006: prose is scanned only for a lens whose own surface claims it.
+    # `globs` above is exactly that surface (catalog globs + spec extras),
+    # so this needs no second list to drift out of sync.
+    def _scannable(rel):
+        return not _is_prose(rel) or bool(globs and _glob_hit([rel], globs))
+
+    for label, rx in _compiled(spec):
+        found = None
+        real_rel = None
+        for rel, text in ctx.contents():
+            if not _scannable(rel):
+                continue
+            if rx.search(text):
+                if found is None:
+                    found = rel
+                if not ctx.is_discounted(rel):
+                    real_rel = rel
+                    break
+        if found:
+            if real_rel is not None:
+                evidence.append(f"content: {label} in {found}"
+                                + ctx.exemption_note(real_rel))
+                score += W_CONTENT
+            else:   # ONLY fixture-class support
+                evidence.append(f"content: {label} in {found} "
+                                f"{_DISCOUNT_NOTE}")
+                score += W_CONTENT * FIXTURE_DISCOUNT
+
+    # -- density signal
+    dens = spec.get("density")
+    if dens:
+        label, threshold = dens
+        count, nfiles, real_count, real_rel = _density_hits(
+            ctx, cat.get("code_extensions") or [])
+        if count >= threshold:
+            if real_count:
+                evidence.append(f"content: {label}: {count} across "
+                                f"{nfiles} file(s)"
+                                + ctx.exemption_note(real_rel))
+                score += W_DENSITY
+            else:   # ONLY fixture-class support
+                evidence.append(f"content: {label}: {count} across "
+                                f"{nfiles} file(s) {_DISCOUNT_NOTE}")
+                score += W_DENSITY * FIXTURE_DISCOUNT
+
+    # -- requirement-text keywords
+    kws = sorted(k for k in spec.get("keywords", ())
+                 if k in ctx.requirement_text)
+    if kws:
+        evidence.append("requirement: mentions " + ", ".join(kws))
+        score += W_KEYWORD
+
+    # -- graph flags
+    for flag in spec.get("graph", ()):
+        if flag == "hub":
+            hub = int(ctx.graph.get("hub_dependents") or 0)
+            if hub >= _HUB_DEPENDENTS:
+                evidence.append(f"graph: hub module ({hub} direct "
+                                "dependents)")
+                score += W_GRAPH
+        elif flag == "boundary":
+            bcs = sorted(ctx.graph.get("boundary_contracts") or [])
+            if bcs:
+                evidence.append("graph: boundary contracts in impact: "
+                                + ", ".join(bcs[:3]))
+                score += W_GRAPH
+
+    score = round(min(1.0, score), 4)
+    negative = []
+    if score < LIGHT:
+        if evidence:
+            negative = [f"0 {lens_id} signals strong enough (score {score} "
+                        f"< {LIGHT}): only {len(evidence)} weak indicator(s); "
+                        + ", ".join(spec["absent"][:2])]
+        else:
+            negative = [f"0 {lens_id} signals: "
+                        + ", ".join(spec["absent"])]
+    return {"score": score, "evidence": evidence,
+            "negative_evidence": negative}
+
+
+def _make_detector(lens_id: str, spec: dict, catalog_lens: dict, cat: dict):
+    def detector(ctx: Ctx) -> dict:
+        return _spec_detect(lens_id, spec, catalog_lens, cat, ctx)
+    detector.__name__ = f"detect_{lens_id.replace('-', '_')}"
+    return detector
+
+
+def _build_registry() -> dict:
+    cat = load_catalog()
+    by_id = {l["id"]: l for l in cat["lenses"]}
+    missing = sorted(set(by_id) - set(SPECS))
+    extra = sorted(set(SPECS) - set(by_id))
+    if missing or extra:
+        # fail closed at import: a catalog/spec drift must never silently
+        # route a lens with no detector (or a detector with no lens)
+        raise ValueError(f"lens_signals spec drift: missing={missing} "
+                         f"extra={extra}")
+    return {lid: _make_detector(lid, SPECS[lid], by_id[lid], cat)
+            for lid in sorted(by_id)}
+
+
+DETECTORS: dict = _build_registry()
+
+
+def requirement_keyword_lenses(ctx: Ctx, lens_ids=None) -> dict:
+    """The requirement-keyword detector, re-runnable on its own.
+
+    {lens_id: [matched keywords]} for every lens whose spec keywords appear
+    in ctx.requirement_text — the SAME `k in ctx.requirement_text` rule
+    `_spec_detect` scores with W_KEYWORD, isolated so a caller holding only
+    a ctx can ask "which lenses does this requirement's own text earn?".
+
+    B4 (R-0008): a component's cached lens_map is derived WITHOUT
+    requirement_text, so lens.py's component assembly re-runs this LIVE on
+    the ctx it already builds and UNIONS the result into the proposed set —
+    a cached map may add candidates, never subtract them. Empty
+    requirement text -> {} (no widening, byte-unchanged routing)."""
+    if not ctx.requirement_text:
+        return {}
+    ids = sorted(SPECS) if lens_ids is None else \
+        sorted(set(lens_ids) & set(SPECS))
+    out: dict = {}
+    for lid in ids:
+        kws = sorted(k for k in SPECS[lid].get("keywords", ())
+                     if k in ctx.requirement_text)
+        if kws:
+            out[lid] = kws
+    return out
+
+
+# ----------------------------------------------------------------- verdicts
+
+def detect(lens_id: str, ctx: Ctx) -> dict:
+    """Run one registered detector and validate its result shape.
+    Unknown lens or malformed result -> ValueError (fail closed)."""
+    det = DETECTORS.get(lens_id)
+    if det is None:
+        raise ValueError(f"unknown lens id: {lens_id!r} (catalog has "
+                         f"{len(DETECTORS)} registered detectors)")
+    r = det(ctx)
+    if not isinstance(r, dict):
+        raise ValueError(f"detector {lens_id}: result must be a dict")
+    try:
+        score = float(r["score"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"detector {lens_id}: missing/non-numeric score")
+    if not (0.0 <= score <= 1.0):
+        raise ValueError(f"detector {lens_id}: score {score} outside 0..1")
+    ev = r.get("evidence")
+    neg = r.get("negative_evidence")
+    if not isinstance(ev, list) or not isinstance(neg, list) \
+            or not all(isinstance(x, str) for x in ev + neg):
+        raise ValueError(f"detector {lens_id}: evidence/negative_evidence "
+                         "must be lists of strings")
+    return {"score": score, "evidence": list(ev), "negative_evidence":
+            list(neg)}
+
+
+def verdict_for_score(score: float) -> str:
+    if score >= DEEP:
+        return "deep"
+    if score >= LIGHT:
+        return "light"
+    return "n/a"
+
+
+def verdicts(lens_ids, ctx: Ctx, floors: bool = True) -> dict:
+    """{lens_id: {verdict, score, evidence, negative_evidence}} for the given
+    lenses. An n/a WITHOUT negative evidence raises ValueError — an
+    unevidenced routing gap must halt the route, not silently skip a lens."""
+    out = {}
+    for lid in sorted(set(lens_ids)):
+        r = detect(lid, ctx)
+        v = verdict_for_score(r["score"])
+        if v == "n/a" and not r["negative_evidence"]:
+            raise ValueError(
+                f"lens {lid}: n/a verdict without negative evidence — "
+                "detectors must prove absence, not assert it (fail closed)")
+        out[lid] = {"verdict": v, "score": r["score"],
+                    "evidence": r["evidence"],
+                    "negative_evidence": r["negative_evidence"]}
+    if floors:
+        _apply_floors(out, ctx)
+    return out
+
+
+# ------------------------------------------------------------------- floors
+
+_ENFORCEMENT_MARKERS = ("taskplane_lite.py",)
+_ENFORCEMENT_SEGMENTS = ("hooks",)
+_AUTHISH = ("auth", "login", "permission", "secret", "credential", "token")
+
+
+def _security_floor_reason(ctx: Ctx) -> str | None:
+    """Non-None when the change touches enforcement/boundary surfaces:
+    taskplane_lite.py, hooks/, auth-ish files, or boundary contracts in the
+    graph impact."""
+    for f in ctx.files:
+        base = os.path.basename(f)
+        if base in _ENFORCEMENT_MARKERS:
+            return f"enforcement surface touched: {f}"
+        segs = f.lower().split("/")
+        if any(s in segs for s in _ENFORCEMENT_SEGMENTS):
+            return f"enforcement surface touched: {f}"
+        if any(a in base.lower() for a in _AUTHISH) or f.lower().endswith(
+                (".env", ".pem")) or "/.env" in f.lower():
+            return f"auth-ish surface touched: {f}"
+    bcs = sorted(ctx.graph.get("boundary_contracts") or [])
+    if bcs:
+        return "boundary contracts in impact: " + ", ".join(bcs[:3])
+    return None
+
+
+def _code_change_file(ctx: Ctx) -> str | None:
+    code_ext = load_catalog().get("code_extensions") or []
+    for f in ctx.files:
+        if _is_code(f, code_ext):
+            return f
+    return None
+
+
+# D6 — the architecture floor promised a full pass and delivered a mention.
+#
+# The skill has claimed since v2.11.0 that a STRUCTURALLY SIGNIFICANT change
+# gets a full architecture pass. The floor promoted `n/a -> light` and
+# stopped, so a field review of a diff that touched a 12-dependent hub came
+# back `light` while carrying `hub module (12 direct dependents)` in its OWN
+# evidence, and was swept in one line.
+#
+# ARCH_HUB_DEPENDENTS is the "this is a design event whatever the path looks
+# like" bar, and is deliberately the same 8 as lens._HUB_FULL (which has
+# meant "a full design pass" since v2.0.0) — the two must not disagree about
+# what a hub is. It is NOT the much lower _HUB_DEPENDENTS=3 scoring signal,
+# which only earns graph weight.
+ARCH_HUB_DEPENDENTS = 8
+
+# Paths that ARE the structure: a service contract, a topology, or the
+# infrastructure the components run on. Sorted at the call site so the
+# reason a floor gives is deterministic.
+_ARCH_STRUCTURAL_GLOBS = ("**/*.proto", "**/docker-compose*", "**/*.tf",
+                          "**/k8s/**", "**/helm/**")
+
+
+def _structurally_significant(ctx: Ctx) -> str | None:
+    """The REASON this change is an architectural event, or None.
+
+    A reason rather than a bool on purpose: the defect was a floor that fired
+    and could not say what it saw, so its promotion read like a guess. Order
+    is fixed (graph before paths) so the same ctx always yields the same
+    sentence."""
+    try:
+        hub = int(ctx.graph.get("hub_dependents") or 0)
+    except (TypeError, ValueError):
+        hub = 0
+    if hub >= ARCH_HUB_DEPENDENTS:
+        return (f"hub module ({hub} direct dependents >= "
+                f"{ARCH_HUB_DEPENDENTS})")
+    bcs = sorted(ctx.graph.get("boundary_contracts") or [])
+    if bcs:
+        return "named boundary contract(s) in impact: " + ", ".join(bcs[:3])
+    hit = _glob_hit(ctx.files, sorted(_ARCH_STRUCTURAL_GLOBS))
+    if hit:
+        return f"structural surface: {hit[0]} matches {hit[1]}"
+    return None
+
+
+# A floor that can DEMOTE is not a floor. `_promote` is order-aware in BOTH
+# directions: it consults this table to decide whether the target is
+# actually higher than what is already recorded, and writes nothing at all
+# when it is not.
+_VERDICT_ORDER = {"n/a": 0, "light": 1, "deep": 2}
+
+
+def _verdict_rank(verdict) -> int:
+    """Rank a verdict for the never-lower comparison. 'deep (forced)' and
+    any other word this module did not mint rank at the TOP — an unknown
+    verdict is depth somebody else claimed, and a floor that overwrote it
+    would be lowering coverage while calling itself a floor."""
+    v = str(verdict or "n/a")
+    if v.startswith("deep"):
+        return _VERDICT_ORDER["deep"]
+    return _VERDICT_ORDER.get(v, _VERDICT_ORDER["deep"])
+
+
+def _promote(entry: dict, reason: str, to: str = "light") -> bool:
+    """Raise `entry` to at least `to`, or do nothing. Returns whether it
+    fired, so the caller can tell a promotion from a no-op. Idempotent: a
+    second identical application appends no second evidence line."""
+    if _VERDICT_ORDER[to] <= _verdict_rank(entry.get("verdict")):
+        # A floor is an applicability fact, not merely a mutation marker.
+        # Persist it even when the signal engine already met/exceeded the
+        # minimum; the stage-profile pass runs later and must be able to prove
+        # this lens is protected from narrowing.
+        entry["floor"] = reason
+        return False
+    entry["verdict"] = to
+    entry["evidence"] = entry["evidence"] + [reason]
+    entry["floor"] = reason
+    return True
+
+
+def _apply_floors(vmap: dict, ctx: Ctx) -> dict:
+    """Idempotent floors (mutate vmap in place, return it): security may not
+    be n/a on enforcement/boundary diffs; architecture is DEEP on a
+    structurally significant change (D6) and at least light on any other
+    code change. Reasons are recorded in evidence and under 'floor'.
+
+    Every write goes through `_promote`, so no floor here can lower a
+    verdict the engine already scored higher."""
+    sec = vmap.get("security")
+    if sec is not None:
+        reason = _security_floor_reason(ctx)
+        if reason:
+            _promote(sec, f"floor: security promoted to light — {reason}",
+                     to="light")
+    arch = vmap.get("architecture")
+    if arch is not None:
+        significant = _structurally_significant(ctx)
+        if significant:
+            _promote(arch, "floor: architecture promoted to deep — "
+                     f"{significant}", to="deep")
+        else:
+            f = _code_change_file(ctx)
+            if f:
+                _promote(arch, "floor: architecture promoted to light — "
+                         f"code change ({f})", to="light")
+    # R-0001 engineering review: deep floors scale with attributable risk.
+    # Apply this last so the stage floor remains the canonical recorded
+    # reason and cannot be budgeted away.
+    if ctx.stage == "review":
+        risk = _review_risk_profile(vmap, ctx)
+        for lens_id in risk["required_deep_lenses"]:
+            entry = vmap.get(lens_id)
+            if entry is not None:
+                _promote(
+                    entry,
+                    f"{risk['floor_prefix']}: {lens_id} runs deep — "
+                    f"{risk['reason']}",
+                    to="deep",
+                )
+                entry["review_risk_class"] = risk["class"]
+                entry["review_risk_reason"] = risk["reason"]
+                entry["review_required_deep"] = True
+    return vmap
+
+
+_REVIEW_FLOORS = ("architecture", "code-quality", "security", "qa")
+_DOC_RISK_PRIORITY = (
+    "security", "privacy-compliance", "sre", "integrability",
+    "accessibility", "product", "tech-writer",
+)
+
+
+def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
+    """Classify review depth once per immutable routing context.
+
+    Documentation and one-file low-risk code receive one attributable deep
+    slot.  Missing module mapping alone does not widen them.  Mixed,
+    substantive, risky, or explicitly ambiguous/corrupt evidence retains the
+    four engineering floors.  The cached result also makes repeated floor
+    application idempotent: stage-created deep verdicts never reclassify their
+    own input as substantive.
+    """
+    if ctx._review_risk is not None:
+        return ctx._review_risk
+
+    code_ext = load_catalog().get("code_extensions") or []
+    code_files = [path for path in ctx.files if _is_code(path, code_ext)]
+    doc_files = [
+        path for path in ctx.files
+        if path.lower().endswith((".md", ".mdx", ".rst", ".txt", ".adoc"))
+        or os.path.basename(path).lower().startswith(
+            ("readme", "changelog", "changes", "release-notes")
+        )
+    ]
+    non_doc_files = [path for path in ctx.files if path not in doc_files]
+    available_content = {path for path, _ in ctx.contents()}
+    missing_code_content = [path for path in code_files
+                            if path not in available_content]
+    significant = _structurally_significant(ctx)
+    security_reason = _security_floor_reason(ctx)
+
+    risk_class = "substantive-risky"
+    reason = "substantive or risky review change"
+    required = _REVIEW_FLOORS
+    floor_prefix = "mandatory review floor"
+
+    if not ctx.files:
+        reason = "empty or missing change mapping"
+    elif code_files and doc_files:
+        reason = "mixed code and documentation change"
+    elif code_files and len(non_doc_files) != len(code_files):
+        reason = "mixed code and non-document change"
+    elif doc_files and len(doc_files) == len(ctx.files):
+        review_progression = (ctx._review_progression
+                              or _NO_REVIEW_PROGRESSION)
+        document_content = {path: text for path, text in ctx.contents()}
+        uncertainty = review_progression.document_evidence_uncertainty(
+            ctx.files, document_content
+        )
+        if uncertainty:
+            reason = uncertainty
+        else:
+            signals = review_progression.document_lens_signals(
+                ctx.files, document_content
+            )
+            selected = next(
+                (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
+                 and lens_id in vmap),
+                "tech-writer",
+            )
+            risk_class = "documentation-only"
+            reason = f"documentation evidence selected {selected}"
+            required = (selected,)
+            floor_prefix = "risk-selected review floor"
+    elif missing_code_content:
+        reason = "code content unavailable for risk classification"
+    elif significant:
+        reason = significant
+    elif security_reason:
+        reason = security_reason
+    elif any(_verdict_rank(row.get("verdict")) >= _VERDICT_ORDER["deep"]
+             for row in vmap.values()):
+        reason = "signal engine classified at least one lens deep"
+    elif code_files and len(code_files) > 1:
+        reason = "multi-file code change"
+    elif code_files:
+        risk_class = "simple-low-risk"
+        reason = f"single mapped low-risk code file: {code_files[0]}"
+        ranked = sorted(
+            (lens_id for lens_id in _REVIEW_FLOORS if lens_id in vmap),
+            key=lambda lens_id: (
+                -float(vmap[lens_id].get("score") or 0),
+                _REVIEW_FLOORS.index(lens_id),
+            ),
+        )
+        required = (ranked[0] if ranked else "code-quality",)
+        floor_prefix = "risk-selected review floor"
+    else:
+        reason = "unclassified or missing module mapping"
+
+    ctx._review_risk = {
+        "class": risk_class,
+        "reason": reason,
+        "required_deep_lenses": tuple(required),
+        "floor_prefix": floor_prefix,
+    }
+    return ctx._review_risk
+
+
+# ------------------------------------------------------------------- budget
+
+def apply_budget(verdict_map: dict, cap: int = DEEP_CAP,
+                 target: tuple = DEEP_TARGET, ctx: Ctx | None = None) -> dict:
+    """Rank deep lenses by score (ties broken by lens id) and DEMOTE — never
+    drop — everything past `cap` to light, recording the demotion in
+    evidence. `target` documents the desired deep band; depth is never
+    manufactured to reach it. Floors are applied before ranking so they
+    participate in the same hard cap as every other deep disposition; a
+    floor is ranked ahead of an equal non-floor signal but cannot expand the
+    deep set past the declared budget. Returns a NEW map."""
+    out = {lid: {"verdict": v["verdict"], "score": v["score"],
+                 "evidence": list(v["evidence"]),
+                 "negative_evidence": list(v["negative_evidence"]),
+                 **({"floor": v["floor"]} if "floor" in v else {})}
+           for lid, v in verdict_map.items()}
+    if ctx is not None:
+        _apply_floors(out, ctx)
+    deep = sorted((lid for lid, v in out.items() if v["verdict"] == "deep"),
+                  key=lambda lid: ("floor" not in out[lid],
+                                   -out[lid]["score"], lid))
+    for rank, lid in enumerate(deep, start=1):
+        if rank > cap:
+            entry = out[lid]
+            entry["verdict"] = "light"
+            entry["evidence"].append(
+                f"budget: demoted deep->light (rank {rank} > cap {cap}, "
+                f"score {entry['score']})")
+    return out
+
+
+# -------------------------------------------------------------- entry point
+
+def route_verdicts(workspace, files, stage=None, requirement_text=None,
+                   graph=None, content_by_file=None,
+                   review_progression=None) -> dict:
+    """The one-call entry the router (t2) uses: verdicts for EVERY catalog
+    lens over the changed files, budget-capped, floors applied after the
+    budget. `stage` is carried on the ctx for the router's stage profiles
+    (t2) — detection itself is stage-independent. Deterministic; designed to
+    complete well under 1s on a repo-sized change list."""
+    cat = load_catalog()
+    ctx = make_ctx(workspace, files, requirement_text=requirement_text,
+                   graph=graph, stage=stage,
+                   content_by_file=content_by_file,
+                   review_progression=review_progression)
+    vmap = verdicts([l["id"] for l in cat["lenses"]], ctx, floors=False)
+    if stage == "review":
+        # Evidence-aware documentation routing is bounded and independent of
+        # code-module mapping; uncertainty cannot widen to the full catalog.
+        (ctx._review_progression or _NO_REVIEW_PROGRESSION) \
+            .apply_document_signals(vmap, files, content_by_file)
+    return apply_budget(vmap, cap=DEEP_CAP, target=DEEP_TARGET, ctx=ctx)
