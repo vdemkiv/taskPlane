@@ -650,6 +650,33 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
             "run: python3 taskplane/import_cycles.py --check --verify-history",
         ], workflow_shell="echo {0}"),
     ),
+    (
+        "script-long-help",
+        _workflow_variant([
+            "run: python3 taskplane/import_cycles.py --check --verify-history "
+            "--help",
+        ]),
+    ),
+    (
+        "script-short-help",
+        _workflow_variant([
+            "run: python3 taskplane/import_cycles.py --check --verify-history -h",
+        ]),
+    ),
+    (
+        "interpreter-long-help",
+        _workflow_variant([
+            "run: python3 --help taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "interpreter-short-help",
+        _workflow_variant([
+            "run: python3 -h taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
 ])
 def test_history_proof_rejects_inert_workflow_text_before_cut(
         tmp_path: Path, case: str, disabled_workflow: str) -> None:
@@ -688,6 +715,19 @@ def test_history_proof_rejects_inert_workflow_text_before_cut(
 def test_workflow_parser_accepts_closed_safe_effective_shells(
         workflow: str) -> None:
     assert cycles._workflow_ratchet_error(workflow) is None
+
+
+@pytest.mark.parametrize("help_flag", [
+    "-h", "-hignored", "--h", "--he", "--hel", "--help",
+])
+@pytest.mark.parametrize("before_script", [False, True])
+def test_command_parser_rejects_successful_help_exit_family(
+        help_flag: str, before_script: bool) -> None:
+    words = ["python3", "taskplane/import_cycles.py", "--check",
+             "--verify-history"]
+    words.insert(1 if before_script else len(words), help_flag)
+
+    assert not cycles._run_invokes_ratchet(" ".join(words))
 
 
 def test_history_proof_rejects_noop_scanner_cut_restore_gap(

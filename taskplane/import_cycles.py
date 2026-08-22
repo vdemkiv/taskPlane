@@ -602,6 +602,13 @@ def _run_invokes_ratchet(command: str) -> bool:
         return False
     if len(words) < 4:
         return False
+    # argparse's generated help action exits zero before either required proof
+    # runs. It accepts ``-h`` with suffixes and unambiguous ``--help``
+    # abbreviations, so reject the complete successful help-only family in any
+    # interpreter or script position.
+    if any(word.startswith("-h") or word in {"--h", "--he", "--hel", "--help"}
+           for word in words):
+        return False
     if any(word and set(word).issubset({";", "&", "|"}) for word in words):
         return False
     executable = PurePosixPath(words[0]).name
