@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import uuid
+from datetime import datetime, timezone
 
 import repository
 import recovery
@@ -57,12 +58,12 @@ def _closed_knowledge_entries(root: str) -> list[dict]:
                 raise PreflightError(
                     "canonical knowledge root contains an unsafe symlink")
         for name in filenames:
-            if name.endswith(".lock"):
-                continue
             path = os.path.join(directory, name)
             if os.path.islink(path) or not os.path.isfile(path):
                 raise PreflightError(
                     "canonical knowledge root contains a non-regular entry")
+            if name.endswith(".lock"):
+                continue
             size, digest = _sha256_file(path)
             relative = os.path.relpath(path, root).replace(os.sep, "/")
             entries.append({"path": relative, "bytes": size,
@@ -144,6 +145,7 @@ def _verify_prior_design(workspace: str, entries: list[dict]) -> list[dict]:
         workspace, "ls-tree", "-r", "--name-only", current_revision,
         "--", "design").splitlines()))
     if (not expected_paths or supplied_paths != expected_paths
+            or len(entries) != len(expected_paths)
             or current_paths != expected_paths
             or set(_closed_checkout_paths(
                 workspace, "design")) != expected_paths):
@@ -206,19 +208,61 @@ def _verify_active_plan(workspace: str, revision: str, run_id: str,
     """Bind approved Plan metadata to the complete committed Plan payload."""
     plan = active_plan if isinstance(active_plan, dict) else {}
     supplied_paths = plan.get("paths")
+    approved_revision = str(plan.get("revision") or "")
+    approved_entries = plan.get("entries")
+    approval_fingerprint = str(plan.get("fingerprint") or "")
     if (plan.get("run_id") != run_id or plan.get("status") != "approved"
+            or not approved_revision
             or not isinstance(supplied_paths, list) or not supplied_paths
+            or not isinstance(approved_entries, list)
             or any(not isinstance(path, str) or not path.startswith("plan/")
                    or ".." in path.split("/") for path in supplied_paths)):
         raise PreflightError("stale Plan authority is active")
+
+    approval = {
+        "run_id": run_id,
+        "status": "approved",
+        "revision": approved_revision,
+        "paths": supplied_paths,
+        "entries": approved_entries,
+    }
+    if approval_fingerprint != _canonical_digest(approval):
+        raise PreflightError("stale Plan approval fingerprint is active")
+
+    approved_output = _git_output(
+        workspace, "ls-tree", "-r", "--name-only", approved_revision,
+        "--", "plan")
+    approved_paths = sorted(
+        path for path in approved_output.splitlines() if path)
+    entry_paths = ([str(row.get("path") or "")
+                    for row in approved_entries]
+                   if all(isinstance(row, dict) for row in approved_entries)
+                   else [])
+    if (not approved_paths or sorted(supplied_paths) != approved_paths
+            or len(set(supplied_paths)) != len(supplied_paths)
+            or sorted(entry_paths) != approved_paths
+            or len(set(entry_paths)) != len(entry_paths)):
+        raise PreflightError("stale Plan authority is active")
+
+    approved_by_path = {row["path"]: row for row in approved_entries}
+    for path in approved_paths:
+        row = approved_by_path[path]
+        committed = _git_output(
+            workspace, "show", f"{approved_revision}:{path}", binary=True)
+        if (row.get("object_id") != _git_output(
+                workspace, "rev-parse", f"{approved_revision}:{path}")
+                or row.get("bytes") != len(committed)
+                or row.get("sha256") != hashlib.sha256(
+                    committed).hexdigest()):
+            raise PreflightError(
+                f"stale Plan approval evidence is active for {path}")
 
     committed_output = _git_output(
         workspace, "ls-tree", "-r", "--name-only", revision, "--", "plan")
     committed_paths = sorted(
         path for path in committed_output.splitlines() if path)
     if (not committed_paths
-            or sorted(supplied_paths) != committed_paths
-            or len(set(supplied_paths)) != len(supplied_paths)
+            or approved_paths != committed_paths
             or _closed_checkout_paths(workspace, "plan") != committed_paths):
         raise PreflightError("stale Plan authority is active")
 
@@ -228,8 +272,14 @@ def _verify_active_plan(workspace: str, revision: str, run_id: str,
             workspace, "show", f"{revision}:{path}", binary=True)
         checkout_path = os.path.join(workspace, *path.split("/"))
         size, digest = _sha256_file(checkout_path)
-        if size != len(committed) or digest != hashlib.sha256(
-                committed).hexdigest():
+        approved_row = approved_by_path[path]
+        if (size != len(committed)
+                or digest != hashlib.sha256(committed).hexdigest()
+                or digest != approved_row["sha256"]
+                or len(committed) != approved_row["bytes"]
+                or _git_output(
+                    workspace, "rev-parse", f"{revision}:{path}") !=
+                approved_row["object_id"]):
             raise PreflightError(f"stale Plan payload is active for {path}")
         entries.append({
             "path": path,
@@ -241,9 +291,11 @@ def _verify_active_plan(workspace: str, revision: str, run_id: str,
     authority = {
         "run_id": run_id,
         "status": "approved",
-        "revision": revision,
+        "revision": approved_revision,
+        "current_revision": revision,
         "paths": committed_paths,
         "entries": entries,
+        "approval_fingerprint": approval_fingerprint,
         "stale": False,
     }
     authority["fingerprint"] = _canonical_digest(authority)
@@ -263,10 +315,18 @@ def _baseline_enforcement(value: dict,
     evidence_id = str(value.get("evidence_id") or "")
     session_id = str(value.get("session_fingerprint") or "")
     receipt = value.get("receipt_evidence")
-    receipt_fields = ("loaded_path", "content_fingerprint",
-                      "host_observation", "observed_at")
+    receipt_fields = ("effective_path", "loaded_path", "content_fingerprint",
+                      "host_observation", "observed_at",
+                      "session_fingerprint")
     if not evidence_id or not session_id or not isinstance(receipt, dict) or \
             any(not receipt.get(field) for field in receipt_fields):
+        raise PreflightError("enforcement hook-path receipt is incomplete")
+    if receipt.get("session_fingerprint") != session_id:
+        raise PreflightError("enforcement receipt belongs to another session")
+    receipt_fingerprint = str(receipt.get("content_fingerprint") or "")
+    if (len(receipt_fingerprint) != 64
+            or any(character not in "0123456789abcdef"
+                   for character in receipt_fingerprint.lower())):
         raise PreflightError("enforcement hook-path receipt is incomplete")
     authorization = None
     if status == "advisory":
@@ -285,14 +345,52 @@ def _baseline_enforcement(value: dict,
             raise PreflightError(
                 "advisory enforcement needs bounded attributable advisory "
                 "authorization")
+        expires_at = str(advisory_authorization.get("expires_at") or "")
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise PreflightError(
+                "advisory enforcement authorization expiry is invalid") \
+                from exc
+        if (expiry.tzinfo is None
+                or expiry.astimezone(timezone.utc) <= datetime.now(
+                    timezone.utc)):
+            raise PreflightError(
+                "advisory enforcement authorization is expired")
         authorization = dict(advisory_authorization)
     elif advisory_authorization is not None:
         raise PreflightError("live enforcement must not carry advisory authority")
+    if (status == "live"
+            and receipt.get("effective_path") not in {
+                "native_effective", "bridge_effective"}):
+        raise PreflightError(
+            "live enforcement contradicts the hook-path receipt")
     return {"status": status, "label": ("enforced" if status == "live"
                                          else "advisory"),
             "enforced": status == "live", "evidence_id": evidence_id,
             "session_id": session_id, "hook_path_receipt": dict(receipt),
             "advisory_authorization": authorization}
+
+
+def _graph_content_fingerprint(graph: dict) -> str:
+    """Recompute the canonical fingerprint emitted by depgraph._stamp_meta."""
+    try:
+        graph_material = {
+            "files": {
+                path: row.get("hash", "")
+                for path, row in (graph.get("files") or {}).items()
+            },
+            "edges": sorted((
+                edge["from"], edge["to"], edge["kind"],
+                edge.get("source"), edge.get("confidence"))
+                for edge in (graph.get("edges") or [])),
+        }
+        payload = json.dumps(
+            graph_material, sort_keys=True,
+            separators=(",", ":")).encode("utf-8")
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise PreflightError("graph content fingerprint is malformed") from exc
+    return hashlib.sha256(payload).hexdigest()
 
 
 def verify_governance_baseline(
@@ -345,6 +443,7 @@ def verify_governance_baseline(
     if (len(fingerprint) != 64
             or any(character not in "0123456789abcdef" for character in
                    fingerprint.lower())
+            or fingerprint != _graph_content_fingerprint(graph)
             or scanned_revision != revision):
         raise PreflightError("graph is not refreshed at the baseline revision")
 

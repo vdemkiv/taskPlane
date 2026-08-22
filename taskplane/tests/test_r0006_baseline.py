@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -52,6 +54,46 @@ def _knowledge_manifest(root, repo_id, repository_key):
     return value
 
 
+def _graph_fingerprint(graph):
+    material = {
+        "files": {
+            path: row.get("hash", "")
+            for path, row in (graph.get("files") or {}).items()
+        },
+        "edges": sorted((
+            edge["from"], edge["to"], edge["kind"],
+            edge.get("source"), edge.get("confidence"))
+            for edge in (graph.get("edges") or [])),
+    }
+    return hashlib.sha256(json.dumps(
+        material, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _plan_approval(workspace, revision, run_id):
+    paths = _git(
+        workspace, "ls-tree", "-r", "--name-only", revision,
+        "--", "plan").splitlines()
+    entries = []
+    for path in paths:
+        data = (workspace / path).read_bytes()
+        entries.append({
+            "path": path,
+            "object_id": _git(workspace, "rev-parse", f"{revision}:{path}"),
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+    approval = {
+        "run_id": run_id,
+        "status": "approved",
+        "revision": revision,
+        "paths": paths,
+        "entries": entries,
+    }
+    approval["fingerprint"] = _canonical_digest(approval)
+    return approval
+
+
 @pytest.fixture
 def baseline_fixture(tmp_path, monkeypatch):
     workspace = tmp_path / "checkout"
@@ -87,12 +129,13 @@ def baseline_fixture(tmp_path, monkeypatch):
     graph_root.mkdir(parents=True)
     graph = {
         "meta": {
-            "content_fingerprint": "a" * 64,
             "scanned_head": revision,
         },
+        "files": {},
         "nodes": [],
         "edges": [],
     }
+    graph["meta"]["content_fingerprint"] = _graph_fingerprint(graph)
     (graph_root / "graph.json").write_text(
         json.dumps(graph), encoding="utf-8")
     locator = {
@@ -138,6 +181,7 @@ def baseline_fixture(tmp_path, monkeypatch):
             "content_fingerprint": "b" * 64,
             "host_observation": "no compatible live receipt",
             "observed_at": "2026-08-21T23:31:12Z",
+            "session_fingerprint": "session-fingerprint",
         },
         "advisory": {"actor": "human:vdemkiv"},
     }
@@ -145,7 +189,8 @@ def baseline_fixture(tmp_path, monkeypatch):
         "actor": "human:vdemkiv",
         "reason": "host hook receipt is unavailable",
         "scope": "R-0006:waves-1-5",
-        "expires_at": "2026-12-31T23:59:59Z",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)
+                       ).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "accepted_limitations": ["screen enforcement is advisory"],
     }
     return {
@@ -158,6 +203,7 @@ def baseline_fixture(tmp_path, monkeypatch):
         "advisory": advisory,
         "knowledge": knowledge,
         "artifact_root": artifact_root,
+        "active_plan": _plan_approval(workspace, revision, run_id),
     }
 
 
@@ -168,11 +214,7 @@ def _verify(fixture, **overrides):
         "prior_design": fixture["prior_design"],
         "enforcement": fixture["enforcement"],
         "advisory_authorization": fixture["advisory"],
-        "active_plan": {
-            "run_id": fixture["run_id"],
-            "status": "approved",
-            "paths": ["plan/plan.md", "plan/tasks.json"],
-        },
+        "active_plan": fixture["active_plan"],
         "obsolete_run_ids": ["old-run"],
     }
     values.update(overrides)
@@ -189,7 +231,7 @@ def test_baseline_binds_fresh_revision_graph_plan_design_and_knowledge(
     assert result["repository"]["branch"] == "main"
     assert result["run"]["id"] == baseline_fixture["run_id"]
     assert result["graph"] == {
-        "fingerprint": "a" * 64,
+        "fingerprint": _graph_fingerprint({"files": {}, "edges": []}),
         "scanned_revision": baseline_fixture["revision"],
     }
     assert result["plan_authority"]["stale"] is False
@@ -232,6 +274,25 @@ def test_manifest_identity_digest_and_nonempty_store_are_mandatory(
     tampered["root"] = str(baseline_fixture["knowledge"].parent)
     with pytest.raises(preflight.PreflightError, match="canonical knowledge root"):
         _verify(baseline_fixture, trusted_knowledge_manifest=tampered)
+
+
+def test_lock_exclusion_never_hides_symlink_or_nonregular_entry(
+        baseline_fixture):
+    knowledge = baseline_fixture["knowledge"]
+    symlink = knowledge / "unsafe.lock"
+    symlink.symlink_to(knowledge / "decisions.md")
+    with pytest.raises(preflight.PreflightError, match="non-regular entry"):
+        preflight._closed_knowledge_entries(str(knowledge))
+
+    symlink.unlink()
+    fifo = knowledge / "unsafe.lock"
+    os.mkfifo(fifo)
+    try:
+        with pytest.raises(preflight.PreflightError,
+                           match="non-regular entry"):
+            preflight._closed_knowledge_entries(str(knowledge))
+    finally:
+        fifo.unlink()
 
     tampered = dict(baseline_fixture["trusted"])
     tampered["manifest_digest"] = "0" * 64
@@ -299,6 +360,14 @@ def test_prior_design_closed_set_includes_committed_visual(baseline_fixture):
         _verify(baseline_fixture)
 
 
+def test_prior_design_rejects_duplicate_valid_rows(baseline_fixture):
+    duplicate = list(baseline_fixture["prior_design"])
+    duplicate.append(dict(duplicate[0]))
+    with pytest.raises(preflight.PreflightError,
+                       match="prior Design evidence is incomplete"):
+        _verify(baseline_fixture, prior_design=duplicate)
+
+
 def test_plan_authority_fingerprints_canonical_checkout_bytes(
         baseline_fixture):
     workspace = baseline_fixture["workspace"]
@@ -309,6 +378,29 @@ def test_plan_authority_fingerprints_canonical_checkout_bytes(
     with pytest.raises(preflight.PreflightError,
                        match="stale Plan payload is active for plan/plan.md"):
         _verify(baseline_fixture)
+
+
+def test_plan_approval_cannot_promote_changed_same_path_content(
+        baseline_fixture):
+    workspace = Path(baseline_fixture["workspace"])
+    approval = baseline_fixture["active_plan"]
+    (workspace / "plan" / "plan.md").write_text(
+        "# Changed after approval\n", encoding="utf-8")
+    _git(workspace, "add", "plan/plan.md")
+    _git(workspace, "commit", "-qm", "change plan after approval")
+    current = _git(workspace, "rev-parse", "HEAD")
+
+    with pytest.raises(preflight.PreflightError,
+                       match="stale Plan payload is active"):
+        preflight._verify_active_plan(
+            str(workspace), current, baseline_fixture["run_id"], approval)
+
+    tampered = dict(approval)
+    tampered["revision"] = current
+    with pytest.raises(preflight.PreflightError,
+                       match="approval fingerprint"):
+        preflight._verify_active_plan(
+            str(workspace), current, baseline_fixture["run_id"], tampered)
 
     _git(workspace, "checkout", "--", "plan/plan.md")
     with open(os.path.join(workspace, "plan", "unexpected.md"), "w",
@@ -337,12 +429,65 @@ def test_only_live_is_enforced_and_advisory_must_be_bounded_and_attributable(
         _verify(baseline_fixture, enforcement=unproven,
                 advisory_authorization=None)
 
+    live_receipt = dict(
+        baseline_fixture["enforcement"]["receipt_evidence"],
+        effective_path="native_effective",
+        host_observation="native hook path observed in this session")
     live = dict(baseline_fixture["enforcement"], status="live",
-                advisory=None)
+                advisory=None, receipt_evidence=live_receipt)
     result = _verify(baseline_fixture, enforcement=live,
                      advisory_authorization=None)
     assert result["enforcement"]["label"] == "enforced"
     assert result["enforcement"]["enforced"] is True
+
+
+def test_live_receipt_semantics_and_advisory_expiry_are_authoritative(
+        baseline_fixture):
+    contradictory = dict(
+        baseline_fixture["enforcement"], status="live", advisory=None)
+    with pytest.raises(preflight.PreflightError,
+                       match="contradicts the hook-path receipt"):
+        _verify(baseline_fixture, enforcement=contradictory,
+                advisory_authorization=None)
+
+    wrong_session_receipt = dict(
+        baseline_fixture["enforcement"]["receipt_evidence"],
+        session_fingerprint="another-session")
+    wrong_session = dict(
+        baseline_fixture["enforcement"],
+        receipt_evidence=wrong_session_receipt)
+    with pytest.raises(preflight.PreflightError,
+                       match="belongs to another session"):
+        _verify(baseline_fixture, enforcement=wrong_session)
+
+    expired = dict(
+        baseline_fixture["advisory"],
+        expires_at="2000-01-01T00:00:00Z")
+    with pytest.raises(preflight.PreflightError, match="is expired"):
+        _verify(baseline_fixture, advisory_authorization=expired)
+
+    malformed = dict(
+        baseline_fixture["advisory"], expires_at="tomorrow-ish")
+    with pytest.raises(preflight.PreflightError, match="expiry is invalid"):
+        _verify(baseline_fixture, advisory_authorization=malformed)
+
+
+def test_graph_fingerprint_is_recomputed_from_canonical_material(
+        baseline_fixture):
+    graph_path = (baseline_fixture["artifact_root"].parent / "graph" /
+                  "graph.json")
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    original = graph["meta"]["content_fingerprint"]
+    graph["edges"].append({
+        "from": "a.py", "to": "b.py", "kind": "import",
+        "source": "ast", "confidence": "high",
+    })
+    graph["meta"]["content_fingerprint"] = original
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+
+    with pytest.raises(preflight.PreflightError,
+                       match="graph is not refreshed"):
+        _verify(baseline_fixture)
 
 
 def test_hook_receipt_and_primary_main_checkout_are_authoritative(
