@@ -443,8 +443,12 @@ def test_only_live_is_enforced_and_advisory_must_be_bounded_and_attributable(
 
 def test_live_receipt_semantics_and_advisory_expiry_are_authoritative(
         baseline_fixture):
+    contradictory_receipt = dict(
+        baseline_fixture["enforcement"]["receipt_evidence"],
+        effective_path="native_effective")
     contradictory = dict(
-        baseline_fixture["enforcement"], status="live", advisory=None)
+        baseline_fixture["enforcement"], status="live", advisory=None,
+        receipt_evidence=contradictory_receipt)
     with pytest.raises(preflight.PreflightError,
                        match="contradicts the hook-path receipt"):
         _verify(baseline_fixture, enforcement=contradictory,

@@ -360,9 +360,17 @@ def _baseline_enforcement(value: dict,
         authorization = dict(advisory_authorization)
     elif advisory_authorization is not None:
         raise PreflightError("live enforcement must not carry advisory authority")
-    if (status == "live"
-            and receipt.get("effective_path") not in {
-                "native_effective", "bridge_effective"}):
+    host_observation = " ".join(str(
+        receipt.get("host_observation") or "").lower().split())
+    denies_live_receipt = any(phrase in host_observation for phrase in (
+        "no compatible live receipt",
+        "no session-compatible hook receipt",
+        "live receipt unavailable",
+    ))
+    if (status == "live" and (
+            receipt.get("effective_path") not in {
+                "native_effective", "bridge_effective"}
+            or denies_live_receipt)):
         raise PreflightError(
             "live enforcement contradicts the hook-path receipt")
     return {"status": status, "label": ("enforced" if status == "live"
