@@ -13,6 +13,7 @@ are touched or the change is large. Pure stdlib.
 
 from __future__ import annotations
 
+import copy
 import fnmatch
 import hashlib
 import json
@@ -1308,6 +1309,16 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     # every brief — instead of N embedded copies at output weight. Four lens
     # agents cost ~754k effective tokens on the measured review, "each
     # carrying its own copy of the diff and the blast-radius brief".
+    review_policy = copy.deepcopy(
+        (routing.get("context") or {}).get("review_depth_policy"))
+    if isinstance(review_policy, dict) and \
+            review_policy.get("depth") == "quick-only":
+        # Defense in depth: dispatch owns the final model-facing payload, so
+        # it reapplies the requirement ceiling even when a caller hands it a
+        # pre-policy route containing explicit/forced deep dispositions.
+        import review_progression
+        routing = review_progression.apply_depth_policy(
+            routing, review_policy)
     ctx_note = ""
     if context_paths:
         try:
@@ -1342,7 +1353,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         # retained as an explicit out-of-charter rejection.
         import review_progression
         concern_outcomes = review_progression.resolve_sweep_concerns(
-            sweep_concerns, already_promoted=already_promoted
+            sweep_concerns, already_promoted=already_promoted,
+            review_policy=review_policy,
         )
         sweep_by_id = {str(row.get("id")): row for row in sweep}
         accepted = []
@@ -1417,6 +1429,9 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         sweep_brief = {**tp.dispatch_fields(
             "lens", "tp-lens", "sweep", "cheap"),
             "ids": [s["id"] for s in sweep], "agent": "tp-lens",
+            **({"tier": "light", "depth": "quick"}
+               if review_policy and
+               review_policy.get("depth") == "quick-only" else {}),
             "task_slot": "lens-sweep",
             "output": ".em-review/lens-sweep/findings.json",
             "contract": {"read_only": True,
@@ -1476,6 +1491,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                 "No lenses routed for this diff — there is nothing to review. "
                 "Dispatch no agents; report a clean/no-op review to the human."),
         }
+        if isinstance(review_policy, dict):
+            out["review_depth_policy"] = copy.deepcopy(review_policy)
         if decision is not None:
             out["routing_decision"] = decision
         if runnability:
@@ -1495,6 +1512,16 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "findings into one findings dashboard (`tp findings`) for the "
             "human review gate."),
     }
+    if isinstance(review_policy, dict):
+        out["review_depth_policy"] = copy.deepcopy(review_policy)
+    if review_policy and review_policy.get("depth") == "quick-only":
+        out["instruction"] = (
+            "Dispatch the single QUICK sweep under its governed read-only "
+            "contract. A complete quick output is sufficient collection "
+            "evidence; dispatch no deep lens. Any substantive regression "
+            "returns the same task for correction, then rerun this quick "
+            "sweep against the stable corrected target."
+        )
     if decision is not None:
         out["routing_decision"] = decision
     if concern_outcomes is not None:

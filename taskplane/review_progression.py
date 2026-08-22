@@ -8,6 +8,7 @@ pure and synchronous; persistence and dispatch remain ReviewKernel owners.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -143,11 +144,77 @@ def apply_document_signals(verdict_map: dict, files, content_by_file=None) -> di
     return verdict_map
 
 
+def _quick_only(review_policy: dict | None) -> bool:
+    return isinstance(review_policy, dict) and \
+        review_policy.get("depth") == "quick-only"
+
+
+def apply_depth_policy(routing: dict, review_policy: dict | None) -> dict:
+    """Apply a requirement-bound depth ceiling after every routing override.
+
+    Quick-only is a ceiling, not a second applicability mapper.  Existing
+    deep/light decisions keep their evidence and all applicable lenses are
+    batched into the one cheap sweep; n/a dispositions remain n/a.  Copying
+    prevents the requirement policy from mutating a caller's cached route.
+    """
+    routed = copy.deepcopy(routing or {})
+    context = routed.setdefault("context", {})
+    if not _quick_only(review_policy):
+        if isinstance(review_policy, dict):
+            context["review_depth_policy"] = copy.deepcopy(review_policy)
+        return routed
+
+    active = []
+    for row in routed.get("lenses") or []:
+        verdict = str(row.get("verdict") or row.get("tier") or "")
+        if verdict == "deep (forced)":
+            verdict = "deep"
+        if verdict not in {"deep", "light"}:
+            continue
+        if verdict == "deep":
+            row["initial_verdict"] = row.get("initial_verdict") or "deep"
+            evidence = row.setdefault("evidence", [])
+            reason = "requirement-bound quick-only depth ceiling"
+            if reason not in evidence:
+                evidence.append(reason)
+            reasons = row.setdefault("reasons", [])
+            if reason not in reasons:
+                reasons.append(reason)
+        row["tier"] = row["verdict"] = "light"
+        row["mode"] = "inline"
+        active.append(str(row.get("id") or ""))
+
+    active = sorted(value for value in active if value)
+    progression = context.setdefault("review_progression", {})
+    progression["deep_lenses"] = []
+    progression["sweep_lenses"] = active
+    progression["sweep_count"] = 1 if active else 0
+    context["review_depth_policy"] = copy.deepcopy(review_policy)
+    return routed
+
+
 def initial_wave(routing: dict, *, sweep_limit: int = DEFAULT_SWEEP_LIMIT) -> dict:
     """Project a routing decision into deep slots plus at most one sweep."""
     if not isinstance(sweep_limit, int) or sweep_limit < 0:
         raise ValueError("sweep_limit must be a non-negative integer")
     rows = {str(row["id"]): row for row in routing.get("lenses") or []}
+    policy = (routing.get("context") or {}).get("review_depth_policy")
+    if _quick_only(policy):
+        light_ids = sorted(
+            lens_id for lens_id, row in rows.items()
+            if row.get("tier") in {"deep", "deep (forced)", "light"})
+        return {
+            "schema": "taskplane.review-progression/v1",
+            "deep": [],
+            "sweep": (
+                {"slot": "lens-sweep", "tier": "light",
+                 "lenses": light_ids}
+                if light_ids else None
+            ),
+            "sweep_count": 1 if light_ids else 0,
+            "deferred_light": [],
+            "review_depth_policy": copy.deepcopy(policy),
+        }
     risk = routing.get("context", {}).get("review_risk") or {}
     required = tuple(risk.get("required_deep_lenses") or ())
     if not required:
@@ -197,7 +264,8 @@ def _in_charter(lens_id: str, rationale: str, trigger: str) -> bool:
     return not claimed or lens_id in claimed
 
 
-def resolve_sweep_concerns(concerns, *, already_promoted=()) -> dict:
+def resolve_sweep_concerns(concerns, *, already_promoted=(),
+                           review_policy: dict | None = None) -> dict:
     """Normalize sweep concerns into deterministic promotions/rejections.
 
     Every high/major concern receives one outcome.  Promotion requires a
@@ -211,6 +279,7 @@ def resolve_sweep_concerns(concerns, *, already_promoted=()) -> dict:
         if value.removeprefix("lens-") in catalog
     }
     promotions = []
+    corrections = []
     rejections = []
     for raw in concerns or []:
         row = dict(raw) if isinstance(raw, dict) else {}
@@ -220,11 +289,13 @@ def resolve_sweep_concerns(concerns, *, already_promoted=()) -> dict:
         evidence_ref = str(row.get("evidence_ref") or "").strip()
         rationale = str(row.get("rationale") or "").strip()
         trigger = str(row.get("trigger") or "").strip()
+        finding_class = str(row.get("class") or "").strip().lower()
         fingerprint = _concern_fingerprint(row)
         reason = None
         if fingerprint in seen or (concern_id and concern_id in seen):
             reason = "duplicate"
-        elif severity not in PROMOTION_SEVERITIES:
+        elif severity not in PROMOTION_SEVERITIES and not (
+                _quick_only(review_policy) and finding_class == "regression"):
             reason = "below-promotion-threshold"
         elif lens_id not in catalog:
             reason = "invalid-lens"
@@ -245,6 +316,22 @@ def resolve_sweep_concerns(concerns, *, already_promoted=()) -> dict:
             continue
         seen.update({fingerprint, concern_id})
         promoted_lenses.add(lens_id)
+        if _quick_only(review_policy):
+            corrections.append({
+                "concern_id": concern_id,
+                "lens": lens_id,
+                "slot": "lens-sweep",
+                "tier": "light",
+                "severity": severity,
+                "class": finding_class,
+                "evidence_ref": evidence_ref,
+                "rationale": rationale,
+                "trigger": trigger,
+                "fingerprint": fingerprint,
+                "action": "return-same-task-for-correction",
+                "deep_dispatch": False,
+            })
+            continue
         promotions.append({
             "concern_id": concern_id,
             "lens": lens_id,
@@ -259,5 +346,9 @@ def resolve_sweep_concerns(concerns, *, already_promoted=()) -> dict:
     return {
         "schema": "taskplane.review-promotions/v1",
         "promotions": promotions,
+        "corrections": corrections,
         "rejections": rejections,
+        "outcome": ("correction_required" if corrections else "continue"),
+        **({"review_depth_policy": copy.deepcopy(review_policy)}
+           if isinstance(review_policy, dict) else {}),
     }
