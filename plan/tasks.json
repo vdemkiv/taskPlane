@@ -166,6 +166,7 @@
     {
       "id": "t05-wave3-graph-quality",
       "scope": [
+        "docs/cli-reference.md",
         "taskplane/depgraph.py",
         "taskplane/decompose.py",
         "taskplane/tp.py",
