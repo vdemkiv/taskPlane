@@ -49,6 +49,7 @@ import hashlib
 import io
 import json
 import re
+import shlex
 import time as _time
 import traceback
 
@@ -57,6 +58,42 @@ import taskplane_lite as tp  # noqa: E402
 import host_capabilities as host_caps  # noqa: E402
 import enforcement as enforcement_kernel  # noqa: E402
 import collision as collision_kernel  # noqa: E402
+import storage as runtime_storage  # noqa: E402
+import run_store as repository_run_store  # noqa: E402
+
+
+# Closed user-layer refusal protocol. Only errors whose failure is an
+# anticipated public engine outcome belong here; built-in RuntimeError and
+# ValueError deliberately remain outside it so programming defects retain the
+# exit-70 traceback path below. The known set is derived, never hand-synced.
+PUBLIC_ENGINE_ERROR_REGISTRY = {
+    tp.StateError: {
+        "headline": "governed state is unavailable",
+        "recovery": "{program} onboard --workspace {workspace} --json",
+        "action_label": "recovery",
+        "exit_code": 1,
+        "debug_cause": "reraise",
+    },
+    runtime_storage.StorageIdentityError: {
+        "headline": "workspace identity check failed",
+        "recovery": ("{program} repository prepare {workspace} "
+                     "--workspace {workspace}"),
+        "action_label": "recovery",
+        "exit_code": 1,
+        "debug_cause": "reraise",
+    },
+    repository_run_store.TaskplaneCompatibilityError: {
+        "headline": "engine compatibility check failed",
+        "recovery": (
+            "codex plugin marketplace add vdemkiv/taskPlane",
+            "codex plugin add taskplane",
+        ),
+        "action_label": "recovery",
+        "exit_code": 2,
+        "debug_cause": "reraise",
+    },
+}
+KNOWN_ENGINE_ERRORS = frozenset(PUBLIC_ENGINE_ERROR_REGISTRY)
 
 
 # Shared help text for the universal --workspace plumbing flag. It is
@@ -5318,7 +5355,21 @@ def cmd_repository(a) -> int:
         host = {"kind": tp.host(),
                 "session_id": (os.environ.get("CODEX_THREAD_ID") or
                                os.environ.get("CLAUDE_SESSION_ID"))}
-        pending = repository_preflight_module.find_bootstrap(ws, spec=a.spec)
+        try:
+            pending = repository_preflight_module.find_bootstrap(
+                ws, spec=a.spec)
+        except runtime_storage.StorageIdentityError:
+            # `repository prepare` is the recovery boundary for an invalid
+            # checkout locator.  Bootstrap lookup ordinarily follows that
+            # locator, but prepare already has an explicit Git checkout and
+            # can safely resolve its identity/layout before overwriting the
+            # bad locator.  Other repository actions remain fail-closed.
+            candidate = os.path.realpath(os.path.abspath(os.path.expanduser(
+                str(a.spec or ""))))
+            if candidate != os.path.realpath(ws) or \
+                    not os.path.isdir(candidate):
+                raise
+            pending = None
         if pending:
             value = repository_preflight_module.bootstrap_response(pending)
         else:
@@ -6458,22 +6509,70 @@ def _utf8_streams() -> None:
             pass
 
 
-def _enforce_stage_compatibility() -> None:
+def _preparser_workspace(argv=None) -> str | None:
+    """Read only the workspace spelling needed by a startup refusal.
+
+    Compatibility is checked before argparse or any repository state.  This
+    deliberately tiny scan preserves that ordering while still letting the
+    shared public-error envelope print a command for the requested checkout.
+    """
+    values = list(sys.argv[1:] if argv is None else argv)
+    for index, value in enumerate(values):
+        if value == "--workspace" and index + 1 < len(values):
+            return values[index + 1]
+        if value.startswith("--workspace="):
+            return value.split("=", 1)[1]
+    return None
+
+
+def _enforce_stage_compatibility(argv=None) -> int | None:
     """Refuse a broken stage dependency before opening governed state."""
-    import run_store as repository_run_store
     try:
         repository_run_store.ensure_stage_compatibility()
     except repository_run_store.TaskplaneCompatibilityError as exc:
         if os.environ.get("TASKPLANE_DEBUG"):
             raise
-        print("taskplane: compatibility failed: "
-              f"TaskplaneCompatibilityError: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
+        envelope = _public_engine_error(exc)
+        if envelope is None:  # fail closed if registry wiring ever drifts
+            raise
+        return _render_engine_error(
+            exc, envelope, workspace=_preparser_workspace(argv))
+    return None
+
+
+def _public_engine_error(exc: BaseException) -> dict | None:
+    """Return the exact registered public envelope, never a broad base hit."""
+    return PUBLIC_ENGINE_ERROR_REGISTRY.get(type(exc))
+
+
+def _render_engine_error(exc: BaseException, envelope: dict, *,
+                         workspace: str | None = None) -> int:
+    """Project one known refusal as headline, recovery command, and exit."""
+    workspace = shlex.quote(_workspace(workspace))
+    program = shlex.quote(os.path.abspath(__file__))
+    recovery_value = envelope["recovery"]
+    recovery_templates = ((recovery_value,) if isinstance(recovery_value, str)
+                          else tuple(recovery_value))
+    recovery_commands = [str(template).format(
+        program=program, workspace=workspace)
+        for template in recovery_templates]
+    print(f"taskplane: {envelope['headline']}: "
+          f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    for index, recovery in enumerate(recovery_commands, start=1):
+        suffix = ("" if len(recovery_commands) == 1 else
+                  f" {index}/{len(recovery_commands)}")
+        print(f"  {envelope['action_label']}{suffix}: {recovery}",
+              file=sys.stderr)
+    print("  debug: re-run with TASKPLANE_DEBUG=1 for the full traceback",
+          file=sys.stderr)
+    return int(envelope["exit_code"])
 
 
 def main(argv=None) -> int:
     _utf8_streams()
-    _enforce_stage_compatibility()
+    compatibility_refusal = _enforce_stage_compatibility(argv)
+    if compatibility_refusal is not None:
+        return compatibility_refusal
     p = argparse.ArgumentParser(prog="tp.py")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -7400,8 +7499,8 @@ def main(argv=None) -> int:
     # USER-LAYER ERROR BOUNDARY. The "simple front" translates raw
     # tracebacks into governed messages — but it NEVER swallows: a failure
     # stays a FAILURE (nonzero exit) and the full detail stays available.
-    #   - tp.StateError: a GOVERNED failure — the message already carries
-    #     the path, the why, and the remedy. One clean line, exit 1.
+    #   - registered public engine errors: a concise headline, an executable
+    #     recovery command, no traceback, and their declared nonzero exit.
     #   - missing git binary: the documented prerequisite — the remedy line,
     #     exit 1.
     #   - anything UNEXPECTED: a short reason line PLUS the full traceback
@@ -7427,12 +7526,10 @@ def main(argv=None) -> int:
                   "git and re-run (see README prerequisites).",
                   file=sys.stderr)
             return 1
-        if isinstance(exc, tp.StateError):
-            # StateError already carries the path, the why, and the remedy.
-            print(f"taskplane: {a.cmd} failed: {exc}", file=sys.stderr)
-            print("  (set TASKPLANE_DEBUG=1 for the full traceback)",
-                  file=sys.stderr)
-            return 1
+        envelope = _public_engine_error(exc)
+        if envelope is not None:
+            return _render_engine_error(
+                exc, envelope, workspace=getattr(a, "workspace", None))
         # Unexpected: short reason first, then the FULL traceback — the
         # boundary governs the message, it never destroys the evidence.
         print(f"taskplane: {a.cmd} failed: "
