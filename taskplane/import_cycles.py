@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import shlex
@@ -24,6 +25,8 @@ PACKAGE = "taskplane"
 POLICY_RELATIVE = Path("taskplane/tests/fixtures/import-cycles.json")
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
+WORKFLOW_SHA256 = \
+    "e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505"
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
 RATCHET_STEP_NAME = "Import-cycle inventory, bounds, and activation order"
@@ -502,6 +505,14 @@ def _show_optional(root: Path, revision: str, path: Path) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def _show_optional_bytes(root: Path, revision: str, path: Path) -> bytes | None:
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{path.as_posix()}"], cwd=root,
+        check=False, capture_output=True, timeout=30,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
 def _strip_yaml_comment(line: str) -> str:
     """Remove a YAML comment without treating quoted ``#`` as a comment."""
     single_quoted = False
@@ -791,6 +802,100 @@ def _first_activation(root: Path, policy_relative: Path) -> str:
         "valid policy path, and CI --check --verify-history invocation")
 
 
+def _protected_edges_at_revision(root: Path, revision: str) -> set[tuple[str, str]]:
+    modules = sorted({module for edge in TARGET_CUT_EDGES for module in edge})
+    sources = {}
+    for module in modules:
+        relative = Path(*module.split(".")).with_suffix(".py")
+        source = _show_optional(root, revision, relative)
+        if source is not None:
+            sources[module] = (relative.as_posix(), source)
+    if not sources:
+        return set()
+    try:
+        graph, _ = _scan_graph(sources)
+    except CycleScanError as exc:
+        raise CycleHistoryError(
+            f"cannot inspect protected edges at revision {revision}: {exc}") \
+            from exc
+    return {
+        edge for edge in TARGET_CUT_EDGES
+        if edge[1] in graph.get(edge[0], set())
+    }
+
+
+def _first_protected_cut(root: Path) -> str | None:
+    paths = sorted({
+        Path(*module.split(".")).with_suffix(".py").as_posix()
+        for edge in TARGET_CUT_EDGES for module in edge
+    })
+    commits = _run_git(
+        root, "rev-list", "--first-parent", "--reverse", "HEAD", "--",
+        *paths,
+    ).splitlines()
+    armed = False
+    expected = set(TARGET_CUT_EDGES)
+    for commit in commits:
+        edges = _protected_edges_at_revision(root, commit)
+        if edges == expected:
+            armed = True
+        elif armed:
+            return commit
+    return None
+
+
+def _seal_activation(
+        root: Path, trusted_scanner: bytes,
+        trusted_workflow: bytes) -> str:
+    commits = _run_git(
+        root, "rev-list", "--first-parent", "--reverse", "HEAD", "--",
+        MODULE_RELATIVE.as_posix(), WORKFLOW_RELATIVE.as_posix(),
+    ).splitlines()
+    expected_edges = set(TARGET_CUT_EDGES)
+    activation = next((
+        commit for commit in commits
+        if _show_optional_bytes(root, commit, MODULE_RELATIVE) == trusted_scanner
+        and _show_optional_bytes(root, commit, WORKFLOW_RELATIVE)
+        == trusted_workflow
+        and _protected_edges_at_revision(root, commit) == expected_edges
+    ), None)
+    if activation is None:
+        missing = expected_edges - _protected_edges_at_revision(root, "HEAD")
+        rendered = ", ".join(
+            f"{source} -> {target}" for source, target in sorted(missing))
+        detail = f"; missing: {rendered}" if rendered else ""
+        raise CycleHistoryError(
+            "no first-parent content-addressed seal contains the trusted "
+            f"scanner/workflow blobs and all protected edges{detail}")
+
+    sealed_commits = _run_git(
+        root, "rev-list", "--first-parent", "--reverse",
+        f"{activation}^..HEAD",
+    ).splitlines()
+    for commit in sealed_commits:
+        if _show_optional_bytes(root, commit, MODULE_RELATIVE) != trusted_scanner:
+            raise CycleHistoryError(
+                f"sealed cycle scanner changed at revision {commit}")
+        workflow = _show_optional_bytes(root, commit, WORKFLOW_RELATIVE)
+        if workflow is None or hashlib.sha256(
+                workflow).hexdigest() != WORKFLOW_SHA256:
+            raise CycleHistoryError(
+                f"cycle ratchet workflow inactive at revision {commit}: "
+                "sealed workflow bytes changed or were removed")
+
+    first_cut = _first_protected_cut(root)
+    if first_cut is not None:
+        history = _run_git(
+            root, "rev-list", "--first-parent", "--reverse", "HEAD",
+        ).splitlines()
+        positions = {commit: index for index, commit in enumerate(history)}
+        if positions[activation] >= positions[first_cut]:
+            raise CycleHistoryError(
+                f"content-addressed seal {activation} must strictly precede "
+                f"protected cut revision {first_cut}")
+    return activation
+
+
 def verify_history(root: Path, policy_path: Path) -> dict:
     root = Path(root).resolve()
     policy_path = Path(policy_path).resolve()
@@ -846,6 +951,27 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         raise CycleHistoryError(
             f"ratchet activation did not precede the target cuts; missing: {rendered}")
 
+    trusted_scanner = _show_optional_bytes(root, "HEAD", MODULE_RELATIVE)
+    if trusted_scanner is None:
+        raise CycleHistoryError("trusted HEAD cycle scanner is unavailable")
+    try:
+        trusted_scanner_source = trusted_scanner.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CycleHistoryError(
+            "trusted HEAD cycle scanner is not UTF-8") from exc
+    if _scanner_contract_error(trusted_scanner_source) is not None:
+        raise CycleHistoryError("trusted HEAD cycle scanner is unavailable")
+    trusted_workflow = _show_optional_bytes(root, "HEAD", WORKFLOW_RELATIVE)
+    if trusted_workflow is None:
+        raise CycleHistoryError("trusted HEAD workflow is unavailable")
+    workflow_digest = hashlib.sha256(trusted_workflow).hexdigest()
+    if workflow_digest != WORKFLOW_SHA256:
+        raise CycleHistoryError(
+            "trusted HEAD workflow hash mismatch: "
+            f"expected={WORKFLOW_SHA256} actual={workflow_digest}")
+    seal_activation = _seal_activation(
+        root, trusted_scanner, trusted_workflow)
+
     # Audit every protected-line commit from activation through HEAD, not only
     # commits that changed the policy. This makes continuity part of the proof:
     # CI, scanner, or policy cannot be disabled for a cut and restored later.
@@ -859,31 +985,53 @@ def verify_history(root: Path, policy_path: Path) -> dict:
     if not protected_commits or protected_commits[0] != activation:
         raise CycleHistoryError(
             "ratchet activation is not on the HEAD first-parent history")
-    trusted_scanner = _show_optional(root, "HEAD", MODULE_RELATIVE)
-    if trusted_scanner is None or _scanner_contract_error(
-            trusted_scanner) is not None:
-        raise CycleHistoryError("trusted HEAD cycle scanner is unavailable")
 
     previous_policy = activation_policy
     last_policy_commit = activation
     protected_cut_seen = False
+    seal_seen = seal_activation not in protected_commits
     for commit in protected_commits:
-        module = _show_optional(root, commit, MODULE_RELATIVE)
-        if module is None:
+        if commit == seal_activation:
+            seal_seen = True
+        module_blob = _show_optional_bytes(root, commit, MODULE_RELATIVE)
+        if module_blob is None:
             raise CycleHistoryError(
                 f"cycle scanner was removed at revision {commit}")
+        try:
+            module = module_blob.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CycleHistoryError(
+                f"cycle scanner is not UTF-8 at revision {commit}") from exc
         scanner_error = _scanner_contract_error(module)
         if scanner_error is not None:
             raise CycleHistoryError(
                 f"cycle scanner inactive at revision {commit}: {scanner_error}")
+        if seal_seen and module_blob != trusted_scanner:
+            raise CycleHistoryError(
+                f"sealed cycle scanner changed at revision {commit}")
 
-        workflow = _show_optional(root, commit, WORKFLOW_RELATIVE)
-        workflow_error = None if workflow is None else \
-            _workflow_ratchet_error(workflow)
-        if workflow is None or workflow_error is not None:
+        workflow_blob = _show_optional_bytes(root, commit, WORKFLOW_RELATIVE)
+        if workflow_blob is None:
             raise CycleHistoryError(
                 f"cycle ratchet workflow inactive at revision {commit}: "
-                f"{workflow_error or 'workflow file is missing'}")
+                "workflow file is missing")
+        if seal_seen:
+            if hashlib.sha256(workflow_blob).hexdigest() != WORKFLOW_SHA256:
+                raise CycleHistoryError(
+                    f"cycle ratchet workflow inactive at revision {commit}: "
+                    "sealed workflow bytes changed")
+        else:
+            try:
+                workflow = workflow_blob.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise CycleHistoryError(
+                    f"cycle ratchet workflow inactive at revision {commit}: "
+                    "workflow is not UTF-8") from exc
+            workflow_error = _workflow_ratchet_error(workflow)
+            if workflow_error is not None:
+                raise CycleHistoryError(
+                    f"cycle ratchet workflow inactive at revision {commit}: "
+                    f"{workflow_error}")
 
         raw_policy = _show_optional(root, commit, policy_relative)
         if raw_policy is None:
@@ -921,7 +1069,7 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         if any(target not in commit_graph.get(source, set())
                for source, target in TARGET_CUT_EDGES):
             protected_cut_seen = True
-        if protected_cut_seen and module != trusted_scanner:
+        if protected_cut_seen and module_blob != trusted_scanner:
             raise CycleHistoryError(
                 f"cycle scanner at or after protected cut revision {commit} "
                 "does not match the trusted HEAD scanner blob")
@@ -943,6 +1091,7 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         "schema": HISTORY_SCHEMA,
         "status": "pass",
         "activation_revision": activation,
+        "seal_revision": seal_activation,
         "measurement_revision": activation_parent,
         "current_policy_revision": current_policy["source_revision"],
         "target_edges": [list(edge) for edge in TARGET_CUT_EDGES],

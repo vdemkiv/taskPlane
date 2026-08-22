@@ -1,6 +1,7 @@
 """R-0006 S4/S7: measure every import SCC and reject cycle growth."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -37,35 +38,7 @@ def main(*args, **kwargs):
 
 OPTIONS = ("--check", "--verify-history")
 """
-ACTIVE_WORKFLOW = """\
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  wave3-contracts:
-    name: R-0006 graph + CLI contracts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: "3.12"
-      - name: Import-cycle inventory, bounds, and activation order
-        run: >-
-          python3 taskplane/import_cycles.py
-          --root .
-          --policy taskplane/tests/fixtures/import-cycles.json
-          --check
-          --verify-history
-"""
+ACTIVE_WORKFLOW = WORKFLOW.read_text(encoding="utf-8")
 sys.path.insert(0, str(ROOT))
 
 from taskplane import import_cycles as cycles  # noqa: E402
@@ -175,6 +148,16 @@ def _workflow_variant(
         "          python-version: \"3.12\"\n"
         f"{fields}\n"
     )
+
+
+def _wave3_variant(old: str, new: str) -> str:
+    start = ACTIVE_WORKFLOW.index("  wave3-contracts:\n")
+    end = ACTIVE_WORKFLOW.index("\n  pushed-sha-proof:\n", start)
+    job = ACTIVE_WORKFLOW[start:end]
+    if old not in job:
+        raise AssertionError(f"wave3 fixture anchor is missing: {old!r}")
+    return ACTIVE_WORKFLOW[:start] + job.replace(old, new, 1) + \
+        ACTIVE_WORKFLOW[end:]
 
 
 def test_ast_tarjan_inventory_is_complete_deterministic_and_file_level(
@@ -432,6 +415,7 @@ def test_history_proof_finds_activation_before_all_five_cuts(
 
     assert proof["status"] == "pass"
     assert proof["activation_revision"] == activation
+    assert proof["seal_revision"] == activation
     assert proof["measurement_revision"] == before
     assert proof["target_edges"] == [list(edge)
                                       for edge in cycles.TARGET_CUT_EDGES]
@@ -466,6 +450,54 @@ def test_history_proof_handles_no_ff_cut_merge(tmp_path: Path) -> None:
     )
 
     assert cycles.verify_history(tmp_path, policy)["status"] == "pass"
+
+
+def test_history_proof_allows_ordinary_evolution_before_seal(
+        tmp_path: Path) -> None:
+    policy, workflow, active = _start_history_fixture(tmp_path)
+    scanner = tmp_path / "taskplane" / "import_cycles.py"
+    workflow.write_text(active + "# pre-seal workflow comment\n", encoding="utf-8")
+    _commit(tmp_path, "ordinary pre-seal workflow evolution")
+    scanner.write_text(
+        ACTIVE_SCANNER + "# sealed scanner revision\n", encoding="utf-8")
+    workflow.write_text(active, encoding="utf-8")
+    seal = _commit(tmp_path, "activate content-addressed seal")
+
+    proof = cycles.verify_history(tmp_path, policy)
+
+    assert proof["status"] == "pass"
+    assert proof["seal_revision"] == seal
+
+
+def test_history_proof_rejects_trusted_head_workflow_hash_mismatch(
+        tmp_path: Path) -> None:
+    policy, workflow, active = _start_history_fixture(tmp_path)
+    workflow.write_text(active + "# unsealed mutation\n", encoding="utf-8")
+    _commit(tmp_path, "mutate trusted HEAD workflow")
+
+    with pytest.raises(
+            cycles.CycleHistoryError,
+            match="trusted HEAD workflow hash mismatch"):
+        cycles.verify_history(tmp_path, policy)
+
+
+def test_history_proof_rejects_seal_after_cut_and_restore(
+        tmp_path: Path) -> None:
+    policy, _, _ = _start_history_fixture(tmp_path)
+    lens = tmp_path / "taskplane" / "lens.py"
+    lens.write_text("def f():\n    return None\n", encoding="utf-8")
+    cut = _commit(tmp_path, "cut protected edge before seal")
+    lens.write_text("def f():\n    import review\n", encoding="utf-8")
+    _commit(tmp_path, "restore protected edge")
+    scanner = tmp_path / "taskplane" / "import_cycles.py"
+    scanner.write_text(
+        ACTIVE_SCANNER + "# post-cut scanner seal\n", encoding="utf-8")
+    _commit(tmp_path, "attempt seal after restored cut")
+
+    with pytest.raises(
+            cycles.CycleHistoryError,
+            match=rf"strictly precede.*{cut}"):
+        cycles.verify_history(tmp_path, policy)
 
 
 def test_history_proof_rejects_policy_bound_raise(tmp_path: Path) -> None:
@@ -770,7 +802,7 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
     ),
     (
         "job-continue-on-error",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "    runs-on: ubuntu-latest\n",
             "    runs-on: ubuntu-latest\n"
             "    continue-on-error: true\n",
@@ -778,7 +810,7 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
     ),
     (
         "job-env-path-shadow",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "    runs-on: ubuntu-latest\n",
             "    runs-on: ubuntu-latest\n"
             "    env:\n"
@@ -794,6 +826,33 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
             "    branches: [main]\n"
             "    paths-ignore: ['taskplane/**']\n",
         ),
+    ),
+    (
+        "invalid-later-job-yaml",
+        ACTIVE_WORKFLOW.replace(
+            "  pushed-sha-proof:\n",
+            "  pushed-sha-proof:\n    malformed: [unterminated\n", 1),
+    ),
+    (
+        "top-level-alias",
+        "shared: &shared\n  PATH: /tmp/shadow-bin\n"
+        + ACTIVE_WORKFLOW,
+    ),
+    (
+        "quoted-top-level-env",
+        '"env":\n  PATH: /tmp/shadow-bin\n' + ACTIVE_WORKFLOW,
+    ),
+    (
+        "quoted-top-level-defaults",
+        '"defaults":\n  run:\n    shell: true {0}\n' + ACTIVE_WORKFLOW,
+    ),
+    (
+        "malformed-global-quote",
+        ACTIVE_WORKFLOW.replace("name: CI\n", 'name: "CI\n', 1),
+    ),
+    (
+        "malformed-global-colon",
+        "malformed: value: extra\n" + ACTIVE_WORKFLOW,
     ),
 ])
 def test_history_proof_rejects_inert_workflow_text_before_cut(
@@ -815,15 +874,14 @@ def test_history_proof_rejects_inert_workflow_text_before_cut(
 
 def test_workflow_parser_accepts_canonical_prefix_and_harmless_post_steps(
         ) -> None:
-    post_step = (
-        ACTIVE_WORKFLOW
-        + "      - name: Harmless follow-up\n"
-        + "        run: echo complete\n")
-
     assert cycles._workflow_ratchet_error(ACTIVE_WORKFLOW) is None
-    assert cycles._workflow_ratchet_error(post_step) is None
     assert cycles._workflow_ratchet_error(
         WORKFLOW.read_text(encoding="utf-8")) is None
+
+
+def test_checked_in_workflow_matches_content_addressed_seal() -> None:
+    assert hashlib.sha256(WORKFLOW.read_bytes()).hexdigest() == \
+        cycles.WORKFLOW_SHA256
 
 
 @pytest.mark.parametrize(("case", "workflow"), [
@@ -850,76 +908,75 @@ def test_workflow_parser_accepts_canonical_prefix_and_harmless_post_steps(
     ),
     (
         "job-needs",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "    runs-on: ubuntu-latest\n",
-            "    runs-on: ubuntu-latest\n    needs: setup\n", 1),
+            "    runs-on: ubuntu-latest\n    needs: setup\n"),
     ),
     (
         "job-strategy",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "    runs-on: ubuntu-latest\n",
             "    runs-on: ubuntu-latest\n"
-            "    strategy:\n      matrix: {python: []}\n", 1),
+            "    strategy:\n      matrix: {python: []}\n"),
     ),
     (
         "checkout-mutable-tag",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-            "actions/checkout@v7", 1),
+            "actions/checkout@v7"),
     ),
     (
         "checkout-ref-substitution",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "          fetch-depth: 0\n",
-            "          fetch-depth: 0\n          ref: attacker\n", 1),
+            "          fetch-depth: 0\n          ref: attacker\n"),
     ),
     (
         "setup-mutable-tag",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-            "actions/setup-python@v7", 1),
+            "actions/setup-python@v7"),
     ),
     (
         "setup-version-substitution",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             '          python-version: "3.12"\n',
-            '          python-version: "3.13"\n', 1),
+            '          python-version: "3.13"\n'),
     ),
     (
         "ratchet-step-env",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "        run: >-\n",
             "        env:\n          PATH: /tmp/shadow-bin\n"
-            "        run: >-\n", 1),
+            "        run: >-\n"),
     ),
     (
         "ratchet-working-directory",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "        run: >-\n",
-            "        working-directory: /tmp\n        run: >-\n", 1),
+            "        working-directory: /tmp\n        run: >-\n"),
     ),
     (
         "pre-ratchet-mutation-step",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "      - name: Import-cycle inventory, bounds, and activation order\n",
             "      - name: Mutate scanner\n"
             "        run: sed -i.bak s/check/pass/ taskplane/import_cycles.py\n"
-            "      - name: Import-cycle inventory, bounds, and activation order\n",
-            1),
+            "      - name: Import-cycle inventory, bounds, and activation order\n"),
     ),
     (
         "job-merge-alias",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "    name: R-0006 graph + CLI contracts\n",
             "    <<: *untrusted\n"
-            "    name: R-0006 graph + CLI contracts\n", 1),
+            "    name: R-0006 graph + CLI contracts\n"),
     ),
     (
         "duplicate-runs-on",
-        ACTIVE_WORKFLOW.replace(
+        _wave3_variant(
             "    runs-on: ubuntu-latest\n",
             "    runs-on: ubuntu-latest\n"
-            "    runs-on: ubuntu-latest\n", 1),
+            "    runs-on: ubuntu-latest\n"),
     ),
 ])
 def test_workflow_parser_rejects_skip_mask_substitute_and_premutate(
@@ -972,13 +1029,13 @@ def test_history_proof_rejects_noop_scanner_cut_restore_gap(
     _commit(tmp_path, "replace scanner with marker-preserving no-op")
     (tmp_path / "taskplane" / "lens.py").write_text(
         "def f():\n    return None\n", encoding="utf-8")
-    cut = _commit(tmp_path, "cut target edge under no-op scanner")
+    _commit(tmp_path, "cut target edge under no-op scanner")
     scanner.write_text(ACTIVE_SCANNER, encoding="utf-8")
     _commit(tmp_path, "restore trusted scanner")
 
     with pytest.raises(
             cycles.CycleHistoryError,
-            match=rf"protected cut revision {cut}.*trusted HEAD scanner blob"):
+            match="sealed cycle scanner changed"):
         cycles.verify_history(tmp_path, policy)
 
 
@@ -990,13 +1047,13 @@ def test_history_proof_rejects_noop_scanner_reverse_edge_cut_restore(
     _commit(tmp_path, "replace scanner with marker-preserving no-op")
     (tmp_path / "taskplane" / "decompose.py").write_text(
         "import lens_signals\n", encoding="utf-8")
-    cut = _commit(tmp_path, "cut decompose to depgraph under no-op scanner")
+    _commit(tmp_path, "cut decompose to depgraph under no-op scanner")
     scanner.write_text(ACTIVE_SCANNER, encoding="utf-8")
     _commit(tmp_path, "restore trusted scanner")
 
     with pytest.raises(
             cycles.CycleHistoryError,
-            match=rf"protected cut revision {cut}.*trusted HEAD scanner blob"):
+            match="sealed cycle scanner changed"):
         cycles.verify_history(tmp_path, policy)
 
 
