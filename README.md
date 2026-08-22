@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.15** | **Python compatibility, quick-only review, and import-cycle reduction are now release-gated.** The supported Python matrix compiles before tests, graph and CLI failures stay actionable, zero-token and exact-SHA delivery proofs fail closed, the SCC ratchet lands before cuts, and the first lower-owner split removes the `depgraph`/`decompose` cycle without changing direct APIs or payloads. Nested test processes now stay bound to the governed task checkout. |
 | **v2.17.14** | **Governed delivery now isolates every lifecycle stage and passes only bounded, verified handoffs.** Immutable stage lineage, independent split roots, conservative singleton migration, and bounded status, review, sign-off, and Retro projections work across hosts while preserving R-0003 evidence, collision, merge, and fail-closed cleanup controls. |
 | **v2.17.13** | **Stateless review workers now carry proof into the exact governed worktree.** Signed actions bootstrap bounded evaluator and lens authority without inherited hook state; run-bound graph and cleanup identity stays exact and fails closed on unsafe collisions; and both marketplace bundles now ship schema-valid, install-complete OpenAI and Claude host hooks. |
-| **v2.17.12** | **ReviewKernel evidence now stays exact, executable, and bounded.** Canonical patches include only governed tracked and untracked files, explicit empty scopes remain empty, oversized scopes fail visibly, continuation commands select `python3` on POSIX and `py` on Windows, and focused regression coverage preserves normalization, lineage, status, outage, and worktree-binding behavior. |
 
 ## Install
 
