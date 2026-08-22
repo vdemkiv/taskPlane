@@ -172,20 +172,17 @@ def test_readiness_and_completion_consume_the_persisted_quality_record(
     assert any("graph scan quality is degraded" in row for row in done["errors"])
 
 
-@pytest.mark.parametrize("surface", ["design", "review", "dod"])
-def test_design_review_and_dod_cli_entries_refuse_degraded_graph(
+@pytest.mark.parametrize("surface", ["loop-next", "loop-gate", "dod"])
+def test_governed_loop_and_dod_cli_entries_refuse_degraded_graph(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str], surface: str):
     monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "store"))
     ws = _broken_workspace(tmp_path)
     dg.scan(str(ws))
 
-    if surface == "design":
+    if surface.startswith("loop-"):
         code = tp_cli.cmd_loop(SimpleNamespace(
-            workspace=str(ws), loop_action="next"))
-    elif surface == "review":
-        code = tp_cli.cmd_review(SimpleNamespace(
-            workspace=str(ws), review_action="start"))
+            workspace=str(ws), loop_action=surface.removeprefix("loop-")))
     else:
         code = tp_cli.cmd_dod(SimpleNamespace(workspace=str(ws)))
 
@@ -193,6 +190,51 @@ def test_design_review_and_dod_cli_entries_refuse_degraded_graph(
     assert code != 0
     assert "graph scan quality is degraded" in output
     assert "app/broken.py" in output
+
+
+def test_standalone_review_continues_with_degraded_warning_and_floors(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]):
+    monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "store"))
+    ws = _broken_workspace(tmp_path)
+    (ws / "app" / "good.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _git("add", "-A", cwd=ws)
+    _git("commit", "-qm", "review target", cwd=ws)
+    dg.scan(str(ws))
+
+    # Keep the test on the standalone Review route while exposing its sealed
+    # slots immediately; the separate execution-choice tests own that human
+    # preflight boundary.
+    import review as review_kernel
+    monkeypatch.setattr(review_kernel, "review_execution_preflight",
+                        lambda **_kwargs: None)
+
+    code = tp_cli.main([
+        "review", "start", "HEAD", "--base", "HEAD~1",
+        "--workspace", str(ws),
+    ])
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert output["status"] == "ready"
+    assert output["graph_degraded"] is True
+    assert output["slots"]
+    warning = output["preflight"]["graph_quality_warning"]
+    assert warning["status"] == "degraded"
+    assert warning["continuation"] == \
+        "immutable_diff_with_architecture_security_floors"
+    assert "app/broken.py" in warning["reason"]
+    quality_path = ws / output["graph_quality"]["relative_path"]
+    quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    assert quality["review_fallback"]["mode"] == "immutable_diff"
+    assert quality["review_fallback"]["guardrails"] == [
+        "architecture_floor", "security_floor"]
+    assert "caller_coverage_incomplete" in quality["reasons"]
+    assert quality["impact"]["unknown_reason"] == "graph_scan_degraded"
+    scan_quality = quality["impact"]["graph_scan_quality"]
+    assert scan_quality["degraded"] is True
+    assert scan_quality["failures"][0]["file"] == \
+        "app/broken.py"
 
 
 def test_clean_scan_keeps_legacy_cli_shape_and_allows_strict(

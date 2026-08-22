@@ -4610,11 +4610,6 @@ def cmd_review(a) -> int:
     import review as rv
     ws = _workspace(a.workspace)
     review_action = getattr(a, "review_action", None)
-    if review_action in {None, "start", "resume", "collect", "signoff"}:
-        refusal = _graph_quality_refusal(ws, "Review")
-        if refusal:
-            print(json.dumps(refusal, indent=2))
-            return 1
     enforcement = None
     if review_action in {"start", "resume", "signoff"}:
         active = tp.load_active(ws) or {}
@@ -4948,17 +4943,38 @@ def cmd_review(a) -> int:
         step("graph", False, reason=e.__class__.__name__)
     graph_errors = dg.quality_errors(g) if g and "dg" in locals() else []
     if graph_errors:
-        step("graph", False, reason=graph_errors[0])
-        out.update({
-            "ok": False,
-            "status": "graph_quality_degraded",
+        quality = dg.scan_quality(g)
+        warning = {
+            "schema": "taskplane.graph-quality-warning/v1",
+            "status": "degraded",
             "reason": graph_errors[0],
-            "graph_quality": dg.scan_quality(g),
-            "next": (dg.scan_quality(g).get("recovery") or
-                     dg.GRAPH_SCAN_RECOVERY),
+            "graph_quality": quality,
+            "recovery": (quality.get("recovery") or
+                         dg.GRAPH_SCAN_RECOVERY),
+            "continuation": "immutable_diff_with_architecture_security_floors",
+        }
+        # Standalone Review is intentionally useful when graph enrichment is
+        # incomplete: preserve the producer failure visibly, then let the
+        # review kernel route from the pinned immutable diff with its
+        # architecture/security floors. Governed Evaluate/EM and DoD retain
+        # their strict refusals in cmd_loop/cmd_dod.
+        step("graph", False, reason=graph_errors[0],
+             recovery=warning["recovery"], continuation=warning["continuation"])
+        out["graph_quality_warning"] = warning
+        preflight["graph_quality_warning"] = warning
+        # Adapt the producer-complete scan record into ReviewKernel's existing
+        # impact-quality interface. A failed graph producer makes the derived
+        # radius unknown, and the same degraded graph cannot honestly repair
+        # that uncertainty through caller expansion. The full producer record
+        # remains attached to the impact evidence rather than being recast as
+        # an unrelated truncation or coverage failure.
+        imp = dict(imp)
+        imp.update({
+            "unknown": True,
+            "unknown_reason": "graph_scan_degraded",
+            "graph_scan_quality": quality,
         })
-        print(json.dumps(out, indent=2, sort_keys=True))
-        return 1
+        out["impact"] = imp
     rec["review_cache"] = tgt.review_cache_identity(rec, g)
     preflight["cache_identity"] = rec["review_cache"]
     tgt.save(ws, rec)
@@ -5012,7 +5028,8 @@ def cmd_review(a) -> int:
             runnability=runmod.evidence_record(probe),
             requirement={}, acceptance=[], contracts=[], stage="review",
             task_type="review", base=base,
-            caller_expander=rv.bounded_caller_expander(g),
+            caller_expander=(None if graph_errors else
+                             rv.bounded_caller_expander(g)),
             routing_content=rv.changed_content_from_patch(patch))
         if manifest.get("status") not in {"ready", "needs_user"}:
             if repository_run:
