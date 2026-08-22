@@ -142,13 +142,15 @@ class TestTheRefusalNowFires(_EngineWorkspaces):
 
 
 class TestSubmitStampsTheEvidenceEngine(unittest.TestCase):
-    def test_submit_records_the_workspace_engine_alongside_the_running_one(self):
+    def test_submit_selects_and_records_the_evidence_producer_engine(self):
         """The stamp the gate needs must be in the record, or the repair is
         a function nobody calls."""
         import loop
         src = open(loop.__file__, encoding="utf-8").read()
         self.assertIn("evidence_engine_fingerprint", src)
-        self.assertIn("tp.workspace_engine_fingerprint(act_ws)", src)
+        self.assertIn("_submission_evidence_engine_workspace(", src)
+        self.assertIn(
+            "tp.workspace_engine_fingerprint(evidence_engine_ws)", src)
 
 
 if __name__ == "__main__":

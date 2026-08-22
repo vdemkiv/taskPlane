@@ -5611,6 +5611,40 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     return errors
 
 
+def _submission_evidence_engine_workspace(
+        ws: str, state: dict, task: dict | None, act_ws: str) -> str:
+    """Choose the engine tree that produced task evaluation evidence.
+
+    A parallel evaluator keeps reading the claimed worktree so its source and
+    evidence fingerprints remain task-scoped.  Once that exact task tip is
+    contained in the primary checkout, however, a merge-and-resubmit is
+    produced under the primary engine that now owns validation.  Continuing
+    to stamp the surviving pre-merge worktree would make the documented
+    engine-skew remedy impossible until worktree cleanup.
+
+    Fail closed toward the worktree unless both identities are exact: the
+    worktree must still be at the recorded task target and that target must be
+    an ancestor of primary HEAD.  Unmerged, advanced, detached, or otherwise
+    ambiguous worktrees therefore retain their independent engine stamp.
+    """
+    if state.get("step") != "evaluate" or act_ws == ws or \
+            not state.get("parallel") or not task:
+        return act_ws
+    target = str(task.get("target_commit") or "").strip()
+    if len(target) not in (40, 64) or any(
+            character not in "0123456789abcdef" for character in target):
+        return act_ws
+    try:
+        if tp.git_head(act_ws) != target:
+            return act_ws
+        contained = tp._run(
+            ["git", "merge-base", "--is-ancestor", target, "HEAD"],
+            cwd=ws)
+    except Exception:
+        return act_ws
+    return ws if contained.returncode == 0 else act_ws
+
+
 def submit(ws: str, outcome: str, note: str = "",
            task_id: str | None = None) -> dict:
     """Worker submission — evidence request, never a state transition.
@@ -5711,6 +5745,8 @@ def submit(ws: str, outcome: str, note: str = "",
             (step == "em" or step == "evaluate" and not state.get("parallel")):
         graph_fingerprint = (depgraph.load(ws).get("meta") or {}).get(
             "content_fingerprint")
+    evidence_engine_ws = _submission_evidence_engine_workspace(
+        ws, state, task, act_ws)
     submission = {
         "step": step,
         "task": (task or {}).get("id"),
@@ -5730,20 +5766,23 @@ def submit(ws: str, outcome: str, note: str = "",
         # could never fire. Stamp the engine in the workspace the EVIDENCE
         # came from; None where that workspace carries no engine copy.
         "evidence_engine_fingerprint":
-            tp.workspace_engine_fingerprint(act_ws),
+            tp.workspace_engine_fingerprint(evidence_engine_ws),
         "submitted_at": int(time.time()),
     }
     with mutate(ws) as locked:
         if locked is None:
             return {"error": "no active loop"}
         def _same(existing):
-            # engine_fingerprint is part of the identity: a re-submission
-            # under a DIFFERENT engine must replace the record, not be
-            # deduplicated into it (A4's in-flight remedy).
+            # Both engine fingerprints are part of the identity: a
+            # re-submission under a different running engine OR after the
+            # exact task tip moves under the primary evidence producer must
+            # replace stale metadata, not be deduplicated into it (A4's
+            # merge-and-resubmit remedy).
             return existing and all(
                 existing.get(k) == submission.get(k)
                 for k in ("step", "task", "outcome", "fingerprint",
-                          "engine_fingerprint"))
+                          "engine_fingerprint",
+                          "evidence_engine_fingerprint"))
         if parallel_execute:
             target = next((x for x in locked.get("tasks") or []
                            if x.get("id") == task_id), None)

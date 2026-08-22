@@ -1997,6 +1997,41 @@ class TestEngineSkewRefusal(unittest.TestCase):
             st["_submission"]["engine_fingerprint"] = fingerprint
         loop.save(ws, st)
 
+    def _real_engine_wave_ws(self):
+        """Build the merge-and-resubmit topology with real engine bytes."""
+        ws = git_ws(self.tmp, [TASK])
+        engine_root = os.path.join(ws, "taskplane")
+        os.makedirs(engine_root)
+        source_root = os.path.dirname(os.path.abspath(loop.__file__))
+        for name in tp.VALIDATOR_SURFACE:
+            shutil.copy(os.path.join(source_root, name + ".py"), engine_root)
+        subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
+        subprocess.run(["git", "commit", "-qm", "engine baseline"],
+                       cwd=ws, check=True)
+
+        loop.init(ws, "g", spec_path="s", checkpoints=["plan"],
+                  parallel=True)
+        loop.next_action(ws)
+        loop.gate(ws, "pass")
+        loop.approve(ws)
+        agent_ws = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
+                        "tp/t1"], cwd=ws, check=True)
+        loop.claim(ws, "t1", agent_ws)
+        with open(os.path.join(agent_ws, "src", "todo", "a.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("x=2\n")
+        subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
+        subprocess.run(["git", "commit", "-qm", "task change"],
+                       cwd=agent_ws, check=True)
+        depgraph.scan(agent_ws)
+        submit_gate(ws, "pass", task_id="t1")
+        loop.next_action(ws)
+        write_kernel_results(ws)
+        review.collect_review(agent_ws, publish=False)
+        write_verdict(ws)
+        return ws, agent_ws
+
     def test_fingerprint_is_the_validator_surface_bytes_not_its_paths(self):
         fp = tp.engine_fingerprint()
         self.assertEqual(fp, tp.engine_fingerprint())        # deterministic
@@ -2084,6 +2119,83 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertEqual(again["submission"]["engine_fingerprint"],
                          tp.engine_fingerprint())
         self.assertNotIn("error", loop.gate(ws, "pass"))
+        self.assertEqual(loop.load(ws)["step"], "em")
+
+    def test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp(
+            self):
+        """The documented merge+resubmit remedy works before cleanup.
+
+        The task worktree branches before a primary-only engine fix.  Its
+        unmerged submission must retain the worktree's older producer stamp
+        and be refused.  Once the exact task target is merged, regenerating
+        byte-identical canonical evidence and resubmitting must replace the
+        cached submission metadata with the primary validator's engine even
+        while the clean, older worktree still exists.
+        """
+        ws, agent_ws = self._real_engine_wave_ws()
+        verdict_path = os.path.join(agent_ws, ".eval", "verdict.json")
+        original_verdict = open(verdict_path, "rb").read()
+        worker_engine = tp.workspace_engine_fingerprint(agent_ws)
+
+        with open(os.path.join(ws, "taskplane", "loop.py"), "a",
+                  encoding="utf-8") as handle:
+            handle.write("\n# primary validator fix\n")
+        subprocess.run(["git", "add", "taskplane/loop.py"], cwd=ws,
+                       check=True)
+        subprocess.run(["git", "commit", "-qm", "primary engine fix"],
+                       cwd=ws, check=True)
+        primary_engine = tp.workspace_engine_fingerprint(ws)
+        self.assertNotEqual(worker_engine, primary_engine)
+
+        on_path = {"schema": "taskplane.runtime-guidance/v1",
+                   "status": "on_path", "step": "evaluate"}
+        with unittest.mock.patch.object(loop.runtime_eval, "guide_loop",
+                                        return_value=on_path), \
+                unittest.mock.patch.object(loop.time, "time",
+                                            return_value=100):
+            first_result = loop.submit(ws, "pass")
+        self.assertNotIn("error", first_result, first_result)
+        first = first_result["submission"]
+        self.assertEqual(first["evidence_engine_fingerprint"], worker_engine)
+        self.assertEqual(first["submitted_at"], 100)
+        refused = loop.gate(ws, "pass")
+        self.assertEqual(
+            refused["engine_skew"]["reason"], "engine_skew_workspace")
+        self.assertEqual(loop.load(ws)["step"], "evaluate")
+
+        subprocess.run(["git", "merge", "--no-ff", "-m", "merge task",
+                        "tp/t1"], cwd=ws, check=True)
+        target = loop.load(ws)["tasks"][0]["target_commit"]
+        self.assertEqual(tp.git_head(agent_ws), target)
+        self.assertEqual(subprocess.run(
+            ["git", "merge-base", "--is-ancestor", target, "HEAD"], cwd=ws,
+            check=False).returncode, 0)
+
+        os.unlink(verdict_path)
+        token = loop._EVIDENCE_STATE_WORKSPACE.set(ws)
+        try:
+            self.assertTrue(loop.evidence(agent_ws, write=True)["written"])
+        finally:
+            loop._EVIDENCE_STATE_WORKSPACE.reset(token)
+        write_verdict(ws)
+        self.assertEqual(open(verdict_path, "rb").read(), original_verdict)
+
+        with unittest.mock.patch.object(loop.runtime_eval, "guide_loop",
+                                        return_value=on_path), \
+                unittest.mock.patch.object(loop.time, "time",
+                                            return_value=200):
+            second = loop.submit(ws, "pass")["submission"]
+        self.assertEqual(second["fingerprint"], first["fingerprint"])
+        self.assertEqual(
+            second["evidence_engine_fingerprint"], primary_engine)
+        self.assertEqual(second["submitted_at"], 200)
+        self.assertNotEqual(second, first)
+        # This regression owns submission identity and the engine-skew
+        # pre-check. The synthetic repository does not carry the full host
+        # producer-receipt fixture needed by the independent evaluation walk.
+        with unittest.mock.patch.object(loop, "_evaluation_errors",
+                                        return_value=[]):
+            self.assertNotIn("error", loop.gate(ws, "pass"))
         self.assertEqual(loop.load(ws)["step"], "em")
 
     def test_no_submission_record_is_not_this_guard_s_business(self):
