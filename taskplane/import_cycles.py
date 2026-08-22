@@ -11,6 +11,7 @@ import argparse
 import ast
 import json
 from pathlib import Path, PurePosixPath
+import shlex
 import subprocess
 import sys
 from typing import Iterable, Mapping, Sequence
@@ -23,6 +24,8 @@ PACKAGE = "taskplane"
 POLICY_RELATIVE = Path("taskplane/tests/fixtures/import-cycles.json")
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
+RATCHET_JOB_ID = "wave3-contracts"
+RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
 
 # These are the four deferred edges recorded in the R-0006 source analysis.
 # The history proof requires all four in the activation commit; later commits
@@ -487,21 +490,201 @@ def _show_optional(root: Path, revision: str, path: Path) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def _workflow_runs_ratchet(source: str) -> bool:
-    """Return whether CI still invokes both sides of the ratchet contract."""
-    return all(marker in source for marker in (
-        "taskplane/import_cycles.py", "--check", "--verify-history",
-    ))
+def _strip_yaml_comment(line: str) -> str:
+    """Remove a YAML comment without treating quoted ``#`` as a comment."""
+    single_quoted = False
+    double_quoted = False
+    escaped = False
+    for index, character in enumerate(line):
+        if double_quoted and character == "\\" and not escaped:
+            escaped = True
+            continue
+        if character == "'" and not double_quoted and not escaped:
+            single_quoted = not single_quoted
+        elif character == '"' and not single_quoted and not escaped:
+            double_quoted = not double_quoted
+        elif character == "#" and not single_quoted and not double_quoted \
+                and (index == 0 or line[index - 1].isspace()):
+            return line[:index]
+        escaped = False
+    return line
+
+
+def _yaml_key_value(content: str, key: str) -> str | None:
+    stripped = content.strip()
+    if stripped.startswith("- "):
+        stripped = stripped[2:].lstrip()
+    prefix = f"{key}:"
+    if not stripped.startswith(prefix):
+        return None
+    return stripped[len(prefix):].strip()
+
+
+def _workflow_lines(source: str) -> list[tuple[int, str]]:
+    rows = []
+    for raw in source.splitlines():
+        active = _strip_yaml_comment(raw).rstrip()
+        if not active.strip():
+            continue
+        indentation = len(active) - len(active.lstrip(" "))
+        rows.append((indentation, active.lstrip(" ")))
+    return rows
+
+
+def _condition_is_unconditional(value: str) -> bool:
+    normalized = value.strip().strip('"\'').strip()
+    if normalized.startswith("${{") and normalized.endswith("}}"):
+        normalized = normalized[3:-2].strip()
+    return normalized.lower() == "true"
+
+
+def _run_invokes_ratchet(command: str) -> bool:
+    scalar = command.strip()
+    if len(scalar) >= 2 and scalar[0] == scalar[-1] \
+            and scalar[0] in {'"', "'"}:
+        scalar = scalar[1:-1]
+    try:
+        lexer = shlex.shlex(scalar, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        words = list(lexer)
+    except ValueError:
+        return False
+    if len(words) < 4:
+        return False
+    if any(word and set(word).issubset({";", "&", "|"}) for word in words):
+        return False
+    executable = PurePosixPath(words[0]).name
+    python_runner = executable in {"python", "python3"} or (
+        executable.startswith("python3.")
+        and executable.removeprefix("python3.").isdigit())
+    if not python_runner:
+        return False
+    script_index = 1
+    while script_index < len(words) and words[script_index].startswith("-"):
+        if words[script_index] in {"-c", "-m"}:
+            return False
+        script_index += 1
+    if script_index >= len(words) or \
+            words[script_index] != MODULE_RELATIVE.as_posix():
+        return False
+    arguments = set(words[script_index + 1:])
+    return {"--check", "--verify-history"}.issubset(arguments)
+
+
+def _workflow_ratchet_error(source: str) -> str | None:
+    """Prove an unconditional active ``run:`` invokes the ratchet.
+
+    This deliberately parses only the small GitHub Actions YAML surface needed
+    by the contract. Commented text and renamed keys are ignored. A condition
+    on the containing job or step is accepted only when it is statically true;
+    dynamic conditions cannot prove that the protected-line check always ran.
+    """
+    rows = _workflow_lines(source)
+    jobs_index = next(
+        (index for index, (_, content) in enumerate(rows)
+         if content == "jobs:"), None)
+    blocks: list[tuple[int, int, int]] = []
+    if jobs_index is not None:
+        jobs_indent = rows[jobs_index][0]
+        job_indent = jobs_indent + 2
+        starts = [
+            index for index in range(jobs_index + 1, len(rows))
+            if rows[index][0] == job_indent
+            and rows[index][1].endswith(":")
+            and not rows[index][1].startswith("-")
+        ]
+        for position, start in enumerate(starts):
+            if rows[start][1] != f"{RATCHET_JOB_ID}:":
+                continue
+            end = starts[position + 1] if position + 1 < len(starts) \
+                else len(rows)
+            blocks.append((start, end, job_indent))
+
+    disabled_candidates = []
+    for start, end, job_indent in blocks:
+        check_names = [
+            value.strip().strip('"\'')
+            for indent, content in rows[start:end]
+            if indent == job_indent + 2
+            if (value := _yaml_key_value(content, "name")) is not None
+        ]
+        if check_names != [RATCHET_CHECK_NAME]:
+            disabled_candidates.append(
+                f"check name must be {RATCHET_CHECK_NAME!r}")
+            continue
+        job_conditions = [
+            value for indent, content in rows[start:end]
+            if indent == job_indent + 2
+            if (value := _yaml_key_value(content, "if")) is not None
+        ]
+        for index in range(start, end):
+            run_indent, content = rows[index]
+            inline = _yaml_key_value(content, "run")
+            if inline is None:
+                continue
+            if inline in {">", ">-", "|", "|-", "|+", ">+"}:
+                body = []
+                cursor = index + 1
+                while cursor < end and rows[cursor][0] > run_indent:
+                    body.append(rows[cursor][1])
+                    cursor += 1
+                command = " ".join(body)
+            else:
+                command = inline
+            if not _run_invokes_ratchet(command):
+                continue
+
+            step_start = index
+            while step_start > start:
+                previous_indent, previous = rows[step_start - 1]
+                if previous_indent < run_indent and previous.startswith("- "):
+                    step_start -= 1
+                    break
+                if previous_indent < run_indent:
+                    break
+                step_start -= 1
+            step_indent = rows[step_start][0] if step_start < index else run_indent
+            step_end = index + 1
+            while step_end < end:
+                candidate_indent, candidate = rows[step_end]
+                if candidate_indent == step_indent and candidate.startswith("- "):
+                    break
+                if candidate_indent < step_indent:
+                    break
+                step_end += 1
+            step_conditions = [
+                value for indent, candidate in rows[step_start:step_end]
+                if indent in {step_indent, run_indent}
+                if (value := _yaml_key_value(candidate, "if")) is not None
+            ]
+            ignored_failures = [
+                value for indent, candidate in rows[step_start:step_end]
+                if indent in {step_indent, run_indent}
+                if (value := _yaml_key_value(
+                    candidate, "continue-on-error")) is not None
+                and value.strip().strip('"\'').lower() != "false"
+            ]
+            conditions = job_conditions + step_conditions
+            if conditions and not all(
+                    _condition_is_unconditional(value) for value in conditions):
+                disabled_candidates.extend(conditions)
+                continue
+            if ignored_failures:
+                disabled_candidates.extend(
+                    f"continue-on-error: {value}" for value in ignored_failures)
+                continue
+            return None
+
+    if disabled_candidates:
+        return f"ratchet job or step is conditional: {disabled_candidates}"
+    return f"no active unconditional {RATCHET_JOB_ID!r} / " \
+        f"{RATCHET_CHECK_NAME!r} run invokes import_cycles.py with --check " \
+        "and --verify-history"
 
 
 def _scanner_contract_error(source: str) -> str | None:
-    """Return a named reason when a historical scanner was disabled.
-
-    History is inspected with the current trusted scanner, so old scanner code
-    is never executed. These structural markers prove that the committed CI
-    entry point still exposed the inventory check and history proof instead of
-    being replaced by a no-op while a protected edge was cut.
-    """
+    """Reject malformed scanner artifacts before applying semantic proof."""
     try:
         tree = ast.parse(source, filename=MODULE_RELATIVE.as_posix())
     except SyntaxError as exc:
@@ -538,7 +721,7 @@ def _first_activation(root: Path, policy_relative: Path) -> str:
         workflow = _show_optional(root, commit, WORKFLOW_RELATIVE)
         if module is not None and policy is not None and workflow is not None \
                 and _scanner_contract_error(module) is None \
-                and _workflow_runs_ratchet(workflow):
+                and _workflow_ratchet_error(workflow) is None:
             return commit
     raise CycleHistoryError(
         "no first-parent ratchet activation commit contains an active scanner, "
@@ -613,9 +796,14 @@ def verify_history(root: Path, policy_path: Path) -> dict:
     if not protected_commits or protected_commits[0] != activation:
         raise CycleHistoryError(
             "ratchet activation is not on the HEAD first-parent history")
+    trusted_scanner = _show_optional(root, "HEAD", MODULE_RELATIVE)
+    if trusted_scanner is None or _scanner_contract_error(
+            trusted_scanner) is not None:
+        raise CycleHistoryError("trusted HEAD cycle scanner is unavailable")
 
     previous_policy = activation_policy
     last_policy_commit = activation
+    protected_cut_seen = False
     for commit in protected_commits:
         module = _show_optional(root, commit, MODULE_RELATIVE)
         if module is None:
@@ -627,10 +815,12 @@ def verify_history(root: Path, policy_path: Path) -> dict:
                 f"cycle scanner inactive at revision {commit}: {scanner_error}")
 
         workflow = _show_optional(root, commit, WORKFLOW_RELATIVE)
-        if workflow is None or not _workflow_runs_ratchet(workflow):
+        workflow_error = None if workflow is None else \
+            _workflow_ratchet_error(workflow)
+        if workflow is None or workflow_error is not None:
             raise CycleHistoryError(
                 f"cycle ratchet workflow inactive at revision {commit}: "
-                "expected taskplane/import_cycles.py --check --verify-history")
+                f"{workflow_error or 'workflow file is missing'}")
 
         raw_policy = _show_optional(root, commit, policy_relative)
         if raw_policy is None:
@@ -663,7 +853,18 @@ def verify_history(root: Path, policy_path: Path) -> dict:
             previous_policy = candidate
             last_policy_commit = commit
 
-        measured_commit = build_inventory_at_revision(root, commit)
+        commit_sources = _revision_sources(root, commit)
+        commit_graph, _ = _scan_graph(commit_sources)
+        if any(target not in commit_graph.get(source, set())
+               for source, target in TARGET_CUT_EDGES):
+            protected_cut_seen = True
+        if protected_cut_seen and module != trusted_scanner:
+            raise CycleHistoryError(
+                f"cycle scanner at or after protected cut revision {commit} "
+                "does not match the trusted HEAD scanner blob")
+
+        measured_commit = _inventory_from_sources(
+            commit_sources, source_revision=commit)
         enforced = check_inventory(candidate, measured_commit)
         if enforced["status"] != "pass":
             raise CycleHistoryError(

@@ -25,6 +25,27 @@ def main():
 
 OPTIONS = ("--check", "--verify-history")
 """
+MARKER_PRESERVING_NOOP_SCANNER = """\
+def check_inventory(*args, **kwargs):
+    return {"status": "pass"}
+
+def verify_history(*args, **kwargs):
+    return {"status": "pass"}
+
+def main(*args, **kwargs):
+    return 0
+
+OPTIONS = ("--check", "--verify-history")
+"""
+ACTIVE_WORKFLOW = """\
+jobs:
+  wave3-contracts:
+    name: R-0006 graph + CLI contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Import-cycle inventory, bounds, and activation order
+        run: python3 taskplane/import_cycles.py --check --verify-history
+"""
 sys.path.insert(0, str(ROOT))
 
 from taskplane import import_cycles as cycles  # noqa: E402
@@ -62,6 +83,48 @@ def _commit(root: Path, message: str) -> str:
         ["git", "rev-parse", "HEAD"], cwd=root, check=True,
         capture_output=True, text=True, encoding="utf-8",
     ).stdout.strip()
+
+
+def _start_history_fixture(root: Path) -> tuple[Path, Path, str]:
+    _init_repo(root)
+    _write_modules(root, {
+        "lens": "def f():\n    import review\n",
+        "review": "import lens\n",
+        "depgraph": "def f():\n    import decompose\n",
+        "decompose": "import depgraph\nimport lens_signals\n",
+        "lens_signals": "import depgraph\n",
+        "taskplane_lite": "def f():\n    import depgraph\n",
+    })
+    before = _commit(root, "before ratchet")
+    policy = root / "taskplane" / "tests" / "fixtures" / \
+        "import-cycles.json"
+    policy.parent.mkdir(parents=True)
+    policy.write_text(cycles.canonical_json(cycles.build_inventory(
+        root, source_revision=before)), encoding="utf-8")
+    (root / "taskplane" / "import_cycles.py").write_text(
+        ACTIVE_SCANNER, encoding="utf-8")
+    workflow = root / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    active = ACTIVE_WORKFLOW
+    workflow.write_text(active, encoding="utf-8")
+    _commit(root, "activate ratchet")
+    return policy, workflow, active
+
+
+def _workflow_variant(step_fields: list[str], *, job_if: str | None = None) -> str:
+    job_condition = f"    if: {job_if}\n" if job_if is not None else ""
+    fields = "\n".join(
+        [f"      - {step_fields[0]}"]
+        + [f"        {field}" for field in step_fields[1:]])
+    return (
+        "jobs:\n"
+        "  wave3-contracts:\n"
+        "    name: R-0006 graph + CLI contracts\n"
+        f"{job_condition}"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        f"{fields}\n"
+    )
 
 
 def test_ast_tarjan_inventory_is_complete_deterministic_and_file_level(
@@ -302,9 +365,7 @@ def test_history_proof_finds_activation_before_all_four_cuts(
         ACTIVE_SCANNER, encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
-    workflow.write_text(
-        "run: python3 taskplane/import_cycles.py --check --verify-history\n",
-        encoding="utf-8")
+    workflow.write_text(ACTIVE_WORKFLOW, encoding="utf-8")
     activation = _commit(tmp_path, "activate ratchet")
 
     proof = cycles.verify_history(tmp_path, policy_path)
@@ -344,9 +405,7 @@ def test_history_proof_rejects_policy_bound_raise(tmp_path: Path) -> None:
         ACTIVE_SCANNER, encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
-    workflow.write_text(
-        "run: python3 taskplane/import_cycles.py --check --verify-history\n",
-        encoding="utf-8")
+    workflow.write_text(ACTIVE_WORKFLOW, encoding="utf-8")
     _commit(tmp_path, "activate ratchet")
 
     policy["sccs"][0]["physical_loc"] += 100
@@ -377,9 +436,7 @@ def test_history_proof_rejects_intermediate_raise_then_restore(
         ACTIVE_SCANNER, encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
-    workflow.write_text(
-        "run: python3 taskplane/import_cycles.py --check --verify-history\n",
-        encoding="utf-8")
+    workflow.write_text(ACTIVE_WORKFLOW, encoding="utf-8")
     _commit(tmp_path, "activate ratchet")
 
     # Make a real larger tree, then bless its exact inventory in the next
@@ -423,9 +480,7 @@ def test_history_proof_rejects_a_cut_in_the_activation_commit(
         "def no_review_import():\n    return None\n", encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
-    workflow.write_text(
-        "run: python3 taskplane/import_cycles.py --check --verify-history\n",
-        encoding="utf-8")
+    workflow.write_text(ACTIVE_WORKFLOW, encoding="utf-8")
     _commit(tmp_path, "activation wrongly includes cut")
 
     with pytest.raises(
@@ -454,8 +509,7 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
         ACTIVE_SCANNER, encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
-    active_workflow = (
-        "run: python3 taskplane/import_cycles.py --check --verify-history\n")
+    active_workflow = ACTIVE_WORKFLOW
     workflow.write_text(active_workflow, encoding="utf-8")
     _commit(tmp_path, "activate ratchet")
 
@@ -471,6 +525,83 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
             cycles.CycleHistoryError,
             match=rf"workflow inactive at revision {disabled}"):
         cycles.verify_history(tmp_path, policy_path)
+
+
+@pytest.mark.parametrize(("case", "disabled_workflow"), [
+    (
+        "commented-command",
+        _workflow_variant([
+            "name: disabled",
+            "# run: python3 taskplane/import_cycles.py --check --verify-history",
+        ]),
+    ),
+    (
+        "job-if-false",
+        _workflow_variant([
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ], job_if="false"),
+    ),
+    (
+        "step-if-false",
+        _workflow_variant([
+            "if: false",
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ]),
+    ),
+    (
+        "renamed-runner",
+        _workflow_variant([
+            "runner: python3 taskplane/import_cycles.py --check --verify-history",
+        ]),
+    ),
+    (
+        "ignored-exit",
+        _workflow_variant([
+            "run: python3 taskplane/import_cycles.py --check --verify-history "
+            "|| true",
+        ]),
+    ),
+    (
+        "continue-on-error",
+        _workflow_variant([
+            "continue-on-error: true",
+            "run: python3 taskplane/import_cycles.py --check --verify-history",
+        ]),
+    ),
+])
+def test_history_proof_rejects_inert_workflow_text_before_cut(
+        tmp_path: Path, case: str, disabled_workflow: str) -> None:
+    policy, workflow, active = _start_history_fixture(tmp_path)
+    workflow.write_text(disabled_workflow, encoding="utf-8")
+    disabled = _commit(tmp_path, case)
+    (tmp_path / "taskplane" / "lens.py").write_text(
+        "def f():\n    return None\n", encoding="utf-8")
+    _commit(tmp_path, "cut target edge")
+    workflow.write_text(active, encoding="utf-8")
+    _commit(tmp_path, "restore workflow")
+
+    with pytest.raises(
+            cycles.CycleHistoryError,
+            match=rf"workflow inactive at revision {disabled}"):
+        cycles.verify_history(tmp_path, policy)
+
+
+def test_history_proof_rejects_noop_scanner_cut_restore_gap(
+        tmp_path: Path) -> None:
+    policy, _, _ = _start_history_fixture(tmp_path)
+    scanner = tmp_path / "taskplane" / "import_cycles.py"
+    scanner.write_text(MARKER_PRESERVING_NOOP_SCANNER, encoding="utf-8")
+    _commit(tmp_path, "replace scanner with marker-preserving no-op")
+    (tmp_path / "taskplane" / "lens.py").write_text(
+        "def f():\n    return None\n", encoding="utf-8")
+    cut = _commit(tmp_path, "cut target edge under no-op scanner")
+    scanner.write_text(ACTIVE_SCANNER, encoding="utf-8")
+    _commit(tmp_path, "restore trusted scanner")
+
+    with pytest.raises(
+            cycles.CycleHistoryError,
+            match=rf"protected cut revision {cut}.*trusted HEAD scanner blob"):
+        cycles.verify_history(tmp_path, policy)
 
 
 def test_ci_runs_full_history_ratchet_before_structural_tests() -> None:
