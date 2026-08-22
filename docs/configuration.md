@@ -11,6 +11,23 @@ required for normal use.
 do — set those deliberately, and treat them as part of your governance
 configuration, not personal preference.
 
+## Supported Python runtime
+
+Taskplane's validated support range is **CPython 3.10 through 3.13 inclusive**.
+Other Python versions are outside the validated support range; an interpreter
+newer than 3.13 may start, but remains unvalidated until it is added to this
+matrix. The push and pull-request CI matrix proves each supported minor
+independently: before any test command, every leg compiles and imports all
+tracked Python modules shipped in the plugin plus its hook entry points, then
+runs representative version, CLI entry, graph, status, and evaluation-corpus
+flows.
+
+An interpreter older than Python 3.10 is refused with exit status 2 and a
+concise `taskplane requires Python 3.10 or newer` message before importing
+shipped modules and before creating or changing Taskplane state. This early
+compatibility refusal emits no Python traceback because the engine has not
+been imported yet.
+
 ## Store and state
 
 The default external home uses the hybrid layout documented in

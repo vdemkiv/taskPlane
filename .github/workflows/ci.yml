@@ -38,6 +38,7 @@ jobs:
               taskplane/tests/test_stage_release_matrix.py
               taskplane/tests/test_stage_loop_integration.py
               taskplane/tests/test_stage_cli.py
+              taskplane/tests/test_r0006_python_matrix.py
           - python: "3.11"
             tests: >-
               taskplane/tests/test_r0002_reviewkernel_regression_floor.py
@@ -51,6 +52,7 @@ jobs:
               taskplane/tests/test_stage_release_matrix.py
               taskplane/tests/test_stage_loop_integration.py
               taskplane/tests/test_stage_cli.py
+              taskplane/tests/test_r0006_python_matrix.py
           - python: "3.12"
             tests: >-
               taskplane/tests
@@ -58,6 +60,20 @@ jobs:
               --ignore=taskplane/tests/test_dispatch_parity.py
               --ignore=taskplane/tests/test_lens_signals_fixtures.py
               --ignore=taskplane/tests/test_stage_waves.py
+          - python: "3.13"
+            tests: >-
+              taskplane/tests/test_r0002_reviewkernel_regression_floor.py
+              taskplane/tests/test_repository_preflight.py
+              taskplane/tests/test_storage_kernel.py
+              taskplane/tests/test_windows_portability.py
+              taskplane/tests/test_stage_non_build_handoffs.py
+              taskplane/tests/test_stage_cross_host.py
+              taskplane/tests/test_stage_rollout.py
+              taskplane/tests/test_stage_r0003_preservation.py
+              taskplane/tests/test_stage_release_matrix.py
+              taskplane/tests/test_stage_loop_integration.py
+              taskplane/tests/test_stage_cli.py
+              taskplane/tests/test_r0006_python_matrix.py
     steps:
       # Third-party actions are pinned to full commit SHAs (tag as comment) so
       # a moved/compromised tag cannot change what runs in the release-trust path.
@@ -74,6 +90,58 @@ jobs:
         run: |
           git config --global user.email "ci@taskplane"
           git config --global user.name "taskplane-ci"
+
+      # P2 is intentionally one unconditional step in the matrix job. A
+      # syntax/import failure therefore stops its Python leg before pytest,
+      # while the representative commands prove the public entry surfaces on
+      # the same interpreter that will run that leg's tests.
+      - name: Compile and import every shipped Python entry point
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          TASKPLANE_HOME: ${{ runner.temp }}/taskplane-python-${{ matrix.python }}-state
+          TASKPLANE_COMPAT_WORKSPACE: ${{ runner.temp }}/taskplane-python-${{ matrix.python }}-workspace
+        run: |
+          python - <<'PY'
+          # R-0006-COMPILE-IMPORT-BEGIN
+          from __future__ import annotations
+          import importlib
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          root = Path.cwd()
+          tracked = subprocess.run(
+              ["git", "ls-files", "--", "taskplane/*.py", "hooks/*.py"],
+              text=True, encoding="utf-8", capture_output=True, check=True,
+          ).stdout.splitlines()
+          shipped = sorted(
+              Path(row) for row in tracked
+              if Path(row).suffix == ".py" and len(Path(row).parts) == 2
+              and Path(row).parts[0] in {"taskplane", "hooks"}
+          )
+          if not shipped or Path("taskplane/tp.py") not in shipped \
+                  or Path("hooks/host_native_runtime.py") not in shipped:
+              raise SystemExit("tracked shipped Python surface is incomplete")
+          for relative in shipped:
+              source = (root / relative).read_text(encoding="utf-8")
+              compile(source, str(relative), "exec")
+          sys.path[:0] = [str(root / "taskplane"), str(root)]
+          loaded = []
+          for relative in shipped:
+              module_name = ".".join(relative.with_suffix("").parts)
+              importlib.import_module(module_name)
+              loaded.append(module_name)
+          print(f"compiled and imported {len(loaded)} tracked shipped "
+                "Python entry points")
+          # R-0006-COMPILE-IMPORT-END
+          PY
+          python taskplane/tp.py version --verify
+          python taskplane/tp.py --help >/dev/null
+          mkdir -p "$TASKPLANE_COMPAT_WORKSPACE"
+          git -C "$TASKPLANE_COMPAT_WORKSPACE" init -q
+          python taskplane/tp.py graph --workspace "$TASKPLANE_COMPAT_WORKSPACE" scan >/dev/null
+          python taskplane/tp.py status --workspace "$TASKPLANE_COMPAT_WORKSPACE" >/dev/null
+          python scripts/ci_evals.py --corpus
 
       # Run from the repo ROOT (not `working-directory: taskplane`): conftest.py
       # imports the `taskplane` package for shared store isolation, which only
