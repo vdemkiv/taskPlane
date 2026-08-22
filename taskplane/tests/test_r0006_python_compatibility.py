@@ -57,8 +57,12 @@ def test_stage_dependency_compiles_and_consumers_import_on_supported_python(
         "                  'loaded': loaded}))",
     ])
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    # Taskplane's checkout-bound suite runner intentionally rewrites nested
+    # Python argv to keep imports pinned to the worktree. Prefixing with the
+    # host's env executable preserves the explicitly selected minor here.
+    env_program = shutil.which("env") or "/usr/bin/env"
     result = subprocess.run(
-        [interpreter, "-c", script], cwd=str(ROOT), env=env,
+        [env_program, interpreter, "-c", script], cwd=str(ROOT), env=env,
         text=True, encoding="utf-8", errors="replace",
         capture_output=True, check=False)
 
