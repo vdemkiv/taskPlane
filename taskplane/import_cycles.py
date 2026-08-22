@@ -600,33 +600,22 @@ def _run_invokes_ratchet(command: str) -> bool:
         words = list(lexer)
     except ValueError:
         return False
-    if len(words) < 4:
+    if len(words) < 4 or words[0] != "python3":
         return False
-    # argparse's generated help action exits zero before either required proof
-    # runs. It accepts ``-h`` with suffixes and unambiguous ``--help``
-    # abbreviations, so reject the complete successful help-only family in any
-    # interpreter or script position.
-    if any(word.startswith("-h") or word in {"--h", "--he", "--hel", "--help"}
-           for word in words):
+    # Closed grammar: no interpreter option may precede the script. This
+    # excludes every Python early-success form (-V, extended help, and future
+    # controls) without maintaining a denylist that can drift with Python.
+    if words[1] != MODULE_RELATIVE.as_posix():
         return False
-    if any(word and set(word).issubset({";", "&", "|"}) for word in words):
-        return False
-    executable = PurePosixPath(words[0]).name
-    python_runner = executable in {"python", "python3"} or (
-        executable.startswith("python3.")
-        and executable.removeprefix("python3.").isdigit())
-    if not python_runner:
-        return False
-    script_index = 1
-    while script_index < len(words) and words[script_index].startswith("-"):
-        if words[script_index] in {"-c", "-m"}:
-            return False
-        script_index += 1
-    if script_index >= len(words) or \
-            words[script_index] != MODULE_RELATIVE.as_posix():
-        return False
-    arguments = set(words[script_index + 1:])
-    return {"--check", "--verify-history"}.issubset(arguments)
+    arguments = tuple(words[2:])
+    return arguments in {
+        ("--check", "--verify-history"),
+        (
+            "--root", ".",
+            "--policy", POLICY_RELATIVE.as_posix(),
+            "--check", "--verify-history",
+        ),
+    }
 
 
 def _workflow_ratchet_error(source: str) -> str | None:

@@ -677,6 +677,62 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
             "--verify-history",
         ]),
     ),
+    (
+        "interpreter-question-help",
+        _workflow_variant([
+            "run: python3 -? taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "interpreter-short-version",
+        _workflow_variant([
+            "run: python3 -V taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "interpreter-verbose-version",
+        _workflow_variant([
+            "run: python3 -VV taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "interpreter-long-version",
+        _workflow_variant([
+            "run: python3 --version taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "interpreter-help-env",
+        _workflow_variant([
+            "run: python3 --help-env taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "interpreter-help-xoptions",
+        _workflow_variant([
+            "run: python3 --help-xoptions taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "interpreter-help-all",
+        _workflow_variant([
+            "run: python3 --help-all taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
+    (
+        "unknown-interpreter-control",
+        _workflow_variant([
+            "run: python3 --future-control taskplane/import_cycles.py --check "
+            "--verify-history",
+        ]),
+    ),
 ])
 def test_history_proof_rejects_inert_workflow_text_before_cut(
         tmp_path: Path, case: str, disabled_workflow: str) -> None:
@@ -728,6 +784,30 @@ def test_command_parser_rejects_successful_help_exit_family(
     words.insert(1 if before_script else len(words), help_flag)
 
     assert not cycles._run_invokes_ratchet(" ".join(words))
+
+
+@pytest.mark.parametrize("command", [
+    "python3 taskplane/import_cycles.py --check --verify-history",
+    "python3 taskplane/import_cycles.py --root . "
+    "--policy taskplane/tests/fixtures/import-cycles.json "
+    "--check --verify-history",
+])
+def test_command_parser_accepts_only_canonical_ratchet_forms(
+        command: str) -> None:
+    assert cycles._run_invokes_ratchet(command)
+
+
+@pytest.mark.parametrize("interpreter_control", [
+    "-?", "-V", "-VV", "--version", "--help-env", "--help-xoptions",
+    "--help-all", "--future-control",
+])
+def test_command_parser_rejects_all_pre_script_controls(
+        interpreter_control: str) -> None:
+    command = (
+        f"python3 {interpreter_control} taskplane/import_cycles.py "
+        "--check --verify-history")
+
+    assert not cycles._run_invokes_ratchet(command)
 
 
 def test_history_proof_rejects_noop_scanner_cut_restore_gap(
