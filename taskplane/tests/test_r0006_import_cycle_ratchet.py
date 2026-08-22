@@ -13,6 +13,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = ROOT / "taskplane" / "tests" / "fixtures" / "import-cycles.json"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+ACTIVE_SCANNER = """\
+def check_inventory():
+    pass
+
+def verify_history():
+    pass
+
+def main():
+    pass
+
+OPTIONS = ("--check", "--verify-history")
+"""
 sys.path.insert(0, str(ROOT))
 
 from taskplane import import_cycles as cycles  # noqa: E402
@@ -287,7 +299,7 @@ def test_history_proof_finds_activation_before_all_four_cuts(
         cycles.canonical_json(cycles.build_inventory(
             tmp_path, source_revision=before)), encoding="utf-8")
     (tmp_path / "taskplane" / "import_cycles.py").write_text(
-        "# activation marker\n", encoding="utf-8")
+        ACTIVE_SCANNER, encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
@@ -302,6 +314,10 @@ def test_history_proof_finds_activation_before_all_four_cuts(
     assert proof["measurement_revision"] == before
     assert proof["target_edges"] == [list(edge)
                                       for edge in cycles.TARGET_CUT_EDGES]
+
+    (tmp_path / "README.md").write_text("unrelated\n", encoding="utf-8")
+    _commit(tmp_path, "ordinary unrelated commit")
+    assert cycles.verify_history(tmp_path, policy_path)["status"] == "pass"
 
     (tmp_path / "taskplane" / "lens.py").write_text(
         "def f():\n    return None\n", encoding="utf-8")
@@ -325,7 +341,7 @@ def test_history_proof_rejects_policy_bound_raise(tmp_path: Path) -> None:
     policy = cycles.build_inventory(tmp_path, source_revision=before)
     policy_path.write_text(cycles.canonical_json(policy), encoding="utf-8")
     (tmp_path / "taskplane" / "import_cycles.py").write_text(
-        "# activation marker\n", encoding="utf-8")
+        ACTIVE_SCANNER, encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
@@ -358,7 +374,7 @@ def test_history_proof_rejects_intermediate_raise_then_restore(
     original = cycles.build_inventory(tmp_path, source_revision=before)
     policy_path.write_text(cycles.canonical_json(original), encoding="utf-8")
     (tmp_path / "taskplane" / "import_cycles.py").write_text(
-        "# activation marker\n", encoding="utf-8")
+        ACTIVE_SCANNER, encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
@@ -379,7 +395,9 @@ def test_history_proof_rejects_intermediate_raise_then_restore(
     policy_path.write_text(cycles.canonical_json(original), encoding="utf-8")
     _commit(tmp_path, "restore original policy")
 
-    with pytest.raises(cycles.CycleHistoryError, match="policy growth"):
+    with pytest.raises(
+            cycles.CycleHistoryError,
+            match="cycle ratchet violation|policy growth"):
         cycles.verify_history(tmp_path, policy_path)
 
 
@@ -400,7 +418,7 @@ def test_history_proof_rejects_a_cut_in_the_activation_commit(
     policy_path.write_text(cycles.canonical_json(cycles.build_inventory(
         tmp_path, source_revision=before)), encoding="utf-8")
     (tmp_path / "taskplane" / "import_cycles.py").write_text(
-        "# activation marker\n", encoding="utf-8")
+        ACTIVE_SCANNER, encoding="utf-8")
     (tmp_path / "taskplane" / "lens.py").write_text(
         "def no_review_import():\n    return None\n", encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
@@ -413,6 +431,45 @@ def test_history_proof_rejects_a_cut_in_the_activation_commit(
     with pytest.raises(
             cycles.CycleHistoryError,
             match=r"taskplane\.lens -> taskplane\.review"):
+        cycles.verify_history(tmp_path, policy_path)
+
+
+def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write_modules(tmp_path, {
+        "lens": "def f():\n    import review\n",
+        "review": "import lens\n",
+        "depgraph": "def f():\n    import decompose\n",
+        "decompose": "import depgraph\nimport lens_signals\n",
+        "lens_signals": "import depgraph\n",
+        "taskplane_lite": "def f():\n    import depgraph\n",
+    })
+    before = _commit(tmp_path, "before ratchet")
+    policy_path = tmp_path / "taskplane" / "tests" / "fixtures" / \
+        "import-cycles.json"
+    policy_path.parent.mkdir(parents=True)
+    policy_path.write_text(cycles.canonical_json(cycles.build_inventory(
+        tmp_path, source_revision=before)), encoding="utf-8")
+    (tmp_path / "taskplane" / "import_cycles.py").write_text(
+        ACTIVE_SCANNER, encoding="utf-8")
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    active_workflow = (
+        "run: python3 taskplane/import_cycles.py --check --verify-history\n")
+    workflow.write_text(active_workflow, encoding="utf-8")
+    _commit(tmp_path, "activate ratchet")
+
+    workflow.write_text("name: enforcement disabled\n", encoding="utf-8")
+    disabled = _commit(tmp_path, "disable CI")
+    (tmp_path / "taskplane" / "lens.py").write_text(
+        "def f():\n    return None\n", encoding="utf-8")
+    _commit(tmp_path, "cut while disabled")
+    workflow.write_text(active_workflow, encoding="utf-8")
+    _commit(tmp_path, "restore CI")
+
+    with pytest.raises(
+            cycles.CycleHistoryError,
+            match=rf"workflow inactive at revision {disabled}"):
         cycles.verify_history(tmp_path, policy_path)
 
 

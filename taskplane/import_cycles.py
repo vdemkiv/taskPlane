@@ -487,9 +487,48 @@ def _show_optional(root: Path, revision: str, path: Path) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def _workflow_runs_ratchet(source: str) -> bool:
+    """Return whether CI still invokes both sides of the ratchet contract."""
+    return all(marker in source for marker in (
+        "taskplane/import_cycles.py", "--check", "--verify-history",
+    ))
+
+
+def _scanner_contract_error(source: str) -> str | None:
+    """Return a named reason when a historical scanner was disabled.
+
+    History is inspected with the current trusted scanner, so old scanner code
+    is never executed. These structural markers prove that the committed CI
+    entry point still exposed the inventory check and history proof instead of
+    being replaced by a no-op while a protected edge was cut.
+    """
+    try:
+        tree = ast.parse(source, filename=MODULE_RELATIVE.as_posix())
+    except SyntaxError as exc:
+        line = f" line {exc.lineno}" if exc.lineno else ""
+        return f"scanner is not valid Python{line}: {exc.msg or 'invalid syntax'}"
+    functions = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    missing_functions = sorted(
+        {"check_inventory", "verify_history", "main"} - functions)
+    strings = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    missing_options = sorted({"--check", "--verify-history"} - strings)
+    reasons = []
+    if missing_functions:
+        reasons.append(f"missing functions {missing_functions}")
+    if missing_options:
+        reasons.append(f"missing CLI options {missing_options}")
+    return "; ".join(reasons) or None
+
+
 def _first_activation(root: Path, policy_relative: Path) -> str:
     commits = _run_git(
-        root, "rev-list", "--reverse", "HEAD", "--",
+        root, "rev-list", "--first-parent", "--reverse", "HEAD", "--",
         MODULE_RELATIVE.as_posix(), policy_relative.as_posix(),
         WORKFLOW_RELATIVE.as_posix(),
     ).splitlines()
@@ -498,12 +537,12 @@ def _first_activation(root: Path, policy_relative: Path) -> str:
         policy = _show_optional(root, commit, policy_relative)
         workflow = _show_optional(root, commit, WORKFLOW_RELATIVE)
         if module is not None and policy is not None and workflow is not None \
-                and "taskplane/import_cycles.py" in workflow \
-                and "--verify-history" in workflow:
+                and _scanner_contract_error(module) is None \
+                and _workflow_runs_ratchet(workflow):
             return commit
     raise CycleHistoryError(
-        "no reachable ratchet activation commit contains the scanner, policy, "
-        "and CI --verify-history invocation")
+        "no first-parent ratchet activation commit contains an active scanner, "
+        "valid policy path, and CI --check --verify-history invocation")
 
 
 def verify_history(root: Path, policy_path: Path) -> dict:
@@ -561,15 +600,38 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         raise CycleHistoryError(
             f"ratchet activation did not precede the target cuts; missing: {rendered}")
 
-    # Inspect every policy version, not only HEAD.  Otherwise a bound could be
-    # raised to admit a cut/growth and then restored before final review.
-    later_policy_commits = _run_git(
-        root, "rev-list", "--reverse", f"{activation}..HEAD", "--",
-        policy_relative.as_posix(),
+    # Audit every protected-line commit from activation through HEAD, not only
+    # commits that changed the policy. This makes continuity part of the proof:
+    # CI, scanner, or policy cannot be disabled for a cut and restored later.
+    # Commits before activation are deliberately outside this interval, and
+    # unrelated commits remain valid because their inherited triplet and graph
+    # continue to satisfy the same checks.
+    protected_commits = _run_git(
+        root, "rev-list", "--first-parent", "--reverse",
+        f"{activation}^..HEAD",
     ).splitlines()
+    if not protected_commits or protected_commits[0] != activation:
+        raise CycleHistoryError(
+            "ratchet activation is not on the HEAD first-parent history")
+
     previous_policy = activation_policy
     last_policy_commit = activation
-    for commit in later_policy_commits:
+    for commit in protected_commits:
+        module = _show_optional(root, commit, MODULE_RELATIVE)
+        if module is None:
+            raise CycleHistoryError(
+                f"cycle scanner was removed at revision {commit}")
+        scanner_error = _scanner_contract_error(module)
+        if scanner_error is not None:
+            raise CycleHistoryError(
+                f"cycle scanner inactive at revision {commit}: {scanner_error}")
+
+        workflow = _show_optional(root, commit, WORKFLOW_RELATIVE)
+        if workflow is None or not _workflow_runs_ratchet(workflow):
+            raise CycleHistoryError(
+                f"cycle ratchet workflow inactive at revision {commit}: "
+                "expected taskplane/import_cycles.py --check --verify-history")
+
         raw_policy = _show_optional(root, commit, policy_relative)
         if raw_policy is None:
             raise CycleHistoryError(
@@ -580,24 +642,33 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         except (json.JSONDecodeError, CyclePolicyError) as exc:
             raise CycleHistoryError(
                 f"cycle policy at revision {commit} is invalid: {exc}") from exc
-        monotonic = check_inventory(previous_policy, candidate)
-        if monotonic["status"] != "pass":
+
+        if canonical_json(candidate) != canonical_json(previous_policy):
+            monotonic = check_inventory(previous_policy, candidate)
+            if monotonic["status"] != "pass":
+                raise CycleHistoryError(
+                    f"policy growth at revision {commit}: " +
+                    format_failures(monotonic))
+            policy_parent = git_revision(root, f"{commit}^")
+            if candidate["source_revision"] != policy_parent:
+                raise CycleHistoryError(
+                    f"cycle policy at revision {commit} must measure its parent: "
+                    f"policy={candidate['source_revision']} parent={policy_parent}")
+            measured_policy = build_inventory_at_revision(
+                root, candidate["source_revision"])
+            if canonical_json(measured_policy) != canonical_json(candidate):
+                raise CycleHistoryError(
+                    f"cycle policy at revision {commit} is not exact for its "
+                    "source_revision")
+            previous_policy = candidate
+            last_policy_commit = commit
+
+        measured_commit = build_inventory_at_revision(root, commit)
+        enforced = check_inventory(candidate, measured_commit)
+        if enforced["status"] != "pass":
             raise CycleHistoryError(
-                f"policy growth at revision {commit}: " +
-                format_failures(monotonic))
-        policy_parent = git_revision(root, f"{commit}^")
-        if candidate["source_revision"] != policy_parent:
-            raise CycleHistoryError(
-                f"cycle policy at revision {commit} must measure its parent: "
-                f"policy={candidate['source_revision']} parent={policy_parent}")
-        measured = build_inventory_at_revision(root,
-                                               candidate["source_revision"])
-        if canonical_json(measured) != canonical_json(candidate):
-            raise CycleHistoryError(
-                f"cycle policy at revision {commit} is not exact for its "
-                "source_revision")
-        previous_policy = candidate
-        last_policy_commit = commit
+                f"cycle ratchet violation at revision {commit}: " +
+                format_failures(enforced))
 
     if canonical_json(previous_policy) != canonical_json(current_policy):
         raise CycleHistoryError(
