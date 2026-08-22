@@ -6307,8 +6307,22 @@ def _utf8_streams() -> None:
             pass
 
 
+def _enforce_stage_compatibility() -> None:
+    """Refuse a broken stage dependency before opening governed state."""
+    import run_store as repository_run_store
+    try:
+        repository_run_store.ensure_stage_compatibility()
+    except repository_run_store.TaskplaneCompatibilityError as exc:
+        if os.environ.get("TASKPLANE_DEBUG"):
+            raise
+        print("taskplane: compatibility failed: "
+              f"TaskplaneCompatibilityError: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
 def main(argv=None) -> int:
     _utf8_streams()
+    _enforce_stage_compatibility()
     p = argparse.ArgumentParser(prog="tp.py")
     sub = p.add_subparsers(dest="cmd", required=True)
 
