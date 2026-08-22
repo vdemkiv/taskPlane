@@ -118,13 +118,24 @@ class GraphQualityDegraded(RuntimeError):
     """A strict graph consumer refused the persisted producer record."""
 
 
+def _fingerprinted_scan_quality(record: dict) -> dict:
+    """Bind graph-scan quality to canonical material, excluding itself."""
+    material = copy.deepcopy(record)
+    material.pop("fingerprint", None)
+    digest = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    material["fingerprint"] = digest
+    return material
+
+
 def scan_quality(graph: dict) -> dict:
     """Return the canonical producer-complete graph scan quality record."""
     raw = ((graph or {}).get("meta") or {}).get("graph_scan_quality")
     if isinstance(raw, dict) and raw.get("schema") == \
             GRAPH_SCAN_QUALITY_SCHEMA:
-        return raw
-    return {
+        return _fingerprinted_scan_quality(raw)
+    return _fingerprinted_scan_quality({
         "schema": GRAPH_SCAN_QUALITY_SCHEMA,
         "degraded": False,
         "mode": "modules",
@@ -137,7 +148,7 @@ def scan_quality(graph: dict) -> dict:
             "decomposition": {"status": "not-requested", "failures": []},
         },
         "recovery": GRAPH_SCAN_RECOVERY,
-    }
+    })
 
 
 def quality_errors(graph: dict) -> list[str]:
@@ -1138,7 +1149,7 @@ def _graph_scan_quality(base_failures: list[dict], dstats: dict | None,
     base.sort(key=key)
     decomposition.sort(key=key)
     failures = sorted(base + decomposition, key=key)
-    return {
+    return _fingerprinted_scan_quality({
         "schema": GRAPH_SCAN_QUALITY_SCHEMA,
         "degraded": bool(failures),
         "mode": "components" if decompose else "modules",
@@ -1159,7 +1170,7 @@ def _graph_scan_quality(base_failures: list[dict], dstats: dict | None,
             },
         },
         "recovery": GRAPH_SCAN_RECOVERY,
-    }
+    })
 
 
 def _scan_locked(ws: str, into: dict | None = None,
@@ -1276,23 +1287,29 @@ def _scan_locked(ws: str, into: dict | None = None,
         try:
             st = os.stat(full)
             size, mtime = st.st_size, int(st.st_mtime)
+            mtime_ns = st.st_mtime_ns
         except OSError:
-            size = mtime = None
-        # mtime+size short-circuit: an unchanged file keeps its cached hash,
+            size = mtime = mtime_ns = None
+        # Nanosecond-mtime+size short-circuit: an unchanged file keeps its
+        # cached hash,
         # imports AND edges WITHOUT being re-read or re-hashed. This is what
         # makes a rescan scale with the DIFF, not the whole tree — on a big
         # repo the em-gate true-up and retro no longer re-hash every file.
         if (cached and size is not None and cached.get("size") == size
-                and cached.get("mtime") == mtime and "imports" in cached
+                and cached.get("mtime_ns") == mtime_ns
+                and "imports" in cached
                 and "refs" in cached
                 and (not rel.endswith(".py")
-                     or cached.get("parse_checked") is True)):
+                     or cached.get("parse_checked") is True)
+                and not (rel.endswith(".py") and
+                         isinstance(cached.get("parse_failure"), dict))):
             imports = set(cached["imports"])
             imports.discard(mod)
             refs = list(cached["refs"])
             file_entries[rel] = {"hash": cached.get("hash", ""),
                                  "imports": sorted(imports), "refs": refs,
-                                 "size": size, "mtime": mtime}
+                                 "size": size, "mtime": mtime,
+                                 "mtime_ns": mtime_ns}
             if rel.endswith(".py"):
                 file_entries[rel]["parse_checked"] = True
                 failure = cached.get("parse_failure")
@@ -1368,7 +1385,8 @@ def _scan_locked(ws: str, into: dict | None = None,
         imports.discard(mod)
         refs = sorted(_file_refs(src, rel, files, artifact_only=True))
         file_entries[rel] = {"hash": digest, "imports": sorted(imports),
-                             "refs": refs, "size": size, "mtime": mtime}
+                             "refs": refs, "size": size, "mtime": mtime,
+                             "mtime_ns": mtime_ns}
         if rel.endswith(".py"):
             file_entries[rel]["parse_checked"] = True
             if parse_failure is not None:
@@ -1392,14 +1410,17 @@ def _scan_locked(ws: str, into: dict | None = None,
         try:
             st = os.stat(full)
             size, mtime = st.st_size, int(st.st_mtime)
+            mtime_ns = st.st_mtime_ns
         except OSError:
-            size = mtime = None
+            size = mtime = mtime_ns = None
         if (cached and size is not None and cached.get("size") == size
-                and cached.get("mtime") == mtime and "refs" in cached):
+                and cached.get("mtime_ns") == mtime_ns
+                and "refs" in cached):
             refs = list(cached["refs"])
             file_entries[rel] = {"hash": cached.get("hash", ""),
                                  "imports": [], "refs": refs,
                                  "size": size, "mtime": mtime,
+                                 "mtime_ns": mtime_ns,
                                  "artifact": True}
             ref_rows.append((rel, _mod(rel), refs))
             continue
@@ -1412,7 +1433,7 @@ def _scan_locked(ws: str, into: dict | None = None,
         file_entries[rel] = {
             "hash": hashlib.sha1(src.encode()).hexdigest()[:12],
             "imports": [], "refs": refs, "size": size, "mtime": mtime,
-            "artifact": True}
+            "mtime_ns": mtime_ns, "artifact": True}
         ref_rows.append((rel, _mod(rel), refs))
 
     # manifests: .csproj project/package references, Gemfile gems

@@ -1,6 +1,7 @@
 """R-0006 B3: graph degradation is producer-complete and gateable."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -107,6 +108,62 @@ def test_repeated_and_legacy_cached_scans_preserve_base_failures(
     dg.save(str(ws), legacy)
     repaired = dg.scan(str(ws))
     assert _base_failure(_quality(repaired)) == expected
+
+
+def test_cached_python_failure_rechecks_same_size_preserved_mtime_repair(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "store"))
+    ws = _broken_workspace(tmp_path)
+    first = dg.scan(str(ws))
+    assert _quality(first)["degraded"] is True
+
+    path = ws / "app" / "broken.py"
+    before = path.stat()
+    broken = path.read_text(encoding="utf-8")
+    assert broken.endswith("def broken(:\n")
+    repaired = broken.removesuffix("def broken(:\n") + "fixed = None\n"
+    assert len(repaired.encode()) == before.st_size
+    path.write_text(repaired, encoding="utf-8")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    preserved = path.stat()
+    assert (preserved.st_size, preserved.st_mtime_ns) == \
+        (before.st_size, before.st_mtime_ns)
+
+    second = dg.scan(str(ws))
+    quality = _quality(second)
+    assert quality["degraded"] is False
+    assert quality["failures"] == []
+    row = second["files"]["app/broken.py"]
+    assert row["parse_checked"] is True
+    assert "parse_failure" not in row
+    assert row["hash"] != first["files"]["app/broken.py"]["hash"]
+
+
+def test_graph_scan_quality_fingerprint_is_stable_and_content_bound(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "store"))
+    quality = _quality(dg.scan(str(_broken_workspace(tmp_path))))
+    assert len(quality["fingerprint"]) == 64
+    assert set(quality["fingerprint"]) <= set("0123456789abcdef")
+
+    material = dict(quality)
+    material.pop("fingerprint")
+    expected = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert quality["fingerprint"] == expected
+
+    same = dg._graph_scan_quality(
+        quality["producers"]["base-scanner"]["failures"], None,
+        decompose=False, scanned_revision=quality["scanned_revision"])
+    assert same["fingerprint"] == quality["fingerprint"]
+    changed_failure = dict(
+        quality["producers"]["base-scanner"]["failures"][0],
+        reason="different parse failure")
+    changed = dg._graph_scan_quality(
+        [changed_failure], None, decompose=False,
+        scanned_revision=quality["scanned_revision"])
+    assert changed["fingerprint"] != quality["fingerprint"]
 
 
 def _run_graph(ws: Path, store: Path, *args: str) -> subprocess.CompletedProcess:
@@ -235,6 +292,26 @@ def test_standalone_review_continues_with_degraded_warning_and_floors(
     assert scan_quality["degraded"] is True
     assert scan_quality["failures"][0]["file"] == \
         "app/broken.py"
+    decision_path = ws / output["routing_decision"]["relative_path"]
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    dispositions = decision["dispositions"]
+    for lens_id in ("architecture", "security"):
+        row = dispositions[lens_id]
+        assert row["verdict"] in {"light", "deep"}
+        assert "degraded graph fallback" in row["floor"]
+        assert any("degraded graph fallback" in item
+                   for item in row["evidence"])
+    slotted = {lens_id for slot in output["slots"]
+               for lens_id in slot["lens_ids"]}
+    assert {"architecture", "security"} <= slotted
+    sweep = next(slot for slot in output["slots"]
+                 if slot["slot_id"] == "light-sweep")
+    brief_path = ws / sweep["brief"]["relative_path"]
+    brief = json.loads(brief_path.read_text(encoding="utf-8"))
+    assert {"architecture", "security"} <= set(brief["lens_ids"])
+    assert any(row["lens"] == "security"
+               for row in brief["language_references"])
+    assert "plugin-pinned language references" in brief["prompt"]
 
 
 def test_clean_scan_keeps_legacy_cli_shape_and_allows_strict(

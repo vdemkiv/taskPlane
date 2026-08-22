@@ -5021,6 +5021,71 @@ def cmd_review(a) -> int:
         diff_ref = store.put("diff", {"base": base, "patch": patch,
                                       "files": files})
         symbols = rv.changed_symbols_from_patch(patch)
+        routing_content = rv.changed_content_from_patch(patch)
+        review_router = None
+        if graph_errors:
+            import lens as lensmod
+
+            def _degraded_review_router():
+                routing = lensmod.route(
+                    files, task_type="review", breadth="routed",
+                    stage="review", workspace=ws,
+                    requirement_text=None,
+                    content_by_file=routing_content)
+                guardrails = ("architecture", "security")
+                by_id = {str(row.get("id") or ""): row
+                         for row in routing.get("lenses") or []}
+                for lens_id in guardrails:
+                    row = by_id.get(lens_id)
+                    if row is None:
+                        continue
+                    tier = str(row.get("tier") or row.get("verdict") or "")
+                    reason = f"degraded graph fallback: {lens_id} floor"
+                    if tier not in {"light", "deep"}:
+                        row["initial_verdict"] = tier or "n/a"
+                        row["tier"] = "light"
+                        row["verdict"] = "light"
+                        row["mode"] = "inline"
+                        row.pop("negative_evidence", None)
+                    row["floor"] = reason
+                    for key in ("evidence", "reasons"):
+                        values = row.setdefault(key, [])
+                        if reason not in values:
+                            values.append(reason)
+                context = routing.setdefault("context", {})
+                progression = context.setdefault("review_progression", {})
+                sweep_lenses = list(progression.get("sweep_lenses") or [])
+                for lens_id in guardrails:
+                    row = by_id.get(lens_id) or {}
+                    tier = str(row.get("tier") or row.get("verdict") or "")
+                    if tier == "light" and lens_id not in sweep_lenses:
+                        # The two advertised guardrails are a fixed, bounded
+                        # widening of the existing single sweep. Keeping them
+                        # in the same slot avoids a second review wave while
+                        # ensuring dispatch cannot filter either floor out.
+                        sweep_lenses.append(lens_id)
+                progression["sweep_lenses"] = sweep_lenses
+                progression["sweep_count"] = 1 if sweep_lenses else 0
+                progression["deferred_light"] = [
+                    lens_id for lens_id in
+                    progression.get("deferred_light") or []
+                    if lens_id not in guardrails]
+                context["graph_quality_fallback"] = {
+                    "mode": "immutable_diff",
+                    "guardrails": ["architecture_floor",
+                                   "security_floor"],
+                    "sweep_widening": [
+                        lens_id for lens_id in guardrails
+                        if lens_id in sweep_lenses],
+                }
+                # Routing attached language references before the fallback
+                # promoted security. Refresh that deterministic attachment so
+                # the stored sweep brief applies the newly active floor too.
+                routing = lensmod._attach_language_context(
+                    routing, files, "review")
+                return routing
+
+            review_router = _degraded_review_router
         manifest = rv.start_review(
             ws, target=rec, graph=g, impact=imp,
             diff={"files": files, "changed_symbols": symbols,
@@ -5030,7 +5095,7 @@ def cmd_review(a) -> int:
             task_type="review", base=base,
             caller_expander=(None if graph_errors else
                              rv.bounded_caller_expander(g)),
-            routing_content=rv.changed_content_from_patch(patch))
+            router=review_router, routing_content=routing_content)
         if manifest.get("status") not in {"ready", "needs_user"}:
             if repository_run:
                 import run_store as repository_run_store
