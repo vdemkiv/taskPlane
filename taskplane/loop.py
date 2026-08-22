@@ -5102,8 +5102,23 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
         except Exception as exc:
             errors.append("evaluation leased slot collection failed: "
                           f"{exc.__class__.__name__}: {exc}")
-    if not kernel or kernel.get("status") != "complete" or \
-            kernel.get("stage") != EVALUATE_ROUTE_STAGE:
+    quick_output_sufficient = False
+    if kernel and kernel.get("stage") == EVALUATE_ROUTE_STAGE:
+        try:
+            import review_evidence as _review_evidence
+            quality = _review_evidence.ArtifactStore(kernel_ws).read(
+                kernel["quality"])
+            quick_output_sufficient = \
+                runtime_eval._complete_quick_only_evaluation(
+                    kernel, quality, verdict, _review)
+        except Exception:
+            # The ordinary complete-kernel path remains the fail-closed
+            # fallback when the narrow R-0006 quick-output proof is absent or
+            # malformed.
+            quick_output_sufficient = False
+    if (not kernel or kernel.get("status") != "complete" or
+            kernel.get("stage") != EVALUATE_ROUTE_STAGE) and \
+            not quick_output_sufficient:
         errors.append("evaluation selective review kernel is missing or incomplete")
     if verdict.get("task") != task.get("id"):
         errors.append("evaluation evidence is for task "
@@ -5134,7 +5149,7 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
         errors.append(
             f"canonical blocking finding prevents Evaluate pass: {lens_id} "
             f"({count})")
-    if set(canonical_rows) != expected_lenses:
+    if not quick_output_sufficient and set(canonical_rows) != expected_lenses:
         missing_slots = sorted(expected_lenses - set(canonical_rows))
         unexpected_slots = sorted(set(canonical_rows) - expected_lenses)
         if missing_slots:
@@ -5155,7 +5170,7 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
             errors.append(f"routed lens has no verdict: {lens_id}")
         else:
             canonical = canonical_rows.get(lens_id)
-            if canonical is None:
+            if canonical is None and not quick_output_sufficient:
                 errors.append(f"routed lens lacks a leased slot result: {lens_id}")
                 continue
             try:
@@ -5164,7 +5179,7 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
                 blocker_count = 1
             if row.get("verdict") != "pass" or blocker_count > 0:
                 errors.append(f"routed lens did not pass cleanly: {lens_id}")
-            if (row.get("verdict"), blocker_count) != \
+            if canonical is not None and (row.get("verdict"), blocker_count) != \
                     (canonical.get("verdict"), canonical.get("blockers")):
                 errors.append(
                     f"routed lens verdict contradicts leased result: {lens_id}")

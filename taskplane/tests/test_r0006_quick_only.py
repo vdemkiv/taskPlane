@@ -4,6 +4,7 @@ import os
 import pytest
 
 import lens
+import loop
 import review
 import review_evidence
 import review_progression
@@ -497,6 +498,65 @@ def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
 
     assert facts == {key: True for key in runtime_eval.REVIEW_FACTS}
     assert runtime_eval.assess("evaluate", facts)["status"] == "on_path"
+
+
+def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
+        tmp_path, monkeypatch):
+    workspace = str(tmp_path / "evaluator-quick-gate")
+    opened = review.start_review(
+        workspace, **_start_args({"id": "R-0006"}))
+    review.collect_review(
+        workspace, publish=False, run_id=opened["run_id"])
+    kernel = review._load_state(workspace, opened["run_id"])
+    _write_green_evaluator_output(workspace, kernel)
+    task = {
+        "id": "t02-wave1-quick-only-review-policy",
+        "req": "R-0006",
+        "criteria": ["quick output is sufficient"],
+        "contracts": ["contract:review.collection"],
+    }
+    state = {"step": "evaluate", "graph_governance": False}
+    binding = {"workspace": workspace, "run_id": opened["run_id"]}
+    monkeypatch.setattr(
+        loop, "review_kernel_binding", lambda *_args: binding)
+    monkeypatch.setattr(loop, "_design_current_errors", lambda *_args: [])
+
+    assert loop._evaluation_errors(workspace, state, task) == []
+
+
+def test_evaluate_gate_still_rejects_substantive_quick_output(
+        tmp_path, monkeypatch):
+    workspace = str(tmp_path / "evaluator-quick-gate-blocker")
+    opened = review.start_review(
+        workspace, **_start_args({"id": "R-0006"}))
+    review.collect_review(
+        workspace, publish=False, run_id=opened["run_id"])
+    kernel = review._load_state(workspace, opened["run_id"])
+    _write_green_evaluator_output(workspace, kernel)
+    path = runtime_storage.evaluation_path(workspace)
+    with open(path, encoding="utf-8") as stream:
+        verdict = json.load(stream)
+    verdict["lenses"][0].update({"verdict": "fail", "blockers": 1})
+    with open(path, "w", encoding="utf-8") as stream:
+        json.dump(verdict, stream, sort_keys=True)
+    task = {
+        "id": "t02-wave1-quick-only-review-policy",
+        "req": "R-0006",
+        "criteria": ["quick output is sufficient"],
+        "contracts": ["contract:review.collection"],
+    }
+    state = {"step": "evaluate", "graph_governance": False}
+    binding = {"workspace": workspace, "run_id": opened["run_id"]}
+    monkeypatch.setattr(
+        loop, "review_kernel_binding", lambda *_args: binding)
+    monkeypatch.setattr(loop, "_design_current_errors", lambda *_args: [])
+
+    errors = loop._evaluation_errors(workspace, state, task)
+
+    assert "evaluation selective review kernel is missing or incomplete" in \
+        errors
+    assert any("routed lens lacks a leased slot result" in error
+               for error in errors), errors
 
 
 def test_evaluator_quick_output_fails_closed_on_lens_or_provisional_blocker(
