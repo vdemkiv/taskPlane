@@ -64,8 +64,15 @@ def baseline_fixture(tmp_path, monkeypatch):
     design.mkdir()
     (design / "design.md").write_text("approved design\n", encoding="utf-8")
     (design / "contract.json").write_text("{}\n", encoding="utf-8")
-    _git(workspace, "add", "design")
-    _git(workspace, "commit", "-qm", "design")
+    (design / "visual.html").write_text(
+        "<p>approved visual</p>\n", encoding="utf-8")
+    plan = workspace / "plan"
+    plan.mkdir()
+    (plan / "plan.md").write_text("# Approved plan\n", encoding="utf-8")
+    (plan / "tasks.json").write_text(
+        '{"tasks": []}\n', encoding="utf-8")
+    _git(workspace, "add", "design", "plan")
+    _git(workspace, "commit", "-qm", "approved design and plan")
     revision = _git(workspace, "rev-parse", "HEAD")
 
     run_id = "fresh-run"
@@ -114,7 +121,11 @@ def baseline_fixture(tmp_path, monkeypatch):
             "sha256": hashlib.sha256(
                 (workspace / path).read_bytes()).hexdigest(),
         }
-        for path in ("design/design.md", "design/contract.json")
+        for path in (
+            "design/design.md",
+            "design/contract.json",
+            "design/visual.html",
+        )
     ]
     enforcement = {
         "schema": "taskplane.enforcement-status/v1",
@@ -182,7 +193,11 @@ def test_baseline_binds_fresh_revision_graph_plan_design_and_knowledge(
         "scanned_revision": baseline_fixture["revision"],
     }
     assert result["plan_authority"]["stale"] is False
-    assert len(result["prior_design"]) == 2
+    assert result["plan_authority"]["revision"] == \
+        baseline_fixture["revision"]
+    assert len(result["plan_authority"]["entries"]) == 2
+    assert len(result["plan_authority"]["fingerprint"]) == 64
+    assert len(result["prior_design"]) == 3
     assert result["knowledge"]["preserved"] is True
     assert result["enforcement"]["status"] == "advisory"
     assert result["enforcement"]["enforced"] is False
@@ -257,6 +272,51 @@ def test_obsolete_run_stale_plan_graph_or_prior_design_drift_blocks(
     drift[0]["sha256"] = "0" * 64
     with pytest.raises(preflight.PreflightError, match="prior Design drift"):
         _verify(baseline_fixture, prior_design=drift)
+
+
+def test_prior_design_closed_set_includes_committed_visual(baseline_fixture):
+    without_visual = [
+        row for row in baseline_fixture["prior_design"]
+        if row["path"] != "design/visual.html"
+    ]
+    with pytest.raises(preflight.PreflightError,
+                       match="prior Design evidence is incomplete"):
+        _verify(baseline_fixture, prior_design=without_visual)
+
+    drift = [dict(row) for row in baseline_fixture["prior_design"]]
+    next(row for row in drift if row["path"] == "design/visual.html")[
+        "sha256"] = "0" * 64
+    with pytest.raises(preflight.PreflightError,
+                       match="prior Design drift detected for design/visual"):
+        _verify(baseline_fixture, prior_design=drift)
+
+    visual = os.path.join(
+        baseline_fixture["workspace"], "design", "visual.html")
+    with open(visual, "w", encoding="utf-8") as handle:
+        handle.write("<p>changed visual</p>\n")
+    with pytest.raises(preflight.PreflightError,
+                       match="prior Design drift detected for design/visual"):
+        _verify(baseline_fixture)
+
+
+def test_plan_authority_fingerprints_canonical_checkout_bytes(
+        baseline_fixture):
+    workspace = baseline_fixture["workspace"]
+    plan_path = os.path.join(workspace, "plan", "plan.md")
+    with open(plan_path, "w", encoding="utf-8") as handle:
+        handle.write("# Stale plan\n")
+
+    with pytest.raises(preflight.PreflightError,
+                       match="stale Plan payload is active for plan/plan.md"):
+        _verify(baseline_fixture)
+
+    _git(workspace, "checkout", "--", "plan/plan.md")
+    with open(os.path.join(workspace, "plan", "unexpected.md"), "w",
+              encoding="utf-8") as handle:
+        handle.write("stale payload\n")
+    with pytest.raises(preflight.PreflightError,
+                       match="stale Plan authority is active"):
+        _verify(baseline_fixture)
 
 
 def test_only_live_is_enforced_and_advisory_must_be_bounded_and_attributable(

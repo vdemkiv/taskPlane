@@ -129,15 +129,25 @@ def _git_output(workspace: str, *args: str, binary: bool = False):
 def _verify_prior_design(workspace: str, entries: list[dict]) -> list[dict]:
     if not isinstance(entries, list) or not entries:
         raise PreflightError("prior Design evidence is absent")
-    expected_paths = {"design/design.md", "design/contract.json"}
     supplied_paths = ({str(row.get("path") or "") for row in entries}
                       if all(isinstance(row, dict) for row in entries)
                       else set())
-    if supplied_paths != expected_paths:
-        raise PreflightError("prior Design evidence is incomplete")
     revisions = {str(row.get("revision") or "") for row in entries}
     if len(revisions) != 1 or not next(iter(revisions), ""):
         raise PreflightError("prior Design evidence is not one committed view")
+    prior_revision = next(iter(revisions))
+    expected_paths = set(filter(None, _git_output(
+        workspace, "ls-tree", "-r", "--name-only", prior_revision,
+        "--", "design").splitlines()))
+    current_revision = _git_output(workspace, "rev-parse", "HEAD")
+    current_paths = set(filter(None, _git_output(
+        workspace, "ls-tree", "-r", "--name-only", current_revision,
+        "--", "design").splitlines()))
+    if (not expected_paths or supplied_paths != expected_paths
+            or current_paths != expected_paths
+            or set(_closed_checkout_paths(
+                workspace, "design")) != expected_paths):
+        raise PreflightError("prior Design evidence is incomplete")
     verified: list[dict] = []
     for raw in entries:
         if not isinstance(raw, dict):
@@ -153,12 +163,91 @@ def _verify_prior_design(workspace: str, entries: list[dict]) -> list[dict]:
         digest = hashlib.sha256(data).hexdigest()
         if digest != expected:
             raise PreflightError(f"prior Design drift detected for {path}")
+        current = _git_output(
+            workspace, "show", f"{current_revision}:{path}", binary=True)
+        checkout_path = os.path.join(workspace, *path.split("/"))
+        checkout_size, checkout_digest = _sha256_file(checkout_path)
+        if (current != data or checkout_size != len(data)
+                or checkout_digest != digest):
+            raise PreflightError(f"prior Design drift detected for {path}")
         object_id = _git_output(
             workspace, "rev-parse", f"{revision}:{path}")
         verified.append({"revision": revision, "path": path,
                          "object_id": object_id, "bytes": len(data),
                          "sha256": digest})
     return verified
+
+
+def _closed_checkout_paths(root: str, relative_root: str) -> list[str]:
+    """Return every regular path below one checkout root, without links."""
+    absolute_root = os.path.join(root, relative_root)
+    if not os.path.isdir(absolute_root) or os.path.islink(absolute_root):
+        raise PreflightError(f"canonical {relative_root}/ payload is absent")
+    paths: list[str] = []
+    for directory, names, filenames in os.walk(
+            absolute_root, followlinks=False):
+        names.sort()
+        filenames.sort()
+        for name in names:
+            if os.path.islink(os.path.join(directory, name)):
+                raise PreflightError(
+                    f"canonical {relative_root}/ payload contains a symlink")
+        for name in filenames:
+            path = os.path.join(directory, name)
+            if os.path.islink(path) or not os.path.isfile(path):
+                raise PreflightError(
+                    f"canonical {relative_root}/ payload is not regular")
+            paths.append(os.path.relpath(path, root).replace(os.sep, "/"))
+    return sorted(paths)
+
+
+def _verify_active_plan(workspace: str, revision: str, run_id: str,
+                        active_plan: dict) -> dict:
+    """Bind approved Plan metadata to the complete committed Plan payload."""
+    plan = active_plan if isinstance(active_plan, dict) else {}
+    supplied_paths = plan.get("paths")
+    if (plan.get("run_id") != run_id or plan.get("status") != "approved"
+            or not isinstance(supplied_paths, list) or not supplied_paths
+            or any(not isinstance(path, str) or not path.startswith("plan/")
+                   or ".." in path.split("/") for path in supplied_paths)):
+        raise PreflightError("stale Plan authority is active")
+
+    committed_output = _git_output(
+        workspace, "ls-tree", "-r", "--name-only", revision, "--", "plan")
+    committed_paths = sorted(
+        path for path in committed_output.splitlines() if path)
+    if (not committed_paths
+            or sorted(supplied_paths) != committed_paths
+            or len(set(supplied_paths)) != len(supplied_paths)
+            or _closed_checkout_paths(workspace, "plan") != committed_paths):
+        raise PreflightError("stale Plan authority is active")
+
+    entries: list[dict] = []
+    for path in committed_paths:
+        committed = _git_output(
+            workspace, "show", f"{revision}:{path}", binary=True)
+        checkout_path = os.path.join(workspace, *path.split("/"))
+        size, digest = _sha256_file(checkout_path)
+        if size != len(committed) or digest != hashlib.sha256(
+                committed).hexdigest():
+            raise PreflightError(f"stale Plan payload is active for {path}")
+        entries.append({
+            "path": path,
+            "object_id": _git_output(
+                workspace, "rev-parse", f"{revision}:{path}"),
+            "bytes": size,
+            "sha256": digest,
+        })
+    authority = {
+        "run_id": run_id,
+        "status": "approved",
+        "revision": revision,
+        "paths": committed_paths,
+        "entries": entries,
+        "stale": False,
+    }
+    authority["fingerprint"] = _canonical_digest(authority)
+    return authority
 
 
 def _baseline_enforcement(value: dict,
@@ -236,18 +325,12 @@ def verify_governance_baseline(
             or primary_locator.get("repo_id") != locator.get("repo_id")):
         raise PreflightError("primary checkout has an obsolete run pointer")
     locator = primary_locator
-    plan = active_plan if isinstance(active_plan, dict) else {}
-    plan_paths = plan.get("paths")
-    if (plan.get("run_id") != run_id or plan.get("status") != "approved"
-            or not isinstance(plan_paths, list) or not plan_paths
-            or any(not isinstance(path, str) or not path.startswith("plan/")
-                   or ".." in path.split("/") for path in plan_paths)):
-        raise PreflightError("stale Plan authority is active")
-
     revision = _git_output(root, "rev-parse", "HEAD")
     branch = _git_output(root, "branch", "--show-current") or None
     if branch != "main":
         raise PreflightError("governance baseline must record the main revision")
+    plan_authority = _verify_active_plan(
+        root, revision, run_id, active_plan)
     paths = locator.get("paths") or {}
     graph_path = os.path.join(str(paths.get("graph") or ""), "graph.json")
     try:
@@ -279,8 +362,7 @@ def verify_governance_baseline(
                 "obsolete_pointer": False},
         "graph": {"fingerprint": fingerprint,
                   "scanned_revision": scanned_revision},
-        "plan_authority": {"run_id": run_id, "status": "approved",
-                           "paths": list(plan_paths), "stale": False},
+        "plan_authority": plan_authority,
         "prior_design": design,
         "knowledge": knowledge,
         "enforcement": enforcement_record,
