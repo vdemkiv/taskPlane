@@ -26,6 +26,7 @@ import contextvars
 import copy
 import gzip
 import hashlib
+import importlib
 import subprocess
 import sys as _sys
 import json
@@ -34,6 +35,8 @@ import os
 import re
 import time
 
+import graph_decomposition
+import graph_primitives
 import storage as runtime_storage
 import taskplane_lite as tp
 
@@ -105,7 +108,7 @@ _GRAPH_CACHE: dict[str, tuple] = {}
 # Active batched mutations: abs graph path -> the in-flight graph dict.
 # See batch().
 _BATCH: dict[str, dict] = {}
-_SCANNER_CACHE_VERSION: str | None = None
+_SCANNER_CACHE_VERSION: dict[bool, str] = {}
 _STRICT_GRAPH_QUALITY = contextvars.ContextVar(
     "taskplane_strict_graph_quality", default=False)
 
@@ -190,15 +193,25 @@ def _stat_sig(p: str):
 
 def scanner_cache_version(*, decompose: bool = False) -> str:
     """Content identity of this scanner plus its requested graph layer."""
-    global _SCANNER_CACHE_VERSION
-    if _SCANNER_CACHE_VERSION is None:
+    cached = _SCANNER_CACHE_VERSION.get(bool(decompose))
+    if cached is None:
         try:
-            with open(__file__, "rb") as handle:
-                _SCANNER_CACHE_VERSION = hashlib.sha256(
-                    handle.read()).hexdigest()[:16]
+            sources = [__file__, graph_primitives.__file__]
+            if decompose:
+                sources.extend((
+                    graph_decomposition.__file__,
+                    os.path.join(os.path.dirname(__file__),
+                                 "lens_signals.py"),
+                ))
+            digest = hashlib.sha256()
+            for source in sources:
+                with open(source, "rb") as handle:
+                    digest.update(handle.read())
+            cached = digest.hexdigest()[:16]
         except OSError:
-            _SCANNER_CACHE_VERSION = "unavailable"
-    return f"{_SCANNER_CACHE_VERSION}-{'components' if decompose else 'modules'}"
+            cached = "unavailable"
+        _SCANNER_CACHE_VERSION[bool(decompose)] = cached
+    return f"{cached}-{'components' if decompose else 'modules'}"
 
 
 def _managed_cache_path(ws: str, *, decompose: bool) -> tuple[str, str] | None:
@@ -285,6 +298,11 @@ def load(ws: str) -> dict:
     g.setdefault("recorded", [])
     _GRAPH_CACHE[p] = (sig, g)
     return g
+
+
+# Lens projection reads graph state through the persistence owner's callable,
+# keeping lens_signals below depgraph without copying path/store semantics.
+graph_primitives.register_graph_loader(load)
 
 
 def save(ws: str, g: dict) -> None:
@@ -375,323 +393,25 @@ def summary(ws: str) -> dict:
             "edges": len(g.get("edges") or [])}
 
 
-# ------------------------------------------------------------------ modules
-
-# Directory names that mark a source root — the module is the FEATURE
-# directly under them, so real structure (auth, payment, …) shows instead
-# of the whole app collapsing into one node.
-_SRC_ROOTS = ("src", "app", "lib", "packages", "pkg", "internal", "cmd")
-
-
-# --------------------------------------------------- declared module identity
-#
-# D-0007. Path-depth guessing INVENTS module ids. On a workspace monorepo the
-# scanner found the right SHAPE — four modules, two edges — under four names
-# nobody uses: `ui`, `core`, `svc/gateway`, `svc/billing`, where every
-# manifest, every import statement and every human says `@acme/ui`,
-# `@acme/core`, `acme/gateway`, `acme/billing`. An invented id cannot be
-# cross-referenced with anything, which is most of what an id is for: `graph
-# impact` answering "touches ui" is not an answer a reviewer can carry back to
-# the codebase.
-#
-# THE RULE, and it is narrower than "read every manifest": adopt a declared
-# name only when that name is what other code IMPORTS the module by.
-#
-#   package.json `name`   IS the specifier — `import "@acme/core"`.      ADOPT
-#   go.mod `module`       IS the import path — `import "acme/billing"`.  ADOPT
-#   pyproject `name`      is a DISTRIBUTION name; the import name is the
-#                         package DIRECTORY (`pip install pricing`, then
-#                         `import app`). Adopting it would rename
-#                         services/pricing to `pricing` and match nothing.    —
-#   pom.xml `artifactId`  is a build coordinate; Java imports by PACKAGE.      —
-#
-# A manifest at the REPO ROOT is skipped on the same principle: it describes
-# the repository, not a module inside it. `{"name": "shopfront"}` at the root
-# of a polyglot app would otherwise rename the whole tree.
-#
-# The declared directory becomes the module BOUNDARY — everything beneath it
-# belongs to it — because the published/imported unit is exactly what a
-# reviewer's blast radius should be drawn around.
-_GO_MODULE_LINE = re.compile(r"^\s*module\s+(\S+)", re.M)
-_ID_PREFIXES = ("ext:", "svc:", "req:", "contract:", "resource:")
-
-
-def manifest_modules(files, read) -> dict:
-    """{dir_prefix: declared_module_id} from a repo's own build manifests.
-
-    `read(relpath)` returns the file's text or None. Pure and injectable so
-    the rule can be tested without a filesystem.
-    """
-    out: dict = {}
-    for rel in sorted(files or ()):
-        rel = str(rel).replace("\\", "/")
-        base = posixpath.basename(rel)
-        if base not in ("package.json", "go.mod"):
-            continue
-        d = posixpath.dirname(rel)
-        if not d:
-            # A root manifest describes the REPOSITORY, so it must not become
-            # a module id — that would collapse every file into one node.
-            #
-            # But a root `go.mod` is different in the one way that matters
-            # here: its module path is literally the prefix other code
-            # IMPORTS this repo's packages by
-            # (`github.com/aws/karpenter-provider-aws/pkg/...`). Skipping it
-            # entirely meant every intra-repo Go import resolved to `ext:` —
-            # `graph impact` on karpenter-provider-aws reported 2 modules and
-            # no call structure at all, and the review's only blocking finding
-            # had to be traced by hand. It is recorded under a reserved key
-            # and consumed as a PREFIX (see _strip_root_module), never as a
-            # module in its own right.
-            if base == "go.mod":
-                m = _GO_MODULE_LINE.search(read(rel) or "")
-                if m and m.group(1) and "/" in m.group(1):
-                    out[ROOT_MODULE_KEY] = m.group(1).strip()
-            continue
-        text = read(rel)
-        if not text:
-            continue
-        declared = None
-        if base == "package.json":
-            try:
-                data = json.loads(text)
-            except (ValueError, TypeError):
-                continue    # malformed manifest: keep the path-derived id
-            if isinstance(data, dict) and isinstance(data.get("name"), str):
-                declared = data["name"].strip()
-        else:
-            m = _GO_MODULE_LINE.search(text)
-            declared = m.group(1).strip() if m else None
-        if not declared or declared.startswith(_ID_PREFIXES):
-            # a declared name that collides with a reserved node namespace
-            # would make an internal module read as `ext:`/`svc:` to every
-            # consumer — refuse it rather than corrupt the kind
-            continue
-        out[d] = declared.replace("\\", "/").strip("/")
-    return {k: v for k, v in out.items() if v}
-
-
-def declared_module_ids(g: dict | None) -> dict:
-    """The manifest map the last scan resolved, off a loaded graph.
-
-    Consumers that turn CHANGED FILES into module ids must resolve them the
-    same way the scan did, or they compare `packages/ui` against a graph that
-    only contains `@acme/ui` and silently report a zero blast radius.
-    """
-    return ((g or {}).get("meta") or {}).get("module_ids") or {}
-
-
-# Reserved key in the manifest map for the repo's own Go module PATH. Not a
-# module id: it is a prefix that turns an intra-repo import into a repo
-# path. Prefixed with a character no directory can start with, so it can
-# never collide with a real declared name.
-ROOT_MODULE_KEY = "\x00root_module"
-
-
-def _strip_root_module(spec: str, declared_ids) -> "str | None":
-    """`<root module>/pkg/x` -> `pkg/x`, else None.
-
-    Go is the case that needs this: one module path covers the whole repo,
-    so an import of a sibling package carries the repo prefix rather than
-    naming a separately-declared module. Stripping it yields a repo-relative
-    path that `module_of` already knows how to bucket.
-    """
-    return strip_root_prefix(spec, root_module(declared_ids))
-
-
-def root_module(declared_ids) -> "str | None":
-    """The repo's own module path, from whichever shape the caller holds.
-
-    v2.10.0 got this wrong in a way that made the whole feature a no-op.
-    `declared_ids` reaches the resolvers as a DICT from the manifest map and
-    as a SET from `_scan_locked` (`set(manifests.values())`), which needs
-    only membership — and the SET is what the scanner actually holds. The
-    dict-only lookup added then silently returned None there, so the root
-    module path was read from go.mod, stored under a reserved key, and never
-    used by anything. A set cannot carry it: the path is a VALUE with no key
-    to find it by, and guessing which member is the root would be exactly
-    the kind of inference that produces a wrong graph quietly. So this
-    returns None for a set BY DESIGN, and every resolver takes the root
-    explicitly (`strip_root_prefix`) instead of hoping to recover it.
-    """
-    if isinstance(declared_ids, dict):
-        return declared_ids.get(ROOT_MODULE_KEY) or None
-    return None
-
-
-def strip_root_prefix(spec: str, root: "str | None") -> "str | None":
-    """`<root>/pkg/x` -> `pkg/x`. The prefix rule, with the root passed in."""
-    if not root:
-        return None
-    spec = str(spec or "").replace("\\", "/").strip("/")
-    if spec == root:
-        return None                      # the repo itself is not a module
-    if spec.startswith(root + "/"):
-        return spec[len(root) + 1:] or None
-    return None
-
-
-def _declared_target(spec: str, declared_ids) -> "str | None":
-    """The declared module an import SPECIFIER names, or None.
-
-    Longest match on SEGMENT boundaries, so `acme/billing/internal/db`
-    resolves to `acme/billing` and `acme/billing-legacy` does not.
-    """
-    if not declared_ids:
-        return None
-    spec = str(spec or "").replace("\\", "/").strip("/")
-    while spec:
-        if spec in declared_ids and spec != ROOT_MODULE_KEY:
-            return spec
-        if "/" not in spec:
-            return None
-        spec = spec.rsplit("/", 1)[0]
-    return None
-
-
-def module_of(relpath: str, manifests: dict | None = None) -> str:
-    """Module id: the first two MEANINGFUL directory segments.
-
-    A generic source root (src/, app/, lib/, packages/, pkg/, internal/,
-    cmd/) names a CONVENTION, not a component, so it is invisible to
-    identity — dropped wherever it appears, rather than shifting the answer:
-
-        src/auth/session.py              -> auth
-        web/src/App.tsx                  -> web
-        web/src/cart/CartPanel.tsx       -> web/cart
-        services/pricing/src/rules.py    -> services/pricing
-        engine/mod/views/list.py         -> engine/mod
-        template/app/src/payment/x.ts    -> template/payment
-
-    A file at the repo root -> (root); a path made of nothing BUT source
-    roots keeps its deepest one, because there is nothing else to use.
-
-    `manifests` (from `manifest_modules`) OVERRIDES all of that for paths
-    under a declared module: a repo that states its own module identity is
-    believed over a guess derived from directory depth.
-    """
-    # Module ids are '/'-shaped everywhere they are compared (globs, lens
-    # routing, component ids, contract scopes). A caller that hands in a
-    # host-shaped path must not mint 'src\\auth' as an id.
-    relpath = str(relpath or "").replace("\\", "/")
-    d = posixpath.dirname(relpath)
-    if manifests:
-        # nearest declaration wins: a nested package inside a workspace
-        # member is its own module, not its parent's
-        probe = d
-        while probe:
-            hit = manifests.get(probe)
-            if hit:
-                return hit
-            nxt = posixpath.dirname(probe)
-            if nxt == probe:
-                break
-            probe = nxt
-    if not d:
-        return "(root)"
-    parts = d.split("/")
-    # Standard Maven/Gradle layout.  Treating ``src`` as the last meaningful
-    # source root collapses every Java package into one ``main/java`` node and
-    # removes all internal imports as self-edges.  Package tails retain useful
-    # feature boundaries without binding the graph to a particular group id.
-    for marker in (("src", "main", "java"), ("src", "test", "java")):
-        for i in range(0, len(parts) - len(marker) + 1):
-            if tuple(parts[i:i + len(marker)]) == marker:
-                pkg = parts[i + len(marker):]
-                if pkg:
-                    # M1 (v2.2.1): a two-segment tail collapsed distinct
-                    # packages sharing their last two segments (com/a/svc/db
-                    # and com/b/svc/db both -> svc/db). Three segments keep
-                    # the disambiguating parent while staying group-id-free.
-                    return "/".join(pkg[-3:])
-    # D-0018. The old rule read only the segments AFTER the last source
-    # root, which made a NESTED root corrupt identity in two ways at once:
-    # `web/src/App.tsx` became `src` — an id that names a convention, not a
-    # component — and `web/src/cart/X.tsx` became `cart`, which silently
-    # MERGES it with `admin/src/cart/Y.tsx`. Two sibling apps, one node.
-    #
-    # Dropping source roots wherever they occur fixes both and makes the
-    # rule uniform: `web/cart` is what the same repo would already have
-    # produced without the intermediate `src/`, so whether a project uses
-    # that convention no longer changes its module ids.
-    kept = [p for p in parts if p not in _SRC_ROOTS]
-    return "/".join(kept[:2]) if kept else parts[-1]
-
-
-def _node_kind(node: str) -> str:
-    if node.startswith("req:"):
-        return "requirement"
-    if node.startswith("contract:"):
-        return "contract"
-    if node.startswith("resource:"):
-        return "resource"
-    if node.startswith("svc:"):
-        return "infra"
-    if node.startswith("ext:"):
-        return "external"
-    return "module"
-
-
-def _is_boundary(node: str) -> bool:
-    return node.startswith(("contract:", "resource:", "svc:", "ext:"))
-
-
-# ------------------------------------------------------------- edge semantics
-#
-# This graph carries two very different families of edge, and callers that
-# ask "what DEPENDS on X?" must not confuse them.
-#
-#   DEPENDENCY edges — "from NEEDS to"; `to` breaking breaks `from`:
-#     imports     module -> module | ext:pkg   (scanned source imports)
-#     depends_on  svc:a  -> svc:b              (compose service ordering)
-#     consumes    module -> contract:c         (this code calls that contract)
-#     depends     req:a  -> req:b              (declared work dependency)
-#     calls/uses                               (reserved for future scanners;
-#                                               allow-listed up front so a new
-#                                               dependency scanner is counted
-#                                               without a second bug like the
-#                                               one below)
-#
-#   STRUCTURAL / ANNOTATION edges — "from is DECLARED IN / ABOUT to". They
-#   record provenance or ownership and carry NO "would break" relationship,
-#   and several of them point BACKWARDS relative to the dependency they
-#   describe:
-#     defined_in  svc:api -> module   the compose FILE that declares the
-#                                     service lives in that module. Emitted by
-#                                     the declaring file itself, so a module
-#                                     can "have dependents" purely because it
-#                                     contains a docker-compose.yml. This is
-#                                     the edge that repealed D-0002: this
-#                                     repo's own test corpus
-#                                     (taskplane/tests/fixtures/detectors/
-#                                     architecture/positive/docker-compose.yml)
-#                                     gave module `taskplane/tests` two
-#                                     "dependents" that are the fixtures.
-#     planned / realizes  req: -> module    requirement-to-code traceability
-#     provides    module -> contract:  ownership, the inverse of `consumes`
-#     validates   module -> contract:  a TEST asserts a contract. Excluded on
-#                                     purpose: counting it would let a test
-#                                     module's own assertions vouch for the
-#                                     thing under test — the same class of
-#                                     self-referential exemption as defined_in.
-#     changes     req: -> contract:    a requirement edits a contract
-#
-# Only the first family may answer "does real code depend on this?" — see
-# lens_signals._graph_payload / decompose._graph_payload (B5, R-0008).
-DEPENDENCY_EDGE_KINDS = frozenset({
-    "imports", "depends_on", "consumes", "depends", "calls", "uses",
-})
-
-
-def is_dependency_edge(edge: dict) -> bool:
-    """True when `edge` expresses "from NEEDS to" (see DEPENDENCY_EDGE_KINDS).
-    Structural/annotation kinds (defined_in, planned, realizes, provides,
-    validates, changes) are False. Non-dict / kind-less input -> False."""
-    try:
-        return edge.get("kind") in DEPENDENCY_EDGE_KINDS
-    except AttributeError:
-        return False
-
+# ------------------------------------------------ shared graph primitives
+# Stable depgraph API, one lower-layer implementation.  Aliases preserve
+# every existing caller and monkeypatch target while scanner, decomposition,
+# and lens routing consume the same identity/edge/context contract.
+_SRC_ROOTS = graph_primitives._SRC_ROOTS
+_GO_MODULE_LINE = graph_primitives._GO_MODULE_LINE
+_ID_PREFIXES = graph_primitives._ID_PREFIXES
+ROOT_MODULE_KEY = graph_primitives.ROOT_MODULE_KEY
+DEPENDENCY_EDGE_KINDS = graph_primitives.DEPENDENCY_EDGE_KINDS
+manifest_modules = graph_primitives.manifest_modules
+declared_module_ids = graph_primitives.declared_module_ids
+_strip_root_module = graph_primitives._strip_root_module
+root_module = graph_primitives.root_module
+strip_root_prefix = graph_primitives.strip_root_prefix
+_declared_target = graph_primitives._declared_target
+module_of = graph_primitives.module_of
+_node_kind = graph_primitives.node_kind
+_is_boundary = graph_primitives.is_boundary
+is_dependency_edge = graph_primitives.is_dependency_edge
 
 # ------------------------------------------------------------------ scanners
 
@@ -1616,8 +1336,14 @@ def _scan_locked(ws: str, into: dict | None = None,
     dstats = None
     if decompose:
         try:
-            import decompose as _dc
-            comps, dstats = _dc.derive(ws, g, prev)
+            if not graph_primitives.lens_router_registered():
+                # Explicit composition boundary: lens_signals registers its
+                # live router thunk in graph_primitives.  Import by provider
+                # name only when the additive component layer is requested;
+                # the provider itself imports no scanner, so this cannot
+                # recreate the graph/decomposition cycle.
+                importlib.import_module("lens_signals")
+            comps, dstats = graph_decomposition.derive(ws, g, prev)
             g["components"] = comps
             g["meta"]["decompose"] = {"floors": dstats.get("floors_hash", "")}
         except Exception as e:   # fail-open: never crash the scan

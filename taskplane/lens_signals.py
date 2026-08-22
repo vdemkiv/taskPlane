@@ -35,6 +35,7 @@ import json
 import os
 import re
 
+import graph_primitives
 from path_roles import change_adds_no_test
 
 # ---------------------------------------------------------------- thresholds
@@ -128,17 +129,14 @@ FIXTURE_EXEMPT_MIN_DEPENDENTS = 1
 def _module_is_fixture_classed(module: str) -> bool:
     """Guard 2: the fixture marking must be visible at the module boundary
     that carries the dependent count, not somewhere deeper in the path."""
-    m = str(module or "").replace(os.sep, "/").strip("/")
-    return bool(m) and m != "(root)" and is_fixture_path(m)
+    return graph_primitives.is_fixture_module(module)
 
 
 def _module_of(path: str, manifests: dict | None = None) -> str:
-    """The graph module id owning `path` (depgraph's own rule). A degraded
-    fallback keeps ctx construction non-raising without depgraph."""
+    """The graph module id owning ``path`` through the shared contract."""
     p = str(path).replace(os.sep, "/")
     try:
-        import depgraph
-        return depgraph.module_of(p, manifests)
+        return graph_primitives.module_of(p, manifests)
     except Exception:
         d = os.path.dirname(p)
         return "/".join(d.split("/")[:2]) if d else "(root)"
@@ -341,57 +339,16 @@ def make_ctx(workspace, files, requirement_text=None, graph=None,
 
 def _graph_payload(workspace, files) -> dict:
     try:
-        import depgraph
-        g = depgraph.load(workspace)
+        g = graph_primitives.load_graph(workspace)
         # the graph's own declared ids, or the fixture-exemption and
         # dependent-count lookups below miss every workspace module
-        _ids = depgraph.declared_module_ids(g)
-        touched = sorted({depgraph.module_of(str(f).replace(os.sep, "/"),
-                                             _ids)
+        _ids = graph_primitives.declared_module_ids(g)
+        touched = sorted({graph_primitives.module_of(
+                              str(f).replace(os.sep, "/"), _ids)
                           for f in files or []})
-        rev: dict[str, set] = {}
-        dep_rev: dict[str, set] = {}
-        adjacent_contracts: set = set()
-        tset = set(touched)
-        for e in g.get("edges") or []:
-            frm, to = e.get("from"), e.get("to")
-            if not frm or not to:
-                continue
-            rev.setdefault(to, set()).add(frm)
-            if depgraph.is_dependency_edge(e):
-                dep_rev.setdefault(to, set()).add(frm)
-            for a, b in ((frm, to), (to, frm)):
-                if a in tset and str(b).startswith("contract:"):
-                    adjacent_contracts.add(b)
-        # hub_dependents keeps counting EVERY incoming edge — it is the
-        # pre-existing "is this a hub?" signal and narrowing it would drop
-        # graph weight off lenses that earn it today.
-        hub = max((len(rev.get(m, ())) for m in touched), default=0)
-        # module_dependents feeds the B5 fixture-path exemption, which asks a
-        # much stricter question — "does real code DEPEND on this?" — so it
-        # counts only depgraph.DEPENDENCY_EDGE_KINDS. Structural kinds
-        # (defined_in, planned/realizes, provides, validates, changes) are
-        # excluded: a fixture's own docker-compose.yml must not be able to
-        # vouch for the fixture tree it lives in. Mirrored exactly in
-        # decompose._graph_payload so cached maps and live routing agree.
-        #
-        # GUARD 3 (EM, v3 phase 3): the dependent must not ITSELF be
-        # fixture-classed. Guards 1 and 2 ask what KIND of edge and at what
-        # GRANULARITY; neither asked WHO is vouching — so one test tree
-        # importing another (testdata/core → fixtures/core) exempted the
-        # second and a fixture-only diff kept full weight. That is exactly
-        # the D-0002 routing inflation the discount exists to prevent. A
-        # fixture cannot be its own witness.
-        return {"hub_dependents": hub,
-                "boundary_contracts": sorted(adjacent_contracts),
-                "modules": touched,
-                # carried so every LATER path->module resolution in this
-                # payload's consumers agrees with the keys below
-                "module_ids": _ids,
-                "module_dependents": {
-                    m: len([d for d in (dep_rev.get(m) or ()) if d != m
-                            and not _module_is_fixture_classed(d)])
-                    for m in touched}}
+        return graph_primitives.graph_payload(
+            g, touched,
+            fixture_module_predicate=graph_primitives.is_fixture_module)
     except Exception:
         return {"hub_dependents": 0, "boundary_contracts": [], "modules": [],
                 "module_dependents": {}}
@@ -1441,3 +1398,10 @@ def measure_audit_hybrid(corpus_entries, workspace=None, base: str = "HEAD",
             "bar": dict(HYBRID_BAR),
             "corpus_size": len(rows),
             "rows": rows}
+
+
+# The thunk resolves the current global on every call so the established
+# monkeypatch seam remains live while decomposition depends only on the lower
+# graph contract.
+graph_primitives.register_lens_router(
+    lambda *args, **kwargs: route_verdicts(*args, **kwargs))
