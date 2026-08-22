@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import subprocess
@@ -20,6 +21,279 @@ class PreflightError(RuntimeError):
 
 
 _BOOTSTRAP_SCHEMA = "taskplane.preflight-bootstrap/v1"
+_KNOWLEDGE_MANIFEST_SCHEMA = \
+    "taskplane.knowledge-preservation-manifest/v1"
+_GOVERNANCE_BASELINE_SCHEMA = "taskplane.governance-baseline/v1"
+
+
+def _canonical_digest(value: object) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _sha256_file(path: str) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    count = 0
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            count += len(chunk)
+            digest.update(chunk)
+    return count, digest.hexdigest()
+
+
+def _closed_knowledge_entries(root: str) -> list[dict]:
+    """Hash every regular knowledge object, excluding lock files only."""
+    if not os.path.isdir(root):
+        raise PreflightError("canonical knowledge root is unavailable")
+    entries: list[dict] = []
+    for directory, names, filenames in os.walk(root, followlinks=False):
+        names.sort()
+        filenames.sort()
+        for name in names:
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                raise PreflightError(
+                    "canonical knowledge root contains an unsafe symlink")
+        for name in filenames:
+            if name.endswith(".lock"):
+                continue
+            path = os.path.join(directory, name)
+            if os.path.islink(path) or not os.path.isfile(path):
+                raise PreflightError(
+                    "canonical knowledge root contains a non-regular entry")
+            size, digest = _sha256_file(path)
+            relative = os.path.relpath(path, root).replace(os.sep, "/")
+            entries.append({"path": relative, "bytes": size,
+                            "sha256": digest})
+    return sorted(entries, key=lambda row: row["path"])
+
+
+def _verify_knowledge_manifest(locator: dict, trusted: dict) -> dict:
+    if not isinstance(trusted, dict) or trusted.get("schema") != \
+            _KNOWLEDGE_MANIFEST_SCHEMA:
+        raise PreflightError("trusted pre-cleanup knowledge manifest is absent")
+    home = os.path.realpath(str(locator.get("home") or ""))
+    key = str(locator.get("repository_key") or "")
+    if not home or not os.path.isabs(home) or not key:
+        raise PreflightError("workspace locator has no canonical knowledge root")
+    root = os.path.realpath(os.path.join(home, "projects", key, "knowledge"))
+    project = os.path.realpath(os.path.join(home, "projects", key))
+    if os.path.commonpath((project, root)) != project:
+        raise PreflightError("canonical knowledge root escapes the project")
+    root_fingerprint = hashlib.sha256(root.encode("utf-8")).hexdigest()
+    if (os.path.realpath(str(trusted.get("root") or "")) != root
+            or trusted.get("root_fingerprint") != root_fingerprint
+            or trusted.get("repo_id") != locator.get("repo_id")
+            or trusted.get("repository_key") != key):
+        raise PreflightError(
+            "trusted manifest does not name the canonical knowledge root")
+    if trusted.get("exclusions") != ["*.lock"]:
+        raise PreflightError("knowledge manifest exclusions must be locks only")
+    signed = dict(trusted)
+    supplied_digest = signed.pop("manifest_digest", None)
+    if supplied_digest != _canonical_digest(signed):
+        raise PreflightError("knowledge manifest digest mismatch")
+    expected = trusted.get("entries")
+    if not isinstance(expected, list) or not expected:
+        raise PreflightError("trusted knowledge manifest must not be empty")
+    if expected != sorted(expected, key=lambda row: str(row.get("path"))):
+        raise PreflightError("knowledge manifest entries are not sorted")
+    current = _closed_knowledge_entries(root)
+    if current != expected:
+        raise PreflightError("knowledge preservation mismatch")
+    return {"root": root, "root_fingerprint": root_fingerprint,
+            "manifest_digest": supplied_digest, "entry_count": len(current),
+            "preserved": True}
+
+
+def _git_output(workspace: str, *args: str, binary: bool = False):
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=workspace, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=not binary,
+            encoding=None if binary else "utf-8",
+            errors=None if binary else "replace", timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PreflightError(f"Git baseline evidence is unavailable: {exc}") \
+            from exc
+    if result.returncode != 0:
+        error = (result.stderr.decode("utf-8", errors="replace")
+                 if binary else result.stderr)
+        raise PreflightError(
+            f"Git baseline evidence is unavailable: {str(error).strip()}")
+    return result.stdout if binary else result.stdout.strip()
+
+
+def _verify_prior_design(workspace: str, entries: list[dict]) -> list[dict]:
+    if not isinstance(entries, list) or not entries:
+        raise PreflightError("prior Design evidence is absent")
+    expected_paths = {"design/design.md", "design/contract.json"}
+    supplied_paths = ({str(row.get("path") or "") for row in entries}
+                      if all(isinstance(row, dict) for row in entries)
+                      else set())
+    if supplied_paths != expected_paths:
+        raise PreflightError("prior Design evidence is incomplete")
+    revisions = {str(row.get("revision") or "") for row in entries}
+    if len(revisions) != 1 or not next(iter(revisions), ""):
+        raise PreflightError("prior Design evidence is not one committed view")
+    verified: list[dict] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            raise PreflightError("prior Design evidence is malformed")
+        revision = str(raw.get("revision") or "")
+        path = str(raw.get("path") or "")
+        expected = str(raw.get("sha256") or "")
+        if not revision or not path.startswith("design/") or ".." in \
+                path.split("/"):
+            raise PreflightError("prior Design evidence is malformed")
+        data = _git_output(
+            workspace, "show", f"{revision}:{path}", binary=True)
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != expected:
+            raise PreflightError(f"prior Design drift detected for {path}")
+        object_id = _git_output(
+            workspace, "rev-parse", f"{revision}:{path}")
+        verified.append({"revision": revision, "path": path,
+                         "object_id": object_id, "bytes": len(data),
+                         "sha256": digest})
+    return verified
+
+
+def _baseline_enforcement(value: dict,
+                          advisory_authorization: dict | None) -> dict:
+    if not isinstance(value, dict) or value.get("schema") != \
+            "taskplane.enforcement-status/v1":
+        raise PreflightError("enforcement evidence is absent")
+    status = value.get("status")
+    if status == "unproven":
+        raise PreflightError("enforcement is unproven")
+    if status not in {"live", "advisory"}:
+        raise PreflightError("enforcement status is invalid")
+    evidence_id = str(value.get("evidence_id") or "")
+    session_id = str(value.get("session_fingerprint") or "")
+    receipt = value.get("receipt_evidence")
+    receipt_fields = ("loaded_path", "content_fingerprint",
+                      "host_observation", "observed_at")
+    if not evidence_id or not session_id or not isinstance(receipt, dict) or \
+            any(not receipt.get(field) for field in receipt_fields):
+        raise PreflightError("enforcement hook-path receipt is incomplete")
+    authorization = None
+    if status == "advisory":
+        required = ("actor", "reason", "scope", "expires_at",
+                    "accepted_limitations")
+        if (not isinstance(advisory_authorization, dict)
+                or any(not advisory_authorization.get(key)
+                       for key in required)
+                or not isinstance(
+                    advisory_authorization.get("accepted_limitations"), list)):
+            raise PreflightError(
+                "advisory enforcement needs bounded attributable advisory "
+                "authorization")
+        recorded_actor = str((value.get("advisory") or {}).get("actor") or "")
+        if recorded_actor != str(advisory_authorization.get("actor") or ""):
+            raise PreflightError(
+                "advisory enforcement needs bounded attributable advisory "
+                "authorization")
+        authorization = dict(advisory_authorization)
+    elif advisory_authorization is not None:
+        raise PreflightError("live enforcement must not carry advisory authority")
+    return {"status": status, "label": ("enforced" if status == "live"
+                                         else "advisory"),
+            "enforced": status == "live", "evidence_id": evidence_id,
+            "session_id": session_id, "hook_path_receipt": dict(receipt),
+            "advisory_authorization": authorization}
+
+
+def verify_governance_baseline(
+        workspace: str, *, expected_run_id: str,
+        trusted_knowledge_manifest: dict, prior_design: list[dict],
+        enforcement: dict, active_plan: dict,
+        obsolete_run_ids=(), advisory_authorization: dict | None = None) \
+        -> dict:
+    """Verify and emit the closed R-0006 governance baseline.
+
+    All authority-bearing inputs are checked against canonical Git, locator,
+    graph, and external-knowledge facts.  Only the resulting run artifact is
+    written; Design and knowledge inputs remain byte-for-byte untouched.
+    """
+    requested_root = os.path.realpath(os.path.abspath(workspace))
+    locator = storage.load_workspace_locator(requested_root)
+    if not isinstance(locator, dict):
+        raise PreflightError("fresh governed run locator is absent")
+    run_id = str(locator.get("run_id") or "")
+    if run_id != str(expected_run_id or ""):
+        raise PreflightError("workspace locator does not name the fresh run")
+    if run_id in {str(value) for value in obsolete_run_ids}:
+        raise PreflightError("obsolete run pointer is active")
+    root = os.path.realpath(str(locator.get("primary_checkout") or ""))
+    if not root or not os.path.isabs(root):
+        raise PreflightError("workspace locator has no primary checkout")
+    primary_locator = storage.load_workspace_locator(root)
+    if (not isinstance(primary_locator, dict)
+            or primary_locator.get("run_id") != run_id
+            or primary_locator.get("repo_id") != locator.get("repo_id")):
+        raise PreflightError("primary checkout has an obsolete run pointer")
+    locator = primary_locator
+    plan = active_plan if isinstance(active_plan, dict) else {}
+    plan_paths = plan.get("paths")
+    if (plan.get("run_id") != run_id or plan.get("status") != "approved"
+            or not isinstance(plan_paths, list) or not plan_paths
+            or any(not isinstance(path, str) or not path.startswith("plan/")
+                   or ".." in path.split("/") for path in plan_paths)):
+        raise PreflightError("stale Plan authority is active")
+
+    revision = _git_output(root, "rev-parse", "HEAD")
+    branch = _git_output(root, "branch", "--show-current") or None
+    if branch != "main":
+        raise PreflightError("governance baseline must record the main revision")
+    paths = locator.get("paths") or {}
+    graph_path = os.path.join(str(paths.get("graph") or ""), "graph.json")
+    try:
+        with open(graph_path, encoding="utf-8") as handle:
+            graph = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise PreflightError(f"refreshed graph evidence is unavailable: {exc}") \
+            from exc
+    graph_meta = graph.get("meta") if isinstance(graph, dict) else None
+    fingerprint = str((graph_meta or {}).get("content_fingerprint") or "")
+    scanned_revision = str((graph_meta or {}).get("scanned_head") or "")
+    if (len(fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in
+                   fingerprint.lower())
+            or scanned_revision != revision):
+        raise PreflightError("graph is not refreshed at the baseline revision")
+
+    knowledge = _verify_knowledge_manifest(
+        locator, trusted_knowledge_manifest)
+    design = _verify_prior_design(root, prior_design)
+    enforcement_record = _baseline_enforcement(
+        enforcement, advisory_authorization)
+    record = {
+        "schema": _GOVERNANCE_BASELINE_SCHEMA,
+        "repository": {"repo_id": locator.get("repo_id"),
+                       "repository_key": locator.get("repository_key"),
+                       "branch": branch, "revision": revision},
+        "run": {"id": run_id, "locator_schema": locator.get("schema"),
+                "obsolete_pointer": False},
+        "graph": {"fingerprint": fingerprint,
+                  "scanned_revision": scanned_revision},
+        "plan_authority": {"run_id": run_id, "status": "approved",
+                           "paths": list(plan_paths), "stale": False},
+        "prior_design": design,
+        "knowledge": knowledge,
+        "enforcement": enforcement_record,
+    }
+    record["fingerprint"] = _canonical_digest(record)
+    artifact_root = os.path.realpath(str(paths.get("artifacts") or ""))
+    home = os.path.realpath(str(locator.get("home") or ""))
+    if not artifact_root or os.path.commonpath((home, artifact_root)) != home:
+        raise PreflightError("baseline artifact path escapes canonical storage")
+    artifact = os.path.join(
+        artifact_root, "baseline", "governance-baseline.json")
+    tp.atomic_write_json(artifact, record, sort_keys=True)
+    return record
 
 
 def reconcile_onboarding_checks(checks: list[dict], *, repair,
