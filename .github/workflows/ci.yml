@@ -198,6 +198,191 @@ jobs:
         if: matrix.python == '3.12'
         run: python3 scripts/ci_loop_cost.py
 
+  # V1 is deliberately separate from the ordinary test matrix.  The scorer
+  # starts with no inherited credentials/proxies and a sitecustomize guard
+  # installed before any scorer import, so a green receipt proves the frozen
+  # corpus used zero tokens and made no egress attempt.
+  zero-token-corpus:
+    name: zero-token corpus (credential-empty, no-egress)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Prove no-egress guard and deterministic corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          guard_dir="$RUNNER_TEMP/taskplane-no-egress"
+          isolated_home="$RUNNER_TEMP/taskplane-zero-home"
+          corrupt_root="$RUNNER_TEMP/taskplane-corrupt-corpus"
+          mkdir -p "$guard_dir" "$isolated_home" "$corrupt_root"
+          cat >"$guard_dir/sitecustomize.py" <<'PY'
+          """CI-only, pre-import network denial for the zero-token corpus."""
+          import socket
+          try:
+              import _socket
+          except ImportError:  # pragma: no cover - CPython always has it
+              _socket = None
+
+          ATTEMPTS = []
+
+          class NoEgressError(OSError):
+              pass
+
+          def deny(label):
+              def blocked(*_args, **_kwargs):
+                  ATTEMPTS.append(label)
+                  raise NoEgressError("network denied before scorer import: " + label)
+              return blocked
+
+          class DeniedSocket:
+              def __new__(cls, *_args, **_kwargs):
+                  return deny("socket.socket")()
+
+              def connect(self, *_args, **_kwargs):
+                  return deny("socket.connect")()
+
+              def connect_ex(self, *_args, **_kwargs):
+                  return deny("socket.connect_ex")()
+
+          socket.socket = DeniedSocket
+          socket.SocketType = DeniedSocket
+          socket.create_connection = deny("socket.create_connection")
+          if hasattr(socket, "socketpair"):
+              socket.socketpair = deny("socket.socketpair")
+          if hasattr(socket, "fromfd"):
+              socket.fromfd = deny("socket.fromfd")
+          if _socket is not None:
+              _socket.socket = DeniedSocket
+
+          for name in (
+              "getaddrinfo", "gethostbyname", "gethostbyname_ex",
+              "gethostbyaddr", "getnameinfo",
+          ):
+              blocked = deny("socket." + name)
+              if hasattr(socket, name):
+                  setattr(socket, name, blocked)
+              if _socket is not None and hasattr(_socket, name):
+                  setattr(_socket, name, blocked)
+          PY
+
+          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B - <<'PY'
+          import os
+          import sitecustomize
+          import socket
+
+          assert set(os.environ) == {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"}
+          probes = (
+              ("socket.socket", lambda: socket.socket()),
+              ("socket.connect",
+               lambda: socket.socket.connect(None, ("example.invalid", 443))),
+              ("socket.connect_ex",
+               lambda: socket.socket.connect_ex(None, ("example.invalid", 443))),
+              ("socket.create_connection",
+               lambda: socket.create_connection(("example.invalid", 443))),
+              ("socket.getaddrinfo",
+               lambda: socket.getaddrinfo("example.invalid", 443)),
+          )
+          for label, probe in probes:
+              try:
+                  probe()
+              except sitecustomize.NoEgressError:
+                  pass
+              else:
+                  raise SystemExit("no-egress probe unexpectedly succeeded: " + label)
+          assert sitecustomize.ATTEMPTS == [label for label, _ in probes]
+          PY
+
+          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B scripts/ci_evals.py --corpus >"$RUNNER_TEMP/corpus-1.txt" 2>&1
+          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B scripts/ci_evals.py --corpus >"$RUNNER_TEMP/corpus-2.txt" 2>&1
+          cmp "$RUNNER_TEMP/corpus-1.txt" "$RUNNER_TEMP/corpus-2.txt"
+
+          cp -R evals "$corrupt_root/evals"
+          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B - "$corrupt_root/evals/compliant/expected.json" <<'PY'
+          import json
+          import sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as handle:
+              expected = json.load(handle)
+          expected["rates"]["artifact_surfacing"] = 0.0
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(expected, handle, sort_keys=True)
+          PY
+          if env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B scripts/ci_evals.py --corpus --root "$corrupt_root" >"$RUNNER_TEMP/corpus-corrupt.txt" 2>&1; then
+            echo "corrupted expected.json was incorrectly accepted" >&2
+            exit 1
+          fi
+          grep -F "MISMATCH artifact_surfacing" "$RUNNER_TEMP/corpus-corrupt.txt"
+
+  wave3-contracts:
+    name: R-0006 graph + CLI contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
+        run: pip install "pytest==8.*"
+      - name: Graph quality and public CLI recovery contracts
+        run: >-
+          python3 -m pytest -q
+          taskplane/tests/test_r0006_graph_quality.py
+          taskplane/tests/test_r0006_cli_errors.py
+
+  # P1 is push-only: pull_request uses a synthetic merge/branch SHA and must
+  # remain local_green.  The three needs are one workflow-run receipt set;
+  # the proof then performs its own fetch and checks repository topology.
+  pushed-sha-proof:
+    name: pushed SHA delivery proof
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [tests, zero-token-corpus, wave3-contracts]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Bind required check results to this workflow SHA
+        env:
+          CHECKED_SHA: ${{ github.sha }}
+          COMPAT_RESULT: ${{ needs.tests.result }}
+          GRAPH_CLI_RESULT: ${{ needs.wave3-contracts.result }}
+          ZERO_TOKEN_RESULT: ${{ needs.zero-token-corpus.result }}
+        run: |
+          python3 - "$RUNNER_TEMP/required-checks.json" <<'PY'
+          import importlib.util
+          import json
+          import os
+          import sys
+
+          spec = importlib.util.spec_from_file_location("ci_evals", "scripts/ci_evals.py")
+          ci_evals = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(ci_evals)
+          conclusions = (
+              os.environ["COMPAT_RESULT"],
+              os.environ["GRAPH_CLI_RESULT"],
+              os.environ["ZERO_TOKEN_RESULT"],
+          )
+          receipts = [
+              {"name": name, "sha": os.environ["CHECKED_SHA"],
+               "conclusion": conclusion}
+              for name, conclusion in zip(
+                  ci_evals.PUSHED_GREEN_REQUIRED_CHECKS, conclusions)
+          ]
+          with open(sys.argv[1], "w", encoding="utf-8") as handle:
+              json.dump(receipts, handle, sort_keys=True)
+          PY
+          python3 scripts/ci_evals.py --prove-pushed-sha \
+            --checked-sha "$CHECKED_SHA" \
+            --check-receipts "$RUNNER_TEMP/required-checks.json" --json
+
   # Host portability without a second full-suite tax. Windows runs the
   # cross-host contract plus the two integration files that previously found
   # real Windows-only failures. Those defects are also reproduced on Linux by
