@@ -1,6 +1,7 @@
 """R-0006 V1: the frozen corpus is deterministic, credential-empty CI."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -66,6 +67,10 @@ def test_no_egress_guard_loads_before_intentional_socket_and_dns_probes():
     assert "LANG=C.UTF-8" in job
     assert "LC_ALL=C.UTF-8" in job
     assert "PYTHONPATH=" in job
+    assert (
+        'assert set(os.environ) == {"PATH", "HOME", "LANG", "LC_ALL", '
+        '"PYTHONPATH"}' in job
+    )
 
 
 def test_corpus_output_is_byte_compared_and_corrupt_expected_must_fail():
@@ -122,20 +127,38 @@ def test_embedded_guard_is_preloaded_under_exact_env_and_blocks_every_probe(
         "PYTHONPATH": str(guard_dir),
     }
     probe = r"""
+import json
 import os
 import sitecustomize
 import socket
 import sys
 
-assert "sitecustomize" in sys.modules
-expected_env = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"}
-extras = set(os.environ) - expected_env
-# macOS injects this locale key even across env -i.  The production job is
-# Ubuntu and retains the exact-set assertion; this local behavioral replay
-# permits only that host-owned key and no credential/proxy/model variables.
-assert not extras or (sys.platform == "darwin" and
-                      extras == {"__CF_USER_TEXT_ENCODING"})
-assert expected_env <= set(os.environ)
+sys.dont_write_bytecode = True
+required_env = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"}
+sensitive_markers = (
+    "CREDENTIAL", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "AUTH",
+    "API_KEY", "ACCESS_KEY", "PRIVATE_KEY", "PROXY", "OPENAI",
+    "ANTHROPIC", "AWS", "AZURE", "GCP", "GOOGLE_CLOUD", "CLOUDSDK",
+    "MODEL", "COHERE", "GEMINI", "MISTRAL", "HUGGINGFACE", "HF_",
+    "OLLAMA",
+)
+observed_env = set(os.environ)
+environment = {
+    "required": sorted(required_env),
+    "observed": sorted(observed_env),
+    "missing": sorted(required_env - observed_env),
+    "sensitive": sorted(
+        name for name in observed_env
+        if any(marker in name.upper() for marker in sensitive_markers)
+    ),
+}
+diagnostics = {
+    "environment": environment,
+    "sitecustomize_preloaded": "sitecustomize" in sys.modules,
+}
+if environment["missing"] or environment["sensitive"]:
+    print(json.dumps(diagnostics, sort_keys=True))
+    raise SystemExit("unsafe local zero-token replay environment")
 probes = (
     ("socket.socket", lambda: socket.socket()),
     ("socket.connect", lambda: socket.socket.connect(None, ("example.invalid", 443))),
@@ -151,22 +174,55 @@ for label, call in probes:
     else:
         raise AssertionError("probe escaped: " + label)
 assert sitecustomize.ATTEMPTS == [label for label, _ in probes]
+diagnostics["attempts"] = sitecustomize.ATTEMPTS
+print(json.dumps(diagnostics, sort_keys=True))
 """
     blocked = subprocess.run(
-        [sys.executable, "-B", "-c", probe], env=clean_env,
+        [sys.executable, "-c", probe], env=clean_env,
         text=True, encoding="utf-8", capture_output=True,
     )
-    assert blocked.returncode == 0, blocked.stderr
+    replay = {
+        "returncode": blocked.returncode,
+        "stdout": blocked.stdout,
+        "stderr": blocked.stderr,
+    }
+    assert blocked.returncode == 0, json.dumps(replay, sort_keys=True)
+    diagnostics = json.loads(blocked.stdout)
+    assert diagnostics["environment"]["required"] == sorted(clean_env)
+    assert diagnostics["environment"]["missing"] == []
+    assert diagnostics["environment"]["sensitive"] == []
+    assert diagnostics["sitecustomize_preloaded"] is True
+
+    corpus_probe = (
+        "import runpy, sys\n"
+        "sys.dont_write_bytecode = True\n"
+        f"sys.argv = [{str(SCRIPT)!r}, '--corpus']\n"
+        f"runpy.run_path({str(SCRIPT)!r}, run_name='__main__')\n"
+    )
 
     first = subprocess.run(
-        [sys.executable, "-B", str(SCRIPT), "--corpus"],
+        [sys.executable, "-c", corpus_probe],
         cwd=ROOT, env=clean_env, capture_output=True,
     )
     second = subprocess.run(
-        [sys.executable, "-B", str(SCRIPT), "--corpus"],
+        [sys.executable, "-c", corpus_probe],
         cwd=ROOT, env=clean_env, capture_output=True,
     )
-    assert first.returncode == second.returncode == 0
+    corpus_replay = {
+        "first": {
+            "returncode": first.returncode,
+            "stdout": first.stdout.decode(errors="replace"),
+            "stderr": first.stderr.decode(errors="replace"),
+        },
+        "second": {
+            "returncode": second.returncode,
+            "stdout": second.stdout.decode(errors="replace"),
+            "stderr": second.stderr.decode(errors="replace"),
+        },
+    }
+    assert first.returncode == second.returncode == 0, json.dumps(
+        corpus_replay, sort_keys=True
+    )
     assert first.stdout + first.stderr == second.stdout + second.stderr
 
 
