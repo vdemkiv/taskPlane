@@ -2458,8 +2458,27 @@ def cmd_budget(a) -> int:
 
 # --------------------------------------------------------------- dod
 
+def _graph_quality_refusal(ws: str, surface: str) -> dict | None:
+    """One persisted producer record, consumed by every strict CLI gate."""
+    import depgraph
+    graph = depgraph.load(ws)
+    errors = depgraph.quality_errors(graph)
+    if not errors:
+        return None
+    return {
+        "schema": "taskplane.graph-quality-refusal/v1",
+        "error": errors[0],
+        "surface": surface,
+        "graph_quality": depgraph.scan_quality(graph),
+    }
+
+
 def cmd_dod(a) -> int:
     ws = _workspace(a.workspace)
+    refusal = _graph_quality_refusal(ws, "DoD")
+    if refusal:
+        print(json.dumps(refusal, indent=2))
+        return 1
     c = tp.load_active(ws)
     if c is None:
         print("taskplane: no active contract — nothing to validate.",
@@ -2572,6 +2591,11 @@ def cmd_loop(a) -> int:
     action = a.loop_action
     out = None
     enforcement = None
+    if action in {"next", "gate"}:
+        refusal = _graph_quality_refusal(ws, "Design/Plan/Review/DoD")
+        if refusal:
+            print(json.dumps(refusal, indent=2))
+            return 1
     guarded_actions = {"init", "next", "wave", "claim", "gate", "approve"}
     if action in guarded_actions:
         current = loopmod.load(ws)
@@ -2616,12 +2640,23 @@ def cmd_loop(a) -> int:
         else:
             out = st
     elif action == "next":
-        out = loopmod.next_action(ws, rid=getattr(a, "req", None))
+        import depgraph
+        try:
+            with depgraph.strict_quality():
+                out = loopmod.next_action(ws, rid=getattr(a, "req", None))
+        except depgraph.GraphQualityDegraded as exc:
+            out = {"error": str(exc), "step": "graph-quality"}
     elif action == "submit":
         out = loopmod.submit(ws, a.outcome, note=a.note or "", task_id=a.task)
     elif action == "gate":
-        out = loopmod.gate(ws, a.outcome, note=a.note or "", task_id=a.task,
-                           rid=getattr(a, "req", None))
+        import depgraph
+        try:
+            with depgraph.strict_quality():
+                out = loopmod.gate(
+                    ws, a.outcome, note=a.note or "", task_id=a.task,
+                    rid=getattr(a, "req", None))
+        except depgraph.GraphQualityDegraded as exc:
+            out = {"error": str(exc), "step": "graph-quality"}
         # Tier-routing observability at the gate summary, ON BY DEFAULT: the
         # cheap/deep routing the briefs resolve is only real if dispatch used
         # it, so every gate shows expected-vs-observed models. Pure audit —
@@ -4575,6 +4610,11 @@ def cmd_review(a) -> int:
     import review as rv
     ws = _workspace(a.workspace)
     review_action = getattr(a, "review_action", None)
+    if review_action in {None, "start", "resume", "collect", "signoff"}:
+        refusal = _graph_quality_refusal(ws, "Review")
+        if refusal:
+            print(json.dumps(refusal, indent=2))
+            return 1
     enforcement = None
     if review_action in {"start", "resume", "signoff"}:
         active = tp.load_active(ws) or {}
@@ -4906,6 +4946,19 @@ def cmd_review(a) -> int:
         # degraded graph and routes from diff/content with mandatory floors.
         g, imp = {}, {}
         step("graph", False, reason=e.__class__.__name__)
+    graph_errors = dg.quality_errors(g) if g and "dg" in locals() else []
+    if graph_errors:
+        step("graph", False, reason=graph_errors[0])
+        out.update({
+            "ok": False,
+            "status": "graph_quality_degraded",
+            "reason": graph_errors[0],
+            "graph_quality": dg.scan_quality(g),
+            "next": (dg.scan_quality(g).get("recovery") or
+                     dg.GRAPH_SCAN_RECOVERY),
+        })
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 1
     rec["review_cache"] = tgt.review_cache_identity(rec, g)
     preflight["cache_identity"] = rec["review_cache"]
     tgt.save(ws, rec)
@@ -5410,13 +5463,29 @@ def cmd_graph(a) -> int:
     if a.graph_action == "scan":
         dec = bool(getattr(a, "decompose", False))
         g = dg.scan(ws, decompose=dec)
+        quality = dg.scan_quality(g)
         out = {"modules": len(g["modules"]),
                "edges": len(g["edges"]),
                "files": len(g["files"]),
                "stored": os.path.join(tp.kb_root(ws), "graph.json")}
         if dec:   # ADDITIVE: without --decompose the output is unchanged
             out["components"] = len(g.get("components") or [])
-        print(json.dumps(out, indent=2))
+        if quality.get("degraded"):
+            out["degraded"] = True
+            out["graph_quality"] = quality
+        if getattr(a, "text", False):
+            print(f"graph scan: modules={out['modules']} edges={out['edges']} "
+                  f"files={out['files']} degraded="
+                  + str(bool(quality.get("degraded"))).lower())
+            for row in quality.get("failures") or []:
+                print("  - {producer}: {module} {file} {error_class}: "
+                      "{reason}".format(**row))
+            if quality.get("degraded"):
+                print("  recovery: " + str(quality.get("recovery") or ""))
+        else:
+            print(json.dumps(out, indent=2))
+        if bool(getattr(a, "strict", False)) and quality.get("degraded"):
+            return 1
     elif a.graph_action == "impact":
         files = (a.files.split(",") if a.files else
                  _changed_for_impact(ws, a.base))
@@ -6857,6 +6926,15 @@ def main(argv=None) -> int:
     gs.add_argument("--decompose", action="store_true",
                     help="derive the component layer (graph.json "
                          "'components'; R-0003 contract:component-map)")
+    gs.add_argument("--strict", action="store_true",
+                    help="persist the normal fail-open record, then return "
+                         "nonzero when any graph producer is degraded")
+    gsf = gs.add_mutually_exclusive_group()
+    gsf.add_argument("--json", action="store_true",
+                     help="print machine JSON (the backward-compatible "
+                          "default)")
+    gsf.add_argument("--text", action="store_true",
+                     help="print a concise human graph-quality report")
     gi = gsub.add_parser("impact", help="what a change reaches: blast radius across the graph")
     gi.add_argument("--files", help="comma-separated changed files "
                     "(default: git diff + untracked)")

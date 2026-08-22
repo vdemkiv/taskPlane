@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
+import contextvars
 import copy
 import gzip
 import hashlib
@@ -105,6 +106,70 @@ _GRAPH_CACHE: dict[str, tuple] = {}
 # See batch().
 _BATCH: dict[str, dict] = {}
 _SCANNER_CACHE_VERSION: str | None = None
+_STRICT_GRAPH_QUALITY = contextvars.ContextVar(
+    "taskplane_strict_graph_quality", default=False)
+
+GRAPH_SCAN_QUALITY_SCHEMA = "taskplane.graph-scan-quality/v1"
+GRAPH_SCAN_RECOVERY = (
+    "repair the named source/producer and rerun `tp graph scan --strict`")
+
+
+class GraphQualityDegraded(RuntimeError):
+    """A strict graph consumer refused the persisted producer record."""
+
+
+def scan_quality(graph: dict) -> dict:
+    """Return the canonical producer-complete graph scan quality record."""
+    raw = ((graph or {}).get("meta") or {}).get("graph_scan_quality")
+    if isinstance(raw, dict) and raw.get("schema") == \
+            GRAPH_SCAN_QUALITY_SCHEMA:
+        return raw
+    return {
+        "schema": GRAPH_SCAN_QUALITY_SCHEMA,
+        "degraded": False,
+        "mode": "modules",
+        "scanned_revision": str(((graph or {}).get("meta") or {}).get(
+            "scanned_head") or ""),
+        "affected_modules": [],
+        "failures": [],
+        "producers": {
+            "base-scanner": {"status": "complete", "failures": []},
+            "decomposition": {"status": "not-requested", "failures": []},
+        },
+        "recovery": GRAPH_SCAN_RECOVERY,
+    }
+
+
+def quality_errors(graph: dict) -> list[str]:
+    """Human-actionable errors for every strict consumer of one record."""
+    quality = scan_quality(graph)
+    if not quality.get("degraded"):
+        return []
+    details = []
+    for row in quality.get("failures") or []:
+        details.append(
+            f"{row.get('producer', 'unknown')} {row.get('module', '?')} "
+            f"{row.get('file', '?')} {row.get('error_class', 'error')}: "
+            f"{row.get('reason', 'unknown reason')}")
+    suffix = "; ".join(details) or "producer reported degradation"
+    return [f"graph scan quality is degraded: {suffix} — "
+            f"{quality.get('recovery') or GRAPH_SCAN_RECOVERY}"]
+
+
+def require_quality(graph: dict) -> None:
+    errors = quality_errors(graph)
+    if errors:
+        raise GraphQualityDegraded(errors[0])
+
+
+@contextlib.contextmanager
+def strict_quality():
+    """Make nested graph scans fail after persisting their quality record."""
+    token = _STRICT_GRAPH_QUALITY.set(True)
+    try:
+        yield
+    finally:
+        _STRICT_GRAPH_QUALITY.reset(token)
 
 
 def _stat_sig(p: str):
@@ -619,12 +684,32 @@ def is_dependency_edge(edge: dict) -> bool:
 
 # ------------------------------------------------------------------ scanners
 
-def _py_imports(src: str, relpath: str, known_stems: dict) -> set:
+def _bounded_parse_reason(exc: BaseException) -> str:
+    """One-line, bounded producer reason suitable for JSON and terminals."""
+    if isinstance(exc, SyntaxError):
+        reason = str(exc.msg or "invalid syntax")
+        if exc.lineno is not None:
+            reason += f" at line {exc.lineno}"
+            if exc.offset is not None:
+                reason += f", column {exc.offset}"
+    else:
+        reason = str(exc) or exc.__class__.__name__
+    return " ".join(reason.split())[:240]
+
+
+def _py_imports_checked(src: str, relpath: str,
+                        known_stems: dict) -> tuple[set, dict | None]:
     out = set()
     try:
         tree = ast.parse(src)
-    except SyntaxError:
-        return out
+    except SyntaxError as exc:
+        return out, {
+            "file": relpath,
+            "parser": "python-ast",
+            "error_class": exc.__class__.__name__,
+            "reason": _bounded_parse_reason(exc),
+            "file_fingerprint": hashlib.sha256(src.encode()).hexdigest(),
+        }
     stdlib = getattr(_sys, "stdlib_module_names", frozenset())
     pkg_dir = posixpath.dirname(relpath)
     for node in ast.walk(tree):
@@ -645,7 +730,12 @@ def _py_imports(src: str, relpath: str, known_stems: dict) -> set:
                 out.add(hit)
             elif "/" not in n and n and n not in stdlib:
                 out.add(f"ext:{n}")
-    return out
+    return out, None
+
+
+def _py_imports(src: str, relpath: str, known_stems: dict) -> set:
+    """Backward-compatible import-only view of the checked scanner."""
+    return _py_imports_checked(src, relpath, known_stems)[0]
 
 
 _JS_IMPORT = re.compile(
@@ -872,7 +962,7 @@ _GO_LIMITATION_DECLARED = (
     "(record_edge / `tp graph edge`).")
 
 
-def scan(ws: str, decompose: bool = False) -> dict:
+def scan(ws: str, decompose: bool = False, *, strict: bool = False) -> dict:
     """Build/refresh the graph. Incremental: unchanged files (by content
     hash) keep their cached edges — a rescan after a small diff is cheap.
     The read-modify-write is serialized under the graph.json lock so a
@@ -885,13 +975,20 @@ def scan(ws: str, decompose: bool = False) -> dict:
     decomposed carries no `components` key at all."""
     p = os.path.abspath(_path(ws))
     if p in _BATCH:                        # inside batch(): lock already held
-        return _scan_locked(ws, into=_BATCH[p], decompose=decompose)
+        graph = _scan_locked(ws, into=_BATCH[p], decompose=decompose)
+        if strict or _STRICT_GRAPH_QUALITY.get():
+            require_quality(graph)
+        return graph
     restored = _restore_managed_cache(ws, decompose=decompose)
     if restored is not None:
+        if strict or _STRICT_GRAPH_QUALITY.get():
+            require_quality(restored)
         return restored
     with tp.file_lock(p):
         graph = _scan_locked(ws, decompose=decompose)
     _write_managed_cache(ws, graph, decompose=decompose)
+    if strict or _STRICT_GRAPH_QUALITY.get():
+        require_quality(graph)
     return graph
 
 
@@ -1014,6 +1111,57 @@ def _is_artifact(relpath: str) -> bool:
     return bool(posixpath.dirname(rel)) and rel.endswith(ARTIFACT_EXT)
 
 
+def _graph_scan_quality(base_failures: list[dict], dstats: dict | None,
+                        *, decompose: bool, scanned_revision: str) -> dict:
+    """Combine producer reports without letting decomposition mask base AST."""
+    base = [copy.deepcopy(row) for row in base_failures]
+    for row in base:
+        row["producer"] = "base-scanner"
+    decomposition = [copy.deepcopy(row)
+                     for row in ((dstats or {}).get("failures") or [])]
+    for row in decomposition:
+        row["producer"] = "decomposition"
+    if decompose and (dstats or {}).get("error") and not decomposition:
+        decomposition.append({
+            "producer": "decomposition",
+            "file": "",
+            "module": "(graph)",
+            "parser": "decomposition",
+            "error_class": "DecompositionError",
+            "reason": " ".join(str(dstats["error"]).split())[:240],
+            "file_fingerprint": "",
+        })
+    key = lambda row: (str(row.get("producer") or ""),
+                       str(row.get("module") or ""),
+                       str(row.get("file") or ""),
+                       str(row.get("reason") or ""))
+    base.sort(key=key)
+    decomposition.sort(key=key)
+    failures = sorted(base + decomposition, key=key)
+    return {
+        "schema": GRAPH_SCAN_QUALITY_SCHEMA,
+        "degraded": bool(failures),
+        "mode": "components" if decompose else "modules",
+        "scanned_revision": str(scanned_revision or ""),
+        "affected_modules": sorted({str(row.get("module") or "")
+                                    for row in failures
+                                    if str(row.get("module") or "")}),
+        "failures": failures,
+        "producers": {
+            "base-scanner": {
+                "status": "degraded" if base else "complete",
+                "failures": base,
+            },
+            "decomposition": {
+                "status": ("degraded" if decomposition else "complete")
+                if decompose else "not-requested",
+                "failures": decomposition,
+            },
+        },
+        "recovery": GRAPH_SCAN_RECOVERY,
+    }
+
+
 def _scan_locked(ws: str, into: dict | None = None,
                  decompose: bool = False) -> dict:
     prev = load(ws)
@@ -1118,11 +1266,13 @@ def _scan_locked(ws: str, into: dict | None = None,
                     pkg_map.setdefault(pkg, _mod(rel))
 
     file_entries, edges = {}, set()
+    base_failures: list[dict] = []
     ref_rows: list = []          # (file, module, [resolved target files])
     prev_files = prev.get("files", {})
     for rel in code_files:
         full = os.path.join(ws, rel)
         cached = prev_files.get(rel)
+        mod = _mod(rel)
         try:
             st = os.stat(full)
             size, mtime = st.st_size, int(st.st_mtime)
@@ -1134,14 +1284,24 @@ def _scan_locked(ws: str, into: dict | None = None,
         # repo the em-gate true-up and retro no longer re-hash every file.
         if (cached and size is not None and cached.get("size") == size
                 and cached.get("mtime") == mtime and "imports" in cached
-                and "refs" in cached):
+                and "refs" in cached
+                and (not rel.endswith(".py")
+                     or cached.get("parse_checked") is True)):
             imports = set(cached["imports"])
-            mod = _mod(rel)
             imports.discard(mod)
             refs = list(cached["refs"])
             file_entries[rel] = {"hash": cached.get("hash", ""),
                                  "imports": sorted(imports), "refs": refs,
                                  "size": size, "mtime": mtime}
+            if rel.endswith(".py"):
+                file_entries[rel]["parse_checked"] = True
+                failure = cached.get("parse_failure")
+                if isinstance(failure, dict):
+                    failure = copy.deepcopy(failure)
+                    failure["module"] = mod
+                    failure["producer"] = "base-scanner"
+                    file_entries[rel]["parse_failure"] = failure
+                    base_failures.append(failure)
             for target in imports:
                 edges.add((mod, target, "imports"))
             ref_rows.append((rel, mod, refs))
@@ -1152,10 +1312,17 @@ def _scan_locked(ws: str, into: dict | None = None,
         except OSError:
             continue
         digest = hashlib.sha1(src.encode()).hexdigest()[:12]
-        if cached and cached.get("hash") == digest and "refs" in cached:
+        parse_failure = None
+        if (cached and cached.get("hash") == digest and "refs" in cached
+                and (not rel.endswith(".py")
+                     or cached.get("parse_checked") is True)):
             imports = set(cached["imports"])
+            if rel.endswith(".py") and isinstance(
+                    cached.get("parse_failure"), dict):
+                parse_failure = copy.deepcopy(cached["parse_failure"])
         elif rel.endswith(".py"):
-            imports = _py_imports(src, rel, known_stems)
+            imports, parse_failure = _py_imports_checked(
+                src, rel, known_stems)
         elif rel.endswith(".go"):
             # PARTIAL COVERAGE (mirrors the Ruby autoloading note). A Go
             # import path is resolvable to an internal module exactly when
@@ -1198,11 +1365,18 @@ def _scan_locked(ws: str, into: dict | None = None,
         else:
             imports = _js_imports(src, rel, set(files), manifests,
                                   declared_ids, root_mod)
-        mod = _mod(rel)
         imports.discard(mod)
         refs = sorted(_file_refs(src, rel, files, artifact_only=True))
         file_entries[rel] = {"hash": digest, "imports": sorted(imports),
                              "refs": refs, "size": size, "mtime": mtime}
+        if rel.endswith(".py"):
+            file_entries[rel]["parse_checked"] = True
+            if parse_failure is not None:
+                parse_failure = copy.deepcopy(parse_failure)
+                parse_failure["module"] = mod
+                parse_failure["producer"] = "base-scanner"
+                file_entries[rel]["parse_failure"] = parse_failure
+                base_failures.append(parse_failure)
         for target in imports:
             edges.add((mod, target, "imports"))
         ref_rows.append((rel, mod, refs))
@@ -1438,6 +1612,9 @@ def _scan_locked(ws: str, into: dict | None = None,
         pd = (prev.get("meta") or {}).get("decompose")
         if pd is not None:
             g["meta"]["decompose"] = copy.deepcopy(pd)
+    g["meta"]["graph_scan_quality"] = _graph_scan_quality(
+        base_failures, dstats, decompose=decompose,
+        scanned_revision=tp.git_head(ws) or "")
     if into is not None:
         # Active batch: replace the batched graph's contents in place so the
         # batch's single flush persists this scan (identity preserved).
@@ -1706,6 +1883,7 @@ def readiness(ws: str, tasks) -> dict:
     except Exception as exc:
         return {"passed": False, "errors": [f"graph scan failed: {exc}"],
                 "warnings": [], "tasks": [], "graph": {}}
+    errors.extend(quality_errors(g))
     for task in tasks or []:
         tid = task.get("id", "?")
         supplied = dict(task.get("impact_policy") or {})
@@ -1767,14 +1945,15 @@ def readiness(ws: str, tasks) -> dict:
 def completion(ws: str, changed_files, planned_modules=None,
                policy: dict | None = None) -> dict:
     """Graph Definition of Done read model for one realized change."""
+    graph = load(ws)
     files = list(changed_files or [])
-    actual = sorted({module_of(f, declared_module_ids(load(ws))) for f in files})
+    actual = sorted({module_of(f, declared_module_ids(graph)) for f in files})
     planned = sorted(set(planned_modules or []))
     imp = impact(ws, files, policy=policy)
     contract_files = sorted(f for f in files if re.search(
         r"(^|/)(openapi|asyncapi|schemas?|contracts?)(/|\.)|"
         r"\.(proto|avsc)$", f, re.I))
-    errors = []
+    errors = quality_errors(graph)
     if imp.get("unknown"):
         errors.append("graph contains unknown realized modules: "
                       + ", ".join(imp["unknown"]))
