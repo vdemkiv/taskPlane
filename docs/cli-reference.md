@@ -67,7 +67,7 @@ not repeated in the tables.
 | `tp.py loop init` | start an Evaluate-Loop for a goal |
 | `tp.py loop next` | print the next stage brief for the active loop |
 | `tp.py loop replan` | human: archive frozen tasks and return to Plan for a corrected plan plus fresh approval |
-| `tp.py loop resolve` | resolve a blocked loop: retry, skip, defer or abort |
+| `tp.py loop resolve` | resolve a blocked loop: retry, pass, skip, defer or abort |
 | `tp.py loop retro` | print the loop retrospective |
 | `tp.py loop select` | A/B selection gate: pick the variant that ships (or 'hybrid') |
 | `tp.py loop status` | show the loop's stage, tasks and gates |
@@ -384,6 +384,9 @@ rebuild the dependency graph from the working tree
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--decompose` | flag | derive the component layer (graph.json 'components'; R-0003 contract:component-map) |
+| `--json` | flag | print machine JSON (the backward-compatible default) |
+| `--strict` | flag | persist the normal fail-open record, then return nonzero when any graph producer is degraded |
+| `--text` | flag | print a concise human graph-quality report |
 
 ## `tp.py help`
 
@@ -607,7 +610,7 @@ Positional arguments:
 | `--max-fix-cycles` | MAX_FIX_CYCLES | fix cycles the loop may run before it escalates to the human (default 2) |
 | `--parallel` | flag | execute waves of scope-disjoint tasks concurrently, one governed agent per task |
 | `--req` | REQ | anchor the loop to a requirement R-id; TASKPLANE_STAGE_NATIVE=new-run requires an exact existing requirement |
-| `--reuse-approved-design` | flag | start at Plan from an unchanged completed design-only loop with the same requirement/spec and attributable `--by` authority |
+| `--reuse-approved-design` | flag | start at Plan from an unchanged completed design-only loop with the same requirement/spec and attributable --by authority |
 | `--spec` | SPEC | path to an existing spec (skips PM) |
 
 ## `tp.py loop next`
@@ -632,7 +635,7 @@ human: archive frozen tasks and return to Plan for a corrected plan plus fresh a
 
 ## `tp.py loop resolve`
 
-resolve a blocked loop: retry, skip, defer or abort
+resolve a blocked loop: retry, pass, skip, defer or abort
 
 Positional arguments:
 

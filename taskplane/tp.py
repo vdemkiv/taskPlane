@@ -2458,8 +2458,27 @@ def cmd_budget(a) -> int:
 
 # --------------------------------------------------------------- dod
 
+def _graph_quality_refusal(ws: str, surface: str) -> dict | None:
+    """One persisted producer record, consumed by every strict CLI gate."""
+    import depgraph
+    graph = depgraph.load(ws)
+    errors = depgraph.quality_errors(graph)
+    if not errors:
+        return None
+    return {
+        "schema": "taskplane.graph-quality-refusal/v1",
+        "error": errors[0],
+        "surface": surface,
+        "graph_quality": depgraph.scan_quality(graph),
+    }
+
+
 def cmd_dod(a) -> int:
     ws = _workspace(a.workspace)
+    refusal = _graph_quality_refusal(ws, "DoD")
+    if refusal:
+        print(json.dumps(refusal, indent=2))
+        return 1
     c = tp.load_active(ws)
     if c is None:
         print("taskplane: no active contract — nothing to validate.",
@@ -2572,6 +2591,11 @@ def cmd_loop(a) -> int:
     action = a.loop_action
     out = None
     enforcement = None
+    if action in {"next", "gate"}:
+        refusal = _graph_quality_refusal(ws, "Design/Plan/Review/DoD")
+        if refusal:
+            print(json.dumps(refusal, indent=2))
+            return 1
     guarded_actions = {"init", "next", "wave", "claim", "gate", "approve"}
     if action in guarded_actions:
         current = loopmod.load(ws)
@@ -2616,12 +2640,23 @@ def cmd_loop(a) -> int:
         else:
             out = st
     elif action == "next":
-        out = loopmod.next_action(ws, rid=getattr(a, "req", None))
+        import depgraph
+        try:
+            with depgraph.strict_quality():
+                out = loopmod.next_action(ws, rid=getattr(a, "req", None))
+        except depgraph.GraphQualityDegraded as exc:
+            out = {"error": str(exc), "step": "graph-quality"}
     elif action == "submit":
         out = loopmod.submit(ws, a.outcome, note=a.note or "", task_id=a.task)
     elif action == "gate":
-        out = loopmod.gate(ws, a.outcome, note=a.note or "", task_id=a.task,
-                           rid=getattr(a, "req", None))
+        import depgraph
+        try:
+            with depgraph.strict_quality():
+                out = loopmod.gate(
+                    ws, a.outcome, note=a.note or "", task_id=a.task,
+                    rid=getattr(a, "req", None))
+        except depgraph.GraphQualityDegraded as exc:
+            out = {"error": str(exc), "step": "graph-quality"}
         # Tier-routing observability at the gate summary, ON BY DEFAULT: the
         # cheap/deep routing the briefs resolve is only real if dispatch used
         # it, so every gate shows expected-vs-observed models. Pure audit —
@@ -4906,6 +4941,40 @@ def cmd_review(a) -> int:
         # degraded graph and routes from diff/content with mandatory floors.
         g, imp = {}, {}
         step("graph", False, reason=e.__class__.__name__)
+    graph_errors = dg.quality_errors(g) if g and "dg" in locals() else []
+    if graph_errors:
+        quality = dg.scan_quality(g)
+        warning = {
+            "schema": "taskplane.graph-quality-warning/v1",
+            "status": "degraded",
+            "reason": graph_errors[0],
+            "graph_quality": quality,
+            "recovery": (quality.get("recovery") or
+                         dg.GRAPH_SCAN_RECOVERY),
+            "continuation": "immutable_diff_with_architecture_security_floors",
+        }
+        # Standalone Review is intentionally useful when graph enrichment is
+        # incomplete: preserve the producer failure visibly, then let the
+        # review kernel route from the pinned immutable diff with its
+        # architecture/security floors. Governed Evaluate/EM and DoD retain
+        # their strict refusals in cmd_loop/cmd_dod.
+        step("graph", False, reason=graph_errors[0],
+             recovery=warning["recovery"], continuation=warning["continuation"])
+        out["graph_quality_warning"] = warning
+        preflight["graph_quality_warning"] = warning
+        # Adapt the producer-complete scan record into ReviewKernel's existing
+        # impact-quality interface. A failed graph producer makes the derived
+        # radius unknown, and the same degraded graph cannot honestly repair
+        # that uncertainty through caller expansion. The full producer record
+        # remains attached to the impact evidence rather than being recast as
+        # an unrelated truncation or coverage failure.
+        imp = dict(imp)
+        imp.update({
+            "unknown": True,
+            "unknown_reason": "graph_scan_degraded",
+            "graph_scan_quality": quality,
+        })
+        out["impact"] = imp
     rec["review_cache"] = tgt.review_cache_identity(rec, g)
     preflight["cache_identity"] = rec["review_cache"]
     tgt.save(ws, rec)
@@ -4952,6 +5021,71 @@ def cmd_review(a) -> int:
         diff_ref = store.put("diff", {"base": base, "patch": patch,
                                       "files": files})
         symbols = rv.changed_symbols_from_patch(patch)
+        routing_content = rv.changed_content_from_patch(patch)
+        review_router = None
+        if graph_errors:
+            import lens as lensmod
+
+            def _degraded_review_router():
+                routing = lensmod.route(
+                    files, task_type="review", breadth="routed",
+                    stage="review", workspace=ws,
+                    requirement_text=None,
+                    content_by_file=routing_content)
+                guardrails = ("architecture", "security")
+                by_id = {str(row.get("id") or ""): row
+                         for row in routing.get("lenses") or []}
+                for lens_id in guardrails:
+                    row = by_id.get(lens_id)
+                    if row is None:
+                        continue
+                    tier = str(row.get("tier") or row.get("verdict") or "")
+                    reason = f"degraded graph fallback: {lens_id} floor"
+                    if tier not in {"light", "deep"}:
+                        row["initial_verdict"] = tier or "n/a"
+                        row["tier"] = "light"
+                        row["verdict"] = "light"
+                        row["mode"] = "inline"
+                        row.pop("negative_evidence", None)
+                    row["floor"] = reason
+                    for key in ("evidence", "reasons"):
+                        values = row.setdefault(key, [])
+                        if reason not in values:
+                            values.append(reason)
+                context = routing.setdefault("context", {})
+                progression = context.setdefault("review_progression", {})
+                sweep_lenses = list(progression.get("sweep_lenses") or [])
+                for lens_id in guardrails:
+                    row = by_id.get(lens_id) or {}
+                    tier = str(row.get("tier") or row.get("verdict") or "")
+                    if tier == "light" and lens_id not in sweep_lenses:
+                        # The two advertised guardrails are a fixed, bounded
+                        # widening of the existing single sweep. Keeping them
+                        # in the same slot avoids a second review wave while
+                        # ensuring dispatch cannot filter either floor out.
+                        sweep_lenses.append(lens_id)
+                progression["sweep_lenses"] = sweep_lenses
+                progression["sweep_count"] = 1 if sweep_lenses else 0
+                progression["deferred_light"] = [
+                    lens_id for lens_id in
+                    progression.get("deferred_light") or []
+                    if lens_id not in guardrails]
+                context["graph_quality_fallback"] = {
+                    "mode": "immutable_diff",
+                    "guardrails": ["architecture_floor",
+                                   "security_floor"],
+                    "sweep_widening": [
+                        lens_id for lens_id in guardrails
+                        if lens_id in sweep_lenses],
+                }
+                # Routing attached language references before the fallback
+                # promoted security. Refresh that deterministic attachment so
+                # the stored sweep brief applies the newly active floor too.
+                routing = lensmod._attach_language_context(
+                    routing, files, "review")
+                return routing
+
+            review_router = _degraded_review_router
         manifest = rv.start_review(
             ws, target=rec, graph=g, impact=imp,
             diff={"files": files, "changed_symbols": symbols,
@@ -4959,8 +5093,9 @@ def cmd_review(a) -> int:
             runnability=runmod.evidence_record(probe),
             requirement={}, acceptance=[], contracts=[], stage="review",
             task_type="review", base=base,
-            caller_expander=rv.bounded_caller_expander(g),
-            routing_content=rv.changed_content_from_patch(patch))
+            caller_expander=(None if graph_errors else
+                             rv.bounded_caller_expander(g)),
+            router=review_router, routing_content=routing_content)
         if manifest.get("status") not in {"ready", "needs_user"}:
             if repository_run:
                 import run_store as repository_run_store
@@ -5410,13 +5545,29 @@ def cmd_graph(a) -> int:
     if a.graph_action == "scan":
         dec = bool(getattr(a, "decompose", False))
         g = dg.scan(ws, decompose=dec)
+        quality = dg.scan_quality(g)
         out = {"modules": len(g["modules"]),
                "edges": len(g["edges"]),
                "files": len(g["files"]),
                "stored": os.path.join(tp.kb_root(ws), "graph.json")}
         if dec:   # ADDITIVE: without --decompose the output is unchanged
             out["components"] = len(g.get("components") or [])
-        print(json.dumps(out, indent=2))
+        if quality.get("degraded"):
+            out["degraded"] = True
+            out["graph_quality"] = quality
+        if getattr(a, "text", False):
+            print(f"graph scan: modules={out['modules']} edges={out['edges']} "
+                  f"files={out['files']} degraded="
+                  + str(bool(quality.get("degraded"))).lower())
+            for row in quality.get("failures") or []:
+                print("  - {producer}: {module} {file} {error_class}: "
+                      "{reason}".format(**row))
+            if quality.get("degraded"):
+                print("  recovery: " + str(quality.get("recovery") or ""))
+        else:
+            print(json.dumps(out, indent=2))
+        if bool(getattr(a, "strict", False)) and quality.get("degraded"):
+            return 1
     elif a.graph_action == "impact":
         files = (a.files.split(",") if a.files else
                  _changed_for_impact(ws, a.base))
@@ -6857,6 +7008,15 @@ def main(argv=None) -> int:
     gs.add_argument("--decompose", action="store_true",
                     help="derive the component layer (graph.json "
                          "'components'; R-0003 contract:component-map)")
+    gs.add_argument("--strict", action="store_true",
+                    help="persist the normal fail-open record, then return "
+                         "nonzero when any graph producer is degraded")
+    gsf = gs.add_mutually_exclusive_group()
+    gsf.add_argument("--json", action="store_true",
+                     help="print machine JSON (the backward-compatible "
+                          "default)")
+    gsf.add_argument("--text", action="store_true",
+                     help="print a concise human graph-quality report")
     gi = gsub.add_parser("impact", help="what a change reaches: blast radius across the graph")
     gi.add_argument("--files", help="comma-separated changed files "
                     "(default: git diff + untracked)")

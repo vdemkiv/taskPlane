@@ -102,6 +102,33 @@ _STDLIB = getattr(__import__("sys"), "stdlib_module_names", frozenset())
 class _DerivationError(Exception):
     """Internal: a per-module derivation failure (caught by derive())."""
 
+    def __init__(self, message: str, *, file: str = "",
+                 parser: str = "decomposition",
+                 error_class: str = "DerivationError",
+                 reason: str | None = None):
+        super().__init__(message)
+        self.file = file
+        self.parser = parser
+        self.error_class = error_class
+        self.reason = " ".join(str(reason or message).split())[:240]
+
+
+def _syntax_error(rel: str, exc: SyntaxError) -> _DerivationError:
+    reason = str(exc.msg or "invalid syntax")
+    if exc.lineno is not None:
+        reason += f" at line {exc.lineno}"
+        if exc.offset is not None:
+            reason += f", column {exc.offset}"
+    return _DerivationError(
+        f"bad AST in {rel}: {reason}", file=rel, parser="python-ast",
+        error_class=exc.__class__.__name__, reason=reason)
+
+
+def _unreadable_error(rel: str) -> _DerivationError:
+    return _DerivationError(
+        f"unreadable file: {rel}", file=rel, parser="file-read",
+        error_class="OSError", reason="file could not be read")
+
 
 # ---------------------------------------------------------------- bounded IO
 
@@ -300,12 +327,12 @@ def _file_refs(text: str | None, rel: str, mod_stems: dict,
     """Per-file (intra-module file targets, module-level alias targets).
     Python via AST; JS-family via relative-import regex; other -> empty."""
     if text is None:
-        raise _DerivationError(f"unreadable file: {rel}")
+        raise _unreadable_error(rel)
     if rel.endswith(".py"):
         try:
             tree = ast.parse(text)
         except SyntaxError as e:
-            raise _DerivationError(f"bad AST in {rel}: {e}") from None
+            raise _syntax_error(rel, e) from None
         intra, alias = _py_import_map(tree, rel, mod_stems, repo_stems,
                                       module)
         return set(intra.values()), set(alias.values())
@@ -352,7 +379,7 @@ def _symbol_clusters(text: str, rel: str, floors: dict):
     try:
         tree = ast.parse(text)
     except SyntaxError as e:
-        raise _DerivationError(f"bad AST in {rel}: {e}") from None
+        raise _syntax_error(rel, e) from None
     tops = {n.name: n for n in tree.body
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
                               ast.ClassDef))}
@@ -395,7 +422,7 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
     texts = {f: _read_text(workspace, f) for f in files}
     for f, t in texts.items():
         if t is None:
-            raise _DerivationError(f"unreadable file: {f}")
+            raise _unreadable_error(f)
     lines = {f: _count_lines(t) for f, t in texts.items()}
     sizes = {f: len(t.encode("utf-8", "replace")) for f, t in texts.items()}
 
@@ -584,7 +611,7 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
         try:
             tree = ast.parse(texts[f])
         except SyntaxError as e:     # pragma: no cover — parsed above
-            raise _DerivationError(f"bad AST in {f}: {e}") from None
+            raise _syntax_error(f, e) from None
         intra_map, alias_map = _py_import_map(tree, f, mod_stems,
                                               repo_stems, module)
         for n, node in sorted(tops.items()):
@@ -689,12 +716,26 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
     """
     stats = {"components": 0, "recomputed": 0, "cache_hits": 0,
              "floor_folded": 0, "modules_skipped": 0, "degraded": [],
-             "floors_hash": "", "error": None}
+             "failures": [], "floors_hash": "", "error": None}
     errors: list = []
     try:
         floors, ferr = load_floors(workspace)
         if ferr:
             errors.append(ferr)
+            cfg = os.path.join(workspace, _COMPONENTS_YAML)
+            try:
+                with open(cfg, "rb") as stream:
+                    cfg_fingerprint = hashlib.sha256(stream.read()).hexdigest()
+            except OSError:
+                cfg_fingerprint = ""
+            stats["failures"].append({
+                "file": _COMPONENTS_YAML,
+                "module": "(configuration)",
+                "parser": "components-yaml",
+                "error_class": "ValueError",
+                "reason": " ".join(str(ferr).split())[:240],
+                "file_fingerprint": cfg_fingerprint,
+            })
         fhash = hashlib.sha256(json.dumps(floors, sort_keys=True,
                                           separators=(",", ":")).encode()
                                ).hexdigest()
@@ -719,6 +760,15 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
         for rel in prev_files:
             prev_by_module.setdefault(
                 _module_of(rel, _dg.declared_module_ids(prev)), []).append(rel)
+        previous_failures: dict[str, list] = {}
+        previous_quality = ((prev.get("meta") or {}).get(
+            "graph_scan_quality") or {})
+        previous_decomposition = ((previous_quality.get("producers") or {})
+                                  .get("decomposition") or {})
+        for row in previous_decomposition.get("failures") or []:
+            if isinstance(row, dict) and row.get("module"):
+                previous_failures.setdefault(str(row["module"]), []).append(
+                    json.loads(json.dumps(row)))
 
         repo_stems = _repo_stems(graph)
         out: list = []
@@ -740,13 +790,22 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
                 separators=(",", ":")).encode()).hexdigest()[:16]
             prev_gsig_ok = all(c.get("graph_sig") == gsig
                                for c in prev_comps.get(module) or [])
+            cached_degraded = any(bool(c.get("degraded"))
+                                  for c in prev_comps.get(module) or [])
+            cached_failure_rows = previous_failures.get(module) or []
             if (module in prev_comps and prev_fhash == fhash
                     and prev_gsig_ok
-                    and material == prev_material):
+                    and material == prev_material
+                    and (not cached_degraded or cached_failure_rows)):
                 reused = json.loads(json.dumps(prev_comps[module]))
                 out.extend(reused)
                 stats["modules_skipped"] += 1
                 stats["cache_hits"] += len(reused)
+                if cached_degraded:
+                    stats["degraded"].append(module)
+                    stats["failures"].extend(cached_failure_rows)
+                    errors.extend(str(row.get("reason") or "")
+                                  for row in cached_failure_rows)
                 continue
             try:
                 comps, folded = _derive_module(workspace, module, files,
@@ -757,6 +816,17 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
                 # degraded marker — a broken file never breaks the scan
                 errors.append(f"{module}: {e}")
                 stats["degraded"].append(module)
+                stats["failures"].append({
+                    "file": str(getattr(e, "file", "") or ""),
+                    "module": module,
+                    "parser": str(getattr(e, "parser", "decomposition")),
+                    "error_class": str(getattr(
+                        e, "error_class", e.__class__.__name__)),
+                    "reason": " ".join(str(getattr(
+                        e, "reason", e)).split())[:240],
+                    "file_fingerprint": str(hashes.get(
+                        getattr(e, "file", ""), "")),
+                })
                 comps = [{"id": f"{module}::core", "module": module,
                           "files": files, "symbols": [],
                           "_members": [(f, hashes.get(f, ""), "")
@@ -782,6 +852,18 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
                     stats["recomputed"] += 1
                 except Exception as e:
                     errors.append(f"{module}: lens map failed: {e}")
+                    files_in_component = list(c.get("files") or [])
+                    stats["failures"].append({
+                        "file": files_in_component[0]
+                        if len(files_in_component) == 1 else "",
+                        "module": module,
+                        "parser": "lens-map",
+                        "error_class": e.__class__.__name__,
+                        "reason": " ".join(str(e).split())[:240],
+                        "file_fingerprint": str(hashes.get(
+                            files_in_component[0], ""))
+                        if len(files_in_component) == 1 else "",
+                    })
                     c["lens_map"] = {}
                     c["degraded"] = True
                     if module not in stats["degraded"]:
@@ -794,4 +876,10 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
         return out, stats
     except Exception as e:       # absolute fail-open: never crash a scan
         stats["error"] = "; ".join(errors + [f"decompose failed: {e}"])
+        stats["failures"].append({
+            "file": "", "module": "(graph)", "parser": "decomposition",
+            "error_class": e.__class__.__name__,
+            "reason": " ".join(str(e).split())[:240],
+            "file_fingerprint": "",
+        })
         return [], stats
