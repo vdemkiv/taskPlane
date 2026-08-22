@@ -49,6 +49,7 @@ import hashlib
 import io
 import json
 import re
+import shlex
 import time as _time
 import traceback
 
@@ -57,6 +58,28 @@ import taskplane_lite as tp  # noqa: E402
 import host_capabilities as host_caps  # noqa: E402
 import enforcement as enforcement_kernel  # noqa: E402
 import collision as collision_kernel  # noqa: E402
+import storage as runtime_storage  # noqa: E402
+
+
+# Closed user-layer refusal protocol. Only errors whose failure is an
+# anticipated public engine outcome belong here; built-in RuntimeError and
+# ValueError deliberately remain outside it so programming defects retain the
+# exit-70 traceback path below. The known set is derived, never hand-synced.
+PUBLIC_ENGINE_ERROR_REGISTRY = {
+    tp.StateError: {
+        "headline": "governed state is unavailable",
+        "recovery": "{program} onboard --workspace {workspace} --json",
+        "exit_code": 1,
+        "debug_cause": "reraise",
+    },
+    runtime_storage.StorageIdentityError: {
+        "headline": "workspace identity check failed",
+        "recovery": "{program} onboard --workspace {workspace} --json",
+        "exit_code": 1,
+        "debug_cause": "reraise",
+    },
+}
+KNOWN_ENGINE_ERRORS = frozenset(PUBLIC_ENGINE_ERROR_REGISTRY)
 
 
 # Shared help text for the universal --workspace plumbing flag. It is
@@ -6471,6 +6494,25 @@ def _enforce_stage_compatibility() -> None:
         raise SystemExit(2) from None
 
 
+def _public_engine_error(exc: BaseException) -> dict | None:
+    """Return the exact registered public envelope, never a broad base hit."""
+    return PUBLIC_ENGINE_ERROR_REGISTRY.get(type(exc))
+
+
+def _render_engine_error(a, exc: BaseException, envelope: dict) -> int:
+    """Project one known refusal as headline, recovery command, and exit."""
+    workspace = shlex.quote(_workspace(getattr(a, "workspace", None)))
+    program = shlex.quote(os.path.abspath(__file__))
+    recovery = str(envelope["recovery"]).format(
+        program=program, workspace=workspace)
+    print(f"taskplane: {envelope['headline']}: "
+          f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    print(f"  recovery: {recovery}", file=sys.stderr)
+    print("  debug: re-run with TASKPLANE_DEBUG=1 for the full traceback",
+          file=sys.stderr)
+    return int(envelope["exit_code"])
+
+
 def main(argv=None) -> int:
     _utf8_streams()
     _enforce_stage_compatibility()
@@ -7400,8 +7442,8 @@ def main(argv=None) -> int:
     # USER-LAYER ERROR BOUNDARY. The "simple front" translates raw
     # tracebacks into governed messages — but it NEVER swallows: a failure
     # stays a FAILURE (nonzero exit) and the full detail stays available.
-    #   - tp.StateError: a GOVERNED failure — the message already carries
-    #     the path, the why, and the remedy. One clean line, exit 1.
+    #   - registered public engine errors: a concise headline, an executable
+    #     recovery command, no traceback, and their declared nonzero exit.
     #   - missing git binary: the documented prerequisite — the remedy line,
     #     exit 1.
     #   - anything UNEXPECTED: a short reason line PLUS the full traceback
@@ -7427,12 +7469,9 @@ def main(argv=None) -> int:
                   "git and re-run (see README prerequisites).",
                   file=sys.stderr)
             return 1
-        if isinstance(exc, tp.StateError):
-            # StateError already carries the path, the why, and the remedy.
-            print(f"taskplane: {a.cmd} failed: {exc}", file=sys.stderr)
-            print("  (set TASKPLANE_DEBUG=1 for the full traceback)",
-                  file=sys.stderr)
-            return 1
+        envelope = _public_engine_error(exc)
+        if envelope is not None:
+            return _render_engine_error(a, exc, envelope)
         # Unexpected: short reason first, then the FULL traceback — the
         # boundary governs the message, it never destroys the evidence.
         print(f"taskplane: {a.cmd} failed: "
