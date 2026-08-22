@@ -7211,6 +7211,54 @@ def resolve(ws: str, decision: str) -> dict:
         # no implementation finding to fix. Retry the missing judgment itself.
         # Judged product failures continue through the existing fix route.
         state["step"] = "evaluate" if retry_evaluation else "fix"
+    elif decision == "pass":
+        evaluation = t.get("evaluation") or {}
+        accept_errors = []
+        if not (
+                t.get("status") == "unavailable"
+                and evaluation.get("status") == "unavailable"
+                and evaluation.get("verdict") == "non-judged"
+                and evaluation.get("reason_code") ==
+                "orchestration_unavailable"):
+            accept_errors.append(
+                "pass is only available for a non-judged orchestration "
+                "outage")
+        act_ws = str(t.get("workspace") or ws)
+        unavailable_errors, verdict = _evaluation_unavailable_errors(
+            act_ws, state, t)
+        accept_errors.extend(unavailable_errors)
+        criteria = (verdict or {}).get("criteria") or []
+        if not criteria or any(
+                not isinstance(row, dict) or row.get("status") != "met"
+                for row in criteria):
+            accept_errors.append(
+                "human pass requires every task criterion to be evidenced "
+                "as met")
+        if accept_errors:
+            return {"error": "unavailable evaluation cannot be accepted as "
+                    "passed", "blockers": accept_errors}
+        # This is a HUMAN recovery decision over a mechanically valid outage
+        # envelope, not an evaluator self-pass.  Preserve the outage evidence
+        # and make the exceptional acceptance explicit in task state.
+        t["status"] = "passed"
+        t["human_resolution"] = {
+            "decision": "pass",
+            "reason": "criteria met; quick-only evaluation accepted during "
+                      "orchestration outage",
+        }
+        after_last = ("selection" if state.get("ab")
+                      and not state.get("selection") else "em")
+        if state.get("parallel"):
+            state["step"] = (after_last if all(
+                row.get("status") in SETTLED for row in state["tasks"])
+                else "execute")
+        else:
+            nxt = _next_unsettled_index(state, state["current_task"])
+            if nxt is not None:
+                state["current_task"] = nxt
+                state["step"] = "execute"
+            else:
+                state["step"] = after_last
     elif decision == "skip":
         t["status"] = "skipped"
         # Cascade: a task that depended (transitively) on the skipped one
@@ -7256,7 +7304,7 @@ def resolve(ws: str, decision: str) -> dict:
     elif decision == "abort":
         state["step"] = "failed"
     else:
-        return {"error": "decision must be retry|skip|defer|abort"}
+        return {"error": "decision must be retry|pass|skip|defer|abort"}
     state["_stage_completion"] = _stage_loop_decision_completion(
         ws, schema="taskplane.loop-resolution-result/v1",
         step="escalated", outcome="resolved",

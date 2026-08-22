@@ -6592,8 +6592,10 @@ def main(argv=None) -> int:
                     help="pass a BLOCKED refinement gate anyway")
     la.add_argument("--advisory", action="store_true",
                     help="acknowledge degraded screen enforcement")
-    lr = lsub.add_parser("resolve", help="resolve a blocked loop: retry, skip, defer or abort")
-    lr.add_argument("decision", choices=["retry", "skip", "defer", "abort"])
+    lr = lsub.add_parser(
+        "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort")
+    lr.add_argument(
+        "decision", choices=["retry", "pass", "skip", "defer", "abort"])
     lrp = lsub.add_parser(
         "replan", help="human: archive frozen tasks and return to Plan for "
         "a corrected plan plus fresh approval")

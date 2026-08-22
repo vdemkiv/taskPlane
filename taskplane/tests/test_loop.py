@@ -526,6 +526,49 @@ class TestLoop(unittest.TestCase):
             task["evaluation"]["outage_identity"]["evaluation"],
             verdict["evaluation"])
 
+    def test_human_can_accept_met_criteria_during_orchestration_outage(self):
+        ws, _, _ = self._gate_evaluator_unavailable()
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        task["evaluation"]["reason_code"] = "orchestration_unavailable"
+        task["evaluation"]["outage_identity"]["evaluation"][
+            "reason_code"] = "orchestration_unavailable"
+        verdict_path = os.path.join(ws, ".eval", "verdict.json")
+        with open(verdict_path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["evaluation"]["reason_code"] = "orchestration_unavailable"
+        with open(verdict_path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream)
+        loop.save(ws, state)
+
+        result = loop.resolve(ws, "pass")
+
+        self.assertNotIn("error", result)
+        accepted = loop.load(ws)["tasks"][0]
+        self.assertEqual(accepted["status"], "passed")
+        self.assertEqual(accepted["human_resolution"]["decision"], "pass")
+
+    def test_human_pass_refuses_unmet_criteria(self):
+        ws, _, _ = self._gate_evaluator_unavailable()
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        task["evaluation"]["reason_code"] = "orchestration_unavailable"
+        task["evaluation"]["outage_identity"]["evaluation"][
+            "reason_code"] = "orchestration_unavailable"
+        verdict_path = os.path.join(ws, ".eval", "verdict.json")
+        with open(verdict_path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["evaluation"]["reason_code"] = "orchestration_unavailable"
+        verdict["criteria"][0]["status"] = "not-met"
+        with open(verdict_path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream)
+        loop.save(ws, state)
+
+        result = loop.resolve(ws, "pass")
+
+        self.assertIn("error", result)
+        self.assertEqual(loop.load(ws)["tasks"][0]["status"], "unavailable")
+
     def test_next_activates_contract_gate_clears(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
