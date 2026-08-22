@@ -6256,6 +6256,19 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             if stale:
                 return {"error": stale + " during gate validation — submit "
                                  "the final state again", "step": step}
+        refreshed_fix_registration = None
+        if outcome == "pass" and step == "fix" and state.get("parallel"):
+            current = _current_task(state)
+            try:
+                refreshed_fix_registration = \
+                    runtime_storage.refresh_task_worktree_tip(
+                        ws, str((current or {}).get("id") or ""))
+            except runtime_storage.StorageIdentityError as exc:
+                return {"error": "fix gate could not bind the repaired "
+                                 f"managed-worktree target: {exc}",
+                        "step": step}
+            current["target_commit"] = \
+                refreshed_fix_registration["branch_tip"]
         if _validated.get("tasks") and not state.get("tasks"):
             state["tasks"] = _validated["tasks"]
         if step == "plan":
@@ -6281,7 +6294,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             completion_state["signoff_evidence"] = signoff_evidence
         completion = _stage_loop_gate_completion(
             ws, completion_state, step=step, outcome=outcome, note=note,
-            submission=submission)
+            submission=submission,
+            target_commit=((refreshed_fix_registration or {}).get(
+                "branch_tip")))
         state.pop("_submission", None)
         if step == "pm":
             if "requirement_refinement" in _validated:

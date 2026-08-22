@@ -556,6 +556,110 @@ def assess(step: str, facts: dict | None,
     }
 
 
+def _complete_quick_only_evaluation(
+        state: dict, quality: dict, verdict: dict, review_module: Any) -> bool:
+    """Recognize the one requirement-bound alternative to deep-era receipts.
+
+    R-0006 deliberately permits routing from a pinned immutable diff when
+    graph enrichment is incomplete.  The legacy runtime controls predate
+    that policy and otherwise reject the completed quick review solely
+    because ``graph-quality.status`` is not ``complete``.  This predicate is
+    intentionally stricter than the ordinary receipt checks: it admits only
+    the exact quick-only manifest with no deep/promotion artifacts, no
+    blocking canonical or provisional findings, and a fully green,
+    schema-validated evaluator output.
+    """
+    policy = state.get("review_depth_policy") or {}
+    receipt = state.get("review_depth_receipt") or {}
+    if not (
+            policy.get("schema") == "taskplane.review-depth-policy/v1"
+            and policy.get("requirement_id") == "R-0006"
+            and policy.get("depth") == "quick-only"
+            and policy.get("deep_slots_allowed") is False
+            and policy.get("complete_quick_output_sufficient") is True
+            and state.get("status") in {"ready", "complete"}
+            and receipt.get("status") == "satisfied"
+            and receipt.get("outcome") == "quick_output_sufficient"
+            and receipt.get("deep_slots") == []
+            and int(receipt.get("promotion_attempts") or 0) == 0
+            and not state.get("adaptive_wave")
+            and not (state.get("quick_corrections") or [])):
+        return False
+
+    slots = [row for row in state.get("slots") or []
+             if isinstance(row, dict)]
+    if len(slots) != 1 or slots[0].get("slot_id") != "light-sweep":
+        return False
+    if receipt.get("quick_slots") != ["light-sweep"]:
+        return False
+    expected_lenses = [str(value) for value in slots[0].get("lens_ids") or []]
+    if not expected_lenses or len(set(expected_lenses)) != len(expected_lenses):
+        return False
+    if quality.get("status") != "complete" and (
+            (quality.get("review_fallback") or {}).get("mode") !=
+            "immutable_diff"):
+        return False
+
+    revisions = [row for row in (
+        state.get("revision"), state.get("provisional_revision"))
+        if isinstance(row, dict)]
+    if any(review_module.blocking_findings_by_lens(
+            row.get("findings") or []) for row in revisions):
+        return False
+    canonical_rows = [row for row in state.get("lens_results") or []
+                      if isinstance(row, dict)]
+    if state.get("status") == "complete":
+        canonical_ids = [str(row.get("lens") or "")
+                         for row in canonical_rows]
+        if set(canonical_ids) != set(expected_lenses) or \
+                len(set(canonical_ids)) != len(canonical_ids):
+            return False
+        if any(row.get("verdict") != "pass" or
+               not isinstance(row.get("blockers"), int) or
+               row.get("blockers") != 0 for row in canonical_rows):
+            return False
+    else:
+        # In the R-0006 workflow the evaluator's schema-bound output is the
+        # quick result.  The legacy collection probe consequently records one
+        # honest missing light-sweep producer, which must be the only gap.
+        provisional = state.get("provisional_revision") or {}
+        completeness = provisional.get("completeness") or {}
+        gaps = provisional.get("gaps") or []
+        if not (
+                not canonical_rows
+                and provisional.get("disposition") == "provisional"
+                and completeness.get("expected") == 1
+                and completeness.get("collected") == 0
+                and completeness.get("missing") == 1
+                and completeness.get("complete") is False
+                and len(gaps) == 1
+                and isinstance(gaps[0], dict)
+                and gaps[0].get("slot_id") == "light-sweep"):
+            return False
+
+    evaluation = verdict.get("evaluation") or {}
+    criteria = verdict.get("criteria") or []
+    lens_rows = [row for row in verdict.get("lenses") or []
+                 if isinstance(row, dict)]
+    lens_ids = [str(row.get("lens") or "") for row in lens_rows]
+    if not (
+            verdict.get("verdict") == "pass"
+            and evaluation.get("status") == "complete"
+            and evaluation.get("reason_code") == "none"
+            and not (verdict.get("failures") or [])
+            and isinstance(criteria, list) and criteria
+            and all(isinstance(row, dict) and row.get("status") == "met"
+                    and bool(str(row.get("evidence") or "").strip())
+                    for row in criteria)
+            and len(set(lens_ids)) == len(lens_ids)
+            and set(lens_ids) == set(expected_lenses)
+            and all(row.get("verdict") == "pass" and
+                    isinstance(row.get("blockers"), int) and
+                    row.get("blockers") == 0 for row in lens_rows)):
+        return False
+    return True
+
+
 def review_facts(ws: str, step: str, *, run_id: str) -> dict:
     """Machine-owned ReviewKernel facts used by Evaluate and final EM."""
     expected_stage = "build" if step == "evaluate" else "review"
@@ -651,6 +755,16 @@ def review_facts(ws: str, step: str, *, run_id: str) -> dict:
                     })
                 facts["output_schema_validated"] = \
                     facts["output_schema_declared"]
+                if facts["output_schema_validated"] and \
+                        _complete_quick_only_evaluation(
+                            state, quality, verdict, review):
+                    # R-0006's complete quick collection is the governed
+                    # replacement for these deep-era orchestration receipts.
+                    # Every substantive quick finding still makes the strict
+                    # predicate false and therefore remains fail-closed.
+                    facts["graph_before_route"] = True
+                    facts["lens_results_collected"] = True
+                    facts["output_producer_observed"] = True
             except Exception:
                 facts["output_schema_validated"] = False
             # The outer verdict is admissible only after the canonical leased
