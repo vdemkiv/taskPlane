@@ -108,6 +108,86 @@ def test_quick_only_demotes_explicit_deep_routes_into_one_quick_sweep():
     assert all(row["tier"] != "deep" for row in routed["lenses"])
 
 
+def test_quick_only_direct_dispatch_demotes_contradictory_deep_signal():
+    policy = _policy()
+    routing = {
+        "lenses": [
+            {
+                "id": "security", "name": "Security", "tier": "deep",
+                "verdict": "n/a", "mode": "none", "score": 0,
+                "negative_evidence": ["caller claimed n/a"],
+                "checks": [], "looks_for": "auth defects",
+            },
+            {
+                "id": "dba", "name": "Database", "tier": "n/a",
+                "verdict": "n/a", "mode": "inline", "score": 0,
+                "negative_evidence": ["no data surface"],
+                "checks": [], "looks_for": "data defects",
+            },
+        ],
+        "context": {"changed_files": 1, "review_depth_policy": policy},
+    }
+
+    dispatch = lens.dispatch_briefs(routing)
+
+    assert dispatch["deep"] == []
+    assert dispatch["sweep"]["ids"] == ["security"]
+    assert dispatch["routing_decision"]["security"]["verdict"] == "light"
+    assert dispatch["routing_decision"]["dba"]["verdict"] == "n/a"
+
+
+def test_quick_only_direct_dispatch_retains_legacy_sweep_tier():
+    policy = _policy()
+    routing = {
+        "lenses": [
+            {
+                "id": "security", "name": "Security", "tier": "deep",
+                "mode": "subagent", "score": 9,
+                "evidence": ["authentication boundary changed"],
+                "checks": [], "looks_for": "auth defects",
+            },
+            {
+                "id": "qa", "name": "QA", "tier": "sweep",
+                "mode": "inline", "score": 2,
+                "evidence": ["legacy sweep route"],
+                "checks": [], "looks_for": "regressions",
+            },
+        ],
+        "context": {
+            "changed_files": 1,
+            "review_depth_policy": policy,
+            "review_progression": {
+                "deep_lenses": ["security"], "sweep_lenses": ["qa"],
+            },
+        },
+    }
+
+    dispatch = lens.dispatch_briefs(routing)
+
+    assert dispatch["deep"] == []
+    assert dispatch["sweep"]["ids"] == ["qa", "security"]
+    assert dispatch["routing_decision"]["qa"]["evidence"] == [
+        "legacy sweep route"]
+
+
+def test_quick_only_clears_stage_review_deep_slot_metadata():
+    policy = _policy()
+    routing = lens.route(
+        ["src/auth.py"], stage="review", use_signals=True, workspace=".",
+        content_by_file={"src/auth.py": "authorize(user)"})
+    assert routing["context"]["review_progression"]["deep_slots"]
+    routing["context"]["review_depth_policy"] = policy
+
+    routed = review_progression.apply_depth_policy(routing, policy)
+    dispatch = lens.dispatch_briefs(routed)
+
+    progression = routed["context"]["review_progression"]
+    assert progression["deep_slots"] == []
+    assert "deep_lenses" not in progression
+    assert dispatch["deep"] == []
+    assert dispatch["sweep"]["ids"] == progression["sweep_lenses"]
+
+
 @pytest.mark.parametrize("changed_symbols", [[], [
     f"service.symbol_{index}" for index in range(19)]])
 def test_sparse_or_stale_graph_still_dispatches_governed_quick_only(
@@ -141,6 +221,11 @@ def test_incremental_retry_override_is_finally_demoted_to_quick(tmp_path):
     assert security["initial_verdict"] == "n/a"
     assert security["verdict"] == security["tier"] == "light"
     assert security["mode"] == "inline"
+    routed_ids = {row["id"] for row in state["routing"]["lenses"]
+                  if row["mode"] != "none"}
+    leased_ids = {lens_id for slot in opened["slots"]
+                  for lens_id in slot["lens_ids"]}
+    assert routed_ids == leased_ids == {"security"}
 
 
 def test_substantive_quick_finding_requests_correction_without_promotion():
@@ -208,6 +293,66 @@ def test_quick_only_collection_progression_never_builds_a_deep_followup(tmp_path
     assert outcome["promotions"] == {}
     assert outcome["corrections"][0]["lens"] == "security"
     assert outcome["outcome"] == "correction_required"
+
+
+@pytest.mark.parametrize("finding_class", ["pre-existing", "observation"])
+def test_quick_only_high_nonblocking_finding_does_not_request_correction(
+        tmp_path, finding_class):
+    store = review_evidence.ArtifactStore(str(tmp_path))
+    ref = store.put("slot-result", {
+        "slot_id": "light-sweep",
+        "findings": [{
+            "lens": "security", "severity": "high", "class": finding_class,
+            "file": "src/service.py", "line": 4,
+            "title": "Visible but not introduced by this change",
+            "scenario": "The quick sweep retained contextual evidence.",
+            "claim": {"trigger": "inspect the changed authorization path"},
+        }],
+    })
+    decision = store.put("routing-decision", {
+        "schema": "taskplane.routing-decision/v2",
+        "dispositions": {"security": {"verdict": "light"}},
+    })
+    state = {
+        "routing_decision": decision,
+        "review_depth_policy": _policy(),
+    }
+
+    outcome = review._light_sweep_promotions(store, state, [ref])
+
+    assert outcome["promotions"] == {}
+    assert outcome["corrections"] == []
+    assert outcome["outcome"] == "continue"
+
+
+def test_quick_only_cross_domain_regression_bypasses_promotion_charter(
+        tmp_path):
+    store = review_evidence.ArtifactStore(str(tmp_path))
+    finding = {
+        "lens": "code-quality", "severity": "low", "class": "regression",
+        "file": "src/service.py", "line": 9,
+        "title": "Authorization token bypass",
+        "scenario": "An authorization token bypass reaches the handler.",
+        "claim": {"trigger": "authorization token bypass"},
+    }
+    ref = store.put("slot-result", {
+        "slot_id": "light-sweep", "findings": [finding]})
+    decision = store.put("routing-decision", {
+        "schema": "taskplane.routing-decision/v2",
+        "dispositions": {"code-quality": {"verdict": "light"}},
+    })
+    state = {
+        "routing_decision": decision,
+        "review_depth_policy": _policy(),
+    }
+
+    outcome = review._light_sweep_promotions(store, state, [ref])
+
+    assert review.blocking_findings_by_lens([finding]) == {"code-quality": 1}
+    assert outcome["promotions"] == {}
+    assert outcome["outcome"] == "correction_required"
+    assert outcome["corrections"][0]["lens"] == "code-quality"
+    assert outcome["corrections"][0]["deep_dispatch"] is False
 
 
 def _write_quick_output(workspace, run_id, findings):

@@ -166,12 +166,24 @@ def apply_depth_policy(routing: dict, review_policy: dict | None) -> dict:
 
     active = []
     for row in routed.get("lenses") or []:
-        verdict = str(row.get("verdict") or row.get("tier") or "")
-        if verdict == "deep (forced)":
-            verdict = "deep"
-        if verdict not in {"deep", "light"}:
+        # Applicability is the union of both routing signals.  Older routes
+        # use tier="sweep" without a verdict, while retained/caller-provided
+        # decisions can temporarily disagree (for example tier="deep" with
+        # verdict="n/a").  Under quick-only, any applicable signal must be
+        # retained in the quick sweep and no deep signal may survive.
+        verdict = str(row.get("verdict") or "").strip().lower()
+        tier = str(row.get("tier") or "").strip().lower()
+        signals = {"deep" if value == "deep (forced)" else value
+                   for value in (verdict, tier)}
+        applicable = bool(signals & {"deep", "light", "sweep"})
+        if not applicable:
+            # Keep the coverage-honesty row but make its inactivity
+            # canonical.  Gate validation uses mode != "none" as the exact
+            # set that owes a leased result.
+            row["tier"] = row["verdict"] = "n/a"
+            row["mode"] = "none"
             continue
-        if verdict == "deep":
+        if "deep" in signals:
             row["initial_verdict"] = row.get("initial_verdict") or "deep"
             evidence = row.setdefault("evidence", [])
             reason = "requirement-bound quick-only depth ceiling"
@@ -186,7 +198,11 @@ def apply_depth_policy(routing: dict, review_policy: dict | None) -> dict:
 
     active = sorted(value for value in active if value)
     progression = context.setdefault("review_progression", {})
-    progression["deep_lenses"] = []
+    # Stage=review routes persist concrete deep slot identities in this
+    # canonical field.  Clear them along with the row dispositions so no
+    # model-facing or rendered output can advertise a pre-policy deep wave.
+    progression["deep_slots"] = []
+    progression.pop("deep_lenses", None)
     progression["sweep_lenses"] = active
     progression["sweep_count"] = 1 if active else 0
     context["review_depth_policy"] = copy.deepcopy(review_policy)
@@ -202,7 +218,8 @@ def initial_wave(routing: dict, *, sweep_limit: int = DEFAULT_SWEEP_LIMIT) -> di
     if _quick_only(policy):
         light_ids = sorted(
             lens_id for lens_id, row in rows.items()
-            if row.get("tier") in {"deep", "deep (forced)", "light"})
+            if row.get("tier") in {
+                "deep", "deep (forced)", "light", "sweep"})
         return {
             "schema": "taskplane.review-progression/v1",
             "deep": [],

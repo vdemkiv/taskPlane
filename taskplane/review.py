@@ -2089,6 +2089,8 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
                         state.get("quick_corrections") else "continue")}
     decision = store.read(state["routing_decision"])["dispositions"]
     concerns = []
+    quick_corrections = []
+    seen_quick = set()
     source_by_id = {}
     for ref in refs:
         result = store.read(ref)
@@ -2098,15 +2100,48 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
             lens_id = str(finding.get("lens") or "")
             if (decision.get(lens_id) or {}).get("verdict") != "light":
                 continue
-            quick_blocker = policy.get("depth") == "quick-only" and bool(
-                blocking_findings_by_lens([finding]))
-            if not quick_blocker and loop.normalize_severity(
-                    finding.get("severity")) not in \
+            if policy.get("depth") == "quick-only":
+                # The canonical finding classifier is the sole correction
+                # boundary.  High-severity observations and retained
+                # pre-existing findings remain visible evidence, but they do
+                # not block this workflow or manufacture a deep follow-up.
+                if not blocking_findings_by_lens([finding]):
+                    continue
+            elif loop.normalize_severity(finding.get("severity")) not in \
                     ADAPTIVE_PROMOTION_SEVERITIES:
                 continue
             concern_id = review_evidence_runtime.content_fingerprint(finding)
             claim = finding.get("claim") if isinstance(
                 finding.get("claim"), dict) else {}
+            if policy.get("depth") == "quick-only":
+                # A validated leased regression has already crossed the
+                # canonical blocking policy.  It is a correction, not a
+                # candidate deep promotion, so legacy keyword-based charter
+                # filtering must not be allowed to discard it.
+                if concern_id in seen_quick:
+                    continue
+                seen_quick.add(concern_id)
+                evidence_ref = (f"{str(finding.get('file') or '')[:300]}:"
+                                f"{int(finding.get('line') or 1)}")
+                quick_corrections.append({
+                    "concern_id": concern_id,
+                    "lens": lens_id,
+                    "slot": "lens-sweep",
+                    "tier": "light",
+                    "severity": loop.normalize_severity(
+                        finding.get("severity")),
+                    "class": str(finding.get("class") or ""),
+                    "evidence_ref": evidence_ref,
+                    "rationale": str(
+                        finding.get("scenario") or finding.get("title") or ""),
+                    "trigger": str(claim.get("trigger") or
+                                   finding.get("scenario") or
+                                   finding.get("title") or ""),
+                    "fingerprint": concern_id,
+                    "action": "return-same-task-for-correction",
+                    "deep_dispatch": False,
+                })
+                continue
             source_by_id.setdefault(concern_id, {
                 "severity": str(finding.get("severity") or ""),
                 "title": str(finding.get("title") or "")[:200],
@@ -2129,6 +2164,14 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
                                finding.get("title") or ""),
                 "class": str(finding.get("class") or ""),
             })
+    if policy.get("depth") == "quick-only":
+        return {
+            "promotions": {},
+            "corrections": quick_corrections,
+            "outcome": ("correction_required" if quick_corrections
+                        else "continue"),
+            "rejections": [],
+        }
     resolved = review_progression.resolve_sweep_concerns(
         concerns, review_policy=policy)
     promotions: dict[str, list[dict]] = {}
