@@ -1,10 +1,11 @@
 """R-0006 B1/B2 compatibility and startup-refusal regressions."""
 from __future__ import annotations
 
-import ast
 import json
 import os
 from pathlib import Path
+import shutil
+import stat
 import subprocess
 import sys
 
@@ -15,20 +16,116 @@ ROOT = Path(__file__).resolve().parents[2]
 TASKPLANE = ROOT / "taskplane"
 
 
-@pytest.mark.parametrize("feature_version", [(3, 10), (3, 11), (3, 12)])
-def test_stage_dependency_parses_on_every_supported_python(feature_version):
-    source = TASKPLANE / "stage_entities.py"
-    body = source.read_text(encoding="utf-8")
+SUPPORTED_PYTHON_MINORS = (10, 11, 12, 13)
+DIRECT_STAGE_CONSUMERS = (
+    "run_store", "loop", "stage_migration", "taskplane_lite",
+)
 
-    # The exact B1 regression is accepted by PEP 701 parsers even when
-    # ``feature_version`` requests an older grammar. Keep the source-shape
-    # assertion beside the matrix parse so a newer test runner cannot mask it.
+
+def _interpreter_for_minor(minor: int) -> str | None:
+    if sys.version_info[:2] == (3, minor):
+        return sys.executable
+    return shutil.which(f"python3.{minor}")
+
+
+def test_supported_matrix_has_an_eligible_interpreter():
+    assert any(_interpreter_for_minor(minor)
+               for minor in SUPPORTED_PYTHON_MINORS)
+
+
+def test_stage_dependency_excludes_pep701_only_regression_shape():
+    body = (TASKPLANE / "stage_entities.py").read_text(encoding="utf-8")
     assert 'f"attempt-{request_fingerprint({' not in body
-    ast.parse(body, filename=str(source), feature_version=feature_version)
+
+
+@pytest.mark.parametrize("minor", SUPPORTED_PYTHON_MINORS)
+def test_stage_dependency_compiles_and_consumers_import_on_supported_python(
+        minor):
+    interpreter = _interpreter_for_minor(minor)
+    if interpreter is None:
+        pytest.skip(f"Python 3.{minor} is not installed on this runner")
+
+    script = "\n".join([
+        "import importlib, json, pathlib, sys",
+        f"engine = pathlib.Path({str(TASKPLANE)!r})",
+        "source = engine / 'stage_entities.py'",
+        "compile(source.read_text(encoding='utf-8'), str(source), 'exec')",
+        "sys.path.insert(0, str(engine))",
+        f"modules = {DIRECT_STAGE_CONSUMERS!r}",
+        "loaded = [importlib.import_module(name).__name__ for name in modules]",
+        "print(json.dumps({'minor': list(sys.version_info[:2]), "
+        "                  'loaded': loaded}))",
+    ])
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    result = subprocess.run(
+        [interpreter, "-c", script], cwd=str(ROOT), env=env,
+        text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    evidence = json.loads(result.stdout)
+    assert evidence == {
+        "minor": [3, minor],
+        "loaded": list(DIRECT_STAGE_CONSUMERS),
+    }
+
+
+def _seed_governed_state(workspace: Path, state_home: Path) -> None:
+    fixtures = {
+        state_home / "runs" / "existing-run" / "manifest.json":
+            b'{"schema":"taskplane.run/v4","status":"existing"}\n',
+        state_home / "runs" / "existing-run" / "graph" / "graph.json":
+            b'{"schema":"taskplane.graph/v1","nodes":["existing"]}\n',
+        state_home / "runs" / "existing-run" / "state" / "control" /
+        "active_contract.json":
+            b'{"schema":"taskplane.contract/v1","task":"existing"}\n',
+        state_home / "runs" / "existing-run" / "state" /
+        "review-kernel-v2" / "runs" / "existing-review" / "state.json":
+            b'{"schema":"taskplane.review-run/v2","status":"complete"}\n',
+        state_home / "projects" / "existing-project" / "knowledge" /
+        "index.json":
+            b'{"requirements":[{"id":"R-existing",'
+            b'"file":"requirements/R-existing.md"}]}\n',
+        state_home / "projects" / "existing-project" / "knowledge" /
+        "requirements" / "R-existing.md":
+            b'# Existing requirement\n\nMust remain byte-identical.\n',
+        workspace / ".taskplane" / "existing-state.json":
+            b'{"schema":"taskplane.workspace-state/v1","preserve":true}\n',
+    }
+    for path, payload in fixtures.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple]:
+    snapshot = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        details = path.lstat()
+        metadata = (stat.S_IMODE(details.st_mode), details.st_mtime_ns)
+        if path.is_dir():
+            snapshot[relative] = ("directory", *metadata)
+        elif path.is_file():
+            snapshot[relative] = ("file", *metadata, path.read_bytes())
+        elif path.is_symlink():
+            snapshot[relative] = ("symlink", *metadata, os.readlink(path))
+        else:  # pragma: no cover - fixtures create only portable file types
+            snapshot[relative] = ("other", *metadata)
+    return snapshot
+
+
+def _governed_snapshot(workspace: Path, state_home: Path) -> dict[str, tuple]:
+    return {
+        f"workspace/{path}": value
+        for path, value in _tree_snapshot(workspace).items()
+    } | {
+        f"state-home/{path}": value
+        for path, value in _tree_snapshot(state_home).items()
+    }
 
 
 def _broken_stage_startup(tmp_path: Path, *, debug: bool) \
-        -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+        -> tuple[subprocess.CompletedProcess[str], dict, dict]:
     overlay = tmp_path / "broken-dependency"
     overlay.mkdir()
     (overlay / "stage_entities.py").write_text(
@@ -36,6 +133,8 @@ def _broken_stage_startup(tmp_path: Path, *, debug: bool) \
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     state_home = tmp_path / "state-home"
+    _seed_governed_state(workspace, state_home)
+    before = _governed_snapshot(workspace, state_home)
     script = "\n".join([
         "import os, sys",
         f"engine = {str(TASKPLANE)!r}",
@@ -61,12 +160,13 @@ def _broken_stage_startup(tmp_path: Path, *, debug: bool) \
         [sys.executable, "-c", script], cwd=str(tmp_path), env=env,
         text=True, encoding="utf-8", errors="replace",
         capture_output=True, check=False)
-    return result, workspace, state_home
+    after = _governed_snapshot(workspace, state_home)
+    return result, before, after
 
 
 def test_unparseable_stage_dependency_refuses_once_before_state_creation(
         tmp_path):
-    result, workspace, state_home = _broken_stage_startup(
+    result, before, after = _broken_stage_startup(
         tmp_path, debug=False)
 
     assert result.returncode == 2
@@ -75,12 +175,11 @@ def test_unparseable_stage_dependency_refuses_once_before_state_creation(
     assert "stage_entities" in result.stderr
     assert "Traceback" not in result.stderr
     assert "SyntaxError" not in result.stderr
-    assert list(workspace.iterdir()) == []
-    assert not state_home.exists()
+    assert after == before
 
 
 def test_unparseable_stage_dependency_keeps_debug_traceback(tmp_path):
-    result, workspace, state_home = _broken_stage_startup(
+    result, before, after = _broken_stage_startup(
         tmp_path, debug=True)
 
     assert result.returncode != 0
@@ -88,8 +187,7 @@ def test_unparseable_stage_dependency_keeps_debug_traceback(tmp_path):
     assert "Traceback" in result.stderr
     assert "SyntaxError" in result.stderr
     assert "TaskplaneCompatibilityError" in result.stderr
-    assert list(workspace.iterdir()) == []
-    assert not state_home.exists()
+    assert after == before
 
 
 def test_valid_stage_dependency_allows_cli_startup(tmp_path):
