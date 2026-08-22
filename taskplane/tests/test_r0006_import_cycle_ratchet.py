@@ -38,13 +38,33 @@ def main(*args, **kwargs):
 OPTIONS = ("--check", "--verify-history")
 """
 ACTIVE_WORKFLOW = """\
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
 jobs:
   wave3-contracts:
     name: R-0006 graph + CLI contracts
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
       - name: Import-cycle inventory, bounds, and activation order
-        run: python3 taskplane/import_cycles.py --check --verify-history
+        run: >-
+          python3 taskplane/import_cycles.py
+          --root .
+          --policy taskplane/tests/fixtures/import-cycles.json
+          --check
+          --verify-history
 """
 sys.path.insert(0, str(ROOT))
 
@@ -130,6 +150,12 @@ def _workflow_variant(
         [f"      - {step_fields[0]}"]
         + [f"        {field}" for field in step_fields[1:]])
     return (
+        "name: CI\n\n"
+        "on:\n"
+        "  push:\n"
+        "    branches: [main]\n"
+        "  pull_request:\n"
+        "    branches: [main]\n\n"
         f"{workflow_defaults}"
         "jobs:\n"
         "  wave3-contracts:\n"
@@ -138,6 +164,15 @@ def _workflow_variant(
         "    runs-on: ubuntu-latest\n"
         f"{job_defaults}"
         "    steps:\n"
+        "      - uses: actions/checkout@"
+        "3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+        "        with:\n"
+        "          fetch-depth: 0\n"
+        "          persist-credentials: false\n"
+        "      - uses: actions/setup-python@"
+        "5fda3b95a4ea91299a34e894583c3862153e4b97\n"
+        "        with:\n"
+        "          python-version: \"3.12\"\n"
         f"{fields}\n"
     )
 
@@ -733,6 +768,33 @@ def test_history_proof_rejects_disable_cut_restore_gap(tmp_path: Path) -> None:
             "--verify-history",
         ]),
     ),
+    (
+        "job-continue-on-error",
+        ACTIVE_WORKFLOW.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n"
+            "    continue-on-error: true\n",
+        ),
+    ),
+    (
+        "job-env-path-shadow",
+        ACTIVE_WORKFLOW.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n"
+            "    env:\n"
+            "      PATH: /tmp/shadow-bin\n",
+        ),
+    ),
+    (
+        "push-trigger-path-exclusion",
+        ACTIVE_WORKFLOW.replace(
+            "  push:\n"
+            "    branches: [main]\n",
+            "  push:\n"
+            "    branches: [main]\n"
+            "    paths-ignore: ['taskplane/**']\n",
+        ),
+    ),
 ])
 def test_history_proof_rejects_inert_workflow_text_before_cut(
         tmp_path: Path, case: str, disabled_workflow: str) -> None:
@@ -751,26 +813,118 @@ def test_history_proof_rejects_inert_workflow_text_before_cut(
         cycles.verify_history(tmp_path, policy)
 
 
-@pytest.mark.parametrize("workflow", [
-    ACTIVE_WORKFLOW,
-    _workflow_variant([
-        "shell: bash",
-        "run: python3 taskplane/import_cycles.py --check --verify-history",
-    ]),
-    _workflow_variant([
-        "run: python3 taskplane/import_cycles.py --check --verify-history",
-    ], job_shell="bash"),
-    _workflow_variant([
-        "run: python3 taskplane/import_cycles.py --check --verify-history",
-    ], workflow_shell="bash"),
-    _workflow_variant([
-        "shell: bash",
-        "run: python3 taskplane/import_cycles.py --check --verify-history",
-    ], job_shell="echo {0}", workflow_shell="true {0}"),
+def test_workflow_parser_accepts_canonical_prefix_and_harmless_post_steps(
+        ) -> None:
+    post_step = (
+        ACTIVE_WORKFLOW
+        + "      - name: Harmless follow-up\n"
+        + "        run: echo complete\n")
+
+    assert cycles._workflow_ratchet_error(ACTIVE_WORKFLOW) is None
+    assert cycles._workflow_ratchet_error(post_step) is None
+    assert cycles._workflow_ratchet_error(
+        WORKFLOW.read_text(encoding="utf-8")) is None
+
+
+@pytest.mark.parametrize(("case", "workflow"), [
+    (
+        "workflow-env",
+        ACTIVE_WORKFLOW.replace(
+            "on:\n", "env:\n  PATH: /tmp/shadow-bin\n\non:\n", 1),
+    ),
+    (
+        "workflow-defaults",
+        ACTIVE_WORKFLOW.replace(
+            "on:\n", "defaults:\n  run:\n    shell: true {0}\n\non:\n", 1),
+    ),
+    (
+        "trigger-path-filter",
+        ACTIVE_WORKFLOW.replace(
+            "    branches: [main]\n",
+            "    branches: [main]\n    paths: ['docs/**']\n", 1),
+    ),
+    (
+        "missing-pull-request",
+        ACTIVE_WORKFLOW.replace(
+            "  pull_request:\n    branches: [main]\n", "", 1),
+    ),
+    (
+        "job-needs",
+        ACTIVE_WORKFLOW.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n    needs: setup\n", 1),
+    ),
+    (
+        "job-strategy",
+        ACTIVE_WORKFLOW.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n"
+            "    strategy:\n      matrix: {python: []}\n", 1),
+    ),
+    (
+        "checkout-mutable-tag",
+        ACTIVE_WORKFLOW.replace(
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "actions/checkout@v7", 1),
+    ),
+    (
+        "checkout-ref-substitution",
+        ACTIVE_WORKFLOW.replace(
+            "          fetch-depth: 0\n",
+            "          fetch-depth: 0\n          ref: attacker\n", 1),
+    ),
+    (
+        "setup-mutable-tag",
+        ACTIVE_WORKFLOW.replace(
+            "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "actions/setup-python@v7", 1),
+    ),
+    (
+        "setup-version-substitution",
+        ACTIVE_WORKFLOW.replace(
+            '          python-version: "3.12"\n',
+            '          python-version: "3.13"\n', 1),
+    ),
+    (
+        "ratchet-step-env",
+        ACTIVE_WORKFLOW.replace(
+            "        run: >-\n",
+            "        env:\n          PATH: /tmp/shadow-bin\n"
+            "        run: >-\n", 1),
+    ),
+    (
+        "ratchet-working-directory",
+        ACTIVE_WORKFLOW.replace(
+            "        run: >-\n",
+            "        working-directory: /tmp\n        run: >-\n", 1),
+    ),
+    (
+        "pre-ratchet-mutation-step",
+        ACTIVE_WORKFLOW.replace(
+            "      - name: Import-cycle inventory, bounds, and activation order\n",
+            "      - name: Mutate scanner\n"
+            "        run: sed -i.bak s/check/pass/ taskplane/import_cycles.py\n"
+            "      - name: Import-cycle inventory, bounds, and activation order\n",
+            1),
+    ),
+    (
+        "job-merge-alias",
+        ACTIVE_WORKFLOW.replace(
+            "    name: R-0006 graph + CLI contracts\n",
+            "    <<: *untrusted\n"
+            "    name: R-0006 graph + CLI contracts\n", 1),
+    ),
+    (
+        "duplicate-runs-on",
+        ACTIVE_WORKFLOW.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n"
+            "    runs-on: ubuntu-latest\n", 1),
+    ),
 ])
-def test_workflow_parser_accepts_closed_safe_effective_shells(
-        workflow: str) -> None:
-    assert cycles._workflow_ratchet_error(workflow) is None
+def test_workflow_parser_rejects_skip_mask_substitute_and_premutate(
+        case: str, workflow: str) -> None:
+    assert cycles._workflow_ratchet_error(workflow), case
 
 
 @pytest.mark.parametrize("help_flag", [
