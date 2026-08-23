@@ -40,6 +40,19 @@ python3 "$PLUGIN/taskplane/tp.py" new --read-only \
 
 The hook enforces this — a write to the reviewed source is blocked, not
 trusted.
+
+For a leased brief carrying `contract_bootstrap`, do not use `new` and do not
+export an inline task-slot environment. Run the complete pre-screen-visible
+signed command in `contract_bootstrap.host_command` unchanged:
+
+```bash
+<contract_bootstrap.host_command>
+```
+
+The task slot, action, and expected lease identity are command arguments, so
+the host screen verifies and activates the exact signed singleton contract
+before shell execution even while sibling lenses are active. The action still
+derives only this worker's exact task-slot, lease, and result allowance.
 **Do not clear your own lease.** Submit the exact result and stop. The
 ReviewKernel collector owns deterministic release of every completed producer
 slot, including failed-schema recovery; a child clearing itself can race the

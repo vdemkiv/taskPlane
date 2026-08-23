@@ -113,13 +113,7 @@ class ReviewKernelError(RuntimeError):
 
 
 def review_depth_policy(requirement: dict | None) -> dict:
-    """Resolve the governed requirement's machine-readable lens ceiling.
-
-    R-0006 predates the structured field in some retained requirement
-    records, so its exact identity is the bounded compatibility mapping.  No
-    other requirement inherits this override: progressive review remains the
-    product default.
-    """
+    """Resolve the shipped automatic policy: bounded sweep and correction."""
     requirement = requirement if isinstance(requirement, dict) else {}
     requirement_id = str(requirement.get("id") or "").strip()
     declared = requirement.get("review_policy")
@@ -133,45 +127,44 @@ def review_depth_policy(requirement: dict | None) -> dict:
         depth = "quick-only"
         source = "governed-compatibility:R-0006"
     elif not depth:
-        depth = "progressive"
-        source = "default"
-    if depth not in {"progressive", "quick-only"}:
+        depth = "quick-only"
+        source = "automatic-bounded-sweep"
+    if depth and depth != "quick-only":
+        if depth == "progressive":
+            raise ReviewKernelError(
+                "adaptive deep review unavailable: "
+                "direct-human-command-not-shipped")
         raise ReviewKernelError(
             f"unsupported review depth policy for {requirement_id or 'requirement'}")
-    quick = depth == "quick-only"
     return {
         "schema": "taskplane.review-depth-policy/v1",
         "requirement_id": requirement_id or None,
         "depth": depth,
         "source": source,
-        "deep_slots_allowed": not quick,
-        "promotion": "correction-required" if quick else "adaptive-deep",
-        "complete_quick_output_sufficient": quick,
+        "deep_slots_allowed": False,
+        "promotion": "correction-required",
+        "complete_quick_output_sufficient": True,
     }
 
 
 def _assert_review_depth_manifest(
         policy: dict | None, slots: Iterable[dict], *,
-        promotions: dict | list | None = None,
         corrections: Iterable[dict] | None = None) -> dict:
     """Validate and project the policy at each dispatch/collection boundary."""
-    policy = copy.deepcopy(policy) if isinstance(policy, dict) else {
-        "schema": "taskplane.review-depth-policy/v1", "depth": "progressive",
-        "deep_slots_allowed": True, "promotion": "adaptive-deep",
-        "complete_quick_output_sufficient": False,
-    }
+    policy = copy.deepcopy(policy) if isinstance(policy, dict) else \
+        review_depth_policy(None)
+    if policy.get("depth") != "quick-only" or \
+            policy.get("deep_slots_allowed") is not False:
+        raise ReviewKernelError(
+            "adaptive deep review unavailable: direct-human-command-not-shipped")
     slot_ids = sorted(str(row.get("slot_id") or "")
                       for row in slots or [] if isinstance(row, dict))
     deep_slots = sorted(slot_id for slot_id in slot_ids
                         if slot_id.startswith("deep."))
-    if policy.get("depth") == "quick-only":
-        if deep_slots:
-            raise ReviewKernelError(
-                "quick-only review manifest contains deep slot(s): " +
-                ", ".join(deep_slots))
-        if promotions:
-            raise ReviewKernelError(
-                "quick-only review manifest contains a forbidden promotion")
+    if deep_slots:
+        raise ReviewKernelError(
+            "quick-only review manifest contains deep slot(s): " +
+            ", ".join(deep_slots))
     correction_rows = [copy.deepcopy(row) for row in corrections or []]
     return {
         **policy,
@@ -179,10 +172,9 @@ def _assert_review_depth_manifest(
         "quick_slots": [slot_id for slot_id in slot_ids
                         if slot_id and slot_id not in deep_slots],
         "deep_slots": deep_slots,
-        "promotion_attempts": 0 if not promotions else len(promotions),
+        "promotion_attempts": 0,
         "outcome": ("correction_required" if correction_rows else
-                    "quick_output_sufficient" if
-                    policy.get("depth") == "quick-only" else "continue"),
+                    "quick_output_sufficient"),
         **({"corrections": correction_rows} if correction_rows else {}),
     }
 
@@ -1669,7 +1661,7 @@ def _routing_decision(routing: dict, catalog: dict) -> dict:
         verdict = str(row.get("tier") or row.get("verdict") or "")
         if verdict == "deep (forced)":
             verdict = "deep"
-        if verdict not in {"deep", "light", "n/a"}:
+        if verdict not in {"sweep", "light", "n/a"}:
             raise ReviewKernelError(f"mapper returned invalid verdict for {lens_id}")
         evidence_key = "negative_evidence" if verdict == "n/a" else "evidence"
         evidence = list(row.get(evidence_key) or row.get("reasons") or [])
@@ -1891,7 +1883,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                run_id: str | None = None,
                canonical_revision: int | None = None,
                review_policy: dict | None = None) -> tuple[list, list]:
-    """Allocate exact deep slots plus at most one bounded light sweep."""
+    """Allocate one immutable lease/producer slot per selected sweep lens."""
     import lens as lensmod
     import review_evidence as evidence
 
@@ -1899,10 +1891,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     deep = [lid for lid, row in sorted(decision.items())
             if row["verdict"] == "deep"]
     light = [lid for lid, row in sorted(decision.items())
-             if row["verdict"] == "light"]
+             if row["verdict"] in {"sweep", "light"}]
     entries = [(f"deep.{lid}", [lid]) for lid in deep]
-    if light:
-        entries.append(("light-sweep", light))
+    entries.extend((f"sweep.{lid}", [lid]) for lid in light)
     if review_policy and review_policy.get("depth") == "quick-only" and deep:
         raise ReviewKernelError(
             "quick-only review routing contains deep disposition(s): " +
@@ -1915,6 +1906,19 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     internal, manifest = [], []
     routing_fingerprint = evidence.content_fingerprint({
         "routing": routing, "decision": decision})
+    sweep_set = {
+        "schema": "taskplane.dispatch-set/v1",
+        "id": f"automatic-review-sweep-{routing_fingerprint[:12]}",
+        "concurrent": True, "member_count": len(light),
+    }
+    sweep_wait = {
+        "schema": "taskplane.wait-policy/v1",
+        "outstanding_set": sweep_set["id"],
+        "outstanding_count": len(light), "mode": "event",
+        "timeout_seconds": 1800, "minimum_timeout_seconds": 300,
+        "reissue_after": ["completion", "attention"],
+        "scheduled_polling": False,
+    }
     relevant_files = store.read(envelope_ref).get("diff", {}).get("files") or []
     for slot_id, lens_ids in entries:
         view_ref = evidence.create_scoped_view(
@@ -1924,9 +1928,13 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
         lease_ref = _create_verified_v3_lease(
             store, envelope_ref, view_ref, slot_id=slot_id,
             lens_ids=lens_ids, canonical_revision=revision, run_id=run_id)
+        is_sweep = slot_id.startswith("sweep.")
         source = full_briefs.get(
-            "light-sweep" if slot_id == "light-sweep" else lens_ids[0]) or {}
-        required_references = list(source.get("language_references") or [])
+            "light-sweep" if is_sweep else lens_ids[0]) or {}
+        required_references = [
+            ref for ref in source.get("language_references") or []
+            if not is_sweep or str(ref.get("lens") or "") == lens_ids[0]
+        ]
         result_path = _result_path(
             store.workspace, stage, lease_ref["fingerprint"])
         producer_contract = {
@@ -1995,6 +2003,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             # review evidence: Claude's cheap default is `haiku`, while Codex
             # inherits.  Persist the portable capability request only.
             "role": role,
+            "dispatch_set": copy.deepcopy(
+                sweep_set if is_sweep else source.get("dispatch_set") or {}),
+            "wait_policy": copy.deepcopy(
+                sweep_wait if is_sweep else source.get("wait_policy") or {}),
         }
         if required_references:
             brief["language_references"] = required_references
@@ -2011,10 +2023,14 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                          "brief": _portable_ref(brief_ref),
                          "view": _portable_ref(view_ref),
                          "lease": _portable_ref(lease_ref),
-                         "result_path": result_path})
+                         "result_path": result_path,
+                         "dispatch_set": copy.deepcopy(brief["dispatch_set"]),
+                         "wait_policy": copy.deepcopy(brief["wait_policy"])})
     expanded = {lid for row in internal for lid in row["lens_ids"]}
-    if expanded != set(deep) | set(light) or len(entries) > len(deep) + 1:
-        raise ReviewKernelError("dispatch slots do not equal deep plus light mapping")
+    if expanded != set(deep) | set(light) or \
+            len(entries) != len(deep) + len(light):
+        raise ReviewKernelError(
+            "dispatch slots do not equal one slot per selected lens")
     _assert_slot_conservation(
         selected=[slot_id for slot_id, _ in entries],
         prepared=[row["slot_id"] for row in internal],
@@ -2024,69 +2040,22 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     return internal, manifest
 
 
-def _promoted_slot_plan(store, state: dict, promotions: dict[str, list[dict]]) \
-        -> tuple[list, list]:
-    """Allocate one bounded deep slot for every light lens that found high."""
-    policy = state.get("review_depth_policy") or {}
-    if policy.get("depth") == "quick-only":
-        raise ReviewKernelError(
-            "quick-only review forbids adaptive deep promotion")
-    promoted = sorted(promotions)
-    routing = copy.deepcopy(state.get("routing") or {})
-    for row in routing.get("lenses") or []:
-        lens_id = str(row.get("id") or "")
-        if lens_id in promotions:
-            row["tier"] = row["verdict"] = "deep"
-            row.setdefault("evidence", []).append(
-                "adaptive promotion: light sweep reported a high-severity finding")
-        else:
-            row["tier"] = row["verdict"] = "n/a"
-            row["negative_evidence"] = ["not part of adaptive promotion wave"]
-    original = store.read(state["routing_decision"])["dispositions"]
-    decision = {}
-    for lens_id in promoted:
-        entry = copy.deepcopy(original[lens_id])
-        entry["verdict"] = "deep"
-        entry["initial_verdict"] = "light"
-        entry["promotion"] = {
-            "source_slot": "light-sweep",
-            "reason": "high-severity finding discovered during light sweep",
-            "triggers": copy.deepcopy(promotions[lens_id]),
-        }
-        entry.setdefault("evidence", []).append(
-            "adaptive promotion: light sweep reported a high-severity finding")
-        decision[lens_id] = entry
-    envelope = store.read(state["envelope"])
-    settled_ref = ((envelope.get("change") or {}).get("settled_findings"))
-    runnability = envelope.get("runnability") or {}
-    return _slot_plan(
-        store, state["envelope"], routing, decision,
-        base=str((routing.get("context") or {}).get("base") or "HEAD"),
-        runnability=runnability, stage=state.get("stage") or "review",
-        settled_ref=settled_ref, run_id=state.get("run_id"),
-        review_policy=policy)
-
-
-def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
+def _resolve_sweep_corrections(store, state: dict, refs: list[dict]) \
         -> dict:
-    """Normalize high-risk sweep output into promotions and rejections.
+    """Normalize high-risk sweep output into corrections and rejections.
 
     The sweep is untrusted producer evidence even after lease validation.  It
-    therefore crosses the same deterministic promotion boundary as every
-    other progressive-review concern: duplicates/replays are idempotent and
-    cross-charter risks are explicitly rejected instead of becoming repeated
-    trigger rows for a deep slot.
+    crosses one deterministic classification boundary: duplicates/replays are
+    idempotent and cross-charter risks are rejected instead of becoming
+    repeated same-task corrections.
     """
     import loop
     import review_progression
 
     policy = state.get("review_depth_policy") or {}
     if state.get("adaptive_wave"):
-        return {"promotions": {}, "rejections": copy.deepcopy(
-            state.get("promotion_rejections") or []),
-            "corrections": copy.deepcopy(state.get("quick_corrections") or []),
-            "outcome": ("correction_required" if
-                        state.get("quick_corrections") else "continue")}
+        raise ReviewKernelError(
+            "adaptive deep review unavailable: direct-human-command-not-shipped")
     decision = store.read(state["routing_decision"])["dispositions"]
     concerns = []
     quick_corrections = []
@@ -2094,11 +2063,14 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
     source_by_id = {}
     for ref in refs:
         result = store.read(ref)
-        if result.get("slot_id") != "light-sweep":
+        result_slot = str(result.get("slot_id") or "")
+        if result_slot != "light-sweep" and not result_slot.startswith(
+                "sweep."):
             continue
         for finding in result.get("findings") or []:
             lens_id = str(finding.get("lens") or "")
-            if (decision.get(lens_id) or {}).get("verdict") != "light":
+            if (decision.get(lens_id) or {}).get("verdict") not in {
+                    "sweep", "light"}:
                 continue
             if policy.get("depth") == "quick-only":
                 # The canonical finding classifier is the sole correction
@@ -2126,8 +2098,8 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
                 quick_corrections.append({
                     "concern_id": concern_id,
                     "lens": lens_id,
-                    "slot": "lens-sweep",
-                    "tier": "light",
+                    "slot": result_slot,
+                    "tier": "sweep",
                     "severity": loop.normalize_severity(
                         finding.get("severity")),
                     "class": str(finding.get("class") or ""),
@@ -2149,6 +2121,7 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
                 "line": int(finding.get("line") or 1),
                 "concern_id": concern_id,
                 "class": str(finding.get("class") or ""),
+                "slot": result_slot,
             })
             concerns.append({
                 "id": concern_id,
@@ -2166,7 +2139,6 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
             })
     if policy.get("depth") == "quick-only":
         return {
-            "promotions": {},
             "corrections": quick_corrections,
             "outcome": ("correction_required" if quick_corrections
                         else "continue"),
@@ -2174,7 +2146,7 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
         }
     resolved = review_progression.resolve_sweep_concerns(
         concerns, review_policy=policy)
-    promotions: dict[str, list[dict]] = {}
+    corrections = []
     for promotion in resolved["promotions"]:
         trigger = copy.deepcopy(source_by_id[promotion["concern_id"]])
         trigger.update({
@@ -2183,10 +2155,24 @@ def _light_sweep_promotions(store, state: dict, refs: list[dict]) \
             "rationale": promotion["rationale"],
             "trigger": promotion["trigger"],
         })
-        promotions.setdefault(promotion["lens"], []).append(trigger)
-    return {"promotions": promotions,
-            "corrections": copy.deepcopy(resolved.get("corrections") or []),
-            "outcome": resolved.get("outcome") or "continue",
+        corrections.append({
+            "concern_id": trigger["concern_id"],
+            "lens": promotion["lens"],
+            "slot": trigger["slot"],
+            "tier": "sweep",
+            "severity": loop.normalize_severity(trigger.get("severity")),
+            "class": trigger.get("class") or "",
+            "evidence_ref": trigger.get("evidence_ref") or "",
+            "rationale": trigger.get("rationale") or "",
+            "trigger": trigger.get("trigger") or "",
+            "fingerprint": trigger.get("fingerprint") or
+                           trigger["concern_id"],
+            "action": "return-same-task-for-correction",
+            "deep_dispatch": False,
+        })
+    return {"corrections": corrections,
+            "outcome": ("correction_required" if corrections else
+                        resolved.get("outcome") or "continue"),
             "rejections": copy.deepcopy(resolved["rejections"])}
 
 
@@ -2484,19 +2470,21 @@ def review_dor_evidence(ws: str, target: dict, *,
 
 
 def _directive_lens_ids(directives: list[dict], catalog: dict) -> dict[str, list[str]]:
-    """Match explicit review requests to the live lens catalog."""
+    """Match directive membership hints without granting depth authority."""
     import lens_signals
     matched = {}
     for row in directives:
         text = str(row.get("text") or "").lower()
-        words = set(re.findall(r"[a-z][a-z0-9-]{2,}", text))
+        words = set(re.findall(r"[a-z][a-z0-9-]{2,}", text)) - \
+            _REQ_STOP_WORDS
         for lens in catalog.get("lenses") or []:
             lid = str(lens.get("id") or "")
             spec = lens_signals.SPECS.get(lid) or {}
             keywords = [str(k).lower() for k in spec.get("keywords") or []]
             haystack = " ".join(str(lens.get(key) or "").lower()
                                 for key in ("id", "name", "charter", "looks_for"))
-            lens_words = set(re.findall(r"[a-z][a-z0-9-]{2,}", haystack))
+            lens_words = set(re.findall(r"[a-z][a-z0-9-]{2,}", haystack)) - \
+                _REQ_STOP_WORDS
             phrase_hit = any(keyword in text for keyword in keywords)
             name_hit = str(lens.get("name") or "").lower() in text
             if phrase_hit or name_hit or len(words & lens_words) >= 2:
@@ -2950,52 +2938,27 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                                       row.get("source") or ""))
                               not in seen_directives)
         requested = _directive_lens_ids(directive_rows, catalog)
-        for entry in routing.get("lenses") or []:
-            lid = str(entry.get("id") or "")
-            if lid not in requested:
-                continue
-            prior = str(entry.get("verdict") or entry.get("tier") or "n/a")
-            entry["initial_verdict"] = prior
-            entry["verdict"] = "deep"
-            entry["tier"] = "deep"
-            entry["mode"] = "subagent"
-            entry.setdefault("evidence", []).append(
-                "explicit review directive: " + "; ".join(requested[lid]))
-            entry.setdefault("reasons", []).append(
-                "requested by discovered review instructions")
-        dor["requested_lenses"] = requested
+        membership_pins = set(requested)
         if retry_lenses is not None:
             retry = {str(value) for value in retry_lenses if str(value)}
             known = {str(row.get("id") or "")
                      for row in catalog.get("lenses") or []}
             if not retry or not retry <= known or not retry_source_run_id:
                 raise ReviewKernelError("incremental retry evidence is invalid")
-            for entry in routing.get("lenses") or []:
-                lid = str(entry.get("id") or "")
-                prior = str(entry.get("verdict") or entry.get("tier") or "n/a")
-                entry["initial_verdict"] = prior
-                if lid in retry:
-                    entry["verdict"] = entry["tier"] = "deep"
-                    entry["mode"] = "subagent"
-                    entry.setdefault("evidence", []).append(
-                        "incremental retry of prior failed lens")
-                else:
-                    entry["verdict"] = entry["tier"] = "n/a"
-                    entry["mode"] = "inline"
-                    entry["negative_evidence"] = [
-                        "prior sealed pass retained; final engineering review "
-                        "remains the broad regression gate"]
+            membership_pins.update(retry)
             dor["incremental_retry"] = {
                 "source_run_id": retry_source_run_id,
                 "lenses": sorted(retry),
                 "reuse": "sealed-pass-dispositions",
             }
-        import review_progression
-        # Directives and incremental retries can deliberately raise ordinary
-        # progressive depth.  The requirement ceiling is final, so apply it
-        # after both overrides and immediately before the canonical decision.
-        routing = review_progression.apply_depth_policy(
-            routing, depth_policy)
+        routing = lensmod.automatic_sweep_route(
+            routing, pinned_lenses=membership_pins)
+        for entry in routing.get("lenses") or []:
+            lid = str(entry.get("id") or "")
+            if lid in requested and entry.get("tier") == "sweep":
+                entry.setdefault("evidence", []).append(
+                    "directive membership pin: " + "; ".join(requested[lid]))
+        dor["requested_lenses"] = requested
         decision = _routing_decision(routing, catalog)
     except Exception as exc:
         run_id = _run_id(stage, _target_run_fingerprint(target),
@@ -3066,7 +3029,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     })
     counts = {tier: sum(1 for row in decision.values()
                         if row["verdict"] == tier)
-              for tier in ("deep", "light", "n/a")}
+              for tier in ("sweep", "n/a")}
     for slot in internal_slots:
         slot["run_id"] = run_id
     slot_ids = sorted(row["slot_id"] for row in internal_slots)
@@ -3553,6 +3516,55 @@ def leased_result_authority(ws: str, paths: Iterable[str]) -> dict | None:
         "slot_id": slot["slot_id"], "task_slot": task_slot,
         "contract": contract,
     }
+
+
+def signed_bootstrap_workspace(
+        workspace: str, *, expected: dict, task_slot: str) -> str:
+    """Resolve a native worker's managed checkout from its exact sealed lease."""
+    owner = os.path.realpath(workspace)
+    try:
+        locator = runtime_storage.load_workspace_locator(owner)
+    except runtime_storage.StorageIdentityError as exc:
+        raise ReviewKernelError(
+            f"signed review bootstrap workspace locator is invalid: {exc}") \
+            from exc
+    run_id = str(expected.get("run_id") or "")
+    if not locator:
+        raise ReviewKernelError(
+            "signed review bootstrap workspace locator is missing or stale")
+    # The locator owns the outer delivery run and its bounded state root.  A
+    # ReviewKernel run has a separate content-derived identity inside that
+    # root, so equality between those two run ids would reject every managed
+    # native worker.  Resolve the signed review run through the locator-owned
+    # store instead; `_load_state` verifies that exact review identity.
+    try:
+        state = _load_state(owner, run_id)
+    except ReviewKernelError as exc:
+        raise ReviewKernelError(
+            "signed review bootstrap ReviewKernel state is missing or stale") \
+            from exc
+    if state.get("status") not in {"ready", "prepared"}:
+        raise ReviewKernelError(
+            "signed review bootstrap lease is not dispatchable")
+    store = __import__("review_evidence").ArtifactStore(owner)
+    matches = []
+    for slot in state.get("slots") or []:
+        producer = slot.get("producer_contract") or {}
+        if producer.get("task_slot") != task_slot:
+            continue
+        lease = store.read(slot["lease"])
+        checks = {
+            "lease_fingerprint": lease.get("lease_fingerprint"),
+            "lens_ids": list(lease.get("lens_ids") or []),
+            "target_fingerprint": lease.get("target_fingerprint"),
+            "canonical_revision": int(lease.get("canonical_revision") or 0),
+        }
+        if all(checks[key] == expected.get(key) for key in checks):
+            matches.append(slot)
+    if len(matches) != 1:
+        raise ReviewKernelError(
+            "signed review bootstrap lease does not uniquely own workspace")
+    return owner
 
 
 def record_slot_write_observation(ws: str, *, event: dict, contract: dict,
@@ -4652,12 +4664,11 @@ def _persist_current_lens_telemetry(ws: str, state: dict, store) -> dict:
     for lens_id, disposition in sorted(decision.items()):
         row = disposition if isinstance(disposition, dict) else {}
         verdict = str(row.get("verdict") or "")
-        promoted = "promotion" in row
         was_collected = str(lens_id) in collected
         slots.append({
             "lens": str(lens_id), "eligible": verdict != "n/a",
-            "selected": verdict in {"deep", "light"} and not promoted,
-            "promoted": promoted, "collected": was_collected,
+            "selected": verdict == "sweep",
+            "promoted": False, "collected": was_collected,
         })
         lifecycle[str(lens_id)] = {
             "retries": 0, "repairs": 0, "latency_ms": 0,
@@ -4903,8 +4914,11 @@ def _collect_review_transaction(
                 f"review cannot collect from {state.get('status')}")
         depth_policy = state.get("review_depth_policy") or {}
         _assert_review_depth_manifest(
-            depth_policy, state.get("slots") or [],
-            promotions=(state.get("adaptive_wave") or {}).get("promotions"))
+            depth_policy, state.get("slots") or [])
+        if state.get("adaptive_wave"):
+            raise ReviewKernelError(
+                "adaptive deep review unavailable: "
+                "direct-human-command-not-shipped")
         if list(result_refs or []):
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
@@ -5054,76 +5068,12 @@ def _collect_review_transaction(
                 gap_slots=len(collected["gaps"]),
                 findings=len(revision["findings"]), approval_enabled=False)
             return manifest
-        promotion_resolution = _light_sweep_promotions(store, state, refs)
-        promotions = promotion_resolution["promotions"]
-        quick_corrections = promotion_resolution.get("corrections") or []
-        promotion_rejections = promotion_resolution["rejections"]
+        correction_resolution = _resolve_sweep_corrections(store, state, refs)
+        quick_corrections = correction_resolution.get("corrections") or []
+        sweep_rejections = correction_resolution["rejections"]
         depth_receipt = _assert_review_depth_manifest(
             depth_policy, state.get("slots") or [],
-            promotions=promotions, corrections=quick_corrections)
-        if promotions:
-            _consume_review_authority(
-                state, "affected_retry",
-                "dispatch only lenses promoted by high-severity sweep evidence")
-            promoted_internal, promoted_manifest = _promoted_slot_plan(
-                store, state, promotions)
-            for slot in promoted_internal:
-                slot["run_id"] = state["run_id"]
-            _prepare_slot_result_dirs(ws, promoted_internal)
-            effective = copy.deepcopy(
-                store.read(state["routing_decision"])["dispositions"])
-            for lens_id, triggers in promotions.items():
-                effective[lens_id]["initial_verdict"] = "light"
-                effective[lens_id]["verdict"] = "deep"
-                effective[lens_id]["promotion"] = {
-                    "source_slot": "light-sweep",
-                    "reason": "high-severity finding discovered during light sweep",
-                    "triggers": copy.deepcopy(triggers),
-                }
-                effective[lens_id].setdefault("evidence", []).append(
-                    "adaptive promotion: light sweep reported a high-severity finding")
-            effective_ref = store.put("routing-decision", {
-                "schema": "taskplane.routing-decision/v2",
-                "stage": state.get("stage"), "routing_mode": "adaptive",
-                "dispositions": effective,
-            })
-            counters = dict(state.get("counters") or {})
-            counters["dispatched_agent_count"] = int(
-                counters.get("dispatched_agent_count", 0)) + len(promoted_manifest)
-            counters["view_count"] = int(counters.get("view_count", 0)) + len(
-                promoted_manifest)
-            counters["prompt_view_bytes"] = int(
-                counters.get("prompt_view_bytes", 0)) + sum(
-                    row["view"]["bytes"] for row in promoted_manifest)
-            manifest = _manifest({
-                "schema": "taskplane.review-collect-manifest/v2",
-                "status": "needs_deep_followup", "run_id": state["run_id"],
-                "target_fingerprint": store.read(state["envelope"])[
-                    "target_fingerprint"],
-                "context_fingerprint": state["envelope"]["fingerprint"],
-                "routing_decision": _portable_ref(effective_ref),
-                "promotions": copy.deepcopy(promotions),
-                "promotion_rejections": copy.deepcopy(
-                    promotion_rejections),
-                "review_depth_policy": depth_receipt,
-                "slots": promoted_manifest, "counters": counters,
-                "next_action": "dispatch every promoted deep slot in one wave, "
-                               "then retry review collect once",
-            })
-            updated = dict(
-                state, status="ready",
-                slots=list(state.get("slots") or []) + promoted_internal,
-                dispatch_slots=promoted_manifest,
-                routing_decision=effective_ref,
-                promotion_rejections=copy.deepcopy(promotion_rejections),
-                review_depth_receipt=depth_receipt,
-                adaptive_wave={"status": "dispatched", "wave": 2,
-                               "promotions": copy.deepcopy(promotions)},
-                manifest=manifest, counters=counters)
-            _save_state(ws, updated)
-            tp.trace(ws, "review_adaptive_deep_wave", run_id=state["run_id"],
-                     promoted_lenses=sorted(promotions), wave=2)
-            return manifest
+            corrections=quick_corrections)
         conservation = None
         if leases:
             collected = _collect_verified_slot_results(store, leases, refs)
@@ -5136,7 +5086,7 @@ def _collect_review_transaction(
         else:
             routed = store.read(state["routing_decision"]).get(
                 "dispositions") or {}
-            if any((row or {}).get("verdict") in {"deep", "light"}
+            if any((row or {}).get("verdict") in {"deep", "sweep", "light"}
                    for row in routed.values()):
                 raise ReviewKernelError(
                     "review slot conservation failed: routed lenses produced "
@@ -5209,8 +5159,8 @@ def _collect_review_transaction(
                          "dor_evidence": dor,
                          "requirements_validation": requirements_validation,
                          "result_validations": portable_validations,
-                         "promotion_rejections": copy.deepcopy(
-                             promotion_rejections),
+                         "sweep_rejections": copy.deepcopy(
+                             sweep_rejections),
                          "review_depth_policy": depth_receipt,
                          "quick_corrections": copy.deepcopy(
                              quick_corrections)},
@@ -5241,7 +5191,7 @@ def _collect_review_transaction(
             "slot_conservation": conservation,
             "review_depth_policy": depth_receipt,
             "quick_corrections": copy.deepcopy(quick_corrections),
-            "promotion_rejections": copy.deepcopy(promotion_rejections),
+            "sweep_rejections": copy.deepcopy(sweep_rejections),
         })
         _collection_fault("post_manifest")
         prepared = dict(
@@ -5253,7 +5203,7 @@ def _collect_review_transaction(
             result_validations=result_validations,
             review_depth_receipt=depth_receipt,
             quick_corrections=copy.deepcopy(quick_corrections),
-            promotion_rejections=copy.deepcopy(promotion_rejections),
+            sweep_rejections=copy.deepcopy(sweep_rejections),
             prior_identity=prior, publication_body=body,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.

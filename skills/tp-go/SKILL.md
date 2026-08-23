@@ -184,8 +184,10 @@ explicit approval in conversation. Never run the loop silently.
    Codex, follow
    `references/codex-native-dispatch.md`: use the exact `task_name`, model and
    `reasoning_effort`, standalone `role_marker`, and complete
-   `role_instructions` file plus action payload. Wait with bounded native
-   waits and collect the final result. If the action includes
+   `role_instructions` file plus action payload. Follow the emitted
+   `taskplane.wait-policy/v1`: one event wait per outstanding set, unbounded
+   when supported or at least 1800 seconds, reissued only after a completion
+   or attention wake. Collect the final result. If the action includes
    `stage_runtime_dispatch`, pass it unchanged and make it the worker's only
    stage startup context; reject mismatched stage heads, handoff fingerprints,
    authority, scope, budget, execution claim, or selected artifacts. Do not

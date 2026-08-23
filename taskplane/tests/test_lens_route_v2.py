@@ -7,16 +7,18 @@ Pins, in order of importance:
 - STAGE RESTRICTION: the candidate set is the stage profile (design never
   yields code-quality); profile membership is DATA — adding a lens to a
   profile changes routing with zero code change.
-- SIGNAL INTEGRATION: verdicts come from lens_signals (i18n fixture diff
-  routes i18n deep; a stdlib diff routes i18n n/a WITH negative evidence
-  present in the routing output — coverage honesty).
-- BUDGET + FLOORS through route(): deep hard-capped at 8 (overflow demoted
-  to light, never dropped); architecture >= light on any code change;
-  security never n/a on an enforcement-touching diff.
-- FORCE / SKIP: --lens/--only forces deep regardless of verdict; --skip
-  stays visible as an evidenced n/a.
-- ENGINE FAILURE FAILS OPEN: lens_signals raising falls back to legacy
-  breadth=all routing (MORE coverage) with a degradation marker.
+- SIGNAL INTEGRATION: verdicts come from lens_signals, then automatic
+  Review/Evaluate projects them to one 4–5-lens sweep (an i18n fixture pins
+  i18n into that sweep; a stdlib diff keeps i18n n/a WITH its negative
+  evidence visible — coverage honesty).
+- AUTOMATIC BUDGET + FLOORS through route(): no deep/full dispositions;
+  exactly 4–5 sweeps; architecture is always in the sweep; contextual
+  security/QA/documentation signals compete inside that fixed budget.
+- AUTOMATIC SELECT / SKIP: --only pins membership inside the 4–5-lens
+  automatic sweep without granting deep authority; --skip is a hard,
+  evidenced exclusion. Architecture remains the mandatory sweep floor.
+- ENGINE FAILURE FAILS CLOSED: lens_signals raising emits a named
+  mapper_unavailable decision with zero dispatch.
 - breadth="all" stays the legacy full-catalog sweep, byte-identical.
 """
 import copy
@@ -374,11 +376,11 @@ class TestStageRestriction(unittest.TestCase):
 
 
 class TestSignalIntegration(unittest.TestCase):
-    def test_i18n_fixture_diff_routes_i18n_deep(self):
+    def test_i18n_fixture_diff_routes_i18n_sweep(self):
         files = tree_files(I18N_POS)
         r = lens.route(files, stage="review", catalog=CAT, workspace=I18N_POS)
         x = entry(r, "i18n")
-        self.assertEqual(x["tier"], "deep")
+        self.assertEqual(x["tier"], "sweep")
         self.assertEqual(x["mode"], "subagent")
         self.assertGreaterEqual(x["score"], lens_signals.DEEP)
         self.assertTrue(any("locale" in e or "i18n" in e
@@ -406,7 +408,7 @@ class TestSignalIntegration(unittest.TestCase):
         finally:
             shutil.rmtree(ws)
         sec = entry(r, "security")
-        self.assertEqual(sec["tier"], "deep")
+        self.assertEqual(sec["tier"], "sweep")
         # legacy vocabulary (glob/baseline) ...
         self.assertTrue(any(rr.startswith("touches ")
                             for rr in sec["reasons"]), sec["reasons"])
@@ -437,7 +439,7 @@ BUDGET_WS_SPEC = {
 
 
 class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
-    def test_deep_capped_at_8_overflow_demoted_never_dropped(self):
+    def test_automatic_route_projects_signals_to_four_or_five_sweeps(self):
         ws = write_ws(BUDGET_WS_SPEC)
         try:
             r = lens.route(sorted(BUDGET_WS_SPEC), stage="review",
@@ -445,20 +447,13 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         finally:
             shutil.rmtree(ws)
         t = tiers(r)
-        deep = [lid for lid, tier in t.items() if tier == "deep"]
-        self.assertEqual(len(deep), lens_signals.DEEP_CAP)      # exactly 8
-        self.assertTrue(
-            {"architecture", "code-quality", "security", "qa"}
-            .issubset(deep),
-            "mandatory review floors must rank inside the cap",
-        )
-        # every catalog lens still present — overflow was demoted, not dropped
+        self.assertFalse([lid for lid, tier in t.items() if tier == "deep"])
+        sweep = {lid for lid, tier in t.items() if tier == "sweep"}
+        self.assertIn(len(sweep), (4, 5))
+        self.assertIn("architecture", sweep)
+        # Every catalog lens remains dispositioned; the cap never hides rows.
         self.assertEqual(set(t), set(ALL_IDS))
-        demoted = [x for x in r["lenses"]
-                   if any("budget: demoted" in e for e in x["evidence"])]
-        self.assertTrue(demoted)
-        for x in demoted:
-            self.assertEqual(x["tier"], "light")
+        self.assertEqual(set(t.values()), {"sweep", "n/a"})
 
     def test_architecture_floor_on_any_code_change(self):
         ws = write_ws({"src/todo/util.py": "def add(a, b):\n    return a+b\n"})
@@ -468,7 +463,7 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         finally:
             shutil.rmtree(ws)
         arch = entry(r, "architecture")
-        self.assertIn(arch["tier"], ("light", "deep"))   # never n/a on code
+        self.assertEqual(arch["tier"], "sweep")   # never n/a on code
         self.assertIn("floor", arch)
         self.assertIn("floor: architecture promoted", " ".join(arch["evidence"]))
 
@@ -482,7 +477,7 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         finally:
             shutil.rmtree(ws)
         self.assertNotIn("architecture", CAT["stage_profiles"]["build"])
-        self.assertIn(entry(r, "architecture")["tier"], ("light", "deep"))
+        self.assertEqual(entry(r, "architecture")["tier"], "sweep")
 
     def test_security_never_na_on_enforcement_touching_diff(self):
         ws = write_ws({"hooks/pretool_gate.txt": "plain text, zero code\n"})
@@ -491,7 +486,7 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
                            catalog=CAT, workspace=ws)
         finally:
             shutil.rmtree(ws)
-        self.assertIn(entry(r, "security")["tier"], ("light", "deep"))
+        self.assertEqual(entry(r, "security")["tier"], "sweep")
 
     # ---- the untested trigger, on the STAGE-AWARE path -------------------
     #
@@ -510,7 +505,7 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         finally:
             shutil.rmtree(ws)
         qa = entry(r, "qa")
-        self.assertIn(qa["tier"], ("light", "deep"))
+        self.assertEqual(qa["tier"], "sweep")
         self.assertIn("untested change (code changed, no test file)",
                       qa["reasons"])
         self.assertIn("change shape: code changed with no test file",
@@ -527,45 +522,47 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
         self.assertNotIn("change shape: code changed with no test file",
                          entry(r, "qa")["evidence"])
 
-    def test_docs_only_change_uses_one_attributable_risk_selected_deep_lens(self):
+    def test_docs_only_change_keeps_attributable_lens_in_sweep(self):
         ws = write_ws({"docs/guide.md": "# guide\n"})
         try:
             r = lens.route(["docs/guide.md"], stage="review", catalog=CAT,
                            workspace=ws)
         finally:
             shutil.rmtree(ws)
-        deep = [x for x in r["lenses"] if x["tier"] == "deep"]
-        self.assertEqual([x["id"] for x in deep], ["tech-writer"])
-        self.assertEqual(deep[0]["review_risk_class"], "documentation-only")
+        self.assertFalse([x for x in r["lenses"] if x["tier"] == "deep"])
+        writer = entry(r, "tech-writer")
+        self.assertEqual(writer["tier"], "sweep")
+        self.assertEqual(writer["review_risk_class"], "documentation-only")
         self.assertIn("documentation evidence selected tech-writer",
-                      deep[0]["review_risk_reason"])
-        self.assertIn("risk-selected review floor", deep[0]["floor"])
+                      writer["review_risk_reason"])
+        self.assertIn("risk-selected review floor", writer["floor"])
         qa = entry(r, "qa")
         self.assertNotIn("change shape: code changed with no test file",
                          qa["evidence"])
 
-    def test_simple_low_risk_change_uses_one_attributable_risk_selected_deep_lens(self):
+    def test_simple_low_risk_signal_is_preserved_without_creating_depth(self):
         ws = write_ws({"src/value.py": "value = 1\n"})
         try:
             r = lens.route(["src/value.py"], stage="review", catalog=CAT,
                            workspace=ws)
         finally:
             shutil.rmtree(ws)
-        deep = [x for x in r["lenses"] if x["tier"] == "deep"]
-        self.assertEqual(len(deep), 1)
-        self.assertIn(deep[0]["id"],
+        self.assertFalse([x for x in r["lenses"] if x["tier"] == "deep"])
+        risk = [x for x in r["lenses"]
+                if x.get("review_risk_class") == "simple-low-risk"]
+        self.assertEqual(len(risk), 1)
+        self.assertEqual(risk[0]["tier"], "sweep")
+        self.assertIn(risk[0]["id"],
                       {"architecture", "code-quality", "security", "qa"})
-        self.assertEqual(deep[0]["review_risk_class"], "simple-low-risk")
         self.assertIn("single mapped low-risk code file",
-                      deep[0]["review_risk_reason"])
-        self.assertIn("risk-selected review floor", deep[0]["floor"])
+                      risk[0]["review_risk_reason"])
+        self.assertIn("risk-selected review floor", risk[0]["floor"])
 
-    def test_substantive_and_risky_changes_retain_four_mandatory_deep_floors(self):
+    def test_substantive_and_risky_changes_never_escape_sweep_depth(self):
         fixtures = (
             {"src/one.py": "value = 1\n", "src/two.py": "value = 2\n"},
             {"src/auth/login.py": "password = request.value\n"},
         )
-        required = {"architecture", "code-quality", "security", "qa"}
         for files in fixtures:
             with self.subTest(files=sorted(files)):
                 ws = write_ws(files)
@@ -574,19 +571,21 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
                                    workspace=ws)
                 finally:
                     shutil.rmtree(ws)
-                self.assertTrue(required.issubset({
-                    x["id"] for x in r["lenses"] if x["tier"] == "deep"
-                }))
-                for lens_id in required:
-                    row = entry(r, lens_id)
-                    self.assertEqual(row["review_risk_class"],
-                                     "substantive-risky")
-                    self.assertIn("mandatory review floor", row["floor"])
+                sweep = [x for x in r["lenses"] if x["tier"] == "sweep"]
+                self.assertIn(len(sweep), (4, 5))
+                self.assertFalse([x for x in r["lenses"]
+                                  if x["tier"] == "deep"])
+                self.assertEqual(entry(r, "architecture")["tier"], "sweep")
+                risk = [x for x in r["lenses"]
+                        if x.get("review_risk_class") == "substantive-risky"]
+                self.assertTrue(risk)
+                self.assertTrue(all("mandatory review floor" in x["floor"]
+                                    for x in risk))
 
-    def test_trigger_respects_the_stage_profile(self):
-        # qa is a review-stage lens. During build, tests legitimately may not
-        # exist yet — the trigger is a signal, not a floor, so the build
-        # profile still excludes it rather than being overridden.
+    def test_automatic_selector_uses_complete_catalog_after_stage_signals(self):
+        # QA is absent from the build profile, but the approved automatic
+        # selector works over the complete catalog and may select its live
+        # untested-change signal inside the fixed sweep budget.
         self.assertNotIn("qa", CAT["stage_profiles"]["build"])
         ws = write_ws({"src/app.py": "def value():\n    return 1\n"})
         try:
@@ -594,7 +593,7 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
                            workspace=ws)
         finally:
             shutil.rmtree(ws)
-        self.assertEqual(entry(r, "qa")["tier"], "n/a")
+        self.assertEqual(entry(r, "qa")["tier"], "sweep")
 
     def test_substring_lookalike_filenames_still_route_qa(self):
         # contest.py / latest.py / specification.py / protest/ all contain
@@ -609,7 +608,7 @@ class TestBudgetAndFloorsThroughRoute(unittest.TestCase):
                                    workspace=ws)
                 finally:
                     shutil.rmtree(ws)
-                self.assertIn(entry(r, "qa")["tier"], ("light", "deep"),
+                self.assertEqual(entry(r, "qa")["tier"], "sweep",
                               f"{name} was mistaken for a test file")
 
     def test_test_path_detection_is_segment_and_filename_aware(self):
@@ -665,21 +664,23 @@ class TestTestPathRoles(unittest.TestCase):
                 ["README.md"], CAT["code_extensions"]))
 
 
-class TestForceAndSkip(unittest.TestCase):
-    def test_forced_lens_overrides_na(self):
+class TestAutomaticSelectAndSkip(unittest.TestCase):
+    def test_only_pins_na_lens_inside_bounded_sweep_without_depth(self):
         files = tree_files(I18N_NEG)
         r = lens.route(files, stage="review", catalog=CAT, workspace=I18N_NEG,
                        only=["i18n"])
         x = entry(r, "i18n")
-        self.assertEqual(x["tier"], "deep")
-        self.assertEqual(x["verdict"], "deep (forced)")
+        self.assertEqual(x["tier"], "sweep")
+        self.assertEqual(x["verdict"], "sweep")
         self.assertEqual(x["mode"], "subagent")
-        self.assertTrue(any("forced" in e for e in x["evidence"]))
-        # everything else is an evidenced, VISIBLE n/a — not silently gone
-        for other in r["lenses"]:
-            if other["id"] != "i18n":
-                self.assertEqual(other["tier"], "n/a")
-                self.assertTrue(other["negative_evidence"])
+        selected = {row["id"] for row in r["lenses"]
+                    if row["tier"] == "sweep"}
+        self.assertIn("i18n", selected)
+        self.assertIn("architecture", selected)
+        self.assertIn(len(selected), (4, 5))
+        self.assertEqual({row["tier"] for row in r["lenses"]},
+                         {"sweep", "n/a"})
+        self.assertFalse(any(row["tier"] == "deep" for row in r["lenses"]))
 
     def test_skip_is_a_visible_evidenced_na(self):
         ws = write_ws({"src/auth/login.py": "password = 'x'\n"})
@@ -691,6 +692,39 @@ class TestForceAndSkip(unittest.TestCase):
         sec = entry(r, "security")
         self.assertEqual(sec["tier"], "n/a")
         self.assertTrue(any("--skip" in e for e in sec["negative_evidence"]))
+        selected = {row["id"] for row in r["lenses"]
+                    if row["tier"] == "sweep"}
+        self.assertNotIn("security", selected)
+        self.assertIn("architecture", selected)
+        self.assertIn(len(selected), (4, 5))
+
+    def test_skip_architecture_conflict_fails_closed(self):
+        r = lens.route(["src/app.py"], stage="review", catalog=CAT,
+                       skip=["architecture"])
+        self.assertEqual(r["lenses"], [])
+        self.assertEqual(r["context"]["status"], "mapper_unavailable")
+        self.assertIn("mandatory architecture floor",
+                      r["context"]["lens_engine_failed"])
+
+    def test_same_lens_in_only_and_skip_fails_closed(self):
+        r = lens.route(["src/app.py"], stage="review", catalog=CAT,
+                       only=["security"], skip=["security"])
+        self.assertEqual(r["lenses"], [])
+        self.assertIn("both select and skip",
+                      r["context"]["lens_engine_failed"])
+
+    def test_unknown_and_over_budget_explicit_selection_fail_closed(self):
+        cases = (
+            (["not-a-lens"], "unknown lenses"),
+            (["security", "qa", "testability", "i18n", "dba"],
+             "exceeds the 5-lens budget"),
+        )
+        for only, error in cases:
+            with self.subTest(only=only):
+                r = lens.route(["src/app.py"], stage="review", catalog=CAT,
+                               only=only)
+                self.assertEqual(r["lenses"], [])
+                self.assertIn(error, r["context"]["lens_engine_failed"])
 
 
 class TestEngineFailureStopsDispatch(unittest.TestCase):
@@ -744,9 +778,9 @@ class TestDispatchBriefsV2(unittest.TestCase):
         deep_ids = {b["id"] for b in d["deep"]}
         self.assertEqual(deep_ids,
                          {lid for lid, tier in t.items() if tier == "deep"})
-        # light lenses batch into the single sweep-style brief
+        # Automatic sweep dispositions batch into the single sweep brief.
         self.assertEqual(set(d["sweep"]["ids"]),
-                         {lid for lid, tier in t.items() if tier == "light"})
+                         {lid for lid, tier in t.items() if tier == "sweep"})
         # n/a lenses appear in NO brief ...
         na_ids = {lid for lid, tier in t.items() if tier == "n/a"}
         self.assertFalse(na_ids & deep_ids)
@@ -934,9 +968,14 @@ class TestCanonicalDiffContentSignals(unittest.TestCase):
             ["src/app.py"], stage="review", workspace=ws,
             content_by_file={"src/app.py": "value = 2\n"})
 
-        self.assertNotEqual(entry(whole_file, "security")["tier"], "n/a")
+        whole_security = entry(whole_file, "security")
+        canonical_security = entry(canonical_diff, "security")
+        self.assertGreater(whole_security["score"],
+                           canonical_security["score"])
+        self.assertIn("content: auth/secret markers",
+                      " ".join(whole_security["evidence"]))
         self.assertNotEqual(entry(whole_file, "accessibility")["tier"], "n/a")
-        security = entry(canonical_diff, "security")
+        security = canonical_security
         self.assertEqual(security["tier"], "n/a")
         self.assertFalse(any("credential" in evidence.lower()
                              or "password" in evidence.lower()

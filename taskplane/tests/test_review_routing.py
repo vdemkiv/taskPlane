@@ -156,31 +156,19 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as stream:
                 stream.write(content)
 
-    def test_start_maps_all_lenses_but_dispatches_only_deep_plus_one_sweep(self):
-        def route_with_one_light_lens():
-            routing = lens.route(
-                self.diff["files"], breadth="routed", stage="review",
-                workspace=self.ws, requirement_text="safe change")
-            light_ids = [row["id"] for row in routing["lenses"]
-                         if row.get("tier") == "light"]
-            self.assertTrue(light_ids)
-            retained = light_ids[0]
-            for row in routing["lenses"]:
-                if row.get("tier") == "light" and row["id"] != retained:
-                    row["tier"] = row["verdict"] = "n/a"
-                    row["negative_evidence"] = ["single-light test fixture"]
-            return routing
-
-        out = self._start(router=route_with_one_light_lens)
+    def test_start_maps_all_lenses_and_dispatches_bounded_singleton_sweeps(self):
+        out = self._start()
         self.assertEqual(out["status"], "ready")
         self.assertEqual(sum(out["routing_counts"].values()),
                          len(lens.load_catalog()["lenses"]))
-        sweeps = [row for row in out["slots"]
-                  if row["slot_id"] == "light-sweep"]
-        self.assertEqual(len(sweeps), 1)
+        sweeps = list(out["slots"])
+        self.assertGreaterEqual(len(sweeps), 4)
+        self.assertLessEqual(len(sweeps), 5)
+        self.assertTrue(all(row["slot_id"] ==
+                            f"sweep.{row['lens_ids'][0]}" and
+                            len(row["lens_ids"]) == 1 for row in sweeps))
         state = review._load_state(self.ws, out["run_id"])
-        sweep = next(row for row in state["slots"]
-                     if row["slot_id"] == "light-sweep")
+        sweep = state["slots"][0]
         brief = review_evidence.ArtifactStore(self.ws).read(sweep["brief"])
         dispatch = tp.dispatch_fields(
             "lens", "tp-lens", "sweep", "cheap")
@@ -199,23 +187,24 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertNotIn("breadth", json.dumps(out).lower())
         self.assertLessEqual(len(json.dumps(out).encode()), 16 * 1024)
 
-    def test_incremental_retry_dispatches_only_prior_failed_lenses(self):
+    def test_incremental_retry_membership_keeps_floor_and_bounded_sweep(self):
         prior_run = "a" * 32
         opened = self._start(
             retry_lenses={"architecture", "code-quality"},
             retry_source_run_id=prior_run)
         state = review._load_state(self.ws, opened["run_id"])
-        self.assertEqual(
-            {lens_id for slot in state["slots"]
-             for lens_id in slot["lens_ids"]},
-            {"architecture", "code-quality"})
+        selected = {lens_id for slot in state["slots"]
+                    for lens_id in slot["lens_ids"]}
+        self.assertTrue({"architecture", "code-quality"} <= selected)
+        self.assertGreaterEqual(len(selected), 4)
+        self.assertLessEqual(len(selected), 5)
         decision = review_evidence.ArtifactStore(self.ws).read(
             state["routing_decision"])["dispositions"]
-        self.assertEqual(decision["architecture"]["verdict"], "deep")
-        self.assertEqual(decision["code-quality"]["verdict"], "deep")
+        self.assertEqual(decision["architecture"]["verdict"], "sweep")
+        self.assertEqual(decision["code-quality"]["verdict"], "sweep")
         self.assertTrue(all(
             row["verdict"] == "n/a" for lens_id, row in decision.items()
-            if lens_id not in {"architecture", "code-quality"}))
+            if lens_id not in selected))
         envelope = review_evidence.ArtifactStore(self.ws).read(
             state["envelope"])
         self.assertEqual(
@@ -489,13 +478,13 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                          started["context_fingerprint"])
         self.assertEqual(out["counters"]["top_level_cli_count"], 2)
 
-    def test_major_light_sweep_finding_dispatches_one_bounded_deep_wave(self):
+    def test_major_sweep_finding_requires_correction_without_human_deep_auth(self):
         started = self._start()
         state = review._load_state(self.ws, started["run_id"])
         decision = review_evidence.ArtifactStore(self.ws).read(
             state["routing_decision"])["dispositions"]
         light_lens = next(lens_id for lens_id, row in decision.items()
-                          if row["verdict"] == "light")
+                          if row["verdict"] == "sweep")
         finding = {
             "lens": light_lens, "kind": "defect", "severity": "major",
             "class": "regression", "file": "src/service.py", "line": 1,
@@ -515,39 +504,19 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         followup = review.collect_review(
             self.ws, publish=False, run_id=started["run_id"])
 
-        self.assertEqual(followup["status"], "needs_deep_followup")
-        self.assertEqual([row["lens_ids"] for row in followup["slots"]],
-                         [[light_lens]])
+        self.assertEqual(followup["status"], "complete")
         self.assertEqual(followup["context_fingerprint"],
                          started["context_fingerprint"])
         promoted = review._load_state(self.ws, started["run_id"])
-        self.assertEqual(promoted["adaptive_wave"]["wave"], 2)
-        # The bounded initial sweep may itself contain exactly this one lens;
-        # count the newly allocated deep slot, not the source sweep slot.
-        self.assertEqual(len([
-            row for row in promoted["slots"]
-            if row["slot_id"] != "light-sweep" and
-            row["lens_ids"] == [light_lens]
-        ]), 1)
-        self.assertTrue(any(row["slot_id"] == "light-sweep" and
-                            light_lens in row["lens_ids"]
-                            for row in promoted["slots"]))
+        self.assertNotIn("adaptive_wave", promoted)
+        correction = next(row for row in promoted["quick_corrections"]
+                          if row["lens"] == light_lens)
+        self.assertEqual(correction["slot"], f"sweep.{light_lens}")
+        self.assertEqual(correction["tier"], "sweep")
+        self.assertFalse(correction["deep_dispatch"])
         effective = review_evidence.ArtifactStore(self.ws).read(
             promoted["routing_decision"])["dispositions"][light_lens]
-        self.assertEqual(effective["initial_verdict"], "light")
-        self.assertEqual(effective["verdict"], "deep")
-
-        self._write_pending_slots(run_id=started["run_id"])
-        completed = review.collect_review(
-            self.ws, publish=False, run_id=started["run_id"])
-        self.assertEqual(completed["status"], "complete")
-        self.assertEqual(completed["canonical_revision"], 1)
-        rendered = __import__("dashboard").render_lens_coverage(
-            review_evidence.ArtifactStore(self.ws).read(
-                review._load_state(self.ws, started["run_id"])[
-                    "routing_decision"])["dispositions"])
-        self.assertIn("promoted light → deep", rendered)
-        self.assertIn(finding["title"], rendered)
+        self.assertEqual(effective["verdict"], "sweep")
 
     def test_light_sweep_normalizes_duplicate_replay_and_cross_charter_risks(self):
         store = review_evidence.ArtifactStore(self.ws)
@@ -580,18 +549,26 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             "findings": [accepted, dict(accepted), cross_charter],
         })
 
-        resolved = review._light_sweep_promotions(
+        resolved = review._resolve_sweep_corrections(
             store, {"routing_decision": decision_ref}, [result_ref])
 
-        self.assertEqual(list(resolved["promotions"]), ["security"])
-        self.assertEqual(len(resolved["promotions"]["security"]), 1)
+        self.assertEqual(len(resolved["corrections"]), 1)
+        self.assertEqual(resolved["corrections"][0]["slot"], "light-sweep")
+        self.assertEqual(resolved["corrections"][0]["tier"], "sweep")
+        self.assertFalse(resolved["corrections"][0]["deep_dispatch"])
         self.assertEqual(
             [row["reason"] for row in resolved["rejections"]],
             ["duplicate", "out-of-charter"],
         )
-        self.assertEqual(
-            len({row["fingerprint"] for row in
-                 resolved["promotions"]["security"]}), 1)
+        self.assertEqual(resolved["outcome"], "correction_required")
+
+    def test_progressive_policy_is_unavailable_until_human_command_is_shipped(self):
+        with self.assertRaisesRegex(
+                review.ReviewKernelError,
+                "adaptive deep review unavailable: "
+                "direct-human-command-not-shipped"):
+            review.review_depth_policy({
+                "id": "R-1", "review_policy": {"depth": "progressive"}})
 
     def test_low_light_sweep_finding_does_not_dispatch_a_deep_wave(self):
         started = self._start()
@@ -599,7 +576,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         decision = review_evidence.ArtifactStore(self.ws).read(
             state["routing_decision"])["dispositions"]
         light_lens = next(lens_id for lens_id, row in decision.items()
-                          if row["verdict"] == "light")
+                          if row["verdict"] == "sweep")
         finding = {
             "lens": light_lens, "kind": "defect", "severity": "minor",
             "class": "observation", "file": "src/service.py", "line": 1,
@@ -670,7 +647,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             workspace=self.ws)
         arch = next(row for row in routing["lenses"]
                     if row["id"] == "architecture")
-        self.assertEqual(arch["tier"], "deep")
+        self.assertEqual(arch["tier"], "sweep")
         self.assertIn("floor", arch)
 
     def test_body_only_change_cannot_turn_zero_symbols_into_complete_coverage(self):
@@ -1137,10 +1114,6 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 "outcome": "the request violates the required safety invariant",
                 "repro": "run the failing request against the changed service"},
         }])
-        first = review.collect_review(self.ws, publish=False)
-        self.assertEqual(first["status"], "needs_deep_followup")
-        self.assertNotIn("gaps", first)
-        self._write_pending_slots()
         manifest = review.collect_review(self.ws, publish=False)
         store = review_evidence.ArtifactStore(self.ws)
         validations = [store.read(ref)
@@ -1169,10 +1142,6 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 "repro": "run the failing request against the changed service"},
         }])
         state = review._load_state(self.ws)
-        first = review.collect_review(self.ws, publish=False)
-        self.assertEqual(first["status"], "needs_deep_followup")
-        self.assertNotIn("gaps", first)
-        self._write_pending_slots()
         manifest = review.collect_review(self.ws, publish=False)
         store = review_evidence.ArtifactStore(self.ws)
         validations = [store.read(ref)
@@ -1543,7 +1512,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(out["counters"]["emitted_bytes"],
                          out["manifest_bytes"])
 
-    def test_full_catalog_dispatch_fits_aggregate_manifest_budget(self):
+    def test_full_catalog_directive_is_bounded_to_automatic_sweep_budget(self):
         catalog = lens.load_catalog()["lenses"]
         routing = {
             "lenses": [
@@ -1561,8 +1530,11 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         out = self._start(router=lambda: routing, task_type="implementation")
 
         self.assertEqual(out["status"], "ready")
-        self.assertEqual(out["routing_counts"]["deep"], len(catalog))
-        self.assertGreater(out["manifest_bytes"], 16 * 1024)
+        self.assertEqual(out["routing_counts"]["sweep"], 5)
+        self.assertEqual(len(out["slots"]), 5)
+        self.assertTrue(all(len(row["lens_ids"]) == 1 and
+                            row["slot_id"].startswith("sweep.")
+                            for row in out["slots"]))
         self.assertLessEqual(out["manifest_bytes"], review.MAX_MANIFEST_BYTES)
         self.assertEqual(out["manifest_bytes"],
                          len(review_evidence.canonical_bytes(out)))
@@ -1574,14 +1546,19 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 review.ReviewKernelError, "review manifest exceeds"):
             review._manifest(oversized)
 
-    def test_collect_commits_empty_revision_when_all_lenses_are_na(self):
+    def test_architecture_floor_prevents_an_all_na_automatic_route(self):
         catalog = lens.load_catalog()["lenses"]
         routing = {"lenses": [
-            {"id": row["id"], "tier": "n/a", "mode": "none",
+            {"id": row["id"], "name": row["name"],
+             "tier": "n/a", "verdict": "n/a", "mode": "none",
              "score": 0, "negative_evidence": ["no matching signal"]}
             for row in catalog], "context": {"signals": {}}}
         started = self._start(router=lambda: routing)
-        self.assertEqual(started["slots"], [])
+        self.assertGreaterEqual(len(started["slots"]), 4)
+        self.assertLessEqual(len(started["slots"]), 5)
+        self.assertTrue(any(slot["lens_ids"] == ["architecture"]
+                            for slot in started["slots"]))
+        self._write_slot_results()
         out = review.collect_review(self.ws, publish=False)
         self.assertEqual(out["status"], "complete")
         self.assertEqual(out["canonical_revision"], 1)

@@ -23,6 +23,12 @@ not repeated in the tables.
 | `tp.py ack` | discharge an obligation the engine issued (WS-F evals); --status lists what is open |
 | `tp.py budget` | record a cooperative spend estimate, or --grant N more actions (the budget approval gate) |
 | `tp.py clear` | deactivate the workspace contract |
+| `tp.py command` | durable governed host-command lifecycle |
+| `tp.py command cancel` | cancel a durable command |
+| `tp.py command launch` | launch direct argv through the durable command runtime |
+| `tp.py command reconnect` | reconnect a durable command |
+| `tp.py command show` | show a durable command |
+| `tp.py command wait` | wait a durable command |
 | `tp.py context` | session-start context summary |
 | `tp.py contracts` | list every active contract slot, including stale ones a union is silently applying |
 | `tp.py dashboard` | render the mission-control view |
@@ -60,6 +66,12 @@ not repeated in the tables.
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
+| `tp.py loop command` | run a durable command through the live loop root |
+| `tp.py loop command cancel` | cancel a durable command |
+| `tp.py loop command launch` | launch direct argv through the durable command runtime |
+| `tp.py loop command reconnect` | reconnect a durable command |
+| `tp.py loop command show` | show a durable command |
+| `tp.py loop command wait` | wait a durable command |
 | `tp.py loop evidence` | assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill |
 | `tp.py loop gate` | orchestrator-only: judge the evidence and advance the loop |
 | `tp.py loop guide` | before pass submission, check deterministic workflow facts and return one bounded drift correction |
@@ -92,6 +104,7 @@ not repeated in the tables.
 | `tp.py req score` | score a requirement's refinement against the bar |
 | `tp.py req signoff` | record the human Product gate |
 | `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
+| `tp.py review activate-contract` | verify one signed leased-review action and activate only its producer slot |
 | `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
 | `tp.py review evidence` | record approved dynamic validation or render evidence |
 | `tp.py review option` | record the human's optional dynamic review/render choice |
@@ -173,6 +186,83 @@ deactivate the workspace contract
 | `--all` | flag | release EVERY active slot, not just this process's — the way out when a wave leaked contracts |
 | `--approved-by` | APPROVED_BY | human chat identity authorizing recovery past an exhausted budget |
 | `--slot` | SLOT | release one named slot (see `tp contracts`) without setting TASKPLANE_TASK |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py command`
+
+durable governed host-command lifecycle
+
+## `tp.py command cancel`
+
+cancel a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py command launch`
+
+launch direct argv through the durable command runtime
+
+Positional arguments:
+
+- `argv` — direct command argv after --
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--cwd` | CWD | command directory within the workspace |
+| `--deadline-seconds` | DEADLINE_SECONDS | optional execution deadline from launch |
+| `--host` | one of: claude, codex | host adapter contract |
+| `--run-id` | RUN_ID (required) | canonical governed run identity |
+| `--task-id` | TASK_ID (required) | canonical governed task identity |
+| `--wave-id` | WAVE_ID | optional governed command-wave identity |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py command reconnect`
+
+reconnect a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py command show`
+
+show a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py command wait`
+
+wait a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--consumer` | CONSUMER | durable delivery receipt consumer |
+| `--timeout` | TIMEOUT | single blocking wait timeout |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py context`
@@ -554,6 +644,83 @@ Positional arguments:
 | `--agent-workspace` | AGENT_WORKSPACE (required) | the worker's worktree — its contract activates there |
 | `--by` | BY | human identity required with --advisory |
 
+## `tp.py loop command`
+
+run a durable command through the live loop root
+
+## `tp.py loop command cancel`
+
+cancel a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py loop command launch`
+
+launch direct argv through the durable command runtime
+
+Positional arguments:
+
+- `argv` — direct command argv after --
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--cwd` | CWD | command directory within the workspace |
+| `--deadline-seconds` | DEADLINE_SECONDS | optional execution deadline from launch |
+| `--host` | one of: claude, codex | host adapter contract |
+| `--run-id` | RUN_ID (required) | canonical governed run identity |
+| `--task-id` | TASK_ID (required) | canonical governed task identity |
+| `--wave-id` | WAVE_ID | optional governed command-wave identity |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py loop command reconnect`
+
+reconnect a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py loop command show`
+
+show a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py loop command wait`
+
+wait a durable command
+
+Positional arguments:
+
+- `handle` — opaque durable command handle
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
+| `--consumer` | CONSUMER | durable delivery receipt consumer |
+| `--timeout` | TIMEOUT | single blocking wait timeout |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py loop evidence`
 
 assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill
@@ -900,6 +1067,17 @@ open a review in ONE call — tools, target pin, graph, impact, contract, obliga
 
 | Flag | Value | What it does |
 | --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py review activate-contract`
+
+verify one signed leased-review action and activate only its producer slot
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--expected-identity` | EXPECTED_IDENTITY (required) | URL-safe encoded exact worker/lease identity |
+| `--signed-action` | SIGNED_ACTION (required) | URL-safe encoded signed ReviewKernel action |
+| `--task-slot` | TASK_SLOT (required) | exact signed producer slot visible to host screen |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py review collect`

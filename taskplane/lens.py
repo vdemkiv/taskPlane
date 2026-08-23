@@ -891,6 +891,135 @@ def _assemble_components(workspace, files, cat, *, stage, requirement_text,
         return None, None, {"miss": str(exc)}
 
 
+_AUTOMATIC_SWEEP_FALLBACKS = (
+    "architecture", "code-quality", "security", "qa", "testability",
+)
+
+
+def _automatic_selector_ids(values, *, field: str) -> set:
+    """Normalize one explicit selector without silently changing its meaning."""
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        values = [values]
+    try:
+        normalized = {str(value).strip() for value in values}
+    except TypeError as exc:
+        raise ValueError(f"automatic sweep {field} must be lens ids") from exc
+    if "" in normalized:
+        raise ValueError(f"automatic sweep {field} contains an empty lens id")
+    return normalized
+
+
+def automatic_sweep_route(routing: dict, *, pinned_lenses=(),
+                          skipped_lenses=(), strict_pins: bool = False) -> dict:
+    """Project a complete automatic route to exactly one 4–5 lens sweep.
+
+    Context and directive text may affect membership only.  They cannot
+    create deep/full work, another worker, or a promotion path. Fuzzy prose
+    pins are ranked within the budget; ``strict_pins`` is reserved for an
+    explicit selector, whose over-budget request must fail rather than be
+    silently truncated.
+    """
+    routed = copy.deepcopy(routing or {})
+    rows = list(routed.get("lenses") or [])
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    if "architecture" not in by_id or len(rows) < 4:
+        raise ValueError("automatic sweep requires the complete lens catalog")
+    catalog_ids = set(by_id)
+    pins = _automatic_selector_ids(pinned_lenses, field="only")
+    skips = _automatic_selector_ids(skipped_lenses, field="skip")
+    unknown = (pins | skips) - catalog_ids
+    if unknown:
+        raise ValueError(
+            "automatic sweep selector names unknown lenses: " +
+            ", ".join(sorted(unknown)))
+    overlap = pins & skips
+    if overlap:
+        raise ValueError(
+            "automatic sweep cannot both select and skip: " +
+            ", ".join(sorted(overlap)))
+    if "architecture" in skips:
+        raise ValueError(
+            "automatic sweep cannot skip mandatory architecture floor")
+    pins.discard("architecture")
+    if strict_pins and len(pins) > 4:
+        raise ValueError(
+            "automatic sweep explicit selection exceeds the 5-lens budget")
+    eligible = [row for row in rows
+                if row.get("id") != "architecture"
+                and str(row.get("id") or "") not in skips]
+    if len(eligible) < 3:
+        raise ValueError(
+            "automatic sweep exclusions leave fewer than 4 eligible lenses")
+    ranked = sorted(
+        eligible,
+        key=lambda row: (
+            str(row.get("id")) not in pins,
+            -float(row.get("score") or 0), str(row.get("id") or "")),
+    )
+    positive_fourth = len(ranked) >= 4 and (
+        float(ranked[3].get("score") or 0) > 0 or
+        bool(ranked[3].get("evidence")))
+    target = 5 if len(pins) >= 4 or positive_fourth else 4
+    selected = ["architecture"]
+    for row in ranked:
+        lens_id = str(row.get("id") or "")
+        if lens_id and lens_id not in selected:
+            selected.append(lens_id)
+        if len(selected) == target:
+            break
+    for fallback in _AUTOMATIC_SWEEP_FALLBACKS:
+        if (fallback in by_id and fallback not in skips and
+                fallback not in selected):
+            selected.append(fallback)
+        if len(selected) == target:
+            break
+    if len(selected) != target:
+        raise ValueError(
+            f"automatic sweep could not fill its {target}-lens budget")
+    selected_set = set(selected)
+    for row in rows:
+        lens_id = str(row.get("id") or "")
+        if lens_id in selected_set:
+            prior = str(row.get("verdict") or row.get("tier") or "n/a")
+            row["tier"] = row["verdict"] = "sweep"
+            # `mode` controls whether the evaluator actually invokes the
+            # governed worker.  Sweep is the bounded review depth; subagent
+            # is the dispatch mechanism, not a promotion to deep review.
+            row["mode"] = "subagent"
+            row.setdefault("evidence", []).append(
+                "automatic bounded sweep selection" if
+                lens_id != "architecture" else
+                "automatic architecture sweep floor")
+            row.setdefault("reasons", []).append(
+                f"automatic sweep membership (initial verdict {prior})")
+            row.pop("negative_evidence", None)
+        else:
+            row["tier"] = row["verdict"] = "n/a"
+            row["mode"] = "none"
+            prior_negative = list(row.get("negative_evidence") or [])
+            if lens_id in skips:
+                negative = prior_negative or [f"operator --skip {lens_id}"]
+            else:
+                negative = [
+                    "not selected by automatic bounded sweep (4–5 lens cap)"
+                ] + prior_negative
+            row["negative_evidence"] = negative
+            row["reasons"] = list(negative)
+    context = routed.setdefault("context", {})
+    context["automatic_review"] = True
+    context["review_progression"] = {
+        "schema": "taskplane.review-progression/v1",
+        "deep_slots": [], "sweep_count": len(selected),
+        "sweep_lenses": selected,
+        "sweep_slots": [f"sweep.{lens_id}" for lens_id in selected],
+        "deferred_light": [],
+    }
+    context["automatic_tiers"] = ["n/a", "sweep"]
+    return routed
+
+
 def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
               only, skip, hub_dependents, workspace,
               requirement_text, content_by_file=None) -> dict:
@@ -915,8 +1044,11 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
     files = list(changed_files or [])
     has_code = any(_is_code(f, code_ext) for f in files)
     large = len(files) >= deep_n
-    only = set(only or [])
-    skip = set(skip or [])
+    automatic = stage in {"review", "build"}
+    only = (_automatic_selector_ids(only, field="only") if automatic
+            else set(only or []))
+    skip = (_automatic_selector_ids(skip, field="skip") if automatic
+            else set(skip or []))
 
     profile = (cat.get("stage_profiles") or {}).get(stage)
     all_ids = [l["id"] for l in cat["lenses"]]
@@ -956,7 +1088,7 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             workspace or ".", files, stage=stage,
             requirement_text=requirement_text,
             content_by_file=content_by_file)
-    if stage == "review":
+    if stage in {"review", "build"}:
         # Component routing and module routing consume the same bounded
         # document evidence.  A component-map miss is never a reason to
         # widen documentation to the full catalog.
@@ -989,14 +1121,17 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
         if lens.get("untested_trigger") and _adds_no_test(files, code_ext):
             reasons.append("untested change (code changed, no test file)")
 
-        forced = lid in only
+        # Automatic Review/Evaluate treats --only as a membership pin inside
+        # its bounded sweep.  It is not the separately attributed human-deep
+        # command and therefore cannot force depth or exclude every filler.
+        forced = lid in only and not automatic
         if forced:
             # --lens/--only force: the lens runs deep REGARDLESS of verdict.
             if verdict != "deep":
                 evidence.append("forced: --lens/--only override "
                                 f"(engine verdict was '{verdict}')")
             verdict = "deep"
-        elif only:
+        elif only and not automatic:
             negative = [f"excluded by --only ({', '.join(sorted(only))})"] \
                 + negative
             verdict = "n/a"
@@ -1068,7 +1203,7 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
             if "component_attribution" in x}
     elif comp_info is not None and comp_info.get("miss"):
         ctxd["component_layer_failed"] = comp_info["miss"]
-    if stage == "review":
+    if stage in {"review", "build"}:
         import review_progression
         required_rows = [row for row in selected
                          if row.get("review_required_deep")]
@@ -1080,34 +1215,9 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
                     row["id"] for row in required_rows
                 ),
             }
-        progressive = review_progression.initial_wave({
-            "lenses": selected,
-            "context": ctxd,
-        })
-        # The canonical ReviewKernel builds its routing decision directly
-        # from this complete catalog map.  Therefore the bounded sweep must
-        # be reflected in the dispositions themselves, not only copied into
-        # context metadata for the legacy brief dispatcher.  Retain every
-        # overflow lens as an explained n/a so coverage remains complete
-        # without allocating a second/unbounded light wave.
-        by_id = {str(row.get("id") or ""): row for row in selected}
-        for lens_id in progressive["deferred_light"]:
-            entry = by_id[lens_id]
-            prior = str(entry.get("verdict") or entry.get("tier") or "light")
-            entry["tier"] = entry["verdict"] = "n/a"
-            entry["mode"] = "none"
-            entry["negative_evidence"] = [
-                "deferred by bounded progressive review sweep "
-                f"(limit {review_progression.DEFAULT_SWEEP_LIMIT}; "
-                f"initial verdict '{prior}')"
-            ]
-        ctxd["review_progression"] = {
-            "schema": progressive["schema"],
-            "deep_slots": [row["slot"] for row in progressive["deep"]],
-            "sweep_count": progressive["sweep_count"],
-            "sweep_lenses": (progressive["sweep"] or {}).get("lenses", []),
-            "deferred_light": progressive["deferred_light"],
-        }
+        return automatic_sweep_route(
+            {"lenses": selected, "context": ctxd},
+            pinned_lenses=only, skipped_lenses=skip, strict_pins=True)
     return {"lenses": selected, "context": ctxd}
 
 
@@ -1438,6 +1548,17 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                          "task_slot": "lens-sweep",
                          "write_allow": [".em-review/lens-sweep/**"],
                          "max_actions": actions_for("sweep", max_actions)},
+            "dispatch_set": {"schema": "taskplane.dispatch-set/v1",
+                             "id": "automatic-review-sweep",
+                             "concurrent": True,
+                             "member_count": len(sweep)},
+            "wait_policy": {"schema": "taskplane.wait-policy/v1",
+                            "outstanding_set": "automatic-review-sweep",
+                            "outstanding_count": len(sweep), "mode": "event",
+                            "timeout_seconds": 1800,
+                            "minimum_timeout_seconds": 300,
+                            "reissue_after": ["completion", "attention"],
+                            "scheduled_polling": False},
             "prompt": _slot_instr("lens-sweep") + (
                 f"Quick SWEEP of these lenses against the diff vs `{base}`: "
                 f"{names}. Run each lens's top checks only — flag or clear in "

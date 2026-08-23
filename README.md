@@ -118,7 +118,7 @@ explicit.
 
 The moving parts: an enforcement kernel (contracts + lifecycle hook +
 orchestrator-only gates + audit trace), the loop engine, the Design Contract phase,
-26 read-only lens agents fanned out in parallel, the requirements/decisions/debt
+a 26-lens catalog with exactly 4–5 relevant light-sweep agents selected for automatic review, the requirements/decisions/debt
 knowledge base, a deterministic dependency graph with a zero-token blast-radius map,
 and portable `cheap`/`standard`/`deep` model tiers routed per step, task, and lens —
 mapped to models by env config, verifiable with `tp loop verify-dispatch`.
@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.16** | **Governed command events and selective review are wired into the live flow.** Governed command launch, reconnect, and event-driven waits reach the durable command runtime, and automatic review runs exactly 4–5 selected light-sweep lenses concurrently—never automatic full, deep, promoted, or all-26 execution. During host screening, signed review actions activate their exact lease before command execution. |
 | **v2.17.15** | **Python compatibility, quick-only review, and import-cycle reduction are now release-gated.** The supported Python matrix compiles before tests, graph and CLI failures stay actionable, zero-token and exact-SHA delivery proofs fail closed, the SCC ratchet lands before cuts, and the first lower-owner split removes the `depgraph`/`decompose` cycle without changing direct APIs or payloads. Nested test processes now stay bound to the governed task checkout. |
 | **v2.17.14** | **Governed delivery now isolates every lifecycle stage and passes only bounded, verified handoffs.** Immutable stage lineage, independent split roots, conservative singleton migration, and bounded status, review, sign-off, and Retro projections work across hosts while preserving R-0003 evidence, collision, merge, and fail-closed cleanup controls. |
-| **v2.17.13** | **Stateless review workers now carry proof into the exact governed worktree.** Signed actions bootstrap bounded evaluator and lens authority without inherited hook state; run-bound graph and cleanup identity stays exact and fails closed on unsafe collisions; and both marketplace bundles now ship schema-valid, install-complete OpenAI and Claude host hooks. |
 
 ## Install
 

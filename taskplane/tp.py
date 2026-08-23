@@ -44,6 +44,7 @@ _enforce_supported_python()
 
 import argparse
 import ast
+import base64
 import contextlib
 import hashlib
 import io
@@ -60,6 +61,7 @@ import enforcement as enforcement_kernel  # noqa: E402
 import collision as collision_kernel  # noqa: E402
 import storage as runtime_storage  # noqa: E402
 import run_store as repository_run_store  # noqa: E402
+import governed_commands as governed_command_engine  # noqa: E402
 
 
 # Closed user-layer refusal protocol. Only errors whose failure is an
@@ -2067,6 +2069,27 @@ def _screen(a) -> int:
         tool_input = {}
     command = tp.command_text(tool_name, tool_input)
 
+    try:
+        bootstrap = _visible_review_bootstrap(command, ws)
+    except Exception as exc:
+        if "review activate-contract" in command:
+            print(json.dumps({
+                "decision": "block",
+                "reason": "taskplane: signed review bootstrap failed "
+                          f"closed ({exc})"}))
+            return 0
+        bootstrap = None
+    if bootstrap is not None:
+        ws = str(bootstrap.pop("workspace", ws))
+        contract = _activate_visible_review_bootstrap(ws, **bootstrap)
+        tp.trace(ws, "review_contract_bootstrap_screened",
+                 task_slot=contract["task_slot"],
+                 action_id=contract["bootstrap_action_id"],
+                 lease_fingerprint=contract["bootstrap_lease_fingerprint"])
+        if "turn_id" not in event:
+            print(json.dumps({"decision": "approve"}))
+        return 0
+
     # Native Codex children can report their host cwd rather than the managed
     # PR checkout. Resolve an absolute sealed lease back to its checkout
     # BEFORE loading/screening the contract; doing this afterward made the
@@ -2122,6 +2145,17 @@ def _screen(a) -> int:
         # taskplane is installed, silently bypassing the user's own
         # permission prompts. Governance vouches for in-scope actions; the
         # ABSENCE of a contract must defer, never rubber-stamp.
+        return 0
+
+    if _legacy_review_activation_command(command):
+        members = contract.get("_union") or []
+        suffix = (f" (most-restrictive union of {len(members)} active "
+                  "contracts)" if members else "")
+        print(json.dumps({
+            "decision": "block",
+            "reason": "taskplane: legacy direct taskplane_lite activation "
+                      "is forbidden; use an exact signed review bootstrap" +
+                      suffix}))
         return 0
 
     # ORPHANED-CONTRACT AUTO-RELEASE — a contract whose owner is gone (dead
@@ -2783,6 +2817,9 @@ def cmd_loop(a) -> int:
         rep = tp.dispatch_report(ws)
         print(json.dumps(rep, indent=2))
         return 1 if rep["mismatches"] else 0
+    elif action == "command":
+        out = loopmod.governed_command(
+            ws, a.command_action, _governed_command_request(a))
     # R-0004 stage emitter (contract:wave-workflow): `loop wave` and
     # `loop next` are the STAGE dispatch surfaces — when the payload is a
     # stage dispatch (execute wave / evaluate / fix) and the workflow path
@@ -2812,6 +2849,77 @@ def cmd_loop(a) -> int:
     # a refused gate/submit/wave for success. Matches the convention the
     # other subcommands (req score, kb lint, share push) already follow.
     return 1 if isinstance(out, dict) and out.get("error") else 0
+
+
+def _governed_command_request(a) -> dict:
+    action = a.command_action
+    request = {"authorization": a.authorization}
+    if action == "launch":
+        argv = list(a.argv)
+        if argv[:1] == ["--"]:
+            argv = argv[1:]
+        request.update({
+            "argv": argv,
+            "cwd": getattr(a, "cwd", None),
+            "deadline": (None if getattr(a, "deadline_seconds", None) is None
+                         else _time.time() + float(a.deadline_seconds)),
+            "host": a.host,
+            "run_id": a.run_id,
+            "task_id": a.task_id,
+            "wave_id": getattr(a, "wave_id", None),
+        })
+    else:
+        request["handle"] = a.handle
+        if action == "wait":
+            request.update({"consumer": a.consumer, "timeout": a.timeout})
+    return request
+
+
+def cmd_command(a) -> int:
+    """Supported standalone durable command lifecycle surface."""
+    out = governed_command_engine.execute(
+        _workspace(a.workspace), a.command_action,
+        _governed_command_request(a))
+    print(json.dumps(out, indent=2))
+    return 1 if isinstance(out, dict) and out.get("error") else 0
+
+
+def _add_governed_command_actions(parser, *, fn=None) -> None:
+    actions = parser.add_subparsers(dest="command_action", required=True)
+    launch = actions.add_parser(
+        "launch", help="launch direct argv through the durable command runtime")
+    launch.add_argument("--authorization", required=True,
+                        help="actor/session identity bound to the handle")
+    launch.add_argument("--run-id", required=True,
+                        help="canonical governed run identity")
+    launch.add_argument("--task-id", required=True,
+                        help="canonical governed task identity")
+    launch.add_argument("--host", choices=["claude", "codex"],
+                        default="codex", help="host adapter contract")
+    launch.add_argument("--cwd", default=None,
+                        help="command directory within the workspace")
+    launch.add_argument("--deadline-seconds", type=float, default=None,
+                        help="optional execution deadline from launch")
+    launch.add_argument("--wave-id", default=None,
+                        help="optional governed command-wave identity")
+    launch.add_argument("--workspace", default=argparse.SUPPRESS,
+                        help=_WS_HELP)
+    launch.add_argument("argv", nargs=argparse.REMAINDER,
+                        help="direct command argv after --")
+    for action in ("wait", "reconnect", "show", "cancel"):
+        child = actions.add_parser(action, help=f"{action} a durable command")
+        child.add_argument("--authorization", required=True,
+                           help="actor/session identity bound to the handle")
+        child.add_argument("--workspace", default=argparse.SUPPRESS,
+                           help=_WS_HELP)
+        if action == "wait":
+            child.add_argument("--consumer", default="model",
+                               help="durable delivery receipt consumer")
+            child.add_argument("--timeout", type=float, default=None,
+                               help="single blocking wait timeout")
+        child.add_argument("handle", help="opaque durable command handle")
+    if fn is not None:
+        parser.set_defaults(fn=fn)
 
 
 _MAX_STAGE_COMMAND_BYTES = 1024 * 1024
@@ -4627,6 +4735,115 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
     return visuals, obligations
 
 
+_REVIEW_BOOTSTRAP_EXPECTED_FIELDS = {
+    "run_id", "task_id", "role_marker", "worker_identity", "action_id",
+    "lens_ids", "target_fingerprint", "lease_fingerprint",
+    "canonical_revision",
+}
+
+
+def _decode_review_bootstrap(value: str, label: str) -> dict:
+    try:
+        raw = str(value or "")
+        decoded = base64.urlsafe_b64decode(
+            raw + "=" * (-len(raw) % 4)).decode("utf-8")
+        result = json.loads(decoded)
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise tp.StateError(label, "signed review bootstrap is malformed") \
+            from exc
+    if not isinstance(result, dict):
+        raise tp.StateError(label, "signed review bootstrap is malformed")
+    return result
+
+
+def _review_bootstrap_values(signed_action: str, expected_identity: str,
+                             task_slot: str) -> dict:
+    action = _decode_review_bootstrap(signed_action, "--signed-action")
+    expected = _decode_review_bootstrap(
+        expected_identity, "--expected-identity")
+    if set(expected) != _REVIEW_BOOTSTRAP_EXPECTED_FIELDS:
+        raise tp.StateError(
+            "--expected-identity",
+            "review contract expected identity is malformed")
+    producer = action.get("producer_contract")
+    signed_slot = (producer.get("task_slot")
+                   if isinstance(producer, dict) else None)
+    if not isinstance(task_slot, str) or signed_slot != task_slot:
+        raise tp.StateError(
+            "--task-slot", "review contract task slot mismatches action")
+    return {"action": action, "expected": expected, "task_slot": task_slot}
+
+
+def _activate_visible_review_bootstrap(
+        workspace: str, *, action: dict, expected: dict,
+        task_slot: str) -> dict:
+    """Activate one command-visible signed slot without inline shell env."""
+    sentinel = object()
+    prior = os.environ.get("TASKPLANE_TASK", sentinel)
+    os.environ["TASKPLANE_TASK"] = task_slot
+    try:
+        return tp.activate_review_contract_action(
+            workspace, action, **expected)
+    finally:
+        if prior is sentinel:
+            os.environ.pop("TASKPLANE_TASK", None)
+        else:
+            os.environ["TASKPLANE_TASK"] = prior
+
+
+def _visible_review_bootstrap(command: str, workspace: str) -> dict | None:
+    """Parse only the exact bootstrap argv emitted by the live loop."""
+    try:
+        tokens = shlex.split(str(command or ""))
+    except ValueError as exc:
+        if "review activate-contract" in str(command or ""):
+            raise tp.StateError(
+                "review activate-contract",
+                "signed review bootstrap command is malformed") from exc
+        return None
+    marker = ["review", "activate-contract"]
+    marker_seen = any(tokens[index:index + 2] == marker
+                      for index in range(max(0, len(tokens) - 1)))
+    if not marker_seen:
+        return None
+    if len(tokens) < 4 or tokens[2:4] != marker:
+        raise tp.StateError(
+            "review activate-contract",
+            "signed review bootstrap command shape is invalid")
+    if (os.path.realpath(tokens[0]) != os.path.realpath(sys.executable) or
+            os.path.realpath(tokens[1]) != os.path.realpath(__file__) or
+            len(tokens) != 12 or tokens[4] != "--workspace" or
+            tokens[6] != "--task-slot" or
+            tokens[8] != "--signed-action" or
+            tokens[10] != "--expected-identity"):
+        raise tp.StateError(
+            "review activate-contract",
+            "signed review bootstrap command shape is invalid")
+    bootstrap = _review_bootstrap_values(tokens[9], tokens[11], tokens[7])
+    managed_workspace = os.path.realpath(tokens[5])
+    event_workspace = os.path.realpath(workspace)
+    if managed_workspace != event_workspace:
+        import review as review_kernel
+        managed_workspace = review_kernel.signed_bootstrap_workspace(
+            managed_workspace, expected=bootstrap["expected"],
+            task_slot=bootstrap["task_slot"])
+    return {**bootstrap, "workspace": managed_workspace}
+
+
+def _legacy_review_activation_command(command: str) -> bool:
+    try:
+        tokens = shlex.split(str(command or ""))
+    except ValueError:
+        return False
+    for index, token in enumerate(tokens[:-2]):
+        python_name = os.path.basename(token).lower()
+        if (re.fullmatch(r"python(?:\d+(?:\.\d+)?)?(?:\.exe)?",
+                         python_name) and
+                tokens[index + 1:index + 3] == ["-m", "taskplane_lite"]):
+            return True
+    return False
+
+
 def cmd_review(a) -> int:
     """Open a review in ONE call.
 
@@ -4647,6 +4864,19 @@ def cmd_review(a) -> int:
     import review as rv
     ws = _workspace(a.workspace)
     review_action = getattr(a, "review_action", None)
+    if review_action == "activate-contract":
+        bootstrap = _review_bootstrap_values(
+            a.signed_action, a.expected_identity, a.task_slot)
+        contract = _activate_visible_review_bootstrap(ws, **bootstrap)
+        print(json.dumps({
+            "schema": "taskplane.review-contract-activation/v1",
+            "status": "active", "task_slot": contract["task_slot"],
+            "action_id": contract["bootstrap_action_id"],
+            "lease_fingerprint": contract["bootstrap_lease_fingerprint"],
+            "read_only": contract["read_only"],
+            "write_allow": contract["write_allow"],
+        }, sort_keys=True, separators=(",", ":")))
+        return 0
     enforcement = None
     if review_action in {"start", "resume", "signoff"}:
         active = tp.load_active(ws) or {}
@@ -6752,6 +6982,10 @@ def main(argv=None) -> int:
     d.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     d.set_defaults(fn=cmd_dod)
 
+    cp = sub.add_parser(
+        "command", help="durable governed host-command lifecycle")
+    _add_governed_command_actions(cp, fn=cmd_command)
+
     lp = sub.add_parser("loop", help="drive the Evaluate-Loop engine")
     lp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lsub = lp.add_subparsers(dest="loop_action", required=True)
@@ -6892,6 +7126,9 @@ def main(argv=None) -> int:
     lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "
                     "used the models the briefs resolved (tier routing)")
+    lcmd = lsub.add_parser(
+        "command", help="run a durable command through the live loop root")
+    _add_governed_command_actions(lcmd)
     lp.set_defaults(fn=cmd_loop)
 
     sg = sub.add_parser(
@@ -7298,6 +7535,17 @@ def main(argv=None) -> int:
                          "routing, runnability and the ready-to-dispatch "
                          "briefs, as one JSON payload")
     rvsub = rvp.add_subparsers(dest="review_action")
+    rva = rvsub.add_parser(
+        "activate-contract", help="verify one signed leased-review action "
+                         "and activate only its producer slot")
+    rva.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rva.add_argument("--task-slot", required=True,
+                     help="exact signed producer slot visible to host screen")
+    rva.add_argument("--signed-action", required=True,
+                     help="URL-safe encoded signed ReviewKernel action")
+    rva.add_argument("--expected-identity", required=True,
+                     help="URL-safe encoded exact worker/lease identity")
+    rva.set_defaults(fn=cmd_review)
     rvs = rvsub.add_parser("start", help="establish the facts and activate "
                            "the read-only contract")
     rvs.add_argument("spec", nargs="?", help="PR url, OWNER/REPO#N, or a ref")

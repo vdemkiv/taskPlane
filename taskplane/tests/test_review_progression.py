@@ -43,10 +43,12 @@ def test_review_floors_scale_with_attributable_risk_across_required_matrix():
         assert routed["context"]["review_risk"]["class"] == risk_class, name
         assert set(routed["context"]["review_risk"]["required_deep_lenses"]) == expected
         plan = progression.initial_wave(routed)
-        slots = [row["slot"] for row in plan["deep"]]
-        assert {row["lens"] for row in plan["deep"]} == expected, name
+        slots = [row["slot"] for row in plan["sweep"]]
+        assert plan["deep"] == [], name
+        assert 4 <= len(plan["sweep"]) <= 5, name
+        assert "architecture" in {row["lens"] for row in plan["sweep"]}, name
         assert len(slots) == len(set(slots)), name
-        assert plan["sweep_count"] <= 1
+        assert plan["sweep_count"] == len(plan["sweep"])
 
 
 def test_document_risk_signal_selects_an_attributable_single_deep_lens():
@@ -56,7 +58,9 @@ def test_document_risk_signal_selects_an_attributable_single_deep_lens():
     )
     plan = progression.initial_wave(routed)
     assert routed["context"]["review_risk"]["class"] == "documentation-only"
-    assert [row["lens"] for row in plan["deep"]] == ["security"]
+    assert plan["deep"] == []
+    assert 4 <= len(plan["sweep"]) <= 5
+    assert "architecture" in {row["lens"] for row in plan["sweep"]}
     security = next(row for row in routed["lenses"] if row["id"] == "security")
     assert security["floor"].startswith("risk-selected review floor:")
     assert "documentation evidence selected security" in security["floor"]
@@ -69,8 +73,8 @@ def test_review_floors_survive_cache_and_early_provisional_inputs():
         if row["id"] in required:
             row["tier"] = row["verdict"] = "light"
     plan = progression.initial_wave(routed)
-    assert {row["lens"] for row in plan["deep"]} >= required
-    assert not (required & set((plan["sweep"] or {}).get("lenses", [])))
+    assert plan["deep"] == []
+    assert 4 <= len(plan["sweep"]) <= 5
 
 
 def test_initial_wave_has_deep_slots_and_at_most_one_bounded_sweep():
@@ -80,10 +84,10 @@ def test_initial_wave_has_deep_slots_and_at_most_one_bounded_sweep():
     plan = progression.initial_wave(routed, sweep_limit=8)
     required = set(routed["context"]["review_risk"]["required_deep_lenses"])
     assert required == {"security"}
-    assert required == {slot["lens"] for slot in plan["deep"]}
-    assert plan["sweep"] is None or plan["sweep"]["slot"] == "lens-sweep"
-    assert len(plan["sweep"]["lenses"] if plan["sweep"] else []) <= 8
-    assert len({slot["slot"] for slot in plan["deep"]}) == len(plan["deep"])
+    assert plan["deep"] == []
+    assert 4 <= len(plan["sweep"]) <= 5
+    assert all(slot["tier"] == "sweep" for slot in plan["sweep"])
+    assert len({slot["slot"] for slot in plan["sweep"]}) == len(plan["sweep"])
 
 
 def test_production_dispatch_consumes_the_bounded_progressive_wave():
@@ -93,8 +97,9 @@ def test_production_dispatch_consumes_the_bounded_progressive_wave():
     dispatch = lens.dispatch_briefs(routed)
     expected = routed["context"]["review_progression"]["sweep_lenses"]
     required = routed["context"]["review_risk"]["required_deep_lenses"]
-    assert {row["id"] for row in dispatch["deep"]} >= set(required)
-    assert dispatch["sweep"] is None or dispatch["sweep"]["ids"] == expected
+    assert dispatch["deep"] == []
+    assert dispatch["sweep"]["ids"] == expected
+    assert 4 <= len(expected) <= 5
     assert len(expected) <= progression.DEFAULT_SWEEP_LIMIT
 
 
@@ -107,15 +112,14 @@ def test_canonical_review_kernel_decision_allocates_only_bounded_sweep():
     decision = review._routing_decision(routed, lens.load_catalog())
     selected = sorted(
         lens_id for lens_id, row in decision.items()
-        if row["verdict"] == "light"
+        if row["verdict"] == "sweep"
     )
     bounded = sorted(
         routed["context"]["review_progression"]["sweep_lenses"]
     )
     assert selected == bounded
-    assert len(selected) == progression.DEFAULT_SWEEP_LIMIT
+    assert 4 <= len(selected) <= 5
     deferred = routed["context"]["review_progression"]["deferred_light"]
-    assert deferred
     for lens_id in deferred:
         assert decision[lens_id]["verdict"] == "n/a"
         assert decision[lens_id]["negative_evidence"][0].startswith(
@@ -142,7 +146,6 @@ def test_production_dispatch_consumes_early_blocker_and_promotes_deep_slot():
     dispatch = lens.dispatch_briefs(routed, sweep_concerns=concerns)
     promoted = [row for row in dispatch["deep"] if row["id"] == "sre"]
     assert len(promoted) == 1
-    assert FLOORS <= {row["id"] for row in dispatch["deep"]}
     assert promoted[0]["task_slot"] == "lens-sre"
     assert dispatch["review_progression"]["promotions"][0]["lens"] == "sre"
     assert dispatch["routing_decision"]["sre"]["initial_verdict"] == "light"

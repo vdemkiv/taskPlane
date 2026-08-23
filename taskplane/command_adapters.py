@@ -115,6 +115,49 @@ def _process_identity(process: object, *, role: str,
             "role": role, "generation": int(generation)}
 
 
+def detached_process_binding(process: object, *, token: str) -> dict:
+    """Create a reconnectable, PID-reuse-resistant local worker binding."""
+    pid = int(process.pid)
+    return {
+        "schema": "taskplane.detached-command-binding/v1",
+        "pid": pid,
+        "pgid": int(os.getpgid(pid)),
+        "started": _pid_start_identity(pid),
+        "token": str(token),
+    }
+
+
+def detached_process_groups_supported() -> bool:
+    """Whether this host can safely own and signal detached process groups."""
+    return (os.name != "nt" and hasattr(os, "getpgid") and
+            hasattr(os, "killpg") and hasattr(os, "setsid"))
+
+
+def detached_process_is_live(binding: Mapping[str, object]) -> bool:
+    """Return whether a durable local-worker binding still owns its process."""
+    try:
+        if (set(binding) != {"schema", "pid", "pgid", "started", "token"} or
+                binding.get("schema") !=
+                "taskplane.detached-command-binding/v1" or
+                not str(binding.get("token") or "")):
+            return False
+        pid, pgid = int(binding["pid"]), int(binding["pgid"])
+        if pid <= 0 or pgid <= 0 or os.getpgid(pid) != pgid:
+            return False
+        return _pid_start_identity(pid) == binding.get("started")
+    except (KeyError, TypeError, ValueError, OSError,
+            subprocess.SubprocessError):
+        return False
+
+
+def cancel_detached_process(binding: Mapping[str, object]) -> None:
+    """Cancel only the still-live process group named by a durable binding."""
+    if not detached_process_is_live(binding):
+        raise OSError("detached command ownership no longer matches")
+    pgid = int(binding["pgid"])
+    os.killpg(pgid, signal.SIGTERM)
+
+
 def _register_preview_process(preview_id: str, process: object, *,
                               role: str = "preview-command") -> dict:
     ownership = _process_identity(process, role=role)
@@ -369,6 +412,7 @@ class CommandAdapter:
     def launch(self, command: object, *, cwd: str,
                deadline: float | None = None,
                wave_id: str | None = None,
+               identity: Mapping | None = None,
                review_session: Mapping | None = None,
                review_sandbox: Mapping | None = None) -> str:
         launched = self._launcher(command, cwd)
@@ -377,6 +421,7 @@ class CommandAdapter:
         handle = self.runtime.create(
             command_fingerprint=_fingerprint_command(command),
             binding=launched.binding, deadline=deadline, wave_id=wave_id,
+            identity=identity,
             review_session=review_session, review_sandbox=review_sandbox)
         self._bindings[handle] = dict(launched.binding)
         self.runtime.transition(handle, "running")
@@ -613,17 +658,42 @@ class CommandAdapter:
         snapshot = self.runtime.snapshot(handle)
         if snapshot["state"] not in TERMINAL_STATES and self._canceller:
             binding = self._bindings.get(handle)
-            if binding is not None:
+            ownership_already_lost = (
+                snapshot["state"] == "input_required" and
+                snapshot.get("reason") == "detached_worker_ownership_lost")
+            if binding is not None and not ownership_already_lost:
+                binding_digest = hashlib.sha256(json.dumps(
+                    binding, sort_keys=True, separators=(",", ":"),
+                    default=str).encode("utf-8")).hexdigest()
+                if binding_digest != snapshot.get("binding_digest"):
+                    raise OSError(
+                        "detached command control binding does not match "
+                        "immutable runtime ownership")
+                if (binding.get("schema") ==
+                        "taskplane.detached-command-binding/v1" and
+                        not detached_process_is_live(binding)):
+                    raise OSError(
+                        "detached command process ownership no longer matches")
                 self._canceller(binding)
         return self.runtime.cancel(handle)
 
     def reconnect(self, handle: str,
-                  *, binding: Mapping[str, object] | None = None) -> dict:
+                  *, binding: Mapping[str, object] | None = None,
+                  ownership_check: Callable[[Mapping[str, object]], bool] |
+                  None = None) -> dict:
         effective = binding or self._bindings.get(handle)
-        result = self.runtime.reconnect(handle, binding=effective)
+        result = self.runtime.reconnect(
+            handle, binding=effective, ownership_check=ownership_check)
         if binding is not None and result.get("state") != "failed":
             self._bindings[handle] = dict(binding)
         return result
+
+    def restore_binding(self, handle: str,
+                        binding: Mapping[str, object]) -> None:
+        """Restore host-private binding loaded by a trusted composition root."""
+        if not binding:
+            raise ValueError("restored command binding must be non-empty")
+        self._bindings[str(handle)] = dict(binding)
 
     def snapshot(self, handle: str) -> dict:
         return self.runtime.snapshot(handle)

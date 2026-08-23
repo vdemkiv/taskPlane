@@ -26,7 +26,11 @@ yourself — you advance the engine and dispatch the role it names.
 
 1. Loop: `$TP loop next` → the payload names the step, role, contract,
    lenses, requirement, knowledge, design, and instruction. Dispatch that role
-   (subagent) with the payload. Product/designer/planner return their artifacts; YOU
+   (subagent) with the payload. For every dispatched outstanding set, follow
+   its `taskplane.wait-policy/v1`: one event-driven wait, unbounded when the
+   host permits or at least 1800 seconds, never below 300 seconds. Reissue
+   only after a completion or attention wake; never schedule repeat polling.
+   Product/designer/planner return their artifacts; YOU
    run their mechanical gate. Execute/fix/evaluate/engineering workers report
    through `loop submit`; YOU alone call the matching `loop gate`. A worker's
    PASS is only a request for validation — the engine recomputes DoR/DoD and

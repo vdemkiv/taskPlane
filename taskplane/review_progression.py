@@ -192,8 +192,10 @@ def apply_depth_policy(routing: dict, review_policy: dict | None) -> dict:
             reasons = row.setdefault("reasons", [])
             if reason not in reasons:
                 reasons.append(reason)
-        row["tier"] = row["verdict"] = "light"
-        row["mode"] = "inline"
+        automatic = bool(context.get("automatic_review"))
+        row["tier"] = row["verdict"] = (
+            "sweep" if automatic else "light")
+        row["mode"] = "subagent" if automatic else "inline"
         active.append(str(row.get("id") or ""))
 
     active = sorted(value for value in active if value)
@@ -204,17 +206,56 @@ def apply_depth_policy(routing: dict, review_policy: dict | None) -> dict:
     progression["deep_slots"] = []
     progression.pop("deep_lenses", None)
     progression["sweep_lenses"] = active
-    progression["sweep_count"] = 1 if active else 0
+    progression["sweep_count"] = (
+        len(active) if context.get("automatic_review") else
+        (1 if active else 0))
     context["review_depth_policy"] = copy.deepcopy(review_policy)
     return routed
 
 
 def initial_wave(routing: dict, *, sweep_limit: int = DEFAULT_SWEEP_LIMIT) -> dict:
-    """Project a routing decision into deep slots plus at most one sweep."""
+    """Project routing into independently leased workers for one sweep set."""
     if not isinstance(sweep_limit, int) or sweep_limit < 0:
         raise ValueError("sweep_limit must be a non-negative integer")
     rows = {str(row["id"]): row for row in routing.get("lenses") or []}
-    policy = (routing.get("context") or {}).get("review_depth_policy")
+    context = routing.get("context") or {}
+    policy = context.get("review_depth_policy")
+    if context.get("automatic_review"):
+        ordered = list((context.get("review_progression") or {}).get(
+            "sweep_lenses") or [])
+        selected = [lens_id for lens_id in ordered
+                    if lens_id in rows and rows[lens_id].get("tier") in {
+                        "sweep", "light"}]
+        if not 4 <= len(selected) <= 5 or "architecture" not in selected:
+            raise ValueError(
+                "automatic review requires 4–5 sweep workers including architecture")
+        dispatch_set = {
+            "schema": "taskplane.dispatch-set/v1",
+            "id": "automatic-review-sweep", "concurrent": True,
+            "member_count": len(selected),
+        }
+        wait_policy = {
+            "schema": "taskplane.wait-policy/v1",
+            "outstanding_set": dispatch_set["id"],
+            "outstanding_count": len(selected), "mode": "event",
+            "timeout_seconds": 1800, "minimum_timeout_seconds": 300,
+            "reissue_after": ["completion", "attention"],
+            "scheduled_polling": False,
+        }
+        return {
+            "schema": "taskplane.review-progression/v1",
+            "deep": [],
+            "sweep": [
+                {"slot": f"lens-{lens_id}", "lens": lens_id,
+                 "tier": "sweep", "dispatch_set": copy.deepcopy(dispatch_set)}
+                for lens_id in selected
+            ],
+            "sweep_count": len(selected),
+            "deferred_light": [],
+            "dispatch_set": dispatch_set,
+            "wait_policy": wait_policy,
+            "review_depth_policy": copy.deepcopy(policy),
+        }
     if _quick_only(policy):
         light_ids = sorted(
             lens_id for lens_id, row in rows.items()

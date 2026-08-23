@@ -219,11 +219,20 @@ class CommandRuntime:
 
     def create(self, *, command_fingerprint: str, binding: Mapping | None,
                deadline: float | None = None, wave_id: str | None = None,
+               identity: Mapping | None = None,
                review_session: Mapping | None = None,
                review_sandbox: Mapping | None = None,
                preview: Mapping | None = None) -> str:
         handle = secrets.token_hex(16)
         now = float(self._clock())
+        if identity is not None:
+            identity = dict(identity)
+            if (set(identity) != {"schema", "run_id", "task_id"} or
+                    identity.get("schema") !=
+                    "taskplane.governed-command-identity/v1" or
+                    not all(str(identity.get(key) or "").strip()
+                            for key in ("run_id", "task_id"))):
+                raise ValueError("governed command identity is invalid")
         if review_session is not None:
             review_session = dict(review_session)
             required = {"schema", "run_id", "target_fingerprint",
@@ -275,6 +284,7 @@ class CommandRuntime:
             "updated_at": now,
             "deadline": deadline,
             "wave_id": wave_id,
+            **({"identity": identity} if identity is not None else {}),
             **({"review_session": review_session}
                if review_session is not None else {}),
             **({"review_sandbox": review_sandbox}
@@ -283,6 +293,7 @@ class CommandRuntime:
             "exit_code": None,
             "reason": None,
             "events": [],
+            "lifecycle": [],
             "recovery": [],
             "deliveries": {},
             "delivery_leases": {},
@@ -297,9 +308,9 @@ class CommandRuntime:
                 "output_redactions": 0,
             },
         }
-        self._save(handle, snapshot, {
-            "revision": 1, "state": "created", "at": now,
-        })
+        event = self._build_event(snapshot)
+        snapshot["lifecycle"].append(event)
+        self._save(handle, snapshot, event)
         return handle
 
     def snapshot(self, handle: str) -> dict:
@@ -386,6 +397,7 @@ class CommandRuntime:
                 event = self._build_event(
                     snapshot, state=state, reason=safe_reason or state)
                 snapshot["events"].append(event)
+                snapshot.setdefault("lifecycle", []).append(event)
                 self._save(handle, snapshot, event)
                 return event
             raise InvalidTransition(
@@ -403,6 +415,7 @@ class CommandRuntime:
         })
         snapshot["metrics"]["output_redactions"] += reason_redactions
         event = self._build_event(snapshot)
+        snapshot.setdefault("lifecycle", []).append(event)
         if state in MEANINGFUL_STATES:
             snapshot["events"].append(event)
         self._save(handle, snapshot, event)
@@ -435,6 +448,8 @@ class CommandRuntime:
             }),
             **({"review_session": dict(snapshot["review_session"])}
                if snapshot.get("review_session") else {}),
+            **({"identity": dict(snapshot["identity"])}
+               if snapshot.get("identity") else {}),
             **({"preview": dict(snapshot["preview"])}
                if snapshot.get("preview") else {}),
         }
@@ -546,7 +561,14 @@ class CommandRuntime:
                 snapshot["metrics"]["model_delivery_count"] += 1
             snapshot["delivery_leases"].pop(consumer, None)
             self._save(handle, snapshot)
-            return event
+            delivered = dict(event)
+            delivered["delivery_receipt"] = {
+                "schema": "taskplane.command-delivery-receipt/v1",
+                "consumer": consumer,
+                "delivery_key": delivery_key,
+                "revision": revision,
+            }
+            return delivered
 
     def ack(self, handle: str, *, consumer: str,
             delivery_key: str) -> dict | None:
@@ -570,7 +592,9 @@ class CommandRuntime:
                 return None
             time.sleep(interval)
 
-    def reconnect(self, handle: str, *, binding: Mapping | None) -> dict:
+    def reconnect(self, handle: str, *, binding: Mapping | None,
+                  ownership_check: Callable[[Mapping], bool] | None = None) \
+            -> dict:
         with self._state_lock(handle):
             snapshot = self._load(handle)
             if snapshot["state"] in TERMINAL_STATES:
@@ -579,6 +603,10 @@ class CommandRuntime:
             if not supplied or supplied != snapshot.get("binding_digest"):
                 return self._transition_locked(
                     handle, snapshot, "failed", reason="binding_lost")
+            if ownership_check is not None and not ownership_check(binding):
+                return self._transition_locked(
+                    handle, snapshot, "input_required",
+                    reason="detached_worker_ownership_lost")
             snapshot["metrics"]["reconnect_count"] += 1
             snapshot["updated_at"] = float(self._clock())
             self._save(handle, snapshot, {

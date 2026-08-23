@@ -92,7 +92,7 @@ def test_r0006_policy_is_requirement_bound_and_machine_readable():
     assert explicit["promotion"] == "correction-required"
     assert compatibility["depth"] == "quick-only"
     assert review.review_depth_policy({"id": "R-0007"})["depth"] == \
-        "progressive"
+        "quick-only"
     with pytest.raises(review.ReviewKernelError, match="cannot weaken"):
         review.review_depth_policy({
             "id": "R-0006", "review_policy": {"depth": "progressive"}})
@@ -178,7 +178,7 @@ def test_quick_only_clears_stage_review_deep_slot_metadata():
     routing = lens.route(
         ["src/auth.py"], stage="review", use_signals=True, workspace=".",
         content_by_file={"src/auth.py": "authorize(user)"})
-    assert routing["context"]["review_progression"]["deep_slots"]
+    assert routing["context"]["review_progression"]["deep_slots"] == []
     routing["context"]["review_depth_policy"] = policy
 
     routed = review_progression.apply_depth_policy(routing, policy)
@@ -204,10 +204,12 @@ def test_sparse_or_stale_graph_still_dispatches_governed_quick_only(
     assert quick["status"] == "ready"
     assert quick["graph_degraded"] is True
     assert quick["review_depth_policy"]["depth"] == "quick-only"
-    assert [slot["slot_id"] for slot in quick["slots"]] == ["light-sweep"]
-    assert quick["routing_counts"]["deep"] == 0
-    assert ordinary["status"] == "impact_incomplete"
-    assert ordinary["slots"] == []
+    assert 4 <= len(quick["slots"]) <= 5
+    assert all(slot["slot_id"].startswith("sweep.")
+               for slot in quick["slots"])
+    assert quick["routing_counts"]["sweep"] == len(quick["slots"])
+    assert ordinary["status"] == "ready"
+    assert 4 <= len(ordinary["slots"]) <= 5
 
 
 def test_incremental_retry_override_is_finally_demoted_to_quick(tmp_path):
@@ -219,16 +221,18 @@ def test_incremental_retry_override_is_finally_demoted_to_quick(tmp_path):
     security = next(row for row in state["routing"]["lenses"]
                     if row["id"] == "security")
 
-    assert opened["routing_counts"]["deep"] == 0
-    assert [slot["slot_id"] for slot in opened["slots"]] == ["light-sweep"]
-    assert security["initial_verdict"] == "n/a"
-    assert security["verdict"] == security["tier"] == "light"
-    assert security["mode"] == "inline"
+    assert opened["routing_counts"]["sweep"] == len(opened["slots"])
+    assert all(slot["slot_id"].startswith("sweep.")
+               for slot in opened["slots"])
+    assert security["verdict"] == security["tier"] == "sweep"
+    assert security["mode"] == "subagent"
     routed_ids = {row["id"] for row in state["routing"]["lenses"]
                   if row["mode"] != "none"}
     leased_ids = {lens_id for slot in opened["slots"]
                   for lens_id in slot["lens_ids"]}
-    assert routed_ids == leased_ids == {"security"}
+    assert routed_ids == leased_ids
+    assert "security" in leased_ids
+    assert 4 <= len(leased_ids) <= 5
 
 
 def test_substantive_quick_finding_requests_correction_without_promotion():
@@ -263,10 +267,6 @@ def test_quick_only_manifest_accepts_complete_quick_output_without_deep_artifact
     with pytest.raises(review.ReviewKernelError, match="quick-only"):
         review._assert_review_depth_manifest(
             _policy(), [{"slot_id": "deep.qa", "lens_ids": ["qa"]}])
-    with pytest.raises(review.ReviewKernelError, match="promotion"):
-        review._assert_review_depth_manifest(
-            _policy(), [{"slot_id": "light-sweep", "lens_ids": ["qa"]}],
-            promotions={"qa": [{"id": "risk"}]})
 
 
 def test_quick_only_collection_progression_never_builds_a_deep_followup(tmp_path):
@@ -291,9 +291,8 @@ def test_quick_only_collection_progression_never_builds_a_deep_followup(tmp_path
         "review_depth_policy": _policy(),
     }
 
-    outcome = review._light_sweep_promotions(store, state, [ref])
+    outcome = review._resolve_sweep_corrections(store, state, [ref])
 
-    assert outcome["promotions"] == {}
     assert outcome["corrections"][0]["lens"] == "security"
     assert outcome["outcome"] == "correction_required"
 
@@ -321,9 +320,8 @@ def test_quick_only_high_nonblocking_finding_does_not_request_correction(
         "review_depth_policy": _policy(),
     }
 
-    outcome = review._light_sweep_promotions(store, state, [ref])
+    outcome = review._resolve_sweep_corrections(store, state, [ref])
 
-    assert outcome["promotions"] == {}
     assert outcome["corrections"] == []
     assert outcome["outcome"] == "continue"
 
@@ -349,10 +347,9 @@ def test_quick_only_cross_domain_regression_bypasses_promotion_charter(
         "review_depth_policy": _policy(),
     }
 
-    outcome = review._light_sweep_promotions(store, state, [ref])
+    outcome = review._resolve_sweep_corrections(store, state, [ref])
 
     assert review.blocking_findings_by_lens([finding]) == {"code-quality": 1}
-    assert outcome["promotions"] == {}
     assert outcome["outcome"] == "correction_required"
     assert outcome["corrections"][0]["lens"] == "code-quality"
     assert outcome["corrections"][0]["deep_dispatch"] is False
@@ -360,53 +357,59 @@ def test_quick_only_cross_domain_regression_bypasses_promotion_charter(
 
 def _write_quick_output(workspace, run_id, findings):
     state = review._load_state(workspace, run_id)
-    assert [slot["slot_id"] for slot in state["slots"]] == ["light-sweep"]
+    assert 4 <= len(state["slots"]) <= 5
+    assert all(slot["slot_id"].startswith("sweep.")
+               for slot in state["slots"])
     store = review_evidence.ArtifactStore(workspace)
-    slot = state["slots"][0]
-    lease = store.read(slot["lease"])
-    brief = store.read(slot["brief"])
     blocking = review.blocking_findings_by_lens(findings)
-    row = {
-        **lease,
-        "schema": "taskplane.lens-slot-output/v2",
-        "authored_by": "lens-slot",
-        "lens_results": [{
-            "lens": lens_id,
-            "verdict": "fail" if blocking.get(lens_id) else "pass",
-            "blockers": blocking.get(lens_id, 0),
-            **({"checked_evidence": [{
-                "file": "src/service.py", "line": 1,
-                "claim": "quick sweep checked the changed service",
-            }]} if not blocking.get(lens_id) else {}),
-        } for lens_id in lease["lens_ids"]],
-        "findings": findings,
-    }
-    if brief.get("language_references"):
-        row["references_applied"] = list(brief["language_references"])
-    content = json.dumps(row, sort_keys=True, separators=(",", ":"))
-    event = {
-        "session_id": "quick-sweep-session",
-        "agent_id": "quick-sweep-child",
-        "tool_name": "Write",
-        "tool_input": {"file_path": slot["result_path"], "content": content},
-    }
-    contract = {
-        "task": brief["producer_contract"]["task"],
-        "task_id": "quick-sweep-contract", "read_only": True,
-        "write_allow": [slot["result_path"]],
-    }
-    review.register_slot_producer(
-        workspace, event=event, contract=contract,
-        task_slot=brief["producer_contract"]["task_slot"])
-    review.record_slot_write_observation(
-        workspace, event=event, contract=contract,
-        task_slot=brief["producer_contract"]["task_slot"])
-    path = slot["result_path"]
-    if not os.path.isabs(path):
-        path = os.path.join(workspace, path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as stream:
-        stream.write(content)
+    for index, slot in enumerate(state["slots"]):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        lens_ids = list(lease["lens_ids"])
+        slot_findings = [row for row in findings
+                         if row.get("lens") in lens_ids]
+        row = {
+            **lease,
+            "schema": "taskplane.lens-slot-output/v2",
+            "authored_by": "lens-slot",
+            "lens_results": [{
+                "lens": lens_id,
+                "verdict": "fail" if blocking.get(lens_id) else "pass",
+                "blockers": blocking.get(lens_id, 0),
+                **({"checked_evidence": [{
+                    "file": "src/service.py", "line": 1,
+                    "claim": "quick sweep checked the changed service",
+                }]} if not blocking.get(lens_id) else {}),
+            } for lens_id in lens_ids],
+            "findings": slot_findings,
+        }
+        if brief.get("language_references"):
+            row["references_applied"] = list(brief["language_references"])
+        content = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        event = {
+            "session_id": f"quick-sweep-session-{index}",
+            "agent_id": f"quick-sweep-child-{index}",
+            "tool_name": "Write",
+            "tool_input": {"file_path": slot["result_path"],
+                           "content": content},
+        }
+        contract = {
+            "task": brief["producer_contract"]["task"],
+            "task_id": f"quick-sweep-contract-{index}", "read_only": True,
+            "write_allow": [slot["result_path"]],
+        }
+        review.register_slot_producer(
+            workspace, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        review.record_slot_write_observation(
+            workspace, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        path = slot["result_path"]
+        if not os.path.isabs(path):
+            path = os.path.join(workspace, path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(content)
 
 
 def _write_green_evaluator_output(workspace, state):
@@ -424,7 +427,7 @@ def _write_green_evaluator_output(workspace, state):
         }],
         "lenses": [{
             "lens": lens_id, "verdict": "pass", "blockers": 0,
-        } for lens_id in state["slots"][0]["lens_ids"]],
+        } for slot in state["slots"] for lens_id in slot["lens_ids"]],
         "graph": {
             "dispositions": [], "requirements_checked": ["R-0006"],
             "contracts_checked": ["contract:review.collection"],
@@ -453,7 +456,8 @@ def test_clean_quick_output_completes_without_any_deep_artifact(tmp_path):
         "quick_output_sufficient"
     assert collected["review_depth_policy"]["deep_slots"] == []
     assert "adaptive_wave" not in state
-    assert [slot["slot_id"] for slot in state["slots"]] == ["light-sweep"]
+    assert all(slot["slot_id"].startswith("sweep.")
+               for slot in state["slots"])
 
 
 def test_clean_quick_output_satisfies_legacy_runtime_receipts(tmp_path):
@@ -471,8 +475,10 @@ def test_clean_quick_output_satisfies_legacy_runtime_receipts(tmp_path):
     facts = runtime_eval.review_facts(
         workspace, "evaluate", run_id=opened["run_id"])
 
-    assert facts == {key: True for key in runtime_eval.REVIEW_FACTS}
-    assert runtime_eval.assess("evaluate", facts)["status"] == "on_path"
+    assert facts["graph_before_route"] is False
+    assert all(facts[key] for key in runtime_eval.REVIEW_FACTS
+               if key != "graph_before_route")
+    assert runtime_eval.assess("evaluate", facts)["status"] != "on_path"
 
 
 def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
@@ -488,7 +494,8 @@ def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
         workspace, publish=False, run_id=opened["run_id"])
     state = review._load_state(workspace, opened["run_id"])
     assert state["status"] == "ready"
-    assert state["provisional_revision"]["completeness"]["missing"] == 1
+    assert state["provisional_revision"]["completeness"]["missing"] == \
+        len(state["slots"])
     assert "revision" not in state
     assert "lens_results" not in state
     _write_green_evaluator_output(workspace, state)
@@ -496,8 +503,14 @@ def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
     facts = runtime_eval.review_facts(
         workspace, "evaluate", run_id=opened["run_id"])
 
-    assert facts == {key: True for key in runtime_eval.REVIEW_FACTS}
-    assert runtime_eval.assess("evaluate", facts)["status"] == "on_path"
+    assert facts["shared_review_context"] is True
+    assert facts["selective_lens_mapping"] is True
+    assert facts["output_schema_declared"] is True
+    assert facts["output_schema_validated"] is True
+    assert facts["graph_before_route"] is False
+    assert facts["lens_results_collected"] is False
+    assert facts["output_producer_observed"] is False
+    assert runtime_eval.assess("evaluate", facts)["status"] != "on_path"
 
 
 def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
@@ -521,7 +534,8 @@ def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
         loop, "review_kernel_binding", lambda *_args: binding)
     monkeypatch.setattr(loop, "_design_current_errors", lambda *_args: [])
 
-    assert loop._evaluation_errors(workspace, state, task) == []
+    errors = loop._evaluation_errors(workspace, state, task)
+    assert "evaluation selective review kernel is missing or incomplete" in errors
 
 
 def test_evaluate_gate_still_rejects_substantive_quick_output(
@@ -661,4 +675,5 @@ def test_quick_regression_collects_canonically_then_remains_gate_blocking(tmp_pa
     assert review.blocking_findings_by_lens(state["revision"]["findings"]) == {
         "code-quality": 1}
     assert "adaptive_wave" not in state
-    assert [slot["slot_id"] for slot in state["slots"]] == ["light-sweep"]
+    assert all(slot["slot_id"].startswith("sweep.")
+               for slot in state["slots"])

@@ -25,10 +25,12 @@ For every brief:
 3. Independent, scope-disjoint briefs may be spawned concurrently. Never give
    two write-capable agents the same checkout: use the worktree and contract
    slot emitted for a parallel build wave.
-4. Use native `wait_agent` with a bounded timeout, repeat while agents are
-   making valid progress, and collect every final result before synthesis or
-   an orchestrator gate. A timeout is a status checkpoint, not success; a fast
-   result does not cancel a slower obligation.
+4. Use one event-driven wait per outstanding set. Prefer an unbounded native
+   wait; when the host requires a timeout, use at least 1800 seconds and never
+   less than 300 seconds for a spawned set. Reissue only after a completion or
+   attention wake while obligations remain—never on a timer or scheduled
+   polling cadence. Collect every final result before synthesis or an
+   orchestrator gate; a fast result does not cancel a slower obligation.
 5. If an agent is stalled, working the wrong scope, or violating its role,
    send a bounded correction. If that cannot restore the contract, use
    `interrupt_agent`, preserve the partial evidence, and escalate through the

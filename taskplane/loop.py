@@ -27,16 +27,20 @@ existing spec (→plan).
 from __future__ import annotations
 
 from collections.abc import Mapping
+import base64
 import contextlib
 import contextvars
 import json
 import os
 import re
+import shlex
 import stat
+import sys
 import time
 
 import authority as authority_engine
 import command_wave
+import governed_commands
 import depgraph
 import evaluation_output
 import evaluator_health
@@ -2642,6 +2646,51 @@ command_wave_create = command_wave.create
 command_wave_resume = command_wave.resume
 command_wave_update = command_wave.update
 
+
+def governed_command(ws: str, action: str, request: object) -> dict:
+    """Run one command lifecycle action through the live loop root."""
+    return governed_commands.execute(ws, action, request)
+
+
+def _native_dispatch_intent(
+    ws: str, state: Mapping[str, object], *, step: str, task_id: str,
+    dispatch: Mapping[str, object], wait_policy: Mapping[str, object],
+    wave_id: str | None = None,
+) -> dict:
+    """Persist non-authoritative intent before the host launches an agent."""
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception:
+        locator = None
+    run_id = str(locator.get("run_id") or "") \
+        if isinstance(locator, Mapping) else ""
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", run_id) is None:
+        import hashlib
+        material = json.dumps({
+            "workspace": os.path.realpath(ws),
+            "goal": state.get("goal"),
+            "baseline": state.get("baseline"),
+        }, sort_keys=True, separators=(",", ":"))
+        run_id = "loop-" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+    role = str(dispatch.get("role") or STEP_ROLE.get(step) or step)
+    result = governed_command(ws, "dispatch", {
+        "authorization": f"loop-dispatch:{run_id}",
+        "consumer": f"{role}:{task_id}",
+        "host": "native-agent",
+        "payload": {
+            "schema": "taskplane.native-agent-dispatch/v1",
+            "step": step,
+            "role": role,
+            "task_name": dispatch.get("task_name"),
+            "wait_policy": dict(wait_policy),
+        },
+        "run_id": run_id,
+        "task_id": task_id,
+        "wave_id": wave_id,
+    })
+    result["wait_policy"] = dict(wait_policy)
+    return result
+
 # A task is SETTLED when nothing further is owed on it: it passed, or the
 # selection gate closed it (not_selected / reference), or a human skipped it.
 # Wave readiness and "are we done?" both reason over this set.
@@ -3505,11 +3554,15 @@ def _bind_stateless_review_contract_actions(
     run_id = str(bound.get("run_id") or "")
     if not run_id or not str(task_id or "").strip():
         raise ValueError("review contract bootstrap needs run and task identity")
+    wait_policies = []
+    outstanding_members = []
     for slot in bound.get("slots") or []:
         if not isinstance(slot, dict):
             raise ValueError("review contract bootstrap slot is malformed")
         lease = store.read(slot.get("lease") or {})
         brief = store.read(slot.get("brief") or {})
+        wait_policies.append(brief.get("wait_policy"))
+        outstanding_members.append(str(slot.get("slot_id") or ""))
         producer = brief.get("producer_contract")
         role = brief.get("role") or {}
         role_marker = str(role.get("role_marker") or "")
@@ -3545,20 +3598,43 @@ def _bind_stateless_review_contract_actions(
             "canonical_revision": int(
                 lease.get("canonical_revision") or 0),
         }
+        encode = lambda value: base64.urlsafe_b64encode(json.dumps(
+            value, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).decode("ascii").rstrip("=")
+        action_token = encode(action)
+        expected_token = encode(expected)
+        command_argv = [
+            sys.executable,
+            os.path.realpath(os.path.join(os.path.dirname(tp.__file__),
+                                          "tp.py")),
+            "review", "activate-contract", "--workspace",
+            os.path.realpath(review_ws), "--task-slot",
+            producer["task_slot"], "--signed-action", action_token,
+            "--expected-identity", expected_token,
+        ]
         slot["contract_bootstrap"] = {
             "schema": "taskplane.review-contract-bootstrap/v1",
             "required_before_evidence": True,
             "authority": "signed_action",
             "active_slot_semantics": "derived_cache_not_authority",
             "function": "taskplane_lite.activate_review_contract_action",
-            "environment": {
-                "TASKPLANE_TASK": producer["task_slot"],
-                "TASKPLANE_REVIEW_CONTRACT_ACTION": json.dumps(
-                    action, sort_keys=True, separators=(",", ":")),
-            },
+            "environment": {},
+            "command": "review activate-contract",
+            "command_argv": command_argv,
+            "host_command": shlex.join(command_argv),
+            "task_slot": producer["task_slot"],
+            "workspace": os.path.realpath(review_ws),
             "expected": expected,
             "action": action,
         }
+    if outstanding_members:
+        if (any(not isinstance(row, Mapping) for row in wait_policies) or
+                any(dict(row) != dict(wait_policies[0])
+                    for row in wait_policies[1:])):
+            raise ValueError(
+                "review contract bootstrap needs one shared wait policy")
+        bound["wait_invocation"] = event_wait_invocation(
+            wait_policies[0], outstanding_members)
     return bound
 
 
@@ -4000,6 +4076,11 @@ def wave(ws: str) -> dict:
                  if str(task["id"]) in stage_dispatches]
 
     entries = []
+    wave_wait_policy = (event_wait_policy("execute-wave", len(ready))
+                        if ready else None)
+    wave_wait_invocation = (event_wait_invocation(
+        wave_wait_policy, [str(task["id"]) for task in ready])
+        if ready else None)
     for t in ready:
         dispatch = tp.dispatch_fields(
             "step", "tp-executor", t["id"], tp.step_tier("execute", t))
@@ -4030,6 +4111,7 @@ def wave(ws: str) -> dict:
             "runtime_evals": runtime_eval.guidance("execute"),
             **({"enforcement": enforcement} if enforcement else {}),
         }
+        entry["wait_policy"] = dict(wave_wait_policy)
         stage_dispatch = stage_dispatches.get(str(t["id"]))
         if stage_dispatch is None and not stage_dispatches:
             stage_dispatch = _stage_loop_dispatch(
@@ -4038,6 +4120,10 @@ def wave(ws: str) -> dict:
                     t.get("scope"), tp.DEFAULT_OUT_OF_SCOPE))
         if stage_dispatch is not None:
             entry["stage_runtime_dispatch"] = stage_dispatch
+        entry["dispatch_intent"] = _native_dispatch_intent(
+            ws, state, step="execute", task_id=str(t["id"]),
+            dispatch=dispatch, wait_policy=wave_wait_policy,
+            wave_id="execute-wave")
         entries.append(entry)
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
              held=[h["task"] for h in held])
@@ -4079,6 +4165,7 @@ def wave(ws: str) -> dict:
     return {
         "step": "execute", "parallel": True,
         "wave": entries, "held": held,
+        "wait_invocation": wave_wait_invocation,
         **({"enforcement": enforcement} if enforcement else {}),
         "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": (
@@ -4661,6 +4748,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                       f"host — the planned routing has no effect; set "
                       f"TASKPLANE_MODEL_{str(model_tier).upper()} to "
                       "activate it")
+    dispatch_wait_policy = event_wait_policy(
+        f"{step}:{(task or {}).get('id') or step}", 1)
     result = {**dispatch,
         **({"model_note": model_note} if model_note else {}),
         **({
@@ -4675,6 +4764,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                            "this exact task_name, role instructions, standalone "
                            "role_marker, model when non-null, and "
                            "reasoning_effort."),
+        "wait_policy": dispatch_wait_policy,
         # cross-host artifact: '/'-shaped out, host-shaped in state
         "task": tp.posix_workspace(task),
         "contract": {"read_only": bool(contract.get("read_only")),
@@ -4742,10 +4832,72 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 "step": step, "status": status(ws)}
     if stage_dispatch is not None:
         result["stage_runtime_dispatch"] = stage_dispatch
+    if step in {"execute", "evaluate", "fix"}:
+        dispatch_member = str((task or {}).get("id") or step)
+        result["dispatch_intent"] = _native_dispatch_intent(
+            ws, state, step=step, task_id=dispatch_member,
+            dispatch=dispatch, wait_policy=dispatch_wait_policy)
+        result["wait_invocation"] = event_wait_invocation(
+            dispatch_wait_policy, [dispatch_member])
     return result
 
 
 guide = runtime_eval.guide_loop
+
+
+def event_wait_policy(outstanding_set: str, outstanding_count: int) -> dict:
+    """Return the single long-lived event wait for a dispatched set."""
+    if not str(outstanding_set or "").strip():
+        raise ValueError("outstanding_set is required")
+    if int(outstanding_count) < 1:
+        raise ValueError("outstanding_count must be positive")
+    return {
+        "schema": "taskplane.wait-policy/v1",
+        "outstanding_set": str(outstanding_set),
+        "outstanding_count": int(outstanding_count),
+        "mode": "event",
+        "timeout_seconds": 1800,
+        "minimum_timeout_seconds": 300,
+        "reissue_after": ["completion", "attention"],
+        "scheduled_polling": False,
+    }
+
+
+def event_wait_invocation(policy: Mapping[str, object],
+                          outstanding_members: list[str], *,
+                          wake: str | None = None) -> dict:
+    """Emit one live event wait, or its wake-authorized reissue.
+
+    A host may issue the first invocation immediately. A later invocation is
+    a reissue and must carry the completion/attention event that woke the
+    prior wait; timeouts and scheduled polling never authorize one.
+    """
+    value = dict(policy) if isinstance(policy, Mapping) else {}
+    members = list(outstanding_members)
+    if (value.get("schema") != "taskplane.wait-policy/v1" or
+            value.get("mode") != "event" or
+            value.get("scheduled_polling") is not False or
+            int(value.get("timeout_seconds") or 0) < 1800 or
+            value.get("reissue_after") != ["completion", "attention"]):
+        raise ValueError("event wait policy is invalid")
+    if (not members or any(not isinstance(member, str) or not member.strip()
+                           for member in members) or
+            len(set(members)) != len(members) or
+            int(value.get("outstanding_count") or 0) != len(members)):
+        raise ValueError("event wait outstanding set is invalid")
+    if wake is not None and wake not in value["reissue_after"]:
+        raise ValueError(
+            "event wait reissue requires a completion or attention wake")
+    return {
+        "schema": "taskplane.event-wait-invocation/v1",
+        "operation": "wait_for_events",
+        "outstanding_set": value["outstanding_set"],
+        "outstanding_members": members,
+        "timeout_seconds": int(value["timeout_seconds"]),
+        "scheduled": False,
+        "reissue": wake is not None,
+        "wake": wake,
+    }
 
 
 def _instruction(step: str, state: dict, ws: str | None = None) -> str:
@@ -4813,11 +4965,13 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
         "fix": f"Run the tp-fixer on task {t and t['id']}: repair the "
                "listed failures + add a regression test. Then `loop submit "
                "pass`; only the orchestrator calls `loop gate`.",
-        "em": "Run tp-engineering (read-only): `lenses` is the one complete "
-              "26-lens routing decision. Run exact tier=deep slots and at "
-              "most one bounded tier=light sweep; tier=n/a is evidence, "
-              "never a dispatch. Pass each slot's contract_bootstrap unchanged; "
-              "the exact worker verifies the signed action and derives its "
+        "em": "Run tp-engineering (read-only): run every emitted "
+              "`review_kernel.slots` entry concurrently in one sweep set, "
+              "using each slot's exact brief, lease, contract_bootstrap, and "
+              "result_path, then issue exactly `review_kernel.wait_invocation` "
+              "once. Refuse selector re-entry, serial fallback, and any "
+              "deep/light/full/26-lens dispatch. "
+              "Each exact worker verifies the signed action and derives its "
               "read-only contract before evidence access. Do not re-derive "
               "diff or impact per lens. "
               "Synthesize all verdicts + requirement-vs-implementation into "
