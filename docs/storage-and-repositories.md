@@ -68,9 +68,9 @@ The standalone review order is absolute:
 4. compute graph quality and the bounded blast radius; if enrichment remains
    incomplete, preserve the warning and use the pinned diff for standalone
    PR Review (Evaluate/EM remain fail-closed);
-5. route the complete 26-lens disposition;
+5. record the catalog disposition and select exactly 4–5 relevant quick lenses;
 6. only when routing is ready, activate the read-only contract and dispatch
-   the exact deep slots plus at most one light sweep.
+   those selected lenses concurrently.
 
 Sparse or stale graph evidence is never presented as complete. Standalone PR
 Review continues from the pinned diff with an explicit degraded-graph warning

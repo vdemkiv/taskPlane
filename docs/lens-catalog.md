@@ -39,13 +39,13 @@
 
 ## Always-on floor: architecture & system design
 
-**Architecture is routed on every code change** — a light pass on any diff, a full pass when the change is structurally significant. That floor is enforced by the engine (`tp lens route --all`), not by memory: component boundaries, data flow, contracts, and failure modes get a look even when no architecture files changed.
+**Architecture is selected on every code change** as one of the 4–5 quick automatic lenses. Structural significance changes what evidence it considers, not its automatic depth. Exact deep architecture review requires a direct user request.
 
 ## Routing notes
 
-- **Baselines are intentionally only four** — `code-quality`, `security`, `testability`, and always-on `architecture` — so a typical change fires ~4–7 lenses, not all 26. Role lenses fire by context (files/task type).
-- **Mode** (`inline` vs governed `subagent`) is per-lens, set by `deep_globs` or change size; a wide review fans them out as parallel `tp-lens` agents (`tp lens dispatch`).
-- **`tp lens route`** shows exactly which fired and why; `--only`/`--skip` override; `--all` returns the full catalog (deep + sweep).
+- **Automatic execution is exactly 4–5 quick lenses** — always-on `architecture` plus the most relevant context lenses. The remaining catalog entries are evidenced `n/a`; full or exact deep review requires a direct user request.
+- **Mode** (`inline` vs governed `subagent`) is an execution detail; the production kernel emits the selected quick lanes concurrently.
+- **`tp lens route`** shows relevance and evidence. Normal production review applies the bounded 4–5 selector afterward. `--all` is a direct-user diagnostic surface, never an automatic fallback.
 
 ## Adding a lens
 

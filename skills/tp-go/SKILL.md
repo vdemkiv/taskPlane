@@ -43,8 +43,10 @@ run standalone Product refinement first and then repeat it inside the loop.
 
 **One selective evidence kernel.** Review, Evaluate, and final EM use one
 pinned diff, graph-quality/blast-radius record, requirements/contracts and
-DoR/DoD envelope, one complete 26-lens disposition, and leased results.
-Dispatch exactly the deep slots plus at most one light sweep. An
+DoR/DoD envelope, one complete catalog disposition, and leased results.
+Automatic review dispatches exactly 4–5 selected quick lenses concurrently;
+it never creates full, deep, promoted, or all-catalog work. Exact deep lenses
+require a direct attributable user command. An
 `impact_incomplete` run dispatches nobody. Lenses consume scoped artifact
 references and never rederive diff, graph, routing, or runnability.
 
@@ -208,15 +210,13 @@ explicit approval in conversation. Never run the loop silently.
    (`discipline/tdd.md`) honoring the primed lenses, evaluate proves
    criteria + runs routed lenses and dispositions graph impact — its briefs
    are routed with `stage="build"` (route v2: build-profile candidates
-   scored against the wave's real diff, cap-8 budget, floors, evidenced
+   scored against the wave's real diff, exact 4–5 quick-lens budget, floors, evidenced
    n/a; when a component layer exists — `tp graph scan --decompose` — the
    touched components assemble the candidates and each routed lens names
    its proposers). The engineering review uses the same canonical review
-   context and exact selective routing decision, and every Nth completed
-   review (default 5,
-   `TASKPLANE_AUDIT_EVERY`) also runs the full-catalog audit sweep: a
-   finding on a lens the router marked n/a auto-files as a router
-   regression that blocks sign-off. Full routing detail:
+   context and exact selective routing decision. Release, recovery,
+   degraded-graph, and legacy audit-cadence paths retain the same selected
+   4–5 quick lenses; none widens automatically. Full routing detail:
    `docs/routing-and-flows.md`.
    Execute/fix/evaluate/engineering workers
    end with `loop submit` and stop; the orchestrator alone calls `loop gate`

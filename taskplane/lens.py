@@ -1024,15 +1024,15 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
               only, skip, hub_dependents, workspace,
               requirement_text, content_by_file=None) -> dict:
     """Signal-driven routing (v3 Phase 1). Candidates restricted to the
-    stage profile; verdicts from lens_signals.route_verdicts (budget cap 8
-    + security/architecture floors applied inside); legacy glob/task-type
+    stage profile; relevance verdicts from lens_signals.route_verdicts with
+    security/architecture floors applied inside; legacy glob/task-type
     reasons merged with signal evidence. EVERY catalog lens gets an output
     entry — n/a included, carrying its negative evidence (coverage
     honesty). Raises on any engine problem; route() catches and returns a
     named zero-dispatch mapper_unavailable result.
 
     v3 Phase 2 (R-0003): when the graph carries a `components` layer, the
-    candidate verdicts come from _assemble_components (capped union of the
+    candidate verdicts come from _assemble_components (bounded union of the
     touched components' cached maps, re-evidenced on the live diff). The
     fallback ladder permits component assembly -> module-level route; if the
     module mapper fails too, route() returns mapper_unavailable with zero
@@ -1052,7 +1052,9 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
 
     profile = (cat.get("stage_profiles") or {}).get(stage)
     all_ids = [l["id"] for l in cat["lenses"]]
-    # Unknown/absent stage -> the FULL catalog (fail open to more coverage).
+    # Unknown/absent stage retains the full candidate map for an explicit
+    # diagnostic caller. Automatic review/build stages are narrowed below to
+    # exactly 4–5 quick lanes and never widen on failure.
     candidates = set(profile) if profile else set(all_ids)
 
     # R-0003 component path — engages ONLY when the graph carries the
@@ -1080,10 +1082,9 @@ def _route_v2(changed_files, cat, *, stage, task_type, artifact_type,
                 pass
     if vmap is None:
         # Applicability engine (module level): verdicts for EVERY catalog
-        # lens, budget-capped (hard cap 8, overflow demoted to light, never
-        # dropped), floors applied after the budget (security on
-        # enforcement/boundary diffs; architecture >= light on any code
-        # change).
+        # lens. The production stage selector later narrows this evidence map
+        # to exactly 4–5 quick lanes; security/architecture floors affect
+        # membership, never automatic depth.
         vmap = lens_signals.route_verdicts(
             workspace or ".", files, stage=stage,
             requirement_text=requirement_text,

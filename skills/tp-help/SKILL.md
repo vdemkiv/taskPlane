@@ -51,8 +51,9 @@ DoR and approval boundary, and Engineering admits only reproducible defects or
 violations of named repository declarations. Settled findings stay settled unless
 new evidence is named. The selective review kernel from v2.14 still governs Review,
 Evaluate, and final sign-off. taskplane establishes graph quality and the
-bounded blast radius before it maps all 26 lenses to deep, light, or n/a.
-Only the deep set plus at most one light sweep runs. A standalone PR review can
+bounded blast radius before it records the catalog disposition and selects
+exactly 4–5 relevant quick lenses. They run concurrently; automatic full,
+deep, promoted, and all-catalog review do not exist. A standalone PR review can
 continue from its pinned diff with a visible degraded-graph warning; delivery
 Evaluate/EM gates still stop on insufficient impact. Every reviewer receives a scoped reference
 to one immutable diff/impact/requirements/DoR/DoD context and writes a leased,
@@ -142,9 +143,9 @@ carries its own lens map and a diff routes the components it touches. If graph
 quality or the applicability map is insufficient, taskplane stops before lens
 dispatch instead of spending more to guess. Test fixtures no longer inflate
 routing (×0.25 discount). Every
-Nth review runs as a full-catalog audit that diffs findings against the
-routing — a finding on an n/a'd lens auto-files as a router regression and
-blocks sign-off. The DoD can run a graph-scoped regression gate: the blast
+review uses the same bounded selected sweep; cadence and release status never
+widen it. Full or exact deep review requires a direct attributable user
+request. The DoD can run a graph-scoped regression gate: the blast
 radius's tests at the change's baseline vs now; only was-green-now-red
 blocks. Full detail: `docs/routing-and-flows.md`.
 
@@ -232,7 +233,7 @@ for people who want direct control:
 | "build X" / "set up taskplane" / anything | `taskplane build …` | the whole governed loop — routes internally as needed |
 | "spec this" / "refine the requirement" / "change request" | `/tp-product` | the WHAT seat: requirements, scores, product decisions |
 | "new feature" / "prototype this" / "build it as A/B variants" | `/tp-build` | a north-star check + refinement first, visual mock before build, A/B variants with a selection gate |
-| "review this" / "security review" / "what depends on X" / "run the retro" | `taskplane review …` | the SOUND seat: full lens catalog (architecture always on), impact, verdicts, retro |
+| "review this" / "security review" / "what depends on X" / "run the retro" | `taskplane review …` | the SOUND seat: 4–5 selected quick lenses in parallel (architecture included), impact, verdicts, retro; deep only when directly requested |
 | "north-star this" / "should we build this" / "does this serve the direction" | `/tp-northstar` | the STRATEGY lens, summoned & advisory: alignment vs the north star + Leverage · Reversibility · Opportunity cost · Coherence |
 | "where are we" | `taskplane status` | concise progress, current harness state, and decisions needed |
 | "how does X work" | `/tp-help` | this tour + concept explainers |

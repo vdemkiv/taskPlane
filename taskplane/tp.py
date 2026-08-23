@@ -3429,31 +3429,11 @@ def cmd_lens(a) -> int:
         print(json.dumps(b, indent=2))
         return 0
 
-    # v2.11.0 — the CLI now ASKS for signal-driven routing.
-    #
-    # route v2 (the applicability engine: content + graph + requirement
-    # signals, per-lens deep | light | n/a with machine-checkable negative
-    # evidence) shipped in v2.4.0 and was never reachable from here.
-    # `route()` enables it only when `stage` or `use_signals` is passed, and
-    # `cmd_lens` passed neither — so every `lens route` and every
-    # `lens dispatch`, which is where the review actually spends its tokens,
-    # took the glob-based legacy path. The one caller in the codebase that
-    # passed `stage="review"` was audit.py, the coverage REPORTER. The
-    # engine scored the diff for a report and the wave ignored it.
-    #
-    # Measured on a reconstruction of aws/karpenter-provider-aws#9464 (a Go
-    # type addition plus a docs edit): legacy routed 6 lenses deep and
-    # marked nothing n/a; route v2 routed 2 deep, 4 light, and 20 n/a —
-    # each n/a carrying its evidence, e.g. product -> "0 product signals:
-    # no spec/requirements files, no acceptance-criteria markers". The
-    # field run dispatched 6 agents and 336k tokens for that diff.
-    #
-    # Coverage is NOT reduced by this — it is DISCLOSED. v2 emits an entry
-    # for every catalog lens and `routing_decision` carries each one's
-    # verdict, so the dashboard still shows all 26 and can now say WHY a
-    # lens did not run instead of running it to avoid the question. A
-    # failing engine still falls open to legacy breadth=all (more coverage,
-    # never less) and says so.
+    # Normal CLI routing uses the same production selector as Review/Evaluate:
+    # exactly 4–5 relevant quick lenses with architecture included and every
+    # other catalog entry evidenced n/a. `--all` is intentionally kept outside
+    # that automatic stage as an explicit user diagnostic request; no delivery,
+    # release, recovery, audit, or mapper-failure path may select it.
     stage = None if getattr(a, "breadth_all", False) else "review"
     breadth = "all" if getattr(a, "breadth_all", False) else "routed"
     if getattr(a, "artifact_type", None):
@@ -7252,8 +7232,8 @@ def main(argv=None) -> int:
     lnr.add_argument("--only", help="comma list — only these lenses")
     lnr.add_argument("--skip", help="comma list — skip these lenses")
     lnr.add_argument("--all", action="store_true", dest="breadth_all",
-                     help="full catalog: routed lenses run deep, the rest "
-                          "as a quick sweep — nothing skipped")
+                     help="explicit user diagnostic: full catalog with "
+                          "deep routed lenses; never used automatically")
     lnr.add_argument("--json", action="store_true",
                      help="print the routing decision as JSON")
     lnr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
@@ -7270,9 +7250,9 @@ def main(argv=None) -> int:
     lns.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lns.set_defaults(fn=cmd_lens)
 
-    lnd = lnsub.add_parser("dispatch", help="ready-to-dispatch lens-agent "
-                           "briefs — one read-only agent per deep lens, "
-                           "fanned out in parallel")
+    lnd = lnsub.add_parser("dispatch", help="ready-to-dispatch selected "
+                           "quick review brief; normal governed review uses "
+                           "4–5 concurrent leased slots")
     lnd.add_argument("--base", default="HEAD",
                      help="git base to diff against (default HEAD)")
     lnd.add_argument("--task-type", help="declared task type (feature, "
@@ -7282,14 +7262,15 @@ def main(argv=None) -> int:
     lnd.add_argument("--skip", help="comma list — do not dispatch these "
                      "lenses")
     lnd.add_argument("--all", action="store_true", dest="breadth_all",
-                     help="full catalog: routed lenses run deep, the rest "
-                          "as a quick sweep — nothing skipped")
+                     help="explicit user diagnostic: full catalog with "
+                          "deep routed lenses; never used automatically")
     lnd.add_argument("--max-actions", type=int, default=None,
                      dest="max_actions",
                      help="per-agent action ceiling written into each "
                           "dispatched lens brief. Default scales with the "
-                          "brief: 45 for a deep lens (it owns one subject at "
-                          "full depth and reads widely), 30 for the sweep. "
+                          "brief: 30 for the automatic quick sweep; an "
+                          "explicit user --all request may create 45-action "
+                          "deep briefs. "
                           "An explicit value applies to every brief.")
     lnd.add_argument("--artifact-type",
                      help="route on an artifact instead of the diff — "

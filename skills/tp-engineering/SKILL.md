@@ -1,9 +1,9 @@
 ---
 name: tp-engineering
-description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Reviews DISPOSITION the full lens catalog — the applicability engine routes each lens deep, light, or n/a-with-evidence, architecture & system design keeps its floor — plus a requirements-vs-implementation walk for the human to sign off. Read-only toward code by enforced contract; it judges — it never implements or fixes."
+description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Automatic review runs exactly 4–5 relevant quick lenses concurrently, keeps architecture in the selected set, and never creates full, deep, promoted, or all-catalog work. Exact deep lenses are available only when the user directly requests them with attributable authorization. Includes a requirements-vs-implementation walk for human sign-off. Read-only toward code; it judges — it never implements or fixes."
 ---
 
-# /tp-engineering — the SOUND seat (impact · all lenses · verdicts)
+# /tp-engineering — the SOUND seat (impact · selected lenses · verdicts)
 
 On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
 workspace launcher exists; it resolves the newest valid installed taskplane
@@ -15,9 +15,9 @@ learn. The loop's `em` step is this persona. Its counterpart,
 grader never graded their own definition.
 
 `flow.json` is the approved Review graph: **verify the bounded stage manifest
-→ pin target → derive one diff and graph impact → graph-quality gate → 26
-dispositions → deep slots plus one light sweep → adaptive deep wave when the
-sweep finds high risk → canonical collect → workflow/graph/findings dashboard
+→ pin target → derive one diff and graph impact → graph-quality gate → catalog
+disposition → select exactly 4–5 relevant quick lenses → run them concurrently
+→ canonical collect → workflow/graph/findings dashboard
 → human approve or request changes → terminalize the addressed Review or
 Engineering stage**. Collection is not completion; the final human decision is
 mandatory for loop and standalone reviews.
@@ -67,8 +67,9 @@ For diagnostic or non-review source preparation use `$TP repository prepare
 invokes repository preflight, pins the verified target, and derives one
 canonical review context. It contains
 one canonical diff, graph-quality record and blast radius, runnability result,
-requirements/contracts, DoR/DoD evidence, and one complete 26-lens routing
-decision. It returns compact artifact references plus the exact briefs; it
+requirements/contracts, DoR/DoD evidence, and one complete catalog routing
+decision. It returns compact artifact references plus exactly 4–5 selected
+quick briefs; it
 does not print or duplicate the artifact bodies. Do not walk the older
 target/graph/impact/route/dispatch commands during a normal review.
 
@@ -121,28 +122,22 @@ blocked; only declaring it finished. This exists because "render the
 dashboard" written in a skill was ignored for a month — an instruction is
 not a mechanism, and a refusal is.
 
-**Every review DISPOSITIONS the full catalog — it does not RUN the full
-catalog (v2.11.0).** `$TP lens route` returns all 26 lenses with a verdict
-each: `deep` (summoned by the change — full depth, its own agent), `light`
-(quick pass, batched into the sweep), and `n/a` — which runs NOTHING and
-carries machine-checkable negative evidence saying why, e.g. `product` →
-"0 product signals: no spec/requirements files, no acceptance-criteria
-markers". Coverage honesty comes from the evidence, not from running a
-lens to avoid the question: on a Go type change plus a docs edit the
-engine routes 2 deep + 4 light and marks 20 n/a, where the old glob router
-ran 6 deep and swept 20 more for nothing.
+**Every automatic review runs exactly 4–5 selected quick lenses.** The
+catalog disposition remains machine-readable coverage evidence, but it never
+creates work by itself. The selector keeps architecture in the bounded set,
+adds only lenses relevant to the diff and graph impact, and marks every
+unselected lens `n/a` with negative evidence. Selected lenses all run at quick
+depth and run concurrently.
 
-Do NOT pass `--all`. It forces every lens to run AND switches the
-applicability engine off (`lens.py`: `breadth != "all"`), which is
-precisely the waste this paragraph exists to prevent. It remains available
-for the rare case where you deliberately want the whole catalog executed —
-say so when you use it. **Architecture & system design keeps its floor**:
-the engine applies it, and the security floor, inside routing — a
-structurally significant change still gets a full pass whatever the
-signals say.
+Do NOT pass `--all` or create deep work during automatic Review, Evaluate, EM,
+release, recovery, audit, or degraded-graph handling. Full or exact deep work
+requires a direct user command, actor, lens set, request receipt, timestamp,
+and target-bound authorization. **Architecture & system design keeps its
+membership floor** inside the 4–5 quick-lens set; the floor does not change
+depth.
 
-**Fan out only the exact mapped set.** `review start` returns one brief per
-`deep` lens plus at most one bounded `light` sweep —
+**Fan out only the exact selected set.** `review start` returns exactly 4–5
+quick lens briefs —
 each carrying its own exact **read-only `producer_contract`**, leased
 `result_schema`, and one `result_path`. Dispatch one `tp-lens` agent per brief
 in one host-native parallel wave. Each agent activates that exact task slot,
@@ -150,8 +145,8 @@ reads only the referenced scoped view, and writes only the declared result
 bytes to `result_path`; it must not create the removed per-lens findings
 layout. None can touch code (the harness
 holds — read-only, metered). Most reviews finish in one wall-clock pass. A
-light lens that reports a normalized high/major/blocker finding is promoted
-to one dedicated deep slot in a single bounded second wave.
+substantive finding returns the same task for correction and a fresh bounded
+quick pass; it never promotes a lens.
 
 **Runnability is probed ONCE, before briefs.** `review start` answers
 "can `go test` / `npm test` / `pytest` even start in this checkout"
@@ -200,10 +195,8 @@ artifact at `review start.visuals.workflow_and_wave` inline through the host
 widget. Its dashboard already embeds the exact blast-radius graph; do not
 create or deliver a second graph artifact.
 Dispatch the returned briefs, then run `$TP review collect`. Collect validates
-each leased result. If it returns `status: needs_deep_followup`, dispatch every
-returned promoted slot concurrently; they reuse the original sealed context
-and must not rerun routing, diff, graph, or runnability discovery. Then retry
-`$TP review collect` once. Otherwise collection commits one canonical findings revision and
+each leased result and commits one canonical findings revision; automatic
+collection must never return or dispatch a promoted/deep follow-up. It
 returns `visuals.final_dashboard`, whose structure is workflow/gates first,
 dependency graph second, then the complete findings and approval/rejection
 surface. Render `visuals.final_dashboard.inline.path` inline; use its durable
@@ -227,10 +220,8 @@ its named original producer concurrently as one repair wave, wait for all of
 them, and retry `$TP review collect` once. Never retry collection after only a
 subset of the reported repairs, and never turn a schema repair into a fresh
 substantive review.
-Promotion is substantive review, not schema repair: it occurs only when the
-light sweep itself reports normalized high risk, is bounded to one additional
-wave, and is shown as `light → deep` with its triggering findings in final lens
-coverage.
+Substantive findings are correction input for the same task, not authorization
+for another review depth or another lens wave.
 If collection reports that producer provenance is unavailable, stop with that
 named host/provenance blocker. Do not inspect taskplane's implementation,
 reconstruct a receipt, hand-merge results, or dispatch replacement lenses.
@@ -256,8 +247,9 @@ incomplete/wrong review policy blocks the engineering gate. Per-task
 evaluation separately blocks unknown or undispositioned direct impact,
 unchecked affected requirements, and unverified declared contracts.
 Distributed traversal stops at the named contract/resource boundary. Your
-review makes the map honest for the next contract. Deep session procedure:
-`references/em-session.md`; security depth: `references/security.md`;
+review makes the map honest for the next contract. Session procedure:
+`references/em-session.md`; when the user explicitly authorizes an exact deep
+security review, use `references/security.md`;
 feedback per `references/feedback-craft.md`.
 
 **Show ALL findings — the review needs its own dashboard.** Each lens writes
@@ -305,10 +297,10 @@ unresolved — `medium` → `med`, `minor` → `low`, `question`/`praise` →
 (fail closed). So carry lens findings' own vocabulary through verbatim if
 you like, but never re-grade a finding downward — an unknown or softened
 label still blocks. Include a `meta` block: `title`, `subtitle`, `tests`, `clean:[…]`, a `gate` with
-buttons, and — required (v1.5.4) — `lens_coverage` (the `{id: deep|sweep}`
+buttons, and — required (v1.5.4) — `lens_coverage` (the `{id: quick|n/a}`
 map projected by `review collect` from the canonical routing decision, so the
 dashboard shows all 26 lenses marked
-deep / sweep / didn't-fire, and adding a lens to the catalog appears
+selected quick / evidenced n/a, and adding a lens to the catalog appears
 automatically) and `impact` (the `tp graph impact` payload, so the
 blast-radius panel renders). Both also fold into the never-skippable
 headline. Then render it.
@@ -352,7 +344,7 @@ Submit verdicts with reproducible notes, escalation options for the human
 selective-routing/finding evidence, graph true-up, lessons → KB, then `done`), recorded
 decisions. tp-engineering never edits code — a build gap goes back
 through the loop (`loop submit fail` with a reproducible note; the
-orchestrator gates it). Deep persona spec:
+orchestrator gates it). Agent role spec:
 `agents/tp-engineering.md`.
 
 **Persist before you part.** Managed run artifacts are external to the source

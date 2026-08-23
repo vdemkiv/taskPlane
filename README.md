@@ -15,9 +15,10 @@ taskplane is not another prompt collection, review bot, or project tracker. It
 is the governed execution and assurance layer between your intent and
 agent-generated changes. Requirements, dependencies, contracts, implementation,
 and review stay connected from Definition of Ready through Definition of Done.
-A 26-lens engineering review makes architecture, solution design, security, data, operability,
-UX, and other technical consequences explicit for engineers, EMs, PMs, and
-nontechnical decision-makers.
+A 26-lens catalog lets the selector choose exactly 4–5 relevant quick lenses
+for each automatic review, always including architecture. Those lenses run in
+parallel; full or exact deep review runs only when the user directly requests
+it.
 
 **Simple for the user; strict for the agents.** State the goal, review the
 evidence, and make only the decisions that require human judgment. taskplane
@@ -78,19 +79,19 @@ explicit.
   budget, denied commands, read-only for reviewers — screened by the PreToolUse
   hook before each tool call. Literal scope overrides carry provenance: only the
   human-approved plan's `plan_minted` mark authorizes them, never a CLI flag. [docs/state-spec.md](docs/state-spec.md).
-- **26 lenses with intelligent routing v2.** The lens catalog (generated:
-  [docs/lens-catalog.md](docs/lens-catalog.md)) is routed per stage profile (design
-  8 · build 5 · review 26) by a signal engine that scores each lens against the
-  actual diff and returns `deep` / `light` / `n/a` — every `n/a` carries
-  machine-checkable negative evidence, the cap-8 budget demotes (never drops),
-  security floors hold on enforcement diffs, and engine failure fails open to the
-  full catalog. [docs/routing-and-flows.md](docs/routing-and-flows.md).
+- **26-lens catalog, 4–5-lens automatic execution.** The selector scores the
+  actual diff and dependency impact, keeps architecture in the set, and emits
+  exactly 4–5 relevant quick lenses. They run concurrently; every unselected
+  lens carries machine-checkable negative evidence. Failure refuses dispatch
+  instead of widening work. Full, deep, promoted, and all-catalog execution
+  requires a direct attributable user request.
+  [docs/routing-and-flows.md](docs/routing-and-flows.md).
 - **Graph decomposition.** `tp graph scan --decompose` derives a component layer
   inside the dependency graph (directory convention + import cohesion + AST
   clustering; floors overridable via `components.yaml`) with fingerprint-cached
   per-component lens maps. Reviews route the capped union of touched components'
-  maps, `component_attribution` names which component proposed each routed lens, and
-  the fail-open ladder only ever widens (component → module → full catalog). Same doc.
+  maps, and `component_attribution` names which component proposed each selected
+  lens. Missing or degraded mapping evidence never widens execution. Same doc.
 - **Governed flows.** The review wave and the execute/evaluate/fix waves each
   dispatch as one journaled, resumable Dynamic Workflow on Claude; the Task-dispatch
   path stays mandatory and byte-identical everywhere — it is the only Codex path —
@@ -103,9 +104,9 @@ explicit.
   dependency-graph blast radius at the DoD gate: Tier 1 blocks a was-green-now-red
   test against the change's baseline; Tier 2 flags a changed enforcement/public
   entry point with no covering test. [docs/regression-gate-design.md](docs/regression-gate-design.md).
-- **Audit cadence + router audits.** Every Nth review (`TASKPLANE_AUDIT_EVERY`) a
-  full-catalog sweep diffs its findings against the routing; any finding from an
-  `n/a`-routed lens is auto-filed as a router regression that blocks sign-off.
+- **Bounded review at every cadence.** Release, recovery, degraded-graph, and
+  audit-cadence paths use the same selected 4–5-lens quick sweep; none can
+  silently widen review depth or catalog breadth.
 - **A knowledge base that compounds.** Requirements (refinement-scored, with
   dependencies and named contracts), decision records (ADRs with lifecycle and
   supersede chains), and tracked debt (`tp req debt`) persist in a plan-aware
@@ -130,6 +131,7 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.18** | **The R-0007 production contracts are wired into the live review path.** Automatic review now executes exactly 4–5 selected quick lenses concurrently, keeps architecture in the set, and cannot create automatic full, deep, promoted, audit-wide, or all-26 work. Deep execution exists only behind a direct attributable human command. Structured finding provenance, exact dispatch-lease audits, graph-bound DoD input, composite-worker guidance, bounded efficiency telemetry, and scoped enforcement exceptions now travel through production entry points. Import cycles are cut and ratcheted against the reduced inventory. |
 | **v2.17.17** | **Taskplane's public metadata now describes Taskplane alone.** Skill and agent discovery descriptions contain no competitor comparisons; exact external namespaces remain only inside collision-isolation enforcement and its tests. |
 | **v2.17.16** | **Governed command events and selective review are wired into the live flow.** Governed command launch, reconnect, and event-driven waits reach the durable command runtime, and automatic review runs exactly 4–5 selected light-sweep lenses concurrently—never automatic full, deep, promoted, or all-26 execution. During host screening, signed review actions activate their exact lease before command execution. |
 | **v2.17.15** | **Python compatibility, quick-only review, and import-cycle reduction are now release-gated.** The supported Python matrix compiles before tests, graph and CLI failures stay actionable, zero-token and exact-SHA delivery proofs fail closed, the SCC ratchet lands before cuts, and the first lower-owner split removes the `depgraph`/`decompose` cycle without changing direct APIs or payloads. Nested test processes now stay bound to the governed task checkout. |

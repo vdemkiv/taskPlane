@@ -31,9 +31,10 @@ local task contracts on supported Codex surfaces.
   depth, Design DoR/DoD, validation mapping, risks, rollout, and conditional
   visualization without changing product code. Definition of Ready includes dependency and contract awareness;
   scoped contracts constrain execution; workers submit source-and-artifact
-  fingerprints for orchestrator-only Definition-of-Done gates; and a full
-  26-lens review exposes solution design, architecture, security, operability, data, UX, and
-  other technical consequences for technical and nontechnical decision-makers.
+  fingerprints for orchestrator-only Definition-of-Done gates; and automatic
+  review selects exactly 4–5 relevant quick lenses from the 26-lens catalog,
+  always includes architecture, and runs them concurrently. Full or exact
+  deep review requires a direct attributable user request.
 - **Logo:** `assets/taskplane-logo.svg`
 - **Composer icon:** `assets/taskplane-icon.svg`
 

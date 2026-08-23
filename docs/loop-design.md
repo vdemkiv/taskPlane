@@ -93,7 +93,7 @@ workspace fingerprint before the orchestrator gate.
 | EXECUTE | loop-executor | build (per-task scope) | the task's `scope_paths` | deps done; scope+tests+graph policy set | task test passes; diff in scope; fingerprinted submission. Realized graph truth is checked at EVALUATE and finalized before EM. |
 | EVALUATE | loop-evaluator | read-only + allow `.eval/**` | `.eval/**` | impl commits exist | PASS/FAIL + evidence per criterion, impacted node, affected requirement, and contract. One bounded host/model `unavailable` result advances with a visible warning and never consumes a product FIX cycle; any actual product/lens failure still enters FIX. |
 | FIX | loop-fixer | build (same task scope) | the task's `scope_paths` | a reproducible FAIL | failure fixed + regression + re-verified |
-| EM | engineering-manager | read-only review | exact leased paths under the external run root | all tasks PASS + final graph true-up | full lens/graph evidence on the current fingerprint; approved Design module/edge/contract conformance with a zero-drift list when applicable (any recorded drift blocks; human-accepted deviations require explicit `accepted_drift` entries, surfaced at the gate); then human sign-off |
+| EM | engineering-manager | read-only review | exact leased paths under the external run root | all tasks PASS + final graph true-up | exact 4–5-lens quick-review and graph evidence on the current fingerprint; approved Design module/edge/contract conformance with a zero-drift list when applicable (any recorded drift blocks; human-accepted deviations require explicit `accepted_drift` entries, surfaced at the gate); then human sign-off |
 
 ## Artifacts / handoff chain (what each step hands the next)
 

@@ -2120,8 +2120,8 @@ def stage_command(ws: str, command: str, request: object) -> dict:
         return _stage_command_error(action, exc)
 
 # R-0006 row 1: the EVALUATE step routes lenses with the BUILD stage
-# profile (route v2: build-profile candidates, R-0001 budget 5-7/cap-8
-# inherited verbatim, component assembly from R-0003). ONE constant feeds
+# profile (route v2: build-profile candidates narrowed to exactly 4–5 quick
+# lenses, component assembly from R-0003). ONE constant feeds
 # BOTH the evaluate brief's routing and _evaluation_errors' expected-lens
 # derivation, so the validator's expectation can never drift from what
 # was dispatched. Final EM uses the review profile through the same kernel.
@@ -6744,8 +6744,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": "stage-native loop transition failed closed: "
                     f"{exc.__class__.__name__}: {exc}", "step": step}
     if step == "em" and outcome == "pass":
-        # One more COMPLETED engineering review: advance the audit cadence
-        # (every Nth em review runs as a full audit sweep). A cadence-store
+        # Preserve the legacy completed-review counter for readable old state.
+        # It never widens the selected 4–5-lens automatic review. A counter
         # failure is traced, never allowed to block a validated sign-off.
         try:
             reviews = record_audit_review(ws)

@@ -1,4 +1,4 @@
-"""Audit sweep cadence + router-regression auto-filing — owned by taskplane.
+"""Compatibility audit metadata + router-regression validation.
 
 Extracted VERBATIM from loop.py (R-0006 / D-0004, v3 Phase 2): this module
 owns the audit machinery — the persistent completed-em-review counter, the
@@ -17,21 +17,18 @@ callers (and monkeypatching tests) keep resolving them at loop.<name>; the
 gate math itself still lives with the frozen `finding_blocks` rule in
 loop.py — this module CALLS it (late-bound, never a reimplementation).
 
-Routed reviews save tokens only if skipping stays HONEST: every Nth em
-review (default 5, TASKPLANE_AUDIT_EVERY overridable, min 1) — plus any
-review flagged as a release review — runs as a full-catalog AUDIT. The
-audit's merged findings are diffed against the recorded routing decision;
-a finding attributable to a lens the router marked n/a is a detector miss
-and is AUTO-FILED into the findings set as a router regression
-(class: regression, owner: router) — which blocks the gate through the
-frozen v2.3.1 `finding_blocks` rule, with no guardrail change.
+Automatic full-catalog audit execution is retired. Normal delivery always
+uses the bounded selected sweep, including release reviews and cadence
+boundaries. Deep or full-catalog execution is legal only through an explicit
+human command and its attributable authorization receipt. The legacy counter
+and router-regression validator remain readable for existing run state and
+explicitly authorized historical/audit evidence; neither can create work.
 """
 
 from __future__ import annotations
 
 import os
 
-import lens as lens_router
 import taskplane_lite as tp
 
 AUDIT_FILE = "audit.json"
@@ -115,21 +112,13 @@ def _release_review_flagged(state) -> bool:
 
 
 def audit_due(ws: str, state: dict | None = None) -> bool:
-    """Is the UPCOMING em review an audit? True every Nth completed review
-    (default 5), on a release flag, or when the cadence state is unreadable
-    (fail toward more coverage, never less)."""
-    if state is None:
-        try:
-            state = _loop().load(ws)
-        except Exception:
-            state = None
-    if _release_review_flagged(state):
-        return True
-    try:
-        completed = audit_counter(ws)
-    except tp.StateError:
-        return True
-    return (completed + 1) % audit_every() == 0
+    """Automatic audits never widen review execution.
+
+    Kept as a compatibility/status seam for older callers. An explicit human
+    deep/full request travels through the review authorization command, not
+    through cadence, release flags, corrupt state, or this function.
+    """
+    return False
 
 
 def router_audit(ws: str, routing_decision, findings) -> list:
@@ -455,45 +444,17 @@ def _routing_decision_of(routing) -> dict | None:
 
 
 def _audit_brief(ws: str, state: dict | None) -> dict:
-    """The em brief's audit block: whether the upcoming review is an audit,
-    why, and — when due — the recorded routing decision (stage='review'
-    signal routing) so the findings-vs-routing diff is computable at the
-    gate. The em review itself KEEPS breadth=all (the full-catalog mandate
-    is unchanged); audit mode adds the decision recording + auto-filing."""
+    """Compatibility projection that can never widen automatic review."""
     every = audit_every()
-    release = _release_review_flagged(state)
     try:
         completed = audit_counter(ws)
-        broken = False
     except tp.StateError:
-        completed, broken = None, True
-    due = release or broken or ((completed + 1) % every == 0)
-    if release:
-        reason = "release review"
-    elif broken:
-        reason = ("audit cadence state unreadable — auditing "
-                  "(fail toward more coverage)")
-    elif due:
-        reason = f"every-{every}th (n={completed + 1})"
-    else:
-        nxt = -(-(completed + 1) // every) * every     # next multiple of N
-        reason = (f"not due (n={completed + 1}; next audit at review {nxt})")
-    info = {"due": due, "reason": reason, "every": every,
-            "reviews_completed": completed}
-    if due:
-        info["mandate"] = (
-            "AUDIT review: run the full catalog (breadth=all — the standing "
-            "em mandate) and record the routing decision below in "
-            ".em-review/findings.json meta (meta.routing_decision, or v2 "
-            "meta.lens_coverage) so any finding from an n/a-routed lens is "
-            "auto-filed as a router regression at the gate.")
-        try:
-            shadow = lens_router.route_git_diff(
-                ws, base=(state or {}).get("baseline") or "HEAD",
-                breadth="routed", stage="review")
-            decision = _routing_decision_of(shadow)
-            if decision:
-                info["routing_decision"] = decision
-        except Exception as exc:      # noqa: BLE001 — brief must still render
-            info["routing_decision_error"] = str(exc)
-    return info
+        completed = None
+    return {
+        "due": False,
+        "reason": "automatic full-catalog audits disabled",
+        "every": every,
+        "reviews_completed": completed,
+        "policy": "selected-sweep-only",
+        "human_override": "direct attributable review command only",
+    }

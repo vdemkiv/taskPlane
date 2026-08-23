@@ -39,9 +39,11 @@ Normal standalone Review, per-task Evaluate, and final engineering review all
 start from the same canonical routing decision inside one canonical review
 context. The context binds one target, one canonical diff, graph quality and
 blast radius, requirements/contracts and DoR/DoD evidence, and runnability.
-All 26 lenses receive a disposition; only `deep` slots plus at most one
-bounded `light` sweep receive briefs. No lens receives permission to derive
-its own diff, graph impact, routing decision, or runnability result.
+The catalog receives a complete disposition for coverage evidence, then the
+production selector emits exactly 4–5 relevant quick lens briefs. Architecture
+is always included. Selected lenses run concurrently, and no lens receives
+permission to derive its own diff, graph impact, routing decision, or
+runnability result.
 
 Graph quality runs first. Sparse module evidence gets at most one bounded
 changed-symbol caller expansion. In standalone PR Review, remaining graph
@@ -52,52 +54,45 @@ the PR bytes. In governed Evaluate/EM, insufficient impact remains
 `mapper_unavailable` and zero lens dispatch. Neither condition recovers through
 `breadth=all`.
 
-`tp lens route` selects lenses for a change. Since v2.4.0 the selection is
-a **signal engine** (`taskplane/lens_signals.py`), not a filename glob
-match: each catalog lens is scored against the actual diff — paths,
-content, density, and the dependency graph — and receives one of three
-verdicts:
-
-- `deep` — a governed read-only lens agent reviews the change in depth;
-- `light` — a quick sweep pass;
-- `n/a` — **only with stated negative evidence** (e.g. "0 i18n markers in
-  the diff"). A bare, unevidenced `n/a` is refused; at the final (`em`)
-  review gate, bare `n/a` coverage blocks sign-off.
+The **signal engine** (`taskplane/lens_signals.py`) scores each catalog lens
+against the actual diff — paths, content, density, and dependency impact. The
+production selector turns the highest-relevance eligible results into exactly
+4–5 quick selections and records every other lens as `n/a` with stated
+negative evidence. A bare, unevidenced `n/a` is refused.
 
 The routing decision is honest and inspectable: the dashboard coverage map
-and the `HEADLINE:` line report `N deep · M light · K n/a (evidenced)`
+and the `HEADLINE:` line report `N quick · K n/a (evidenced)`
 across the full catalog, and the machine-readable `routing_decision`
 object rides on every dispatched brief.
 
 Guardrails that hold at every granularity:
 
-- **Cap-8, demote-never-drop.** The deep set is hard-capped at 8; overflow
-  is demoted to `light` (with the demotion recorded in the evidence) —
-  never dropped from the review.
-- **Floors after the budget.** `security` may not be `n/a` when the diff
-  touches enforcement/boundary surface; `architecture` runs at least
-  `light` on any code change. Floors are applied *after* budget capping,
-  so a cap can never squeeze them out.
-- **Forced lenses.** `tp lens route --only <ids>` runs the named lenses
-  deep regardless of the engine's verdict — the evidence records the
-  force. The force holds at component granularity too.
-- **Stage profiles.** `lenses/catalog.json` carries `stage_profiles`
-  (design 8 · build 5 · review 26); a stage restricts the *candidate* set
-  only. An unknown or absent stage uses the explicit `fail-open` policy and
-  widens to the full catalog.
+- **Exact bounded membership.** Automatic review creates 4–5 quick slots,
+  never more and never fewer for a substantive change.
+- **Architecture floor.** `architecture` is always selected. `security` is
+  pinned when enforcement or a trust boundary changes. Floors affect
+  membership only; they never raise review depth.
+- **Named selection.** Explicit review directives can pin a lens into the
+  bounded quick set; they do not silently turn it deep.
+- **No widening fallback.** Unknown stages, graph degradation, release status,
+  recovery, or cadence cannot expand breadth or depth.
 - **Fail closed before dispatch.** Incomplete graph evidence or an unavailable
-  applicability mapper emits no briefs. `breadth=all` is reserved for an
-  explicit human request or an isolated calibration/audit, never recovery.
+  applicability mapper emits no briefs.
+- **Human-only depth.** Exact deep lenses require the direct `review deep`
+  command with actor, lens set, request receipt, timestamp, and target-bound
+  authorization. Full/all-catalog work likewise requires an explicit user
+  request and is never an automatic fallback.
 
-Dogfood example (this repository — the reviews that shipped routing v2
-routed their own diffs; both full-codebase runs settled on 7 deep):
+Example production decision:
 
 ```bash
-python3 taskplane/tp.py lens route --base main
-# 26 dispositions for N files changed; only deep + light dispatch:
-#   ▸ subagent  security       ← ...
-#   · inline    performance    ← ...
-#   ○ n/a       i18n           ← n/a: 0 i18n markers in the diff
+# 26 catalog dispositions; exactly five quick slots dispatch concurrently:
+#   ▸ quick  architecture
+#   ▸ quick  security
+#   ▸ quick  code-quality
+#   ▸ quick  qa
+#   ▸ quick  integrability
+#   ○ n/a    i18n  ← 0 i18n markers in the diff
 ```
 
 The `○ n/a` rows are the coverage honesty: skips stay visible, each with
@@ -145,7 +140,7 @@ never disturbs an existing layer.
 Routing consumes the layer as a **capped union**: changed files map to
 touched components, the candidate lens set is the union of their cached
 maps — but cached maps only *propose*; final verdicts are re-evidenced on
-the live diff, and the cap-8 budget and security/architecture floors run
+the live diff, and the exact 4–5 quick-lens budget plus security/architecture floors run
 after assembly. Every routed lens names which component(s) proposed it via
 `component_attribution`, which rides additively on each `contract:lens-brief`
 and into the findings meta. The dashboard graph view renders component
@@ -173,7 +168,7 @@ three or more components with distinct dependency sets — pinned by
 
 Checked-in test fixtures look like the surfaces they imitate: a locale
 file under `tests/fixtures/` used to score like a real locale file and
-inflate i18n/mobile to deep. Signal hits whose ONLY support is
+inflate i18n/mobile relevance. Signal hits whose ONLY support is
 fixture-class paths (any `fixtures`/`testdata`/`goldens` path segment, or
 a `.golden` extension) are re-weighted x0.25 — **never suppressed**: the
 evidence line survives and names the discount
@@ -182,7 +177,7 @@ floors still apply after scoring. A hit with any real product-file support
 keeps full weight.
 
 Dogfood example: a diff touching only `taskplane/tests/fixtures/` no
-longer inflates i18n/mobile to deep on this repo; the surviving evidence
+longer inflates i18n/mobile into the selected quick set on this repo; the surviving evidence
 line names the discount. Pinned by
 `taskplane/tests/test_lens_signals.py` (discount named in evidence, real
 product-file support keeps full weight, n/a semantics untouched).
@@ -252,36 +247,21 @@ python3 taskplane/tp.py lens dispatch --base main --emit workflow
 # same payload wrapped as {"workflow": {"name": "review-wave", "args": ...}}
 ```
 
-## Audit cadence — the router is itself reviewed
+## Audit compatibility does not create review work
 
-Routing that skips lenses must be audited, so every Nth completed
-engineering review (default 5, `TASKPLANE_AUDIT_EVERY`, floor 1 — a
-garbage value falls back to the default) runs the **full-catalog audit
-sweep** (`breadth=all`). Its findings are diffed against the review's
-routing decision: any finding from a lens the router marked `n/a` is
-auto-filed as a **router regression** that blocks sign-off until resolved.
-The cadence variable tunes only how OFTEN the audit runs; the audit itself
-and the auto-filing cannot be disabled through it. The machinery lives in
-`taskplane/audit.py` (extracted from `loop.py` in Phase 2 under a
-byte-frozen differential — behavior identical by construction). A routed
-hybrid audit (skipping evidenced-n/a lenses in the sweep) was measured
-against a >=30%-reduction / zero-escape bar and **declined** (D-0003):
-the sweep stays full-catalog.
-
-Dogfood example: `TASKPLANE_AUDIT_EVERY=1` makes EVERY review carry the
-sweep — useful while tuning a new repo's routing signals. taskplane's own
-loop runs under the default cadence; the sweep, the auto-filing, and the
-byte-frozen extraction are pinned by
-`taskplane/tests/test_audit_sweep.py` and
-`taskplane/tests/test_audit_extraction.py`.
+Legacy cadence counters and router-regression evidence remain readable, but
+automatic full-catalog audits are retired. Cadence, release flags, corrupt
+legacy state, recovery, and degraded graphs all retain the same selected 4–5
+quick-lens execution. An audit or deep review can widen work only after a
+direct attributable user request.
 
 ## Evaluate and final engineering review use one selective kernel
 
 The loop's `evaluate` step and final engineering review consume the same
-canonical review context and complete 26-lens disposition. Stage and persona
+canonical review context and complete catalog disposition. Stage and persona
 change which signals are relevant, not the evidence source: both dispatch
-exactly their mapped deep lenses plus at most one light sweep, retain the
-architecture/security floors, and keep every n/a backed by negative evidence.
+exactly 4–5 selected quick lenses concurrently, retain the architecture and
+conditional security membership floors, and keep every n/a backed by negative evidence.
 The final engineering review adds synthesis and human sign-off; it does not
 re-read the repository or broaden to all lenses.
 

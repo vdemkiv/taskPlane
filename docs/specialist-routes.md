@@ -35,9 +35,10 @@ confidence that the review itself won't touch a thing.
 > **tp-engineering: review the approvals-reporting PR against main**
 
 taskplane activates a **read-only contract** (the hook blocks any write to
-the reviewed source), routes the **full 26-lens catalog** — deep on what the
-change touches, a quick sweep on the rest, and **architecture & system
-design always on** — leads with the dependency-graph **blast radius**,
+the reviewed source), selects exactly **4–5 relevant quick lenses** from the
+26-lens catalog, always includes **architecture & system design**, and runs
+the selected lenses concurrently. Full or exact deep review is available only
+when the user directly requests it. The review leads with the dependency-graph **blast radius**,
 checks each acceptance criterion, and hands you a findings report ranked
 blockers-first with `file:line` evidence and a merge verdict. UI changes
 get rendered, not just read. You sign off. The code was never touched.

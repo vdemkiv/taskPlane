@@ -133,8 +133,8 @@ def review_depth_policy(requirement: dict | None) -> dict:
     if depth and depth != "quick-only":
         if depth == "progressive":
             raise ReviewKernelError(
-                "adaptive deep review unavailable: "
-                "direct-human-command-not-shipped")
+                "automatic deep review unavailable: "
+                "direct-human-command-required")
         raise ReviewKernelError(
             f"unsupported review depth policy for {requirement_id or 'requirement'}")
     return {
@@ -2157,7 +2157,7 @@ def _resolve_sweep_corrections(store, state: dict, refs: list[dict]) \
     policy = state.get("review_depth_policy") or {}
     if state.get("adaptive_wave"):
         raise ReviewKernelError(
-            "adaptive deep review unavailable: direct-human-command-not-shipped")
+            "automatic deep review unavailable: direct-human-command-required")
     decision = store.read(state["routing_decision"])["dispositions"]
     concerns = []
     quick_corrections = []
@@ -5236,8 +5236,8 @@ def _collect_review_transaction(
             depth_policy, state.get("slots") or [])
         if state.get("adaptive_wave"):
             raise ReviewKernelError(
-                "adaptive deep review unavailable: "
-                "direct-human-command-not-shipped")
+                "automatic deep review unavailable: "
+                "direct-human-command-required")
         if list(result_refs or []):
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
