@@ -2,545 +2,87 @@
   "package": "taskplane",
   "sccs": [
     {
-      "edge_count": 124,
+      "edge_count": 29,
       "internal_edges": [
-        [
-          "taskplane.audit",
-          "taskplane.defect_claim"
-        ],
-        [
-          "taskplane.audit",
-          "taskplane.lens"
-        ],
-        [
-          "taskplane.audit",
-          "taskplane.loop"
-        ],
-        [
-          "taskplane.audit",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.collision",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.collision"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.kb"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.loop"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.loop_status"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.requirements"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.runtime_eval"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.dashboard",
-          "taskplane.yield_meter"
-        ],
-        [
-          "taskplane.decompose",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.decompose",
-          "taskplane.lens_signals"
-        ],
-        [
-          "taskplane.defect_claim",
-          "taskplane.kb"
-        ],
-        [
-          "taskplane.defect_claim",
-          "taskplane.requirements"
-        ],
-        [
-          "taskplane.depgraph",
-          "taskplane.decompose"
-        ],
-        [
-          "taskplane.depgraph",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.design_contract",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.design_contract",
-          "taskplane.kb"
-        ],
-        [
-          "taskplane.design_contract",
-          "taskplane.requirements"
-        ],
-        [
-          "taskplane.design_contract",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.evaluator_health",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.evidence",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.evidence",
-          "taskplane.loop"
-        ],
-        [
-          "taskplane.evidence",
-          "taskplane.review"
-        ],
-        [
-          "taskplane.evidence",
-          "taskplane.review_evidence"
-        ],
-        [
-          "taskplane.evidence",
-          "taskplane.runtime_eval"
-        ],
-        [
-          "taskplane.evidence",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.kb",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.lens",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.lens",
-          "taskplane.lens_signals"
-        ],
-        [
-          "taskplane.lens",
-          "taskplane.review"
-        ],
-        [
-          "taskplane.lens",
-          "taskplane.review_progression"
-        ],
-        [
-          "taskplane.lens",
-          "taskplane.runnability"
-        ],
-        [
-          "taskplane.lens",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.lens_signals",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.lens_signals",
-          "taskplane.lens"
-        ],
-        [
-          "taskplane.lens_signals",
-          "taskplane.review_progression"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.audit"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.design_contract"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.evaluator_health"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.evidence"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.kb"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.lens"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.loop_status"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.repository"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.requirements"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.retro"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.review"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.review_evidence"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.review_retry"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.run_store"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.runtime_eval"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.stage_entities"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.stage_handoff"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.worktree_cleanup"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.yield_meter"
-        ],
-        [
-          "taskplane.loop_status",
-          "taskplane.loop"
-        ],
-        [
-          "taskplane.loop_status",
-          "taskplane.run_store"
-        ],
-        [
-          "taskplane.loop_status",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.loop_status",
-          "taskplane.views"
-        ],
-        [
-          "taskplane.obligations",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.regression",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.repository",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.repository",
-          "taskplane.worktree_cleanup"
-        ],
-        [
-          "taskplane.requirements",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.requirements",
-          "taskplane.lens"
-        ],
-        [
-          "taskplane.requirements",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.retro",
-          "taskplane.collision"
-        ],
-        [
-          "taskplane.retro",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.retro",
-          "taskplane.kb"
-        ],
-        [
-          "taskplane.retro",
-          "taskplane.loop_status"
-        ],
-        [
-          "taskplane.retro",
-          "taskplane.runtime_eval"
-        ],
-        [
-          "taskplane.retro",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.dashboard"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.defect_claim"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.lens"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.lens_signals"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.loop"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.review_evidence"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.review_progression"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.review_repair"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.runnability"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.runtime_eval"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.views"
-        ],
-        [
-          "taskplane.review",
-          "taskplane.yield_meter"
-        ],
-        [
-          "taskplane.review_evidence",
-          "taskplane.stage_handoff"
-        ],
-        [
-          "taskplane.review_evidence",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.review_progression",
-          "taskplane.lens"
-        ],
-        [
-          "taskplane.review_recovery",
-          "taskplane.review_evidence"
-        ],
-        [
-          "taskplane.review_repair",
-          "taskplane.review"
-        ],
-        [
-          "taskplane.review_repair",
-          "taskplane.review_recovery"
-        ],
-        [
-          "taskplane.review_retry",
-          "taskplane.review"
-        ],
-        [
-          "taskplane.review_retry",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.run_store",
-          "taskplane.collision"
-        ],
-        [
-          "taskplane.run_store",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.run_store",
-          "taskplane.worktree_cleanup"
-        ],
-        [
-          "taskplane.runnability",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.runtime_eval",
-          "taskplane.loop"
-        ],
-        [
-          "taskplane.runtime_eval",
-          "taskplane.review"
-        ],
-        [
-          "taskplane.runtime_eval",
-          "taskplane.review_evidence"
-        ],
-        [
-          "taskplane.runtime_eval",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.stage_entities",
-          "taskplane.review_evidence"
-        ],
-        [
-          "taskplane.stage_entities",
-          "taskplane.stage_handoff"
-        ],
-        [
-          "taskplane.stage_handoff",
-          "taskplane.review_evidence"
-        ],
-        [
-          "taskplane.taskplane_lite",
-          "taskplane.collision"
-        ],
-        [
-          "taskplane.taskplane_lite",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.taskplane_lite",
-          "taskplane.regression"
-        ],
-        [
-          "taskplane.taskplane_lite",
-          "taskplane.stage_entities"
-        ],
-        [
-          "taskplane.taskplane_lite",
-          "taskplane.stage_handoff"
-        ],
-        [
-          "taskplane.views",
-          "taskplane.dashboard"
-        ],
-        [
-          "taskplane.views",
-          "taskplane.depgraph"
-        ],
-        [
-          "taskplane.views",
-          "taskplane.loop"
-        ],
-        [
-          "taskplane.views",
-          "taskplane.obligations"
-        ],
-        [
-          "taskplane.views",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.worktree_cleanup",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.yield_meter",
-          "taskplane.taskplane_lite"
-        ]
+        ["taskplane.audit", "taskplane.loop"],
+        ["taskplane.dashboard", "taskplane.loop"],
+        ["taskplane.dashboard", "taskplane.loop_status"],
+        ["taskplane.dashboard", "taskplane.runtime_eval"],
+        ["taskplane.evidence", "taskplane.loop"],
+        ["taskplane.evidence", "taskplane.review"],
+        ["taskplane.evidence", "taskplane.runtime_eval"],
+        ["taskplane.loop", "taskplane.audit"],
+        ["taskplane.loop", "taskplane.evidence"],
+        ["taskplane.loop", "taskplane.loop_status"],
+        ["taskplane.loop", "taskplane.retro"],
+        ["taskplane.loop", "taskplane.review"],
+        ["taskplane.loop", "taskplane.review_retry"],
+        ["taskplane.loop", "taskplane.runtime_eval"],
+        ["taskplane.loop_status", "taskplane.loop"],
+        ["taskplane.loop_status", "taskplane.views"],
+        ["taskplane.retro", "taskplane.loop_status"],
+        ["taskplane.retro", "taskplane.runtime_eval"],
+        ["taskplane.review", "taskplane.dashboard"],
+        ["taskplane.review", "taskplane.loop"],
+        ["taskplane.review", "taskplane.review_repair"],
+        ["taskplane.review", "taskplane.runtime_eval"],
+        ["taskplane.review", "taskplane.views"],
+        ["taskplane.review_repair", "taskplane.review"],
+        ["taskplane.review_retry", "taskplane.review"],
+        ["taskplane.runtime_eval", "taskplane.loop"],
+        ["taskplane.runtime_eval", "taskplane.review"],
+        ["taskplane.views", "taskplane.dashboard"],
+        ["taskplane.views", "taskplane.loop"]
       ],
-      "member_count": 34,
+      "member_count": 11,
       "members": [
-        "taskplane.audit",
-        "taskplane.collision",
-        "taskplane.dashboard",
-        "taskplane.decompose",
-        "taskplane.defect_claim",
-        "taskplane.depgraph",
-        "taskplane.design_contract",
-        "taskplane.evaluator_health",
-        "taskplane.evidence",
-        "taskplane.kb",
-        "taskplane.lens",
-        "taskplane.lens_signals",
-        "taskplane.loop",
-        "taskplane.loop_status",
-        "taskplane.obligations",
-        "taskplane.regression",
-        "taskplane.repository",
-        "taskplane.requirements",
-        "taskplane.retro",
-        "taskplane.review",
-        "taskplane.review_evidence",
-        "taskplane.review_progression",
-        "taskplane.review_recovery",
-        "taskplane.review_repair",
-        "taskplane.review_retry",
-        "taskplane.run_store",
-        "taskplane.runnability",
-        "taskplane.runtime_eval",
-        "taskplane.stage_entities",
-        "taskplane.stage_handoff",
-        "taskplane.taskplane_lite",
-        "taskplane.views",
-        "taskplane.worktree_cleanup",
-        "taskplane.yield_meter"
+        "taskplane.audit", "taskplane.dashboard", "taskplane.evidence",
+        "taskplane.loop", "taskplane.loop_status", "taskplane.retro",
+        "taskplane.review", "taskplane.review_repair",
+        "taskplane.review_retry", "taskplane.runtime_eval", "taskplane.views"
       ],
-      "physical_loc": 46006
+      "physical_loc": 22060
+    },
+    {
+      "edge_count": 11,
+      "internal_edges": [
+        ["taskplane.collision", "taskplane.taskplane_lite"],
+        ["taskplane.regression", "taskplane.taskplane_lite"],
+        ["taskplane.review_evidence", "taskplane.stage_handoff"],
+        ["taskplane.review_evidence", "taskplane.taskplane_lite"],
+        ["taskplane.stage_entities", "taskplane.review_evidence"],
+        ["taskplane.stage_entities", "taskplane.stage_handoff"],
+        ["taskplane.stage_handoff", "taskplane.review_evidence"],
+        ["taskplane.taskplane_lite", "taskplane.collision"],
+        ["taskplane.taskplane_lite", "taskplane.regression"],
+        ["taskplane.taskplane_lite", "taskplane.stage_entities"],
+        ["taskplane.taskplane_lite", "taskplane.stage_handoff"]
+      ],
+      "member_count": 6,
+      "members": [
+        "taskplane.collision", "taskplane.regression",
+        "taskplane.review_evidence", "taskplane.stage_entities",
+        "taskplane.stage_handoff", "taskplane.taskplane_lite"
+      ],
+      "physical_loc": 11159
+    },
+    {
+      "edge_count": 5,
+      "internal_edges": [
+        ["taskplane.lens", "taskplane.lens_signals"],
+        ["taskplane.lens", "taskplane.review_progression"],
+        ["taskplane.lens_signals", "taskplane.lens"],
+        ["taskplane.lens_signals", "taskplane.review_progression"],
+        ["taskplane.review_progression", "taskplane.lens"]
+      ],
+      "member_count": 3,
+      "members": [
+        "taskplane.lens", "taskplane.lens_signals",
+        "taskplane.review_progression"
+      ],
+      "physical_loc": 2246
     }
   ],
   "schema": "taskplane.import-cycle-ratchet/v1",
-  "source_revision": "b40e7aaa6c80fd22f34d6e2365aefd8e7a232e7b"
+  "source_revision": "f5ef1aa64935d34588a69ff46d6ddbcf6a089b86"
 }
