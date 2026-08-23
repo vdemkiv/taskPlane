@@ -20,6 +20,7 @@ import storage
 
 SCHEMA = "taskplane.enforcement-status/v1"
 ADVISORY_SCHEMA = "taskplane.enforcement-advisory/v1"
+EXCEPTION_SCHEMA = "taskplane.enforcement-exception/v1"
 STATUSES = frozenset(("live", "unproven", "advisory"))
 MODES = frozenset(("strict", "warn", "off"))
 _RELEVANT_CAPABILITIES = (
@@ -184,6 +185,73 @@ def acknowledge_advisory(
     return updated
 
 
+def acknowledge_exception(
+        decision: Mapping[str, Any], *, actor: str, reason: str, scope: str,
+        expires_at: str, accepted_limitations: list[str],
+        acknowledged_at: str | None = None) -> dict[str, Any]:
+    """Record a scoped, expiring human exception for terminal sign-off."""
+    updated = acknowledge_advisory(
+        decision, actor=actor, acknowledged_at=acknowledged_at)
+    reason = str(reason or "").strip()
+    scope = str(scope or "").strip()
+    expires_at = _timestamp(expires_at)
+    limitations = sorted({str(value).strip()
+                          for value in accepted_limitations or []
+                          if str(value).strip()})
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        acknowledged = datetime.fromisoformat(
+            updated["observed_at"].replace("Z", "+00:00"))
+    except ValueError:
+        raise EnforcementError(
+            "enforcement exception expiry must be ISO-8601") from None
+    if expiry.tzinfo is None or expiry <= acknowledged:
+        raise EnforcementError(
+            "enforcement exception expiry must be timezone-aware and future")
+    if not reason or not scope or not limitations:
+        raise EnforcementError(
+            "enforcement exception requires reason, scope, expiry, and "
+            "accepted limitations")
+    exception = {
+        "schema": EXCEPTION_SCHEMA,
+        "actor": updated["advisory"]["actor"],
+        "reason": reason[:1024], "scope": scope[:256],
+        "expires_at": expires_at,
+        "accepted_limitations": limitations[:32],
+        "source_evidence_id": decision.get("evidence_id"),
+    }
+    exception["exception_id"] = "exc-" + _digest(exception)
+    updated["advisory"]["exception"] = exception
+    advisory_payload = dict(updated["advisory"])
+    advisory_payload.pop("decision_id", None)
+    updated["advisory"]["decision_id"] = "adv-" + _digest(advisory_payload)
+    updated["reasons"] = list(updated.get("reasons") or []) + [
+        "scoped enforcement exception accepted for " + scope]
+    updated["evidence_id"] = "enf-" + _digest(
+        _decision_id_payload(updated))
+    return updated
+
+
+def final_signoff_allowed(value: Mapping[str, Any], *,
+                          now: str | None = None) -> bool:
+    """Live enforcement or a current exact terminal exception is required."""
+    decision = validate_decision(value)
+    if decision.get("status") == "live":
+        return True
+    exception = ((decision.get("advisory") or {}).get("exception") or {})
+    if exception.get("schema") != EXCEPTION_SCHEMA or exception.get(
+            "scope") not in {"final-signoff", "review-signoff", "*"}:
+        return False
+    try:
+        expiry = datetime.fromisoformat(
+            str(exception.get("expires_at") or "").replace("Z", "+00:00"))
+        current = datetime.fromisoformat(
+            _timestamp(now).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return expiry.tzinfo is not None and expiry > current
+
+
 def validate_decision(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and detach a decision before it crosses persistence APIs."""
     if not isinstance(value, Mapping) or value.get("schema") != SCHEMA:
@@ -205,6 +273,19 @@ def validate_decision(value: Mapping[str, Any]) -> dict[str, Any]:
         advisory_id = advisory_payload.pop("decision_id", None)
         if advisory_id != "adv-" + _digest(advisory_payload):
             raise EnforcementError("advisory decision identity mismatch")
+        exception = advisory.get("exception")
+        if exception is not None:
+            if not isinstance(exception, Mapping) or exception.get(
+                    "schema") != EXCEPTION_SCHEMA:
+                raise EnforcementError("enforcement exception schema is invalid")
+            payload = dict(exception)
+            exception_id = payload.pop("exception_id", None)
+            if exception_id != "exc-" + _digest(payload) or not str(
+                    exception.get("reason") or "").strip() or not str(
+                    exception.get("scope") or "").strip() or not isinstance(
+                    exception.get("accepted_limitations"), list) or not \
+                    exception["accepted_limitations"]:
+                raise EnforcementError("enforcement exception identity is invalid")
     elif advisory is not None:
         raise EnforcementError("non-advisory decision carries advisory data")
     return copy.deepcopy(dict(value))

@@ -4222,6 +4222,26 @@ def render_stats(ws, metrics, denials, suffix="s"):
         f'<div style="display:flex;gap:4px">{band}</div>{tbl}</div>')
 
 
+def render_worker_efficiency(value: dict | None) -> str:
+    """Render the observational worker-efficiency rollout target."""
+    row = value if isinstance(value, dict) else {}
+    if row.get("schema") != "taskplane.worker-efficiency/v1" or not row.get(
+            "turn_count"):
+        return ""
+    median = row.get("median_executions_per_turn")
+    target = row.get("rollout_target") or {}
+    status = "target met" if target.get("met") else "below rollout target"
+    return (
+        '<div role="status" style="border:1px solid var(--border);'
+        'border-inline-start:4px solid var(--text-secondary);border-radius:6px;'
+        'padding:9px 12px;margin:0 0 12px;font-size:12px">'
+        '<strong>worker efficiency · observational</strong> · median '
+        + _esc(str(median)) + ' executions/turn · '
+        + _esc(str(row.get("guardian_verdict_count") or 0))
+        + ' guardian verdicts · ' + _esc(status)
+        + ' · never changes correctness or review gates</div>')
+
+
 def headline_loop(ws: str) -> str:
     """Never-skippable text line for the loop dashboard: step, task progress,
     open gate. Printed to chat so status survives a skipped render (v1.5.3).
@@ -4774,6 +4794,12 @@ def _widget_parts(ws: str) -> dict:
             f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
             f'<strong>worktree cleanup needs attention</strong> · '
             f'{_esc(reasons)}</div>')
+    try:
+        efficiency_projection = runtime_eval.worker_efficiency_projection(
+            (state or {}).get("worker_efficiency") or [])
+    except Exception:
+        efficiency_projection = {}
+    worker_efficiency = render_worker_efficiency(efficiency_projection)
 
     pipe_s = _widget_spine(state, step, tasks, "s")
     pipe_d = _widget_spine(state, step, tasks, "d")
@@ -4893,7 +4919,8 @@ def _widget_parts(ws: str) -> dict:
     return {
         "sr": sr, "header": header, "notice": notice,
         "assurance": assurance, "interference": interference,
-        "cleanup_alert": cleanup_alert, "hero": hero,
+        "cleanup_alert": cleanup_alert,
+        "worker_efficiency": worker_efficiency, "hero": hero,
         "stage_lineage": stage_lineage,
         "gatebar": gatebar, "dor": dor_html, "stats": stats_html,
         "pipe_s": pipe_s, "pipe_d": pipe_d,
@@ -4946,6 +4973,7 @@ def widget(ws: str) -> str:
         + p["assurance"]
         + p["interference"]
         + p["cleanup_alert"]
+        + p["worker_efficiency"]
         + p["stage_lineage"]
         + p["hero"]
         + p["gatebar"]
@@ -4997,6 +5025,7 @@ def report_widget(ws: str) -> str:
           'color:var(--text-primary)">' + header
         + p["notice"] + p["assurance"] + p["interference"]
         + p["cleanup_alert"]
+        + p["worker_efficiency"]
         + p["stage_lineage"]
         + p["hero"] + p["dor"] + p["stats"]
         + p["workflow"] + p["graph"] + execution + context

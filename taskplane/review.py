@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Iterable
 
 try:  # pwd is unavailable on Windows.
@@ -153,18 +154,38 @@ def _assert_review_depth_manifest(
     """Validate and project the policy at each dispatch/collection boundary."""
     policy = copy.deepcopy(policy) if isinstance(policy, dict) else \
         review_depth_policy(None)
-    if policy.get("depth") != "quick-only" or \
+    human_authorization = policy.get("human_deep_authorization")
+    human_deep = policy.get("depth") == "human-deep"
+    if human_deep:
+        human_authorization = _validate_human_deep_authorization(
+            human_authorization)
+        if policy.get("deep_slots_allowed") is not True or \
+                policy.get("source") != "direct-human-command":
+            raise ReviewKernelError(
+                "human-deep policy is not bound to the direct human command")
+    elif policy.get("depth") != "quick-only" or \
             policy.get("deep_slots_allowed") is not False:
         raise ReviewKernelError(
-            "adaptive deep review unavailable: direct-human-command-not-shipped")
+            "automatic-deep-creation-refused: direct-human-command-required")
     slot_ids = sorted(str(row.get("slot_id") or "")
                       for row in slots or [] if isinstance(row, dict))
     deep_slots = sorted(slot_id for slot_id in slot_ids
                         if slot_id.startswith("deep."))
-    if deep_slots:
+    if deep_slots and not human_deep:
         raise ReviewKernelError(
             "quick-only review manifest contains deep slot(s): " +
             ", ".join(deep_slots))
+    if human_deep:
+        expected = human_authorization["fingerprint"]
+        for row in slots or []:
+            if not isinstance(row, dict) or not str(
+                    row.get("slot_id") or "").startswith("deep."):
+                continue
+            actual = (row.get("human_deep_authorization") or {}).get(
+                "fingerprint")
+            if actual != expected:
+                raise ReviewKernelError(
+                    "human-deep slot is missing its exact authorization")
     correction_rows = [copy.deepcopy(row) for row in corrections or []]
     return {
         **policy,
@@ -176,6 +197,42 @@ def _assert_review_depth_manifest(
         "outcome": ("correction_required" if correction_rows else
                     "quick_output_sufficient"),
         **({"corrections": correction_rows} if correction_rows else {}),
+    }
+
+
+def _validate_human_deep_authorization(value: dict | None) -> dict:
+    """Validate the attributable direct-command authorization envelope."""
+    row = copy.deepcopy(value) if isinstance(value, dict) else {}
+    required = ("schema", "source", "actor", "requested_at", "lens_ids",
+                "request_receipt", "run_id", "target_fingerprint")
+    if any(not row.get(key) for key in required) or row.get("schema") != \
+            "taskplane.human-deep-authorization/v1" or row.get("source") != \
+            "direct-human-command":
+        raise ReviewKernelError(
+            "human-deep authorization requires actor, timestamp, lens set, "
+            "request receipt, run, and target")
+    lenses = row.get("lens_ids")
+    if not isinstance(lenses, list) or not lenses or lenses != sorted(
+            {str(value).strip() for value in lenses if str(value).strip()}):
+        raise ReviewKernelError("human-deep authorization lens set is invalid")
+    unsigned = {key: row[key] for key in row if key != "fingerprint"}
+    expected = review_evidence_runtime.content_fingerprint(unsigned)
+    if row.get("fingerprint") != expected:
+        raise ReviewKernelError("human-deep authorization fingerprint is invalid")
+    return row
+
+
+def human_deep_policy(authorization: dict) -> dict:
+    authorization = _validate_human_deep_authorization(authorization)
+    return {
+        "schema": "taskplane.review-depth-policy/v1",
+        "requirement_id": None,
+        "depth": "human-deep",
+        "source": "direct-human-command",
+        "deep_slots_allowed": True,
+        "promotion": "forbidden",
+        "complete_quick_output_sufficient": False,
+        "human_deep_authorization": authorization,
     }
 
 
@@ -1238,11 +1295,15 @@ def semantic_deduplicate_findings(findings: Iterable[dict]) -> list[dict]:
     return [cluster["finding"] for cluster in clusters]
 
 
-def result_schema_for_slot(required_references: list[dict] | None = None) -> dict:
+def result_schema_for_slot(
+        required_references: list[dict] | None = None, *,
+        human_deep_authorization: dict | None = None) -> dict:
     """Return the single strict lens-result schema used by every transport."""
     import evaluation_output
 
-    return evaluation_output.lens_slot_output_schema(required_references)
+    return evaluation_output.lens_slot_output_schema(
+        required_references,
+        human_deep_authorization=human_deep_authorization)
 
 
 def review_slot_resume_identity(*, lease: dict, result_schema: dict,
@@ -1649,7 +1710,8 @@ def changed_content_from_patch(patch: str) -> dict[str, str]:
             for path, lines in sorted(rows.items())}
 
 
-def _routing_decision(routing: dict, catalog: dict) -> dict:
+def _routing_decision(routing: dict, catalog: dict, *,
+                      allow_human_deep: bool = False) -> dict:
     """Validate one complete catalog mapping and preserve its evidence."""
     expected = [str(row.get("id")) for row in catalog.get("lenses") or []]
     rows = routing.get("lenses") or []
@@ -1661,7 +1723,9 @@ def _routing_decision(routing: dict, catalog: dict) -> dict:
         verdict = str(row.get("tier") or row.get("verdict") or "")
         if verdict == "deep (forced)":
             verdict = "deep"
-        if verdict not in {"sweep", "light", "n/a"}:
+        allowed = {"sweep", "light", "n/a"} | (
+            {"deep"} if allow_human_deep else set())
+        if verdict not in allowed:
             raise ReviewKernelError(f"mapper returned invalid verdict for {lens_id}")
         evidence_key = "negative_evidence" if verdict == "n/a" else "evidence"
         evidence = list(row.get(evidence_key) or row.get("reasons") or [])
@@ -1784,7 +1848,8 @@ def _lens_untrusted_evidence_instruction() -> str:
 def _create_verified_v3_lease(store, envelope_ref: dict, view_ref: dict, *,
                               slot_id: str, lens_ids,
                               canonical_revision: int,
-                              run_id: str | None = None) -> dict:
+                              run_id: str | None = None,
+                              human_deep_authorization: dict | None = None) -> dict:
     """Mint a lease only after its bounded v3 view resolves fail-closed."""
     import review_evidence as evidence
 
@@ -1808,6 +1873,14 @@ def _create_verified_v3_lease(store, envelope_ref: dict, view_ref: dict, *,
         "producer": view["producer"],
         "canonical_revision": int(canonical_revision),
     }
+    if human_deep_authorization is not None:
+        authorization = _validate_human_deep_authorization(
+            human_deep_authorization)
+        if not slot_id.startswith("deep.") or not set(lenses) <= set(
+                authorization["lens_ids"]):
+            raise ReviewKernelError(
+                "human-deep lease does not match its authorized lens set")
+        base["human_deep_authorization"] = authorization
     fingerprint = evidence.content_fingerprint(base)
     payload = dict(base, lease_fingerprint=fingerprint)
     if run_id is not None:
@@ -1868,7 +1941,8 @@ def _collect_verified_slot_results(store, lease_refs, result_refs) -> dict:
         for field in ("slot_id", "lens_ids", "target_fingerprint",
                       "context_fingerprint", "view_fingerprint",
                       "reference_manifest_fingerprint", "producer",
-                      "canonical_revision", "execution_binding"):
+                      "canonical_revision", "execution_binding",
+                      "human_deep_authorization"):
             if field not in lease:
                 continue
             if result.get(field) != lease.get(field):
@@ -1882,12 +1956,16 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                stage: str, settled_ref: dict | None = None,
                run_id: str | None = None,
                canonical_revision: int | None = None,
-               review_policy: dict | None = None) -> tuple[list, list]:
+               review_policy: dict | None = None,
+               explicit_context_note: str = "",
+               human_deep_authorization: dict | None = None) -> tuple[list, list]:
     """Allocate one immutable lease/producer slot per selected sweep lens."""
     import lens as lensmod
     import review_evidence as evidence
 
-    full = lensmod.dispatch_briefs(routing, base=base, runnability=runnability)
+    full = lensmod.dispatch_briefs(
+        routing, base=base, runnability=runnability,
+        context_note=explicit_context_note)
     deep = [lid for lid, row in sorted(decision.items())
             if row["verdict"] == "deep"]
     light = [lid for lid, row in sorted(decision.items())
@@ -1898,6 +1976,15 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
         raise ReviewKernelError(
             "quick-only review routing contains deep disposition(s): " +
             ", ".join(deep))
+    if deep:
+        if human_deep_authorization is None:
+            raise ReviewKernelError(
+                "automatic-deep-creation-refused: direct-human-command-required")
+        authorization = _validate_human_deep_authorization(
+            human_deep_authorization)
+        if sorted(deep) != authorization["lens_ids"]:
+            raise ReviewKernelError(
+                "human-deep routing differs from the authorized lens set")
     revision = (evidence.next_revision(store) if canonical_revision is None
                 else int(canonical_revision))
     full_briefs = {row["id"]: row for row in full.get("deep") or []}
@@ -1927,7 +2014,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             routing_fingerprint=routing_fingerprint, producer=RESULT_AUTHOR)
         lease_ref = _create_verified_v3_lease(
             store, envelope_ref, view_ref, slot_id=slot_id,
-            lens_ids=lens_ids, canonical_revision=revision, run_id=run_id)
+            lens_ids=lens_ids, canonical_revision=revision, run_id=run_id,
+            human_deep_authorization=(human_deep_authorization
+                                      if slot_id.startswith("deep.") else None))
         is_sweep = slot_id.startswith("sweep.")
         source = full_briefs.get(
             "light-sweep" if is_sweep else lens_ids[0]) or {}
@@ -1942,7 +2031,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "task_slot": f"review-{lease_ref['fingerprint'][:20]}",
             "read_only": True, "write_allow": [result_path],
         }
-        result_schema = result_schema_for_slot(required_references)
+        result_schema = result_schema_for_slot(
+            required_references,
+            human_deep_authorization=(human_deep_authorization
+                                      if slot_id.startswith("deep.") else None))
         resume_identity = review_slot_resume_identity(
             lease=store.read(lease_ref), result_schema=result_schema,
             producer_contract=producer_contract, result_path=result_path)
@@ -1990,6 +2082,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                        "but do not gate. Do not re-file a settled fingerprint "
                        "unless recurrence names materially new evidence."
                        + _lens_untrusted_evidence_instruction()
+                       + str(explicit_context_note or "")
                        + ((" Read and apply the plugin-pinned language "
                            "references, resolving them against the plugin "
                            "root that contains role_instructions. Read only "
@@ -2008,6 +2101,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "wait_policy": copy.deepcopy(
                 sweep_wait if is_sweep else source.get("wait_policy") or {}),
         }
+        if slot_id.startswith("deep."):
+            brief["human_deep_authorization"] = copy.deepcopy(
+                human_deep_authorization)
         if required_references:
             brief["language_references"] = required_references
         if settled_ref:
@@ -2018,6 +2114,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                "view": view_ref, "lease": lease_ref,
                "brief": brief_ref, "result_path": result_path,
                "producer_contract": producer_contract}
+        if slot_id.startswith("deep."):
+            row["human_deep_authorization"] = copy.deepcopy(
+                human_deep_authorization)
         internal.append(row)
         manifest.append({"slot_id": slot_id, "lens_ids": lens_ids,
                          "brief": _portable_ref(brief_ref),
@@ -2026,6 +2125,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                          "result_path": result_path,
                          "dispatch_set": copy.deepcopy(brief["dispatch_set"]),
                          "wait_policy": copy.deepcopy(brief["wait_policy"])})
+        if slot_id.startswith("deep."):
+            manifest[-1]["human_deep_authorization"] = copy.deepcopy(
+                human_deep_authorization)
     expanded = {lid for row in internal for lid in row["lens_ids"]}
     if expanded != set(deep) | set(light) or \
             len(entries) != len(deep) + len(light):
@@ -2939,6 +3041,11 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                               not in seen_directives)
         requested = _directive_lens_ids(directive_rows, catalog)
         membership_pins = set(requested)
+        if graph_degraded:
+            # The immutable-diff fallback is useful only if its declared
+            # architecture/security floors are actual selected work, not
+            # prose in graph-quality metadata.
+            membership_pins.update({"architecture", "security"})
         if retry_lenses is not None:
             retry = {str(value) for value in retry_lenses if str(value)}
             known = {str(row.get("id") or "")
@@ -3012,6 +3119,15 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                 "routing_input": _portable_ref(routing_input_ref),
                 "routing_decision": _portable_ref(decision_ref),
                 "settled_findings": _portable_ref(settled_ref)})
+    context_diff = str(diff.get("patch") or diff.get("text") or "")
+    if not context_diff and files:
+        context_diff = json.dumps(diff, sort_keys=True, indent=2)
+    context_impact = quality.get("impact") or impact
+    context_paths = write_context(
+        ws, diff=context_diff, impact=context_impact,
+        blast_radius=json.dumps(context_impact, sort_keys=True, indent=2)
+        if context_impact else "")
+    explicit_context_note = context_note(context_paths)
     revision = evidence.next_revision(store)
     run_id = _run_id(stage, _target_run_fingerprint(target),
                      envelope_ref["fingerprint"], revision)
@@ -3019,7 +3135,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         store, envelope_ref, routing, decision, base=base,
         runnability=runnability, stage=stage, settled_ref=settled_ref,
         run_id=run_id, canonical_revision=revision,
-        review_policy=depth_policy)
+        review_policy=depth_policy,
+        explicit_context_note=explicit_context_note)
     _prepare_slot_result_dirs(ws, internal_slots)
     depth_receipt = _assert_review_depth_manifest(depth_policy, slots)
     counters.update({
@@ -3107,6 +3224,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "quality": quality_ref, "slots": internal_slots,
         "review_depth_policy": depth_policy,
         "review_depth_receipt": depth_receipt,
+        "context_paths": context_paths,
+        "explicit_context_note": explicit_context_note,
         "dispatch_slots": slots,
         "manifest": manifest, "counters": counters,
         "slot_conservation": slot_conservation,
@@ -3127,6 +3246,125 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
              slots=[] if execution_preflight else
              [row["slot_id"] for row in slots],
              dispatch_pending=bool(execution_preflight))
+    return manifest
+
+
+def request_human_deep(
+        ws: str, *, run_id: str, lens_ids: Iterable[str], actor: str,
+        request_receipt: str, requested_at: str | None = None) -> dict:
+    """Authorize exact deep lenses only from an attributable human command."""
+    import lens as lensmod
+    import review_evidence as evidence
+
+    state = _load_state(ws, run_id)
+    if state.get("status") != "ready":
+        raise ReviewKernelError(
+            "human-deep authorization requires a ready, uncollected review")
+    actor = str(actor or "").strip()
+    request_receipt = str(request_receipt or "").strip()
+    lenses = sorted({str(value).strip() for value in lens_ids
+                     if str(value).strip()})
+    if not actor or not request_receipt or not lenses:
+        raise ReviewKernelError(
+            "human-deep command requires actor, lens set, and request receipt")
+    catalog = lensmod.load_catalog()
+    known = {str(row.get("id") or "")
+             for row in catalog.get("lenses") or []}
+    unknown = sorted(set(lenses) - known)
+    if unknown:
+        raise ReviewKernelError(
+            "human-deep command names unknown lens(es): " + ", ".join(unknown))
+    timestamp = str(requested_at or "").strip() or datetime.now(
+        timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        raise ReviewKernelError(
+            "human-deep command timestamp must be ISO-8601") from None
+    if parsed.tzinfo is None:
+        raise ReviewKernelError(
+            "human-deep command timestamp must include a timezone")
+    target_fingerprint = str((state.get("target") or {}).get(
+        "fingerprint") or "")
+    authorization = {
+        "schema": "taskplane.human-deep-authorization/v1",
+        "source": "direct-human-command",
+        "actor": actor,
+        "requested_at": timestamp,
+        "lens_ids": lenses,
+        "request_receipt": request_receipt,
+        "run_id": run_id,
+        "target_fingerprint": target_fingerprint,
+    }
+    authorization["fingerprint"] = evidence.content_fingerprint(authorization)
+    authorization = _validate_human_deep_authorization(authorization)
+    if any((row.get("human_deep_authorization") or {}).get("fingerprint") ==
+           authorization["fingerprint"] for row in state.get("slots") or []):
+        raise ReviewKernelError("human-deep authorization was already dispatched")
+
+    routing = copy.deepcopy(state.get("routing") or {})
+    for entry in routing.get("lenses") or []:
+        lens_id = str(entry.get("id") or "")
+        if lens_id in lenses:
+            entry["tier"] = "deep"
+            entry["verdict"] = "deep"
+            entry["evidence"] = list(entry.get("evidence") or []) + [
+                "direct human deep authorization: " + authorization["fingerprint"]]
+        else:
+            entry["tier"] = "n/a"
+            entry["verdict"] = "n/a"
+            entry["evidence"] = ["outside exact human-authorized lens set"]
+    policy = human_deep_policy(authorization)
+    routing.setdefault("context", {})["review_depth_policy"] = copy.deepcopy(
+        policy)
+    decision = _routing_decision(routing, catalog, allow_human_deep=True)
+    store = evidence.ArtifactStore(ws)
+    envelope = store.read(state["envelope"])
+    settled_ref = ((envelope.get("change") or {}).get(
+        "settled_findings"))
+    revision = evidence.next_revision(store)
+    internal, dispatch = _slot_plan(
+        store, state["envelope"], routing, decision, base="HEAD",
+        runnability=envelope.get("runnability") or {},
+        stage=str(state.get("stage") or "review"),
+        settled_ref=settled_ref, run_id=run_id,
+        canonical_revision=revision, review_policy=policy,
+        explicit_context_note=str(state.get("explicit_context_note") or ""),
+        human_deep_authorization=authorization)
+    for slot in internal:
+        slot["run_id"] = run_id
+    _prepare_slot_result_dirs(ws, internal)
+    all_internal = list(state.get("slots") or []) + internal
+    all_dispatch = list(state.get("dispatch_slots") or []) + dispatch
+    depth_receipt = _assert_review_depth_manifest(policy, all_dispatch)
+    audit = {
+        "schema": "taskplane.human-deep-audit/v1",
+        "status": "authorized",
+        "authorization": authorization,
+        "slot_ids": [row["slot_id"] for row in dispatch],
+        "lease_fingerprints": [row["lease"]["fingerprint"] for row in dispatch],
+        "brief_fingerprints": [row["brief"]["fingerprint"] for row in dispatch],
+    }
+    audit_ref = store.put("human-deep-audit", audit)
+    manifest = _manifest({
+        "schema": "taskplane.human-deep-dispatch/v1",
+        "status": "ready", "run_id": run_id,
+        "human_deep_authorization": authorization,
+        "audit": _portable_ref(audit_ref), "slots": dispatch,
+        "review_depth_policy": depth_receipt,
+    })
+    counters = copy.deepcopy(state.get("counters") or {})
+    counters["dispatched_agent_count"] = len(all_dispatch)
+    counters["view_count"] = len(all_dispatch)
+    _save_state(ws, dict(
+        state, slots=all_internal, dispatch_slots=all_dispatch,
+        review_depth_policy=policy, review_depth_receipt=depth_receipt,
+        human_deep_authorization=authorization,
+        human_deep_audit=_portable_ref(audit_ref), counters=counters,
+        manifest=manifest))
+    tp.trace(ws, "review_human_deep_authorized", run_id=run_id,
+             actor=actor, lens_ids=lenses,
+             authorization_fingerprint=authorization["fingerprint"])
     return manifest
 
 
@@ -3245,6 +3483,44 @@ def _producer_assignment_path(ws: str, lease_fingerprint: str) -> str:
                         lease_fingerprint + ".json")
 
 
+def _dispatch_audit_path(ws: str, lease_fingerprint: str, *,
+                         observation: str | None = None) -> str:
+    name = lease_fingerprint + (f"-{observation}" if observation else "")
+    return os.path.join(_kernel_root(ws), "dispatch-audit", name + ".json")
+
+
+def record_dispatch_audit(ws: str, *, contract: dict, event: dict,
+                          status: str, reason: str,
+                          assignment: dict | None = None) -> dict:
+    """Persist expected-vs-observed lease identity for every governed spawn."""
+    expected = str(contract.get("bootstrap_lease_fingerprint") or "")
+    observed = str((assignment or {}).get("lease_fingerprint") or "")
+    child = str(event.get("agent_id") or "unknown")
+    base = {
+        "schema": "taskplane.dispatch-audit/v1",
+        "status": status,
+        "expected_lease_fingerprint": expected,
+        "observed_lease_fingerprint": observed or None,
+        "task_slot": str(contract.get("task_slot") or tp.task_slot() or ""),
+        "producer_child_id": child,
+        "producer_session": str(event.get("session_id") or
+                                event.get("turn_id") or ""),
+        "reason": str(reason),
+        "evidence_eligible": status == "authorized" and expected == observed,
+    }
+    base["fingerprint"] = review_evidence_runtime.content_fingerprint(base)
+    observation = hashlib.sha256(json.dumps(
+        [child, base["producer_session"], status],
+        separators=(",", ":")).encode()).hexdigest()[:16]
+    tp.atomic_write_json(
+        _dispatch_audit_path(ws, expected or "unleased",
+                             observation=observation), base, sort_keys=True)
+    if base["evidence_eligible"]:
+        tp.atomic_write_json(_dispatch_audit_path(ws, expected), base,
+                             sort_keys=True)
+    return base
+
+
 def _child_observation_path(ws: str, event: dict) -> str:
     identity = _hook_child_identity(event)
     digest = hashlib.sha256(json.dumps(
@@ -3306,13 +3582,21 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
                     expected["write_allow"] and \
                     str(task_slot or "") == expected["task_slot"]:
                 candidates.append((state, slot))
+    governed_lease = str(contract.get("bootstrap_lease_fingerprint") or "")
     if not candidates:
+        if governed_lease:
+            raise ReviewKernelError(
+                "dispatch-lease-mismatch: governed review spawn has no "
+                "matching live lease")
         return None
     if len(candidates) != 1 or not contract.get("read_only"):
         raise ReviewKernelError("leased slot producer dispatch is ambiguous")
     state, slot = candidates[0]
     store = __import__("review_evidence").ArtifactStore(ws)
     lease = store.read(slot["lease"])
+    if governed_lease and governed_lease != lease.get("lease_fingerprint"):
+        raise ReviewKernelError(
+            "dispatch-lease-mismatch: active contract cites another lease")
     if lease.get("execution_binding") is not None:
         envelope = store.read(slot["envelope"])
         review_evidence_runtime.verify_execution_binding(
@@ -3367,6 +3651,10 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
         child = dict(child, lease_fingerprint=lease["lease_fingerprint"],
                      run_id=state["run_id"], slot_id=lease["slot_id"])
         tp.atomic_write_json(child_path, child, sort_keys=True)
+    record_dispatch_audit(
+        ws, contract=contract, event=event, status="authorized",
+        reason="spawn matched exact immutable review lease",
+        assignment=assignment)
     return assignment
 
 
@@ -4090,8 +4378,24 @@ def _host_receipt_trust(ws: str, slot: dict, lease: dict,
     receipt = tp.load_json(_receipt_path(ws, lease["lease_fingerprint"]),
                            default=None, what="slot write observation")
     if receipt is None:
-        return {"trust": "leased-artifact",
-                "host_provenance": {"status": "unavailable"}}
+        audit = tp.load_json(
+            _dispatch_audit_path(ws, lease["lease_fingerprint"]),
+            default=None, what="review dispatch audit")
+        if lease.get("execution_binding") is not None and (
+                not isinstance(audit, dict) or
+                audit.get("schema") != "taskplane.dispatch-audit/v1" or
+                audit.get("status") != "authorized" or
+                audit.get("expected_lease_fingerprint") !=
+                lease["lease_fingerprint"] or
+                audit.get("observed_lease_fingerprint") !=
+                lease["lease_fingerprint"] or
+                not audit.get("evidence_eligible")):
+            raise evidence.ProvenanceError(
+                "slot result is excluded: governed spawn lacks a matching "
+                "dispatch lease audit")
+        return {"trust": "dispatch-leased-artifact",
+                "dispatch_audit": copy.deepcopy(audit),
+                "host_provenance": {"status": "dispatch-authorized"}}
     expected_receipt = {
         "run_id": slot.get("run_id"),
         "lease_fingerprint": lease["lease_fingerprint"],
@@ -4170,7 +4474,10 @@ def _read_slot_output(ws: str, store,
             producer=str(lease.get("producer") or ""))
     for field in ("lease_fingerprint", "slot_id", "lens_ids",
                   "target_fingerprint", "context_fingerprint",
-                  "view_fingerprint", "canonical_revision"):
+                  "view_fingerprint", "canonical_revision",
+                  "human_deep_authorization"):
+        if field not in lease:
+            continue
         if row.get(field) != lease.get(field):
             raise evidence.ProvenanceError(
                 f"slot result {field} does not match lease")
@@ -4211,6 +4518,10 @@ def _read_slot_output(ws: str, store,
         raise evidence.ProvenanceError("finding schema must be a list")
     findings = [_validate_finding(item, lease["lens_ids"]) for item in findings]
     findings, notes = _adjudicate_findings(ws, store, brief, findings)
+    settled_count = 0
+    if brief.get("settled_findings"):
+        settled_count = int((store.read(brief["settled_findings"]) or {}).get(
+            "count") or 0)
     import review_repair
     repair_input = copy.deepcopy(row)
     # A failed verdict may omit checked_evidence in the producer schema.
@@ -4250,7 +4561,9 @@ def _read_slot_output(ws: str, store,
         references_applied=expected_references,
         source=slot["result_path"],
         lens_results=[by_lens[lid] for lid in sorted(by_lens)],
-        repair_audit=recovery["audit"])
+        repair_audit=recovery["audit"],
+        human_deep_authorization=lease.get("human_deep_authorization"),
+        settled_count=settled_count)
     canonical = store.read(ref)
     canonical.update({key: lease[key] for key in (
         "reference_manifest_fingerprint", "routing_fingerprint", "producer")})
@@ -4269,7 +4582,13 @@ def _read_slot_output(ws: str, store,
         "result_fingerprint": ref["fingerprint"],
         "checks": ["sealed-path", "lease-identity", "canonical-schema",
                    "lens-coverage", "finding-verdict-consistency",
-                   "metadata-equivalence", "execution-binding"],
+                   "metadata-equivalence", "execution-binding"] +
+                  (["finding-provenance"] if findings else []) +
+                  (["human-deep-authorization"]
+                   if lease.get("human_deep_authorization") else []),
+        **({"human_deep_authorization": copy.deepcopy(
+                lease["human_deep_authorization"])}
+           if lease.get("human_deep_authorization") else {}),
         "repair": copy.deepcopy(recovery["audit"]),
         **trust,
     })

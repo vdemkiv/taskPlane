@@ -1228,12 +1228,57 @@ def create_slot_lease(store: ArtifactStore, envelope_ref: dict, view_ref: dict,
                      fingerprint=lease_fp)
 
 
+def finding_provenance_receipt(*, lease: dict, finding: dict, source: str,
+                               settled_count: int = 0) -> dict:
+    """Bind one structured finding to its exact immutable producer lease."""
+    if not isinstance(finding, dict) or not str(source or "").strip():
+        raise ProvenanceError(
+            "structured finding requires a leased artifact source")
+    material = {key: copy.deepcopy(value) for key, value in finding.items()
+                if key != "provenance_receipt"}
+    base = {
+        "schema": "taskplane.finding-provenance-receipt/v1",
+        "lease_fingerprint": str(lease.get("lease_fingerprint") or ""),
+        "slot_id": str(lease.get("slot_id") or ""),
+        "lens": str(finding.get("lens") or ""),
+        "target_fingerprint": str(lease.get("target_fingerprint") or ""),
+        "context_fingerprint": str(lease.get("context_fingerprint") or ""),
+        "view_fingerprint": str(lease.get("view_fingerprint") or ""),
+        "canonical_revision": lease.get("canonical_revision"),
+        "finding_fingerprint": content_fingerprint(material),
+        "source": str(source),
+        "settled_count": max(0, int(settled_count)),
+    }
+    if any(not base.get(key) for key in (
+            "lease_fingerprint", "slot_id", "lens", "target_fingerprint",
+            "context_fingerprint", "view_fingerprint")):
+        raise ProvenanceError("structured finding provenance is incomplete")
+    return dict(base, receipt_fingerprint=content_fingerprint(base))
+
+
+def validate_finding_provenance(*, lease: dict, finding: dict) -> dict:
+    receipt = finding.get("provenance_receipt") \
+        if isinstance(finding, dict) else None
+    if not isinstance(receipt, dict):
+        raise ProvenanceError(
+            "structured finding is missing its provenance receipt")
+    expected = finding_provenance_receipt(
+        lease=lease, finding=finding, source=str(receipt.get("source") or ""),
+        settled_count=receipt.get("settled_count") or 0)
+    if receipt != expected:
+        raise ProvenanceError(
+            "structured finding provenance receipt contradicts its lease")
+    return receipt
+
+
 def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
                       authored_slot: str, lens_ids, findings,
                       authored_by: str = "lens-slot",
                       references_applied=None, notes=None,
                       source: str | None = None, lens_results=None,
-                      repair_audit: dict | None = None) -> dict:
+                      repair_audit: dict | None = None,
+                      human_deep_authorization: dict | None = None,
+                      settled_count: int = 0) -> dict:
     lease = store.read(lease_ref)
     if lease.get("schema") != "taskplane.slot-lease/v1":
         raise ProvenanceError("result lease is invalid")
@@ -1244,6 +1289,14 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
     lenses = _strings(lens_ids)
     if lenses != lease.get("lens_ids"):
         raise ProvenanceError("result lens ids do not match slot lease")
+    structured_findings = copy.deepcopy(list(findings or []))
+    for finding in structured_findings:
+        if not isinstance(finding, dict):
+            raise ProvenanceError("finding artifact must be structured")
+        finding["provenance_receipt"] = finding_provenance_receipt(
+            lease=lease, finding=finding,
+            source=str(source or "sealed-slot-result"),
+            settled_count=settled_count)
     base = {
         "schema": "taskplane.slot-result/v1",
         "lease_fingerprint": lease["lease_fingerprint"],
@@ -1254,7 +1307,7 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
         "view_fingerprint": lease["view_fingerprint"],
         "canonical_revision": lease["canonical_revision"],
         "authored_by": authored_by,
-        "findings": copy.deepcopy(list(findings or [])),
+        "findings": structured_findings,
     }
     if lens_results is not None:
         if not isinstance(lens_results, list):
@@ -1267,6 +1320,12 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
         base["repair_audit"] = copy.deepcopy(repair_audit)
     if lease.get("execution_binding") is not None:
         base["execution_binding"] = copy.deepcopy(lease["execution_binding"])
+    if lease.get("human_deep_authorization") is not None:
+        if human_deep_authorization != lease["human_deep_authorization"]:
+            raise ProvenanceError(
+                "human-deep result does not match its lease authorization")
+        base["human_deep_authorization"] = copy.deepcopy(
+            human_deep_authorization)
     if source:
         # This is supplied by ReviewKernel from the sealed lease, never by
         # the lens payload.  It is therefore immutable producer provenance,
@@ -1317,12 +1376,15 @@ def collect_partial_slot_results(store: ArtifactStore,
         ]
         identity_fields.extend(field for field in (
             "reference_manifest_fingerprint", "routing_fingerprint",
-            "producer", "execution_binding") if field in lease)
+            "producer", "execution_binding", "human_deep_authorization")
+            if field in lease)
         for field in identity_fields:
             if row.get(field) != lease.get(field):
                 raise ProvenanceError(f"result {field} does not match lease")
         if row.get("authored_by") != "lens-slot":
             raise ProvenanceError("result is not slot-authored")
+        for finding in row.get("findings") or []:
+            validate_finding_provenance(lease=lease, finding=finding)
         actual[lease_fp] = row
     revisions = {row.get("canonical_revision") for row in leases}
     targets = {row.get("target_fingerprint") for row in leases}

@@ -16,6 +16,17 @@ You are **tp-fixer**, the FIX step. Same contract as the executor (task
 scope), hook-enforced. You get at most `max_fix_cycles` attempts —
 after that the loop escalates to the human, and that's correct behavior.
 
+Worker efficiency contract (`taskplane.worker-guidance/v1`):
+
+- `composite-command`: batch related read-only discovery or verification into
+  one bounded composite command when inputs and failure boundaries are shared.
+- `per-step-marker`: emit one compact marker per completed command step so a
+  partial failure stays attributable without rerunning completed work.
+- `verdict-sized-output`: return only the decision, exact anchors, failed
+  checks, and the smallest recovery instruction.
+
+This guidance never weakens contracts, evidence, tests, or review gates.
+
 1. Read `.eval/verdict.json`: every failure carries a repro. Reproduce it
    FIRST (`discipline/systematic-debugging.md`) — never fix unverified.
    Also apply every scoped `language_references` record in the action payload:

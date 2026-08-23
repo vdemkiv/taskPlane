@@ -2295,7 +2295,8 @@ def dod_check(contract: dict, workspace: str,
               ignore_prefixes: tuple = (),
               regression_files=None,
               notices: list | None = None,
-              suite_evidence: dict | None = None) -> list:
+              suite_evidence: dict | None = None,
+              dod_graph_input: dict | None = None) -> list:
     """Return a list of DoD errors ([] = pass). Fails closed if a scope
     diff is required but no snapshot exists.
 
@@ -2313,6 +2314,38 @@ def dod_check(contract: dict, workspace: str,
     errors: list = []
     coding = contract.get("coding") or {}
     dod = coding.get("dod") or {}
+
+    if dod.get("require_graph_input"):
+        row = dod_graph_input if isinstance(dod_graph_input, dict) else {}
+        if row.get("schema") != "taskplane.dod-graph-input/v1":
+            errors.append(
+                "graph_input: explicit DoD graph input is missing")
+        else:
+            material = {key: row[key] for key in row if key != "fingerprint"}
+            expected = hashlib.sha256(json.dumps(
+                material, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False).encode("utf-8")).hexdigest()
+            files = row.get("changed_files")
+            files_fp = hashlib.sha256(json.dumps(
+                files if isinstance(files, list) else [],
+                separators=(",", ":")).encode("utf-8")).hexdigest()
+            quality = row.get("scan_quality") or {}
+            sparse = bool(row.get("sparse"))
+            sparse_evidence = row.get("sparse_evidence") or {}
+            if row.get("fingerprint") != expected or \
+                    not isinstance(files, list) or \
+                    row.get("changed_files_fingerprint") != files_fp or \
+                    quality.get("schema") != "taskplane.graph-scan-quality/v1" or \
+                    not row.get("complete"):
+                errors.append(
+                    "graph_input: DoD graph input is incomplete or contradictory")
+            elif sparse and (sparse_evidence.get("status") != "proven" or
+                             sparse_evidence.get("graph_module_count") != 0):
+                errors.append(
+                    "graph_input: sparse graph fallback lacks proven sparse evidence")
+            elif not sparse and not isinstance(row.get("impact"), dict):
+                errors.append(
+                    "graph_input: non-sparse graph omitted impact evidence")
 
     if dod.get("require_clean_scope_diff", True) and coding.get("scope_paths"):
         if not snapshot_ref:
@@ -2432,13 +2465,13 @@ def dod_check(contract: dict, workspace: str,
             import regression as _rg
             changed = (list(regression_files) if regression_files is not None
                        else changed_files(workspace, snapshot_ref))
-            graph_impacted = None
-            try:
-                import depgraph as _dg
-                graph_impacted = _dg.impact(
-                    workspace, changed).get("impacted") or None
-            except Exception:
-                graph_impacted = None      # sparse/absent graph → import-map only
+            # T11: graph production belongs to depgraph's explicit caller
+            # edge.  This lightweight gate consumes the already-fingerprinted
+            # record and never imports/recomputes the graph itself.
+            graph_impact = ((dod_graph_input or {}).get("impact")
+                            if isinstance(dod_graph_input, dict) else None)
+            graph_impacted = ((graph_impact or {}).get("impacted") or None
+                              if isinstance(graph_impact, dict) else None)
             # The approved task suite is the task-level behavioral proof. If
             # it is green for these exact bytes, running a second current +
             # detached-baseline pytest radius in the same gate duplicates

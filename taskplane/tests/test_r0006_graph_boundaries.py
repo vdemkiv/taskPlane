@@ -233,22 +233,25 @@ def test_boundary_cut_shrinks_to_the_measured_residual_sccs() -> None:
         ROOT, source_revision="t09-focused-boundary")
     rows = {frozenset(row["members"]): row for row in inventory["sccs"]}
     orchestration = frozenset({
-        "taskplane.audit", "taskplane.dashboard", "taskplane.defect_claim",
-        "taskplane.design_contract", "taskplane.evidence", "taskplane.lens",
-        "taskplane.lens_signals", "taskplane.loop", "taskplane.loop_status",
-        "taskplane.requirements", "taskplane.retro", "taskplane.review",
-        "taskplane.review_progression", "taskplane.review_repair",
+        "taskplane.audit", "taskplane.dashboard", "taskplane.evidence",
+        "taskplane.loop", "taskplane.loop_status", "taskplane.retro",
+        "taskplane.review", "taskplane.review_repair",
         "taskplane.review_retry", "taskplane.runtime_eval", "taskplane.views",
     })
     kernel = frozenset({
-        "taskplane.collision", "taskplane.depgraph", "taskplane.regression",
+        "taskplane.collision", "taskplane.regression",
         "taskplane.review_evidence", "taskplane.stage_entities",
         "taskplane.stage_handoff", "taskplane.taskplane_lite",
     })
+    lens_family = frozenset({
+        "taskplane.lens", "taskplane.lens_signals",
+        "taskplane.review_progression",
+    })
 
-    assert set(rows) == {orchestration, kernel}
-    assert rows[orchestration]["edge_count"] == 48
-    assert rows[kernel]["edge_count"] == 13
+    assert set(rows) == {orchestration, kernel, lens_family}
+    assert rows[orchestration]["edge_count"] == 29
+    assert rows[kernel]["edge_count"] == 11
+    assert rows[lens_family]["edge_count"] == 5
     cyclic = set().union(*rows)
     assert not ({"taskplane.decompose", "taskplane.graph_decomposition",
                  "taskplane.graph_primitives"} & cyclic)

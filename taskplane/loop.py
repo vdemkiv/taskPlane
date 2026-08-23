@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import base64
+import copy
 import contextlib
 import contextvars
 import json
@@ -2641,6 +2642,26 @@ STEP_ROLE = {
 }
 HUMAN_STEPS = progress_engine.HUMAN_STEPS
 
+WORKER_GUIDANCE = {
+    "schema": "taskplane.worker-guidance/v1",
+    "requirements": [
+        {"id": "composite-command",
+         "text": "Batch related read-only discovery or verification into one bounded composite command when their inputs and failure boundary are shared."},
+        {"id": "per-step-marker",
+         "text": "Emit one compact marker for each completed command step so partial failure remains attributable without rerunning completed work."},
+        {"id": "verdict-sized-output",
+         "text": "Return only verdict-sized evidence: the decision, exact anchors, failed checks, and the smallest recovery instruction."},
+    ],
+    "correctness_priority": "guidance never weakens contracts, evidence, tests, or review gates",
+}
+
+
+def worker_guidance(step: str) -> dict | None:
+    """Project the same bounded efficiency contract to every live worker."""
+    if step not in {"execute", "evaluate", "fix"}:
+        return None
+    return copy.deepcopy(WORKER_GUIDANCE)
+
 COMMAND_WAVE_SCHEMA = command_wave.COMMAND_WAVE_SCHEMA
 command_wave_create = command_wave.create
 command_wave_resume = command_wave.resume
@@ -2683,6 +2704,8 @@ def _native_dispatch_intent(
             "role": role,
             "task_name": dispatch.get("task_name"),
             "wait_policy": dict(wait_policy),
+            **({"worker_guidance": worker_guidance(step)}
+               if worker_guidance(step) else {}),
         },
         "run_id": run_id,
         "task_id": task_id,
@@ -4109,6 +4132,7 @@ def wave(ws: str) -> dict:
             "design": _design_context(ws, state),
             "knowledge": kb.render_context(recalled),
             "runtime_evals": runtime_eval.guidance("execute"),
+            "worker_guidance": worker_guidance("execute"),
             **({"enforcement": enforcement} if enforcement else {}),
         }
         entry["wait_policy"] = dict(wave_wait_policy)
@@ -4789,6 +4813,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             "language_references") if routing else None),
         "review_kernel": review_kernel,
         "runtime_evals": runtime_eval.guidance(step),
+        **({"worker_guidance": worker_guidance(step)}
+           if worker_guidance(step) else {}),
         "audit": audit_info,
         "impact": imp and {**imp, "context": depgraph.render_context(imp)},
         "design": _design_context(ws, state),
@@ -5138,11 +5164,15 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
     # Scope regression evidence to this task; loop-owned artifacts self-gate.
     regression_files = [f for f in (tp.changed_files(ws, snapshot) if snapshot else [])
                         if tp.match_any(f, task.get("scope") or [])]
+    contract.setdefault("coding", {}).setdefault("dod", {})[
+        "require_graph_input"] = True
+    graph_input = depgraph.dod_graph_input(ws, regression_files)
     suite_evidence = {}
     errors = (_design_current_errors(ws, state) + tp.dod_check(
         contract, ws, snapshot, ignore_prefixes=lens_router.LOOP_OWNED,
         regression_files=regression_files,
-        suite_evidence=suite_evidence))
+        suite_evidence=suite_evidence,
+        dod_graph_input=graph_input))
     # Preserve the long-standing four-argument patch seam used by race and
     # failure-injection tests. This is transient validation output: gate()
     # copies it into the fresh locked state only after all checks pass.
@@ -6813,9 +6843,11 @@ def _compute_signoff_dod(ws: str, state: dict) -> dict:
                                         if baseline else [])
                      if tp.match_any(f, task.get("scope") or [])]
         task_notices: list = []
+        test_contract["coding"]["dod"]["require_graph_input"] = True
+        graph_input = depgraph.dod_graph_input(ws, regression_files)
         errors.extend(f"task {task.get('id', '?')}: {e}" for e in tp.dod_check(
             test_contract, ws, baseline, regression_files=regression_files,
-            notices=task_notices))
+            notices=task_notices, dod_graph_input=graph_input))
         notices.extend(f"task {task.get('id', '?')}: {n}"
                        for n in task_notices)
     errors.extend(_engineering_review_errors(ws, state))

@@ -1937,6 +1937,48 @@ def impact(ws: str, changed_files, max_depth: int = 3,
     }
 
 
+def dod_graph_input(ws: str, changed_files, *, graph: dict | None = None,
+                    impact_record: dict | None = None) -> dict:
+    """Produce the explicit graph/impact record consumed by DoD gates."""
+    graph = copy.deepcopy(graph) if isinstance(graph, dict) else load(ws)
+    files = sorted({str(value) for value in changed_files or []
+                    if str(value).strip()})
+    quality = scan_quality(graph)
+    sparse = not bool(graph.get("modules"))
+    if impact_record is None:
+        impact_record = impact(ws, files)
+    graph_material = copy.deepcopy(graph)
+    graph_fingerprint = hashlib.sha256(json.dumps(
+        graph_material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    files_fingerprint = hashlib.sha256(json.dumps(
+        files, separators=(",", ":")).encode("utf-8")).hexdigest()
+    sparse_evidence = {
+        "status": "proven" if sparse and not quality.get("degraded") else
+                  "not-sparse" if not sparse else "unproven",
+        "graph_module_count": len(graph.get("modules") or {}),
+        "graph_file_count": len(graph.get("files") or {}),
+        "scan_quality_fingerprint": quality["fingerprint"],
+    }
+    complete = (not quality.get("degraded") and isinstance(
+        impact_record, dict) and (not sparse or
+                                  sparse_evidence["status"] == "proven"))
+    base = {
+        "schema": "taskplane.dod-graph-input/v1",
+        "graph_fingerprint": graph_fingerprint,
+        "changed_files": files,
+        "changed_files_fingerprint": files_fingerprint,
+        "impact": copy.deepcopy(impact_record),
+        "scan_quality": quality,
+        "sparse": sparse,
+        "sparse_evidence": sparse_evidence,
+        "complete": bool(complete),
+    }
+    return dict(base, fingerprint=hashlib.sha256(json.dumps(
+        base, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest())
+
+
 def render_context(imp: dict) -> str:
     """Token-lean impact summary injected at review steps."""
     if not imp["touched"]:

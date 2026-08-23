@@ -1394,6 +1394,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                     max_actions: int | None = None,
                     impact_context: str | None = None,
                     runnability: dict | None = None,
+                    context_note: str | None = None,
                     context_paths: dict | None = None,
                     sweep_concerns=None,
                     already_promoted=()) -> dict:
@@ -1429,13 +1430,22 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         import review_progression
         routing = review_progression.apply_depth_policy(
             routing, review_policy)
-    ctx_note = ""
-    if context_paths:
-        try:
-            import review as _rv
-            ctx_note = _rv.context_note(context_paths)
-        except Exception:
-            ctx_note = ""
+    ctx_note = str(context_note or "")
+    if context_paths and not ctx_note:
+        # Compatibility for callers that predate the explicit context-input
+        # edge.  Production callers now render the note in review.py and pass
+        # it as data; lens.py must never reach back into the review producer.
+        labels = {
+            "diff.patch": "the full diff under review (do not run `git diff` again)",
+            "blast-radius.md": "blast radius from the dependency graph (do not re-run `graph impact`)",
+            "impact.json": "the impact payload as JSON",
+        }
+        lines = ["\nSHARED REVIEW CONTEXT — already on disk, read it, do NOT re-derive it:"]
+        for name in ("diff.patch", "blast-radius.md", "impact.json"):
+            if name in context_paths:
+                lines.append(f"  {context_paths[name]}  — {labels[name]}")
+        lines.append("  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.")
+        ctx_note = "\n".join(lines) + "\n"
     run_note = ""
     if runnability:
         try:
@@ -1455,45 +1465,9 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         sweep.sort(key=lambda x: ordered_sweep.index(x.get("id")))
     concern_outcomes = None
     if sweep_concerns is not None:
-        # This is the production boundary between the bounded light sweep and
-        # its adaptive deep follow-up.  Keep resolution in review_progression
-        # (normalization/charter/idempotence) while this dispatcher owns the
-        # actual brief creation.  A concern may promote only a lens that was
-        # in this routing's light sweep; every other apparent promotion is
-        # retained as an explicit out-of-charter rejection.
-        import review_progression
-        concern_outcomes = review_progression.resolve_sweep_concerns(
-            sweep_concerns, already_promoted=already_promoted,
-            review_policy=review_policy,
-        )
-        sweep_by_id = {str(row.get("id")): row for row in sweep}
-        accepted = []
-        for promotion in concern_outcomes["promotions"]:
-            lens_id = promotion["lens"]
-            row = sweep_by_id.get(lens_id)
-            if row is None:
-                concern_outcomes["rejections"].append({
-                    "concern_id": promotion["concern_id"],
-                    "lens": lens_id,
-                    "severity": promotion["severity"],
-                    "reason": "out-of-charter",
-                    "fingerprint": promotion["fingerprint"],
-                })
-                continue
-            promoted = dict(row)
-            promoted["tier"] = "deep"
-            promoted["verdict"] = "deep"
-            promoted["evidence"] = list(promoted.get("evidence") or []) + [
-                "adaptive promotion from bounded sweep: "
-                + promotion["evidence_ref"]
-            ]
-            promoted["promotion"] = dict(promotion)
-            deep.append(promoted)
-            accepted.append(promotion)
-        concern_outcomes["promotions"] = accepted
-        promoted_ids = {row["lens"] for row in accepted}
-        sweep = [row for row in sweep if row.get("id") not in promoted_ids]
-        deep.sort(key=lambda row: str(row.get("id") or ""))
+        raise ValueError(
+            "automatic-deep-creation-refused: use the direct human review "
+            "deep command with attributable authorization")
     briefs = []
     for x in deep:
         lid = x["id"]

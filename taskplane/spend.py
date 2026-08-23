@@ -27,12 +27,14 @@ underneath it.
 """
 import json
 import os
+import statistics
 from typing import Any
 
 # Cache reads ×0.1, cache writes ×2, output ×5, plain input ×1.
 WEIGHTS = {"input": 1.0, "cache_read": 0.1, "cache_write": 2.0, "output": 5.0}
 USAGE_SCHEMA = "taskplane.token-usage/v2"
 COMMAND_EFFICIENCY_SCHEMA = "taskplane.command-efficiency/v1"
+WORKER_EFFICIENCY_SCHEMA = "taskplane.worker-efficiency/v1"
 
 _COMMAND_COUNTERS = (
     "launches", "elapsed_ms", "meaningful_wakes", "unchanged_model_polls",
@@ -120,6 +122,51 @@ def command_efficiency(values: dict | None) -> dict:
         "measurement_status": ("measured" if not missing and not unproven
                                else "unproven"),
         "gate": {"status": status, "failures": gate_failures},
+    }
+
+
+def worker_efficiency(rows: list[dict] | None) -> dict:
+    """Aggregate bounded worker counters without prompts or command args."""
+    allowed = {"run", "task", "role", "turn", "executions", "verdicts",
+               "decision"}
+    normalized = []
+    for index, raw in enumerate(rows if isinstance(rows, list) else []):
+        if not isinstance(raw, dict) or set(raw) != allowed:
+            raise ValueError(
+                f"worker efficiency row {index} must contain only bounded counters")
+        executions = _nonnegative_integer(raw.get("executions"))
+        verdicts = _nonnegative_integer(raw.get("verdicts"))
+        if executions is None or verdicts is None or any(
+                not str(raw.get(key) or "").strip()
+                for key in ("run", "task", "role", "turn")):
+            raise ValueError(f"worker efficiency row {index} is invalid")
+        decision = str(raw.get("decision") or "")
+        if decision not in {"pass", "fail", "unavailable", "pending"}:
+            raise ValueError(
+                f"worker efficiency row {index} has an invalid decision")
+        normalized.append({
+            "run": str(raw["run"])[:128], "task": str(raw["task"])[:128],
+            "role": str(raw["role"])[:64], "turn": str(raw["turn"])[:128],
+            "executions": executions, "verdicts": verdicts,
+            "decision": decision,
+        })
+    normalized.sort(key=lambda row: (
+        row["run"], row["task"], row["role"], row["turn"]))
+    median = (float(statistics.median(
+        row["executions"] for row in normalized)) if normalized else None)
+    return {
+        "schema": WORKER_EFFICIENCY_SCHEMA,
+        "records": normalized,
+        "turn_count": len(normalized),
+        "execution_count": sum(row["executions"] for row in normalized),
+        "guardian_verdict_count": sum(row["verdicts"] for row in normalized),
+        "median_executions_per_turn": median,
+        "rollout_target": {
+            "metric": "median_executions_per_turn", "minimum": 2,
+            "met": median is not None and median >= 2,
+        },
+        "observational": True,
+        "affects_correctness_or_review_gates": False,
     }
 
 

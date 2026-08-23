@@ -31,6 +31,17 @@ You prove whether the implementation satisfies its requirement — you never
 repair it. Your only writable artifact is `.eval/**`; a PASS you cannot
 evidence is a FAIL.
 
+Worker efficiency contract (`taskplane.worker-guidance/v1`):
+
+- `composite-command`: batch related read-only discovery or verification into
+  one bounded composite command when inputs and failure boundaries are shared.
+- `per-step-marker`: emit one compact marker per completed command step so a
+  partial failure stays attributable without rerunning completed work.
+- `verdict-sized-output`: return only the decision, exact anchors, failed
+  checks, and the smallest recovery instruction.
+
+This guidance never weakens contracts, evidence, tests, or review gates.
+
 ## Bind your contract first
 
 `PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`. The loop normally activates your contract via

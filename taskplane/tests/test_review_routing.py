@@ -853,7 +853,11 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 rc = cli.main([
                     "review", "signoff", "approve", "--by",
                     "human reviewer", "--run-id", opened["run_id"],
-                    "--workspace", parent])
+                    "--workspace", parent, "--advisory",
+                    "--enforcement-reason", "host receipt unavailable",
+                    "--enforcement-scope", "review-signoff",
+                    "--enforcement-expires-at", "2099-01-01T00:00:00Z",
+                    "--accept-limitation", "screen enforcement is unproven"])
             self.assertEqual(rc, 0, output.getvalue())
             signed = json.loads(output.getvalue())
             self.assertEqual(signed["signoff"]["decision"], "approve")
@@ -964,9 +968,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 self.assertIsNone(review._codex_session_receipt(
                     self.ws, store, slot, lease, raw))
             out = review.collect_review(self.ws, publish=False)
-        self.assertEqual(out["status"], "complete")
+        self.assertEqual(out["status"], "incomplete")
 
-    def test_valid_leased_artifacts_collect_without_hook_receipts(self):
+    def test_unobserved_leased_artifacts_are_excluded_without_dispatch_audit(self):
         self._start()
         state = review._load_state(self.ws)
         store = review_evidence.ArtifactStore(self.ws)
@@ -989,11 +993,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as stream:
                 json.dump(row, stream)
         collected = review.collect_review(self.ws, publish=False)
-        self.assertEqual(collected["status"], "complete")
-        validations = [store.read(ref)
-                       for ref in collected["result_validations"]]
-        self.assertEqual({row["trust"] for row in validations},
-                         {"leased-artifact"})
+        self.assertEqual(collected["status"], "incomplete")
 
     def test_receipt_binds_exact_result_bytes_not_only_the_write_path(self):
         """A PreToolUse receipt for blocker bytes cannot bless a later pass."""

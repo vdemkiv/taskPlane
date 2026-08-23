@@ -411,14 +411,19 @@ def _saved_enforcement(value) -> dict | None:
 def _enforcement_check(
         ws: str, *, saved=None, advisory: bool = False,
         actor: str | None = None, run_id: str | None = None,
-        revision: str | int | None = None) -> tuple[dict, dict | None]:
+        revision: str | int | None = None,
+        final_signoff: bool = False, exception_reason: str | None = None,
+        exception_scope: str | None = None,
+        exception_expires_at: str | None = None,
+        accepted_limitations: list[str] | None = None) -> tuple[dict, dict | None]:
     """Compute one decision and, in strict mode, one machine refusal."""
     prior = _saved_enforcement(saved)
     workspace_fp = hashlib.sha256(os.path.normcase(os.path.realpath(
         os.path.abspath(ws))).encode("utf-8")).hexdigest()
     if (prior and prior.get("status") == "advisory"
             and prior.get("workspace_fingerprint") == workspace_fp):
-        return prior, None
+        if not final_signoff or enforcement_kernel.final_signoff_allowed(prior):
+            return prior, None
     snapshot = _host_capability_snapshot(ws)
     mode = _screen_enforcement_mode(snapshot.host)
     decision = enforcement_kernel.enforcement_status(
@@ -428,14 +433,31 @@ def _enforcement_check(
         observed_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
     if advisory:
         try:
-            decision = enforcement_kernel.acknowledge_advisory(
-                decision, actor=str(actor or ""))
+            if final_signoff:
+                decision = enforcement_kernel.acknowledge_exception(
+                    decision, actor=str(actor or ""),
+                    reason=str(exception_reason or ""),
+                    scope=str(exception_scope or ""),
+                    expires_at=str(exception_expires_at or ""),
+                    accepted_limitations=list(accepted_limitations or []))
+            else:
+                decision = enforcement_kernel.acknowledge_advisory(
+                    decision, actor=str(actor or ""))
         except enforcement_kernel.EnforcementError as exc:
             return decision, {
                 "schema": "taskplane.enforcement-refusal/v1",
                 "error": str(exc), "enforcement": decision,
                 "recovery": ["repeat with --advisory --by <human>"],
             }
+    if final_signoff and not enforcement_kernel.final_signoff_allowed(decision):
+        return decision, {
+            "schema": "taskplane.enforcement-refusal/v1",
+            "error": ("final sign-off refused: live hook enforcement or a "
+                      "scoped, expiring human exception is required"),
+            "enforcement": decision,
+            "recovery": ["repeat with --advisory --by plus reason, scope, "
+                         "expiry, and accepted limitation fields"],
+        }
     if mode == "strict" and decision["status"] == "unproven":
         recovery = (["run /reload-plugins, then retry this exact command",
                      "or repeat with --advisory --by <human>"]
@@ -1593,10 +1615,23 @@ def cmd_subagent_start(a) -> int:
                          task_slot=assignment["contract_task_slot"],
                          lease_fingerprint=assignment["lease_fingerprint"])
         except Exception as exc:
-            # Lifecycle remains advisory; the authoritative write hook will
-            # fail closed because no matching producer assignment exists.
             tp.trace(ws, "review_slot_producer_bind_failed", agent_id=agent_id,
                      error=type(exc).__name__)
+            if contract.get("bootstrap_lease_fingerprint"):
+                audit = _review.record_dispatch_audit(
+                    ws, contract=contract, event=event, status="blocked",
+                    reason=f"{exc.__class__.__name__}: {exc}")
+                reason = ("taskplane blocked governed spawn: exact dispatch "
+                          "lease did not match; evidence from this child is "
+                          "ineligible")
+                print(json.dumps({
+                    "decision": "block", "reason": reason,
+                    "dispatch_audit": audit,
+                    "hookSpecificOutput": {
+                        "hookEventName": "SubagentStart",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason}}))
+                return 0
     if isinstance(contract, dict) and contract:
         coding = contract.get("coding")
         coding = coding if isinstance(coding, dict) else {}
@@ -2562,7 +2597,14 @@ def cmd_dod(a) -> int:
             snapshot = f.read().strip() or None
 
     notices: list = []
-    errors = tp.dod_check(c, ws, snapshot, notices=notices)
+    import depgraph
+    changed_for_graph = tp.changed_files(ws, snapshot) if snapshot else []
+    graph_input = depgraph.dod_graph_input(ws, changed_for_graph)
+    c = copy.deepcopy(c)
+    c.setdefault("coding", {}).setdefault("dod", {})[
+        "require_graph_input"] = True
+    errors = tp.dod_check(
+        c, ws, snapshot, notices=notices, dod_graph_input=graph_input)
     import kb as kbmod
     errors += [f"{p['file']}: {p['problem']}" for p in kbmod.lint(ws)]
     tp.trace(ws, "dod", passed=not errors, errors=errors, notices=notices)
@@ -2670,12 +2712,21 @@ def cmd_loop(a) -> int:
     guarded_actions = {"init", "next", "wave", "claim", "gate", "approve"}
     if action in guarded_actions:
         current = loopmod.load(ws)
+        terminal_signoff = action == "approve" and (
+            current or {}).get("step") == "signoff"
         enforcement, refusal = _enforcement_check(
             ws, saved=(current or {}).get("enforcement"),
             advisory=bool(getattr(a, "advisory", False)),
             actor=getattr(a, "by", None),
             run_id=(current or {}).get("run_id"),
-            revision=((current or {}).get("baseline") or tp.git_head(ws)))
+            revision=((current or {}).get("baseline") or tp.git_head(ws)),
+            final_signoff=terminal_signoff,
+            exception_reason=getattr(a, "enforcement_reason", None),
+            exception_scope=getattr(a, "enforcement_scope", None),
+            exception_expires_at=getattr(
+                a, "enforcement_expires_at", None),
+            accepted_limitations=getattr(
+                a, "accept_limitation", None))
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
             return 1
@@ -3457,6 +3508,7 @@ def cmd_lens(a) -> int:
         # v2.13.0: write the diff + blast radius ONCE and cite the paths,
         # instead of embedding a copy in every brief at output weight.
         ctx_paths = {}
+        explicit_context_note = ""
         if not getattr(a, "dashboard", False):
             try:
                 import review as _rv
@@ -3465,14 +3517,16 @@ def cmd_lens(a) -> int:
                     _rc, _diff = tp_target_diff(ws, a.base)
                 ctx_paths = _rv.write_context(
                     ws, diff=_diff, blast_radius=impact_ctx or "")
+                explicit_context_note = _rv.context_note(ctx_paths)
             except Exception:
                 ctx_paths = {}
+                explicit_context_note = ""
         briefs = lensmod.dispatch_briefs(routing, base=a.base,
                                          max_actions=a.max_actions,
                                          impact_context=(
                                              None if ctx_paths else impact_ctx),
                                          runnability=run_probe,
-                                         context_paths=ctx_paths)
+                                         context_note=explicit_context_note)
         # --resume: a wave interrupted mid-flight (a killed turn, a crashed
         # host) used to cost the WHOLE fan-out again — measured at ~16% of
         # one real session's tokens, because four of ten lens agents were
@@ -4877,6 +4931,24 @@ def cmd_review(a) -> int:
             "write_allow": contract["write_allow"],
         }, sort_keys=True, separators=(",", ":")))
         return 0
+    if review_action == "deep":
+        try:
+            ws = rv.resolve_review_workspace(ws, a.run_id)
+            lenses = [item.strip() for raw in a.lens
+                      for item in str(raw).split(",") if item.strip()]
+            result = rv.request_human_deep(
+                ws, run_id=a.run_id, lens_ids=lenses, actor=a.by,
+                request_receipt=a.receipt,
+                requested_at=getattr(a, "requested_at", None))
+        except Exception as exc:
+            print(json.dumps({
+                "schema": "taskplane.human-deep-dispatch/v1",
+                "status": "authorization_failed",
+                "reason": f"{exc.__class__.__name__}: {exc}"},
+                sort_keys=True, separators=(",", ":")))
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
     enforcement = None
     if review_action in {"start", "resume", "signoff"}:
         active = tp.load_active(ws) or {}
@@ -4884,7 +4956,14 @@ def cmd_review(a) -> int:
             ws, saved=active.get("enforcement"),
             advisory=bool(getattr(a, "advisory", False)),
             actor=getattr(a, "by", None),
-            run_id=getattr(a, "run_id", None))
+            run_id=getattr(a, "run_id", None),
+            final_signoff=review_action == "signoff",
+            exception_reason=getattr(a, "enforcement_reason", None),
+            exception_scope=getattr(a, "enforcement_scope", None),
+            exception_expires_at=getattr(
+                a, "enforcement_expires_at", None),
+            accepted_limitations=getattr(
+                a, "accept_limitation", None))
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
             return 1
@@ -7090,6 +7169,15 @@ def main(argv=None) -> int:
                     help="pass a BLOCKED refinement gate anyway")
     la.add_argument("--advisory", action="store_true",
                     help="acknowledge degraded screen enforcement")
+    la.add_argument("--enforcement-reason", default=None,
+                    help="reason for an exceptional terminal advisory sign-off")
+    la.add_argument("--enforcement-scope", default=None,
+                    choices=("final-signoff", "review-signoff", "*"),
+                    help="exact scope of the terminal enforcement exception")
+    la.add_argument("--enforcement-expires-at", default=None,
+                    help="timezone-aware ISO-8601 expiry for the exception")
+    la.add_argument("--accept-limitation", action="append", default=None,
+                    help="accepted limitation; repeat for each limitation")
     lr = lsub.add_parser(
         "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort")
     lr.add_argument(
@@ -7604,6 +7692,19 @@ def main(argv=None) -> int:
                      help="select one active review when several starts coexist")
     rvc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvc.set_defaults(fn=cmd_review)
+    rvd = rvsub.add_parser(
+        "deep", help="directly authorize exact deep lenses from an "
+                     "attributable human request")
+    rvd.add_argument("--run-id", required=True, help="active ready review run")
+    rvd.add_argument("--lens", action="append", required=True,
+                     help="exact lens id; repeat or provide comma-separated ids")
+    rvd.add_argument("--by", required=True, help="human actor identity")
+    rvd.add_argument("--receipt", required=True,
+                     help="host request/message receipt establishing the request")
+    rvd.add_argument("--requested-at", default=None,
+                     help="optional ISO-8601 request timestamp (defaults to now)")
+    rvd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rvd.set_defaults(fn=cmd_review)
     rvo = rvsub.add_parser(
         "option", help="record the human's optional dynamic review/render choice")
     rvo.add_argument("selection", choices=("static", "dynamic", "dynamic-render"))
@@ -7654,6 +7755,15 @@ def main(argv=None) -> int:
     rvsg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvsg.add_argument("--advisory", action="store_true",
                       help="acknowledge degraded screen enforcement")
+    rvsg.add_argument("--enforcement-reason", default=None,
+                      help="reason for an exceptional advisory sign-off")
+    rvsg.add_argument("--enforcement-scope", default=None,
+                      choices=("final-signoff", "review-signoff", "*"),
+                      help="exact scope of the enforcement exception")
+    rvsg.add_argument("--enforcement-expires-at", default=None,
+                      help="timezone-aware ISO-8601 expiry for the exception")
+    rvsg.add_argument("--accept-limitation", action="append", default=None,
+                      help="accepted limitation; repeat for each limitation")
     rvsg.set_defaults(fn=cmd_review)
     rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvp.set_defaults(fn=cmd_review)

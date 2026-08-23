@@ -119,6 +119,16 @@ def worktree_cleanup_projection(value: object) -> dict:
             "counts": counts, "outcomes": projected[:128]}
 
 
+def worker_efficiency_projection(rows: list[dict] | None) -> dict:
+    """Consume counter-only worker telemetry as a non-gating rollout metric."""
+    import spend
+
+    projection = spend.worker_efficiency(rows)
+    if projection.get("affects_correctness_or_review_gates") is not False:
+        raise ValueError("worker efficiency telemetry cannot become gate authority")
+    return projection
+
+
 def review_fix_convergence_projection(
         previous_revision: dict, current_revision: dict, *, cycle: int,
         previously_closed: set[str] | None = None,

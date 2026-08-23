@@ -297,18 +297,18 @@ def test_standalone_review_continues_with_degraded_warning_and_floors(
     dispositions = decision["dispositions"]
     for lens_id in ("architecture", "security"):
         row = dispositions[lens_id]
-        assert row["verdict"] in {"light", "deep"}
+        assert row["verdict"] in {"sweep", "light", "deep"}
         assert "degraded graph fallback" in row["floor"]
         assert any("degraded graph fallback" in item
                    for item in row["evidence"])
     slotted = {lens_id for slot in output["slots"]
                for lens_id in slot["lens_ids"]}
     assert {"architecture", "security"} <= slotted
-    sweep = next(slot for slot in output["slots"]
-                 if slot["slot_id"] == "light-sweep")
-    brief_path = ws / sweep["brief"]["relative_path"]
+    security_slot = next(slot for slot in output["slots"]
+                         if slot["lens_ids"] == ["security"])
+    brief_path = ws / security_slot["brief"]["relative_path"]
     brief = json.loads(brief_path.read_text(encoding="utf-8"))
-    assert {"architecture", "security"} <= set(brief["lens_ids"])
+    assert brief["lens_ids"] == ["security"]
     assert any(row["lens"] == "security"
                for row in brief["language_references"])
     assert "plugin-pinned language references" in brief["prompt"]

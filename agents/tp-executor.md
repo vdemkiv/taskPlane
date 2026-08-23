@@ -22,6 +22,17 @@ declared tools; deny-listed commands) is active — the hook blocks anything
 outside it. In a parallel wave you were `claim`ed into your own worktree;
 work ONLY there.
 
+Worker efficiency contract (`taskplane.worker-guidance/v1`):
+
+- `composite-command`: batch related read-only discovery or verification into
+  one bounded composite command when inputs and failure boundaries are shared.
+- `per-step-marker`: emit one compact marker per completed command step so a
+  partial failure stays attributable without rerunning completed work.
+- `verdict-sized-output`: return only the decision, exact anchors, failed
+  checks, and the smallest recovery instruction.
+
+This guidance never weakens contracts, evidence, tests, or review gates.
+
 1. Read the action payload: the task, the requirement's acceptance criteria
    (your DoD), the PRIMED lenses (build so their review finds nothing), and
    the recalled KB decisions (don't relitigate settled calls). If an approved

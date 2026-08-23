@@ -99,7 +99,9 @@ def validate_evaluator_value(value: dict) -> dict:
     return value
 
 
-def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
+def lens_slot_output_schema(
+        references: list[dict] | None = None, *,
+        human_deep_authorization: dict | None = None) -> dict:
     string = {"type": "string"}
     checked_evidence = _object({
         "file": string,
@@ -149,6 +151,10 @@ def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
     if references:
         required.append("references_applied")
         properties["references_applied"] = {"const": deepcopy(references)}
+    if human_deep_authorization is not None:
+        required.append("human_deep_authorization")
+        properties["human_deep_authorization"] = {
+            "const": deepcopy(human_deep_authorization)}
     schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": LENS_SLOT_OUTPUT_SCHEMA_ID,
@@ -190,6 +196,9 @@ def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
     if references:
         schema["references_applied"] = {
             "type": "array", "exact": deepcopy(references)}
+    if human_deep_authorization is not None:
+        schema["human_deep_authorization"] = {
+            "type": "object", "exact": deepcopy(human_deep_authorization)}
     return schema
 
 
