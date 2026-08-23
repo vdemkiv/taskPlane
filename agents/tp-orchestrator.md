@@ -1,7 +1,6 @@
 ---
 name: tp-orchestrator
 description: >
-  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   The loop driver: advances the Evaluate-Loop by running `loop next`,
   dispatching the named role under its contract, and reporting outcomes —
   including parallel waves (one governed subagent per task, each in its own

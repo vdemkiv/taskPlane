@@ -1,6 +1,6 @@
 ---
 name: tp-help
-description: "Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs. Use when the user asks how taskplane works or how to get started: 'taskplane help', 'how do I use taskplane', 'what can taskplane do', 'taskplane tour', 'getting started with taskplane', 'what is taskplane', 'I installed taskplane, now what', 'taskplane is not doing anything'. Gives the mental model, the quickstart, and which skill to reach for."
+description: "Use when the user asks how taskplane works or how to get started: 'taskplane help', 'how do I use taskplane', 'what can taskplane do', 'taskplane tour', 'getting started with taskplane', 'what is taskplane', 'I installed taskplane, now what', 'taskplane is not doing anything'. Gives the mental model, the quickstart, and which skill to reach for."
 ---
 
 # /tp-help — the guided tour

@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.17.16",
+  "version": "2.17.17",
   "description": "AI software-delivery control plane for Claude and Codex: simple design, build, review, and status prompts backed by dependency-aware readiness, scoped execution, fingerprinted evidence, selective review from a 26-lens catalog, and human approval.",
   "author": {
     "name": "Volodymyr Demkiv",
