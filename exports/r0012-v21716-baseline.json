@@ -1,0 +1,68 @@
+{
+  "schema": "taskplane.r0012-v21716-baseline/v1",
+  "requirement": "R-0012",
+  "phase": "R-0009",
+  "mode": "no-build-authority-evidence",
+  "baseline": {
+    "declared_branch": "codex/r0009-r0011-from-v2.17.16",
+    "baseline_commit": "bba3354e7fc5eb052beac74af230611ae48bd7db",
+    "tag": "v2.17.16",
+    "tag_target": "bba3354e7fc5eb052beac74af230611ae48bd7db",
+    "tree": "a7f46dbf6859f7d2122c4ee6ce99006b4862197a",
+    "machine_resolution": {
+      "branch_tag_merge_base": "bba3354e7fc5eb052beac74af230611ae48bd7db",
+      "tag_dereference": "bba3354e7fc5eb052beac74af230611ae48bd7db",
+      "tree_dereference": "a7f46dbf6859f7d2122c4ee6ce99006b4862197a",
+      "observed_branch_tip_during_execution": "4dbc88ef594de068f32e276a1b2eb3a726223aa2",
+      "observed_tip_is_governance_descendant_of_baseline": true,
+      "baseline_anchor_matches_declared_identity": true
+    }
+  },
+  "scope_decision": {
+    "actor": "user",
+    "gate": "plan",
+    "decision_id": "0045",
+    "decision": "Approve the exact v2.17.16 baseline and the unchanged ordered fifteen-task program semantics for local governed execution.",
+    "v2_17_17_or_later_baseline_allowed": false,
+    "v2_17_17_or_later_implementation_input_allowed": false
+  },
+  "protected_product_tool_tree": {
+    "roots": [
+      "taskplane",
+      "scripts",
+      "hooks",
+      "skills",
+      "agents"
+    ],
+    "fingerprint_algorithm": "sha256-of-git-ls-tree-records",
+    "before": "c420bfc1cd3a01cb111d735272bef5097b83ad8cc3bc9d9f8a2f14cf53e68bb5",
+    "after": "c420bfc1cd3a01cb111d735272bef5097b83ad8cc3bc9d9f8a2f14cf53e68bb5",
+    "identical": true,
+    "changed_paths": [],
+    "code_write_count": 0
+  },
+  "audit": {
+    "evidence_paths": [
+      "exports/r0012-v21716-baseline.json",
+      "exports/r0012-program-ledger.json"
+    ],
+    "action_counts": {
+      "code_write": 0,
+      "reset": 0,
+      "revert": 0,
+      "merge": 0,
+      "donor_mutation": 0,
+      "tag": 0,
+      "push": 0,
+      "release": 0
+    },
+    "superseded_premise": "Resetting or reverting toward a v2.17.17-or-later baseline is obsolete and was not executed.",
+    "external_action_authorized": false
+  },
+  "privacy_compliance": {
+    "personal_data_included": false,
+    "credentials_included": false,
+    "host_private_data_included": false,
+    "transcript_content_included": false
+  }
+}

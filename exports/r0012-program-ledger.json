@@ -1,0 +1,90 @@
+{
+  "schema": "taskplane.r0012-program-ledger/v1",
+  "requirement": "R-0012",
+  "contracts": [
+    "contract:baseline.v2.17.16-authority",
+    "contract:program.r0009-r0011-order",
+    "contract:governance.delivery-authority"
+  ],
+  "phase_order": [
+    {
+      "phase": "R-0009",
+      "mode": "evidence-only",
+      "authority": "v2.17.16 baseline acceptance",
+      "predecessor": null,
+      "product_or_tool_change": false
+    },
+    {
+      "phase": "R-0010",
+      "mode": "closed-six-gap BUILD-C delivery",
+      "predecessor": "R-0009",
+      "entry_condition": "R-0009 evidence accepted"
+    },
+    {
+      "phase": "R-0011",
+      "mode": "boundary-first donor-surface re-delivery through R-0010",
+      "predecessor": "R-0010",
+      "entry_condition": "R-0010 fetched exact-SHA proof and attributed human sign-off"
+    }
+  ],
+  "closed_gap_catalog": {
+    "closed": true,
+    "count": 6,
+    "categories": [
+      "ac-bound-checkpoints",
+      "engine-minted-checkpoint-receipts",
+      "submit-to-checkpoint-wiring",
+      "define-stage-projection",
+      "direct-no-state-graph-disjoint-assignment",
+      "checkpoint-to-integration-authorization"
+    ],
+    "seventh_category_result": "refuse-until-new-attributed-human-scope-decision"
+  },
+  "reuse_only_capabilities": [
+    "cli-to-governed-command-engine reachability",
+    "loop-to-governed-command-engine reachability",
+    "command runtime and adapters",
+    "wake-driven non-polling waits",
+    "automatic four-to-five quick-lens router with architecture floor",
+    "automatic-deep refusal",
+    "graph and dependency identity",
+    "isolated worktree and repository primitives",
+    "merge and engine receipt primitives",
+    "review findings and leases",
+    "governance enforcement"
+  ],
+  "reuse_policy": {
+    "baseline_positive_capability": "verify-and-reuse",
+    "replacement_or_reimplementation": "not-authorized",
+    "v2_17_17_or_later_content": "not-an-implementation-input"
+  },
+  "r0009_no_build": {
+    "before_protected_tree_fingerprint": "c420bfc1cd3a01cb111d735272bef5097b83ad8cc3bc9d9f8a2f14cf53e68bb5",
+    "after_protected_tree_fingerprint": "c420bfc1cd3a01cb111d735272bef5097b83ad8cc3bc9d9f8a2f14cf53e68bb5",
+    "identical": true,
+    "only_artifacts": [
+      "exports/r0012-v21716-baseline.json",
+      "exports/r0012-program-ledger.json"
+    ],
+    "superseded_reset_or_revert_executed": false
+  },
+  "external_action_authority": {
+    "authorized": false,
+    "requires_separate_attributed_human_gate": [
+      "main integration",
+      "merge or rebase",
+      "push",
+      "tag creation or movement",
+      "release or marketplace publication",
+      "destructive history action",
+      "donor mutation",
+      "scope expansion"
+    ]
+  },
+  "privacy_compliance": {
+    "personal_data_included": false,
+    "credentials_included": false,
+    "host_private_data_included": false,
+    "transcript_content_included": false
+  }
+}
