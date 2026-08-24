@@ -194,9 +194,6 @@
         "contract:review.routing->taskplane/build_c.py:consumes",
         "contract:review.depth-boundary->taskplane/build_c.py:consumes",
         "taskplane/build_c.py->contract:define.design-review:provides",
-        "taskplane/loop.py->taskplane/build_c.py:runtime",
-        "taskplane/build_c.py->taskplane/review.py:runtime",
-        "taskplane/review.py->taskplane/lens.py:runtime",
         "taskplane/build_c.py->exports/r0012-program-ledger.json:writes",
         "components.yaml->taskplane/build_c.py:declares"
       ],
@@ -293,20 +290,210 @@
       ]
     },
     {
-      "id": "t08-r0010-phase-exit",
+      "id": "t08a-r0010-review-producer-bootstrap",
       "scope": [
-        "exports/r0012-program-ledger.json"
+        "taskplane/build_c.py",
+        "taskplane/loop.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests && python3 scripts/ci_evals.py --corpus",
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py taskplane/tests/test_r0007_sweep_bootstrap.py -k 'define_projection or producer_activation or review_bridge or event_wait'",
       "req": "R-0012",
       "deps": [
         "t07-r0010-merge-on-green"
+      ],
+      "type": "integration",
+      "gap_category": "define-stage-projection",
+      "contracts": [
+        "contract:runtime.command-events",
+        "contract:review.routing",
+        "contract:review.depth-boundary",
+        "contract:define.design-review"
+      ],
+      "new_modules": [
+        "taskplane/build_c.py",
+        "taskplane/loop.py",
+        "taskplane/review.py",
+        "taskplane/lens.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py"
+      ],
+      "design_edges": [
+        "taskplane/loop.py->taskplane/build_c.py:runtime",
+        "taskplane/build_c.py->taskplane/review.py:runtime",
+        "taskplane/review.py->taskplane/lens.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": []
+    },
+    {
+      "id": "t08b-r0010-changed-surface-regression-repair",
+      "scope": [
+        "taskplane/build_c.py",
+        "taskplane/checkpoint.py",
+        "taskplane/loop.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_r0007_governed_commands.py",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py taskplane/tests/test_r0007_sweep_bootstrap.py",
+      "req": "R-0012",
+      "deps": [
+        "t08a-r0010-review-producer-bootstrap"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:runtime.command-events",
+        "contract:review.routing",
+        "contract:review.depth-boundary",
+        "contract:governance.build-c-checkpoint",
+        "contract:governance.checkpoint-receipt",
+        "contract:orchestration.scope-disjoint-assignment",
+        "contract:orchestration.merge-on-green"
+      ],
+      "new_modules": [
+        "taskplane/build_c.py",
+        "taskplane/checkpoint.py",
+        "taskplane/loop.py",
+        "taskplane/governed_commands.py",
+        "taskplane/command_runtime.py",
+        "taskplane/command_adapters.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_r0007_governed_commands.py",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": []
+    },
+    {
+      "id": "t08c-r0010-corpus-sequencing",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "scripts/ci_evals.py",
+        "taskplane/tests/test_r0006_pushed_sha.py"
+      ],
+      "tests": "python3 scripts/ci_evals.py --corpus && python3 -m pytest -q taskplane/tests/test_r0006_pushed_sha.py -k 'corpus or ci_wiring or phase_exit'",
+      "req": "R-0012",
+      "deps": [
+        "t08a-r0010-review-producer-bootstrap"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:runtime.command-events",
+        "contract:governance.delivery-authority"
+      ],
+      "new_modules": [
+        ".github/workflows/ci.yml",
+        "scripts/ci_evals.py",
+        "taskplane/tests/test_r0006_pushed_sha.py"
+      ],
+      "design_edges": [
+        ".github/workflows/ci.yml->scripts/ci_evals.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": []
+    },
+    {
+      "id": "t08d-r0010-graph-ratchet-refresh",
+      "scope": [
+        "components.yaml",
+        "taskplane/depgraph.py",
+        "taskplane/import_cycles.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "tests": "./taskplane/tp.py graph scan --strict && ./taskplane/tp.py graph impact --files \"taskplane/build_c.py,taskplane/checkpoint.py,taskplane/loop.py,taskplane/tests/test_loop.py,taskplane/tests/test_r0007_governed_commands.py,taskplane/tests/test_r0007_sweep_bootstrap.py\" --json && python3 -m pytest -q taskplane/tests/test_loop.py -k 'graph and (impact or ratchet)'",
+      "req": "R-0012",
+      "deps": [
+        "t08b-r0010-changed-surface-regression-repair"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:import-cycle-ratchet",
+        "contract:program.r0009-r0011-order"
+      ],
+      "new_modules": [
+        "components.yaml",
+        "taskplane/depgraph.py",
+        "taskplane/import_cycles.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": []
+    },
+    {
+      "id": "t08e-r0010-python-matrix-receipts",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "scripts/ci_evals.py",
+        "taskplane/tests/test_r0006_pushed_sha.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_pushed_sha.py -k 'python_matrix or compile_import or compatibility_receipt'",
+      "req": "R-0012",
+      "deps": [
+        "t08c-r0010-corpus-sequencing"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:baseline.v2.17.16-authority",
+        "contract:runtime.command-events",
+        "contract:governance.delivery-authority"
+      ],
+      "new_modules": [
+        ".github/workflows/ci.yml",
+        "scripts/ci_evals.py",
+        "taskplane/tests/test_r0006_pushed_sha.py"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": []
+    },
+    {
+      "id": "t08f-r0010-phase-exit",
+      "scope": [
+        "exports/r0012-program-ledger.json"
+      ],
+      "tests": "sh -c 'status=0; python3 -m pytest -q taskplane/tests || status=1; python3 scripts/ci_evals.py --corpus || status=1; ./taskplane/tp.py graph scan --strict || status=1; ./taskplane/tp.py graph impact --files \"taskplane/build_c.py,taskplane/checkpoint.py,taskplane/loop.py,taskplane/tests/test_loop.py,taskplane/tests/test_r0007_governed_commands.py,taskplane/tests/test_r0007_sweep_bootstrap.py\" --json || status=1; python3 -m pytest -q taskplane/tests/test_loop.py taskplane/tests/test_r0006_pushed_sha.py -k \"r0010_phase_exit or python_matrix_receipt or graph_ratchet_receipt or review_producer_receipt\" || status=1; exit \"$status\"'",
+      "req": "R-0012",
+      "deps": [
+        "t08b-r0010-changed-surface-regression-repair",
+        "t08d-r0010-graph-ratchet-refresh",
+        "t08e-r0010-python-matrix-receipts"
       ],
       "type": "reliability",
       "contracts": [
         "contract:governance.delivery-authority",
         "contract:import-cycle-ratchet",
-        "contract:program.r0009-r0011-order"
+        "contract:program.r0009-r0011-order",
+        "contract:runtime.command-events",
+        "contract:review.routing",
+        "contract:review.depth-boundary"
       ],
       "new_modules": [
         ".github/workflows/ci.yml",
@@ -315,9 +502,7 @@
         "taskplane/import_cycles.py",
         "taskplane/tests/test_r0006_pushed_sha.py"
       ],
-      "design_edges": [
-        ".github/workflows/ci.yml->scripts/ci_evals.py:runtime"
-      ],
+      "design_edges": [],
       "impact_policy": {
         "local_depth": 3,
         "boundary_mode": "contract-only",
@@ -341,7 +526,7 @@
       "tests": "python3 -m pytest -q taskplane/tests/test_r0008_plan_baseline.py taskplane/tests/test_r0008_schema_registry.py taskplane/tests/test_r0008_wiring_define_baseline.py",
       "req": "R-0012",
       "deps": [
-        "t08-r0010-phase-exit"
+        "t08f-r0010-phase-exit"
       ],
       "type": "security",
       "contracts": [

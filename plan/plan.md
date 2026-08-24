@@ -8,7 +8,7 @@ The authoritative branch is codex/r0009-r0011-from-v2.17.16 at bba3354e7fc5eb052
 
 The one bounded impact query returned 28 impacted modules through the approved radius and zero unknown modules. Every task copies the typed graph policy unchanged: local depth 3, contract-only boundaries, contract depth 1, and requirement depth 1.
 
-The 15 tasks collectively cover all 62 approved modules, all 50 canonical Design edges exactly once, all 19 exact requirement contract IDs, and all 20 acceptance-map criteria verbatim and exactly once. Every designed module is declared through the engine-recognized new_modules field, including an exact task-local declaration whenever a scoped new surface is owned. No task invents a relation-prefixed contract ID or a seventh R-0010 gap.
+The 20 tasks collectively cover all 62 approved modules, all 50 canonical Design edges exactly once, all 19 exact requirement contract IDs, and all 20 acceptance-map criteria verbatim and exactly once. Every designed module is declared through the engine-recognized new_modules field, including an exact task-local declaration whenever a scoped new surface is owned. No task invents a relation-prefixed contract ID or a seventh R-0010 gap. The T08 repair tasks carry the already-implemented R-0010 source and green focused evidence forward; they repair or recollect only the failed phase-exit surfaces and do not discard or duplicate the six delivered gaps.
 
 ## Governing boundaries
 
@@ -52,11 +52,25 @@ These six tasks are deliberately serialized. checkpoint.py overlaps between the 
 
 Every task contains the positive production invocation and its severed-edge mutation in the same bounded scope. Checkpoints dispatch zero lenses. Existing quick review remains exactly four or five concurrent quick lenses including architecture; automatic full, deep, 26-lens, light-all, or serial fallback is forbidden.
 
-### Wave 7 — R-0010 proof and human predecessor gate
+### Wave 7 — bounded R-0010 recovery and human predecessor gate
 
-8. t08-r0010-phase-exit is verification-only. It runs the full suite, compile/import floor, zero-token corpus, cycle and graph ratchets, and exact-SHA compatibility evidence. It does not push. After local green, the orchestrator must stop for separate push authority; only an externally supplied fetched-SHA receipt for the identical revision plus attributed R-0010 sign-off opens R-0011.
+The failed t08 receipt at exact SHA 803cf6c49b074c731bffa9f4ae85ce9b011f7039 is immutable input to this replan: 106 tests failed while 4048 passed, CPython 3.10 proof was absent, the `pytest && corpus` command skipped the corpus leg, graph evidence was stale/incomplete, and the selected architecture, DevOps, frontend, integrability, and security quick-lens producers were not active. The zero-file fix attempt is not implementation evidence. Recovery is split so each owner can change only the confirmed surface and the terminal check never hides one leg behind another.
 
-A red R-0010 keeps the direct mode disabled and R-0011 closed. Existing governed-build remains the intact compatibility path.
+8. t08a-r0010-review-producer-bootstrap runs first and alone. It carries the existing DEFINE implementation, repairs only its live orchestration/activation wiring, and establishes an exact-engine receipt before the first automatic evaluation in the recovery wave. That receipt must activate the same five selected quick producers—architecture, DevOps, frontend, integrability, and security—concurrently as one set, collect them through one event-driven wait, and show no automatic full, deep, 26-lens, light-all, or serial fallback. Its focused positive flow and severed-edge mutations cover loop→BUILD-C→incumbent review→incumbent lens routing in the same bounded commit. `review.py` and `lens.py` remain reuse-only targets; the task may not replace their selector, architecture floor, or depth policy.
+
+After that live bootstrap is proven, t08b and t08c may run concurrently because their write scopes are disjoint:
+
+- t08b-r0010-changed-surface-regression-repair owns only the R-0010 changed production/test surfaces: `build_c.py`, `checkpoint.py`, `loop.py`, and the three focused R-0007 regression files. It consumes a complete exact-v2.17.16 suite receipt plus the immutable 106-failure receipt, classifies every failure by actual dependency, repairs only regressions caused by those changed surfaces, and preserves baseline-positive command, wait, review, graph/worktree, receipt, findings, lease, and enforcement behavior. Every repaired live edge retains a positive invocation and same-commit severed-edge mutation. A failure requiring any other product surface is not silently dispositioned; it stops for a new approved scope decision.
+- t08c-r0010-corpus-sequencing owns the CI→zero-token-corpus path and its wiring proof. The corpus is its own executable leg, so it always receives a receipt independent of full-suite status. Severing CI invocation or substituting a non-empty credential environment makes the focused mutation proof fail.
+
+When their respective predecessors finish, t08d and t08e may also run concurrently:
+
+- t08d-r0010-graph-ratchet-refresh follows the changed-surface repair because both own `test_loop.py`. It performs a fresh strict graph scan and bounded impact over the R-0010 changed surfaces, records complete cycle/graph-ratchet disposition at the exact revision, and rejects stale, degraded, unknown-root, or impact-incomplete evidence. Any production call-edge correction must land with its positive flow and severed-edge mutation in this same task.
+- t08e-r0010-python-matrix-receipts follows corpus wiring because both own CI compatibility surfaces. It handles and validates engine/CI-minted CPython 3.10, 3.11, 3.12, and 3.13 compile/import receipts for one revision. The absent local 3.10 interpreter cannot be waived, simulated as green, or replaced by a caller assertion; without a real 3.10 receipt the task stays red. It adds no runtime dependency and performs no push.
+
+Finally, t08f-r0010-phase-exit depends on all repair/evidence branches. Its single command runs the full suite, corpus, graph scan/impact, and receipt checks as independent status-accumulating legs, so a red suite cannot prevent corpus or graph evidence from being collected. It must disposition all 106 prior failures against the exact v2.17.16 baseline, validate the complete Python matrix and five-producer receipt, and leave zero new undispositioned suite/cycle/graph failure on one exact final SHA. It performs no push. After local green, the orchestrator must stop for separate push authority; only an externally supplied fetched-SHA receipt for the identical revision plus attributed R-0010 sign-off opens R-0011.
+
+A red or receipt-incomplete R-0010 keeps direct mode disabled and R-0011 closed. Existing governed-build remains the intact compatibility path.
 
 ### Wave 8 — R-0011 Plan and registry
 
@@ -103,7 +117,7 @@ This task validates external-action authority fixtures but performs no integrati
 
 ## Test and production-edge policy
 
-Each machine task contains exactly one runnable command string. Focused commands are used while building each bounded owner; the two phase-exit tasks carry the intentionally broad final floors required by their acceptance criteria.
+Each machine task contains exactly one runnable command string. Focused commands are used while building each bounded owner. The R-0010 terminal command is intentionally broad but accumulates each leg's status instead of short-circuiting; the R-0011 terminal floor remains bounded to its approved catalog and PROVE surfaces.
 
 A behavior is complete only when the same task/commit contains:
 
@@ -124,11 +138,11 @@ The baseline command engine, runtime/adapters, event wait, router, architecture 
 - Donor history is smuggled as proof. R-0011 accepts content provenance plus new R-0010 receipts only; ancestry and diff checks reject later commits, cherry-picks, old tests, and narrative completion claims.
 - Seven proof components disagree on identity. The bundle accepts one canonical identity set and refuses collection before all seven exact terminal receipts agree.
 - Retry erases a red result. Journal rows are append-only with predecessor digests; one complete second attempt is the limit.
-- Parallelism crosses a hidden shared owner. Only t12 and t13 fan out. All checkpoint/loop/build_c, CI, PROVE, and operations overlaps are dependency-serialized.
+- Parallelism crosses a hidden shared owner. The recovery fan-outs are only t08b/t08c and then t08d/t08e; t12/t13 remain the only R-0011 fan-out. All checkpoint/loop/build_c, CI, graph-test, PROVE, and operations overlaps are dependency-serialized.
 - Python or plugin packaging drifts. New modules remain stdlib-only, portable across CPython 3.10–3.13 and available 3.14 compile/import, strictly typed in CI, and included in deterministic clean Codex/Claude plugin archives.
 
 ## Rollout and rollback
 
-Roll out R-0009 evidence, then the six R-0010 gaps under manual checkpoints, then R-0010 local floors and the separate exact-SHA/sign-off gate. Only afterward run the eight R-0011 catalog groups, with t12/t13 as the sole parallel fan-out, followed by PROVE, CI, operations, final exact-SHA proof, and human sign-off.
+Roll out R-0009 evidence, then the six R-0010 gaps under manual checkpoints, then the live producer bootstrap, the two bounded recovery fan-outs, and the separate exact-SHA/sign-off gate. Only afterward run the eight R-0011 catalog groups, with t12/t13 as the sole R-0011 parallel fan-out, followed by PROVE, CI, operations, final exact-SHA proof, and human sign-off.
 
 Before sharing, an authorized human may abandon a code-bearing branch and return to unchanged bba3354e while retaining or append-safely superseding evidence. While R-0010 is unproven, direct BUILD-C stays disabled. After sharing, correction is a new forward commit or a disabled delivery-mode transition—never reset, force-push, tag movement, receipt deletion, or donor mutation. A failed R-0011 PROVE preserves attempts and blocks sign-off; it never rolls back into unproven integration.
