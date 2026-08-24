@@ -5172,7 +5172,10 @@ def _verified_criterion_evidence(value) -> bool:
         return bool(value.strip())
     if isinstance(value, (list, tuple, dict)):
         return bool(value)
-    return value is not None
+    # Scalar booleans and numbers are outcome-like sentinels, not durable
+    # proof.  Fail closed for them (and for null/unknown objects) instead of
+    # allowing False or 0 to reanchor an archived pass.
+    return False
 
 
 def _verify_reanchor_task_evidence(

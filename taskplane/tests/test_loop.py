@@ -1193,6 +1193,46 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(loop.load(ws)["tasks"][0]["status"], "passed")
         self.assertEqual(loop.load(ws)["step"], "plan_approval")
 
+    def test_define_projection_reanchor_real_verifier_rejects_non_proof_sentinels(self):
+        def verify(evidence):
+            ws = git_ws(tempfile.mkdtemp(dir=self.tmp), [TASK])
+            verdict_path = runtime_storage.evaluation_path(ws)
+            os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
+            with open(verdict_path, "w", encoding="utf-8") as stream:
+                json.dump({
+                    "schema": "taskplane.evaluator-output/v1",
+                    "task": "t1",
+                    "requirement": "",
+                    "verdict": "pass",
+                    "criteria": [{
+                        "criterion": TASK["criteria"][0],
+                        "status": "met",
+                        "evidence": evidence,
+                    }],
+                    "failures": [],
+                }, stream)
+            subprocess.run(
+                ["git", "add", "-f", ".eval/verdict.json"], cwd=ws,
+                check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "record evaluator evidence"],
+                cwd=ws, check=True, capture_output=True, text=True)
+            task = dict(TASK)
+            prior = dict(task, status="passed", workspace=ws,
+                         target_commit=tp.git_head(ws))
+            return loop._verify_reanchor_task_evidence(ws, task, prior)
+
+        for sentinel in (False, 0):
+            with self.subTest(sentinel=sentinel):
+                evidence, error = verify(sentinel)
+                self.assertIsNone(evidence)
+                self.assertEqual(
+                    error, "durable evaluator criterion is not proven met")
+
+        evidence, error = verify("receipt: evaluator independently passed")
+        self.assertIsNone(error)
+        self.assertEqual(evidence["resolution"], "independent-pass")
+
     def test_define_projection_replan_changed_criteria_stays_pending(self):
         prior = dict(TASK, status="passed", workspace=self.tmp,
                      target_commit="a" * 40)
