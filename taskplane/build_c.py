@@ -494,10 +494,26 @@ def _define_impact(graph: Mapping[str, object], files: list[str]) -> dict:
     covered = set()
     modules = graph.get("modules")
     modules = modules if isinstance(modules, Mapping) else {}
+    graph_files = graph.get("files")
+    graph_files = graph_files if isinstance(graph_files, Mapping) else {}
     selected = set(files)
     for module_id, row in modules.items():
-        module_files = set((row or {}).get("files") or []) \
-            if isinstance(row, Mapping) else set()
+        declared_files = (row or {}).get("files") \
+            if isinstance(row, Mapping) else None
+        if isinstance(declared_files, Mapping):
+            module_files = {str(path) for path in declared_files}
+        elif isinstance(declared_files, (list, tuple, set, frozenset)):
+            module_files = {str(path) for path in declared_files}
+        elif isinstance(declared_files, int) and not isinstance(
+                declared_files, bool):
+            module = str(module_id).rstrip("/")
+            prefix = f"{module}/"
+            module_files = {
+                str(path) for path in graph_files
+                if str(path) == module or str(path).startswith(prefix)
+            }
+        else:
+            module_files = set()
         overlap = selected & module_files
         if overlap:
             touched.append(str(module_id))

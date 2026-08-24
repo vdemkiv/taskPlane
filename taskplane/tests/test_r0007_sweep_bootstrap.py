@@ -25,6 +25,31 @@ R0006_DIRECTIVE = (
 )
 
 
+def test_define_impact_accepts_scanned_graph_file_counts():
+    graph = {
+        "modules": {
+            "taskplane": {"files": 2, "kind": "module"},
+            "taskplane/tests": {"files": 1, "kind": "module"},
+        },
+        "files": {
+            "taskplane/build_c.py": {},
+            "taskplane/tests/test_loop.py": {},
+        },
+    }
+
+    impact = build_c._define_impact(
+        graph,
+        ["taskplane/build_c.py", "taskplane/tests/test_loop.py", "unknown.py"],
+    )
+
+    assert impact == {
+        "touched": ["taskplane", "taskplane/tests"],
+        "impacted": {},
+        "total_impacted": 2,
+        "unknown": ["unknown.py"],
+    }
+
+
 def test_event_wait_policy_is_long_lived_and_wake_driven():
     policy = loop.event_wait_policy("review-sweep", 5)
     assert policy == {
