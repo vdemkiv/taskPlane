@@ -9,12 +9,20 @@ mapping that looks like a receipt.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
 import os
 import re
 import stat
 import subprocess
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from pathlib import Path
+
+try:
+    from taskplane import taskplane_lite as contract_engine
+except ImportError:  # direct executable/import compatibility
+    import taskplane_lite as contract_engine
 
 
 CHECKPOINT_SCHEMA = "taskplane.build-c-checkpoint/v1"
@@ -44,10 +52,45 @@ _SPEC_FIELDS = frozenset({
 })
 _PROOF_FIELDS = frozenset({"path", "argv"})
 _R0010_TASK = re.compile(r"(?:^|-)r0010(?:-|$)", re.IGNORECASE)
+_COMMAND_RESULT_FIELDS = frozenset({
+    "schema", "action", "handle", "identity", "lifecycle_states",
+    "snapshot", "event",
+})
+_TERMINAL_STATES = frozenset({"succeeded", "failed", "timed_out", "cancelled"})
+_GREEN_STATE = "succeeded"
+_ENGINE_PRODUCER = "taskplane.checkpoint-engine/v1"
+_IDENTITY_SCHEMA = "taskplane.governed-command-identity/v1"
+_RESULT_SCHEMA = "taskplane.governed-command-result/v1"
+_EVENT_SCHEMA = "taskplane.command-event/v1"
+_STATE_SCHEMA = "taskplane.command-state/v1"
+_DELIVERY_SCHEMA = "taskplane.command-delivery-receipt/v1"
+_SAFE_ENVIRONMENT_KEYS = (
+    "LANG", "LC_ALL", "LC_CTYPE", "PATH", "PYTHONHASHSEED", "TZ",
+)
 
 
 class CheckpointSpecError(ValueError):
     """A checkpoint specification cannot safely start its focused proof."""
+
+
+class CheckpointReceiptError(CheckpointSpecError):
+    """Engine-observed checkpoint evidence cannot mint a green receipt."""
+
+
+def _canonical_digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")).hexdigest()
+
+
+def receipt_digest(receipt: Mapping) -> str:
+    """Return the canonical digest of a receipt without its digest field."""
+    if not isinstance(receipt, Mapping):
+        raise CheckpointReceiptError("checkpoint receipt must be a mapping")
+    return _canonical_digest({
+        key: value for key, value in receipt.items()
+        if key != "receipt_digest"
+    })
 
 
 def _strings(value, field: str, *, nonempty: bool = True) -> list[str]:
@@ -174,6 +217,218 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
         "ratchet_baseline": dict(ratchet),
         "ordered_phases": list(ORDERED_CHECKPOINT_PHASES),
     }
+
+
+def _validated_identity(value: object, field: str) -> dict:
+    if (not isinstance(value, Mapping) or set(value) != {
+            "schema", "run_id", "task_id"} or
+            value.get("schema") != _IDENTITY_SCHEMA or
+            any(not isinstance(value.get(key), str) or
+                not value[key].strip() for key in ("run_id", "task_id"))):
+        raise CheckpointReceiptError(f"{field} identity is invalid")
+    return dict(value)
+
+
+def _validated_predecessors(spec: Mapping,
+                            receipts: Sequence[Mapping]) -> list[str]:
+    if (not isinstance(receipts, Sequence) or
+            isinstance(receipts, (str, bytes))):
+        raise CheckpointReceiptError("predecessor receipts must be a list")
+    expected = list(spec["predecessor_checkpoint_ids"])
+    if len(receipts) != len(expected):
+        raise CheckpointReceiptError(
+            "predecessor receipt count does not match checkpoint specification")
+    digests: list[str] = []
+    for checkpoint_id, receipt in zip(expected, receipts):
+        if not isinstance(receipt, Mapping):
+            raise CheckpointReceiptError("predecessor receipt must be a mapping")
+        identity = receipt.get("identity")
+        supplied_digest = receipt.get("receipt_digest")
+        if (receipt.get("schema") != CHECKPOINT_RECEIPT_SCHEMA or
+                receipt.get("producer") != _ENGINE_PRODUCER or
+                receipt.get("verdict") != "green" or
+                not isinstance(identity, Mapping) or
+                identity.get("checkpoint_id") != checkpoint_id or
+                not isinstance(supplied_digest, str) or
+                supplied_digest != receipt_digest(receipt)):
+            raise CheckpointReceiptError(
+                f"predecessor checkpoint receipt is invalid: {checkpoint_id}")
+        digests.append(supplied_digest)
+    return digests
+
+
+def _validated_runtime_result(worktree: str, spec: Mapping,
+                              result: object) -> dict:
+    if not isinstance(result, Mapping):
+        raise CheckpointReceiptError(
+            "governed command result must be an engine mapping")
+    unknown = sorted(set(result) - _COMMAND_RESULT_FIELDS)
+    if unknown:
+        raise CheckpointReceiptError(
+            "governed command result has caller-authored fields: " +
+            ", ".join(unknown))
+    missing = sorted(_COMMAND_RESULT_FIELDS - set(result))
+    if missing:
+        raise CheckpointReceiptError(
+            "governed command result is missing: " + ", ".join(missing))
+    if (result.get("schema") != _RESULT_SCHEMA or
+            result.get("action") != "wait"):
+        raise CheckpointReceiptError(
+            "checkpoint requires an observed governed command wait result")
+
+    identity = _validated_identity(result.get("identity"), "result")
+    snapshot = result.get("snapshot")
+    event = result.get("event")
+    if not isinstance(snapshot, Mapping) or snapshot.get("schema") != _STATE_SCHEMA:
+        raise CheckpointReceiptError("command snapshot is invalid")
+    if not isinstance(event, Mapping) or event.get("schema") != _EVENT_SCHEMA:
+        raise CheckpointReceiptError("command terminal event is invalid")
+    event_identity = _validated_identity(event.get("identity"), "event")
+    snapshot_identity = _validated_identity(
+        snapshot.get("identity"), "snapshot")
+    if identity != event_identity or identity != snapshot_identity:
+        raise CheckpointReceiptError("governed command identities are mixed")
+
+    handle = result.get("handle")
+    if (not isinstance(handle, str) or not handle or
+            snapshot.get("handle") != handle or event.get("handle") != handle):
+        raise CheckpointReceiptError("governed command handles are mixed")
+    state = event.get("state")
+    if (state not in _TERMINAL_STATES or snapshot.get("state") != state or
+            not isinstance(result.get("lifecycle_states"), Sequence) or
+            isinstance(result.get("lifecycle_states"), (str, bytes)) or
+            not result["lifecycle_states"] or
+            result["lifecycle_states"][-1] != state):
+        raise CheckpointReceiptError("governed command terminal state is mixed")
+
+    delivery = event.get("delivery_receipt")
+    if (not isinstance(delivery, Mapping) or
+            delivery.get("schema") != _DELIVERY_SCHEMA or
+            delivery.get("delivery_key") != event.get("delivery_key") or
+            delivery.get("revision") != event.get("revision") or
+            not str(delivery.get("consumer") or "").strip()):
+        raise CheckpointReceiptError(
+            "checkpoint result lacks an engine delivery receipt")
+
+    expected_workspace = hashlib.sha256(
+        str(Path(worktree).resolve()).encode("utf-8")).hexdigest()
+    if snapshot.get("workspace_fingerprint") != expected_workspace:
+        raise CheckpointReceiptError("command result belongs to another worktree")
+    command_digest = _canonical_digest(spec["focused_proof"]["argv"])
+    expected_runtime_command = hashlib.sha256(
+        command_digest.encode("utf-8")).hexdigest()
+    if snapshot.get("command_fingerprint") != expected_runtime_command:
+        raise CheckpointReceiptError(
+            "command result does not match the declared focused proof")
+
+    artifact = event.get("artifact")
+    if artifact != snapshot.get("artifact"):
+        raise CheckpointReceiptError("command output artifacts are mixed")
+    if not isinstance(artifact, Mapping) or set(artifact) != {
+            "path", "sha256", "bytes", "truncated"}:
+        raise CheckpointReceiptError("command output artifact is invalid")
+    if (not isinstance(artifact.get("bytes"), int) or
+            artifact["bytes"] < 0 or
+            not isinstance(artifact.get("sha256"), str) or
+            len(artifact["sha256"]) != 64 or
+            not isinstance(artifact.get("truncated"), bool)):
+        raise CheckpointReceiptError("command output artifact is invalid")
+    output = event.get("output_delta")
+    if (not isinstance(output, str) or
+            snapshot.get("output_summary") != output or
+            hashlib.sha256(output.encode("utf-8")).hexdigest() !=
+            artifact["sha256"] or
+            len(output.encode("utf-8")) != artifact["bytes"] or
+            snapshot.get("output_digest") != artifact["sha256"]):
+        raise CheckpointReceiptError("command output evidence is mixed")
+
+    if state != _GREEN_STATE or event.get("exit_code") != 0 or \
+            snapshot.get("exit_code") != 0:
+        raise CheckpointReceiptError(
+            f"focused_proof ended {state}; later phases stopped")
+    if artifact["truncated"]:
+        raise CheckpointReceiptError(
+            "focused_proof output is truncated; later phases stopped")
+    return {"identity": identity, "snapshot": dict(snapshot),
+            "event": dict(event), "artifact": dict(artifact)}
+
+
+def validate_and_mint(worktree: str, spec: Mapping,
+                      command_result: Mapping, *,
+                      predecessor_receipts: Sequence[Mapping] = ()) -> dict:
+    """Mint one green receipt exclusively from runtime and repository facts.
+
+    The caller supplies only the checkpoint specification and the incumbent
+    governed-command result.  Producer, verdict, output, environment, result,
+    revision, and receipt fields are all derived here; extra caller fields are
+    refused by the two closed input boundaries.
+    """
+    try:
+        validated = validate_checkpoint_spec(worktree, spec)
+    except CheckpointSpecError as exc:
+        raise CheckpointReceiptError(str(exc)) from exc
+    predecessor_digests = _validated_predecessors(
+        validated, predecessor_receipts)
+    observed = _validated_runtime_result(worktree, validated, command_result)
+
+    contract = contract_engine.load_active(str(Path(worktree).resolve()))
+    if not isinstance(contract, Mapping):
+        raise CheckpointReceiptError(
+            "checkpoint receipt requires an exact active contract")
+    event = observed["event"]
+    snapshot = observed["snapshot"]
+    artifact = observed["artifact"]
+    environment = {
+        key: os.environ[key] for key in _SAFE_ENVIRONMENT_KEYS
+        if key in os.environ
+    }
+    engine_material = {
+        "producer": _ENGINE_PRODUCER,
+        "checkpoint_schema": CHECKPOINT_SCHEMA,
+        "receipt_schema": CHECKPOINT_RECEIPT_SCHEMA,
+        "ordered_phases": list(ORDERED_CHECKPOINT_PHASES),
+    }
+    receipt = {
+        "schema": CHECKPOINT_RECEIPT_SCHEMA,
+        "producer": _ENGINE_PRODUCER,
+        "engine_fingerprint": _canonical_digest(engine_material),
+        "active_contract_fingerprint": _canonical_digest(contract),
+        "identity": {
+            "run_id": observed["identity"]["run_id"],
+            "task_id": observed["identity"]["task_id"],
+            "checkpoint_id": validated["checkpoint_id"],
+            "ac_ids": list(validated["ac_ids"]),
+        },
+        "phase": validated["phase"],
+        "ordered_phases": list(validated["ordered_phases"]),
+        "completed_phases": ["focused_proof"],
+        "command": {
+            "argv": list(validated["focused_proof"]["argv"]),
+            "cwd": str(Path(worktree).resolve()),
+            "fingerprint": snapshot["command_fingerprint"],
+            "handle": event["handle"],
+            "runtime_revision": event["revision"],
+        },
+        "environment_fingerprint": _canonical_digest(environment),
+        "output": {
+            "sha256": artifact["sha256"],
+            "bytes": artifact["bytes"],
+            "truncated": artifact["truncated"],
+            "redactions": int((snapshot.get("metrics") or {}).get(
+                "output_redactions", 0)),
+        },
+        "result": {
+            "state": event["state"],
+            "exit_code": event["exit_code"],
+            "digest": _canonical_digest(event),
+        },
+        "worktree_revision": validated["worktree_revision"],
+        "declared_scope": list(validated["declared_scope"]),
+        "predecessor_receipt_digests": predecessor_digests,
+        "verdict": "green",
+    }
+    receipt["receipt_digest"] = receipt_digest(receipt)
+    return receipt
 
 
 def _is_r0010_code_task(task: Mapping) -> bool:

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import governed_commands
 import loop
 import tp
 import taskplane_lite as contract_engine
+from taskplane import checkpoint
 from taskplane import command_adapters
 from taskplane.command_adapters import CommandAdapter, HostLaunch
 from taskplane.command_runtime import CommandRuntime
@@ -534,3 +536,144 @@ def test_normal_flow_wiring_is_mutation_sensitive():
     assert '"host_observed": False' in dispatch_body
     assert '"execution_observed": False' in dispatch_body
     assert '"delivery_observed": False' in dispatch_body
+
+
+def _checkpoint_workspace(tmp_path):
+    workspace = tmp_path / "checkpoint-repo"
+    proof = workspace / "taskplane" / "tests" / "test_focused.py"
+    proof.parent.mkdir(parents=True)
+    proof.write_text("def test_focused():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "e@e"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "t"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "checkpoint proof"],
+                   cwd=workspace, check=True)
+    contract = contract_engine.build_contract(
+        "checkpoint-task", scope=[str(workspace)], tools=["exec_command"],
+        plan_minted=True)
+    contract_engine.activate(str(workspace), contract, snapshot=None)
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+    argv = ["python3", "-m", "pytest", "-q",
+            "taskplane/tests/test_focused.py"]
+    spec = {
+        "schema": checkpoint.CHECKPOINT_SCHEMA,
+        "checkpoint_id": "cp-r0010-ac-1",
+        "phase": "build",
+        "ac_ids": ["AC-1"],
+        "predecessor_checkpoint_ids": [],
+        "worktree_revision": revision,
+        "declared_scope": ["taskplane/checkpoint.py", "taskplane/tests/**"],
+        "focused_proof": {
+            "path": "taskplane/tests/test_focused.py", "argv": argv,
+        },
+        "ratchet_baseline": {"cycle_count": 0},
+    }
+    return workspace, spec, argv
+
+
+def _checkpoint_command_result(workspace, argv, *, state="succeeded",
+                               exit_code=0):
+    identity = {
+        "schema": governed_commands.IDENTITY_SCHEMA,
+        "run_id": "run-r0010", "task_id": "checkpoint-task",
+    }
+    command_fingerprint = governed_commands._canonical_digest(argv)
+    runtime_fingerprint = hashlib.sha256(
+        command_fingerprint.encode("utf-8")).hexdigest()
+    output = "1 passed\n" if state == "succeeded" else "1 failed\n"
+    output_bytes = output.encode("utf-8")
+    output_digest = hashlib.sha256(output_bytes).hexdigest()
+    event = {
+        "schema": "taskplane.command-event/v1", "handle": "a" * 32,
+        "revision": 4, "state": state, "reason": state,
+        "exit_code": exit_code, "elapsed_ms": 12, "output_delta": output,
+        "artifact": {"path": "artifacts/output.log",
+                     "sha256": output_digest, "bytes": len(output_bytes),
+                     "truncated": False},
+        "delivery_key": "delivery", "identity": identity,
+        "delivery_receipt": {
+            "schema": "taskplane.command-delivery-receipt/v1",
+            "consumer": "checkpoint:cp-r0010-ac-1",
+            "delivery_key": "delivery", "revision": 4,
+        },
+    }
+    snapshot = {
+        "schema": "taskplane.command-state/v1", "handle": "a" * 32,
+        "workspace_fingerprint": hashlib.sha256(
+            str(workspace.resolve()).encode("utf-8")).hexdigest(),
+        "authorization_fingerprint": "b" * 64,
+        "command_fingerprint": runtime_fingerprint,
+        "state": state, "revision": 4, "identity": identity,
+        "exit_code": exit_code, "reason": state, "artifact": event["artifact"],
+        "output_summary": output, "output_digest": output_digest,
+        "metrics": {"output_redactions": 0},
+    }
+    return {
+        "schema": governed_commands.RESULT_SCHEMA, "action": "wait",
+        "handle": "a" * 32, "identity": identity,
+        "lifecycle_states": ["created", "running", state],
+        "snapshot": snapshot, "event": event,
+    }
+
+
+def test_checkpoint_receipt_is_engine_minted_and_exact_revision_bound(tmp_path):
+    workspace, spec, argv = _checkpoint_workspace(tmp_path)
+    receipt = checkpoint.validate_and_mint(
+        str(workspace), spec,
+        _checkpoint_command_result(workspace, argv))
+
+    assert receipt["schema"] == checkpoint.CHECKPOINT_RECEIPT_SCHEMA
+    assert receipt["producer"] == "taskplane.checkpoint-engine/v1"
+    assert receipt["verdict"] == "green"
+    assert receipt["worktree_revision"] == spec["worktree_revision"]
+    assert receipt["identity"] == {
+        "run_id": "run-r0010", "task_id": "checkpoint-task",
+        "checkpoint_id": "cp-r0010-ac-1", "ac_ids": ["AC-1"],
+    }
+    assert receipt["command"]["argv"] == argv
+    assert receipt["command"]["cwd"] == str(workspace.resolve())
+    assert receipt["output"] == {
+        "sha256": hashlib.sha256(b"1 passed\n").hexdigest(),
+        "bytes": len(b"1 passed\n"), "truncated": False,
+        "redactions": 0,
+    }
+    assert len(receipt["engine_fingerprint"]) == 64
+    assert len(receipt["active_contract_fingerprint"]) == 64
+    assert len(receipt["environment_fingerprint"]) == 64
+    assert receipt["receipt_digest"] == checkpoint.receipt_digest(receipt)
+
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "new tip"],
+                   cwd=workspace, check=True)
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="exact HEAD|stale"):
+        checkpoint.validate_and_mint(
+            str(workspace), spec,
+            _checkpoint_command_result(workspace, argv))
+
+
+def test_checkpoint_receipt_rejects_caller_forgery_and_red_stops_later_phases(
+        tmp_path):
+    workspace, spec, argv = _checkpoint_workspace(tmp_path)
+    forged = dict(spec)
+    forged["receipt"] = {"verdict": "green"}
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="unknown checkpoint fields.*receipt"):
+        checkpoint.validate_and_mint(
+            str(workspace), forged,
+            _checkpoint_command_result(workspace, argv))
+
+    forged_result = _checkpoint_command_result(workspace, argv)
+    forged_result["producer"] = "caller"
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="caller-authored fields.*producer"):
+        checkpoint.validate_and_mint(str(workspace), spec, forged_result)
+
+    red = _checkpoint_command_result(
+        workspace, argv, state="failed", exit_code=1)
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="focused_proof.*failed.*later phases stopped"):
+        checkpoint.validate_and_mint(str(workspace), spec, red)
