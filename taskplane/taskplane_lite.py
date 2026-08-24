@@ -1708,7 +1708,6 @@ def _checkout_bound_main(workspace: str, args) -> None:
     shell commands byte-for-byte unchanged.
     """
     import importlib.machinery
-    import importlib.util
     import runpy
     import types
 
@@ -1726,37 +1725,12 @@ def _checkout_bound_main(workspace: str, args) -> None:
     sys.path[:] = [p for p in sys.path if p not in (root, package_path)]
     sys.path[:0] = [root, package_path]
 
-    # The trampoline imports the launching engine before it knows the target
-    # checkout.  Replace that bootstrap-only module with the checkout's own
-    # runtime before executing the suite; otherwise worktree modules can bind
-    # to the launcher's taskplane_lite while their sibling tp.py comes from
-    # the target tree.  That mixed runtime breaks exact signed-command paths
-    # and defeats the checkout boundary this function promises.
-    checkout_lite_path = os.path.realpath(
-        os.path.join(package_path, "taskplane_lite.py"))
-    bound_lite = sys.modules.get("taskplane_lite")
-    bound_lite_path = os.path.realpath(
-        str(getattr(bound_lite, "__file__", "") or ""))
-    if os.path.isfile(checkout_lite_path) and \
-            bound_lite_path != checkout_lite_path:
-        spec = importlib.util.spec_from_file_location(
-            "taskplane_lite", checkout_lite_path)
-        if spec is None or spec.loader is None:
-            raise SystemExit(
-                "checkout-bound taskplane runtime cannot be loaded")
-        bound_lite = importlib.util.module_from_spec(spec)
-        sys.modules["taskplane_lite"] = bound_lite
-        spec.loader.exec_module(bound_lite)
-
     original_popen = subprocess.Popen
-    nested_python_args = getattr(
-        bound_lite, "_checkout_bound_python_args",
-        _checkout_bound_python_args)
 
     def checkout_popen(command, *popen_args, **popen_kwargs):
         if isinstance(command, (list, tuple)) and command and \
                 _python_program(command[0]):
-            command = nested_python_args(root, command[1:])
+            command = _checkout_bound_python_args(root, command[1:])
         return original_popen(command, *popen_args, **popen_kwargs)
 
     subprocess.Popen = checkout_popen

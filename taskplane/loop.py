@@ -3537,6 +3537,37 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         "status": manifest.get("status"), "breadth": "routed"}})
 
 
+_REVIEW_RUNTIME_KERNEL = None
+
+
+def _review_runtime_kernel():
+    """Resolve the enforcement kernel shipped beside this loop module.
+
+    The suite launcher can be an older primary checkout while the governed
+    target is a task worktree.  Keep the target runtime private to this
+    producer-activation boundary: never replace the canonical module in
+    ``sys.modules``, but never sign target actions with the launcher copy.
+    """
+    global _REVIEW_RUNTIME_KERNEL
+    target = os.path.realpath(os.path.join(
+        os.path.dirname(__file__), "taskplane_lite.py"))
+    imported = os.path.realpath(str(getattr(tp, "__file__", "") or ""))
+    if imported == target:
+        return tp
+    cached = _REVIEW_RUNTIME_KERNEL
+    if os.path.realpath(str(getattr(cached, "__file__", "") or "")) == target:
+        return cached
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_taskplane_review_runtime", target)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("target review runtime cannot be loaded")
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    _REVIEW_RUNTIME_KERNEL = runtime
+    return runtime
+
+
 def _bind_stateless_review_contract_actions(
         review_ws: str, manifest: dict, *, task_id: str,
         now: int | None = None) -> dict:
@@ -3549,6 +3580,7 @@ def _bind_stateless_review_contract_actions(
     """
     import hashlib
     import review_evidence
+    runtime_kernel = _review_runtime_kernel()
 
     if not isinstance(manifest, dict) or manifest.get("status") != "ready":
         return manifest
@@ -3582,7 +3614,7 @@ def _bind_stateless_review_contract_actions(
         action_id = "review-action-" + hashlib.sha256(json.dumps(
             action_material, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")).hexdigest()[:24]
-        action = tp.issue_review_contract_action(
+        action = runtime_kernel.issue_review_contract_action(
             review_ws, run_id=run_id, task_id=str(task_id),
             role_marker=role_marker, worker_identity=worker_identity,
             action_id=action_id, lease=lease,
@@ -3606,10 +3638,16 @@ def _bind_stateless_review_contract_actions(
         ).encode("utf-8")).decode("ascii").rstrip("=")
         action_token = encode(action)
         expected_token = encode(expected)
+        # Bind the activation command to the CLI shipped beside this loop
+        # implementation.  A governed suite can intentionally execute a
+        # target worktree with its launcher runtime already imported; using
+        # ``tp.__file__`` in that context crosses revisions and emits a CLI
+        # path the target parser must reject.  The sibling path keeps the
+        # production command target-local without replacing global modules.
         command_argv = [
             sys.executable,
-            os.path.realpath(os.path.join(os.path.dirname(tp.__file__),
-                                          "tp.py")),
+            os.path.realpath(os.path.join(
+                os.path.dirname(__file__), "tp.py")),
             "review", "activate-contract", "--workspace",
             os.path.realpath(review_ws), "--task-slot",
             producer["task_slot"], "--signed-action", action_token,

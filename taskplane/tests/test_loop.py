@@ -2939,35 +2939,15 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
 
 class TestReviewBridge(unittest.TestCase):
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
-        checkout = tempfile.mkdtemp()
-        package = os.path.join(checkout, "taskplane")
-        os.makedirs(package)
-        with open(os.path.join(package, "taskplane_lite.py"), "w",
-                  encoding="utf-8") as stream:
-            stream.write("ORIGIN = 'target-checkout'\n")
+        canonical = sys.modules.get("taskplane_lite")
 
-        missing = object()
-        prior_lite = sys.modules.get("taskplane_lite", missing)
-        prior_package = sys.modules.get("taskplane", missing)
-        prior_popen = subprocess.Popen
-        prior_path = list(sys.path)
-        prior_argv = list(sys.argv)
-        try:
-            tp._checkout_bound_main(checkout, [
-                "-c", "import taskplane_lite; "
-                "assert taskplane_lite.ORIGIN == 'target-checkout'",
-            ])
-        finally:
-            subprocess.Popen = prior_popen
-            sys.path[:] = prior_path
-            sys.argv[:] = prior_argv
-            for name, prior in (("taskplane_lite", prior_lite),
-                                ("taskplane", prior_package)):
-                if prior is missing:
-                    sys.modules.pop(name, None)
-                else:
-                    sys.modules[name] = prior
-            shutil.rmtree(checkout)
+        runtime = loop._review_runtime_kernel()
+
+        self.assertEqual(
+            os.path.realpath(runtime.__file__),
+            os.path.realpath(os.path.join(
+                os.path.dirname(loop.__file__), "taskplane_lite.py")))
+        self.assertIs(sys.modules.get("taskplane_lite"), canonical)
 
     def test_review_bridge_execute_gate_uses_safe_argv(self):
         completed = subprocess.CompletedProcess(

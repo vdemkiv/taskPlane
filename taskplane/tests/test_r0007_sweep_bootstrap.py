@@ -363,6 +363,8 @@ def test_em_instruction_consumes_exact_concurrent_sweep_slots_once():
 def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
         tmp_path, monkeypatch):
     workspace = str(tmp_path)
+    monkeypatch.setattr(
+        review_evidence, "tp", loop._review_runtime_kernel())
     subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
     outer_run_id = "outer-delivery-run"
     identity = runtime_storage.resolve_repository_identity(workspace)
@@ -491,6 +493,9 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     assert all("TASKPLANE_TASK=" not in row["host_command"]
                for row in bootstraps)
     cli = Path(__file__).resolve().parents[1] / "tp.py"
+    assert {os.path.realpath(row["command_argv"][1])
+            for row in bootstraps} == {os.path.realpath(cli)}
+    native_cli = ["/usr/bin/env", sys.executable, str(cli)]
 
     substituted_interpreter = list(bootstraps[0]["command_argv"])
     substituted_interpreter[0] = "/usr/bin/python3"
@@ -515,7 +520,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     mutated_argv[action_index] = mutated_argv[action_index][:-1] + (
         "A" if mutated_argv[action_index][-1] != "A" else "B")
     denied_mutation = subprocess.run(
-        [sys.executable, str(cli), "screen"], cwd=workspace,
+        [*native_cli, "screen"], cwd=workspace,
         input=json.dumps({
             "cwd": workspace, "turn_id": "host-pretool-mutated",
             "tool_name": "Bash",
@@ -532,7 +537,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
                      "TASKPLANE_REVIEW_CONTRACT_EXPECTED"):
             environment.pop(name, None)
         screened = subprocess.run(
-            [sys.executable, str(cli), "screen"], cwd=workspace,
+            [*native_cli, "screen"], cwd=workspace,
             env=environment, input=json.dumps({
                 "cwd": workspace,
                 "turn_id": "host-pretool-" + expected["action_id"],
@@ -543,7 +548,8 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
         assert screened.stdout == ""
         assert bootstrap["task_slot"] in tp.list_task_slots(workspace)
         activated = subprocess.run(
-            bootstrap["command_argv"], cwd=workspace, env=environment,
+            ["/usr/bin/env", *bootstrap["command_argv"]], cwd=workspace,
+            env=environment,
             text=True, capture_output=True, check=False)
         assert activated.returncode == 0, activated.stderr
         receipt = json.loads(activated.stdout)
@@ -555,7 +561,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     active_union = tp.load_active(workspace)
     assert len(active_union["_union"]) == 5
     legacy_screened = subprocess.run(
-        [sys.executable, str(cli), "screen"], cwd=workspace,
+        [*native_cli, "screen"], cwd=workspace,
         env=environment, input=json.dumps({
             "cwd": workspace, "turn_id": "host-pretool-legacy",
             "tool_name": "Bash",
@@ -600,7 +606,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
             {"TASKPLANE_TASK": producer_slot,
              "TASKPLANE_HOOK_PATH": "native"})
         started = subprocess.run(
-            [sys.executable, str(cli), "subagent-start"], cwd=workspace,
+            [*native_cli, "subagent-start"], cwd=workspace,
             env=screen_environment, input=json.dumps({
                 "cwd": workspace,
                 "turn_id": event["turn_id"],
@@ -609,7 +615,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
             }), text=True, capture_output=True, check=False)
         assert started.returncode == 0, started.stderr
         screened = subprocess.run(
-            [sys.executable, str(cli), "screen"], cwd=workspace,
+            [*native_cli, "screen"], cwd=workspace,
             env=screen_environment, input=json.dumps(event), text=True,
             capture_output=True, check=False)
         assert screened.returncode == 0, screened.stderr
