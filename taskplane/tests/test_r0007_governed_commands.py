@@ -620,11 +620,47 @@ def _checkpoint_command_result(workspace, argv, *, state="succeeded",
     }
 
 
+def _checkpoint_runtime_argv(workspace, spec):
+    return checkpoint.validate_checkpoint_spec(
+        str(workspace), spec)["focused_proof"]["argv"]
+
+
+def _run_governed_checkpoint_command(workspace, argv, task_id):
+    authorization = "agent:checkpoint"
+    launched = governed_commands.execute(str(workspace), "launch", {
+        "authorization": authorization,
+        "argv": argv,
+        "run_id": "run-r0010",
+        "task_id": task_id,
+    })
+    return governed_commands.execute(str(workspace), "wait", {
+        "authorization": authorization,
+        "handle": launched["handle"],
+        "consumer": "checkpoint:cp-r0010-ac-1",
+        "timeout": 10,
+    })
+
+
+def test_checkpoint_receipt_mints_from_real_focused_proof_execution(tmp_path):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    runtime_argv = _checkpoint_runtime_argv(workspace, spec)
+    result = _run_governed_checkpoint_command(
+        workspace, runtime_argv, "checkpoint-real-proof")
+
+    receipt = checkpoint.validate_and_mint(str(workspace), spec, result)
+
+    assert result["event"]["state"] == "succeeded"
+    assert "1 passed" in result["event"]["output_delta"]
+    assert receipt["command"]["argv"] == runtime_argv
+    assert receipt["worktree_revision"] == spec["worktree_revision"]
+
+
 def test_checkpoint_receipt_is_engine_minted_and_exact_revision_bound(tmp_path):
     workspace, spec, argv = _checkpoint_workspace(tmp_path)
+    runtime_argv = _checkpoint_runtime_argv(workspace, spec)
     receipt = checkpoint.validate_and_mint(
         str(workspace), spec,
-        _checkpoint_command_result(workspace, argv))
+        _checkpoint_command_result(workspace, runtime_argv))
 
     assert receipt["schema"] == checkpoint.CHECKPOINT_RECEIPT_SCHEMA
     assert receipt["producer"] == "taskplane.checkpoint-engine/v1"
@@ -634,7 +670,7 @@ def test_checkpoint_receipt_is_engine_minted_and_exact_revision_bound(tmp_path):
         "run_id": "run-r0010", "task_id": "checkpoint-task",
         "checkpoint_id": "cp-r0010-ac-1", "ac_ids": ["AC-1"],
     }
-    assert receipt["command"]["argv"] == argv
+    assert receipt["command"]["argv"] == runtime_argv
     assert receipt["command"]["cwd"] == str(workspace.resolve())
     assert receipt["output"] == {
         "sha256": hashlib.sha256(b"1 passed\n").hexdigest(),
@@ -658,22 +694,51 @@ def test_checkpoint_receipt_is_engine_minted_and_exact_revision_bound(tmp_path):
 def test_checkpoint_receipt_rejects_caller_forgery_and_red_stops_later_phases(
         tmp_path):
     workspace, spec, argv = _checkpoint_workspace(tmp_path)
+    runtime_argv = _checkpoint_runtime_argv(workspace, spec)
     forged = dict(spec)
     forged["receipt"] = {"verdict": "green"}
     with pytest.raises(checkpoint.CheckpointReceiptError,
                        match="unknown checkpoint fields.*receipt"):
         checkpoint.validate_and_mint(
             str(workspace), forged,
-            _checkpoint_command_result(workspace, argv))
+            _checkpoint_command_result(workspace, runtime_argv))
 
-    forged_result = _checkpoint_command_result(workspace, argv)
+    forged_result = _checkpoint_command_result(workspace, runtime_argv)
     forged_result["producer"] = "caller"
     with pytest.raises(checkpoint.CheckpointReceiptError,
                        match="caller-authored fields.*producer"):
         checkpoint.validate_and_mint(str(workspace), spec, forged_result)
 
     red = _checkpoint_command_result(
-        workspace, argv, state="failed", exit_code=1)
+        workspace, runtime_argv, state="failed", exit_code=1)
     with pytest.raises(checkpoint.CheckpointReceiptError,
                        match="focused_proof.*failed.*later phases stopped"):
         checkpoint.validate_and_mint(str(workspace), spec, red)
+
+
+def test_checkpoint_receipt_rejects_successful_non_proof_command(tmp_path):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    echo_argv = ["/bin/echo", spec["focused_proof"]["path"]]
+    spec["focused_proof"]["argv"] = echo_argv
+    echo_result = _run_governed_checkpoint_command(
+        workspace, echo_argv, "checkpoint-echo-attack")
+
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="focused_proof.*pytest"):
+        checkpoint.validate_and_mint(
+            str(workspace), spec, echo_result)
+
+
+def test_checkpoint_receipt_rejects_runtime_result_from_prior_revision(tmp_path):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    old_runtime_argv = _checkpoint_runtime_argv(workspace, spec)
+    old_result = _checkpoint_command_result(workspace, old_runtime_argv)
+
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "new tip"],
+                   cwd=workspace, check=True)
+    spec["worktree_revision"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="exact revision"):
+        checkpoint.validate_and_mint(str(workspace), spec, old_result)

@@ -67,6 +67,13 @@ _DELIVERY_SCHEMA = "taskplane.command-delivery-receipt/v1"
 _SAFE_ENVIRONMENT_KEYS = (
     "LANG", "LC_ALL", "LC_CTYPE", "PATH", "PYTHONHASHSEED", "TZ",
 )
+_PYTHON_EXECUTABLE = re.compile(r"python(?:\d+(?:\.\d+)*)?\Z")
+_PYTEST_EXECUTABLES = frozenset({"pytest", "py.test"})
+_NON_EXECUTING_PYTEST_OPTIONS = frozenset({
+    "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
+    "--help", "--setup-only", "--version",
+})
+_REVISION_CACHE_PREFIX = ".pytest_cache/taskplane-checkpoint-"
 
 
 class CheckpointSpecError(ValueError):
@@ -133,6 +140,44 @@ def _scope_contains(path: str, scope: Sequence[str]) -> bool:
                for pattern in scope)
 
 
+def _focused_pytest_argv(argv: Sequence[str], proof_path: str,
+                         revision: str) -> list[str]:
+    """Return a direct pytest command cryptographically bound to ``revision``.
+
+    The incumbent command analyzer supports direct pytest commands, so the
+    common ``python -m pytest`` spelling is normalized to that existing form.
+    A valid engine-owned cache option carries the exact Git revision in argv,
+    making the incumbent runtime fingerprint revision-specific without a new
+    command-result field.
+    """
+    command = list(argv)
+    executable = os.path.basename(command[0]) if command else ""
+    if (_PYTHON_EXECUTABLE.fullmatch(executable) and
+            command[1:3] == ["-m", "pytest"]):
+        command = ["pytest", *command[3:]]
+    elif command[0] not in _PYTEST_EXECUTABLES:
+        raise CheckpointSpecError(
+            "focused_proof.argv must invoke pytest directly or through Python")
+
+    if any(item in _NON_EXECUTING_PYTEST_OPTIONS for item in command[1:]):
+        raise CheckpointSpecError(
+            "focused_proof.argv must execute pytest, not only inspect tests")
+
+    selector = command[-1] if command else ""
+    if selector != proof_path and not selector.startswith(proof_path + "::"):
+        raise CheckpointSpecError(
+            f"focused_proof.argv must run pytest target {proof_path}")
+    marker = f"cache_dir={_REVISION_CACHE_PREFIX}{revision}"
+    if command[-3:-1] == ["-o", marker]:
+        return command
+    if any(isinstance(item, str) and item.startswith(
+            f"cache_dir={_REVISION_CACHE_PREFIX}") for item in command):
+        raise CheckpointSpecError(
+            "focused_proof.argv must invoke pytest for the exact revision")
+    command[-1:-1] = ["-o", marker]
+    return command
+
+
 def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
     """Validate and normalize an AC checkpoint before any command starts.
 
@@ -190,10 +235,6 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
     if unchanged.returncode != 0:
         raise CheckpointSpecError(
             f"focused proof must match exact HEAD: {proof_path}")
-    if proof_path not in argv:
-        raise CheckpointSpecError(
-            f"focused_proof.argv must name focused proof {proof_path}")
-
     head = _git(worktree, "rev-parse", "HEAD")
     if head.returncode != 0:
         raise CheckpointSpecError("worktree revision could not be resolved")
@@ -201,6 +242,7 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
     if revision != head.stdout.strip():
         raise CheckpointSpecError(
             "worktree_revision is stale; checkpoint requires exact HEAD")
+    argv = _focused_pytest_argv(argv, proof_path, revision)
     ratchet = spec.get("ratchet_baseline")
     if not isinstance(ratchet, Mapping):
         raise CheckpointSpecError("ratchet_baseline must be a mapping")
@@ -319,7 +361,7 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
         command_digest.encode("utf-8")).hexdigest()
     if snapshot.get("command_fingerprint") != expected_runtime_command:
         raise CheckpointReceiptError(
-            "command result does not match the declared focused proof")
+            "command result does not match the focused proof exact revision")
 
     artifact = event.get("artifact")
     if artifact != snapshot.get("artifact"):
