@@ -4,7 +4,7 @@
 
 Deliver the approved consolidated R-0009 → R-0010 → R-0011 program from the governed v2.17.16 baseline without importing, repairing, reverting, or releasing any v2.17.17-or-later history.
 
-The authoritative branch is codex/r0009-r0011-from-v2.17.16 at bba3354e7fc5eb052beac74af230611ae48bd7db, tagged v2.17.16. The approved Design fingerprint is 4af9e4f222126b3bbf983f5b23ecf660b392a3bcb9c8c149e7869c05662700c7 and its solution-design evidence fingerprint is 220debf54a6c34d0b3aa634cbbf20e71583e8db145e839398162bf7922276e6c. The stabilized graph at committed governance baseline 17e5a847e423781afb4e64f222d595f407d3594c has content fingerprint 8845fcb7aeeb56991f6b2ef46fa3bfc600b1bac6bd7a83e290201371c52c3039, scan-quality fingerprint 96171616b4fc30c8fe1daec657a2144dc0df5920526bbe7f203845a1ea00d4b2, 92 modules, 296 edges, and 523 files.
+The authoritative branch is codex/r0009-r0011-from-v2.17.16 at bba3354e7fc5eb052beac74af230611ae48bd7db, tagged v2.17.16. The approved Design fingerprint is 0f5214f141c6b6d258813ab22a8f1a19b3f1052abdf773c191d10029606ee794 and its solution-design evidence fingerprint is 6b9191831fd83e12c8e04d8488a663a9a17a53c1f82813aa567e4f3b98d89288. The exact pre-Design baseline graph at 45eed52ff331db28ff229ba8f72761732564fc54 has content fingerprint a377a00651e46b5c4a28154edc043ee2dbaaf77cbfe82d2b29fde01585f9414d, scan-quality fingerprint d128a3e7aeae7fc468e79c186e4407ce52ce8b66f6e21024f75c7bcf6b33e73a, 92 modules, 296 edges, and 523 files.
 
 The one bounded impact query returned 28 impacted modules through the approved radius and zero unknown modules. Every task copies the typed graph policy unchanged: local depth 3, contract-only boundaries, contract depth 1, and requirement depth 1.
 
