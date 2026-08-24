@@ -1143,6 +1143,128 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
         self.assertEqual(loop.approve(ws, by="user")["step"], "execute")
 
+    def test_define_projection_plan_gate_names_every_task_without_explicit_criteria(self):
+        missing = dict(TASK)
+        missing["id"] = "missing-criteria"
+        missing.pop("criteria")
+        empty = dict(TASK, id="empty-criteria", criteria=["", "  "])
+        ws = git_ws(self.tmp, [missing, empty])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        loop.next_action(ws)
+
+        out = loop.gate(ws, "pass")
+
+        self.assertIn("error", out)
+        blockers = "\n".join(out["dor"]["blockers"])
+        self.assertIn("task missing-criteria: explicit acceptance criteria",
+                      blockers)
+        self.assertIn("task empty-criteria: explicit acceptance criteria",
+                      blockers)
+        self.assertEqual(loop.load(ws)["step"], "plan")
+
+    def test_define_projection_replan_reanchors_unchanged_passed_contract(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        loop.next_action(ws)
+        self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
+        state = loop.load(ws)
+        state["tasks"][0].update({
+            "status": "passed", "workspace": ws,
+            "target_commit": tp.git_head(ws),
+        })
+        loop.save(ws, state)
+        loop.replan(ws, by="user", reason="metadata-only correction")
+        loop.next_action(ws)
+        verified = {
+            "target_commit": tp.git_head(ws),
+            "evaluation_path": os.path.join(ws, ".eval", "verdict.json"),
+            "evaluation_sha256": "a" * 64,
+            "resolution": "independent-pass",
+        }
+
+        with unittest.mock.patch.object(
+                loop, "_verify_reanchor_task_evidence",
+                return_value=(verified, None)):
+            out = loop.gate(ws, "pass")
+
+        self.assertNotIn("error", out)
+        self.assertEqual(out["reanchor"]["restored_count"], 1)
+        self.assertEqual(out["reanchor"]["restored"][0]["task_id"], "t1")
+        self.assertEqual(loop.load(ws)["tasks"][0]["status"], "passed")
+        self.assertEqual(loop.load(ws)["step"], "plan_approval")
+
+    def test_define_projection_replan_changed_criteria_stays_pending(self):
+        prior = dict(TASK, status="passed", workspace=self.tmp,
+                     target_commit="a" * 40)
+        current = dict(TASK, criteria=["a newly changed criterion"])
+        state = {
+            "tasks": [current],
+            "replan_history": [{"by": "user", "reason": "metadata",
+                                "ts": 1, "tasks": [prior]}],
+        }
+
+        with unittest.mock.patch.object(
+                loop, "_verify_reanchor_task_evidence") as verify:
+            receipt, errors = loop._reanchor_replanned_tasks(self.tmp, state)
+
+        self.assertEqual(errors, [])
+        verify.assert_not_called()
+        self.assertEqual(state["tasks"][0]["status"], "pending")
+        self.assertEqual(receipt["pending"][0]["reason"],
+                         "immutable_contract_changed")
+
+    def test_define_projection_replan_unverified_evidence_stays_pending(self):
+        prior = dict(TASK, status="passed", workspace=self.tmp,
+                     target_commit="a" * 40)
+        state = {
+            "tasks": [dict(TASK)],
+            "replan_history": [{"by": "user", "reason": "metadata",
+                                "ts": 1, "tasks": [prior]}],
+        }
+
+        with unittest.mock.patch.object(
+                loop, "_verify_reanchor_task_evidence",
+                return_value=(None, "durable verdict target is stale")):
+            receipt, errors = loop._reanchor_replanned_tasks(self.tmp, state)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(state["tasks"][0]["status"], "pending")
+        self.assertEqual(receipt["pending"][0]["reason"],
+                         "evidence_unverified")
+        self.assertIn("stale", receipt["pending"][0]["detail"])
+
+    def test_define_projection_replan_requires_dependency_closed_restore(self):
+        prior_root = dict(TASK, id="root", criteria=["old root"],
+                          status="passed", workspace=self.tmp,
+                          target_commit="a" * 40)
+        prior_child = dict(TASK, id="child", deps=["root"],
+                           status="passed", workspace=self.tmp,
+                           target_commit="b" * 40)
+        current_root = dict(TASK, id="root", criteria=["changed root"])
+        current_child = dict(TASK, id="child", deps=["root"])
+        state = {
+            "tasks": [current_root, current_child],
+            "replan_history": [{"by": "user", "reason": "metadata",
+                                "ts": 1,
+                                "tasks": [prior_root, prior_child]}],
+        }
+
+        with unittest.mock.patch.object(
+                loop, "_verify_reanchor_task_evidence",
+                return_value=({"target_commit": "b" * 40,
+                               "evaluation_sha256": "c" * 64}, None)):
+            receipt, errors = loop._reanchor_replanned_tasks(self.tmp, state)
+
+        self.assertEqual(errors, [])
+        self.assertEqual([task["status"] for task in state["tasks"]],
+                         ["pending", "pending"])
+        pending = {row["task_id"]: row for row in receipt["pending"]}
+        self.assertEqual(pending["root"]["reason"],
+                         "immutable_contract_changed")
+        self.assertEqual(pending["child"]["reason"],
+                         "dependency_not_reanchored")
+        self.assertEqual(pending["child"]["dependencies"], ["root"])
+
     def test_plan_checkpoint_then_execute(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")   # → plan

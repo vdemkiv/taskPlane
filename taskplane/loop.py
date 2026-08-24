@@ -30,6 +30,7 @@ from collections.abc import Mapping
 import base64
 import contextlib
 import contextvars
+import hashlib
 import json
 import os
 import re
@@ -5072,8 +5073,16 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             errors.append(prefix + "scope is missing")
         errors.extend(prefix + problem for problem in
                       tp.plan_test_command_errors(task.get("tests")))
-        if not _criteria_for(ws, state, task):
-            errors.append(prefix + "acceptance criteria are missing")
+        # A requirement or test command can help an evaluator explain a
+        # legacy task, but neither is the executable task contract approved
+        # at Plan.  Every task must carry its own non-empty criteria so a
+        # metadata defect cannot silently expand evaluation to program-wide
+        # acceptance criteria.
+        explicit_criteria = task.get("criteria")
+        if not isinstance(explicit_criteria, list) or not any(
+                str(criterion).strip() for criterion in explicit_criteria):
+            errors.append(prefix + "explicit acceptance criteria are "
+                          "missing or empty")
         rid = task.get("req") or state.get("requirement_id")
         rec = reqs.get_requirement(ws, rid) if rid else None
         if rec:
@@ -5124,6 +5133,288 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
         lambda rid: reqs.get_requirement(ws, rid), state.get("requirement_id")))
     errors.extend("design DoR: " + e for e in _design_plan_errors(ws, state))
     return errors
+
+
+_REANCHOR_CONTRACT_FIELDS = (
+    "id", "scope", "tests", "req", "deps", "type",
+    # Accept both the documented semantic names and their task-file names.
+    # If both are present they are both bound, so aliases cannot hide drift.
+    "gap", "gap_category", "contracts", "modules", "new_modules",
+    "design_edges", "impact", "impact_policy", "criteria",
+)
+_REANCHOR_SEQUENCE_FIELDS = frozenset({
+    "scope", "deps", "contracts", "modules", "new_modules",
+    "design_edges", "criteria",
+})
+_REANCHOR_MAPPING_FIELDS = frozenset({"impact", "impact_policy"})
+
+
+def _reanchor_contract(task: Mapping) -> dict:
+    """Canonical immutable task contract, excluding all runtime fields."""
+    contract = {}
+    for field in _REANCHOR_CONTRACT_FIELDS:
+        value = task.get(field)
+        if field in _REANCHOR_SEQUENCE_FIELDS and value is None:
+            value = []
+        elif field in _REANCHOR_MAPPING_FIELDS and value is None:
+            value = {}
+        contract[field] = value
+    return contract
+
+
+def _reanchor_fingerprint(task: Mapping) -> str:
+    return hashlib.sha256(tp.canonical_json_bytes(
+        _reanchor_contract(task))).hexdigest()
+
+
+def _verified_criterion_evidence(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict)):
+        return bool(value)
+    return value is not None
+
+
+def _verify_reanchor_task_evidence(
+        ws: str, task: Mapping, prior: Mapping) -> tuple[dict | None,
+                                                         str | None]:
+    """Verify exact durable source and evaluation evidence for one pass."""
+    task_id = str(task.get("id") or "")
+    workspace_raw = str(prior.get("workspace") or "").strip()
+    target = str(prior.get("target_commit") or "").strip().lower()
+    if not workspace_raw or not os.path.isdir(workspace_raw):
+        return None, "passed source workspace is missing"
+    workspace = os.path.realpath(workspace_raw)
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", target):
+        return None, "passed source target commit is missing or invalid"
+    if tp.git_head(workspace) != target:
+        return None, "passed source worktree no longer resolves to target"
+    if tp.is_dirty(workspace):
+        return None, "passed source worktree has uncommitted product changes"
+
+    primary = os.path.realpath(ws)
+    if workspace != primary:
+        try:
+            registration = runtime_storage.load_task_worktree_registration(
+                ws, task_id)
+        except runtime_storage.StorageIdentityError as exc:
+            return None, f"managed source registration is invalid: {exc}"
+        if not isinstance(registration, Mapping):
+            return None, "managed source registration is missing"
+        if os.path.realpath(str(registration.get("path") or "")) != workspace \
+                or os.path.realpath(str(
+                    registration.get("primary_checkout") or "")) != primary \
+                or registration.get("branch_tip") != target \
+                or registration.get("linked") is not True:
+            return None, "managed source registration does not bind exact target"
+
+    # Safe argv only: source evidence must still be reachable from the tree
+    # whose new Plan is being accepted.
+    import subprocess
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", target, "HEAD"],
+        cwd=ws, capture_output=True, text=True, check=False)
+    if ancestry.returncode != 0:
+        return None, "passed source target is not in the current repository history"
+
+    verdict_path = runtime_storage.evaluation_path(workspace)
+    try:
+        with open(verdict_path, "rb") as stream:
+            verdict_bytes = stream.read()
+        verdict = json.loads(verdict_bytes)
+    except (OSError, ValueError) as exc:
+        return None, f"durable evaluator verdict is unavailable: {exc}"
+    if not isinstance(verdict, Mapping) or verdict.get("schema") != \
+            "taskplane.evaluator-output/v1":
+        return None, "durable evaluator verdict schema is invalid"
+    if str(verdict.get("task") or "") != task_id:
+        return None, "durable evaluator verdict names a different task"
+    requirement = str(task.get("req") or "")
+    if str(verdict.get("requirement") or "") != requirement:
+        return None, "durable evaluator verdict names a different requirement"
+
+    criteria = list(task.get("criteria") or [])
+    rows = verdict.get("criteria")
+    if not isinstance(rows, list) or len(rows) != len(criteria):
+        return None, "durable evaluator verdict has incomplete criteria"
+    observed = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return None, "durable evaluator criterion evidence is malformed"
+        observed.append(row.get("criterion"))
+        if row.get("status") != "met" or not _verified_criterion_evidence(
+                row.get("evidence")):
+            return None, "durable evaluator criterion is not proven met"
+    if observed != criteria or len(set(map(str, observed))) != len(observed):
+        return None, "durable evaluator criteria do not exactly match the task"
+
+    failures = verdict.get("failures")
+    if not isinstance(failures, list):
+        return None, "durable evaluator failures are malformed"
+    availability = verdict.get("evaluation")
+    resolution = "independent-pass"
+    if isinstance(availability, Mapping) and \
+            availability.get("status") == "unavailable":
+        human = prior.get("human_resolution")
+        warning = prior.get("evaluation")
+        if not isinstance(human, Mapping) or human.get("decision") != "pass":
+            return None, "unavailable evaluation has no resolved human pass"
+        if not isinstance(warning, Mapping) or \
+                warning.get("status") != "unavailable" or \
+                warning.get("verdict") != "non-judged" or \
+                warning.get("reason_code") != "orchestration_unavailable":
+            return None, "resolved outage warning is not exact"
+        if verdict.get("verdict") != "fail" or \
+                availability.get("reason_code") != "orchestration_unavailable":
+            return None, "durable outage verdict is not a non-judged failure"
+        try:
+            identity = evaluator_health.outage_identity(
+                task=task_id, requirement=requirement,
+                evaluation=availability, failures=failures)
+        except evaluator_health.EvaluatorHealthError as exc:
+            return None, f"durable outage identity is invalid: {exc}"
+        if warning.get("outage_identity") != identity:
+            return None, "resolved outage identity no longer matches verdict"
+        resolution = "human-resolved-orchestration-outage"
+    elif verdict.get("verdict") != "pass" or failures:
+        return None, "durable evaluator verdict is not an exact pass"
+
+    return {
+        "target_commit": target,
+        "workspace": workspace,
+        "evaluation_path": verdict_path,
+        "evaluation_sha256": hashlib.sha256(verdict_bytes).hexdigest(),
+        "resolution": resolution,
+    }, None
+
+
+def _reanchor_replanned_tasks(
+        ws: str, state: dict) -> tuple[dict | None, list]:
+    """Restore only evidence-proven, unchanged, dependency-closed passes."""
+    history = state.get("replan_history")
+    if not history:
+        return None, []
+    if not isinstance(history, list) or not isinstance(history[-1], Mapping):
+        return None, ["replan reanchor: latest replan history is ambiguous"]
+    archived = history[-1].get("tasks")
+    current = state.get("tasks")
+    if not isinstance(archived, list) or not isinstance(current, list):
+        return None, ["replan reanchor: latest task snapshots are ambiguous"]
+
+    def indexed(tasks, label):
+        result = {}
+        for item in tasks:
+            if not isinstance(item, Mapping):
+                return None, f"replan reanchor: {label} task is malformed"
+            task_id = str(item.get("id") or "").strip()
+            if not task_id or task_id in result:
+                return None, (f"replan reanchor: {label} task identity "
+                              "is missing or duplicated")
+            result[task_id] = item
+        return result, None
+
+    prior_by_id, error = indexed(archived, "archived")
+    if error:
+        return None, [error]
+    current_by_id, error = indexed(current, "current")
+    if error:
+        return None, [error]
+
+    candidates = {}
+    pending = {}
+    for task_id, task in current_by_id.items():
+        task["status"] = "pending"
+        prior = prior_by_id.get(task_id)
+        if prior is None:
+            pending[task_id] = {"task_id": task_id,
+                                "reason": "new_task"}
+            continue
+        if _reanchor_contract(task) != _reanchor_contract(prior):
+            pending[task_id] = {
+                "task_id": task_id,
+                "reason": "immutable_contract_changed",
+                "current_contract": _reanchor_fingerprint(task),
+                "archived_contract": _reanchor_fingerprint(prior),
+            }
+            continue
+        if prior.get("status") != "passed":
+            pending[task_id] = {
+                "task_id": task_id, "reason": "archived_task_not_passed",
+                "archived_status": prior.get("status"),
+            }
+            continue
+        evidence, evidence_error = _verify_reanchor_task_evidence(
+            ws, task, prior)
+        if evidence_error:
+            pending[task_id] = {
+                "task_id": task_id, "reason": "evidence_unverified",
+                "detail": evidence_error,
+            }
+            continue
+        candidates[task_id] = (task, prior, evidence)
+
+    restored_ids = set()
+    restored = []
+    progressed = True
+    while progressed:
+        progressed = False
+        for task_id, (task, prior, evidence) in candidates.items():
+            if task_id in restored_ids:
+                continue
+            dependencies = list(task.get("deps") or [])
+            if any(dep not in restored_ids for dep in dependencies):
+                continue
+            task["status"] = "passed"
+            task["fix_cycles"] = int(prior.get("fix_cycles") or 0)
+            for field in ("workspace", "target_commit", "human_resolution",
+                          "evaluation"):
+                if field in prior:
+                    task[field] = json.loads(json.dumps(prior[field]))
+            restored_ids.add(task_id)
+            restored.append({
+                "task_id": task_id,
+                "contract_fingerprint": _reanchor_fingerprint(task),
+                **dict(evidence or {}),
+            })
+            progressed = True
+
+    for task_id, (task, _, _) in candidates.items():
+        if task_id in restored_ids:
+            continue
+        missing = [dep for dep in list(task.get("deps") or [])
+                   if dep not in restored_ids]
+        pending[task_id] = {
+            "task_id": task_id, "reason": "dependency_not_reanchored",
+            "dependencies": missing,
+        }
+
+    receipt = {
+        "schema": "taskplane.replan-reanchor/v1",
+        "replan_index": len(history) - 1,
+        "replan_by": history[-1].get("by"),
+        "replan_reason": history[-1].get("reason"),
+        "contract_fields": list(_REANCHOR_CONTRACT_FIELDS),
+        "restored": restored,
+        "pending": [pending[task_id] for task_id in current_by_id
+                    if task_id in pending],
+        "restored_count": len(restored),
+        "pending_count": len(current) - len(restored),
+        "dependency_closed": True,
+    }
+    receipt["fingerprint"] = hashlib.sha256(
+        tp.canonical_json_bytes(receipt)).hexdigest()
+    state["replan_reanchor"] = receipt
+    audit = state.setdefault("replan_reanchor_history", [])
+    if not audit or audit[-1].get("fingerprint") != receipt["fingerprint"]:
+        audit.append(json.loads(json.dumps(receipt)))
+    return receipt, []
+
+
+def _first_unsettled_task_index(state: Mapping) -> int | None:
+    for index, task in enumerate(state.get("tasks") or []):
+        if task.get("status") not in SETTLED:
+            return index
+    return None
 
 
 def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
@@ -6241,6 +6532,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         state = load(ws)
     step = state["step"]
     submission = None
+    reanchor_receipt = None
 
     # v2.3.0: validate --task FIRST in a parallel wave. An unknown id used to
     # fall through to "worker evidence was not submitted", telling the driver
@@ -6486,6 +6778,18 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "plan/tasks.json before approval or execution",
                     "step": "plan",
                     "dor": {"ready": False, "blockers": dor_errors}}
+        reanchor_receipt, reanchor_errors = _reanchor_replanned_tasks(
+            ws, state)
+        if reanchor_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step,
+                     reason="replan_reanchor_ambiguous",
+                     errors=reanchor_errors)
+            return {"error": "replan reanchor failed closed — repair the "
+                             "append-only replan evidence before Plan "
+                             "acceptance",
+                    "step": "plan",
+                    "dor": {"ready": False,
+                            "blockers": reanchor_errors}}
         # B2: ordering at the GATE too — checkpoint-less loops skip approve.
         if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
                                                 "gate")):
@@ -6628,6 +6932,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 state.pop("selection", None)
             if "graph_dor" in _validated:
                 state["graph_dor"] = _validated["graph_dor"]
+            for field in ("replan_reanchor", "replan_reanchor_history"):
+                if field in _validated:
+                    state[field] = json.loads(json.dumps(_validated[field]))
         elif "design_graph_fingerprint" in _validated and \
                 "design_graph_fingerprint" not in state:
             state["design_graph_fingerprint"] = \
@@ -6681,8 +6988,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 state["step"] = ("plan_approval"
                                  if "plan" in state["checkpoints"]
                                  else "execute")
-            state["current_task"] = 0
-            if state["step"] == "execute":
+            resume_at = _first_unsettled_task_index(state)
+            state["current_task"] = resume_at if resume_at is not None else 0
+            if state["step"] == "execute" and resume_at is None:
+                state["step"] = "em"
+            if state["step"] in ("execute", "em"):
                 state["baseline"] = tp.git_head(ws)
         elif step == "execute":
             # a build always goes to evaluate; a FAILED build is flagged so
@@ -6876,13 +7186,22 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
              **({"reason": ((unavailable_verdict or {}).get("evaluation")
                              or {}).get("reason_code")}
                 if outcome == "unavailable" else {}))
+    if reanchor_receipt is not None:
+        tp.trace(ws, "loop_replan_reanchored",
+                 restored=reanchor_receipt["restored_count"],
+                 pending=reanchor_receipt["pending_count"],
+                 tasks=[row["task_id"]
+                        for row in reanchor_receipt["restored"]],
+                 fingerprint=reanchor_receipt["fingerprint"])
     return {"step": state["step"], "status": status(ws),
             **({"stage_transition": stage_transition}
                if stage_transition is not None else {}),
             **({"worktree_cleanup": cleanup_result}
                if cleanup_result is not None else {}),
             **({"warning": (state.get("evaluation_warnings") or [])[-1]}
-               if outcome == "unavailable" else {})}
+               if outcome == "unavailable" else {}),
+            **({"reanchor": reanchor_receipt}
+               if reanchor_receipt is not None else {})}
 
 
 def _compute_signoff_dod(ws: str, state: dict) -> dict:
@@ -7288,8 +7607,9 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             state["define_projection"] = define_projection
         # Baseline for later diff-routing at EVALUATE/EM.
         state["baseline"] = tp.git_head(ws)
-        state["step"] = "execute"
-        state["current_task"] = 0
+        resume_at = _first_unsettled_task_index(state)
+        state["step"] = "execute" if resume_at is not None else "em"
+        state["current_task"] = resume_at if resume_at is not None else 0
         tp.trace(ws, "loop_approve", gate="plan", by=by)
         # High-signal decision → the knowledge base.
         scope = sorted({g for t in (state.get("tasks") or [])
