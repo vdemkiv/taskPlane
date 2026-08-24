@@ -329,7 +329,11 @@
         "contract_depth": 1,
         "requirement_depth": 1
       },
-      "criteria": []
+      "criteria": [
+        "Live v2.17.16 fixtures prove CLI→governed-command-engine, loop→governed-command-engine, runtime/adapter use, non-polling waits, exactly 4–5 quick lenses including architecture at existing boundaries, and fail-closed automatic deep refusal; edge mutations fail and passing rows are reuse-only.",
+        "A live DEFINE transition reuses the current router for exactly 4 or 5 concurrent quick slots including architecture and no deep; live direct assignment runs disjoint scopes concurrently with zero claim/build-lease/wave state and serializes overlap; live integration accepts only the green checkpoint SHA; each severed edge fails.",
+        "T09 and every production behavior pass through actual governed entry points with positive evidence and fail when same-commit call-edge mutations sever reachability; conformant behavior remains unchanged while dormant/test-only code cannot pass."
+      ]
     },
     {
       "id": "t08b-r0010-changed-surface-regression-repair",
@@ -374,7 +378,9 @@
         "contract_depth": 1,
         "requirement_depth": 1
       },
-      "criteria": []
+      "criteria": [
+        "Compatibility fixtures show no observable change to existing command events, waits, review/build routing, architecture inclusion, nonhuman deep refusal, graph/worktree identities, receipts, findings, leases, or enforcement, and no passing implementation is replaced."
+      ]
     },
     {
       "id": "t08c-r0010-corpus-sequencing",
@@ -407,7 +413,9 @@
         "contract_depth": 1,
         "requirement_depth": 1
       },
-      "criteria": []
+      "criteria": [
+        "R-0010 final SHA passes full suite, compile/import matrix, zero-token corpus, cycle and graph ratchets without new undispositioned failure; after authorized push fetched-SHA proof and human sign-off are green for that exact revision before R-0011 opens."
+      ]
     },
     {
       "id": "t08d-r0010-graph-ratchet-refresh",
@@ -440,7 +448,9 @@
         "contract_depth": 1,
         "requirement_depth": 1
       },
-      "criteria": []
+      "criteria": [
+        "R-0010 final SHA passes full suite, compile/import matrix, zero-token corpus, cycle and graph ratchets without new undispositioned failure; after authorized push fetched-SHA proof and human sign-off are green for that exact revision before R-0011 opens."
+      ]
     },
     {
       "id": "t08e-r0010-python-matrix-receipts",
@@ -472,7 +482,9 @@
         "contract_depth": 1,
         "requirement_depth": 1
       },
-      "criteria": []
+      "criteria": [
+        "R-0010 final SHA passes full suite, compile/import matrix, zero-token corpus, cycle and graph ratchets without new undispositioned failure; after authorized push fetched-SHA proof and human sign-off are green for that exact revision before R-0011 opens."
+      ]
     },
     {
       "id": "t08f-r0010-phase-exit",

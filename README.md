@@ -130,9 +130,9 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.18** | **BUILD-C is now wired into governed delivery, with review bootstrap hardened at the real flow boundary.** Acceptance-criteria checkpoints use engine-observed, exact-revision receipts; submissions reach checkpoint execution through the event-driven runtime; DEFINE reuses the bounded 4–5-lens quick router; disjoint direct work can run concurrently without claim, lease, or wave state; and only a green checkpoint can authorize integration. Review startup is checkout-bound, graph-first, signed, and fail-closed against stale, tampered, symlinked, or prose-only evidence. Automatic full, deep, promoted, or all-26 review remains prohibited. |
 | **v2.17.16** | **Governed command events and selective review are wired into the live flow.** Governed command launch, reconnect, and event-driven waits reach the durable command runtime, and automatic review runs exactly 4–5 selected light-sweep lenses concurrently—never automatic full, deep, promoted, or all-26 execution. During host screening, signed review actions activate their exact lease before command execution. |
 | **v2.17.15** | **Python compatibility, quick-only review, and import-cycle reduction are now release-gated.** The supported Python matrix compiles before tests, graph and CLI failures stay actionable, zero-token and exact-SHA delivery proofs fail closed, the SCC ratchet lands before cuts, and the first lower-owner split removes the `depgraph`/`decompose` cycle without changing direct APIs or payloads. Nested test processes now stay bound to the governed task checkout. |
-| **v2.17.14** | **Governed delivery now isolates every lifecycle stage and passes only bounded, verified handoffs.** Immutable stage lineage, independent split roots, conservative singleton migration, and bounded status, review, sign-off, and Retro projections work across hosts while preserving R-0003 evidence, collision, merge, and fail-closed cleanup controls. |
 
 ## Install
 
