@@ -74,6 +74,9 @@ _NON_EXECUTING_PYTEST_OPTIONS = frozenset({
     "--help", "--setup-only", "--version",
 })
 _REVISION_CACHE_PREFIX = ".pytest_cache/taskplane-checkpoint-"
+_PYTEST_PLUGIN = "taskplane.checkpoint"
+_OBSERVED_REVISION_PREFIX = "taskplane-checkpoint-observed-revision="
+_GIT_REVISION = re.compile(r"[0-9a-f]{40,64}\Z")
 
 
 class CheckpointSpecError(ValueError):
@@ -168,14 +171,78 @@ def _focused_pytest_argv(argv: Sequence[str], proof_path: str,
         raise CheckpointSpecError(
             f"focused_proof.argv must run pytest target {proof_path}")
     marker = f"cache_dir={_REVISION_CACHE_PREFIX}{revision}"
-    if command[-3:-1] == ["-o", marker]:
+    engine_arguments = ["-p", _PYTEST_PLUGIN, "-o", marker]
+    if command[-5:-1] == engine_arguments:
+        earlier = command[1:-5]
+        if (any(_PYTEST_PLUGIN in item for item in earlier) or
+                any(item.startswith(f"cache_dir={_REVISION_CACHE_PREFIX}")
+                    for item in earlier)):
+            raise CheckpointSpecError(
+                "focused_proof.argv must not override checkpoint identity")
         return command
-    if any(isinstance(item, str) and item.startswith(
-            f"cache_dir={_REVISION_CACHE_PREFIX}") for item in command):
+    if (any(isinstance(item, str) and item.startswith(
+            f"cache_dir={_REVISION_CACHE_PREFIX}") for item in command) or
+            any(_PYTEST_PLUGIN in item for item in command[1:])):
         raise CheckpointSpecError(
             "focused_proof.argv must invoke pytest for the exact revision")
-    command[-1:-1] = ["-o", marker]
+    command[-1:-1] = engine_arguments
     return command
+
+
+def _pytest_checkpoint_context(config) -> tuple[str, str]:
+    cache_dir = str(config.getini("cache_dir"))
+    name = Path(cache_dir).name
+    prefix = Path(_REVISION_CACHE_PREFIX).name
+    revision = name[len(prefix):] if name.startswith(prefix) else ""
+    if not _GIT_REVISION.fullmatch(revision):
+        raise ValueError("checkpoint pytest plugin requires an exact revision")
+    workspace = str(Path(config.invocation_params.dir).resolve())
+    return workspace, revision
+
+
+def _observed_repository_revision(workspace: str) -> str:
+    head = _git(workspace, "rev-parse", "HEAD")
+    revision = head.stdout.strip() if head.returncode == 0 else ""
+    if not _GIT_REVISION.fullmatch(revision):
+        raise ValueError("checkpoint pytest plugin cannot observe Git HEAD")
+    return revision
+
+
+def pytest_configure(config) -> None:
+    """Fail the governed pytest process unless it starts at its claimed SHA."""
+    import pytest
+
+    try:
+        workspace, expected = _pytest_checkpoint_context(config)
+        observed = _observed_repository_revision(workspace)
+    except ValueError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    if observed != expected:
+        raise pytest.UsageError(
+            "checkpoint pytest runtime-observed repository revision "
+            f"{observed} does not match {expected}")
+    config._taskplane_checkpoint_workspace = workspace
+    config._taskplane_checkpoint_revision = observed
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Recheck Git identity and attest it in the governed runtime output."""
+    config = session.config
+    workspace = getattr(config, "_taskplane_checkpoint_workspace", None)
+    expected = getattr(config, "_taskplane_checkpoint_revision", None)
+    if not workspace or not expected:
+        return
+    try:
+        observed = _observed_repository_revision(workspace)
+    except ValueError:
+        observed = ""
+    if observed != expected:
+        session.exitstatus = 1
+        return
+    terminal = config.pluginmanager.get_plugin("terminalreporter")
+    if terminal is not None:
+        terminal.ensure_newline()
+        terminal.write_line(_OBSERVED_REVISION_PREFIX + observed)
 
 
 def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
@@ -383,6 +450,10 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
             len(output.encode("utf-8")) != artifact["bytes"] or
             snapshot.get("output_digest") != artifact["sha256"]):
         raise CheckpointReceiptError("command output evidence is mixed")
+    attestation = _OBSERVED_REVISION_PREFIX + spec["worktree_revision"]
+    if output.count(attestation) != 1:
+        raise CheckpointReceiptError(
+            "focused_proof lacks the runtime-observed repository revision")
 
     if state != _GREEN_STATE or event.get("exit_code") != 0 or \
             snapshot.get("exit_code") != 0:

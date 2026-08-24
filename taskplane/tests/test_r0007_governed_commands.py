@@ -584,7 +584,11 @@ def _checkpoint_command_result(workspace, argv, *, state="succeeded",
     command_fingerprint = governed_commands._canonical_digest(argv)
     runtime_fingerprint = hashlib.sha256(
         command_fingerprint.encode("utf-8")).hexdigest()
-    output = "1 passed\n" if state == "succeeded" else "1 failed\n"
+    revision = next(
+        item.rsplit(checkpoint._REVISION_CACHE_PREFIX, 1)[1]
+        for item in argv if checkpoint._REVISION_CACHE_PREFIX in item)
+    output = checkpoint._OBSERVED_REVISION_PREFIX + revision + "\n"
+    output += "1 passed\n" if state == "succeeded" else "1 failed\n"
     output_bytes = output.encode("utf-8")
     output_digest = hashlib.sha256(output_bytes).hexdigest()
     event = {
@@ -651,6 +655,8 @@ def test_checkpoint_receipt_mints_from_real_focused_proof_execution(tmp_path):
 
     assert result["event"]["state"] == "succeeded"
     assert "1 passed" in result["event"]["output_delta"]
+    assert (checkpoint._OBSERVED_REVISION_PREFIX + spec["worktree_revision"]
+            in result["event"]["output_delta"])
     assert receipt["command"]["argv"] == runtime_argv
     assert receipt["worktree_revision"] == spec["worktree_revision"]
 
@@ -672,9 +678,12 @@ def test_checkpoint_receipt_is_engine_minted_and_exact_revision_bound(tmp_path):
     }
     assert receipt["command"]["argv"] == runtime_argv
     assert receipt["command"]["cwd"] == str(workspace.resolve())
+    expected_output = (
+        checkpoint._OBSERVED_REVISION_PREFIX + spec["worktree_revision"] +
+        "\n1 passed\n").encode()
     assert receipt["output"] == {
-        "sha256": hashlib.sha256(b"1 passed\n").hexdigest(),
-        "bytes": len(b"1 passed\n"), "truncated": False,
+        "sha256": hashlib.sha256(expected_output).hexdigest(),
+        "bytes": len(expected_output), "truncated": False,
         "redactions": 0,
     }
     assert len(receipt["engine_fingerprint"]) == 64
@@ -688,7 +697,7 @@ def test_checkpoint_receipt_is_engine_minted_and_exact_revision_bound(tmp_path):
                        match="exact HEAD|stale"):
         checkpoint.validate_and_mint(
             str(workspace), spec,
-            _checkpoint_command_result(workspace, argv))
+            _checkpoint_command_result(workspace, runtime_argv))
 
 
 def test_checkpoint_receipt_rejects_caller_forgery_and_red_stops_later_phases(
@@ -728,6 +737,15 @@ def test_checkpoint_receipt_rejects_successful_non_proof_command(tmp_path):
         checkpoint.validate_and_mint(
             str(workspace), spec, echo_result)
 
+    spec["focused_proof"]["argv"] = [
+        "pytest", "-pno:taskplane.checkpoint", "-q",
+        spec["focused_proof"]["path"],
+    ]
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="exact revision"):
+        checkpoint.validate_and_mint(
+            str(workspace), spec, echo_result)
+
 
 def test_checkpoint_receipt_rejects_runtime_result_from_prior_revision(tmp_path):
     workspace, spec, _ = _checkpoint_workspace(tmp_path)
@@ -742,3 +760,30 @@ def test_checkpoint_receipt_rejects_runtime_result_from_prior_revision(tmp_path)
     with pytest.raises(checkpoint.CheckpointReceiptError,
                        match="exact revision"):
         checkpoint.validate_and_mint(str(workspace), spec, old_result)
+
+
+def test_checkpoint_receipt_rejects_predeclared_future_revision(tmp_path):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    revision_a = spec["worktree_revision"]
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "future tip"],
+                   cwd=workspace, check=True)
+    revision_b = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+    subprocess.run(["git", "checkout", "-q", revision_a], cwd=workspace,
+                   check=True)
+
+    argv_a = _checkpoint_runtime_argv(workspace, spec)
+    argv_claiming_b = [item.replace(revision_a, revision_b)
+                       for item in argv_a]
+    result_from_a = _run_governed_checkpoint_command(
+        workspace, argv_claiming_b, "checkpoint-future-revision-attack")
+    assert result_from_a["event"]["state"] == "failed"
+    assert "runtime-observed repository revision" in \
+        result_from_a["event"]["output_delta"]
+
+    subprocess.run(["git", "checkout", "-q", revision_b], cwd=workspace,
+                   check=True)
+    spec["worktree_revision"] = revision_b
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="runtime-observed repository revision"):
+        checkpoint.validate_and_mint(str(workspace), spec, result_from_a)
