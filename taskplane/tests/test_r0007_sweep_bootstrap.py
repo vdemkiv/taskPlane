@@ -366,8 +366,11 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     runtime_kernel, evidence_kernel, review_kernel = \
         loop._review_runtime_modules()
     assert evidence_kernel.tp is runtime_kernel
+    assert evidence_kernel.runtime_storage is review_kernel.runtime_storage
     assert review_kernel.tp is runtime_kernel
     assert review_kernel.review_evidence_runtime is evidence_kernel
+    runtime_import = runtime_kernel.__dict__["__builtins__"]["__import__"]
+    assert runtime_import("storage") is evidence_kernel.runtime_storage
     subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
     outer_run_id = "outer-delivery-run"
     identity = runtime_storage.resolve_repository_identity(workspace)

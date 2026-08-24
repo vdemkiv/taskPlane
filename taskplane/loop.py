@@ -33,6 +33,7 @@ import contextvars
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import shlex
@@ -3483,100 +3484,258 @@ def _diff_files(ws: str, base: str) -> list:
 
 
 _REVIEW_RUNTIME_BUNDLE = None
+_REVIEW_REQUIRED_MODULES = (
+    "storage", "taskplane_lite", "review_evidence", "review")
+_REVIEW_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _private_review_module(name: str, path: str, overrides: dict):
-    """Load one target module with private import bindings.
+def _review_source_stat(value) -> tuple:
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
 
-    The canonical import table belongs to the launcher process and is never
-    replaced.  Functions defined in the returned module retain this private
-    importer, including their later in-function imports.
-    """
-    import builtins
-    import types
-    module = types.ModuleType(name)
-    module.__file__ = path
-    module.__package__ = ""
-    importer = builtins.__import__
 
-    def target_import(import_name, globals=None, locals=None,
-                      fromlist=(), level=0):
-        if level == 0 and import_name in overrides:
-            return overrides[import_name]
-        return importer(import_name, globals, locals, fromlist, level)
-
-    private_builtins = dict(vars(builtins))
-    private_builtins["__import__"] = target_import
-    module.__dict__["__builtins__"] = private_builtins
-    with open(path, "rb") as stream:
-        source = stream.read()
-    # Class decorators such as dataclasses resolve the defining module while
-    # its body executes.  Expose the private identity only for that bounded
-    # load, then restore the launcher's import table exactly.
-    missing = object()
-    previous = sys.modules.get(name, missing)
-    sys.modules[name] = module
+def _verified_review_module_source(checkout_root: str,
+                                   module_name: str) -> dict:
+    """Pin verified bytes for one direct target-checkout Python module."""
+    root = os.path.realpath(os.path.abspath(checkout_root))
+    if not os.path.isdir(root) or os.path.islink(root) or \
+            not _REVIEW_MODULE_NAME.fullmatch(str(module_name or "")):
+        raise RuntimeError("target review module root or name is invalid")
+    path = os.path.abspath(os.path.join(root, module_name + ".py"))
+    resolved = os.path.realpath(path)
     try:
-        exec(compile(source, path, "exec"), module.__dict__)
-    finally:
-        if previous is missing:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous
-    return module
+        contained = os.path.commonpath((root, resolved)) == root
+    except ValueError:
+        contained = False
+    if not contained or resolved != path:
+        raise RuntimeError(
+            f"target review module escapes checkout: {module_name}")
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise RuntimeError(
+            f"required target review module is unavailable: {module_name}") \
+            from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise RuntimeError(
+            f"target review module is not a regular file: {module_name}")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError(
+            f"target review module could not be pinned: {module_name}") \
+            from exc
+    try:
+        with os.fdopen(descriptor, "rb", closefd=True) as stream:
+            opened_before = os.fstat(stream.fileno())
+            source = stream.read()
+            opened_after = os.fstat(stream.fileno())
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    try:
+        after = os.lstat(path)
+    except OSError as exc:
+        raise RuntimeError(
+            f"target review module changed while pinned: {module_name}") \
+            from exc
+    identities = {
+        _review_source_stat(before),
+        _review_source_stat(opened_before),
+        _review_source_stat(opened_after),
+        _review_source_stat(after),
+    }
+    if len(identities) != 1 or not stat.S_ISREG(opened_before.st_mode) or \
+            os.path.realpath(path) != path:
+        raise RuntimeError(
+            f"target review module changed while pinned: {module_name}")
+    return {
+        "name": module_name,
+        "path": path,
+        "source": source,
+        "identity": _review_source_stat(after),
+        "sha256": hashlib.sha256(source).hexdigest(),
+    }
+
+
+class _CheckoutReviewModuleBundle:
+    """Isolated target modules whose local imports remain target-bound."""
+
+    def __init__(self, checkout_root: str):
+        import builtins
+        self.root = os.path.realpath(os.path.abspath(checkout_root))
+        self.sources = {}
+        self.modules = {}
+        self._base_import = builtins.__import__
+        self._builtins = dict(vars(builtins))
+        self._builtins["__import__"] = self._target_import
+        self.namespace = hashlib.sha256(
+            self.root.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _leaf(import_name: str) -> str | None:
+        name = str(import_name or "")
+        if name.startswith("taskplane."):
+            name = name.rsplit(".", 1)[-1]
+        elif "." in name:
+            return None
+        return name if _REVIEW_MODULE_NAME.fullmatch(name) else None
+
+    def _has_target(self, import_name: str) -> str | None:
+        leaf = self._leaf(import_name)
+        if not leaf:
+            return None
+        try:
+            os.lstat(os.path.join(self.root, leaf + ".py"))
+        except OSError:
+            return None
+        return leaf
+
+    def pin(self, module_name: str) -> dict:
+        leaf = self._leaf(module_name)
+        if not leaf:
+            raise RuntimeError("target review module name is invalid")
+        source = self.sources.get(leaf)
+        if source is None:
+            source = _verified_review_module_source(self.root, leaf)
+            self.sources[leaf] = source
+        return source
+
+    def assert_required_current(self) -> None:
+        for name in _REVIEW_REQUIRED_MODULES:
+            source = self.sources.get(name)
+            if source is None:
+                raise RuntimeError(
+                    f"required target review module was not pinned: {name}")
+            try:
+                current = os.lstat(source["path"])
+            except OSError as exc:
+                raise RuntimeError(
+                    f"required target review module changed: {name}") from exc
+            if os.path.realpath(source["path"]) != source["path"] or \
+                    _review_source_stat(current) != source["identity"]:
+                raise RuntimeError(
+                    f"required target review module changed: {name}")
+
+    def _target_import(self, import_name, globals=None, locals=None,
+                       fromlist=(), level=0):
+        if level == 0:
+            target = self._has_target(import_name)
+            if target:
+                return self.load(target)
+        imported = self._base_import(
+            import_name, globals, locals, fromlist, level)
+        path = os.path.realpath(str(getattr(imported, "__file__", "") or ""))
+        if path:
+            try:
+                contained = os.path.commonpath((self.root, path)) == self.root
+            except ValueError:
+                contained = False
+            if not contained and os.path.basename(os.path.dirname(path)) == \
+                    "taskplane":
+                raise ImportError(
+                    f"launcher-owned taskplane module refused: {import_name}")
+        return imported
+
+    def load(self, module_name: str):
+        import types
+        leaf = self._leaf(module_name)
+        if not leaf:
+            raise ImportError(f"target review module is invalid: {module_name}")
+        if leaf in self.modules:
+            return self.modules[leaf]
+        source = self.pin(leaf)
+        private_name = f"_taskplane_checkout_{self.namespace}_{leaf}"
+        module = types.ModuleType(private_name)
+        module.__file__ = source["path"]
+        module.__package__ = ""
+        module.__dict__["__builtins__"] = self._builtins
+        self.modules[leaf] = module
+
+        # Decorators may consult sys.modules while the class body executes.
+        # The private identity exists only for that bounded execution and the
+        # launcher's table is restored byte-for-byte afterward.
+        missing = object()
+        previous = sys.modules.get(private_name, missing)
+        sys.modules[private_name] = module
+        try:
+            exec(compile(source["source"], source["path"], "exec"),
+                 module.__dict__)
+        except Exception:
+            self.modules.pop(leaf, None)
+            raise
+        finally:
+            if previous is missing:
+                sys.modules.pop(private_name, None)
+            else:
+                sys.modules[private_name] = previous
+        return module
 
 
 def _review_runtime_modules():
     """Return one checkout-consistent runtime/evidence/review bundle."""
     global _REVIEW_RUNTIME_BUNDLE
     root = os.path.realpath(os.path.dirname(__file__))
-    paths = {
-        "runtime": os.path.join(root, "taskplane_lite.py"),
-        "evidence": os.path.join(root, "review_evidence.py"),
-        "review": os.path.join(root, "review.py"),
-    }
     cached = _REVIEW_RUNTIME_BUNDLE
     if isinstance(cached, dict) and cached.get("root") == root:
+        cached["loader"].assert_required_current()
         return (cached["runtime"], cached["evidence"], cached["review"])
+
+    loader = _CheckoutReviewModuleBundle(root)
+    pinned = {name: loader.pin(name) for name in _REVIEW_REQUIRED_MODULES}
 
     import review as imported_review
     import review_evidence as imported_evidence
+    import storage as imported_storage
     imported_runtime_path = os.path.realpath(str(
         getattr(tp, "__file__", "") or ""))
+    storage_path = os.path.realpath(str(
+        getattr(imported_storage, "__file__", "") or ""))
     evidence_path = os.path.realpath(str(
         getattr(imported_evidence, "__file__", "") or ""))
     review_path = os.path.realpath(str(
         getattr(imported_review, "__file__", "") or ""))
     consistent = (
-        imported_runtime_path == paths["runtime"]
-        and evidence_path == paths["evidence"]
-        and review_path == paths["review"]
+        imported_runtime_path == pinned["taskplane_lite"]["path"]
+        and storage_path == pinned["storage"]["path"]
+        and evidence_path == pinned["review_evidence"]["path"]
+        and review_path == pinned["review"]["path"]
         and getattr(imported_evidence, "tp", None) is tp
+        and getattr(imported_evidence, "runtime_storage", None)
+        is imported_storage
         and getattr(imported_review, "tp", None) is tp
+        and getattr(imported_review, "runtime_storage", None)
+        is imported_storage
         and getattr(imported_review, "review_evidence_runtime", None)
         is imported_evidence
     )
     if consistent:
         runtime, evidence, review_kernel = tp, imported_evidence, imported_review
     else:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "_taskplane_target_runtime", paths["runtime"])
-        if spec is None or spec.loader is None:
-            raise RuntimeError("target review runtime cannot be loaded")
-        runtime = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(runtime)
-        evidence = _private_review_module(
-            "_taskplane_target_review_evidence", paths["evidence"],
-            {"taskplane_lite": runtime})
-        review_kernel = _private_review_module(
-            "_taskplane_target_review", paths["review"], {
-                "taskplane_lite": runtime,
-                "review_evidence": evidence,
-            })
+        target_storage = loader.load("storage")
+        runtime = loader.load("taskplane_lite")
+        evidence = loader.load("review_evidence")
+        review_kernel = loader.load("review")
+        runtime_import = runtime.__dict__["__builtins__"]["__import__"]
+        if getattr(evidence, "tp", None) is not runtime or \
+                getattr(evidence, "runtime_storage", None) is not \
+                target_storage or getattr(review_kernel, "tp", None) is not \
+                runtime or getattr(review_kernel, "runtime_storage", None) is \
+                not target_storage or getattr(
+                    review_kernel, "review_evidence_runtime", None) is not \
+                evidence or runtime_import("storage") is not target_storage:
+            raise RuntimeError(
+                "target review runtime bundle is internally inconsistent")
     _REVIEW_RUNTIME_BUNDLE = {
         "root": root, "runtime": runtime,
-        "evidence": evidence, "review": review_kernel,
+        "evidence": evidence, "review": review_kernel, "loader": loader,
     }
     return runtime, evidence, review_kernel
 
@@ -5273,14 +5432,53 @@ def _reanchor_fingerprint(task: Mapping) -> str:
 
 
 def _verified_criterion_evidence(value) -> bool:
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, dict)):
-        return bool(value)
-    # Scalar booleans and numbers are outcome-like sentinels, not durable
-    # proof.  Fail closed for them (and for null/unknown objects) instead of
-    # allowing False or 0 to reanchor an archived pass.
-    return False
+    """Require a recursively sound proof shape, not a truthy outcome shell."""
+    seen = set()
+
+    def inspect(item, depth: int = 0) -> tuple[bool, bool]:
+        # The evaluator artifact is JSON, but bound recursion here as well so
+        # an in-process caller cannot supply a cyclic/deep object as proof.
+        if depth > 32:
+            return False, False
+        if isinstance(item, str):
+            return bool(item.strip()), bool(item.strip())
+        if item is None or isinstance(item, bool):
+            return False, False
+        if isinstance(item, (int, float)):
+            # A non-zero finite number can be proof metadata (for example a
+            # line number), but never proof by itself. Zero is an explicit
+            # non-proof sentinel at every nesting level.
+            return (bool(item) and math.isfinite(item)), False
+        if isinstance(item, Mapping):
+            if not item or id(item) in seen:
+                return False, False
+            seen.add(id(item))
+            try:
+                rows = []
+                for key, child in item.items():
+                    if not isinstance(key, str) or not key.strip():
+                        return False, False
+                    rows.append(inspect(child, depth + 1))
+            finally:
+                seen.remove(id(item))
+            return (all(valid for valid, _ in rows) and
+                    any(proof for _, proof in rows),
+                    any(proof for _, proof in rows))
+        if isinstance(item, (list, tuple)):
+            if not item or id(item) in seen:
+                return False, False
+            seen.add(id(item))
+            try:
+                rows = [inspect(child, depth + 1) for child in item]
+            finally:
+                seen.remove(id(item))
+            return (all(valid for valid, _ in rows) and
+                    any(proof for _, proof in rows),
+                    any(proof for _, proof in rows))
+        return False, False
+
+    valid, has_proof = inspect(value)
+    return valid and has_proof
 
 
 _REANCHOR_AUTHORITY_SCHEMA = "taskplane.reanchor-pass-authority/v1"

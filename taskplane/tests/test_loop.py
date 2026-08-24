@@ -1232,14 +1232,24 @@ class TestLoop(unittest.TestCase):
                 reanchor_authority=authority_ref)
             return loop._verify_reanchor_task_evidence(ws, task, prior)
 
-        for sentinel in (False, 0):
+        for sentinel in (
+                False, 0, None, "", [], {}, [False], [0],
+                {"passed": False}, {"proof": {"digest": ""}},
+                [None, []], {"line": 12}):
             with self.subTest(sentinel=sentinel):
                 evidence, error = verify(sentinel)
                 self.assertIsNone(evidence)
                 self.assertEqual(
                     error, "durable evaluator criterion is not proven met")
 
-        evidence, error = verify("receipt: evaluator independently passed")
+        nested_proof = {
+            "proof": {
+                "digest": "sha256:" + "a" * 64,
+                "receipt": "engine:evaluator-independent-pass",
+            },
+            "locations": [{"file": "src/todo/a.py", "line": 1}],
+        }
+        evidence, error = verify(nested_proof)
         self.assertIsNone(error)
         self.assertEqual(evidence["resolution"], "independent-pass")
 
@@ -3069,6 +3079,7 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
 class TestReviewBridge(unittest.TestCase):
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
         canonical = sys.modules.get("taskplane_lite")
+        canonical_storage = sys.modules.get("storage")
         launcher = types.SimpleNamespace(
             __file__="/launcher/v2.17.16/taskplane_lite.py",
             review_execution_root_identity=lambda *_: (_ for _ in ()).throw(
@@ -3092,12 +3103,69 @@ class TestReviewBridge(unittest.TestCase):
         self.assertEqual(binding["schema"],
                          "taskplane.review-execution-binding/v1")
         self.assertIs(evidence.tp, runtime)
+        self.assertIs(evidence.runtime_storage,
+                      review_kernel.runtime_storage)
         self.assertIs(review_kernel.tp, runtime)
         self.assertIs(review_kernel.review_evidence_runtime, evidence)
+        target_import = runtime.__dict__["__builtins__"]["__import__"]
+        self.assertIs(target_import("storage"), evidence.runtime_storage)
         self.assertEqual(os.path.realpath(runtime.__file__), os.path.realpath(
             os.path.join(os.path.dirname(loop.__file__),
                          "taskplane_lite.py")))
+        self.assertEqual(
+            os.path.realpath(evidence.runtime_storage.__file__),
+            os.path.realpath(os.path.join(
+                os.path.dirname(loop.__file__), "storage.py")))
         self.assertIs(sys.modules.get("taskplane_lite"), canonical)
+        self.assertIs(sys.modules.get("storage"), canonical_storage)
+        for private in (runtime, evidence, review_kernel,
+                        evidence.runtime_storage):
+            self.assertIsNot(sys.modules.get(private.__name__), private)
+
+    def test_review_bridge_private_loader_rejects_external_symlink(self):
+        root = tempfile.mkdtemp()
+        outside = tempfile.mkdtemp()
+        payload = os.path.join(outside, "payload.py")
+        with open(payload, "w", encoding="utf-8") as stream:
+            stream.write("external_payload_executed = True\n")
+        os.symlink(payload, os.path.join(root, "review.py"))
+
+        with self.assertRaisesRegex(RuntimeError, "escapes checkout"):
+            loop._verified_review_module_source(root, "review")
+
+    def test_review_bridge_private_loader_rejects_replacement_race(self):
+        root = tempfile.mkdtemp()
+        candidate = os.path.join(root, "review.py")
+        replacement = os.path.join(root, "replacement.py")
+        with open(candidate, "w", encoding="utf-8") as stream:
+            stream.write("trusted = True\n")
+        with open(replacement, "w", encoding="utf-8") as stream:
+            stream.write("replacement_executed = True\n")
+        real_open = os.open
+        real_replace = os.replace
+
+        def replace_before_open(path, flags):
+            if os.path.realpath(path) == os.path.realpath(candidate):
+                real_replace(replacement, candidate)
+            return real_open(path, flags)
+
+        with unittest.mock.patch.object(
+                loop.os, "open", side_effect=replace_before_open), \
+                self.assertRaisesRegex(RuntimeError, "changed while pinned"):
+            loop._verified_review_module_source(root, "review")
+
+    def test_review_bridge_private_loader_executes_verified_checkout_bytes(self):
+        root = tempfile.mkdtemp()
+        candidate = os.path.join(root, "verified.py")
+        with open(candidate, "w", encoding="utf-8") as stream:
+            stream.write("checkout_proof = 'verified-bytes'\n")
+
+        loader = loop._CheckoutReviewModuleBundle(root)
+        module = loader.load("verified")
+
+        self.assertEqual(module.checkout_proof, "verified-bytes")
+        self.assertEqual(loader.sources["verified"]["path"], candidate)
+        self.assertIsNot(sys.modules.get(module.__name__), module)
 
     def test_review_bridge_execute_gate_uses_safe_argv(self):
         completed = subprocess.CompletedProcess(
