@@ -543,6 +543,10 @@ def _checkpoint_workspace(tmp_path):
     proof = workspace / "taskplane" / "tests" / "test_focused.py"
     proof.parent.mkdir(parents=True)
     proof.write_text("def test_focused():\n    assert True\n", encoding="utf-8")
+    (workspace / "taskplane" / "checkpoint.py").write_text(
+        "CHECKPOINT_FIXTURE = True\n", encoding="utf-8")
+    (workspace / ".gitignore").write_text(
+        "__pycache__/\n.pytest_cache/\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
     subprocess.run(["git", "config", "user.email", "e@e"],
                    cwd=workspace, check=True)
@@ -584,9 +588,7 @@ def _checkpoint_command_result(workspace, argv, *, state="succeeded",
     command_fingerprint = governed_commands._canonical_digest(argv)
     runtime_fingerprint = hashlib.sha256(
         command_fingerprint.encode("utf-8")).hexdigest()
-    revision = next(
-        item.rsplit(checkpoint._REVISION_CACHE_PREFIX, 1)[1]
-        for item in argv if checkpoint._REVISION_CACHE_PREFIX in item)
+    revision = argv[argv.index(checkpoint._PYTEST_REVISION_OPTION) + 1]
     output = checkpoint._OBSERVED_REVISION_PREFIX + revision + "\n"
     output += "1 passed\n" if state == "succeeded" else "1 failed\n"
     output_bytes = output.encode("utf-8")
@@ -787,3 +789,25 @@ def test_checkpoint_receipt_rejects_predeclared_future_revision(tmp_path):
     with pytest.raises(checkpoint.CheckpointReceiptError,
                        match="runtime-observed repository revision"):
         checkpoint.validate_and_mint(str(workspace), spec, result_from_a)
+
+
+@pytest.mark.parametrize("change", ["unstaged", "staged", "untracked"])
+def test_checkpoint_receipt_rejects_dirty_declared_scope(tmp_path, change):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    runtime_argv = _checkpoint_runtime_argv(workspace, spec)
+    if change == "untracked":
+        (workspace / "taskplane" / "tests" / "untracked_scope.py").write_text(
+            "DIRTY_SCOPE = True\n", encoding="utf-8")
+    else:
+        (workspace / "taskplane" / "checkpoint.py").write_text(
+            "CHECKPOINT_FIXTURE = False\n", encoding="utf-8")
+        if change == "staged":
+            subprocess.run(["git", "add", "taskplane/checkpoint.py"],
+                           cwd=workspace, check=True)
+
+    dirty_result = _run_governed_checkpoint_command(
+        workspace, runtime_argv, f"checkpoint-dirty-{change}-scope")
+    assert dirty_result["event"]["state"] == "failed"
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="declared scope"):
+        checkpoint.validate_and_mint(str(workspace), spec, dirty_result)

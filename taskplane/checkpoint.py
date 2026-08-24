@@ -73,8 +73,9 @@ _NON_EXECUTING_PYTEST_OPTIONS = frozenset({
     "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
     "--help", "--setup-only", "--version",
 })
-_REVISION_CACHE_PREFIX = ".pytest_cache/taskplane-checkpoint-"
 _PYTEST_PLUGIN = "taskplane.checkpoint"
+_PYTEST_REVISION_OPTION = "--taskplane-checkpoint-revision"
+_PYTEST_SCOPE_OPTION = "--taskplane-checkpoint-scope"
 _OBSERVED_REVISION_PREFIX = "taskplane-checkpoint-observed-revision="
 _GIT_REVISION = re.compile(r"[0-9a-f]{40,64}\Z")
 
@@ -143,15 +144,22 @@ def _scope_contains(path: str, scope: Sequence[str]) -> bool:
                for pattern in scope)
 
 
+def _reserved_pytest_identity_arg(value: str) -> bool:
+    return (_PYTEST_PLUGIN in value or
+            any(value == option or value.startswith(option + "=")
+                for option in (
+                    _PYTEST_REVISION_OPTION, _PYTEST_SCOPE_OPTION)))
+
+
 def _focused_pytest_argv(argv: Sequence[str], proof_path: str,
-                         revision: str) -> list[str]:
+                         revision: str, scope: Sequence[str]) -> list[str]:
     """Return a direct pytest command cryptographically bound to ``revision``.
 
     The incumbent command analyzer supports direct pytest commands, so the
     common ``python -m pytest`` spelling is normalized to that existing form.
-    A valid engine-owned cache option carries the exact Git revision in argv,
-    making the incumbent runtime fingerprint revision-specific without a new
-    command-result field.
+    Engine-owned plugin options carry the exact Git revision and declared
+    scope in argv, making the incumbent runtime fingerprint revision-specific
+    while letting the executing process verify the scoped tree itself.
     """
     command = list(argv)
     executable = os.path.basename(command[0]) if command else ""
@@ -170,34 +178,54 @@ def _focused_pytest_argv(argv: Sequence[str], proof_path: str,
     if selector != proof_path and not selector.startswith(proof_path + "::"):
         raise CheckpointSpecError(
             f"focused_proof.argv must run pytest target {proof_path}")
-    marker = f"cache_dir={_REVISION_CACHE_PREFIX}{revision}"
-    engine_arguments = ["-p", _PYTEST_PLUGIN, "-o", marker]
-    if command[-5:-1] == engine_arguments:
-        earlier = command[1:-5]
-        if (any(_PYTEST_PLUGIN in item for item in earlier) or
-                any(item.startswith(f"cache_dir={_REVISION_CACHE_PREFIX}")
-                    for item in earlier)):
+    engine_arguments = ["-p", _PYTEST_PLUGIN,
+                        _PYTEST_REVISION_OPTION, revision]
+    for item in scope:
+        engine_arguments.extend([_PYTEST_SCOPE_OPTION, item])
+    start = -(len(engine_arguments) + 1)
+    if command[start:-1] == engine_arguments:
+        earlier = command[1:start]
+        if any(_reserved_pytest_identity_arg(item) for item in earlier):
             raise CheckpointSpecError(
                 "focused_proof.argv must not override checkpoint identity")
         return command
-    if (any(isinstance(item, str) and item.startswith(
-            f"cache_dir={_REVISION_CACHE_PREFIX}") for item in command) or
-            any(_PYTEST_PLUGIN in item for item in command[1:])):
+    if any(_reserved_pytest_identity_arg(item) for item in command[1:]):
         raise CheckpointSpecError(
             "focused_proof.argv must invoke pytest for the exact revision")
     command[-1:-1] = engine_arguments
     return command
 
 
-def _pytest_checkpoint_context(config) -> tuple[str, str]:
-    cache_dir = str(config.getini("cache_dir"))
-    name = Path(cache_dir).name
-    prefix = Path(_REVISION_CACHE_PREFIX).name
-    revision = name[len(prefix):] if name.startswith(prefix) else ""
+def _scope_changes(workspace: str, scope: Sequence[str]) -> list[str]:
+    pathspecs = [
+        (":(glob)" if any(char in item for char in "*?[") else ":(literal)")
+        + item for item in scope
+    ]
+    status = _git(workspace, "status", "--porcelain=v1", "-z",
+                  "--untracked-files=all", "--", *pathspecs)
+    if status.returncode != 0:
+        raise ValueError("declared checkpoint scope could not be inspected")
+    return [entry for entry in status.stdout.split("\0") if entry]
+
+
+def pytest_addoption(parser) -> None:
+    """Register engine-owned identity inputs for the checkpoint plugin."""
+    group = parser.getgroup("taskplane-checkpoint")
+    group.addoption(_PYTEST_REVISION_OPTION, action="store")
+    group.addoption(_PYTEST_SCOPE_OPTION, action="append", default=[])
+
+
+def _pytest_checkpoint_context(config) -> tuple[str, str, list[str]]:
+    revision = str(config.getoption(_PYTEST_REVISION_OPTION) or "")
     if not _GIT_REVISION.fullmatch(revision):
         raise ValueError("checkpoint pytest plugin requires an exact revision")
+    scope = config.getoption(_PYTEST_SCOPE_OPTION)
+    if (not isinstance(scope, list) or not scope or
+            any(not isinstance(item, str) or not item.strip()
+                for item in scope) or len(scope) != len(set(scope))):
+        raise ValueError("checkpoint pytest plugin requires declared scope")
     workspace = str(Path(config.invocation_params.dir).resolve())
-    return workspace, revision
+    return workspace, revision, [item.strip() for item in scope]
 
 
 def _observed_repository_revision(workspace: str) -> str:
@@ -213,16 +241,22 @@ def pytest_configure(config) -> None:
     import pytest
 
     try:
-        workspace, expected = _pytest_checkpoint_context(config)
+        workspace, expected, scope = _pytest_checkpoint_context(config)
         observed = _observed_repository_revision(workspace)
+        changes = _scope_changes(workspace, scope)
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from exc
     if observed != expected:
         raise pytest.UsageError(
             "checkpoint pytest runtime-observed repository revision "
             f"{observed} does not match {expected}")
+    if changes:
+        raise pytest.UsageError(
+            "checkpoint pytest runtime-observed declared scope is dirty: "
+            + changes[0])
     config._taskplane_checkpoint_workspace = workspace
     config._taskplane_checkpoint_revision = observed
+    config._taskplane_checkpoint_scope = scope
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
@@ -230,13 +264,16 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     config = session.config
     workspace = getattr(config, "_taskplane_checkpoint_workspace", None)
     expected = getattr(config, "_taskplane_checkpoint_revision", None)
-    if not workspace or not expected:
+    scope = getattr(config, "_taskplane_checkpoint_scope", None)
+    if not workspace or not expected or not scope:
         return
     try:
         observed = _observed_repository_revision(workspace)
+        changes = _scope_changes(workspace, scope)
     except ValueError:
         observed = ""
-    if observed != expected:
+        changes = ["inspection failed"]
+    if observed != expected or changes:
         session.exitstatus = 1
         return
     terminal = config.pluginmanager.get_plugin("terminalreporter")
@@ -309,7 +346,14 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
     if revision != head.stdout.strip():
         raise CheckpointSpecError(
             "worktree_revision is stale; checkpoint requires exact HEAD")
-    argv = _focused_pytest_argv(argv, proof_path, revision)
+    try:
+        changes = _scope_changes(worktree, scope)
+    except ValueError as exc:
+        raise CheckpointSpecError(str(exc)) from exc
+    if changes:
+        raise CheckpointSpecError(
+            "declared scope must match exact HEAD: " + changes[0])
+    argv = _focused_pytest_argv(argv, proof_path, revision, scope)
     ratchet = spec.get("ratchet_baseline")
     if not isinstance(ratchet, Mapping):
         raise CheckpointSpecError("ratchet_baseline must be a mapping")
