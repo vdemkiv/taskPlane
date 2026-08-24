@@ -3077,6 +3077,125 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
 
 
 class TestReviewBridge(unittest.TestCase):
+    def _review_bridge_graph_workspace(self):
+        root = tempfile.mkdtemp()
+        workspace = os.path.join(root, "workspace")
+        os.makedirs(os.path.join(workspace, "src", "todo"))
+        subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+        subprocess.run(["git", "config", "user.email", "e@e"],
+                       cwd=workspace, check=True)
+        subprocess.run(["git", "config", "user.name", "t"],
+                       cwd=workspace, check=True)
+        source = os.path.join(workspace, "src", "todo", "a.py")
+        with open(source, "w", encoding="utf-8") as stream:
+            stream.write("def pending():\n    return False\n")
+        subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-qm", "baseline"],
+                       cwd=workspace, check=True)
+        baseline = tp.git_head(workspace)
+        with open(source, "w", encoding="utf-8") as stream:
+            stream.write("def complete():\n    return True\n")
+        subprocess.run(["git", "add", "src/todo/a.py"],
+                       cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-qm", "implementation"],
+                       cwd=workspace, check=True)
+        depgraph.scan(workspace)
+        graph = depgraph.load(workspace)
+        task = dict(TASK, req="R-graph-order")
+        impact = depgraph.impact(
+            workspace, ["src/todo/a.py"],
+            policy=depgraph.impact_policy(task))
+        requirement = {
+            "id": "R-graph-order",
+            "text": "complete() marks done",
+            "acceptance": [{"id": "AC-1",
+                            "criterion": "complete() marks done"}],
+            "review_policy": {"depth": "quick-only"},
+        }
+        return workspace, baseline, graph, impact, task, requirement
+
+    def test_review_bridge_parallel_evaluate_scans_before_kernel_and_route(self):
+        source = open(loop.__file__, encoding="utf-8").read()
+        start = source.index("# The graph is an input to evaluation")
+        end = source.index("    dispatch = tp.dispatch_fields(", start)
+        flow = source[start:end]
+
+        scan = flow.index("depgraph.scan(graph_refresh_ws)")
+        impact = flow.index("imp = depgraph.impact(graph_ws, changed")
+        kernel = flow.index("review_kernel, routing = _review_kernel(")
+        self.assertIn(
+            "graph_refresh_ws = act_ws if is_parallel_evaluate else ws",
+            flow)
+        self.assertLess(scan, impact)
+        self.assertLess(impact, kernel)
+
+    def test_review_bridge_graph_failure_dispatches_no_lenses(self):
+        workspace, baseline, graph, impact, task, requirement = \
+            self._review_bridge_graph_workspace()
+        stale = json.loads(json.dumps(graph))
+        stale.setdefault("meta", {})["scanned_head"] = "0" * 40
+        _, _, review_kernel = loop._review_runtime_modules()
+
+        with unittest.mock.patch.object(
+                review_kernel, "start_review",
+                wraps=review_kernel.start_review) as started, \
+                self.assertRaises(loop._ReviewGraphQualityError) as raised:
+            loop._review_kernel(
+                workspace, workspace, base=baseline, step="evaluate",
+                task=task, graph=stale, impact=impact,
+                requirement=requirement)
+
+        started.assert_not_called()
+        self.assertEqual(raised.exception.quality["status"],
+                         "impact_incomplete")
+        self.assertIn("stale_graph", raised.exception.quality["reasons"])
+
+    def test_event_wait_review_success_seals_current_graph_before_route_once(self):
+        workspace, baseline, graph, impact, task, requirement = \
+            self._review_bridge_graph_workspace()
+        _, evidence_kernel, review_kernel = loop._review_runtime_modules()
+
+        manifest, routing = loop._review_kernel(
+            workspace, workspace, base=baseline, step="evaluate", task=task,
+            graph=graph, impact=impact, requirement=requirement)
+        bound = loop._bind_stateless_review_contract_actions(
+            workspace, manifest, task_id=task["id"])
+        sealed = review_kernel._load_state(workspace, manifest["run_id"])
+        quality = evidence_kernel.ArtifactStore(workspace).read(
+            sealed["quality"])
+
+        self.assertEqual(quality["status"], "complete")
+        self.assertEqual(quality["scanned_head"], tp.git_head(workspace))
+        routed = [row for row in routing["lenses"]
+                  if row.get("mode") != "none"]
+        self.assertGreaterEqual(len(routed), 4)
+        self.assertLessEqual(len(routed), 5)
+        self.assertIn("architecture", {row["id"] for row in routed})
+        self.assertFalse(any(row.get("tier") == "deep" for row in routed))
+        self.assertEqual(bound["wait_invocation"]["operation"],
+                         "wait_for_events")
+        self.assertEqual(bound["wait_invocation"]["timeout_seconds"], 1800)
+
+        immutable = json.loads(json.dumps({
+            "quality": sealed["quality"],
+            "routing_decision": sealed["routing_decision"],
+            "slots": sealed["slots"],
+        }))
+        with open(os.path.join(workspace, "src", "todo", "a.py"), "a",
+                  encoding="utf-8") as stream:
+            stream.write("# later graph revision\n")
+        subprocess.run(["git", "add", "src/todo/a.py"],
+                       cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-qm", "later graph revision"],
+                       cwd=workspace, check=True)
+        depgraph.scan(workspace)
+        reloaded = review_kernel._load_state(workspace, manifest["run_id"])
+        self.assertEqual({
+            "quality": reloaded["quality"],
+            "routing_decision": reloaded["routing_decision"],
+            "slots": reloaded["slots"],
+        }, immutable)
+
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
         canonical = sys.modules.get("taskplane_lite")
         canonical_storage = sys.modules.get("storage")

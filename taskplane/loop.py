@@ -3740,6 +3740,57 @@ def _review_runtime_modules():
     return runtime, evidence, review_kernel
 
 
+class _ReviewGraphQualityError(RuntimeError):
+    """Current graph evidence cannot authorize selective lens dispatch."""
+
+    def __init__(self, quality: dict, reference: dict):
+        self.quality = quality
+        self.reference = reference
+        reasons = ", ".join(quality.get("reasons") or []) or \
+            "graph quality is incomplete"
+        super().__init__(reasons)
+
+
+def _strict_review_graph_quality(review_ws: str, *, target: dict,
+                                 graph: dict, impact: dict, files: list,
+                                 symbols: list, review_module,
+                                 evidence_module) -> tuple[dict, dict, object]:
+    """Persist admissible current graph evidence before the one route."""
+    loader = (_REVIEW_RUNTIME_BUNDLE or {}).get("loader")
+    if loader is None:
+        raise RuntimeError("target review dependency loader is unavailable")
+    graph_quality = loader.load("graph_quality")
+    source_change = any(os.path.splitext(path)[1].lower() in {
+        ".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go",
+        ".cs", ".java", ".rb"} for path in files)
+    raw_expander = review_module.bounded_caller_expander(graph)
+    expansion_cache = {}
+
+    def one_bounded_expansion(**kwargs):
+        # Preflight and ReviewKernel consume one identical expansion result;
+        # the adapter itself is invoked at most once.
+        if "result" not in expansion_cache:
+            expansion_cache["result"] = raw_expander(**kwargs)
+        return json.loads(json.dumps(expansion_cache["result"]))
+
+    bounded_expander = (one_bounded_expansion
+                        if symbols or not source_change else None)
+    quality = graph_quality.assess(
+        graph, target_head=str(target.get("head") or ""),
+        changed_files=files, changed_symbols=symbols, impact=impact,
+        caller_expander=bounded_expander, snapshot={
+            "target_fingerprint": target.get("fingerprint"),
+            "target_head": target.get("head"),
+        })
+    store = evidence_module.ArtifactStore(review_ws)
+    reference = store.put(
+        "graph-quality", quality, fingerprint=quality["fingerprint"])
+    if quality.get("status") != "complete" or \
+            quality.get("sufficient") is not True:
+        raise _ReviewGraphQualityError(quality, reference)
+    return quality, reference, bounded_expander
+
+
 def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                    task: dict | None, graph: dict, impact: dict,
                    requirement: dict | None,
@@ -3774,23 +3825,37 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
     diff_ref = store.put("diff", {"base": base, "files": files,
                                   "patch": patch})
     stage = "review" if step == "em" else EVALUATE_ROUTE_STAGE
+    changed_symbols = review.changed_symbols_from_patch(patch)
+    quality_ref = None
+    if step == "evaluate":
+        _, quality_ref, caller_expander = _strict_review_graph_quality(
+            diff_ws, target=target, graph=graph, impact=impact, files=files,
+            symbols=changed_symbols, review_module=review,
+            evidence_module=review_evidence)
+    else:
+        caller_expander = review.bounded_caller_expander(graph)
     manifest = review.start_review(
         diff_ws, target=target, graph=graph, impact=impact,
         diff={"files": files,
-              "changed_symbols": review.changed_symbols_from_patch(patch),
+              "changed_symbols": changed_symbols,
               "artifact": review._portable_ref(diff_ref)},
         requirement=requirement or {},
         acceptance=(requirement or {}).get("acceptance") or [],
         contracts=(task or {}).get("contracts") or [],
         stage=stage,
         task_type=(task or {}).get("type"), base=base,
-        caller_expander=review.bounded_caller_expander(graph),
+        caller_expander=caller_expander,
         routing_content=review.changed_content_from_patch(patch),
         retry_lenses=((retry_context or {}).get("lenses")
                       if step == "evaluate" else None),
         retry_source_run_id=((retry_context or {}).get("source_run_id")
                              if step == "evaluate" else None))
     state = review._load_state(diff_ws, manifest.get("run_id"))
+    if quality_ref is not None and state.get("quality") != quality_ref:
+        # A route is immutable. A mismatch is terminal evidence, never a
+        # reason to patch or invoke the selector again after sealing.
+        raise review.ReviewKernelError(
+            "sealed graph quality differs from pre-routing authority")
     return manifest, (state.get("routing") or {"lenses": [], "context": {
         "status": manifest.get("status"), "breadth": "routed"}})
 
@@ -4780,10 +4845,9 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 "status": status(ws)}
 
     # The graph is an input to evaluation, not a cache refreshed only after
-    # review.  Serial work and the final merged-tree review can safely refresh
-    # the shared graph here. Parallel task worktrees are deliberately deferred
-    # until their branches merge; publishing one worker's partial graph as the
-    # project graph would hide its siblings.
+    # review. A parallel evaluator scans its isolated task worktree rather
+    # than publishing a partial worker graph into the shared checkout. This
+    # must finish before impact, quality, routing, leases, or activation.
     if step == "em":
         # Make the final graph describe the merged, as-built system BEFORE
         # the engineering reviewer receives it.  Doing this at the EM gate
@@ -4795,14 +4859,15 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 return {"error": f"graph true-up failed before {step}: {exc}",
                         "step": step, "status": status(ws)}
             tp.trace(ws, "graph_refresh_failed", step=step, error=str(exc))
-    elif step == "evaluate" and not state.get("parallel"):
+    elif step == "evaluate":
+        graph_refresh_ws = act_ws if is_parallel_evaluate else ws
         try:
-            depgraph.scan(ws)
+            depgraph.scan(graph_refresh_ws)
         except Exception as exc:
-            if state.get("graph_governance"):
-                return {"error": f"graph refresh failed before {step}: {exc}",
-                        "step": step, "status": status(ws)}
-            tp.trace(ws, "graph_refresh_failed", step=step, error=str(exc))
+            return {"error": f"graph refresh failed before {step}: {exc}",
+                    "step": step, "status": status(ws),
+                    "review_kernel": {"status": "impact_incomplete",
+                                      "slots": []}}
     # Inject the handful of prior decisions relevant to this step's work, so
     # the role starts with context instead of re-deriving it (token savings).
     task = _current_task(state)
@@ -4966,6 +5031,22 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 diff_ws, review_kernel,
                 task_id=str((task or {}).get("id") or
                             "engineering-signoff"))
+        except _ReviewGraphQualityError as exc:
+            tp.trace(ws, "review_graph_quality_blocked", step=step,
+                     task=(task or {}).get("id"),
+                     reasons=exc.quality.get("reasons") or [], slots=[])
+            return {
+                "error": "graph quality failed before selective review: "
+                         + str(exc),
+                "step": step, "status": status(ws),
+                "graph_quality": {
+                    "status": exc.quality.get("status"),
+                    "reasons": list(exc.quality.get("reasons") or []),
+                    "artifact": exc.reference,
+                },
+                "review_kernel": {"status": "impact_incomplete",
+                                  "slots": []},
+            }
         except Exception as exc:
             review_kernel = {"status": "kernel_unavailable", "slots": [],
                              "reason": f"{exc.__class__.__name__}: {exc}"}
