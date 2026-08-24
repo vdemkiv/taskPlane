@@ -3,43 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>R-0006 five-wave dependency design</title>
+<title>R-0012 ordered delivery state transition</title>
 <style>
-  :root{color-scheme:light dark;--bg:#f6f3ea;--panel:#fffdf7;--ink:#20231f;--muted:#63685f;--line:#8f9689;--accent:#285f52;--gate:#8f4d2f;--defer:#6b5b84}
-  @media(prefers-color-scheme:dark){:root{--bg:#171915;--panel:#20231e;--ink:#edf0e8;--muted:#b3b9ae;--line:#687064;--accent:#78c1ae;--gate:#e09a76;--defer:#b9a4d5}}
-  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,sans-serif}.wrap{max-width:1120px;margin:auto;padding:32px 20px 48px}h1{font-size:clamp(1.6rem,4vw,2.5rem);margin:0 0 6px}.lede{color:var(--muted);max-width:78ch;margin:0 0 26px}.flow{display:grid;grid-template-columns:repeat(5,minmax(170px,1fr));gap:14px;align-items:stretch}.wave{position:relative;background:var(--panel);border:1px solid var(--line);border-top:5px solid var(--accent);border-radius:10px;padding:16px;min-height:270px}.wave:not(:last-child)::after{content:"→";position:absolute;right:-14px;top:20px;z-index:2;color:var(--gate);font-size:22px;font-weight:800}.n{font:700 12px/1.2 ui-monospace,monospace;color:var(--accent);letter-spacing:.08em;text-transform:uppercase}.wave h2{font-size:18px;line-height:1.2;margin:8px 0}.gate{display:inline-block;border:1px solid var(--gate);color:var(--gate);border-radius:999px;padding:3px 8px;font:700 11px/1.2 ui-monospace,monospace;margin:4px 0 10px}.wave ul{padding-left:18px;margin:8px 0}.wave li{margin:6px 0}.contracts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px}.box{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--panel)}.box h2{font-size:17px;margin:0 0 8px}.box p,.box ul{margin:6px 0}.defer{border-color:var(--defer)}.defer h2{color:var(--defer)}code{font-family:ui-monospace,monospace;font-size:.88em}@media(max-width:900px){.flow{grid-template-columns:1fr}.wave{min-height:0}.wave:not(:last-child)::after{content:"↓";right:18px;top:auto;bottom:-20px}.contracts{grid-template-columns:1fr}}
+:root{color-scheme:light dark;--bg:#f7f5ef;--card:#fff;--ink:#17212b;--muted:#52606d;--line:#81909e;--ok:#176b4d;--warn:#a14c15;--stop:#9b2c2c;--accent:#3158a6}
+@media(prefers-color-scheme:dark){:root{--bg:#11161c;--card:#1b232c;--ink:#eef3f7;--muted:#a9b6c2;--line:#6e8091;--ok:#55c89a;--warn:#f1a866;--stop:#ff8585;--accent:#8fb2ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,sans-serif}.wrap{max-width:1180px;margin:auto;padding:32px 22px 56px}h1{font-size:clamp(1.7rem,3vw,2.5rem);margin:0 0 8px}.lede{color:var(--muted);max-width:78ch}.flow{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:18px;margin:32px 0}.state{position:relative;background:var(--card);border:2px solid var(--line);border-radius:14px;padding:18px;min-height:190px;box-shadow:0 4px 18px #0001}.state:not(:last-child)::after{content:"→";position:absolute;right:-18px;top:43%;width:18px;text-align:center;color:var(--accent);font-weight:800}.state h2{font-size:1rem;margin:0 0 10px;color:var(--accent)}.state p,.state li{font-size:.9rem}.gate{border-color:var(--warn)}.done{border-color:var(--ok)}.proof{border-color:var(--accent)}ul{padding-left:19px}.branch{display:grid;grid-template-columns:1fr 1fr;gap:18px}.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}.red{border-left:6px solid var(--stop)}.green{border-left:6px solid var(--ok)}code{font-size:.85em}.legend{color:var(--muted);font-size:.9rem;margin-top:24px}
+@media(max-width:850px){.flow{grid-template-columns:1fr}.state:not(:last-child)::after{content:"↓";right:auto;left:50%;top:auto;bottom:-21px}.branch{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<main class="wrap">
-  <h1>R-0006: gates before dependence</h1>
-  <p class="lede">The five waves form a one-way quality sequence. Behavior remains reversible within a wave, but each protective gate stays in place for later work. Every lens run in these waves is quick-only; a substantive finding returns to correction and never promotes to a deep worker.</p>
-  <section class="flow" aria-label="Five ordered remediation waves">
-    <article class="wave">
-      <div class="n">Wave 1</div><h2>Fresh baseline</h2><div class="gate">entry authority</div>
-      <ul><li>Fresh run and current SHA</li><li>Refreshed source graph</li><li>Prior Git/knowledge fingerprints preserved</li><li>Quick-only dispatch policy</li></ul>
-    </article>
-    <article class="wave">
-      <div class="n">Wave 2</div><h2>Python compatibility</h2><div class="gate">before mutation/tests</div>
-      <ul><li>Fix PEP-701-only f-string</li><li>Eager named compatibility refusal</li><li>CPython 3.10–3.13</li><li>Compile/import before pytest</li></ul>
-    </article>
-    <article class="wave">
-      <div class="n">Wave 3</div><h2>Visible truth</h2><div class="gate">before pushed-green</div>
-      <ul><li>Structured graph degradation</li><li>Known CLI error envelopes</li><li>Zero-token corpus in CI</li><li>Exact remote SHA proof</li></ul>
-    </article>
-    <article class="wave">
-      <div class="n">Wave 4</div><h2>Cycle ratchet, then cuts</h2><div class="gate">commit 4A → commit 4B</div>
-      <ul><li>Measure full SCC inventory</li><li>Reject growth/new members</li><li>Add acyclic graph primitives</li><li>Remove S1/S2 imports</li></ul>
-    </article>
-    <article class="wave">
-      <div class="n">Wave 5</div><h2>Evaluation confidence</h2><div class="gate">bounded claim only</div>
-      <ul><li>1–100 distinct trials</li><li>Three incomplete-work fixtures</li><li>Selective eval graph edges</li><li>Seeded-failure catch-rate</li></ul>
-    </article>
-  </section>
-  <section class="contracts" aria-label="Cross-wave boundaries">
-    <article class="box"><h2>Cross-wave invariants</h2><ul><li>No governed-state mutation before compatibility refusal.</li><li>No strict gate accepts degraded graph evidence.</li><li>No cycle cut lands before the ratchet commit.</li><li>No incomplete sample or zero sample becomes a success rate.</li><li>No quick finding creates a deep slot.</li></ul></article>
-    <article class="box defer"><h2>Separate wave 6</h2><p>Package moves, component/schema redesign, workspace and plugin identity, model-tier policy, attestation, MCP, physical isolation, and broader architecture/security bets remain outside this graph.</p><p>They require a separate requirement and human-approved Design Contract.</p></article>
-  </section>
-</main>
+<div class="wrap" role="main">
+<h1>R-0012: governed v2.17.16 → BUILD-C → boundary-first PROVE</h1>
+<p class="lede">One-way authority with fail-closed checkpoints. Green arrows require the evidence named in each state; no state implies permission for an external action.</p>
+<div class="flow" role="group" aria-label="Ordered program states">
+<div class="state gate"><h2>0 · Consolidated approval</h2><p>Product and Design only until one attributed human approval.</p><ul><li>No Plan or execution state</li><li>No external action</li></ul></div>
+<div class="state done"><h2>R-0009 · No-build baseline</h2><p>Record exact <code>bba3354e…</code>, v2.17.16 tag/tree, scope decision, and reuse matrix.</p><ul><li>Zero product-tree change</li><li>Later history excluded</li></ul></div>
+<div class="state"><h2>R-0010 · Six gaps</h2><p>Manual checkpoint bootstrap over incumbent runtime/router/graph/worktree primitives.</p><ul><li>Submit → runtime → checkpoint</li><li>DEFINE, direct assignment, merge-on-green</li></ul></div>
+<div class="state gate"><h2>Exact-SHA + human gate</h2><p>Full floors, separately approved push, fetched-SHA proof, then R-0010 sign-off.</p><ul><li>Red keeps R-0011 closed</li><li>Passing baseline paths unchanged</li></ul></div>
+<div class="state proof"><h2>R-0011 · Re-deliver and PROVE</h2><p>Fresh checkpointed donor content, exact 23 tests, registry/tiering, seven terminal receipts.</p><ul><li>One batch fix allowed</li><li>Second red → human action</li></ul></div>
+</div>
+<div class="branch" role="group" aria-label="Failure and completion paths">
+<div class="panel red"><h2>Any red or stale identity</h2><p>Stop the dependent transition. Preserve the worktree, checkpoint, and PROVE journal. R-0010 allows a new exact-revision checkpoint; R-0011 permits one complete fix/re-PROVE, then requires a human decision.</p></div>
+<div class="panel green"><h2>Final green bundle</h2><p>All seven component receipts, Plan/diff/graph/full-suite/required-check identities, exact pushed SHA, final 4–5 quick review, and Retro agree. Sign-off becomes available; each push/tag/publication/integration still has its own approval.</p></div>
+</div>
+<p class="legend">Reuse invariant: v2.17.16 command events, wake-only waits, 4–5 concurrent quick review including architecture, and fail-closed automatic deep remain on their existing production paths.</p>
+</div>
 </body>
 </html>

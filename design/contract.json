@@ -1,253 +1,955 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0006",
-  "title": "Five ratcheted remediation waves for compatibility, observability, cycles, and evaluation confidence",
-  "summary": "Deliver R-0006 as five ordered waves that establish a preserved baseline and quick-only review policy, ratchet CPython compatibility before tests or mutation, expose graph/CLI/CI truth, land an import-cycle bound before four edge cuts, and add bounded repeated evaluation plus incomplete-work and seeded-failure evidence while deferring every wave-six architecture and security bet.",
+  "requirement": "R-0012",
+  "title": "Compatibility-first BUILD-C spine and durable boundary-first PROVE",
+  "summary": "Bind the consolidated program to governed v2.17.16, close R-0009 as no-build evidence, add exactly six live R-0010 BUILD-C gaps over incumbent command/review/worktree primitives, then re-deliver donor surfaces through a durable seven-part R-0011 PROVE.",
   "current_state": {
-    "summary": "The active run graph contains only R-0006 and five recorded contract edges with no scanned source modules; CI tests 3.10-3.12 without a preceding compile/import gate or eval corpus; stage_entities contains a 3.12-only multiline f-string; run_store imports it lazily at copied seams; decomposition degradation is retained internally but not completely projected; the CLI has one partial clean-error boundary; four deferred imports form the selected S1/S2 cuts; eval recording is single-trial; and eval corpora have no selective graph edges or catch-rate projection.",
+    "summary": "At exact HEAD bba3354e7fc5eb052beac74af230611ae48bd7db (v2.17.16, tree a7f46dbf6859f7d2122c4ee6ce99006b4862197a), public CLI and loop roots already call the governed command engine, which composes durable CommandRuntime and CommandAdapter owners. Event waits are 1800-second wake-only/non-polling, automatic review selects exactly 4–5 concurrent quick lenses including architecture, and automatic deep is refused because a direct-human command is not shipped. Existing graph/worktree/merge-receipt/review/evidence/enforcement primitives are reusable. loop.submit has no AC checkpoint, Design approval has no DEFINE ReviewKernel call, default parallel Build uses wave/claim/stage-split state, merge lacks checkpoint-SHA authorization, and the R-0011 prove/tier/registry modules, frozen inventory, exports, and exact 23 tests are absent. The engine inventory is empty, so these facts are grounded in the cited sources and exact Git objects.",
     "sources": [
-      "active run graph.json: fingerprint e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af, six nodes, five recorded edges, no source modules/scanned_head",
-      ".github/workflows/ci.yml: CPython 3.10/3.11/3.12 matrix runs pytest without repository compile/import and contains no ci_evals.py --corpus invocation",
-      "taskplane/stage_entities.py:1742-1744: PEP-701 multiline f-string expression; python3.11 py_compile fails",
-      "taskplane/run_store.py:275-278, 728-731, 854-857, 987-990: copied lazy stage_entities imports catch only ImportError",
-      "taskplane/decompose.py:61-65 and 688-795: fail-open contract plus degraded/error statistics",
-      "taskplane/depgraph.py:1418-1467: decomposition import/catch and public scan persistence/trace seam",
-      "taskplane/tp.py:5349-5445 and 7161-7203: graph CLI adapter and current clean/error/debug boundary",
-      "taskplane/lens.py:1312-1317 and taskplane/taskplane_lite.py:2431-2441: single deferred review and depgraph call seams; taskplane/taskplane_lite.py:2774-2778 is the fourth direct production stage_entities consumer",
-      "taskplane/decompose.py:209,220,630,653,666,703 and taskplane/depgraph.py:1424: graph/decomposition/lens deferred imports",
-      "scripts/ci_evals.py:406-451 and 1486-1487: deterministic zero-token corpus implementation",
-      "scripts/eval_skills.py:489-585 and scripts/eval_record.py:1395-1462: one driver call and no repeat/threshold CLI",
-      "components.yaml and evals/**: exclusions exist but no corpus-to-engine dependency map",
-      "taskplane/retro.py and taskplane/dashboard.py: no seeded-failure catch-rate projection",
-      "Git revision 1464432a8b20620852ac23831517cdb28bc77206: prior R-0004 design blobs SHA-256 a5a682b3ebcefb6081b9600423ee0f8307ae0e56b21022626c84b948cabef5d8 and 577ae5048ceb0f1047c6cf691e1b4163351a016f99b711419b9be8614263c154"
+      "specs/spec.md",
+      ".github/workflows/ci.yml",
+      "components.yaml",
+      "plan/tasks.json",
+      "taskplane/preflight.py",
+      "taskplane/command_runtime.py",
+      "taskplane/command_adapters.py",
+      "taskplane/governed_commands.py",
+      "taskplane/loop.py",
+      "taskplane/tp.py",
+      "taskplane/lens.py",
+      "taskplane/review.py",
+      "taskplane/depgraph.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/worktree_cleanup.py",
+      "taskplane/evidence.py",
+      "taskplane/import_cycles.py",
+      "taskplane/dashboard.py",
+      "taskplane/retro.py",
+      "taskplane/tests/test_r0007_governed_commands.py",
+      "taskplane/tests/test_r0007_sweep_bootstrap.py",
+      "taskplane/tests/test_loop.py",
+      "taskplane/tests/test_r0006_pushed_sha.py",
+      "scripts/ci_evals.py",
+      "scripts/ci_loop_cost.py"
     ]
   },
   "alternatives": [
     {
-      "id": "independent-patches",
-      "name": "Independent patches in one merge",
-      "description": "Patch the parse error, warning, CI call, deferred imports, and eval flags independently without cross-wave evidence contracts or an enforced landing sequence.",
+      "id": "compatibility-first-checkpoint-spine",
+      "name": "Compatibility-first checkpoint spine",
+      "description": "Record v2.17.16 without code change, add only six missing BUILD-C live edges over incumbent boundaries, then re-deliver donor content through the proven spine and durable PROVE.",
       "tradeoffs": {
-        "gains": ["Smallest apparent diff", "Fewest new records and adapters"],
-        "costs": ["Cannot prove the cycle ratchet preceded the cuts", "Allows local green, degraded graph, and quick-to-deep drift to be misreported", "Repeats the register's observed defect-regeneration pattern"],
-        "revisit_when": "R-0006 is narrowed to one isolated defect with no sequencing, graph, exact-SHA, sampling, or review-depth acceptance criteria."
+        "gains": [
+          "Smallest authorized production delta",
+          "Preserves event waits, bounded review, graph/worktree identity, and receipts",
+          "Makes every new behavior positive- and severed-edge testable",
+          "Keeps donor history as source evidence only"
+        ],
+        "costs": [
+          "R-0010 bootstraps under manual checkpoints",
+          "R-0011 waits for exact pushed-SHA proof and sign-off",
+          "Adds versioned checkpoint/phase/proof evidence schemas"
+        ],
+        "revisit_when": "A baseline-positive capability fails a live reuse fixture, or a seventh gap is proven and a human expands Product scope."
       }
     },
     {
-      "id": "five-ratcheted-waves",
-      "name": "Five contract-ratcheted waves",
-      "description": "Extend incumbent preflight, graph, CLI, review, evaluation, Retro, dashboard, and CI seams; add each quality gate before dependent changes; introduce only focused graph-primitives and evaluation-sampling modules.",
+      "id": "donor-first-retrofit",
+      "name": "Donor first, BUILD-C retrofit",
+      "description": "Port later boundary-first surfaces first and add checkpointing/reconciliation afterward.",
       "tradeoffs": {
-        "gains": ["Each later wave is protected by already-landed executable gates", "Wave-local rollback and exact acceptance traceability", "Keeps package/schema/security redesign outside the release-blocking repair"],
-        "costs": ["Requires multiple ordered commits and additive records", "Live sampling costs an explicit bounded number of model calls", "Ratchet and impact-map expectations become maintained artifacts"],
-        "revisit_when": "All five waves are green and a separately approved wave-six requirement settles package, component, schema, identity, and trust-boundary changes."
+        "gains": [
+          "Donor-visible functionality appears sooner",
+          "Source layout is familiar from later history"
+        ],
+        "costs": [
+          "Violates predecessor order",
+          "Cannot prove first BUILD-C shakedown",
+          "Treats ungoverned history as authority",
+          "Can integrate before checkpoint evidence"
+        ],
+        "revisit_when": "Only under a replacement requirement explicitly authorizing later-history implementation input."
       }
     },
     {
-      "id": "architecture-first",
-      "name": "Broad architecture and security redesign first",
-      "description": "Move packages, centralize schemas, and change identity/attestation/isolation before repairing the registered defects.",
+      "id": "new-orchestration-core",
+      "name": "New orchestration core",
+      "description": "Replace runtime, router, worktree, receipt, and proof paths with a greenfield scheduler and evidence service.",
       "tradeoffs": {
-        "gains": ["Could eliminate more cycles and reduce a later migration", "Could centralize several cross-cutting policies"],
-        "costs": ["Mixes high-risk redesign with a release-blocking parse failure", "Violates the explicit wave-six deferral", "Requires product and security decisions absent from R-0006"],
-        "revisit_when": "A separate wave-six Design Contract is approved after R-0006's compatibility, visibility, cycle, corpus, and evaluation ratchets pass."
+        "gains": [
+          "One uniform state model",
+          "No compatibility adapter"
+        ],
+        "costs": [
+          "Rebuilds proven capabilities",
+          "Exceeds six gaps",
+          "Creates migration/rollback risk",
+          "Invalidates reuse matrix"
+        ],
+        "revisit_when": "Multiple incumbent contracts fail production compatibility and Product authorizes platform redesign."
+      }
+    },
+    {
+      "id": "verification-only",
+      "name": "Verification-only status quo",
+      "description": "Record v2.17.16 and stop after R-0009.",
+      "tradeoffs": {
+        "gains": [
+          "Zero product change",
+          "Immediate rollback"
+        ],
+        "costs": [
+          "Leaves six R-0010 gaps open",
+          "Delivers none of R-0011"
+        ],
+        "revisit_when": "Product cancels R-0010/R-0011 after R-0009."
       }
     }
   ],
-  "selected_approach": "five-ratcheted-waves",
-  "decision": "Select five contract-ratcheted waves because this is the smallest approach that can prove ordering and prevent recurrence: baseline and quick-only authority first; compile/import before tests or mutation; structured graph/CLI/CI truth before pushed-green claims; a measured SCC ratchet in an earlier commit before explicit-input cuts; then bounded trials, completeness fixtures, selective corpus edges, and one catch-rate record. It reuses existing owners and adds four focused product modules plus explicit policy data.",
+  "selected_approach": "compatibility-first-checkpoint-spine",
+  "decision": "Select the compatibility-first checkpoint spine because it alone satisfies the authoritative baseline, six-gap scope, predecessor gates, reuse invariants, live-edge rule, and donor-as-source-only boundary. Two new R-0010 owners compose incumbent runtime/review/graph/worktree contracts; three new R-0011 proof owners make exact-identity PROVE the sole completion evidence.",
   "modules": {
     "existing": [
-      ".github/workflows/ci.yml", "taskplane/preflight.py", "taskplane/stage_entities.py", "taskplane/run_store.py", "taskplane/depgraph.py", "taskplane/decompose.py", "taskplane/lens.py", "taskplane/lens_signals.py", "taskplane/review.py", "taskplane/review_progression.py", "taskplane/taskplane_lite.py", "taskplane/tp.py", "taskplane/loop.py", "taskplane/eval_drivers.py", "taskplane/eval_rubric.py", "taskplane/eval_scenario.py", "taskplane/runtime_eval.py", "taskplane/retro.py", "taskplane/dashboard.py", "scripts/ci_evals.py", "scripts/eval_skills.py", "scripts/eval_record.py", "evals", "taskplane/tests", "docs"
+      ".github/workflows/ci.yml",
+      "components.yaml",
+      "plan/tasks.json",
+      "scripts/ci_evals.py",
+      "scripts/ci_loop_cost.py",
+      "specs/spec.md",
+      "taskplane/preflight.py",
+      "taskplane/tp.py",
+      "taskplane/loop.py",
+      "taskplane/governed_commands.py",
+      "taskplane/command_runtime.py",
+      "taskplane/command_adapters.py",
+      "taskplane/lens.py",
+      "taskplane/review.py",
+      "taskplane/depgraph.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/worktree_cleanup.py",
+      "taskplane/evidence.py",
+      "taskplane/import_cycles.py",
+      "taskplane/dashboard.py",
+      "taskplane/retro.py",
+      "taskplane/tests/test_r0007_governed_commands.py",
+      "taskplane/tests/test_r0007_sweep_bootstrap.py",
+      "taskplane/tests/test_loop.py",
+      "taskplane/tests/test_r0006_pushed_sha.py"
     ],
     "new": [
-      "taskplane/graph_primitives.py", "taskplane/graph_decomposition.py", "taskplane/import_cycles.py", "taskplane/eval_sampling.py", "evals/impact-map.json", "taskplane/tests/fixtures/import-cycles.json"
+      "taskplane/build_c.py",
+      "taskplane/checkpoint.py",
+      "taskplane/prove.py",
+      "taskplane/test_tiers.py",
+      "taskplane/schema_registry.py",
+      "taskplane/schema-registry.json",
+      "taskplane/tests/fixtures/full-suite-inventory.json",
+      "taskplane/tests/test_r0008_plan_baseline.py",
+      "taskplane/tests/test_r0008_schema_registry.py",
+      "taskplane/tests/test_r0008_wiring_define_baseline.py",
+      "taskplane/tests/test_r0008_define_review.py",
+      "taskplane/tests/test_r0008_wiring_define_review.py",
+      "taskplane/tests/test_r0008_delivery_modes.py",
+      "taskplane/tests/test_r0008_direct_build.py",
+      "taskplane/tests/test_r0008_wiring_delivery_modes.py",
+      "taskplane/tests/test_r0008_test_tiers.py",
+      "taskplane/tests/test_r0008_wiring_test_tiers.py",
+      "taskplane/tests/test_r0008_impact_reconciliation.py",
+      "taskplane/tests/test_r0008_batch_acceptance.py",
+      "taskplane/tests/test_r0008_wiring_reconciliation.py",
+      "taskplane/tests/test_r0008_prove.py",
+      "taskplane/tests/test_r0008_prove_canaries.py",
+      "taskplane/tests/test_r0008_fix_reprove.py",
+      "taskplane/tests/test_r0008_wiring_prove.py",
+      "taskplane/tests/test_r0008_ci_ratchets.py",
+      "taskplane/tests/test_r0008_full_suite_inventory.py",
+      "taskplane/tests/test_r0008_wiring_ci.py",
+      "taskplane/tests/test_r0008_operations.py",
+      "taskplane/tests/test_r0008_dogfood_bundle.py",
+      "taskplane/tests/test_r0008_production_wiring.py",
+      "exports/r0012-v21716-baseline.json",
+      "exports/r0012-program-ledger.json",
+      "exports/r0012-donor-provenance.json",
+      "exports/r0012-prove-journal.jsonl",
+      "exports/r0012-prove-bundle.json",
+      "exports/r0012-retro.json"
     ]
   },
   "contracts": [
-    {"relation":"changes","id":"contract:runtime.python-compatibility","description":"CPython 3.10-3.13 is compiled and import-smoked before tests; stage dependency incompatibility becomes one named pre-mutation refusal."},
-    {"relation":"changes","id":"contract:review.collection","description":"R-0006 manifests contain quick sweep slots only; substantive quick findings return to correction with no promotion."},
-    {"relation":"changes","id":"contract:status.run-observability","description":"Graph quality, exact-SHA CI state, evaluation samples, and seeded-failure metrics share canonical records across machine/text/Markdown/dashboard projections."},
-    {"relation":"changes","id":"contract:governance.enforcement-status","description":"Canonical live|unproven|advisory status binds evidence/session ids and hook-path receipt; only live is enforced, while attributable advisory never masquerades as live."},
-    {"relation":"changes","id":"contract:governance.delivery-authority","description":"Local green is distinct from pushed green; only zero-ahead exact-SHA required-check evidence authorizes the latter label."},
-    {"relation":"provides","id":"contract:governance-baseline","description":"taskplane.governance-baseline/v1 binds fresh run/SHA/graph, Plan authority, prior Design objects, canonical external knowledge root plus trusted pre-cleanup closed manifest, and honest enforcement receipt."},
-    {"relation":"provides","id":"contract:graph-scan-quality","description":"taskplane.graph-scan-quality/v1 combines structured base-scanner per-file parse failures and optional decomposition failures; strict consumers refuse any producer degradation."},
-    {"relation":"provides","id":"contract:cli-error-envelope","description":"An exported public engine-error registry is the source of KNOWN_ENGINE_ERRORS and maps exact classes to headline, executable recovery, exit class, and debug cause."},
-    {"relation":"provides","id":"contract:import-cycle-ratchet","description":"taskplane.import-cycle-ratchet/v1 stores measured file-level SCC membership, edges, counts, LOC, and revision and allows only shrinkage without a new approved design."},
-    {"relation":"provides","id":"contract:evaluation-sample","description":"taskplane.evaluation-sample/v1 binds 1-100 distinct trials, scenario, observed model/version, threshold, completeness, pass count/rate, and evaluation revision."},
-    {"relation":"provides","id":"contract:evaluation-corpus-impact","description":"taskplane.evaluation-corpus-impact/v1 allows bounded canonical corpus prefixes and exact tracked engine files only; broad/wildcard/escaped/over-bound mappings degrade."},
-    {"relation":"provides","id":"contract:seeded-failure-catch-rate","description":"taskplane.seeded-failure-catch-rate/v1 counts unique seeded scenario/failure/model/trial/revision units, enforces sample_size=denominator, and omits numeric fields when unavailable at zero samples."}
+    {
+      "relation": "provides",
+      "id": "contract:program.r0009-r0011-order",
+      "description": "One-way consolidated approval and R-0009→R-0010→R-0011 eligibility ledger."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:baseline.v2.17.16-authority",
+      "description": "Exact branch/commit/tag/tree and no-build baseline scope evidence."
+    },
+    {
+      "relation": "consumes",
+      "id": "contract:runtime.command-events",
+      "description": "Existing durable command lifecycle, terminal events, bounded output, and delivery receipt primitives."
+    },
+    {
+      "relation": "consumes",
+      "id": "contract:review.routing",
+      "description": "Existing applicability selector and concurrent 4–5 quick-lens dispatch."
+    },
+    {
+      "relation": "consumes",
+      "id": "contract:review.depth-boundary",
+      "description": "Existing quick-only architecture floor and fail-closed unavailable automatic deep policy."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:governance.build-c-checkpoint",
+      "description": "Ordered AC-focused checkpoint specification and fail-closed phase result."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:governance.checkpoint-receipt",
+      "description": "Engine-minted exact-revision receipt bound to runtime-observed command evidence."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:orchestration.scope-disjoint-assignment",
+      "description": "Direct dependency-ordered graph-disjoint worktree assignments with no legacy wave/claim/lease state."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:orchestration.merge-on-green",
+      "description": "Exact checkpoint-SHA integration authorization before the incumbent merge receipt."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:define.design-review",
+      "description": "Real Design/Plan-boundary invocation of the incumbent quick applicability router."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:orchestration.delivery-mode",
+      "description": "Boundary-first DEFINE→thin BUILD-C→PROVE default with retained governed-build compatibility mode."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:plan.reconciliation-baseline",
+      "description": "Sealed Plan modules, impact/tolerance, contracts, scopes, ACs, graph revision, and identity policy."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:prove.batch-evidence",
+      "description": "Durable seven-component exact-identity PROVE journal and terminal bundle."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:graph.impact-reconciliation",
+      "description": "Both-direction predicted/actual graph-diff comparison with explicit tolerance."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:test.tier-manifest",
+      "description": "Complete import-derived one-tier-per-test manifest and execution selection."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:schema.registry",
+      "description": "Frozen existing-schema truth and fail-closed new-id registration."
+    },
+    {
+      "relation": "changes",
+      "id": "contract:import-cycle-ratchet",
+      "description": "Adds LOC and PROVE receipt binding while preserving incumbent SCC history enforcement."
+    },
+    {
+      "relation": "provides",
+      "id": "contract:retro.delivery-efficiency",
+      "description": "Exact-revision BUILD-C/PROVE cost, wait, defect, attempt, and stop/re-scope metrics."
+    },
+    {
+      "relation": "changes",
+      "id": "contract:governance.delivery-authority",
+      "description": "Adds consolidated phase and per-external-action human gates without weakening existing authority."
+    }
   ],
   "graph": {
-    "baseline_fingerprint": "e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af",
+    "baseline_fingerprint": "6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d",
     "proposed_modules": [
-      ".github/workflows/ci.yml", "taskplane/preflight.py", "taskplane/stage_entities.py", "taskplane/run_store.py", "taskplane/depgraph.py", "taskplane/decompose.py", "taskplane/lens.py", "taskplane/lens_signals.py", "taskplane/review.py", "taskplane/review_progression.py", "taskplane/taskplane_lite.py", "taskplane/tp.py", "taskplane/loop.py", "taskplane/eval_drivers.py", "taskplane/eval_rubric.py", "taskplane/eval_scenario.py", "taskplane/runtime_eval.py", "taskplane/retro.py", "taskplane/dashboard.py", "scripts/ci_evals.py", "scripts/eval_skills.py", "scripts/eval_record.py", "evals", "taskplane/tests", "docs", "taskplane/graph_primitives.py", "taskplane/graph_decomposition.py", "taskplane/import_cycles.py", "taskplane/eval_sampling.py", "evals/impact-map.json", "taskplane/tests/fixtures/import-cycles.json"
+      ".github/workflows/ci.yml",
+      "components.yaml",
+      "plan/tasks.json",
+      "scripts/ci_evals.py",
+      "scripts/ci_loop_cost.py",
+      "specs/spec.md",
+      "taskplane/preflight.py",
+      "taskplane/tp.py",
+      "taskplane/loop.py",
+      "taskplane/governed_commands.py",
+      "taskplane/command_runtime.py",
+      "taskplane/command_adapters.py",
+      "taskplane/lens.py",
+      "taskplane/review.py",
+      "taskplane/depgraph.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/worktree_cleanup.py",
+      "taskplane/evidence.py",
+      "taskplane/import_cycles.py",
+      "taskplane/dashboard.py",
+      "taskplane/retro.py",
+      "taskplane/tests/test_r0007_governed_commands.py",
+      "taskplane/tests/test_r0007_sweep_bootstrap.py",
+      "taskplane/tests/test_loop.py",
+      "taskplane/tests/test_r0006_pushed_sha.py",
+      "taskplane/build_c.py",
+      "taskplane/checkpoint.py",
+      "taskplane/prove.py",
+      "taskplane/test_tiers.py",
+      "taskplane/schema_registry.py",
+      "taskplane/schema-registry.json",
+      "taskplane/tests/fixtures/full-suite-inventory.json",
+      "taskplane/tests/test_r0008_plan_baseline.py",
+      "taskplane/tests/test_r0008_schema_registry.py",
+      "taskplane/tests/test_r0008_wiring_define_baseline.py",
+      "taskplane/tests/test_r0008_define_review.py",
+      "taskplane/tests/test_r0008_wiring_define_review.py",
+      "taskplane/tests/test_r0008_delivery_modes.py",
+      "taskplane/tests/test_r0008_direct_build.py",
+      "taskplane/tests/test_r0008_wiring_delivery_modes.py",
+      "taskplane/tests/test_r0008_test_tiers.py",
+      "taskplane/tests/test_r0008_wiring_test_tiers.py",
+      "taskplane/tests/test_r0008_impact_reconciliation.py",
+      "taskplane/tests/test_r0008_batch_acceptance.py",
+      "taskplane/tests/test_r0008_wiring_reconciliation.py",
+      "taskplane/tests/test_r0008_prove.py",
+      "taskplane/tests/test_r0008_prove_canaries.py",
+      "taskplane/tests/test_r0008_fix_reprove.py",
+      "taskplane/tests/test_r0008_wiring_prove.py",
+      "taskplane/tests/test_r0008_ci_ratchets.py",
+      "taskplane/tests/test_r0008_full_suite_inventory.py",
+      "taskplane/tests/test_r0008_wiring_ci.py",
+      "taskplane/tests/test_r0008_operations.py",
+      "taskplane/tests/test_r0008_dogfood_bundle.py",
+      "taskplane/tests/test_r0008_production_wiring.py",
+      "exports/r0012-v21716-baseline.json",
+      "exports/r0012-program-ledger.json",
+      "exports/r0012-donor-provenance.json",
+      "exports/r0012-prove-journal.jsonl",
+      "exports/r0012-prove-bundle.json",
+      "exports/r0012-retro.json"
     ],
     "proposed_edges": [
-      {"from":"taskplane/preflight.py","to":"contract:governance-baseline","kind":"provides","reason":"Resolves the authoritative knowledge root and compares trusted pre-cleanup and current closed manifests plus fresh run/revision/graph/Plan evidence."},
-      {"from":"taskplane/preflight.py","to":"contract:governance.enforcement-status","kind":"changes","reason":"Projects live|unproven|advisory with evidence/session identity and verified hook-path receipt; only live is enforced."},
-      {"from":"taskplane/lens.py","to":"contract:review.collection","kind":"changes","reason":"Emits quick-only briefs and accepts pre-rendered context instead of importing review."},
-      {"from":"taskplane/review_progression.py","to":"contract:review.collection","kind":"changes","reason":"Returns substantive quick findings to correction when promotion is forbidden."},
-      {"from":"taskplane/review.py","to":"contract:review.collection","kind":"changes","reason":"Rejects deep slots/promotions in R-0006 collection manifests."},
-      {"from":"taskplane/stage_entities.py","to":"contract:runtime.python-compatibility","kind":"changes","reason":"Removes the PEP-701-only f-string expression."},
-      {"from":"taskplane/run_store.py","to":"contract:runtime.python-compatibility","kind":"changes","reason":"Owns eager stage dependency import and named pre-mutation compatibility refusal."},
-      {"from":".github/workflows/ci.yml","to":"contract:runtime.python-compatibility","kind":"validates","reason":"Runs CPython 3.10-3.13 compile/import before each test leg."},
-      {"from":"taskplane/depgraph.py","to":"contract:graph-scan-quality","kind":"provides","reason":"Base scanner emits structured per-file parse failures even without decomposition and combines all producer failures into strict quality."},
-      {"from":"taskplane/decompose.py","to":"contract:graph-scan-quality","kind":"provides","reason":"Supplies bounded per-module degraded modules and reasons while retaining fail-open normal scan."},
-      {"from":"taskplane/tp.py","to":"contract:cli-error-envelope","kind":"provides","reason":"Exports the public error registry, derives KNOWN_ENGINE_ERRORS exactly, maps normal refusals, and retains unexpected/debug tracebacks."},
-      {"from":".github/workflows/ci.yml","to":"scripts/ci_evals.py","kind":"runtime","reason":"Runs the zero-token corpus under env-i and pre-import process-wide socket/DNS refusal; proves connection failure and byte-identical repeated output."},
-      {"from":".github/workflows/ci.yml","to":"contract:governance.delivery-authority","kind":"validates","reason":"After fetch, requires HEAD=origin/main=checked_sha, zero ahead/behind, and exact-SHA required-check receipts."},
-      {"from":"taskplane/import_cycles.py","to":"contract:import-cycle-ratchet","kind":"provides","reason":"Measures AST file imports with Tarjan and enforces SCC member/edge/LOC non-growth."},
-      {"from":"taskplane/tests/fixtures/import-cycles.json","to":"contract:import-cycle-ratchet","kind":"defines","reason":"Stores measured before/after expectations and source revision."},
-      {"from":".github/workflows/ci.yml","to":"taskplane/import_cycles.py","kind":"runtime","reason":"Runs the ratchet and history-order check before structural tests."},
-      {"from":"taskplane/depgraph.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes graph payload/quality types while retaining scan(ws,decompose=False) compatibility."},
-      {"from":"taskplane/depgraph.py","to":"taskplane/graph_decomposition.py","kind":"runtime","reason":"Implements direct scan(ws,decompose=True) without importing the decompose compatibility module."},
-      {"from":"taskplane/decompose.py","to":"taskplane/graph_decomposition.py","kind":"runtime","reason":"Re-exports the mechanically moved derive algorithm as a backward-compatible facade."},
-      {"from":"taskplane/graph_decomposition.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes low-level graph payload, resolution, floor, and lens-signal primitives without higher-module imports."},
-      {"from":"taskplane/decompose.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes public graph value contracts without importing depgraph or lens_signals."},
-      {"from":"taskplane/lens_signals.py","to":"taskplane/graph_primitives.py","kind":"runtime","reason":"Consumes the same non-circular graph data contract."},
-      {"from":"taskplane/tp.py","to":"taskplane/depgraph.py","kind":"runtime","reason":"CLI/review composition root exercises direct scan including decompose=True and supplies exact graph impact to taskplane_lite."},
-      {"from":"taskplane/retro.py","to":"taskplane/depgraph.py","kind":"runtime","reason":"Retro composition root preserves direct scan(ws,decompose=components-present) behavior."},
-      {"from":"taskplane/loop.py","to":"taskplane/depgraph.py","kind":"runtime","reason":"Loop refresh composition roots preserve direct base scans and supply complete graph impact to DoD."},
-      {"from":"taskplane/review.py","to":"taskplane/lens.py","kind":"runtime","reason":"Governed review renders and injects context_note into every dispatch_briefs call."},
-      {"from":"taskplane/tp.py","to":"taskplane/lens.py","kind":"runtime","reason":"Standalone review adapter renders and injects context_note explicitly."},
-      {"from":"taskplane/loop.py","to":"taskplane/taskplane_lite.py","kind":"runtime","reason":"Governed task DoD supplies graph_impacted plus graph quality; omission on a complete graph is an error."},
-      {"from":"taskplane/tp.py","to":"taskplane/taskplane_lite.py","kind":"runtime","reason":"Standalone DoD adapter supplies graph_impacted plus graph quality; sparse fallback requires proven sparse evidence."},
-      {"from":"scripts/eval_skills.py","to":"taskplane/eval_sampling.py","kind":"runtime","reason":"Creates bounded samples and one immutable record per trial."},
-      {"from":"scripts/eval_record.py","to":"contract:evaluation-sample","kind":"provides","reason":"Persists distinct per-scenario/per-observed-model-version trial evidence."},
-      {"from":"taskplane/eval_sampling.py","to":"contract:evaluation-sample","kind":"provides","reason":"Validates repeat/threshold/completeness and computes the bounded aggregate."},
-      {"from":"taskplane/eval_sampling.py","to":"contract:seeded-failure-catch-rate","kind":"provides","reason":"Counts unique scenario/failure/model/trial/revision units, enforces sample_size=denominator, and omits numeric zero-sample fields."},
-      {"from":"taskplane/eval_rubric.py","to":"evals","kind":"runtime","reason":"Scores the three intended incomplete-work refusal codes and existing corpus."},
-      {"from":"evals/impact-map.json","to":"contract:evaluation-corpus-impact","kind":"defines","reason":"Declares bounded canonical corpus prefixes to exact tracked engine files only."},
-      {"from":"taskplane/depgraph.py","to":"contract:evaluation-corpus-impact","kind":"provides","reason":"Rejects wildcard/directory-wide/escaped/duplicate/over-bound maps and emits selective validates edges."},
-      {"from":"taskplane/retro.py","to":"contract:seeded-failure-catch-rate","kind":"consumes","reason":"Projects the canonical bounded metric to machine, Markdown, and text."},
-      {"from":"taskplane/dashboard.py","to":"contract:seeded-failure-catch-rate","kind":"consumes","reason":"Renders the same labelled metric accessibly and without color dependence."},
-      {"from":"taskplane/dashboard.py","to":"contract:status.run-observability","kind":"changes","reason":"Projects graph quality, exact-SHA CI state, sample completeness, and catch-rate from their canonical records."},
-      {"from":"taskplane/tests","to":"contract:governance.enforcement-status","kind":"validates","reason":"Executes all 18 acceptance mappings, quick-only negative, and fail-closed state snapshots."},
-      {"from":"docs","to":"contract:runtime.python-compatibility","kind":"defines","reason":"Documents CPython 3.10-3.13 support and fail-fast recovery."},
-      {"from":"docs","to":"contract:seeded-failure-catch-rate","kind":"defines","reason":"Documents the bounded claim and separates it from reliability/production defect rate."}
+      {
+        "from": "taskplane/build_c.py",
+        "to": "contract:program.r0009-r0011-order",
+        "kind": "provides",
+        "reason": "BUILD-C validates and advances the one-way program phase ledger."
+      },
+      {
+        "from": "taskplane/preflight.py",
+        "to": "contract:baseline.v2.17.16-authority",
+        "kind": "provides",
+        "reason": "Preflight verifies the exact governed baseline and no-build tree identity."
+      },
+      {
+        "from": "contract:runtime.command-events",
+        "to": "taskplane/checkpoint.py",
+        "kind": "consumes",
+        "reason": "Checkpoints consume incumbent durable runtime events and receipts."
+      },
+      {
+        "from": "contract:review.routing",
+        "to": "taskplane/build_c.py",
+        "kind": "consumes",
+        "reason": "DEFINE delegates applicability and membership to the incumbent router."
+      },
+      {
+        "from": "contract:review.depth-boundary",
+        "to": "taskplane/build_c.py",
+        "kind": "consumes",
+        "reason": "DEFINE and final review inherit quick-only and automatic-deep refusal."
+      },
+      {
+        "from": "taskplane/checkpoint.py",
+        "to": "contract:governance.build-c-checkpoint",
+        "kind": "provides",
+        "reason": "Checkpoint owns ordered AC-focused validation."
+      },
+      {
+        "from": "taskplane/checkpoint.py",
+        "to": "contract:governance.checkpoint-receipt",
+        "kind": "provides",
+        "reason": "Checkpoint mints engine-owned exact-revision receipts from runtime evidence."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "contract:orchestration.scope-disjoint-assignment",
+        "kind": "provides",
+        "reason": "BUILD-C assigns graph-disjoint ready scopes directly."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "contract:orchestration.merge-on-green",
+        "kind": "provides",
+        "reason": "BUILD-C authorizes only the exact green checkpoint SHA for merge."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "contract:define.design-review",
+        "kind": "provides",
+        "reason": "BUILD-C invokes DEFINE review at the Design/Plan boundary."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "contract:orchestration.delivery-mode",
+        "kind": "provides",
+        "reason": "BUILD-C owns boundary-first direct mode and retained compatibility mode."
+      },
+      {
+        "from": "taskplane/preflight.py",
+        "to": "contract:plan.reconciliation-baseline",
+        "kind": "provides",
+        "reason": "Preflight seals the complete approved Plan identity set before Build."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "contract:prove.batch-evidence",
+        "kind": "provides",
+        "reason": "PROVE owns seven terminal receipts, durable attempts, and the final bundle."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "contract:graph.impact-reconciliation",
+        "kind": "provides",
+        "reason": "PROVE compares predicted and actual graph/diff identities both ways."
+      },
+      {
+        "from": "taskplane/test_tiers.py",
+        "to": "contract:test.tier-manifest",
+        "kind": "provides",
+        "reason": "Tier generator owns complete import-derived test classification."
+      },
+      {
+        "from": "taskplane/schema_registry.py",
+        "to": "contract:schema.registry",
+        "kind": "provides",
+        "reason": "Schema validator owns frozen existing ids and new-id registration."
+      },
+      {
+        "from": "taskplane/import_cycles.py",
+        "to": "contract:import-cycle-ratchet",
+        "kind": "changes",
+        "reason": "The incumbent cycle ratchet adds LOC and PROVE receipt binding."
+      },
+      {
+        "from": "taskplane/retro.py",
+        "to": "contract:retro.delivery-efficiency",
+        "kind": "provides",
+        "reason": "Retro emits exact-revision BUILD-C and PROVE efficiency evidence."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "contract:governance.delivery-authority",
+        "kind": "changes",
+        "reason": "BUILD-C enforces consolidated phase and separate external-action authority."
+      },
+      {
+        "from": "taskplane/tp.py",
+        "to": "taskplane/loop.py",
+        "kind": "runtime",
+        "reason": "Public loop commands retain the incumbent orchestration root."
+      },
+      {
+        "from": "taskplane/tp.py",
+        "to": "taskplane/prove.py",
+        "kind": "runtime",
+        "reason": "The public prove command forwards closed arguments to PROVE."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "taskplane/governed_commands.py",
+        "kind": "runtime",
+        "reason": "Live submission invokes the existing governed command engine."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "taskplane/checkpoint.py",
+        "kind": "runtime",
+        "reason": "Live submission validates runtime results through the AC checkpoint."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "taskplane/build_c.py",
+        "kind": "runtime",
+        "reason": "Live transitions invoke phase, DEFINE, assignment, and integration authorities."
+      },
+      {
+        "from": "taskplane/checkpoint.py",
+        "to": "taskplane/governed_commands.py",
+        "kind": "runtime",
+        "reason": "Checkpoint commands launch and wait through the existing lifecycle."
+      },
+      {
+        "from": "taskplane/governed_commands.py",
+        "to": "taskplane/command_runtime.py",
+        "kind": "runtime",
+        "reason": "Governed commands persist durable lifecycle events and receipts."
+      },
+      {
+        "from": "taskplane/governed_commands.py",
+        "to": "taskplane/command_adapters.py",
+        "kind": "runtime",
+        "reason": "Governed commands delegate host launch/wait/cancel to adapters."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "taskplane/review.py",
+        "kind": "runtime",
+        "reason": "DEFINE starts the incumbent ReviewKernel at the real boundary."
+      },
+      {
+        "from": "taskplane/review.py",
+        "to": "taskplane/lens.py",
+        "kind": "runtime",
+        "reason": "Review uses the incumbent automatic 4–5 quick selector."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "taskplane/depgraph.py",
+        "kind": "runtime",
+        "reason": "Direct assignment derives readiness, overlap, and scope identity from the graph."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "taskplane/storage.py",
+        "kind": "runtime",
+        "reason": "Direct assignments use incumbent registered isolated worktree identities."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "taskplane/repository.py",
+        "kind": "runtime",
+        "reason": "Authorized green revisions enter the incumbent merge operation."
+      },
+      {
+        "from": "taskplane/repository.py",
+        "to": "taskplane/worktree_cleanup.py",
+        "kind": "runtime",
+        "reason": "Merge retains the existing durable receipt-before-cleanup order."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "taskplane/preflight.py",
+        "kind": "runtime",
+        "reason": "PROVE consumes the sealed Plan and exact repository identity."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "taskplane/test_tiers.py",
+        "kind": "runtime",
+        "reason": "PROVE runs the generated thin Tier-0 selection."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "taskplane/schema_registry.py",
+        "kind": "runtime",
+        "reason": "PROVE validates frozen and newly introduced schemas."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "taskplane/import_cycles.py",
+        "kind": "runtime",
+        "reason": "PROVE invokes the incumbent SCC/cycle ratchet plus LOC binding."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "taskplane/evidence.py",
+        "kind": "runtime",
+        "reason": "PROVE provides canonical engine evidence to the independent AC evaluator."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "scripts/ci_evals.py",
+        "kind": "runtime",
+        "reason": "PROVE consumes zero-token and exact pushed-SHA required-check receipts."
+      },
+      {
+        "from": ".github/workflows/ci.yml",
+        "to": "taskplane/prove.py",
+        "kind": "runtime",
+        "reason": "CI invokes the public proof battery and wiring ratchets."
+      },
+      {
+        "from": ".github/workflows/ci.yml",
+        "to": "scripts/ci_evals.py",
+        "kind": "runtime",
+        "reason": "CI preserves incumbent zero-token and pushed-SHA authority."
+      },
+      {
+        "from": "taskplane/preflight.py",
+        "to": "exports/r0012-v21716-baseline.json",
+        "kind": "writes",
+        "reason": "R-0009 writes exact baseline and reuse-only evidence."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "exports/r0012-program-ledger.json",
+        "kind": "writes",
+        "reason": "Phase and approval transitions persist append-safe authority evidence."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "exports/r0012-donor-provenance.json",
+        "kind": "writes",
+        "reason": "R-0011 records source-content provenance without importing donor history."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "exports/r0012-prove-journal.jsonl",
+        "kind": "writes",
+        "reason": "Each proof attempt appends immutable component and recovery events."
+      },
+      {
+        "from": "taskplane/prove.py",
+        "to": "exports/r0012-prove-bundle.json",
+        "kind": "writes",
+        "reason": "The terminal proof bundle binds the one canonical identity set."
+      },
+      {
+        "from": "taskplane/retro.py",
+        "to": "exports/r0012-retro.json",
+        "kind": "writes",
+        "reason": "Retro binds required economics and outcomes to the final revision."
+      },
+      {
+        "from": "components.yaml",
+        "to": "taskplane/build_c.py",
+        "kind": "declares",
+        "reason": "The component graph declares the new BUILD-C owner."
+      },
+      {
+        "from": "components.yaml",
+        "to": "taskplane/checkpoint.py",
+        "kind": "declares",
+        "reason": "The component graph declares the checkpoint owner."
+      },
+      {
+        "from": "components.yaml",
+        "to": "taskplane/prove.py",
+        "kind": "declares",
+        "reason": "The component graph declares the PROVE owner."
+      }
     ],
-    "depth_policy": {"local_depth":3,"boundary_mode":"contract-only","contract_depth":1,"requirement_depth":1},
+    "depth_policy": {
+      "local_depth": 3,
+      "boundary_mode": "contract-only",
+      "contract_depth": 1,
+      "requirement_depth": 1
+    },
     "dor": [
-      {"check":"Requirement and acceptance surface are ready","evidence":"R-0006 is canonical, has no dependencies or open Product questions, and contains exactly 18 criteria plus five changed contract relations."},
-      {"check":"Baseline graph limitation is explicit","evidence":"Fingerprint e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af has six recorded nodes/five edges and no source scan; wave 1 refresh is a blocking prerequisite to later impact claims."},
-      {"check":"Current premises are repository-grounded","evidence":"CI, syntax, lazy imports, decompose/depgraph, CLI, deferred edges, eval recorder/corpus, components, Retro/dashboard, and prior Git blobs are cited by path/line or immutable identity."},
-      {"check":"Wave ownership and order are settled","evidence":"Preflight/review own authoritative-root preservation and enforcement in wave 1; stage/run-store/exact tracked-Python CI wave 2; base depgraph/tp/no-egress CI wave 3; import_cycles/graph_primitives/graph_decomposition plus named composition roots wave 4; bounded eval mapping/sampling/reporting wave 5."},
-      {"check":"Numeric and identity boundaries are settled","evidence":"CPython 3.10-3.13; exact git-tracked Python set; local depth 3; repeat 1-100; threshold 0.0-1.0; complete unique trial units; SCC non-growth; map rows 1-32 exact files/128 total; sample_size=denominator; zero-sample numeric omission."},
-      {"check":"Review depth override is settled","evidence":"All R-0006 lens work is quick-only, substantive findings block/return, and no deep slot or promotion is permitted; Product/Design reasoning tier is not lens depth."},
-      {"check":"Python reference is applied","evidence":"python-solution-design.md SHA-256 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7; runtime/package, sync ownership, validation, concurrency, cleanup, and executable verification are dispositioned."}
+      {
+        "check": "Baseline graph identity is exact and Design is an overlay",
+        "evidence": "Engine fingerprint 6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d at bba3354e7fc5eb052beac74af230611ae48bd7db; 92 modules, 293 edges, complete/non-degraded; Design runs no graph mutation."
+      },
+      {
+        "check": "Current-state warning is mitigated by cited production sources",
+        "evidence": "Read-only Git and source inspection verified both governed command roots, runtime/adapters, event waits, router/deep boundary, worktree/merge owners, the six absent live edges, and absent R-0011 modules/tests."
+      },
+      {
+        "check": "R-0010 scope is closed before Plan",
+        "evidence": "Exactly six category ids are defined; every baseline-positive command/wait/review/graph/worktree/receipt/finding/enforcement behavior is verification/reuse-only; a seventh category requires human scope change."
+      },
+      {
+        "check": "Modules and contract boundaries are owned",
+        "evidence": "Every existing/new module appears in proposed_modules and each of 19 requirement contracts has exactly one proposed owner edge with the declared relation."
+      },
+      {
+        "check": "Traversal and cross-boundary policy are bounded",
+        "evidence": "Local depth 3, contract-only stops, contract/requirement depth 1; engine impact has 28 known modules and zero unknowns inside the radius, truncated only beyond declared depth."
+      },
+      {
+        "check": "Ordering, fixtures, and identity inputs are resolved",
+        "evidence": "The three phase transitions, manual R-0010 bootstrap, exact 23-test catalog, 279-schema reproduction, seven PROVE components, graph/diff namespace, CPython matrix, and separate human actions are named with no open Design decisions."
+      }
     ],
     "dod": [
-      {"check":"Every proposed module, edge, and contract is realized","evidence":"Review records all proposed overlay rows, scanner-visible edges after refresh, explicit evidence for contract-only edges, and zero unexplained drift at local depth 3."},
-      {"check":"All 18 acceptance mappings pass exactly","evidence":"Named fixtures/commands below execute once per canonical criterion and fail if their design element is absent or wrong."},
-      {"check":"Wave order and history are proven","evidence":"Wave gates are green sequentially; history shows the import-cycle policy commit passing before a later S1/S2 cut commit; final required checks bind one remote SHA."},
-      {"check":"Baseline preservation and enforcement truth pass","evidence":"Canonical knowledge-root pre-cleanup manifest matches current relative paths/bytes/digests with no missing/moved/unexpected/empty-tree substitution; enforcement is live or bounded attributable advisory and never mislabeled."},
-      {"check":"Compatibility and pre-mutation refusal pass","evidence":"CPython 3.10-3.13 compiles the exact tracked Python set including an outside-directory sentinel; closed production stage consumer set includes taskplane_lite; seeded broken dependency proves named refusal and byte-identical stores."},
-      {"check":"Graph, CLI, and corpus truth pass","evidence":"Base scanner reports parse failures with decompose off/on, strict readiness refuses all producers, registry equals KNOWN_ENGINE_ERRORS, unexpected errors retain traceback, and env-i/pre-import no-egress corpus is byte-deterministic and blocking."},
-      {"check":"Cycle inventory and composition cuts remain compatible","evidence":"Same AST/Tarjan scanner emits full before/after SCC evidence; direct depgraph.scan(...,decompose=True) goldens match; tp, loop, retro, review, and standalone/loop DoD caller audits prove explicit inputs and restrict sparse fallback."},
-      {"check":"Evaluation sampling and completeness pass","evidence":"Fake 7/10 sample reports 0.7 and fails 0.9; invalid/missing trials refuse; three incomplete-work fixtures fail for their intended reason."},
-      {"check":"Impact and catch-rate projections agree","evidence":"Only bounded canonical corpus prefixes/exact engine files route; broad globs and unrelated product/CLI/reporting files do not. Repeated-scenario arithmetic proves unique counted units, sample_size=denominator, and zero-sample numeric omission across projections."},
-      {"check":"Quick-only and wave-six boundaries hold","evidence":"Every dispatch manifest lacks deep slots/promotions, seeded quick findings return to correction, and no package/component/schema/identity/model-tier/attestation/MCP/isolation change appears."}
+      {
+        "check": "Design did not mutate the baseline graph",
+        "evidence": "The orchestrator recomputes and requires baseline fingerprint 6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d before human approval."
+      },
+      {
+        "check": "Realized graph matches the approved overlay",
+        "evidence": "Final graph scan and Engineering meta.design enumerate every proposed module, FROM→TO:KIND edge, and all 19 contracts with verdict conformant and empty drift."
+      },
+      {
+        "check": "Every production edge is live and mutation-sensitive",
+        "evidence": "Same-commit tests positively invoke CLI/loop/runtime/checkpoint/DEFINE/assignment/integration/PROVE/CI/dashboard/Retro paths and fail when each declared edge is severed; dormant/direct-unit-only code is rejected."
+      },
+      {
+        "check": "R-0009 and baseline-positive compatibility remain unchanged",
+        "evidence": "Tree comparison proves zero R-0009 product change; differential fixtures preserve v2.17.16 command events, waits, quick routing, deep refusal, identities, receipts, findings, leases, and enforcement."
+      },
+      {
+        "check": "R-0010 is exactly the six authorized gaps",
+        "evidence": "Plan and implementation inventory map each code-bearing task to one gap id, reject a seventh/reimplementation, and prove no wave/claim/build-lease/per-task-lens state on the direct path."
+      },
+      {
+        "check": "R-0011 proof/catalog/package floors are complete",
+        "evidence": "All 23 exact tests, frozen full-suite inventory, registry, tiers, seven PROVE receipts, canaries, strict typing, CPython 3.10–3.13 plus available 3.14 compile/import, deterministic clean plugin package install, cycle/graph/CI ratchets, and Retro targets pass on one exact SHA."
+      },
+      {
+        "check": "All 20 acceptance mappings fail closed",
+        "evidence": "Each mapping names an executable positive fixture and negative mutation; final non-builder evidence dispositions every criterion exactly once and the gate rejects missing, duplicate, stale, or builder-authored proof."
+      },
+      {
+        "check": "Rollout, rollback, and external authority remain enforceable",
+        "evidence": "Direct BUILD-C remains disabled until R-0010 proof; R-0011 stays closed until exact-SHA sign-off; red attempts remain isolated/durable; every external/destructive action has a distinct prior human approval."
+      }
     ]
   },
   "acceptance_map": [
-    {"criterion":"Fresh baseline and preservation: a baseline verification records the current main revision, fresh governed run id, and refreshed graph fingerprint; confirms no stale plan/** payload or obsolete run pointer is active; and byte/fingerprint comparisons prove previously committed design/** and external knowledge evidence are unchanged.","design_element":"contract:governance-baseline plus contract:governance.enforcement-status via taskplane/preflight.py","validation":"Resolve the canonical locator/project knowledge root and require a trusted pre-cleanup closed path/bytes/digest manifest; reject wrong/empty root, missing/moved/unexpected/non-lock entries, manifest-digest mismatch, stale Plan pointer, or prior Git blob drift. Assert live|unproven|advisory, evidence/session ids, hook-path receipt, live-only enforced label, and bounded attributable advisory handling."},
-    {"criterion":"Supported Python execution: CI proves all shipped Python modules and hook entry points compile, import, and execute representative version, entry, graph, status, and evaluation-corpus flows on CPython 3.10, 3.11, 3.12, and 3.13; if any minor is intentionally unsupported, the same matrix proves it refuses nonzero before filesystem mutation and the documented support range matches.","design_element":"contract:runtime.python-compatibility and .github/workflows/ci.yml matrix","validation":"On all four minors compile the exact NUL-safe git ls-files '*.py' set, assert closed production stage consumer imports, run entry/version/graph/status/stage/corpus flows in an isolated home, then tests; include tracked evals/corpus Python and compare docs to matrix."},
-    {"criterion":"B1 regression closed: a focused compatibility fixture compiles taskplane/stage_entities.py and imports every direct consumer on each supported minor, and the fixture fails against the 2.17.14 multiline f-string defect.","design_element":"taskplane/stage_entities.py precomputed resume request fingerprint and closed-consumer compatibility fixture","validation":"AST-discover production stage_entities imports and assert exact set run_store.py, loop.py, stage_migration.py, taskplane_lite.py; on 3.10-3.13 compile stage_entities and import every member, then require the 2.17.14 snippet to fail the regression fixture."},
-    {"criterion":"B2 fails early and cleanly: a deliberately unparseable stage dependency is detected at entry/startup rather than first lineage validation; an executable fixture asserts one named Taskplane compatibility error, no raw traceback in normal mode, and no created or changed run, graph, contract, review, or requirement state.","design_element":"TaskplaneCompatibilityError at one run_store eager import plus removal of four lazy seams and contract:cli-error-envelope","validation":"Statically assert all four run_store lazy imports are absent; copy a broken dependency into an isolated package, snapshot every governed store, start the stage entry, and assert named nonzero normal output/recovery, no traceback, and identical bytes; debug shows cause."},
-    {"criterion":"P2 is ordered before tests: workflow inspection asserts that every supported Python matrix leg runs a repository-wide compile/import gate before its test step, and a seeded syntax error makes that leg fail without running the tests.","design_element":"exact tracked-Python compile/import-before-pytest order in .github/workflows/ci.yml","validation":"Parse every matrix leg; seed syntax errors separately in taskplane and a tracked corpus/*.py outside the former directory subset, run with a test sentinel, and require compile failure/absent sentinel; add a new tracked .py and prove automatic inclusion."},
-    {"criterion":"B3 degradation is visible and gateable: with one unparseable graph module, graph-scan JSON and text name the module and reason and mark degraded=true; the normal documented fail-open mode remains honest, while strict scan, Design/Plan readiness, and applicable Review/DoD fixtures refuse nonzero.","design_element":"contract:graph-scan-quality from base depgraph scanner plus optional decomposition producer and strict consumers","validation":"Seed bad Python AST and run JSON/text normal+strict with decompose=False and True; assert per-file/module/parser/reason and degraded from the base producer in both, additive decomposition failures when enabled, normal success, and strict/readiness/review/DoD nonzero."},
-    {"criterion":"B4 CLI errors are actionable: a parameterized CLI fixture covers every known public engine-error class and asserts normal output contains a concise headline plus executable recovery action and no Python traceback; an explicit debug invocation retains diagnostic traceback access.","design_element":"contract:cli-error-envelope PUBLIC_ENGINE_ERROR_REGISTRY-derived KNOWN_ENGINE_ERRORS in taskplane/tp.py","validation":"Assert exact class-set equality registry=KNOWN_ENGINE_ERRORS; raise every registered class through normal/debug boundaries for headline/recovery/nonzero/no-normal-traceback/causal-debug-traceback; separately raise an unexpected exception and require exit 70 plus traceback."},
-    {"criterion":"V1 zero-token corpus gates CI: the push/pull-request workflow invokes scripts/ci_evals.py --corpus without model credentials or network/model calls; an intentionally failing corpus fixture fails the job and a valid corpus passes deterministically.","design_element":"env-i plus pre-import process-wide no-egress zero-token corpus CI job","validation":"Launch with only PATH/isolated HOME/locale/no-egress PYTHONPATH; prove socket connect and DNS lookup fail before scorer imports, assert no other credential/proxy/cloud/model env survives, compare two successful canonical outputs byte-for-byte, and require corrupted expected.json nonzero."},
-    {"criterion":"P1 green-CI push boundary: the exact commit accepted as pushed has no local commits ahead of origin/main, and required checks for the supported-version, compile/import, graph/CLI, and zero-token corpus criteria are green for that same SHA; automation or a release record cannot describe an earlier local-only result as the pushed green result.","design_element":"contract:governance.delivery-authority fetched equality and exact-check-SHA rule","validation":"With a local bare remote and fake receipts, fetch then reject ahead, behind, diverged, stale-ref, local-only, mismatched checked_sha, and missing/failing checks; accept only HEAD=refs/remotes/origin/main=checked_sha, both ahead/behind counts zero, all named checks green for that SHA."},
-    {"criterion":"S4/S7 ratchet precedes cuts: repository history and CI configuration prove the import-cycle measurement and bound are active before any S1/S2 edge cut; a fixture that adds a module to an existing cycle or exceeds a declared SCC bound fails and reports the affected modules, edges, and measured size.","design_element":"contract:import-cycle-ratchet in taskplane/import_cycles.py and ordered 4A/4B commits","validation":"Run CI history check to find passing policy commit before cuts; in temporary trees add one cyclic member and one internal edge/LOC growth and require named SCC modules/edges/counts/LOC nonzero failures."},
-    {"criterion":"S1 graph edges are absent: file-level import-graph assertions prove taskplane/depgraph.py and taskplane/decompose.py no longer import one another in either direction or scope, and shared graph data has one non-circular contract consumed by depgraph, decompose, and lens_signals without changing externally observed payload meaning.","design_element":"graph_primitives plus graph_decomposition algorithm owner and backward-compatible depgraph/decompose facades","validation":"AST-scan forbidden mutual imports; assert depgraph/decompose/lens_signals consume graph_primitives and higher modules are absent below it; run direct depgraph.scan(ws,decompose=True) and decompose.derive pre/post goldens from tp and retro fixture paths with identical payload meaning except additive quality."},
-    {"criterion":"S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries.","design_element":"review/tp → lens context-note and loop/tp → taskplane_lite graph-impact composition edges","validation":"AST-scan both forbidden imports; audit every governed review dispatch and DoD caller for explicit inputs; compare briefs/regression selection to goldens; permit sparse fallback only with supplied proven-sparse graph quality and fail omitted impact on complete/non-sparse graphs."},
-    {"criterion":"Post-cut cycle evidence is honest: the ratchet emits the complete SCC inventory before and after S1/S2, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles; checked-in expectations use measured current values rather than stale 2.17.14 estimates, and CI blocks unapproved growth.","design_element":"measured before/after taskplane.import-cycle-ratchet/v1 inventories","validation":"Generate both inventories with the same scanner from exact commit trees; assert named cycle families are present, expectations equal measured members/edges/LOC, and any upward edit without approved design fails CI."},
-    {"criterion":"V2 repeated sampling works: an executable model-eval fixture runs ten deterministic fake trials with seven passes, persists ten distinct per-scenario/per-model-version results, reports pass rate 0.7, and fails a 0.9 threshold; invalid repeat counts, thresholds, and missing trials fail with clean errors.","design_element":"contract:evaluation-sample via taskplane/eval_sampling.py and scripts/eval_skills.py","validation":"Run fake outcomes PPPPPPPFFF with repeat=10/threshold=.9; assert ten unique observed-model-bound records, complete 7/10, 0.7, nonzero threshold result; parameterize repeats 0/101, thresholds outside 0..1, duplicates, and missing trial."},
-    {"criterion":"V3 catches incomplete work: the negative corpus contains at least three executable seeded cases—only three of five acceptance criteria completed, a silently ignored build error, and a test deleted instead of fixed—and the harness refuses each for the intended incomplete-work reason rather than a generic workflow-order failure.","design_element":"incomplete-work evidence checks in eval_rubric plus three evals/negative fixtures","validation":"Execute each fixture through the corpus scorer and assert its exact refusal code (acceptance-coverage, build-error, test-deletion), evidence fields, and absence of an earlier generic ordering failure."},
-    {"criterion":"V4 corpus impact is connected: graph fixtures prove that a change to at least one governance or evaluation engine file lists the relevant evals/* corpus modules in impact and routes their validation, while unrelated product changes do not acquire a catch-all corpus blast radius.","design_element":"bounded exact-file contract:evaluation-corpus-impact in evals/impact-map.json and depgraph","validation":"Accept only canonical evals/<name> or evals/negative/<name> prefixes and 1-32 exact tracked taskplane/scripts .py files (128 total); reject wildcards/taskplane/**/directory/escape/duplicate/over-bound rows; map eval_rubric/governance fixtures while unrelated stage_entities, tp, and dashboard changes route no corpus."},
-    {"criterion":"V5 reports the bounded claim: given a known mixture of caught and missed seeded failures, Retro or dashboard machine, Markdown, and text projections agree on the label seeded-failure catch-rate, numerator, denominator, sample size, threshold, scenario set, model id/version, and evaluation revision; zero-sample input reports unavailable rather than 0% or 100%.","design_element":"unique seeded trial-unit contract:seeded-failure-catch-rate consumed by retro/dashboard","validation":"Render a fixed mixture and a repeated-scenario fixture (5+3 unique trials, 6 caught) across projections; require numerator=6, denominator=sample_size=8, rate=.75, exact scenario/model/revision identity, duplicate rejection; zero sample is unavailable/zero-sample and omits numerator, denominator, sample_size, rate, threshold."},
-    {"criterion":"Quick-only review policy is enforced: every governed lens dispatch manifest for these waves contains only quick-sweep slots and no deep.* slot or promotion; a seeded substantive quick finding prevents the affected gate from passing and returns it for correction without creating a deep worker.","design_element":"contract:review.collection quick-only depth across lens, review_progression, and review","validation":"Generate manifests for every wave and assert all slots are quick and no deep/promotion fields; inject substantive quick finding and assert gate return/correction, zero deep expectations, dispatches, leases, or results."}
+    {
+      "criterion": "Before consolidated human approval, live attempts to create Plan/Build/integration/PROVE/release state refuse; after approval R-0010 remains blocked until R-0009 acceptance and R-0011 until R-0010 exact pushed-SHA proof and human sign-off.",
+      "design_element": "taskplane/build_c.py + contract:program.r0009-r0011-order + contract:governance.delivery-authority",
+      "validation": "Extend taskplane/tests/test_loop.py with a live phase-transition fixture: attempts before approval and before each predecessor create no Plan/task/worktree/PROVE state; the exact attributed approvals open only the next phase."
+    },
+    {
+      "criterion": "A machine check resolves the declared branch to bba3354e7fc5eb052beac74af230611ae48bd7db, verifies v2.17.16, records tree fingerprint and attributed scope decision, and refuses any v2.17.17-or-later revision as baseline or implementation input.",
+      "design_element": "taskplane/preflight.py + contract:baseline.v2.17.16-authority + exports/r0012-v21716-baseline.json",
+      "validation": "Run the R-0009 baseline machine check from taskplane/tests/test_r0008_plan_baseline.py against the branch/tag/tree fixture; substitute a v2.17.17+ commit or moved tag and require baseline_later_history_refused."
+    },
+    {
+      "criterion": "R-0009 before/after tree fingerprints are identical and audit evidence contains only baseline/scope artifacts with zero code write, reset, revert, merge, donor mutation, tag, push, or release; old reset/revert criteria are superseded rather than executed.",
+      "design_element": "exports/r0012-v21716-baseline.json + exports/r0012-program-ledger.json",
+      "validation": "In taskplane/tests/test_r0008_plan_baseline.py compare tracked product-tree fingerprints before/after R-0009 and assert the action ledger contains none of code_write/reset/revert/merge/donor_mutation/tag/push/release; seed each forbidden action and require failure."
+    },
+    {
+      "criterion": "Live v2.17.16 fixtures prove CLI→governed-command-engine, loop→governed-command-engine, runtime/adapter use, non-polling waits, exactly 4–5 quick lenses including architecture at existing boundaries, and fail-closed automatic deep refusal; edge mutations fail and passing rows are reuse-only.",
+      "design_element": "taskplane/governed_commands.py + taskplane/command_runtime.py + taskplane/review.py + selected approach:compatibility-first-checkpoint-spine",
+      "validation": "Run existing taskplane/tests/test_r0007_governed_commands.py and test_r0007_sweep_bootstrap.py live fixtures plus mutation rows for CLI, loop, runtime, adapters, wait, router, architecture, and deep refusal; require every green row to be reuse_only."
+    },
+    {
+      "criterion": "R-0010 Plan maps every implementation task to exactly one of the six closed gap categories and every baseline-positive capability to verification/reuse; reimplementation or a seventh category fails readiness pending human scope decision.",
+      "design_element": "taskplane/build_c.py + contract:orchestration.delivery-mode",
+      "validation": "Add taskplane/tests/test_r0008_delivery_modes.py Plan-readiness fixtures requiring every R-0010 task to carry exactly one of six closed category ids; seed a reuse-positive implementation task and seventh id and require scope_decision_required."
+    },
+    {
+      "criterion": "The live governed submit path invokes the existing command runtime then the AC checkpoint; missing proof refuses by name, real focused proof mints an exact-revision engine receipt, caller-authored receipts fail, red stops later phases, and severing submit→runtime, submit→checkpoint, or checkpoint→receipt fails same-commit mutations.",
+      "design_element": "taskplane/loop.py + taskplane/checkpoint.py + contract:governance.checkpoint-receipt",
+      "validation": "Add live tests in taskplane/tests/test_r0007_governed_commands.py that invoke public loop submit with a real focused proof, missing file, caller receipt, red command, and severed submit→runtime/submit→checkpoint/checkpoint→receipt edges; only the real exact-revision path may mint green."
+    },
+    {
+      "criterion": "A live DEFINE transition reuses the current router for exactly 4 or 5 concurrent quick slots including architecture and no deep; live direct assignment runs disjoint scopes concurrently with zero claim/build-lease/wave state and serializes overlap; live integration accepts only the green checkpoint SHA; each severed edge fails.",
+      "design_element": "taskplane/build_c.py + contract:define.design-review + contract:orchestration.scope-disjoint-assignment + contract:orchestration.merge-on-green",
+      "validation": "Run taskplane/tests/test_r0008_define_review.py, test_r0008_direct_build.py, and wiring companions through live transitions; assert 4–5 concurrent quick slots with architecture, no legacy state, overlap serialization, disjoint concurrency, exact green-SHA merge, and mutation failure for every edge."
+    },
+    {
+      "criterion": "Compatibility fixtures show no observable change to existing command events, waits, review/build routing, architecture inclusion, nonhuman deep refusal, graph/worktree identities, receipts, findings, leases, or enforcement, and no passing implementation is replaced.",
+      "design_element": "selected approach:compatibility-first-checkpoint-spine + contract:runtime.command-events + contract:review.depth-boundary",
+      "validation": "Run differential compatibility fixtures in test_r0007_governed_commands.py, test_r0007_sweep_bootstrap.py, test_loop.py, and enforcement/review tests against v2.17.16 golden outputs; reject any replaced baseline-positive implementation or observable payload change."
+    },
+    {
+      "criterion": "R-0010 final SHA passes full suite, compile/import matrix, zero-token corpus, cycle and graph ratchets without new undispositioned failure; after authorized push fetched-SHA proof and human sign-off are green for that exact revision before R-0011 opens.",
+      "design_element": "taskplane/build_c.py + scripts/ci_evals.py + exports/r0012-program-ledger.json",
+      "validation": "On the R-0010 exact final SHA run full pytest, CPython 3.10–3.13 compile/import, zero-token corpus, cycle and graph ratchets; after separately authorized push run ci_evals.py --prove-pushed-sha and require the same SHA plus attributed sign-off before R-0011 eligibility."
+    },
+    {
+      "criterion": "Every R-0011 donor surface records content provenance and a fresh R-0010 checkpoint, and ancestry/diff evidence proves no v2.17.17-or-later commit was merged, cherry-picked, or treated as proof.",
+      "design_element": "exports/r0012-donor-provenance.json + taskplane/checkpoint.py",
+      "validation": "In taskplane/tests/test_r0008_dogfood_bundle.py recompute path/content hashes and Git ancestry for every donor-derived row; inject a later commit parent/cherry-pick or prior receipt and require later_history_or_stale_proof."
+    },
+    {
+      "criterion": "A fresh requirement completes DEFINE→thin BUILD-C→PROVE; DEFINE and post-change review each emit exactly 4 or 5 concurrent quick lenses including architecture, BUILD carries only permitted checkpoint state and zero legacy per-task governance/lens state, and sign-off receives the durable bundle.",
+      "design_element": "taskplane/build_c.py + taskplane/prove.py + contract:orchestration.delivery-mode",
+      "validation": "Run taskplane/tests/test_r0008_production_wiring.py from a fresh requirement through DEFINE→thin BUILD-C→PROVE; assert both reviews have 4–5 concurrent quick slots with architecture, BUILD has only checkpoint state, and sign-off cites the durable bundle."
+    },
+    {
+      "criterion": "A machine comparison finds exactly the 23 catalog paths in specs/spec.md, each present/passing on the final SHA or individually human re-scoped before dependents; missing, skipped, renamed, duplicate, or silently cut files fail checkpoint and final completeness.",
+      "design_element": "taskplane/prove.py + exact 23-test catalog decision",
+      "validation": "Run taskplane/tests/test_r0008_full_suite_inventory.py to compare the canonical catalog to tracked paths and results; individually seed missing, skip, rename, duplicate, silent cut, and late re-scope and require nonzero completeness."
+    },
+    {
+      "criterion": "Against the 279-existing-schema reproduction all 279 classify existing and zero newly unregistered; one genuinely new id fails by name until registered, and duplicate, malformed, stale-fingerprint, or self-unregistered data fails.",
+      "design_element": "taskplane/schema_registry.py + taskplane/schema-registry.json + contract:schema.registry",
+      "validation": "Run taskplane/tests/test_r0008_schema_registry.py against the frozen 279-id fixture and one new id; seed duplicate, malformed, stale fingerprint, and self-unregistration rows and require named failures."
+    },
+    {
+      "criterion": "Import-graph tiering classifies every tracked test once, rejects Tier-0 quarantine reachability, proves thin PROVE runs zero Tier-2 and governed-build all Tier-2, and dispositions every full-suite failure relative to v2.17.16 with zero undispositioned new failure.",
+      "design_element": "taskplane/test_tiers.py + taskplane/tests/fixtures/full-suite-inventory.json + contract:test.tier-manifest",
+      "validation": "Run taskplane/tests/test_r0008_test_tiers.py and test_r0008_full_suite_inventory.py; assert every tracked test exactly once, Tier-0 quarantine rejection, zero Tier-2 in thin PROVE, all Tier-2 in governed-build, and zero undispositioned new failures."
+    },
+    {
+      "criterion": "A public tp prove emits one terminal receipt for each seven-component battery part and binds one Plan, diff, graph revision, full-suite receipt, clean repository revision, required-check set, and exact pushed SHA; stale, mixed, missing, duplicate, partial, or caller-authored identities fail.",
+      "design_element": "taskplane/prove.py + contract:prove.batch-evidence + exports/r0012-prove-journal.jsonl",
+      "validation": "Invoke public tp prove in taskplane/tests/test_r0008_prove.py and wiring test; require exactly seven terminal receipts bound to one identity set, then inject stale/mixed/missing/duplicate/partial/caller evidence and require nonzero."
+    },
+    {
+      "criterion": "Compatible-identity fixtures fail predicted-but-untouched and actual-but-unpredicted modules by name; one non-builder pass proves every Plan AC exactly once; syntax, cycle, corpus, and scope canaries each go red for the intended cause and green only after reversion.",
+      "design_element": "taskplane/prove.py + contract:graph.impact-reconciliation",
+      "validation": "Run test_r0008_impact_reconciliation.py, test_r0008_batch_acceptance.py, and test_r0008_prove_canaries.py; seed both reconciliation directions plus syntax/cycle/corpus/scope canaries and require isolated red then green only after reversion."
+    },
+    {
+      "criterion": "First red PROVE permits one checkpointed fix and complete re-PROVE; second red blocks sign-off with attributed human action, and restart/resume preserves attempts without overwriting or reusing partial green.",
+      "design_element": "taskplane/prove.py + exports/r0012-prove-journal.jsonl",
+      "validation": "Run taskplane/tests/test_r0008_fix_reprove.py with first-red/fix/re-PROVE, second-red, crash/restart, and partial-green fixtures; assert only one fix authorization, second-red human action, and immutable prior attempts."
+    },
+    {
+      "criterion": "T09 and every production behavior pass through actual governed entry points with positive evidence and fail when same-commit call-edge mutations sever reachability; conformant behavior remains unchanged while dormant/test-only code cannot pass.",
+      "design_element": "selected approach:compatibility-first-checkpoint-spine + live-edge and mutation verification gate",
+      "validation": "Run the same-commit production wiring suite including taskplane/tests/test_r0008_production_wiring.py and existing R-0007 edge tests; remove each declared call edge in mutation fixtures and require failure while unchanged reachable T09 behavior retains its golden output."
+    },
+    {
+      "criterion": "On R-0011 final SHA full suite, compile matrix, corpus, cycle/SCC/LOC, graph/impact, registry, tier, quick-finding, and collection gates are green; Retro binds all metrics, reports empty waits below 10 percent, and fails over 24 hours without prior human re-scope; authorized pushed-SHA proof is green for that SHA.",
+      "design_element": "taskplane/prove.py + taskplane/retro.py + contract:retro.delivery-efficiency",
+      "validation": "On the final SHA run CI/PROVE floors and taskplane/tests/test_r0008_operations.py; assert all named gates green, exact-SHA Retro metrics complete, empty_wait_share < 0.10, >24h without prior re-scope fails, and authorized fetched-SHA proof matches."
+    },
+    {
+      "criterion": "Every external action actually performed—main integration, push, tag, release/marketplace publication, destructive history action, or scope-expanding exception—has distinct attributed human approval, and missing approval prevents only that action.",
+      "design_element": "taskplane/build_c.py + contract:governance.delivery-authority + exports/r0012-program-ledger.json",
+      "validation": "Run taskplane/tests/test_r0008_operations.py with each external action class independently; an action without its own prior attributed approval must refuse while safe local evidence remains valid, and approval reuse across classes fails."
+    }
   ],
   "risks": [
-    {"risk":"A wrong or emptied knowledge tree hashes successfully and falsely proves preservation.","mitigation":"Resolve the root only from canonical locator/project identity and require a trusted pre-cleanup closed relative-path/bytes/digest manifest; reject root mismatch, empty substitution, missing/moved/unexpected entries, and manifest mismatch.","owner":"baseline/governance engineering"},
-    {"risk":"Unproven hook enforcement is presented as live or silently treated as sufficient.","mitigation":"Use only live|unproven|advisory with evidence/session/hook-path receipt; reserve enforced for live, block unproven mutations, and require actor/reason/scope/expiry for visibly advisory continuation.","owner":"enforcement governance"},
-    {"risk":"Baseline preservation is misread as keeping the new R-0006 working Design byte-identical to R-0004.","mitigation":"Bind preservation to immutable prior Git blobs and trusted pre-cleanup knowledge manifest; identify R-0006 as a later proposed artifact.","owner":"baseline/governance engineering"},
-    {"risk":"Eager compatibility probing mutates bytecode or runtime state before refusal.","mitigation":"Import at module startup before RunStore construction, set isolated no-bytecode fixtures, and byte-compare every governed store on failure.","owner":"runtime compatibility engineering"},
-    {"risk":"Only decomposition reports bad Python, so base scans remain falsely complete.","mitigation":"Make base depgraph parsing emit per-file producer failures independently; combine decomposition additively and test strict/normal modes with decompose off and on.","owner":"graph engineering"},
-    {"risk":"Known CLI error mapping hides unexpected defects.","mitigation":"Use a closed enumerated table only for known engine classes; unexpected exceptions retain exit 70 and traceback, debug always re-raises.","owner":"CLI engineering"},
-    {"risk":"Cycle expectations are updated to bless growth or copied from stale report estimates.","mitigation":"Generate with one checked-in scanner, require exact revision/member/edge/LOC evidence, allow shrinkage automatically, and require new approved Design for any upward bound.","owner":"architecture review"},
-    {"risk":"Explicit input inversion silently drops context/impact or breaks direct decompose scans.","mitigation":"Use named tp/review/loop/retro composition edges, audit every governed caller, require direct scan(decompose=True) goldens, and allow sparse fallback only with proven sparse quality; no global registry.","owner":"graph/review engineering"},
-    {"risk":"Repeated trials duplicate spend or report a partial sample as a rate.","mitigation":"Bound repeats 1-100, key immutable trials by sample/scenario/observed-model/index, reuse exact retries only, and refuse incomplete/duplicate sets.","owner":"evaluation engineering"},
-    {"risk":"A broad eval impact mapping turns every engine change into a corpus blast radius.","mitigation":"Allow canonical corpus prefixes and exact tracked files only with row/total bounds; reject wildcards/directories/escapes and test unrelated product, CLI, and reporting files.","owner":"graph and evaluation engineering"},
-    {"risk":"Seeded catch-rate double-counts repeats or is interpreted as production reliability.","mitigation":"Count unique scenario/failure/model/version/trial/revision units, enforce sample_size=denominator and duplicate rejection, hard-code the bounded label, and omit numeric fields when zero-sample unavailable.","owner":"evaluation product and reporting"},
-    {"risk":"Quick-only becomes silent acceptance when a finding would normally promote.","mitigation":"Promotion resolver returns correction/block, collection rejects deep slots, and a seeded substantive quick finding proves no deep worker is created.","owner":"review governance engineering"}
+    {
+      "risk": "A baseline-positive capability is accidentally reimplemented.",
+      "mitigation": "Closed reuse matrix plus six-category Plan readiness and differential golden fixtures reject the task before Build.",
+      "owner": "Plan approver"
+    },
+    {
+      "risk": "Caller-authored checkpoint fields impersonate engine evidence.",
+      "mitigation": "Checkpoint accepts only CommandRuntime/Git-derived fields, rejects unknown observed fields, and binds engine/contract/command/environment/output/result/revision digests.",
+      "owner": "checkpoint module"
+    },
+    {
+      "risk": "A green receipt authorizes another worktree revision.",
+      "mitigation": "Integration authorization requires equality among checkpoint target SHA, registered worktree tip, predecessor receipts, assignment scope, and merge receipt.",
+      "owner": "BUILD-C integration"
+    },
+    {
+      "risk": "Legacy wave/claim/lease state leaks into thin BUILD.",
+      "mitigation": "Direct mode has a closed state schema and asserts zero forbidden records; governed-build remains separate and retained.",
+      "owner": "loop module"
+    },
+    {
+      "risk": "Later donor history is imported as proof.",
+      "mitigation": "Path/content provenance is separated from Git authority; ancestry and diff checks reject v2.17.17+ parents, cherry-picks, and receipts.",
+      "owner": "R-0011 provenance owner"
+    },
+    {
+      "risk": "PROVE components attest different revisions or plans.",
+      "mitigation": "One canonical identity set is validated before collection and every component receipt repeats its digest; mixed evidence fails.",
+      "owner": "PROVE module"
+    },
+    {
+      "risk": "A restart overwrites red or partial proof.",
+      "mitigation": "Append-only attempt ids and predecessor digests preserve every event; resume may only continue the same open attempt.",
+      "owner": "PROVE journal"
+    },
+    {
+      "risk": "New Python modules or registry data are omitted from plugin packages.",
+      "mitigation": "Strict typing, support-matrix compile/import, deterministic package contents, clean installed-plugin smoke, and archive provenance checks are blocking.",
+      "owner": "CI"
+    }
   ],
   "failure_modes": [
-    {"mode":"Authoritative knowledge preservation cannot be proven","detection":"baseline_verification signal reports canonical root mismatch, absent/untrusted pre-cleanup manifest, empty substitution, or missing/moved/unexpected/byte/digest entry delta.","recovery":"The orchestrator stops wave 1; baseline owner supplies the retained immutable closed manifest or restores the exact canonical evidence. If none exists, preservation remains unproven and cannot be reconstructed or waived as a pass."},
-    {"mode":"Enforcement is unproven or advisory","detection":"enforcement_status signal reports status, evidence/session ids, hook-path receipt, and any advisory authorization fields.","recovery":"Host owner establishes a live verified hook receipt before mutation, or a human records actor/reason/exact wave scope/expiry to continue visibly advisory; nobody may label it enforced."},
-    {"mode":"Unsupported syntax, incomplete tracked compile set, or stage dependency import failure","detection":"python_compatibility signal names interpreter, exact tracked-file-set fingerprint, closed stage-consumer set, module, phase=startup, and TaskplaneCompatibilityError before a store opens.","recovery":"Runtime/CI maintainer fixes source or enumeration and reruns all four exact-file compile/import legs including outside-directory sentinel; no governed mutation is replayed because none occurred."},
-    {"mode":"Base scan or decomposition producer is degraded","detection":"graph_scan_quality signal has degraded=true with producer, file/module/parser/reason and scanned SHA independent of decompose mode.","recovery":"Graph maintainer repairs the named source/producer and rescans both modes; normal users retain honest fail-open output while strict readiness/review stays blocked until every producer is complete."},
-    {"mode":"Public CLI error registry drifts or an unexpected exception is swallowed","detection":"cli_error_envelope signal/test reports registry/KNOWN set delta or unexpected-exception behavior mismatch.","recovery":"CLI owner restores one registry-derived exact set or unexpected exit-70 traceback behavior and reruns normal/debug/unexpected fixtures before merge."},
-    {"mode":"Green evidence belongs to an ahead, behind, diverged, stale, or different SHA","detection":"ci_commit_proof signal shows HEAD/origin/main/checked_sha inequality, ahead_count or behind_count nonzero, or missing/failing/mismatched receipt.","recovery":"Release owner fetches, reconciles to the intended exact commit, waits for all checks on that SHA, and regenerates proof; no prior record is relabelled."},
-    {"mode":"An SCC gains a member, edge, LOC, or a new cycle appears","detection":"import_cycle_inventory signal reports policy/current delta with affected modules, edges, counts, and LOC.","recovery":"Architecture owner removes the growth before merge or returns to human-approved Design for an explicit bound change; the ratchet is never bypassed inline."},
-    {"mode":"Direct decomposition or explicit composition input changes behavior","detection":"boundary_parity signal reports direct scan(decompose=True), Retro, context-note, graph-impact, governed-caller audit, or sparse-fallback mismatch.","recovery":"Owning engineer restores compatibility through graph_decomposition or the named consuming parameter and reruns direct/caller/parity plus SCC checks before accepting the cut."},
-    {"mode":"Evaluation trial is missing, duplicated, corrupt, or model-mismatched","detection":"evaluation_sample signal reports complete=false and the exact trial key/problem.","recovery":"Evaluation runner retries only the exact missing key or starts a new sample after reconciliation; it never fills a missing row or computes a passing partial rate."},
-    {"mode":"Eval impact map is broad, escaped, unmatched, duplicate, or over bound","detection":"evaluation_corpus_impact signal reports invalid prefix/exact-file relation, relation counts, or unrelated product/CLI/reporting impact.","recovery":"Graph/eval owner narrows the row to canonical corpus prefix and exact tracked files within 32/128 bounds, then reruns selectivity and strict graph checks before merge."},
-    {"mode":"Seeded-failure units are duplicated, arithmetically inconsistent, or empty","detection":"seeded_failure_catch_rate signal reports unit-identity duplicate, sample_size!=denominator, numerator bound failure, mixed identity, or unavailable zero-sample field violation.","recovery":"Evaluation owner reconciles unique complete units and reruns projections; zero sample remains unavailable with numeric fields omitted until real units exist."},
-    {"mode":"A substantive quick finding requests promotion","detection":"review_depth_policy signal reports correction_required with zero deep slots/expectations/leases.","recovery":"The orchestrator returns the affected work to its owner for bounded correction in the same wave and reruns the quick sweep; no deep worker is dispatched."}
+    {
+      "mode": "Baseline identity or later-history input differs.",
+      "detection": "signal:r0012.baseline-identity reports branch/tag/tree/later_history mismatch.",
+      "recovery": "Program owner corrects the local evidence selection or returns to Product in the same R-0009 attempt; no executable state is created."
+    },
+    {
+      "mode": "Consolidated/predecessor authority is absent or a seventh gap appears.",
+      "detection": "signal:r0012.phase-authority reports missing approval, predecessor, or unknown gap category.",
+      "recovery": "Human supplies the missing attributed decision or records a new scope decision before a single transition retry; existing safe evidence stays valid."
+    },
+    {
+      "mode": "Focused proof is absent, fails, is canceled/dies, or targets a stale revision.",
+      "detection": "signal:r0012.checkpoint names AC, file, command, revision, terminal condition, and stopped phase.",
+      "recovery": "Task owner repairs only the declared AC scope and runs a new checkpoint on a new exact revision; no later phase or integration runs."
+    },
+    {
+      "mode": "Checkpoint evidence is forged, truncated where completeness is required, or identity-mixed.",
+      "detection": "signal:r0012.checkpoint-receipt reports the mismatched runtime/engine/command/environment/output/result/revision field.",
+      "recovery": "Checkpoint owner discards caller data and re-derives one receipt from the durable runtime journal within the same checkpoint attempt."
+    },
+    {
+      "mode": "DEFINE/final review emits invalid depth, count, architecture, concurrency, or wait.",
+      "detection": "signal:r0012.review-projection reports the boundary and invalid selector/manifest field.",
+      "recovery": "Orchestration owner corrects the incumbent-router invocation and restarts that projection; zero Plan/sign-off authority is created."
+    },
+    {
+      "mode": "Assignment overlaps, escapes scope, or has ambiguous identity.",
+      "detection": "signal:r0012.assignment names the tasks, canonical scopes, overlap/out-of-scope path, and graph identity.",
+      "recovery": "BUILD-C serializes valid overlap automatically or the planner obtains a corrected approved Plan before redispatch; no affected branch integrates."
+    },
+    {
+      "mode": "Integration receives red, stale, or dependency-incomplete work.",
+      "detection": "signal:r0012.integration reports checkpoint digest, registered tip, predecessor status, and refusal.",
+      "recovery": "Orchestrator retains the worktree and waits for one new green exact-tip checkpoint; dependents remain isolated and are never rebased onto red."
+    },
+    {
+      "mode": "Tier, schema, reconciliation, or canary proof fails.",
+      "detection": "signal:r0012.tier-registry or signal:r0012.reconciliation names the missing/test/schema/module/canary condition.",
+      "recovery": "Non-builder evaluator permits the one checkpointed batch fix, then PROVE reruns all seven components on a new exact revision."
+    },
+    {
+      "mode": "A PROVE component is missing, mixed, duplicate, partial, or second-red.",
+      "detection": "signal:r0012.prove-component and signal:r0012.prove-attempt report component, attempt, identity, durable predecessor, and limit.",
+      "recovery": "Proof owner resumes the open attempt or starts the one allowed complete re-PROVE; second red blocks and returns an attributed human action."
+    },
+    {
+      "mode": "An external action lacks its own approval.",
+      "detection": "signal:r0012.external-action names the action class, exact target, and missing/mismatched approval.",
+      "recovery": "Release owner obtains a distinct prior attributed approval or leaves only that action unperformed; local evidence remains valid."
+    }
   ],
   "observability": {
     "signals": [
-      "baseline_verification: run id, branch/SHA, graph fingerprint/scanned SHA, Plan authority state, prior Design blob digests, authoritative knowledge-root identity, pre/post manifest ids and digests, entry count, missing/moved/unexpected/empty-tree flags",
-      "enforcement_status: live|unproven|advisory, enforcement evidence id, Codex session id, verified hook-path receipt, and—only for advisory—actor/reason/scope/expiry/accepted limitations",
-      "python_compatibility: interpreter minor, exact tracked-Python-set fingerprint, closed production stage-consumer set, module/entry, compile/import/flow phase, named error, mutation snapshot digest",
-      "graph_scan_quality: degraded boolean, producer, file/resolved module/parser/error class/bounded reason, decompose mode, scanned SHA, quality fingerprint",
-      "cli_error_envelope: command, public registry fingerprint, registry/KNOWN exact-set equality, public error class, mapping id, exit class, recovery id, unexpected-exception behavior, debug availability",
-      "ci_commit_proof: fetched ref and fetch receipt, HEAD SHA, refs/remotes/origin/main SHA, checked SHA, ahead count, behind count, required check names/conclusions and receipt SHAs",
-      "import_cycle_inventory: source revision, every SCC member/internal edge, member/edge/LOC counts, before/after delta",
-      "boundary_parity: direct depgraph.scan(decompose=True), tp/loop/retro composition-root coverage, review-to-lens context-note and host-to-taskplane_lite graph-impact caller coverage, graph payload and sparse-fallback proof fingerprints",
-      "review_depth_policy: requirement/wave, quick slots, deep slots, promotion attempts, correction/block outcome",
-      "evaluation_trial: sample/scenario/trial id, observed model id/version, evaluation revision, status and immutable record fingerprint",
-      "evaluation_sample: requested/completed/distinct trials, pass count/rate, threshold, completeness and refusal reason",
-      "evaluation_corpus_impact: canonical corpus prefix, exact tracked target files, row/total relation counts, invalid/escaped/unmatched/duplicate flags, unrelated product/CLI/reporting selectivity results",
-      "seeded_failure_catch_rate: exact label, counted-unit-set fingerprint, numerator, denominator, sample size, rate, threshold, scenario set, model id/version, evaluation revision, duplicate/mixed-identity flags, availability/reason and zero-sample numeric-field omission"
+      "signal:r0012.phase-authority — phase, predecessor, revision, actor/receipt, decision",
+      "signal:r0012.baseline-identity — branch, commit, tag object/target, tree, reuse-matrix digest",
+      "signal:r0012.checkpoint — AC, proof file/command, ordered phase, revision, terminal condition, verdict",
+      "signal:r0012.checkpoint-receipt — runtime/engine/command/environment/output/result/revision digests",
+      "signal:r0012.assignment — ready/held tasks, scopes, overlap reason, worktree revisions, forbidden-state counts",
+      "signal:r0012.integration — checkpoint digest, authorized SHA, merge receipt, refusal reason",
+      "signal:r0012.review-projection — boundary, selected lenses, architecture, concurrency, wait, deep refusals",
+      "signal:r0012.prove-component — attempt, component, identity set, terminal status, receipt digest",
+      "signal:r0012.prove-attempt — attempt count, fix authorization, predecessor, bundle status",
+      "signal:r0012.reconciliation — predicted/actual/tolerance sets and named drift/cuts",
+      "signal:r0012.tier-registry — tier coverage/quarantine and schema existing/new/error counts",
+      "signal:r0012.retro — revision, wall clock, tokens, checkpoints/cost, waits, defects, attempts, stops",
+      "signal:r0012.external-action — class, approval actor/receipt, exact target, performed/refused"
     ],
     "alerts": [
-      "Block wave entry on any baseline_verification authoritative-root/manifest mismatch, empty or wrong tree, missing/moved/unexpected entry, or active stale Plan authority.",
-      "Render enforced only for enforcement_status=live; block unproven mutation and require an attributable bounded advisory receipt for any advisory exception.",
-      "Block before mutation/tests on python_compatibility failure and name the supported-range recovery.",
-      "Warn visibly in normal graph mode and block strict/readiness/review on any base-scanner or decomposition producer with graph_scan_quality degraded=true.",
-      "Block CLI acceptance on public-registry/KNOWN exact-set drift or swallowed unexpected exceptions.",
-      "Block pushed_green unless fetched HEAD, refs/remotes/origin/main, checked_sha, and every receipt SHA are equal with ahead=0 and behind=0.",
-      "Block merge on import_cycle_inventory growth, direct decomposition parity failure, missing governed composition input, or unjustified sparse fallback.",
-      "Block sample success on evaluation_sample incomplete/duplicate/mismatched trials; never schedule live sampling in ordinary CI.",
-      "Block invalid or near-catch-all evaluation_corpus_impact rows, including wildcard/package-wide targets or unrelated product/CLI/reporting impact.",
-      "Block inconsistent or duplicate seeded-failure counted units; render zero-sample unavailable with numeric fields omitted and alert on projection disagreement.",
-      "Block/return on review_depth_policy substantive quick findings and alert if any deep slot/promotion artifact exists."
+      "alert:r0012-phase-refusal — executable state requested before consolidated or predecessor authority",
+      "alert:r0012-checkpoint-red — missing/failing/stale/forged checkpoint blocks dependents and integration",
+      "alert:r0012-proof-red — PROVE component red; first permits one fix, second requires human action",
+      "alert:r0012-identity-drift — baseline, Plan/diff/graph, worktree, receipt, or pushed-SHA identity mismatch",
+      "alert:r0012-review-depth — automatic slot count/depth/architecture/concurrency invariant violated",
+      "alert:r0012-external-authority — external/destructive action attempted without its distinct approval"
     ]
   },
   "rollout": {
-    "strategy": "Land five sequential waves, requiring the prior wave's acceptance set before the next begins. Begin from the trusted authoritative-root manifest and honest live|unproven|advisory enforcement receipt. Make the exact tracked-Python/closed-consumer gate, base-scanner degradation, public CLI registry, no-egress corpus, and fetched exact-SHA proof prerequisites before the wave-4 two-commit ratchet-before-cuts sequence. Preserve direct depgraph.scan(decompose=True) and all named composition roots while cutting cycles. Land bounded impact-map and arithmetic fixtures before trusting live repeats. Push only after local gates, then accept completion only when required checks are green for HEAD == refs/remotes/origin/main == checked_sha with ahead=behind=0. Keep all changes additive, stdlib-only, synchronous, and scoped away from wave six.",
-    "rollback": "Rollback behavior within the affected wave while retaining every earlier quality floor: never delete or substitute authoritative baseline evidence, mislabel unproven/advisory enforcement as live, narrow the exact tracked-Python or closed-consumer sets, remove no-egress proof, hide base-scanner/decomposition degradation, fork the public CLI registry, remove/raise the cycle ratchet, break the direct scan API or governed input injection, broaden corpus impact mapping, relabel ahead/behind/stale CI proof, rewrite counted trial units, turn zero samples into a percentage, or permit deep promotion. Revert a wave-4 cut only if the retained ratchet and direct/caller parity pass. Disable live sampling by stopping new samples; existing immutable records remain readable. There is no destructive schema migration or external event cutover."
+    "strategy": "After one attributed consolidated Design approval, record no-build R-0009 baseline/reuse evidence; bootstrap R-0010 manually in checkpoint/receipt, submit wiring, DEFINE, direct assignment, merge authorization, then compatibility/live-edge order; require separate authorized push, exact fetched-SHA proof, and human R-0010 sign-off; re-deliver R-0011 in the eight catalog groups through R-0010, then run final review, complete PROVE, Retro, and separately approved external actions.",
+    "rollback": "Before sharing, abandon local code-bearing branches and return to unchanged bba3354e while retaining/superseding evidence append-safely. Direct BUILD-C remains disabled until green and existing governed-build stays intact; red R-0010 keeps R-0011 closed. After sharing, correct forward or disable the delivery mode—never reset, force-push, move tags, delete receipts, or mutate donor evidence. Failed R-0011 PROVE keeps durable attempts and blocks sign-off."
   },
   "visualization": {
     "required": true,
     "kind": "state-transition",
     "path": "design/visual.html",
-    "reason": "Five ordered gates, the two-commit ratchet-before-cuts sub-sequence, cross-wave invariants, and the separate wave-six boundary are materially clearer as one accessible dependency timeline."
+    "reason": "The no-build R-0009 closure, manually bootstrapped R-0010, exact-SHA/human boundary, R-0011 one-fix PROVE loop, and independent external actions form an ordered failure-sensitive state machine that is materially clearer visually."
   },
-  "open_questions": [],
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "One bounded quick sweep grounded every premise in the active baseline graph and cited repository seams, compared independent patches, five ratcheted waves, and architecture-first, and selected the smallest ordered contract approach. The correction cycle closed every substantive quick finding: trusted authoritative-root manifest identity; honest live|unproven|advisory enforcement receipts; all four lazy imports and the closed four-consumer set; exact tracked-Python compilation with an outside-directory sentinel; base-scanner degradation in both modes; fetched exact-SHA/ahead/behind proof; process-wide no-egress and repeated-byte parity; one public CLI engine-error registry; backward-compatible direct decomposition plus every named composition root/input edge; bounded selective corpus impact; and unique counted-unit catch-rate arithmetic with zero-sample omission. All 18 criteria have executable validation, each failure has a named signal and bounded owner recovery, rollback remains additive, quick-only correction has zero deep slots/promotions, and wave six remains explicitly deferred. Python reference SHA-256 verified as 9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7.",
+      "evidence": "Deep solution-design review checked the exact bba3354e v2.17.16 source premises, materially distinct alternatives, closed six-gap scope, incumbent command/wait/review/graph/worktree reuse, new module ownership, 19 contract edges, synchronous cancellation and 16 KiB output bounds, all 20 executable acceptance mappings, same-commit severed-edge gate, 23-test/279-schema/seven-PROVE completeness, type/package/free-threaded boundaries, failure-signal consistency, one-fix recovery, forward-only rollback, and separate human actions. No greenfield duplication, unverifiable mapping, impossible rollback, unsupported boundary, silent debt, or sequencing invention remains.",
       "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "4e4e035843bb2ba45b44bdd3d3ba80f6550cd26169ec537981e83427e7bf46da",
+      "content_fingerprint": "44306bb9dd44e3c63717cc772a772897b9fbdb45f093931029e80fc41a7d1799",
       "self_attested": true
     }
-  ]
+  ],
+  "open_questions": []
 }

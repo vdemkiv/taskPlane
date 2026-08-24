@@ -1,28 +1,27 @@
 {
   "tasks": [
     {
-      "id": "t01-wave1-baseline-authority",
+      "id": "t01-r0009-v21716-authority",
       "scope": [
-        "taskplane/preflight.py",
-        "taskplane/tests/test_r0006_baseline.py"
+        "exports/r0012-v21716-baseline.json",
+        "exports/r0012-program-ledger.json"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_baseline.py",
-      "req": "R-0006",
+      "tests": "python3 -m json.tool exports/r0012-v21716-baseline.json >/dev/null && python3 -m json.tool exports/r0012-program-ledger.json >/dev/null && rg -q 'bba3354e7fc5eb052beac74af230611ae48bd7db' exports/r0012-v21716-baseline.json && rg -q 'v2.17.16' exports/r0012-v21716-baseline.json && test \"$(git rev-parse 'v2.17.16^{commit}')\" = bba3354e7fc5eb052beac74af230611ae48bd7db && git merge-base --is-ancestor bba3354e7fc5eb052beac74af230611ae48bd7db HEAD && git diff --exit-code bba3354e7fc5eb052beac74af230611ae48bd7db -- taskplane scripts hooks skills agents",
+      "req": "R-0012",
       "deps": [],
       "type": "security",
       "contracts": [
-        "contract:governance-baseline",
-        "contract:governance.enforcement-status",
-        "contract:status.run-observability"
+        "contract:baseline.v2.17.16-authority",
+        "contract:program.r0009-r0011-order",
+        "contract:governance.delivery-authority"
       ],
       "new_modules": [
-        "taskplane",
-        "taskplane/tests",
-        "taskplane/preflight.py"
+        "exports/r0012-v21716-baseline.json",
+        "exports/r0012-program-ledger.json"
       ],
       "design_edges": [
-        "taskplane/preflight.py->contract:governance-baseline:provides",
-        "taskplane/preflight.py->contract:governance.enforcement-status:changes"
+        "taskplane/preflight.py->contract:baseline.v2.17.16-authority:provides",
+        "taskplane/preflight.py->exports/r0012-v21716-baseline.json:writes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -31,40 +30,75 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Fresh baseline and preservation: a baseline verification records the current main revision, fresh governed run id, and refreshed graph fingerprint; confirms no stale plan/** payload or obsolete run pointer is active; and byte/fingerprint comparisons prove previously committed design/** and external knowledge evidence are unchanged."
-      ],
-      "acceptance_refs": [
-        "Fresh baseline and preservation: a baseline verification records the current main revision, fresh governed run id, and refreshed graph fingerprint; confirms no stale plan/** payload or obsolete run pointer is active; and byte/fingerprint comparisons prove previously committed design/** and external knowledge evidence are unchanged."
+        "A machine check resolves the declared branch to bba3354e7fc5eb052beac74af230611ae48bd7db, verifies v2.17.16, records tree fingerprint and attributed scope decision, and refuses any v2.17.17-or-later revision as baseline or implementation input.",
+        "R-0009 before/after tree fingerprints are identical and audit evidence contains only baseline/scope artifacts with zero code write, reset, revert, merge, donor mutation, tag, push, or release; old reset/revert criteria are superseded rather than executed."
       ]
     },
     {
-      "id": "t02-wave1-quick-only-review-policy",
+      "id": "t02-r0010-ac-checkpoint",
       "scope": [
-        "taskplane/lens.py",
-        "taskplane/review_progression.py",
-        "taskplane/review.py",
-        "taskplane/tests/test_r0006_quick_only.py"
+        "components.yaml",
+        "taskplane/checkpoint.py",
+        "taskplane/tests/test_loop.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_quick_only.py",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py -k 'build_c_checkpoint or closed_gap'",
+      "req": "R-0012",
       "deps": [
-        "t01-wave1-baseline-authority"
+        "t01-r0009-v21716-authority"
+      ],
+      "type": "feature",
+      "gap_category": "ac-bound-checkpoints",
+      "contracts": [
+        "contract:runtime.command-events",
+        "contract:governance.build-c-checkpoint"
+      ],
+      "new_modules": [
+        "components.yaml",
+        "plan/tasks.json",
+        "specs/spec.md",
+        "taskplane/checkpoint.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "design_edges": [
+        "contract:runtime.command-events->taskplane/checkpoint.py:consumes",
+        "taskplane/checkpoint.py->contract:governance.build-c-checkpoint:provides",
+        "components.yaml->taskplane/checkpoint.py:declares"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "R-0010 Plan maps every implementation task to exactly one of the six closed gap categories and every baseline-positive capability to verification/reuse; reimplementation or a seventh category fails readiness pending human scope decision."
+      ]
+    },
+    {
+      "id": "t03-r0010-engine-receipts",
+      "scope": [
+        "taskplane/checkpoint.py",
+        "taskplane/tests/test_r0007_governed_commands.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0007_governed_commands.py -k 'checkpoint_receipt'",
+      "req": "R-0012",
+      "deps": [
+        "t02-r0010-ac-checkpoint"
       ],
       "type": "security",
+      "gap_category": "engine-minted-checkpoint-receipts",
       "contracts": [
-        "contract:review.collection",
-        "contract:governance.enforcement-status"
+        "contract:governance.checkpoint-receipt",
+        "contract:runtime.command-events"
       ],
       "new_modules": [
-        "taskplane/lens.py",
-        "taskplane/review_progression.py",
-        "taskplane/review.py"
+        "taskplane/checkpoint.py",
+        "taskplane/governed_commands.py",
+        "taskplane/tests/test_r0007_governed_commands.py"
       ],
       "design_edges": [
-        "taskplane/lens.py->contract:review.collection:changes",
-        "taskplane/review_progression.py->contract:review.collection:changes",
-        "taskplane/review.py->contract:review.collection:changes",
-        "taskplane/tests->contract:governance.enforcement-status:validates"
+        "taskplane/checkpoint.py->contract:governance.checkpoint-receipt:provides",
+        "taskplane/checkpoint.py->taskplane/governed_commands.py:runtime"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -73,39 +107,216 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Quick-only review policy is enforced: every governed lens dispatch manifest for these waves contains only quick-sweep slots and no deep.* slot or promotion; a seeded substantive quick finding prevents the affected gate from passing and returns it for correction without creating a deep worker."
-      ],
-      "acceptance_refs": [
-        "Quick-only review policy is enforced: every governed lens dispatch manifest for these waves contains only quick-sweep slots and no deep.* slot or promotion; a seeded substantive quick finding prevents the affected gate from passing and returns it for correction without creating a deep worker."
+        "Compatibility fixtures show no observable change to existing command events, waits, review/build routing, architecture inclusion, nonhuman deep refusal, graph/worktree identities, receipts, findings, leases, or enforcement, and no passing implementation is replaced."
       ]
     },
     {
-      "id": "t03-wave2-compatibility-refusal",
+      "id": "t04-r0010-submit-checkpoint-wiring",
       "scope": [
-        "taskplane/stage_entities.py",
-        "taskplane/run_store.py",
-        "taskplane/tp.py",
-        "taskplane/tests/test_r0006_python_compatibility.py"
+        "taskplane/loop.py",
+        "taskplane/tests/test_r0007_governed_commands.py",
+        "taskplane/tests/test_loop.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_python_compatibility.py",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0007_governed_commands.py taskplane/tests/test_loop.py -k 'submit and checkpoint'",
+      "req": "R-0012",
       "deps": [
-        "t02-wave1-quick-only-review-policy"
+        "t03-r0010-engine-receipts"
+      ],
+      "type": "integration",
+      "gap_category": "submit-to-checkpoint-wiring",
+      "contracts": [
+        "contract:runtime.command-events",
+        "contract:governance.build-c-checkpoint",
+        "contract:governance.checkpoint-receipt"
+      ],
+      "new_modules": [
+        "taskplane/tp.py",
+        "taskplane/loop.py",
+        "taskplane/governed_commands.py",
+        "taskplane/command_runtime.py",
+        "taskplane/command_adapters.py",
+        "taskplane/tests/test_r0007_governed_commands.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "design_edges": [
+        "taskplane/tp.py->taskplane/loop.py:runtime",
+        "taskplane/loop.py->taskplane/governed_commands.py:runtime",
+        "taskplane/loop.py->taskplane/checkpoint.py:runtime",
+        "taskplane/governed_commands.py->taskplane/command_runtime.py:runtime",
+        "taskplane/governed_commands.py->taskplane/command_adapters.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "The live governed submit path invokes the existing command runtime then the AC checkpoint; missing proof refuses by name, real focused proof mints an exact-revision engine receipt, caller-authored receipts fail, red stops later phases, and severing submit→runtime, submit→checkpoint, or checkpoint→receipt fails same-commit mutations."
+      ]
+    },
+    {
+      "id": "t05-r0010-define-projection",
+      "scope": [
+        "components.yaml",
+        "exports/r0012-program-ledger.json",
+        "taskplane/build_c.py",
+        "taskplane/loop.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py taskplane/tests/test_r0007_sweep_bootstrap.py -k 'program_order or define_projection'",
+      "req": "R-0012",
+      "deps": [
+        "t04-r0010-submit-checkpoint-wiring"
+      ],
+      "type": "integration",
+      "gap_category": "define-stage-projection",
+      "contracts": [
+        "contract:program.r0009-r0011-order",
+        "contract:review.routing",
+        "contract:review.depth-boundary",
+        "contract:define.design-review",
+        "contract:governance.delivery-authority"
+      ],
+      "new_modules": [
+        "components.yaml",
+        "exports/r0012-program-ledger.json",
+        "taskplane/build_c.py",
+        "taskplane/loop.py",
+        "taskplane/review.py",
+        "taskplane/lens.py",
+        "taskplane/tests/test_loop.py",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py"
+      ],
+      "design_edges": [
+        "taskplane/build_c.py->contract:program.r0009-r0011-order:provides",
+        "contract:review.routing->taskplane/build_c.py:consumes",
+        "contract:review.depth-boundary->taskplane/build_c.py:consumes",
+        "taskplane/build_c.py->contract:define.design-review:provides",
+        "taskplane/loop.py->taskplane/build_c.py:runtime",
+        "taskplane/build_c.py->taskplane/review.py:runtime",
+        "taskplane/review.py->taskplane/lens.py:runtime",
+        "taskplane/build_c.py->exports/r0012-program-ledger.json:writes",
+        "components.yaml->taskplane/build_c.py:declares"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Before consolidated human approval, live attempts to create Plan/Build/integration/PROVE/release state refuse; after approval R-0010 remains blocked until R-0009 acceptance and R-0011 until R-0010 exact pushed-SHA proof and human sign-off."
+      ]
+    },
+    {
+      "id": "t06-r0010-direct-assignment",
+      "scope": [
+        "taskplane/build_c.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py -k 'scope_assignment'",
+      "req": "R-0012",
+      "deps": [
+        "t05-r0010-define-projection"
+      ],
+      "type": "integration",
+      "gap_category": "direct-no-state-graph-disjoint-assignment",
+      "contracts": [
+        "contract:orchestration.scope-disjoint-assignment",
+        "contract:runtime.command-events",
+        "contract:review.routing",
+        "contract:review.depth-boundary"
+      ],
+      "new_modules": [
+        "taskplane/build_c.py",
+        "taskplane/depgraph.py",
+        "taskplane/storage.py",
+        "taskplane/repository.py",
+        "taskplane/worktree_cleanup.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "design_edges": [
+        "taskplane/build_c.py->contract:orchestration.scope-disjoint-assignment:provides",
+        "taskplane/build_c.py->taskplane/depgraph.py:runtime",
+        "taskplane/build_c.py->taskplane/storage.py:runtime",
+        "taskplane/build_c.py->taskplane/repository.py:runtime",
+        "taskplane/repository.py->taskplane/worktree_cleanup.py:runtime"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Live v2.17.16 fixtures prove CLI→governed-command-engine, loop→governed-command-engine, runtime/adapter use, non-polling waits, exactly 4–5 quick lenses including architecture at existing boundaries, and fail-closed automatic deep refusal; edge mutations fail and passing rows are reuse-only."
+      ]
+    },
+    {
+      "id": "t07-r0010-merge-on-green",
+      "scope": [
+        "taskplane/build_c.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_loop.py -k 'integration_authorization or merge_on_green'",
+      "req": "R-0012",
+      "deps": [
+        "t06-r0010-direct-assignment"
+      ],
+      "type": "security",
+      "gap_category": "checkpoint-to-integration-authorization",
+      "contracts": [
+        "contract:orchestration.merge-on-green",
+        "contract:governance.delivery-authority",
+        "contract:governance.checkpoint-receipt"
+      ],
+      "new_modules": [
+        "taskplane/build_c.py",
+        "taskplane/repository.py",
+        "taskplane/storage.py",
+        "taskplane/tests/test_loop.py"
+      ],
+      "design_edges": [
+        "taskplane/build_c.py->contract:orchestration.merge-on-green:provides",
+        "taskplane/build_c.py->contract:governance.delivery-authority:changes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "A live DEFINE transition reuses the current router for exactly 4 or 5 concurrent quick slots including architecture and no deep; live direct assignment runs disjoint scopes concurrently with zero claim/build-lease/wave state and serializes overlap; live integration accepts only the green checkpoint SHA; each severed edge fails."
+      ]
+    },
+    {
+      "id": "t08-r0010-phase-exit",
+      "scope": [
+        "exports/r0012-program-ledger.json"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests && python3 scripts/ci_evals.py --corpus",
+      "req": "R-0012",
+      "deps": [
+        "t07-r0010-merge-on-green"
       ],
       "type": "reliability",
       "contracts": [
-        "contract:runtime.python-compatibility",
-        "contract:cli-error-envelope",
-        "contract:governance.enforcement-status"
+        "contract:governance.delivery-authority",
+        "contract:import-cycle-ratchet",
+        "contract:program.r0009-r0011-order"
       ],
       "new_modules": [
-        "taskplane/stage_entities.py",
-        "taskplane/run_store.py",
-        "taskplane/tp.py"
+        ".github/workflows/ci.yml",
+        "exports/r0012-program-ledger.json",
+        "scripts/ci_evals.py",
+        "taskplane/import_cycles.py",
+        "taskplane/tests/test_r0006_pushed_sha.py"
       ],
       "design_edges": [
-        "taskplane/stage_entities.py->contract:runtime.python-compatibility:changes",
-        "taskplane/run_store.py->contract:runtime.python-compatibility:changes"
+        ".github/workflows/ci.yml->scripts/ci_evals.py:runtime"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -114,39 +325,90 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "B1 regression closed: a focused compatibility fixture compiles taskplane/stage_entities.py and imports every direct consumer on each supported minor, and the fixture fails against the 2.17.14 multiline f-string defect.",
-        "B2 fails early and cleanly: a deliberately unparseable stage dependency is detected at entry/startup rather than first lineage validation; an executable fixture asserts one named Taskplane compatibility error, no raw traceback in normal mode, and no created or changed run, graph, contract, review, or requirement state."
-      ],
-      "acceptance_refs": [
-        "B1 regression closed: a focused compatibility fixture compiles taskplane/stage_entities.py and imports every direct consumer on each supported minor, and the fixture fails against the 2.17.14 multiline f-string defect.",
-        "B2 fails early and cleanly: a deliberately unparseable stage dependency is detected at entry/startup rather than first lineage validation; an executable fixture asserts one named Taskplane compatibility error, no raw traceback in normal mode, and no created or changed run, graph, contract, review, or requirement state."
+        "R-0010 final SHA passes full suite, compile/import matrix, zero-token corpus, cycle and graph ratchets without new undispositioned failure; after authorized push fetched-SHA proof and human sign-off are green for that exact revision before R-0011 opens."
       ]
     },
     {
-      "id": "t04-wave2-python-matrix",
+      "id": "t09-r0011-plan-and-schema",
       "scope": [
-        ".github/workflows/ci.yml",
-        "docs/configuration.md",
-        "taskplane/tests/test_r0006_python_matrix.py"
+        "taskplane/preflight.py",
+        "taskplane/schema_registry.py",
+        "taskplane/schema-registry.json",
+        "taskplane/tests/test_r0008_plan_baseline.py",
+        "taskplane/tests/test_r0008_schema_registry.py",
+        "taskplane/tests/test_r0008_wiring_define_baseline.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_python_matrix.py",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0008_plan_baseline.py taskplane/tests/test_r0008_schema_registry.py taskplane/tests/test_r0008_wiring_define_baseline.py",
+      "req": "R-0012",
       "deps": [
-        "t03-wave2-compatibility-refusal"
+        "t08-r0010-phase-exit"
+      ],
+      "type": "security",
+      "contracts": [
+        "contract:plan.reconciliation-baseline",
+        "contract:schema.registry",
+        "contract:baseline.v2.17.16-authority"
+      ],
+      "new_modules": [
+        "taskplane/preflight.py",
+        "taskplane/schema_registry.py",
+        "taskplane/schema-registry.json",
+        "taskplane/tests/test_r0008_plan_baseline.py",
+        "taskplane/tests/test_r0008_schema_registry.py",
+        "taskplane/tests/test_r0008_wiring_define_baseline.py"
+      ],
+      "design_edges": [
+        "taskplane/preflight.py->contract:plan.reconciliation-baseline:provides",
+        "taskplane/schema_registry.py->contract:schema.registry:provides"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "Against the 279-existing-schema reproduction all 279 classify existing and zero newly unregistered; one genuinely new id fails by name until registered, and duplicate, malformed, stale-fingerprint, or self-unregistered data fails."
+      ]
+    },
+    {
+      "id": "t11-r0011-delivery-modes-and-provenance",
+      "scope": [
+        "exports/r0012-donor-provenance.json",
+        "taskplane/build_c.py",
+        "taskplane/loop.py",
+        "taskplane/tests/test_r0008_define_review.py",
+        "taskplane/tests/test_r0008_wiring_define_review.py",
+        "taskplane/tests/test_r0008_delivery_modes.py",
+        "taskplane/tests/test_r0008_direct_build.py",
+        "taskplane/tests/test_r0008_wiring_delivery_modes.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0008_define_review.py taskplane/tests/test_r0008_wiring_define_review.py taskplane/tests/test_r0008_delivery_modes.py taskplane/tests/test_r0008_direct_build.py taskplane/tests/test_r0008_wiring_delivery_modes.py",
+      "req": "R-0012",
+      "deps": [
+        "t09-r0011-plan-and-schema"
       ],
       "type": "integration",
       "contracts": [
-        "contract:runtime.python-compatibility"
+        "contract:orchestration.delivery-mode",
+        "contract:governance.build-c-checkpoint",
+        "contract:governance.checkpoint-receipt"
       ],
       "new_modules": [
-        "(root)",
-        ".github/workflows",
-        ".github/workflows/ci.yml",
-        "docs"
+        "exports/r0012-donor-provenance.json",
+        "taskplane/build_c.py",
+        "taskplane/loop.py",
+        "taskplane/review.py",
+        "taskplane/lens.py",
+        "taskplane/tests/test_r0008_define_review.py",
+        "taskplane/tests/test_r0008_wiring_define_review.py",
+        "taskplane/tests/test_r0008_delivery_modes.py",
+        "taskplane/tests/test_r0008_direct_build.py",
+        "taskplane/tests/test_r0008_wiring_delivery_modes.py"
       ],
       "design_edges": [
-        ".github/workflows/ci.yml->contract:runtime.python-compatibility:validates",
-        "docs->contract:runtime.python-compatibility:defines"
+        "taskplane/build_c.py->contract:orchestration.delivery-mode:provides",
+        "taskplane/build_c.py->exports/r0012-donor-provenance.json:writes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -155,41 +417,33 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Supported Python execution: CI proves all shipped Python modules and hook entry points compile, import, and execute representative version, entry, graph, status, and evaluation-corpus flows on CPython 3.10, 3.11, 3.12, and 3.13; if any minor is intentionally unsupported, the same matrix proves it refuses nonzero before filesystem mutation and the documented support range matches.",
-        "P2 is ordered before tests: workflow inspection asserts that every supported Python matrix leg runs a repository-wide compile/import gate before its test step, and a seeded syntax error makes that leg fail without running the tests."
-      ],
-      "acceptance_refs": [
-        "Supported Python execution: CI proves all shipped Python modules and hook entry points compile, import, and execute representative version, entry, graph, status, and evaluation-corpus flows on CPython 3.10, 3.11, 3.12, and 3.13; if any minor is intentionally unsupported, the same matrix proves it refuses nonzero before filesystem mutation and the documented support range matches.",
-        "P2 is ordered before tests: workflow inspection asserts that every supported Python matrix leg runs a repository-wide compile/import gate before its test step, and a seeded syntax error makes that leg fail without running the tests."
+        "Every R-0011 donor surface records content provenance and a fresh R-0010 checkpoint, and ancestry/diff evidence proves no v2.17.17-or-later commit was merged, cherry-picked, or treated as proof."
       ]
     },
     {
-      "id": "t05-wave3-graph-quality",
+      "id": "t12-r0011-test-tier-manifest",
       "scope": [
-        "docs/cli-reference.md",
-        "taskplane/depgraph.py",
-        "taskplane/decompose.py",
-        "taskplane/tp.py",
-        "taskplane/tests/test_r0006_graph_quality.py"
+        "taskplane/test_tiers.py",
+        "taskplane/tests/test_r0008_test_tiers.py",
+        "taskplane/tests/test_r0008_wiring_test_tiers.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_graph_quality.py",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0008_test_tiers.py taskplane/tests/test_r0008_wiring_test_tiers.py",
+      "req": "R-0012",
       "deps": [
-        "t04-wave2-python-matrix"
+        "t11-r0011-delivery-modes-and-provenance"
       ],
       "type": "reliability",
       "contracts": [
-        "contract:graph-scan-quality",
-        "contract:status.run-observability",
-        "contract:governance.enforcement-status"
+        "contract:test.tier-manifest"
       ],
       "new_modules": [
-        "taskplane/depgraph.py",
-        "taskplane/decompose.py"
+        "components.yaml",
+        "taskplane/test_tiers.py",
+        "taskplane/tests/test_r0008_test_tiers.py",
+        "taskplane/tests/test_r0008_wiring_test_tiers.py"
       ],
       "design_edges": [
-        "taskplane/depgraph.py->contract:graph-scan-quality:provides",
-        "taskplane/decompose.py->contract:graph-scan-quality:provides"
+        "taskplane/test_tiers.py->contract:test.tier-manifest:provides"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -198,70 +452,41 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "B3 degradation is visible and gateable: with one unparseable graph module, graph-scan JSON and text name the module and reason and mark degraded=true; the normal documented fail-open mode remains honest, while strict scan, Design/Plan readiness, and applicable Review/DoD fixtures refuse nonzero."
-      ],
-      "acceptance_refs": [
-        "B3 degradation is visible and gateable: with one unparseable graph module, graph-scan JSON and text name the module and reason and mark degraded=true; the normal documented fail-open mode remains honest, while strict scan, Design/Plan readiness, and applicable Review/DoD fixtures refuse nonzero."
+        "Import-graph tiering classifies every tracked test once, rejects Tier-0 quarantine reachability, proves thin PROVE runs zero Tier-2 and governed-build all Tier-2, and dispositions every full-suite failure relative to v2.17.16 with zero undispositioned new failure."
       ]
     },
     {
-      "id": "t06-wave3-cli-error-envelope",
+      "id": "t13-r0011-reconciliation-and-batch-ac",
       "scope": [
-        "taskplane/tp.py",
-        "taskplane/tests/test_r0006_cli_errors.py"
+        "taskplane/prove.py",
+        "taskplane/tests/test_r0008_impact_reconciliation.py",
+        "taskplane/tests/test_r0008_batch_acceptance.py",
+        "taskplane/tests/test_r0008_prove_canaries.py",
+        "taskplane/tests/test_r0008_wiring_reconciliation.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_cli_errors.py",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0008_impact_reconciliation.py taskplane/tests/test_r0008_batch_acceptance.py taskplane/tests/test_r0008_prove_canaries.py taskplane/tests/test_r0008_wiring_reconciliation.py",
+      "req": "R-0012",
       "deps": [
-        "t05-wave3-graph-quality"
-      ],
-      "type": "reliability",
-      "contracts": [
-        "contract:cli-error-envelope"
-      ],
-      "new_modules": [],
-      "design_edges": [
-        "taskplane/tp.py->contract:cli-error-envelope:provides"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "B4 CLI errors are actionable: a parameterized CLI fixture covers every known public engine-error class and asserts normal output contains a concise headline plus executable recovery action and no Python traceback; an explicit debug invocation retains diagnostic traceback access."
-      ],
-      "acceptance_refs": [
-        "B4 CLI errors are actionable: a parameterized CLI fixture covers every known public engine-error class and asserts normal output contains a concise headline plus executable recovery action and no Python traceback; an explicit debug invocation retains diagnostic traceback access."
-      ]
-    },
-    {
-      "id": "t07-wave3-zero-token-and-pushed-sha",
-      "scope": [
-        ".github/workflows/ci.yml",
-        "scripts/ci_evals.py",
-        "taskplane/tests/test_r0006_zero_token_ci.py",
-        "taskplane/tests/test_r0006_pushed_sha.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_zero_token_ci.py taskplane/tests/test_r0006_pushed_sha.py",
-      "req": "R-0006",
-      "deps": [
-        "t06-wave3-cli-error-envelope"
+        "t11-r0011-delivery-modes-and-provenance"
       ],
       "type": "security",
       "contracts": [
-        "contract:governance.delivery-authority",
-        "contract:status.run-observability",
-        "contract:governance.enforcement-status"
+        "contract:graph.impact-reconciliation",
+        "contract:prove.batch-evidence",
+        "contract:plan.reconciliation-baseline"
       ],
       "new_modules": [
-        "scripts",
-        "scripts/ci_evals.py"
+        "taskplane/prove.py",
+        "taskplane/depgraph.py",
+        "taskplane/evidence.py",
+        "taskplane/tests/test_r0008_impact_reconciliation.py",
+        "taskplane/tests/test_r0008_batch_acceptance.py",
+        "taskplane/tests/test_r0008_prove_canaries.py",
+        "taskplane/tests/test_r0008_wiring_reconciliation.py"
       ],
       "design_edges": [
-        ".github/workflows/ci.yml->scripts/ci_evals.py:runtime",
-        ".github/workflows/ci.yml->contract:governance.delivery-authority:validates"
+        "taskplane/prove.py->contract:graph.impact-reconciliation:provides",
+        "taskplane/prove.py->taskplane/evidence.py:runtime"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -270,40 +495,117 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "V1 zero-token corpus gates CI: the push/pull-request workflow invokes scripts/ci_evals.py --corpus without model credentials or network/model calls; an intentionally failing corpus fixture fails the job and a valid corpus passes deterministically.",
-        "P1 green-CI push boundary: the exact commit accepted as pushed has no local commits ahead of origin/main, and required checks for the supported-version, compile/import, graph/CLI, and zero-token corpus criteria are green for that same SHA; automation or a release record cannot describe an earlier local-only result as the pushed green result."
-      ],
-      "acceptance_refs": [
-        "V1 zero-token corpus gates CI: the push/pull-request workflow invokes scripts/ci_evals.py --corpus without model credentials or network/model calls; an intentionally failing corpus fixture fails the job and a valid corpus passes deterministically.",
-        "P1 green-CI push boundary: the exact commit accepted as pushed has no local commits ahead of origin/main, and required checks for the supported-version, compile/import, graph/CLI, and zero-token corpus criteria are green for that same SHA; automation or a release record cannot describe an earlier local-only result as the pushed green result."
+        "Compatible-identity fixtures fail predicted-but-untouched and actual-but-unpredicted modules by name; one non-builder pass proves every Plan AC exactly once; syntax, cycle, corpus, and scope canaries each go red for the intended cause and green only after reversion."
       ]
     },
     {
-      "id": "t08-wave4a-import-cycle-ratchet",
+      "id": "t14-r0011-durable-prove",
       "scope": [
-        "taskplane/import_cycles.py",
-        "taskplane/tests/fixtures/import-cycles.json",
-        ".github/workflows/ci.yml",
-        "taskplane/tests/test_r0006_import_cycle_ratchet.py"
+        "components.yaml",
+        "exports/r0012-prove-journal.jsonl",
+        "exports/r0012-prove-bundle.json",
+        "taskplane/tp.py",
+        "taskplane/prove.py",
+        "taskplane/tests/test_r0008_prove.py",
+        "taskplane/tests/test_r0008_fix_reprove.py",
+        "taskplane/tests/test_r0008_wiring_prove.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_import_cycle_ratchet.py",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0008_prove.py taskplane/tests/test_r0008_fix_reprove.py taskplane/tests/test_r0008_wiring_prove.py",
+      "req": "R-0012",
       "deps": [
-        "t07-wave3-zero-token-and-pushed-sha"
+        "t12-r0011-test-tier-manifest",
+        "t13-r0011-reconciliation-and-batch-ac"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:prove.batch-evidence",
+        "contract:graph.impact-reconciliation",
+        "contract:test.tier-manifest",
+        "contract:schema.registry",
+        "contract:import-cycle-ratchet",
+        "contract:runtime.command-events"
+      ],
+      "new_modules": [
+        "components.yaml",
+        "exports/r0012-prove-journal.jsonl",
+        "exports/r0012-prove-bundle.json",
+        "scripts/ci_evals.py",
+        "taskplane/tp.py",
+        "taskplane/prove.py",
+        "taskplane/preflight.py",
+        "taskplane/governed_commands.py",
+        "taskplane/test_tiers.py",
+        "taskplane/schema_registry.py",
+        "taskplane/import_cycles.py",
+        "taskplane/evidence.py",
+        "taskplane/tests/test_r0008_prove.py",
+        "taskplane/tests/test_r0008_fix_reprove.py",
+        "taskplane/tests/test_r0008_wiring_prove.py"
+      ],
+      "design_edges": [
+        "taskplane/prove.py->contract:prove.batch-evidence:provides",
+        "taskplane/tp.py->taskplane/prove.py:runtime",
+        "taskplane/prove.py->taskplane/preflight.py:runtime",
+        "taskplane/prove.py->taskplane/test_tiers.py:runtime",
+        "taskplane/prove.py->taskplane/schema_registry.py:runtime",
+        "taskplane/prove.py->taskplane/import_cycles.py:runtime",
+        "taskplane/prove.py->scripts/ci_evals.py:runtime",
+        "taskplane/prove.py->exports/r0012-prove-journal.jsonl:writes",
+        "taskplane/prove.py->exports/r0012-prove-bundle.json:writes",
+        "components.yaml->taskplane/prove.py:declares"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "A public tp prove emits one terminal receipt for each seven-component battery part and binds one Plan, diff, graph revision, full-suite receipt, clean repository revision, required-check set, and exact pushed SHA; stale, mixed, missing, duplicate, partial, or caller-authored identities fail.",
+        "First red PROVE permits one checkpointed fix and complete re-PROVE; second red blocks sign-off with attributed human action, and restart/resume preserves attempts without overwriting or reusing partial green."
+      ]
+    },
+    {
+      "id": "t15-r0011-ci-inventory-and-ratchets",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "exports/r0012-program-ledger.json",
+        "taskplane/import_cycles.py",
+        "taskplane/tests/fixtures/full-suite-inventory.json",
+        "taskplane/tests/test_r0008_ci_ratchets.py",
+        "taskplane/tests/test_r0008_full_suite_inventory.py",
+        "taskplane/tests/test_r0008_operations.py",
+        "taskplane/tests/test_r0008_wiring_ci.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0008_ci_ratchets.py taskplane/tests/test_r0008_operations.py taskplane/tests/test_r0008_wiring_ci.py",
+      "req": "R-0012",
+      "deps": [
+        "t14-r0011-durable-prove"
       ],
       "type": "reliability",
       "contracts": [
         "contract:import-cycle-ratchet",
+        "contract:test.tier-manifest",
+        "contract:schema.registry",
+        "contract:prove.batch-evidence",
         "contract:governance.delivery-authority"
       ],
       "new_modules": [
+        ".github/workflows/ci.yml",
+        "exports/r0012-program-ledger.json",
+        "taskplane/prove.py",
+        "taskplane/test_tiers.py",
+        "taskplane/schema_registry.py",
         "taskplane/import_cycles.py",
-        "taskplane/tests/fixtures/import-cycles.json"
+        "taskplane/tests/fixtures/full-suite-inventory.json",
+        "taskplane/tests/test_r0008_ci_ratchets.py",
+        "taskplane/tests/test_r0008_full_suite_inventory.py",
+        "taskplane/tests/test_r0008_operations.py",
+        "taskplane/tests/test_r0008_wiring_ci.py"
       ],
       "design_edges": [
-        "taskplane/import_cycles.py->contract:import-cycle-ratchet:provides",
-        "taskplane/tests/fixtures/import-cycles.json->contract:import-cycle-ratchet:defines",
-        ".github/workflows/ci.yml->taskplane/import_cycles.py:runtime"
+        "taskplane/import_cycles.py->contract:import-cycle-ratchet:changes",
+        ".github/workflows/ci.yml->taskplane/prove.py:runtime"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -312,299 +614,47 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "S4/S7 ratchet precedes cuts: repository history and CI configuration prove the import-cycle measurement and bound are active before any S1/S2 edge cut; a fixture that adds a module to an existing cycle or exceeds a declared SCC bound fails and reports the affected modules, edges, and measured size."
-      ],
-      "acceptance_refs": [
-        "S4/S7 ratchet precedes cuts: repository history and CI configuration prove the import-cycle measurement and bound are active before any S1/S2 edge cut; a fixture that adds a module to an existing cycle or exceeds a declared SCC bound fails and reports the affected modules, edges, and measured size."
+        "Every external action actually performed—main integration, push, tag, release/marketplace publication, destructive history action, or scope-expanding exception—has distinct attributed human approval, and missing approval prevents only that action."
       ]
     },
     {
-      "id": "t09-wave4b-graph-boundary-cuts",
+      "id": "t16-r0011-operations-and-final-wiring",
       "scope": [
-        "taskplane/graph_primitives.py",
-        "taskplane/graph_decomposition.py",
-        "taskplane/depgraph.py",
-        "taskplane/decompose.py",
-        "taskplane/lens_signals.py",
-        "taskplane/tp.py",
-        "taskplane/loop.py",
-        "taskplane/retro.py",
-        "taskplane/tests/test_r0006_graph_boundaries.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_graph_boundaries.py",
-      "req": "R-0006",
-      "deps": [
-        "t08-wave4a-import-cycle-ratchet"
-      ],
-      "type": "reliability",
-      "contracts": [
-        "contract:graph-scan-quality",
-        "contract:import-cycle-ratchet"
-      ],
-      "new_modules": [
-        "taskplane/graph_primitives.py",
-        "taskplane/graph_decomposition.py",
-        "taskplane/lens_signals.py",
-        "taskplane/loop.py",
-        "taskplane/retro.py"
-      ],
-      "design_edges": [
-        "taskplane/depgraph.py->taskplane/graph_primitives.py:runtime",
-        "taskplane/depgraph.py->taskplane/graph_decomposition.py:runtime",
-        "taskplane/decompose.py->taskplane/graph_decomposition.py:runtime",
-        "taskplane/graph_decomposition.py->taskplane/graph_primitives.py:runtime",
-        "taskplane/decompose.py->taskplane/graph_primitives.py:runtime",
-        "taskplane/lens_signals.py->taskplane/graph_primitives.py:runtime",
-        "taskplane/tp.py->taskplane/depgraph.py:runtime",
-        "taskplane/retro.py->taskplane/depgraph.py:runtime",
-        "taskplane/loop.py->taskplane/depgraph.py:runtime"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "S1 graph edges are absent: file-level import-graph assertions prove taskplane/depgraph.py and taskplane/decompose.py no longer import one another in either direction or scope, and shared graph data has one non-circular contract consumed by depgraph, decompose, and lens_signals without changing externally observed payload meaning."
-      ],
-      "acceptance_refs": [
-        "S1 graph edges are absent: file-level import-graph assertions prove taskplane/depgraph.py and taskplane/decompose.py no longer import one another in either direction or scope, and shared graph data has one non-circular contract consumed by depgraph, decompose, and lens_signals without changing externally observed payload meaning."
-      ]
-    },
-    {
-      "id": "t10-wave4b-review-context-input",
-      "scope": [
-        "taskplane/review.py",
-        "taskplane/lens.py",
-        "taskplane/tp.py",
-        "taskplane/tests/test_r0006_review_context_input.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_review_context_input.py",
-      "req": "R-0006",
-      "deps": [
-        "t09-wave4b-graph-boundary-cuts"
-      ],
-      "type": "integration",
-      "contracts": [
-        "contract:review.collection",
-        "contract:import-cycle-ratchet"
-      ],
-      "new_modules": [],
-      "design_edges": [
-        "taskplane/review.py->taskplane/lens.py:runtime",
-        "taskplane/tp.py->taskplane/lens.py:runtime"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
-      ],
-      "acceptance_refs": [
-        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
-      ]
-    },
-    {
-      "id": "t11-wave4b-dod-impact-input",
-      "scope": [
-        "taskplane/loop.py",
-        "taskplane/tp.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/tests/test_r0006_dod_impact_input.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_dod_impact_input.py",
-      "req": "R-0006",
-      "deps": [
-        "t10-wave4b-review-context-input"
-      ],
-      "type": "integration",
-      "contracts": [
-        "contract:graph-scan-quality",
-        "contract:import-cycle-ratchet"
-      ],
-      "new_modules": [
-        "taskplane/taskplane_lite.py"
-      ],
-      "design_edges": [
-        "taskplane/loop.py->taskplane/taskplane_lite.py:runtime",
-        "taskplane/tp.py->taskplane/taskplane_lite.py:runtime"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
-      ],
-      "acceptance_refs": [
-        "S2 single-call edges are absent: static import assertions prove taskplane/lens.py has no import edge to taskplane/review.py and taskplane/taskplane_lite.py has no import edge to taskplane/depgraph.py; focused behavior fixtures prove the former call results remain available through explicit inputs or registered boundaries."
-      ]
-    },
-    {
-      "id": "t12-wave4b-post-cut-inventory",
-      "scope": [
-        "taskplane/import_cycles.py",
-        "taskplane/tests/fixtures/import-cycles.json",
-        "taskplane/tests/test_r0006_post_cut_cycles.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_post_cut_cycles.py",
-      "req": "R-0006",
-      "deps": [
-        "t11-wave4b-dod-impact-input"
-      ],
-      "type": "reliability",
-      "contracts": [
-        "contract:import-cycle-ratchet"
-      ],
-      "new_modules": [],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "Post-cut cycle evidence is honest: the ratchet emits the complete SCC inventory before and after S1/S2, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles; checked-in expectations use measured current values rather than stale 2.17.14 estimates, and CI blocks unapproved growth."
-      ],
-      "acceptance_refs": [
-        "Post-cut cycle evidence is honest: the ratchet emits the complete SCC inventory before and after S1/S2, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles; checked-in expectations use measured current values rather than stale 2.17.14 estimates, and CI blocks unapproved growth."
-      ]
-    },
-    {
-      "id": "t13-wave5-evaluation-sampling",
-      "scope": [
-        "taskplane/eval_sampling.py",
-        "taskplane/eval_drivers.py",
-        "taskplane/eval_scenario.py",
-        "taskplane/runtime_eval.py",
-        "scripts/eval_skills.py",
-        "scripts/eval_record.py",
-        "taskplane/tests/test_r0006_eval_sampling.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_eval_sampling.py",
-      "req": "R-0006",
-      "deps": [
-        "t12-wave4b-post-cut-inventory"
-      ],
-      "type": "reliability",
-      "contracts": [
-        "contract:evaluation-sample",
-        "contract:seeded-failure-catch-rate",
-        "contract:status.run-observability"
-      ],
-      "new_modules": [
-        "taskplane/eval_sampling.py",
-        "taskplane/eval_drivers.py",
-        "taskplane/eval_scenario.py",
-        "taskplane/runtime_eval.py",
-        "scripts/eval_skills.py",
-        "scripts/eval_record.py"
-      ],
-      "design_edges": [
-        "scripts/eval_skills.py->taskplane/eval_sampling.py:runtime",
-        "scripts/eval_record.py->contract:evaluation-sample:provides",
-        "taskplane/eval_sampling.py->contract:evaluation-sample:provides",
-        "taskplane/eval_sampling.py->contract:seeded-failure-catch-rate:provides"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "V2 repeated sampling works: an executable model-eval fixture runs ten deterministic fake trials with seven passes, persists ten distinct per-scenario/per-model-version results, reports pass rate 0.7, and fails a 0.9 threshold; invalid repeat counts, thresholds, and missing trials fail with clean errors."
-      ],
-      "acceptance_refs": [
-        "V2 repeated sampling works: an executable model-eval fixture runs ten deterministic fake trials with seven passes, persists ten distinct per-scenario/per-model-version results, reports pass rate 0.7, and fails a 0.9 threshold; invalid repeat counts, thresholds, and missing trials fail with clean errors."
-      ]
-    },
-    {
-      "id": "t14-wave5-incomplete-corpus-impact",
-      "scope": [
-        "taskplane/eval_rubric.py",
-        "taskplane/eval_scenario.py",
-        "taskplane/depgraph.py",
-        "scripts/ci_evals.py",
-        "evals/impact-map.json",
-        "evals/negative/incomplete-acceptance-coverage/**",
-        "evals/negative/incomplete-build-error/**",
-        "evals/negative/incomplete-test-deletion/**",
-        "taskplane/tests/test_r0006_incomplete_work.py",
-        "taskplane/tests/test_r0006_eval_impact.py"
-      ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_incomplete_work.py taskplane/tests/test_r0006_eval_impact.py",
-      "req": "R-0006",
-      "deps": [
-        "t13-wave5-evaluation-sampling"
-      ],
-      "type": "integration",
-      "contracts": [
-        "contract:evaluation-corpus-impact",
-        "contract:graph-scan-quality",
-        "contract:evaluation-sample"
-      ],
-      "new_modules": [
-        "evals",
-        "taskplane/eval_rubric.py",
-        "evals/impact-map.json"
-      ],
-      "design_edges": [
-        "taskplane/eval_rubric.py->evals:runtime",
-        "evals/impact-map.json->contract:evaluation-corpus-impact:defines",
-        "taskplane/depgraph.py->contract:evaluation-corpus-impact:provides"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "V3 catches incomplete work: the negative corpus contains at least three executable seeded cases—only three of five acceptance criteria completed, a silently ignored build error, and a test deleted instead of fixed—and the harness refuses each for the intended incomplete-work reason rather than a generic workflow-order failure.",
-        "V4 corpus impact is connected: graph fixtures prove that a change to at least one governance or evaluation engine file lists the relevant evals/* corpus modules in impact and routes their validation, while unrelated product changes do not acquire a catch-all corpus blast radius."
-      ],
-      "acceptance_refs": [
-        "V3 catches incomplete work: the negative corpus contains at least three executable seeded cases—only three of five acceptance criteria completed, a silently ignored build error, and a test deleted instead of fixed—and the harness refuses each for the intended incomplete-work reason rather than a generic workflow-order failure.",
-        "V4 corpus impact is connected: graph fixtures prove that a change to at least one governance or evaluation engine file lists the relevant evals/* corpus modules in impact and routes their validation, while unrelated product changes do not acquire a catch-all corpus blast radius."
-      ]
-    },
-    {
-      "id": "t15-wave5-catch-rate-projections",
-      "scope": [
-        "taskplane/eval_sampling.py",
-        "taskplane/retro.py",
+        "exports/r0012-program-ledger.json",
+        "exports/r0012-retro.json",
         "taskplane/dashboard.py",
-        "docs/model-evaluation.md",
-        "docs/EVAL-DoR.md",
-        "taskplane/tests/test_r0006_catch_rate.py"
+        "taskplane/retro.py",
+        "taskplane/tests/test_r0008_operations.py",
+        "taskplane/tests/test_r0008_dogfood_bundle.py",
+        "taskplane/tests/test_r0008_production_wiring.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0006_catch_rate.py",
-      "req": "R-0006",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0008_ci_ratchets.py taskplane/tests/test_r0008_full_suite_inventory.py taskplane/tests/test_r0008_wiring_ci.py taskplane/tests/test_r0008_operations.py taskplane/tests/test_r0008_dogfood_bundle.py taskplane/tests/test_r0008_production_wiring.py",
+      "req": "R-0012",
       "deps": [
-        "t14-wave5-incomplete-corpus-impact"
+        "t15-r0011-ci-inventory-and-ratchets"
       ],
       "type": "integration",
       "contracts": [
-        "contract:seeded-failure-catch-rate",
-        "contract:status.run-observability",
-        "contract:evaluation-sample"
+        "contract:retro.delivery-efficiency",
+        "contract:governance.delivery-authority",
+        "contract:program.r0009-r0011-order",
+        "contract:prove.batch-evidence"
       ],
       "new_modules": [
-        "taskplane/dashboard.py"
+        "exports/r0012-program-ledger.json",
+        "exports/r0012-retro.json",
+        "scripts/ci_loop_cost.py",
+        "taskplane/build_c.py",
+        "taskplane/loop.py",
+        "taskplane/dashboard.py",
+        "taskplane/retro.py",
+        "taskplane/tests/test_r0008_operations.py",
+        "taskplane/tests/test_r0008_dogfood_bundle.py",
+        "taskplane/tests/test_r0008_production_wiring.py"
       ],
       "design_edges": [
-        "taskplane/retro.py->contract:seeded-failure-catch-rate:consumes",
-        "taskplane/dashboard.py->contract:seeded-failure-catch-rate:consumes",
-        "taskplane/dashboard.py->contract:status.run-observability:changes",
-        "docs->contract:seeded-failure-catch-rate:defines"
+        "taskplane/retro.py->contract:retro.delivery-efficiency:provides",
+        "taskplane/retro.py->exports/r0012-retro.json:writes"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -613,10 +663,10 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "V5 reports the bounded claim: given a known mixture of caught and missed seeded failures, Retro or dashboard machine, Markdown, and text projections agree on the label seeded-failure catch-rate, numerator, denominator, sample size, threshold, scenario set, model id/version, and evaluation revision; zero-sample input reports unavailable rather than 0% or 100%."
-      ],
-      "acceptance_refs": [
-        "V5 reports the bounded claim: given a known mixture of caught and missed seeded failures, Retro or dashboard machine, Markdown, and text projections agree on the label seeded-failure catch-rate, numerator, denominator, sample size, threshold, scenario set, model id/version, and evaluation revision; zero-sample input reports unavailable rather than 0% or 100%."
+        "A fresh requirement completes DEFINE→thin BUILD-C→PROVE; DEFINE and post-change review each emit exactly 4 or 5 concurrent quick lenses including architecture, BUILD carries only permitted checkpoint state and zero legacy per-task governance/lens state, and sign-off receives the durable bundle.",
+        "A machine comparison finds exactly the 23 catalog paths in specs/spec.md, each present/passing on the final SHA or individually human re-scoped before dependents; missing, skipped, renamed, duplicate, or silently cut files fail checkpoint and final completeness.",
+        "T09 and every production behavior pass through actual governed entry points with positive evidence and fail when same-commit call-edge mutations sever reachability; conformant behavior remains unchanged while dormant/test-only code cannot pass.",
+        "On R-0011 final SHA full suite, compile matrix, corpus, cycle/SCC/LOC, graph/impact, registry, tier, quick-finding, and collection gates are green; Retro binds all metrics, reports empty waits below 10 percent, and fails over 24 hours without prior human re-scope; authorized pushed-SHA proof is green for that SHA."
       ]
     }
   ]

@@ -1,210 +1,247 @@
-# R-0006 Design — Five ratcheted remediation waves
+# R-0012 Design — Compatibility-first BUILD-C spine from v2.17.16
 
-Status: proposed HOW, awaiting the mechanical Design gate and explicit human approval. This is a design-only artifact. It does not implement a wave, mutate the as-built graph, approve itself, push, or release.
+Status: proposed HOW for human approval. This Design is an overlay only; it does not authorize Plan, Build, integration, PROVE, or any external action.
 
 ## Decision
 
-Deliver R-0006 as five irreversible-quality, reversible-behavior waves. Each wave adds its gate before relying on it, and the next wave cannot start until the prior wave's executable acceptance set is green:
+Select a **compatibility-first checkpoint spine**:
 
-1. seal a fresh baseline and make `quick-only` a machine-readable review policy;
-2. restore and ratchet CPython 3.10–3.13 compatibility before any tests or stateful command runs;
-3. make graph and CLI degradation visible, put the zero-token corpus in CI, and distinguish local green from pushed-SHA green;
-4. land a measured import-cycle ratchet in its own earlier commit, then remove the S1/S2 edges through explicit inputs and one acyclic graph-primitives boundary;
-5. add bounded repeated evaluation, executable incomplete-work fixtures, selective corpus graph edges, and the narrowly labelled seeded-failure catch-rate.
+1. R-0009 records governed v2.17.16 as the sole baseline and closes as evidence-only, with no product-tree change.
+2. R-0010 extends the live v2.17.16 loop through exactly six missing BUILD-C capabilities: AC checkpoints, engine-minted checkpoint receipts, submit-to-checkpoint wiring, DEFINE projection through the incumbent router, checkpoint-authorized integration, and direct graph-disjoint assignment without claim/build-lease/wave state.
+3. R-0011 re-delivers donor content as new source changes through that checkpoint spine, then makes one durable seven-component PROVE bundle the only completion authority.
 
-The design extends current modules and contracts. It adds four focused product modules (`taskplane/graph_primitives.py`, `taskplane/graph_decomposition.py`, `taskplane/import_cycles.py`, and `taskplane/eval_sampling.py`), an explicit eval impact map, and focused tests. It does not move existing packages, redesign components, consolidate schemas, change workspace/plugin identity, change model-tier policy, add attestation/MCP/OS isolation, or make any other wave-six bet.
+The selected design preserves every baseline-positive production call edge. It adds two narrowly owned R-0010 modules—`taskplane/checkpoint.py` for checkpoint execution/receipt validation and `taskplane/build_c.py` for phase authority, DEFINE projection, direct assignment, delivery mode, and merge authorization—and three R-0011 proof modules: `taskplane/prove.py`, `taskplane/test_tiers.py`, and `taskplane/schema_registry.py`.
 
-## Current-state evidence
+No Build begins before one attributed human approval of this complete Design. R-0010 remains blocked until the evidence-only R-0009 decision is accepted. R-0011 remains blocked until R-0010 has exact pushed-SHA proof and a separate human sign-off. Main integration, pushes, tags, publications, destructive history actions, and scope expansion remain independent human gates.
 
-The Taskplane current-state inventory supplied to Design is empty, so none of its absence is treated as evidence. The design is instead grounded in the following repository and run sources:
+## Current state at governed v2.17.16
 
-- The active baseline graph has fingerprint `e3e0d5f90de0f6e9d19526997e6899472c8f0430b86cdaec76e91e0cc97010af`, six nodes, five requirement-to-contract edges, no source modules, and no `scanned_head`. Wave 1 must refresh it before any later impact claim.
-- `.github/workflows/ci.yml` declares CPython 3.10, 3.11, and 3.12, installs pytest, and runs tests without a preceding repository-wide compile/import step. It has no 3.13 compatibility leg and never invokes `scripts/ci_evals.py --corpus`.
-- `taskplane/stage_entities.py:1742-1744` embeds a multiline dictionary in an f-string expression. It fails `python3.11 -m py_compile` with `SyntaxError` and parses on 3.12/3.13 because it relies on PEP 701.
-- `taskplane/run_store.py:275-278`, `:728-731`, `:854-857`, and `:987-990` contain four lazy `stage_entities` import seams and catch only `ImportError`; syntax failure is therefore delayed until lineage/object work and is not translated to a Taskplane compatibility error.
-- `taskplane/decompose.py:61-65` deliberately fails open per module and returns `stats.degraded` plus `stats.error`; `taskplane/depgraph.py:1423-1434` catches decomposition failure but does not place a complete degradation record into the public scan result.
-- `taskplane/tp.py:7161-7203` already provides one user-layer error boundary and preserves tracebacks behind `TASKPLANE_DEBUG`; today only `taskplane_lite.StateError` and a missing Git executable are treated as known clean refusals.
-- `taskplane/lens.py:1312-1317` imports `review` for one context-note call. `taskplane/taskplane_lite.py:2431-2441` imports `depgraph` only to derive regression impact. `taskplane/depgraph.py:1424` imports `decompose`, while `taskplane/decompose.py` locally imports `depgraph` and `lens_signals` at several helper seams. These are the explicit-input boundaries wave 4 cuts.
-- `scripts/ci_evals.py:406-451` already has a deterministic zero-token corpus scorer and `:1486-1487` routes `--corpus` to it. CI simply does not call it.
-- `scripts/eval_skills.py:489-558` records one `native-current` run per skill and `:560-585` offers no repeat or threshold arguments. `scripts/eval_record.py:1395-1462` calls the driver once and freezes one record. The current negative corpus tests workflow misuse, not incomplete work.
-- `components.yaml` only contains scanner exclusions. There is no eval-corpus dependency map; `evals/*` data therefore has no selective relationship to the engine it validates.
-- `taskplane/retro.py` and `taskplane/dashboard.py` expose evaluation and graph projections but no `seeded-failure catch-rate` contract or zero-sample state.
-- The R-0004 design remains content-addressed in Git at revision `1464432a8b20620852ac23831517cdb28bc77206`: `design/design.md` SHA-256 `a5a682b3ebcefb6081b9600423ee0f8307ae0e56b21022626c84b948cabef5d8` and `design/contract.json` SHA-256 `577ae5048ceb0f1047c6cf691e1b4163351a016f99b711419b9be8614263c154`. Replacing the working files for R-0006 does not rewrite those committed blobs. Wave 1 verifies those exact historical objects and the external knowledge tree rather than incorrectly requiring the R-0006 working copy to remain byte-identical to R-0004.
+The engine supplied no current-state inventory, so the design is grounded in the exact Git identity and cited production sources:
 
-No accepted governing decision was supplied for R-0006. Earlier R-0004 approvals remain historical evidence, not authority to widen this requirement.
+- `HEAD`, branch `codex/r0009-r0011-from-v2.17.16`, and dereferenced tag `v2.17.16` name `bba3354e7fc5eb052beac74af230611ae48bd7db`; the tree is `a7f46dbf6859f7d2122c4ee6ce99006b4862197a`.
+- `taskplane/tp.py::cmd_command` calls `governed_command_engine.execute`; `taskplane/loop.py::governed_command` calls `governed_commands.execute`. `taskplane/governed_commands.py` composes `CommandAdapter` and `CommandRuntime`.
+- `taskplane/command_runtime.py` persists append-first transitions, immutable identity bindings, 16 KiB redacted output summaries, terminal states, and delivery receipts. `taskplane/command_adapters.py` owns launch, reconnect, wait, cancellation, and host process binding.
+- `taskplane/loop.py::event_wait_policy` and `event_wait_invocation` emit one 1800-second event wait, prohibit scheduled polling, and allow reissue only after completion or attention. Existing review and wave flows invoke them.
+- `taskplane/review.py::start_review` invokes `lens.automatic_sweep_route`; the selector emits exactly four or five concurrent sweep slots including architecture. `review_depth_policy` and manifest validation refuse automatic/adaptive deep with `direct-human-command-not-shipped`.
+- Existing graph, repository, storage, worktree cleanup, merge receipt, findings, review lease, enforcement, pushed-SHA, zero-token, and SCC/cycle primitives are live and reusable.
+- The missing R-0010 edges are visible in production code: `loop.submit` records runtime-eval and snapshot evidence but does not execute an AC checkpoint; the Design/Plan boundary does not start a DEFINE projection; default parallel delivery uses `wave`, `claim`, and stage-split state; `_automatic_merge_cleanup` has no checkpoint-specific exact-SHA authorization.
+- `taskplane/prove.py`, `taskplane/test_tiers.py`, `taskplane/schema_registry.py`, `taskplane/schema-registry.json`, `taskplane/tests/fixtures/full-suite-inventory.json`, and the 23 named R-0011 test paths do not exist at the baseline.
+- The supplied graph is complete and non-degraded at the same HEAD: fingerprint `6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d`, 92 modules, 293 edges. Review traverses local dependencies to depth 3 and stops at named contracts after one contract and one requirement hop. The engine reports 28 known impacted modules and no unknowns inside that radius.
 
 ## Alternatives considered
 
-### A. Patch each defect independently and merge once
+### A. Compatibility-first checkpoint spine (selected)
 
-Fix the f-string, print the degradation warning, add a CI line, remove imports, and add repeat flags without a cross-wave contract.
+Keep the proven v2.17.16 runtime/review/repository boundaries, add the six missing R-0010 edges, and re-deliver R-0011 only after BUILD-C proves itself.
 
-Gains: smallest apparent diff and fewest new records. Costs: it repeats the failure mode in the improvement register—feature work can land between fixes, cycle expectations can be updated after growth, local green can be mistaken for remote green, and evaluation reporting can drift across CLI, Retro, and dashboard. It cannot mechanically prove that the cycle ratchet preceded the cuts or that quick findings never promoted.
+- Gains: smallest authorized change; preserves event-driven waits and bounded review; makes each new edge mutation-sensitive; provides a clean rollback to the unchanged baseline mode; prevents donor history from becoming proof.
+- Costs: R-0010 must bootstrap under manual checkpoints; R-0011 cannot begin until a pushed exact-SHA receipt and human sign-off exist; the durable proof schemas add explicit evidence maintenance.
+- Revisit when: a baseline-positive capability fails its live reuse fixture, or a seventh gap is demonstrated and a human expands scope.
 
-Revisit only if R-0006 is narrowed to one isolated defect with no sequencing, graph, CI-SHA, or reporting acceptance criteria.
+### B. Port donor behavior first, then retrofit BUILD-C
 
-### B. Five contract-ratcheted waves — selected
+Copy boundary-first modules/tests into the baseline, then add checkpointing and reconciliation around the result.
 
-Add the narrow evidence/quality contracts first, then make behavior changes behind them. Reuse `preflight`, `depgraph`, the CLI boundary, existing eval recorder/rubric, Retro, dashboard, and the current CI workflow. Introduce only an acyclic graph primitive module and a sampling aggregate module where no incumbent owner can meet the requirement without recreating a cycle.
+- Gains: donor functionality appears sooner and offers familiar source material.
+- Costs: violates the required phase order, treats ungoverned later history as implementation authority, cannot truthfully prove the first BUILD-C shakedown, and risks integrating red work.
+- Revisit when: never under R-0012; it requires a replacement Product decision.
 
-Gains: every subsequent step is protected by a gate already present; rollback is wave-local; source-of-truth ownership is explicit; all 18 criteria map to executable checks; package and schema redesign stay deferred. Costs: requires multiple commits and temporary additive fields; the baseline/ratchet artifacts must be maintained; live evaluation takes N bounded model calls when explicitly invoked.
+### C. Replace the loop with a new orchestration core
 
-Revisit when the five waves are green and the separately approved wave-six architecture decides whether to move packages, centralize schemas, or change trust/isolation boundaries.
+Create a greenfield scheduler, receipt store, router, worktree manager, and proof service.
 
-### C. Perform the broad package and governance redesign first
+- Gains: one internally uniform model without compatibility adapters.
+- Costs: rebuilds capabilities already proven at v2.17.16, expands beyond six gaps, creates migration/rollback risk, and invalidates the closed reuse matrix.
+- Revisit when: multiple incumbent contracts independently fail live compatibility and Product authorizes a platform redesign.
 
-Move foundation/kernel/graph/review/orchestration/CLI packages, introduce a schema registry, and solve identity/attestation/isolation while repairing the defects.
+### D. Verification-only status quo
 
-Gains: may reduce later migration work and could eliminate more cycles. Costs: it mixes high-risk architecture and security decisions with a release-blocking parse defect, makes regression attribution poor, violates the explicit wave-six deferral, and requires decisions R-0006 does not authorize.
+Record v2.17.16 and make no BUILD-C or boundary-first changes.
 
-Revisit only under the separate sixth-wave requirement after the compatibility, visibility, cycle, corpus, and sampling ratchets are green.
+- Gains: zero product change and immediate reversibility.
+- Costs: leaves all six verified R-0010 gaps and every R-0011 acceptance criterion unsatisfied.
+- Revisit when: Product cancels R-0010/R-0011 and closes the consolidated program after R-0009.
 
-## Contract ownership
+## Module ownership
 
-### Existing contracts changed
+### R-0009 evidence-only composition
 
-- `contract:runtime.python-compatibility`: supported runtime is CPython 3.10–3.13; all shipped Python compiles, stage dependencies import at startup, and incompatibility refuses before governed-state mutation.
-- `contract:review.collection`: a requirement-bound `quick-only` policy emits quick slots only; substantive quick findings block/return and cannot create a deep promotion.
-- `contract:status.run-observability`: graph degradation, CI-SHA proof, evaluation sample state, and seeded-failure metrics have one machine record and text/Markdown/dashboard projections.
-- `contract:governance.enforcement-status`: compatibility, graph strictness, cycle bounds, and quick-only dispatch are visible as proven/degraded/refused evidence rather than silent best effort.
-- `contract:governance.delivery-authority`: `local_green` and `pushed_green` are distinct; only exact-SHA remote required checks plus zero commits ahead may be described as pushed green.
+- `taskplane/preflight.py` verifies branch, commit, tag, tree, Design/Plan authority, and tree equality using existing Git/read-only helpers.
+- `scripts/ci_evals.py` remains the exact pushed-SHA and required-check authority; it is invoked, not reimplemented.
+- `exports/r0012-v21716-baseline.json` records the exact baseline identity, attributed scope decision, product-tree fingerprint, and closed reuse matrix.
+- `exports/r0012-program-ledger.json` is an append-safe logical ledger of consolidated approval, R-0009 acceptance, R-0010/R-0011 eligibility, sign-offs, and separately authorized external actions. R-0009 writes only these evidence surfaces.
 
-### Focused contracts provided
+### R-0010 checkpoint spine
 
-- `contract:governance-baseline/v1`: a read-only baseline record binds run id, branch/revision, source-graph fingerprint, active pointer status, prior Git blob identities, and external knowledge-tree fingerprint.
-- `contract:graph-scan-quality/v1`: scan output always carries `degraded`, affected modules, reasons, mode, and scanned revision; strict consumers refuse degraded evidence.
-- `contract:cli-error-envelope/v1`: known engine errors map to a stable headline, executable recovery, exit class, and optional debug cause.
-- `contract:import-cycle-ratchet/v1`: a checked-in file-level SCC inventory permits shrinkage, rejects new cyclic members/edges or larger member/edge/LOC bounds, and records before/after inventories.
-- `contract:evaluation-sample/v1`: one bounded sample owns N distinct trial records, pass threshold, observed scenario/model identity, completeness, and evaluation revision.
-- `contract:evaluation-corpus-impact/v1`: an explicit eval impact map creates selective corpus-to-engine validation edges and fails degraded when invalid.
-- `contract:seeded-failure-catch-rate/v1`: caught seeded failures divided by the declared seeded sample, never a production defect or universal reliability measure.
+- `taskplane/checkpoint.py` owns `taskplane.build-c-checkpoint/v1` specifications, ordered checkpoint phases, runtime-result validation, and `taskplane.build-c-checkpoint-receipt/v1`. It trusts only engine-observed command events and repository identity.
+- `taskplane/build_c.py` owns `taskplane.program-phase-ledger/v1`, `taskplane.scope-disjoint-assignment/v1`, `taskplane.integration-authorization/v1`, and the direct BUILD-C mode. It validates phase eligibility, asks the existing router for DEFINE, derives non-overlapping assignments from Plan/graph scope, and authorizes merge only for the checkpoint’s exact green revision.
+- `taskplane/loop.py` remains the live orchestration root. Its submission path calls the existing governed command engine and checkpoint owner; its Design/Plan transition calls BUILD-C DEFINE projection; its execution dispatch calls direct assignment; its integration path consumes exact checkpoint authorization.
+- `taskplane/governed_commands.py`, `command_runtime.py`, and `command_adapters.py` remain the only command lifecycle. No checkpoint runner, polling loop, or receipt store is forked.
+- `taskplane/review.py` and `lens.py` remain the only applicability/router path. DEFINE is a new caller of the incumbent selector, not a second selector.
+- `taskplane/depgraph.py`, `storage.py`, `repository.py`, and `worktree_cleanup.py` remain the graph/worktree/merge substrate. BUILD-C skips legacy wave/claim/build-lease state but does not fork repository identity or merge receipts.
 
-## Wave 1 — Baseline and quick-only governance
+### R-0011 boundary-first proving delivery
 
-Extend `taskplane/preflight.py` with a read-only baseline projection over incumbent repository/run/storage facts. It emits one canonical record into the external run artifact store. It does not copy or rewrite Design or knowledge evidence.
+- `taskplane/preflight.py` additionally seals `taskplane.plan-reconciliation-baseline/v1`: new modules, predicted impact and tolerance, contracts, task scopes, AC identities, graph revision, and compatible graph/diff identity rules.
+- `taskplane/test_tiers.py` generates `taskplane.test-tier-manifest/v1` from the import graph and proves every tracked test appears exactly once, Tier-0 cannot reach quarantine, thin PROVE runs zero Tier-2, and governed-build runs all applicable Tier-2.
+- `taskplane/schema_registry.py` validates the frozen 279-existing-schema reproduction and `taskplane/schema-registry.json`; new identifiers must be explicitly registered and a schema cannot unregister itself.
+- `taskplane/prove.py` owns the public seven-component PROVE orchestration, identity reconciliation, full-suite dispositions, independent AC evaluation, canaries, durable attempt journal, bundle, and one-fix limit.
+- `taskplane/tp.py` adds only the public `prove` CLI adapter and forwards closed arguments to `taskplane.prove`.
+- `.github/workflows/ci.yml` invokes the public PROVE/ratchet surfaces and continues to invoke incumbent zero-token, compatibility, pushed-SHA, packaging, and cycle checks.
+- `taskplane/dashboard.py` renders the phase/checkpoint/PROVE journal in semantic text and machine-equivalent state.
+- `taskplane/retro.py` binds the required delivery metrics to the final revision and writes `exports/r0012-retro.json`.
+- The exact 23 `taskplane/tests/test_r0008_*.py` files named in the requirement are new focused and live-wiring proofs. `taskplane/tests/fixtures/full-suite-inventory.json` is the frozen baseline disposition input.
 
-The authoritative knowledge store is the canonical `knowledge` root resolved from the active workspace locator/project identity (currently `/Users/vdemkiv/.taskplane/projects/github.com-vdemkiv-taskplane-43a0a10bba/knowledge`), never a caller-supplied or discovered lookalike directory. Before cleanup, a `taskplane.knowledge-preservation-manifest/v1` artifact binds repository/project identity, canonical resolved root identity, sorted relative paths, byte counts, per-file SHA-256 digests, explicit exclusions (locks only), and a canonical manifest digest. Baseline verification requires that pre-cleanup manifest identity as input. A missing/moved expected path, byte/digest mismatch, unexpected non-lock entry, root-identity mismatch, empty manifest for a previously non-empty store, or absent trusted pre-cleanup manifest blocks preservation; hashing an empty or wrong tree can never pass. For cleanup that predates R-0006, only a retained immutable audit artifact with the same closed manifest fields is acceptable—otherwise Wave 1 reports preservation as unproven and stops rather than reconstructing a false baseline.
+## Runtime and data contracts
 
-The baseline record also contains the current branch and SHA, fresh governed run id and workspace locator, refreshed graph fingerprint/scanned SHA, absence of an active `plan/**` payload and obsolete run pointer, and Git object ids plus byte digests for prior committed Design files. Preservation means the prior Git objects remain readable with the same bytes and the canonical post-cleanup knowledge manifest matches the trusted pre-cleanup manifest under the closed rules; the new R-0006 Design is a later artifact, not a mutation of R-0004 history.
+### Phase authority
 
-Record enforcement independently as `status=live|unproven|advisory`, with enforcement evidence id, Codex session id, and a verified hook-path receipt (loaded hook/bridge path, content fingerprint, host observation, and observation time). Only `live` may be rendered as “enforced.” `unproven` blocks mutating wave work by default. A human may convert it only to `advisory` through an attributable record containing actor, reason, exact wave/scope, expiry, and accepted limitations; advisory work remains visibly advisory and never satisfies a live-enforcement claim. The current session's unproven receipt is therefore evidence of non-live enforcement, not permission to describe initialization as enforced.
+`taskplane.program-phase-ledger/v1` is append-safe and content-addressed. Its only forward transitions are:
 
-At the same time, carry `review_policy.depth=quick-only` from R-0006 into routing and collection. `lens.py` may emit only the single quick sweep slot (or equivalent quick slots); `review_progression` returns a substantive concern to correction instead of promoting; `review.py` rejects any `deep.*` slot in a manifest bound to this requirement. Product/Design reasoning effort is not a lens depth and is unaffected.
+`awaiting_consolidated_approval → r0009_ready → r0009_accepted → r0010_active → r0010_exact_sha_green → r0010_signed_off → r0011_active → r0011_proved → r0011_signed_off`.
 
-Wave 1 passes only when the graph is refreshed at the current SHA, the active locator names the fresh run, the authoritative-root pre/post knowledge manifest and prior Design hashes match, no missing/moved/unexpected entry exists, no stale Plan authority is active, enforcement is honestly `live` or has a bounded attributable `advisory` authorization, and a seeded quick finding blocks without a deep dispatch.
+A transition carries actor/authority receipt, prior-record digest, phase target, exact repository revision, and evidence digests. Refusal creates no executable stage. External actions are separate rows with their own prior human approval and action receipt; phase approval never implies one.
 
-## Wave 2 — CPython compatibility before state or tests
+### Checkpoint
 
-First replace the PEP-701-only f-string in `stage_entities.py` with a precomputed request dictionary/fingerprint. Then make `run_store.py` load `stage_entities` at module startup through one dual package/script import seam. Convert `ImportError` or `SyntaxError` at that seam to one named `TaskplaneCompatibilityError` carrying the failing module, supported range, and recovery. Remove all four copied lazy imports at the lineage, commit-summary, put-object, and read-object seams.
+`taskplane.build-c-checkpoint/v1` contains checkpoint id, phase, AC ids, predecessor checkpoint ids, exact worktree revision, declared scope, focused-proof repository path and argv, and ratchet baseline. The path must be a regular tracked file inside the worktree before any command starts.
 
-The CLI catches that named error at its existing user boundary. Normal mode prints a concise compatibility headline and recovery and exits nonzero; `TASKPLANE_DEBUG=1` re-raises with the traceback. Because the eager import occurs before a RunStore instance or mutation path exists, the deliberate broken-dependency fixture can snapshot run, graph, contract, review, and requirement stores and prove no byte changed.
+The live synchronous call path is:
 
-The CI matrix becomes CPython 3.10, 3.11, 3.12, and 3.13. Every leg runs, in this order:
+`tp.py loop submit → loop.submit → governed_commands.execute(launch/wait) → CommandAdapter → CommandRuntime events → checkpoint.validate_and_mint → build_c phase/integration eligibility`.
 
-1. a repository-wide in-memory compile over the exact NUL-safe result of `git ls-files '*.py'`, including tracked `evals/**`, `corpus/**`, scripts, generators, hooks, and tests—not a hand-maintained directory subset;
-2. a closed-set import smoke that statically discovers every production import of `stage_entities`, asserts the exact expected set (`run_store.py`, `loop.py`, `stage_migration.py`, and `taskplane_lite.py` around its stage-module seam), imports each consumer, then runs representative version, graph-read, status-read, stage/run-store, and corpus flows in an isolated temporary home;
-3. that leg's pytest suite.
+A green `taskplane.build-c-checkpoint-receipt/v1` binds:
 
-Workflow-order tests parse `ci.yml` and seed syntax errors both in `taskplane/` and in a tracked Python sentinel outside the formerly named four directories (under `corpus/`) in disposable checkouts, proving the exact tracked-file compile exits before a sentinel test command runs. Any newly tracked `.py` is included automatically. The plugin remains stdlib-only. No async path, background task, packaging namespace, dependency, or GIL/free-threading claim is added. The Python solution-design reference targets 3.14 language guidance; R-0006's runtime contract deliberately remains 3.10–3.13 and forbids 3.12-only syntax.
+- engine and active-contract fingerprints;
+- run/task/checkpoint/AC identities;
+- exact command argv/cwd fingerprint and sanitized environment fingerprint;
+- bounded redacted output digest/byte count/truncation, terminal result, and exit code;
+- exact repository/worktree revision and declared scope;
+- ordered phase receipts for compile/import, focused proof, forbidden-state counts, ratchet delta, and one Engineering judgment over only that AC evidence delta;
+- predecessor receipt digests and final verdict.
 
-## Wave 3 — Visible degradation, clean CLI errors, zero-token CI, pushed-SHA truth
+Observed fields come from `CommandRuntime` snapshots/events and Git. Caller-authored producer, result, output, environment, revision, or receipt fields are rejected as unknown. A red, errored, canceled, dead, missing-proof, stale-revision, or truncated-required-output result mints no green receipt and runs no later checkpoint phase. Checkpoints dispatch zero lenses.
 
-The base Python import scanner in `depgraph.scan` becomes the first producer of structured per-file parse failures, independent of component decomposition. Its record contains file, resolved module, parser, error class, bounded reason, and file fingerprint. When `decompose=False`, these producer failures still set `contract:graph-scan-quality/v1.degraded=true`. When `decompose=True`, decomposition contributes a second named producer section; `depgraph.scan` combines, never overwrites, base-scanner and decomposition failures. `decompose.derive` remains fail-open in normal scanning. `tp graph scan --strict` returns nonzero on any producer failure. Design/Plan readiness and applicable Review/DoD consume the same quality record and refuse degraded evidence; they do not re-derive quality privately. Normal scan remains successful but must print `degraded=true`, every file/module/producer/reason, and the strict recovery command. Fixtures run both with and without decomposition.
+Command execution stays synchronous at the orchestration boundary. Cancellation/death propagate as named terminal runtime events and wake the one existing event wait. No asyncio task or `ExceptionGroup` is introduced.
 
-`tp.py` keeps one CLI boundary and exports one public `PUBLIC_ENGINE_ERROR_REGISTRY` protocol: each entry binds an exception class to headline, executable recovery, exit class, and debug-cause policy. `KNOWN_ENGINE_ERRORS` is derived from that registry rather than separately authored. A drift fixture asserts exact class-set equality between the exported registry and `KNOWN_ENGINE_ERRORS`, then parameterizes every entry. Normal mode never prints a traceback for registered classes; debug mode re-raises. A separate unexpected-exception fixture proves unregistered defects retain the current exit-70 diagnostic traceback behavior.
+### DEFINE review
 
-Add a credential-empty, no-egress CI job that runs `python3 scripts/ci_evals.py --corpus` under `env -i` with only an explicit non-secret allowlist (`PATH`, isolated `HOME`, locale, and a prepended no-egress `PYTHONPATH`). That path contains a `sitecustomize.py` loaded before scorer imports which makes process-wide socket creation/connect, `create_connection`, and DNS resolution fail and records any attempt. The job first proves an intentional connection and DNS lookup fail, then runs the valid corpus twice and requires byte-identical canonical output, then corrupts one temporary `expected.json` and requires nonzero. Clearing the whole environment rather than naming a few secrets removes model, cloud, proxy, and credential variables. Live model evaluation remains excluded from push/pull-request CI.
+After the attributed consolidated Design approval and before Plan execution state, `loop.approve` calls `build_c.project_define`, which calls `review.start_review(stage="define")`. That uses `lens.automatic_sweep_route` once, yielding exactly four or five concurrent quick slots including architecture, one event wait, and no deep/full/26-lens/serial fallback. Any slot-count, architecture, depth, graph-quality, or collection violation returns zero Plan authority.
 
-Required check names for Python 3.10–3.13 compatibility, graph/CLI fixtures, and the zero-token corpus are bound to `checked_sha`. After an explicit fetch, pushed-green requires exact equality `HEAD == refs/remotes/origin/main == checked_sha`, `origin/main..HEAD` count zero, `HEAD..origin/main` count zero, and every required-check receipt bound to that same SHA. Ahead, behind, diverged, stale-ref, local-only, or receipt-SHA mismatch remains `local_green`/refused and can never be labelled `pushed_green`. No release/tag/publish operation is added in this requirement.
+### Direct assignment and merge
 
-## Wave 4 — Cycle ratchet first, then four edge cuts
+`build_c.assign` consumes the sealed Plan plus `depgraph` scope/identity. It topologically selects ready tasks, assigns pairwise graph-disjoint scopes concurrently to isolated registered worktrees, and serializes overlaps by dependency order. Its durable assignment receipt contains no wave, claim, build-task lease, or per-task lens state. An out-of-scope write invalidates the assignment and creates no integration authorization.
 
-This wave has two ordered commits and CI verifies the ordering with full repository history.
+`build_c.authorize_integration` accepts only a green checkpoint receipt whose target revision equals the registered worktree tip, whose predecessors are green, and whose scope matches the assignment. Only then may `RepositoryManager.merge_registered_task` run and mint the incumbent merge receipt. Red worktrees and their dependents stay isolated; no rebase onto a red revision is permitted.
 
-### Commit 4A: measurement and ratchet only
+### Plan identity, schema, tiers, and PROVE
 
-Add `taskplane/import_cycles.py`, a stdlib AST/Tarjan file-level scanner, and `taskplane/tests/fixtures/import-cycles.json`. The policy stores every SCC with more than one module, sorted member and internal-edge lists, member count, internal-edge count, physical LOC, and source revision. It permits a known SCC to shrink. It rejects a new cyclic member, a new SCC, or growth above any recorded member/edge/LOC bound. Its failure names affected modules, edges, and measured sizes.
+The sealed Plan uses canonical repository-relative module identities and records graph fingerprint/revision, predicted impact, explicit tolerance, contracts, scopes, AC ids, and new-module identities. The diff uses the same namespace. Ambiguous identities fail before reconciliation.
 
-The first checked-in inventory is generated from the tree at the start of wave 4—not copied from the 2.17.14 report. CI runs the checker before structural tests. A history check proves the policy commit exists and passed while all four targeted deferred imports were still present.
+`taskplane.schema-registry/v1` records id, owner module, introduced revision, shape fingerprint, and status. The frozen fixture contains exactly 279 baseline-existing ids. Unknown new ids block until registered; duplicate/malformed/stale/self-unregistered rows fail.
 
-### Commit 4B: S1/S2 cuts
+`taskplane.test-tier-manifest/v1` records every tracked test once with import-graph fingerprint, tier, reason, and owning component. Tier-0-to-quarantine reachability and omissions fail. Thin PROVE refuses any Tier-2 execution; governed-build completeness requires every applicable Tier-2 test.
 
-Add `taskplane/graph_primitives.py` below `depgraph`, `decompose`, and `lens_signals`, plus a focused `taskplane/graph_decomposition.py` algorithm owner. Graph primitives contains closed graph payload normalization, module-id resolution, floor/quality value records, and consuming-side protocols; it imports none of the higher owners. `graph_decomposition` consumes only graph primitives and contains the mechanically moved decomposition algorithm needed by the compatibility API.
+`tp prove` creates one append-only `taskplane.prove-journal/v1` attempt and exactly seven terminal component receipts:
 
-- `depgraph.scan(ws, decompose: bool=False)` keeps its public signature and return semantics. With `decompose=True` it calls `graph_decomposition.derive` (not the compatibility `decompose` module), so direct callers remain valid while `depgraph` no longer imports `decompose`. `tp.py` graph/review paths, `loop.py` refresh paths, and `retro.py` are named production composition roots and retain their current calls; `tp.py` and `retro.py` exercise the `True` path.
-- `decompose.derive` becomes a backward-compatible facade over `graph_decomposition.derive`. The algorithm consumes graph resolver/payload and low-level lens signal inputs from `graph_primitives`; `decompose` no longer imports `depgraph` or `lens_signals` in any scope.
-- `lens_signals` consumes the same graph-primitives contract. Golden graph/component payloads prove external meaning is byte-equivalent except for the additive quality fields from wave 3.
-- `review.py` and the `tp.py` standalone review adapter own `review → lens` context-note composition: every governed `dispatch_briefs` call supplies the already-rendered note (or an explicit empty note when no context exists). `lens_signals` parity probes also pass an explicit note. `lens.py` no longer imports `review`.
-- `loop.py` and `tp.py`, the only governed callers of `taskplane_lite.dod_check`, own `host/orchestrator → taskplane_lite` graph-impact composition and pass the exact graph result for non-sparse graphs. `taskplane_lite` no longer imports `depgraph`. Sparse fallback is permitted only when the supplied graph-quality record proves zero modules/edges or missing scan; omission on a non-sparse/complete graph is a DoD error, never an implicit fallback.
+1. compile/import across the supported CPython 3.10–3.13 matrix;
+2. generated Tier-0 manifest execution;
+3. credential-empty zero-token corpus;
+4. cycle/SCC/LOC ratchet;
+5. four-canary red/revert/green component;
+6. graph/diff impact reconciliation;
+7. independent non-builder batched AC walk.
 
-After the cuts, regenerate the inventory with the same scanner. The build evidence contains complete before/after SCCs, including the orchestration, lens, and collision/regression/review-evidence/stage-handoff/taskplane-lite cycles. Direct `depgraph.scan(ws, decompose=True)` pre/post goldens prove backward compatibility, and caller audits prove every governed review/DoD composition input is supplied. Only decreases are accepted without a new human-approved Design change. No existing file is moved or renamed.
+The final `taskplane.prove-bundle/v1` binds one Plan fingerprint, diff fingerprint, graph revision, full-suite inventory receipt, clean repository revision, required-check receipt set, exact pushed SHA, and the seven component receipts. Stale, mixed, duplicate, caller-authored, missing, or partial evidence fails nonzero. First red permits exactly one new checkpointed batch fix and a complete second attempt; second red records an attributable human action and blocks sign-off. Restart resumes the immutable attempt journal and never overwrites partial or failed rows.
 
-## Wave 5 — Sampling, incomplete-work evidence, selective corpus impact, catch-rate
+### Python and packaging
 
-Add `taskplane/eval_sampling.py` as the pure aggregate owner. `scripts/eval_skills.py` accepts `--repeat N` (1–100) and `--threshold T` (0.0–1.0), creates a stable sample id, and calls the existing recorder once per `(scenario, observed-model-version, trial-index)`. Each accepted trial has a distinct id and immutable record. Retrying the same exact key reuses a valid record; mismatched or duplicate evidence refuses. Missing/cancelled trials mark the sample incomplete and no pass rate is emitted as a passing result.
+All new runtime code stays in the existing `taskplane` namespace, uses the standard library only, and adds no runtime dependency, import-time client, or global mutable authority. Public trust-boundary records are runtime-validated even when typed. Shared state is file-locked and append-safe; concurrency tests use separate processes and do not infer safety from the GIL or claim untested free-threaded extension support.
 
-A trial passes only when the incumbent evaluation/rubric result is complete and non-blocking. A complete sample reports `pass_count / repeat_count`; ten fake deterministic trials with seven passes report `0.7` and fail threshold `0.9`. Ordinary CI uses fake drivers only. Live sampling is scheduled or explicitly invoked, never part of push/pull-request CI, and persists no credentials or transcript beyond existing bounded evidence.
+The supported runtime floor remains the shipped CPython 3.10–3.13 matrix. The Python 3.14 solution-design guidance is applied by keeping syntax portable and adding a 3.14 compile/import leg when available. New modules receive strict static type checking in CI with a pinned development-only checker. Taskplane ships plugin archives rather than a wheel, so clean-wheel installation is not applicable; deterministic clean Codex/Claude package installation, archive-content checks for the new modules/JSON registry, and import smoke tests are the packaging DoD. No lockfile or runtime package surface changes.
 
-Extend the frozen evaluation record with closed incomplete-work evidence derived from the requirement, submission, suite result, and diff/test manifest. Add three executable negative fixtures with distinct refusal codes:
+## Live-edge and mutation verification gate
 
-- `incomplete.acceptance-coverage`: exactly three of five criteria are evidenced;
-- `incomplete.build-error`: a nonzero build result is followed by a completion claim;
-- `incomplete.test-deletion`: a failing test is deleted with no approved replacement evidence.
+A behavior is delivered only when the same commit contains both positive production invocation and a severed-edge test:
 
-Each fixture must reach the intended completeness check, not fail earlier for ordering. The corpus scorer pins both the refusal code and explanatory evidence.
+| Edge or invariant | Positive production evidence | Required severed-edge/mutation evidence |
+|---|---|---|
+| CLI/loop → governed engine → runtime/adapters | Existing public CLI and loop fixtures launch, wait, reconnect/cancel, and bind results | Remove each call/import; `test_r0007_governed_commands.py` fails |
+| Event wait | Completion, attention, error, cancellation, and death wake once; scheduled polling count is zero | Replace event invocation with polling or allow timeout reissue; sweep/command tests fail |
+| Existing review/deep boundary | Existing review/build stages emit 4–5 concurrent quick slots with architecture; nonhuman deep refuses | Remove router/architecture/depth validation; sweep bootstrap fails |
+| submit → runtime → checkpoint → receipt | A real governed submit runs the declared focused proof and returns the engine receipt for its exact revision | Cut any of the three edges or inject caller receipt fields; focused production-flow tests fail |
+| Design approval → DEFINE router | The real approval transition emits one DEFINE quick set | Cut `build_c.project_define` or bypass `review.start_review`; wiring test fails |
+| Plan → direct assignment → worktree | Disjoint scopes dispatch concurrently, overlap serializes, no legacy state exists | Cut graph call, seed overlap/out-of-scope write, or add claim/wave/lease state; direct-build tests fail |
+| checkpoint → integration → merge receipt | Only the checkpoint target SHA merges | Cut authorization or substitute another/red SHA; integration fixture fails closed |
+| public CLI → seven PROVE components → journal/bundle | One public command produces seven exact terminal receipts | Cut any component/collector edge, mix identities, or inject caller evidence; PROVE wiring tests fail |
+| CI/dashboard/Retro live consumers | CI blocks on PROVE and ratchets; dashboard and Retro render the same journal/revision | Remove each invocation; wiring/operations tests fail |
+| T09 and donor surfaces | Actual governed entry points exercise reachable conformant behavior | Sever every claimed production call edge; dormant/test-only implementations fail |
 
-Add `evals/impact-map.json`, a closed selective mapping from corpus modules to exact engine/evaluator files. Each row has one canonical corpus prefix matching only `evals/<name>` or `evals/negative/<name>` (no wildcard, `..`, symlink escape, or repository root) and 1–32 exact tracked `.py` engine files under `taskplane/` or `scripts/`; the whole map has at most 128 file relations. Directory-only sources and any wildcard/prefix such as `taskplane/**`, `taskplane/`, `scripts/**`, or `**` are invalid. `depgraph` turns each row into `validates` edges; invalid, unmatched, duplicate, escaped, or over-bound entries mark graph scan quality degraded. Fixtures change mapped evaluation/governance files and also unrelated product (`stage_entities.py`), CLI (`tp.py`), and reporting (`dashboard.py`) files to prove no near-catch-all corpus blast radius.
+The exact 23-path catalog is a closed set checked by the PROVE completeness component. Missing, renamed, duplicated, skipped, or silently cut paths fail. T09 is preserved without rewrite when its production reachability and current contract conformance pass; only a proven missing edge or conformance delta permits a minimum correction.
 
-`eval_sampling` computes `contract:seeded-failure-catch-rate/v1` over one explicit counted unit: a unique `(scenario_id, seeded_failure_id, observed_model_id, observed_model_version, trial_index, evaluation_revision)` trial. The denominator is the count of unique complete declared seeded units, the numerator is the subset for which the harness emitted the intended refusal, and `sample_size == denominator` is invariant. Repeated trials of the same scenario count separately only through distinct validated trial indexes; duplicates or mixed model/revision identity refuse. A fixture with five trials of one scenario and three of another, six caught, must report numerator 6, denominator/sample_size 8, rate 0.75. Zero samples produce `status=unavailable`, `reason=zero-sample`, and the label/identity only; numeric fields `numerator`, `denominator`, `sample_size`, `rate`, and `threshold` are omitted rather than set to zero. `retro.py` and `dashboard.py` consume the same record for machine, Markdown, text, and accessible HTML. The label is always `seeded-failure catch-rate`; no projection calls it production defect rate or model reliability.
+## Observability and quality targets
 
-## Failure, observability, and recovery
+Machine signals are versioned, deterministic, and render with equivalent semantic text:
 
-Every contract emits one canonical machine record before rendering. Signals include authoritative-root pre/post manifest identity and entry deltas; live/unproven/advisory enforcement plus evidence/session/hook receipt; exact tracked-Python and closed-consumer identities; per-producer/file graph failures in both scan modes; public-registry/known-error equality; fetched HEAD/origin/checked SHA with ahead and behind counts; SCC inventory and direct/caller parity; bounded corpus-impact selectivity; quick-only dispatch depth; eval trial/sample completeness; and counted-unit catch-rate arithmetic. Text and HTML remain usable without color.
+- `signal:r0012.phase-authority`: phase, predecessor, exact revision, actor/receipt, decision.
+- `signal:r0012.baseline-identity`: branch, commit, tag object/target, tree, reuse-matrix digest.
+- `signal:r0012.checkpoint`: AC, proof path/command, phase, revision, terminal condition, verdict.
+- `signal:r0012.checkpoint-receipt`: runtime/engine/command/environment/output/result/revision digests.
+- `signal:r0012.assignment`: ready/held tasks, scope identities, overlap reason, worktree revisions, forbidden-state counts.
+- `signal:r0012.integration`: checkpoint digest, authorized SHA, merge receipt, refusal reason.
+- `signal:r0012.review-projection`: boundary, selected quick lenses, architecture inclusion, concurrency, wait invocation, deep refusals.
+- `signal:r0012.prove-component`: attempt, component, identity set, terminal status, receipt digest.
+- `signal:r0012.prove-attempt`: attempt count, fix authorization, durable predecessor, bundle status.
+- `signal:r0012.reconciliation`: predicted/actual/tolerance sets and named drift/cuts.
+- `signal:r0012.tier-registry`: tier coverage/quarantine reachability and schema existing/new/error counts.
+- `signal:r0012.retro`: exact revision, wall clock, tokens, checkpoints, mean cost, empty-wait share, defects/checkpoint, PROVE defects, attempts, stop/re-scope events.
+- `signal:r0012.external-action`: action class, approval actor/receipt, exact target, performed/refused.
 
-Failures are fail-closed at the boundary they protect: a wrong/empty knowledge root, manifest delta, or unproven enforcement stops wave 1 unless an attributable bounded advisory receipt exists; compatibility stops before state/tests; any base-scanner or decomposition producer degradation stops strict readiness/review; CLI registry drift or swallowed unexpected errors fail fixtures; ahead/behind/stale/mismatched CI proof cannot become pushed-green; cycle growth, direct-API drift, or missing governed composition inputs stop merge; broad corpus mappings and inconsistent counted units refuse; incomplete samples cannot pass a threshold; zero seeded samples render unavailable with numeric fields absent; substantive quick findings return to correction without a deep worker.
+Exact targets: zero R-0009 product-tree changes; exactly six R-0010 implementation categories; exactly 4–5 automatic quick lenses including architecture; zero automatic deep/full/26/serial fallback slots; zero scheduled polling; checkpoint output summaries bounded to 16 KiB; exactly 23 catalog paths; 279 baseline-existing schemas and zero falsely new; exactly seven terminal PROVE component receipts per attempt; at most two full PROVE attempts; zero new undispositioned final failures; empty-wait share below 10%; and failure for a run exceeding 24 hours without prior human re-scope. Runtime availability/RPO/RTO are not applicable to this local governed CLI; interruption safety is instead measured by durable resume and zero partial-green reuse.
 
-Recovery is bounded and attributable. The named owner repairs the offending source/evidence and reruns the same deterministic check in both relevant modes; preservation cannot be reconstructed from a post-cleanup empty tree and enforcement cannot be relabelled. Cycle-bound increases, corpus catch-all edges, quick-to-deep promotion, and wave-six scope require a new human-approved Design change rather than an inline waiver.
+## Failure modes and recovery
+
+- Baseline or later-history mismatch: `signal:r0012.baseline-identity` refuses R-0009 in the same invocation. The program owner corrects only the evidence/branch selection or returns to Product; no executable state exists.
+- Missing consolidated/predecessor authority or seventh gap: `signal:r0012.phase-authority` refuses before Plan/task/worktree creation. The human supplies the missing approval or records a new scope decision; retry is bounded to that transition.
+- Missing proof, command failure, cancellation, death, or stale checkpoint revision: `signal:r0012.checkpoint` is red and later phases do not run. The task owner repairs the declared AC scope and reruns that checkpoint once on a new exact revision.
+- Forged or mixed checkpoint evidence: `signal:r0012.checkpoint-receipt` refuses before a green receipt or integration state. The checkpoint owner re-derives evidence from the durable runtime journal; caller data is discarded.
+- Invalid quick projection or deep request: `signal:r0012.review-projection` creates no downstream authority. The orchestration owner corrects the incumbent-router invocation; automatic fallback is forbidden.
+- Overlap, out-of-scope write, or ambiguous graph identity: `signal:r0012.assignment` serializes overlap or refuses the affected assignment before integration. The planner corrects scope/identity under a new approved Plan if needed.
+- Red/stale merge attempt: `signal:r0012.integration` keeps the worktree and dependents isolated. The orchestrator accepts only a new green checkpoint for that exact tip; it never rebases dependents onto red.
+- Tier/schema/reconciliation/canary failure: `signal:r0012.tier-registry` or `signal:r0012.reconciliation` makes the current PROVE attempt red. The non-builder evaluator authorizes the single checkpointed batch fix, followed by a complete new attempt.
+- Missing, mixed, duplicate, or partial PROVE receipt: `signal:r0012.prove-component` and `signal:r0012.prove-attempt` block the bundle. The proof owner resumes the current durable attempt or starts the one allowed re-PROVE; a second red returns human action.
+- Missing external approval: `signal:r0012.external-action` blocks only that action. The release owner obtains a distinct attributed approval or leaves the action unperformed.
+
+## Risks and controls
+
+- **Scope creep disguised as compatibility work:** the Plan schema permits only six R-0010 category ids and fails on any task without exactly one. Owner: Plan approver.
+- **Checkpoint self-attestation:** runtime-observed fields and engine fingerprints are minted after execution; unknown caller fields fail. Owner: checkpoint module.
+- **A green task merging at another SHA:** authorization binds checkpoint digest, registered worktree tip, and merge receipt. Owner: BUILD-C integration.
+- **Legacy state leaking into thin BUILD:** direct mode asserts zero wave/claim/build-lease/per-task-lens records; governed-build remains a separate retained compatibility mode. Owner: loop.
+- **Donor history smuggling:** content provenance is path/hash only; ancestry/diff proof rejects v2.17.17+ commits as parents, cherry-picks, or evidence. Owner: R-0011 provenance record.
+- **Seven-part proof becoming seven inconsistent identities:** the final bundle accepts only one canonical identity set and rejects mixing before collection. Owner: PROVE.
+- **Retry overwriting a failure:** append-only attempt ids and predecessor digests preserve red/superseded evidence. Owner: PROVE journal.
+- **Python/package drift:** new modules remain stdlib runtime code, are strictly type-checked, run across the support matrix, and are proven in clean deterministic plugin archives. Owner: CI.
+
+No silent technical debt is accepted. Retained governed-build machinery is an explicit compatibility surface, not a deletion candidate in this requirement. Its future removal requires a separate requirement and signed evidence; R-0012 neither expands nor silently accepts that debt.
 
 ## Rollout and rollback
 
-Roll out one wave at a time on `main`, with the preceding wave's gates required before the next branch/commit begins. Wave 4 is explicitly two commits: ratchet first, cuts second. Wave 5 fake-driver fixtures land before any scheduled live sample is trusted. The final push is accepted only after the exact remote SHA has every required check green.
+1. Obtain one attributed consolidated Design approval; before it, every executable stage refuses.
+2. Record R-0009 baseline/reuse evidence only and prove the product tree unchanged.
+3. Deliver R-0010 under manual AC/group checkpoints: phase authority and checkpoint/receipt first, submit wiring second, DEFINE projection third, direct assignment fourth, checkpoint-authorized integration fifth, then the compatibility and live-edge matrix.
+4. After local R-0010 floors are green, require a separate push approval, fetched exact-SHA proof, and human R-0010 sign-off.
+5. Re-deliver R-0011 in graph-disjoint groups matching the eight catalog groups, each through R-0010 checkpoints; seal Plan identity, tier/registry, PROVE/reconciliation, CI/operations, then run final review/PROVE/Retro.
+6. Cross each integration, push, tag, publication, destructive-history, or scope-expansion boundary only with its own attributed approval.
 
-Rollback is additive and wave-local:
+Before any shared mutation, rollback is branch abandonment back to unchanged `bba3354e...`; R-0009 evidence is superseded by an append-only record, not rewritten. While R-0010 is unproven, direct BUILD-C remains disabled and the existing governed-build path remains intact. A red R-0010 leaves R-0011 closed. After a commit is shared, rollback is a new forward correction or disabling delivery-mode transition—never reset, force-push, tag movement, receipt deletion, or donor mutation. A failed R-0011 PROVE leaves all checkpoint/journal evidence readable and blocks sign-off; it does not roll back into unproven integration.
 
-- Wave 1 authoritative manifest evidence is immutable; disabling its projection does not delete or substitute prior evidence, and unproven/advisory enforcement is never relabelled live. Quick-only remains required for R-0006 and cannot be rolled back to deep promotion inside this requirement.
-- Wave 2 can revert the eager import/error adapter only together with the dependent stage changes; exact tracked-Python compilation and the closed four-consumer import smoke remain as the floor.
-- Wave 3 may revert rendering while retaining base/decomposition machine graph quality, the public error registry, no-egress corpus CI, and fetched exact-SHA proof; it may never relabel degraded/local/ahead/behind evidence as complete/pushed.
-- Wave 4 may revert a cut to the pre-cut tree only if the already-landed ratchet, direct `scan(..., decompose=True)` golden, and governed caller-input audits still pass. The ratchet itself is not removed in this wave.
-- Wave 5 can disable live repeat execution while retaining bounded impact mappings, counted trial records, arithmetic/selectivity fixtures, and zero-token fixtures; readers tolerate zero samples only by rendering unavailable with numeric fields omitted. No stored trial or sample is rewritten.
+## Solution-design lens result
 
-There is no data migration, destructive conversion, external event cutover, or new service. All persistence additions are versioned, additive records. This makes rollback possible without fabricating history.
+The design is grounded in exact v2.17.16 sources and does not rebuild the proven command, wait, review, graph, worktree, receipt, findings, or enforcement machinery. The alternatives are materially different, and the selected approach is the only one consistent with the six-gap scope and predecessor gates. Every one of the 20 acceptance criteria maps to a named module/contract and executable positive/negative validation. All changed contracts have reversible rollout, every failure mode names an emitted signal plus an actor and bounded recovery, and Plan can decompose the phase/call-edge order without inventing authority or identity rules.
 
-## Python solution-design application
+The state-transition visual is required because the non-code R-0009 closure, manual R-0010 bootstrap, exact-SHA/human gate, R-0011 one-fix PROVE loop, and separately controlled external actions are materially easier to audit as one state machine.
 
-The Python solution-design reference was read in full and SHA-256 verified as `9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7`.
+## Open questions
 
-| Concern | Disposition |
-| --- | --- |
-| Runtime and packaging | Runtime support is CPython 3.10–3.13 despite the reference's 3.14 guidance target. The plugin remains stdlib-only; compile/import checks cover tracked package, script, lens-generator, and hook Python plus clean packaged entry points. |
-| Sync/async ownership | All added paths are synchronous. No event loop, task, cancellation, or `ExceptionGroup` contract is introduced. Live trial interruption leaves an incomplete sample and immutable completed trials. |
-| Boundary typing | Runtime-validate graph quality, impact-map JSON, trial/sample records, thresholds/repeats, CI proof, and catch-rate inputs. Type annotations never substitute for validation. |
-| Framework separation | Pure SCC and sample aggregation live in focused modules; CI/CLI/Retro/dashboard are adapters. No import-time settings, global client, or service locator is introduced. |
-| Concurrency and free threading | Trial ids and records are immutable and idempotent; no safety claim relies on the GIL. Existing atomic file/lock boundaries own concurrent persistence. |
-| Failure and cleanup | Compatibility/quality/sample failures refuse before governed mutation or reporting success. Temporary fixtures use isolated roots and existing cleanup; no destructive recovery is introduced. |
-| Verification | CPython matrix, compile-before-test sentinel, clean entry imports, AST cycle ratchet, graph payload goldens, fake 7/10 trials, incomplete-work corpus, impact selectivity, and projection parity are executable. |
-
-## Graph DoR and DoD
-
-The overlay is bounded to local depth 3, `contract-only` boundaries, contract depth 1, and requirement depth 1. The baseline graph fingerprint is pinned even though its missing source scan is an explicit DoR warning. Wave 1 must refresh it and record the current scanned SHA before Plan/Build can claim source impact.
-
-Design DoR is satisfied because R-0006 has exactly 18 criteria and no open questions; every current premise above cites repository or run evidence; module/contract ownership is named; numeric bounds are fixed; sequencing and rollback are settled; and wave six is explicit out of scope.
-
-Build/Review DoD requires realization evidence for every proposed edge and contract, a refreshed as-built graph, complete acceptance-map execution, before/after SCC inventories, exact-SHA CI proof, quick-only manifests, and zero unexplained design drift. Scanner-invisible contracts and eval validation edges need explicit recorded evidence. Any new module, cycle-bound increase, catch-all corpus mapping, deep lens slot, persistence replacement, or package move returns to Design.
-
-## Deferred debt
-
-R-0006 intentionally leaves the remaining measured SCCs in place and adds a small explicit input seam rather than performing the package/component redesign. Record this after approval:
-
-`tp req debt "Resolve residual post-R-0006 import cycles in the separate wave-six architecture" --req R-0006 --reason "R-0006 ratchets and shrinks cycles but package moves and orchestration ownership are explicitly deferred" --follow-up "Approve the wave-six package/component design, then reduce every retained SCC without raising the ratchet" --files "taskplane/**/*.py"`
-
-No other design question remains open.
+None.
