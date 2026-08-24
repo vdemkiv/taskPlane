@@ -1223,13 +1223,9 @@ class TestLoop(unittest.TestCase):
                 ["git", "commit", "-qm", "record evaluator evidence"],
                 cwd=ws, check=True, capture_output=True, text=True)
             task = dict(TASK)
-            authority_ref, source_revision = \
-                loop._persist_reanchor_authority(
-                    ws, task, "independent-pass")
             prior = dict(
                 task, status="passed", workspace=ws,
-                target_commit=source_revision,
-                reanchor_authority=authority_ref)
+                target_commit=tp.git_head(ws))
             return loop._verify_reanchor_task_evidence(ws, task, prior)
 
         for sentinel in (
@@ -1240,50 +1236,47 @@ class TestLoop(unittest.TestCase):
                 evidence, error = verify(sentinel)
                 self.assertIsNone(evidence)
                 self.assertEqual(
-                    error, "durable evaluator criterion is not proven met")
+                    error, "durable evaluator criterion description is missing")
 
-        nested_proof = {
-            "proof": {
-                "digest": "sha256:" + "a" * 64,
-                "receipt": "engine:evaluator-independent-pass",
-            },
-            "locations": [{"file": "src/todo/a.py", "line": 1}],
-        }
-        evidence, error = verify(nested_proof)
-        self.assertIsNone(error)
-        self.assertEqual(evidence["resolution"], "independent-pass")
+        for prose in ("ok", "src/todo/a.py:12",
+                      "tests passed; implementation looks correct"):
+            with self.subTest(prose=prose):
+                self.assertFalse(loop._verified_criterion_evidence(prose))
+                evidence, error = verify(prose)
+                self.assertIsNone(evidence)
+                self.assertEqual(
+                    error,
+                    "engine-authored reanchor authority receipt is missing")
 
     def _authoritative_reanchor_case(self):
-        ws = git_ws(tempfile.mkdtemp(dir=self.tmp), [TASK])
+        ws, _, _ = self._gate_evaluator_unavailable()
+        subprocess.run(["git", "add", "src/todo/a.py"], cwd=ws,
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-qm", "bind evaluated source"],
+                       cwd=ws, check=True, capture_output=True, text=True)
+        state = loop.load(ws)
+        task_state = state["tasks"][0]
+        task_state["evaluation"]["reason_code"] = \
+            "orchestration_unavailable"
+        task_state["evaluation"]["outage_identity"]["evaluation"][
+            "reason_code"] = "orchestration_unavailable"
         verdict_path = runtime_storage.evaluation_path(ws)
-        os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
-        verdict = {
-            "schema": "taskplane.evaluator-output/v1",
-            "task": "t1",
-            "requirement": "",
-            "verdict": "pass",
-            "criteria": [{
-                "criterion": TASK["criteria"][0],
-                "status": "met",
-                "evidence": "receipt: independently verified source",
-            }],
-            "failures": [],
-        }
+        with open(verdict_path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["evaluation"]["reason_code"] = \
+            "orchestration_unavailable"
+        task_state["evaluation"]["outage_identity"] = \
+            evaluator_health.outage_identity(
+                task=verdict["task"], requirement=verdict["requirement"],
+                evaluation=verdict["evaluation"],
+                failures=verdict["failures"])
         with open(verdict_path, "w", encoding="utf-8") as stream:
-            json.dump(verdict, stream, sort_keys=True)
-        subprocess.run(
-            ["git", "add", "-f", ".eval/verdict.json"], cwd=ws,
-            check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["git", "commit", "-qm", "record authoritative evaluation"],
-            cwd=ws, check=True, capture_output=True, text=True)
-        task = dict(TASK)
-        authority_ref, source_revision = loop._persist_reanchor_authority(
-            ws, task, "independent-pass")
-        prior = dict(
-            task, status="passed", workspace=ws,
-            target_commit=source_revision,
-            reanchor_authority=authority_ref)
+            json.dump(verdict, stream)
+        loop.save(ws, state)
+        self.assertNotIn("error", loop.resolve(ws, "pass"))
+        state = loop.load(ws)
+        prior = dict(state["tasks"][0])
+        task = dict(prior)
         return ws, task, prior, verdict_path
 
     def test_define_projection_reanchor_authority_fails_closed_on_tamper_missing_and_mixed_revision(self):
@@ -1294,7 +1287,11 @@ class TestLoop(unittest.TestCase):
         evidence, error = loop._verify_reanchor_task_evidence(
             ws, task, prior)
         self.assertIsNone(error)
-        self.assertEqual(evidence["resolution"], "independent-pass")
+        self.assertEqual(
+            evidence["resolution"],
+            "human-resolved-orchestration-outage")
+        self.assertTrue(loop._verified_criterion_evidence(
+            evidence["criterion_proof"]))
 
         missing_path = receipt_path + ".missing"
         os.replace(receipt_path, missing_path)
@@ -3285,6 +3282,49 @@ class TestReviewBridge(unittest.TestCase):
         self.assertEqual(module.checkout_proof, "verified-bytes")
         self.assertEqual(loader.sources["verified"]["path"], candidate)
         self.assertIsNot(sys.modules.get(module.__name__), module)
+
+    def test_review_bridge_graph_policy_mutation_reloads_complete_bundle(self):
+        root = tempfile.mkdtemp()
+        modules = {
+            "storage": "POLICY = 'storage'\n",
+            "taskplane_lite": "POLICY = 'runtime'\n",
+            "review_evidence": (
+                "import storage as runtime_storage\n"
+                "import taskplane_lite as tp\n"),
+            "review": (
+                "import storage as runtime_storage\n"
+                "import taskplane_lite as tp\n"
+                "import review_evidence as review_evidence_runtime\n"),
+            "graph_quality": "POLICY = 'graph-v1'\n",
+        }
+        for name, source in modules.items():
+            with open(os.path.join(root, name + ".py"), "w",
+                      encoding="utf-8") as stream:
+                stream.write(source)
+        with open(os.path.join(root, "loop.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("# checkout root identity\n")
+
+        with unittest.mock.patch.object(
+                loop, "__file__", os.path.join(root, "loop.py")), \
+                unittest.mock.patch.object(
+                    loop, "_REVIEW_RUNTIME_BUNDLE", None):
+            loop._review_runtime_modules()
+            first_loader = loop._REVIEW_RUNTIME_BUNDLE["loader"]
+            first_policy = first_loader.load("graph_quality")
+            replacement = os.path.join(root, "graph_quality.next")
+            with open(replacement, "w", encoding="utf-8") as stream:
+                stream.write("POLICY = 'graph-v2'\n")
+            os.replace(replacement, os.path.join(root, "graph_quality.py"))
+
+            loop._review_runtime_modules()
+            second_loader = loop._REVIEW_RUNTIME_BUNDLE["loader"]
+            second_policy = second_loader.load("graph_quality")
+
+        self.assertIn("graph_quality", loop._REVIEW_REQUIRED_MODULES)
+        self.assertIsNot(first_loader, second_loader)
+        self.assertEqual(first_policy.POLICY, "graph-v1")
+        self.assertEqual(second_policy.POLICY, "graph-v2")
 
     def test_review_bridge_execute_gate_uses_safe_argv(self):
         completed = subprocess.CompletedProcess(

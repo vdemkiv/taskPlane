@@ -33,7 +33,6 @@ import contextvars
 import hashlib
 import hmac
 import json
-import math
 import os
 import re
 import shlex
@@ -3485,7 +3484,8 @@ def _diff_files(ws: str, base: str) -> list:
 
 _REVIEW_RUNTIME_BUNDLE = None
 _REVIEW_REQUIRED_MODULES = (
-    "storage", "taskplane_lite", "review_evidence", "review")
+    "storage", "taskplane_lite", "review_evidence", "review",
+    "graph_quality")
 _REVIEW_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -3684,9 +3684,18 @@ def _review_runtime_modules():
     global _REVIEW_RUNTIME_BUNDLE
     root = os.path.realpath(os.path.dirname(__file__))
     cached = _REVIEW_RUNTIME_BUNDLE
+    force_private = False
     if isinstance(cached, dict) and cached.get("root") == root:
-        cached["loader"].assert_required_current()
-        return (cached["runtime"], cached["evidence"], cached["review"])
+        try:
+            cached["loader"].assert_required_current()
+        except RuntimeError:
+            # The checkout advanced in this process. Discard every pinned
+            # policy/runtime module and reload current verified bytes as one
+            # private bundle; path-equal canonical imports may still be old.
+            _REVIEW_RUNTIME_BUNDLE = None
+            force_private = True
+        else:
+            return (cached["runtime"], cached["evidence"], cached["review"])
 
     loader = _CheckoutReviewModuleBundle(root)
     pinned = {name: loader.pin(name) for name in _REVIEW_REQUIRED_MODULES}
@@ -3703,7 +3712,8 @@ def _review_runtime_modules():
     review_path = os.path.realpath(str(
         getattr(imported_review, "__file__", "") or ""))
     consistent = (
-        imported_runtime_path == pinned["taskplane_lite"]["path"]
+        not force_private
+        and imported_runtime_path == pinned["taskplane_lite"]["path"]
         and storage_path == pinned["storage"]["path"]
         and evidence_path == pinned["review_evidence"]["path"]
         and review_path == pinned["review"]["path"]
@@ -5512,64 +5522,87 @@ def _reanchor_fingerprint(task: Mapping) -> str:
         _reanchor_contract(task))).hexdigest()
 
 
+_REANCHOR_CRITERION_PROOF_SCHEMA = \
+    "taskplane.reanchor-criterion-proof/v1"
+_REANCHOR_PROOF_FIELDS = frozenset({
+    "schema", "authority_schema", "task_id", "contract_fingerprint",
+    "source_revision", "evaluation_sha256", "criteria_status_sha256",
+    "receipt_sha256", "disposition", "key_id",
+})
+
+
 def _verified_criterion_evidence(value) -> bool:
-    """Require a recursively sound proof shape, not a truthy outcome shell."""
-    seen = set()
-
-    def inspect(item, depth: int = 0) -> tuple[bool, bool]:
-        # The evaluator artifact is JSON, but bound recursion here as well so
-        # an in-process caller cannot supply a cyclic/deep object as proof.
-        if depth > 32:
-            return False, False
-        if isinstance(item, str):
-            return bool(item.strip()), bool(item.strip())
-        if item is None or isinstance(item, bool):
-            return False, False
-        if isinstance(item, (int, float)):
-            # A non-zero finite number can be proof metadata (for example a
-            # line number), but never proof by itself. Zero is an explicit
-            # non-proof sentinel at every nesting level.
-            return (bool(item) and math.isfinite(item)), False
-        if isinstance(item, Mapping):
-            if not item or id(item) in seen:
-                return False, False
-            seen.add(id(item))
-            try:
-                rows = []
-                for key, child in item.items():
-                    if not isinstance(key, str) or not key.strip():
-                        return False, False
-                    rows.append(inspect(child, depth + 1))
-            finally:
-                seen.remove(id(item))
-            return (all(valid for valid, _ in rows) and
-                    any(proof for _, proof in rows),
-                    any(proof for _, proof in rows))
-        if isinstance(item, (list, tuple)):
-            if not item or id(item) in seen:
-                return False, False
-            seen.add(id(item))
-            try:
-                rows = [inspect(child, depth + 1) for child in item]
-            finally:
-                seen.remove(id(item))
-            return (all(valid for valid, _ in rows) and
-                    any(proof for _, proof in rows),
-                    any(proof for _, proof in rows))
-        return False, False
-
-    valid, has_proof = inspect(value)
-    return valid and has_proof
+    """Recognize only a post-verification engine authority projection."""
+    if not isinstance(value, Mapping) or set(value) != \
+            _REANCHOR_PROOF_FIELDS or value.get("schema") != \
+            _REANCHOR_CRITERION_PROOF_SCHEMA or value.get(
+                "authority_schema") != _REANCHOR_AUTHORITY_SCHEMA:
+        return False
+    if not str(value.get("task_id") or "").strip() or value.get(
+            "disposition") not in {
+                "independent-pass", "human-resolved-orchestration-outage"}:
+        return False
+    for field in ("contract_fingerprint", "evaluation_sha256",
+                  "criteria_status_sha256", "receipt_sha256", "key_id"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(value.get(field) or "")):
+            return False
+    return bool(re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+        str(value.get("source_revision") or "")))
 
 
-_REANCHOR_AUTHORITY_SCHEMA = "taskplane.reanchor-pass-authority/v1"
+_REANCHOR_AUTHORITY_SCHEMA = "taskplane.reanchor-pass-authority/v2"
 _REANCHOR_AUTHORITY_REF_SCHEMA = \
     "taskplane.reanchor-pass-authority-reference/v1"
 _REANCHOR_ANCESTRY_TIMEOUT_SECONDS = 10
 
 
+def _validated_reanchor_verdict(task: Mapping, verdict: Mapping,
+                                disposition: str) -> str:
+    """Validate the complete gate verdict and digest its criterion statuses."""
+    task_id = str(task.get("id") or "")
+    requirement = str(task.get("req") or "")
+    if not isinstance(verdict, Mapping) or verdict.get("schema") != \
+            "taskplane.evaluator-output/v1" or str(
+                verdict.get("task") or "") != task_id or str(
+                verdict.get("requirement") or "") != requirement:
+        raise ValueError("reanchor verdict identity is invalid")
+    criteria = list(task.get("criteria") or [])
+    rows = verdict.get("criteria")
+    if not criteria or not isinstance(rows, list) or len(rows) != len(criteria):
+        raise ValueError("reanchor verdict criteria are incomplete")
+    normalized = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping) or row.get("criterion") != \
+                criteria[index] or row.get("status") != "met":
+            raise ValueError("reanchor verdict criteria are not exactly met")
+        # Criterion prose remains ordinary evaluator explanation. It is
+        # validated as present but contributes no authority by itself.
+        descriptive = row.get("evidence")
+        if not isinstance(descriptive, str) or not descriptive.strip():
+            raise ValueError("reanchor verdict criterion description is missing")
+        normalized.append({"criterion": criteria[index], "status": "met"})
+    failures = verdict.get("failures")
+    if not isinstance(failures, list):
+        raise ValueError("reanchor verdict failures are malformed")
+    if disposition == "independent-pass":
+        if verdict.get("verdict") != "pass" or failures:
+            raise ValueError("reanchor verdict is not an independent pass")
+    elif disposition == "human-resolved-orchestration-outage":
+        evaluation = verdict.get("evaluation")
+        if verdict.get("verdict") != "fail" or not isinstance(
+                evaluation, Mapping) or evaluation.get("status") != \
+                "unavailable" or evaluation.get("reason_code") != \
+                "orchestration_unavailable":
+            raise ValueError("reanchor verdict is not a resolved outage")
+    else:
+        raise ValueError("reanchor disposition is invalid")
+    return hashlib.sha256(tp.canonical_json_bytes(normalized)).hexdigest()
+
+
 def _reanchor_authority_material(task: Mapping, *, source_revision: str,
                                  evaluation_sha256: str,
+                                 criteria_status_sha256: str,
                                  disposition: str,
                                  outage_identity=None) -> dict:
     return {
@@ -5578,6 +5611,8 @@ def _reanchor_authority_material(task: Mapping, *, source_revision: str,
         "contract_fingerprint": _reanchor_fingerprint(task),
         "source_revision": str(source_revision or "").lower(),
         "evaluation_sha256": str(evaluation_sha256 or "").lower(),
+        "criteria_status_sha256": str(
+            criteria_status_sha256 or "").lower(),
         "disposition": str(disposition or ""),
         "outage_identity": (outage_identity if disposition ==
                             "human-resolved-orchestration-outage" else None),
@@ -5595,12 +5630,19 @@ def _persist_reanchor_authority(workspace: str, task: Mapping,
     verdict_path = runtime_storage.evaluation_path(workspace)
     with open(verdict_path, "rb") as stream:
         verdict_bytes = stream.read()
+    try:
+        verdict = json.loads(verdict_bytes)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("reanchor verdict JSON is invalid") from exc
     evaluation_sha256 = hashlib.sha256(verdict_bytes).hexdigest()
+    criteria_status_sha256 = _validated_reanchor_verdict(
+        task, verdict, disposition)
     warning = task.get("evaluation") if isinstance(
         task.get("evaluation"), Mapping) else {}
     material = _reanchor_authority_material(
         task, source_revision=source_revision,
         evaluation_sha256=evaluation_sha256,
+        criteria_status_sha256=criteria_status_sha256,
         disposition=disposition,
         outage_identity=warning.get("outage_identity"))
     authority = tp._review_contract_authority(workspace, create=True)
@@ -5625,12 +5667,14 @@ def _persist_reanchor_authority(workspace: str, task: Mapping,
 def _verify_reanchor_authority(workspace: str, task: Mapping,
                                prior: Mapping, *, source_revision: str,
                                evaluation_sha256: str,
-                               disposition: str) -> str | None:
+                               criteria_status_sha256: str,
+                               disposition: str) -> tuple[dict | None,
+                                                          str | None]:
     reference = prior.get("reanchor_authority")
     if not isinstance(reference, Mapping) or reference.get("schema") != \
             _REANCHOR_AUTHORITY_REF_SCHEMA or set(reference) != {
                 "schema", "receipt_sha256", "key_id"}:
-        return "engine-authored reanchor authority receipt is missing"
+        return None, "engine-authored reanchor authority receipt is missing"
     receipt_path = runtime_storage.evaluation_path(
         workspace, "reanchor-authority.json")
     try:
@@ -5638,13 +5682,14 @@ def _verify_reanchor_authority(workspace: str, task: Mapping,
             receipt_bytes = stream.read()
         receipt = json.loads(receipt_bytes)
     except (OSError, ValueError) as exc:
-        return f"engine-authored reanchor authority is unavailable: {exc}"
+        return None, f"engine-authored reanchor authority is unavailable: {exc}"
     if hashlib.sha256(receipt_bytes).hexdigest() != \
             reference.get("receipt_sha256"):
-        return "engine-authored reanchor authority bytes changed"
+        return None, "engine-authored reanchor authority bytes changed"
     expected = _reanchor_authority_material(
         task, source_revision=source_revision,
         evaluation_sha256=evaluation_sha256,
+        criteria_status_sha256=criteria_status_sha256,
         disposition=disposition,
         outage_identity=((prior.get("evaluation") or {}).get(
             "outage_identity") if isinstance(
@@ -5652,9 +5697,9 @@ def _verify_reanchor_authority(workspace: str, task: Mapping,
     try:
         authority = tp._review_contract_authority(workspace, create=False)
     except Exception as exc:
-        return f"reanchor signing authority is unavailable: {exc}"
+        return None, f"reanchor signing authority is unavailable: {exc}"
     if not isinstance(receipt, Mapping):
-        return "engine-authored reanchor authority is malformed"
+        return None, "engine-authored reanchor authority is malformed"
     unsigned = {**expected, "key_id": authority["key_id"]}
     signature = hmac.new(
         authority["secret"], tp.canonical_json_bytes(unsigned),
@@ -5664,8 +5709,22 @@ def _verify_reanchor_authority(workspace: str, task: Mapping,
             {key: receipt.get(key) for key in unsigned} != unsigned or \
             not hmac.compare_digest(str(receipt.get("signature") or ""),
                                     signature):
-        return "engine-authored reanchor authority does not match exact pass"
-    return None
+        return None, "engine-authored reanchor authority does not match exact pass"
+    proof = {
+        "schema": _REANCHOR_CRITERION_PROOF_SCHEMA,
+        "authority_schema": receipt["schema"],
+        "task_id": receipt["task_id"],
+        "contract_fingerprint": receipt["contract_fingerprint"],
+        "source_revision": receipt["source_revision"],
+        "evaluation_sha256": receipt["evaluation_sha256"],
+        "criteria_status_sha256": receipt["criteria_status_sha256"],
+        "receipt_sha256": reference["receipt_sha256"],
+        "disposition": receipt["disposition"],
+        "key_id": receipt["key_id"],
+    }
+    if not _verified_criterion_evidence(proof):
+        return None, "engine-authored criterion proof is malformed"
+    return proof, None
 
 
 def _verify_reanchor_task_evidence(
@@ -5739,9 +5798,11 @@ def _verify_reanchor_task_evidence(
         if not isinstance(row, Mapping):
             return None, "durable evaluator criterion evidence is malformed"
         observed.append(row.get("criterion"))
-        if row.get("status") != "met" or not _verified_criterion_evidence(
-                row.get("evidence")):
+        if row.get("status") != "met":
             return None, "durable evaluator criterion is not proven met"
+        descriptive = row.get("evidence")
+        if not isinstance(descriptive, str) or not descriptive.strip():
+            return None, "durable evaluator criterion description is missing"
     if observed != criteria or len(set(map(str, observed))) != len(observed):
         return None, "durable evaluator criteria do not exactly match the task"
 
@@ -5777,17 +5838,27 @@ def _verify_reanchor_task_evidence(
         return None, "durable evaluator verdict is not an exact pass"
 
     evaluation_sha256 = hashlib.sha256(verdict_bytes).hexdigest()
-    authority_error = _verify_reanchor_authority(
+    try:
+        criteria_status_sha256 = _validated_reanchor_verdict(
+            task, verdict, resolution)
+    except ValueError as exc:
+        return None, f"durable evaluator verdict is invalid: {exc}"
+    criterion_proof, authority_error = _verify_reanchor_authority(
         workspace, task, prior, source_revision=target,
-        evaluation_sha256=evaluation_sha256, disposition=resolution)
+        evaluation_sha256=evaluation_sha256,
+        criteria_status_sha256=criteria_status_sha256,
+        disposition=resolution)
     if authority_error:
         return None, authority_error
+    if not _verified_criterion_evidence(criterion_proof):
+        return None, "engine-authored criterion proof is invalid"
 
     return {
         "target_commit": target,
         "workspace": workspace,
         "evaluation_path": verdict_path,
         "evaluation_sha256": evaluation_sha256,
+        "criterion_proof": criterion_proof,
         "resolution": resolution,
     }, None
 
