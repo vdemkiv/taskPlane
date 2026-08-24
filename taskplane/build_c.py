@@ -11,14 +11,18 @@ from collections.abc import Callable, Mapping
 import hashlib
 import json
 import os
+import re
 
 import depgraph
+import repository
 import review
+import storage as runtime_storage
 import taskplane_lite as tp
 
 
 PROGRAM_LEDGER_SCHEMA = "taskplane.program-phase-ledger/v1"
 DEFINE_PROJECTION_SCHEMA = "taskplane.define-projection/v1"
+SCOPE_ASSIGNMENT_SCHEMA = "taskplane.scope-disjoint-assignment/v1"
 
 
 class ProgramAuthorityError(RuntimeError):
@@ -27,6 +31,189 @@ class ProgramAuthorityError(RuntimeError):
 
 class DefineProjectionError(RuntimeError):
     """DEFINE could not preserve the bounded quick-review contract."""
+
+
+class ScopeAssignmentError(RuntimeError):
+    """Direct BUILD-C assignment could not preserve scope isolation."""
+
+
+_LEGACY_BUILD_STATE = frozenset({
+    "wave", "waves", "claim", "claims", "build_lease", "build_leases",
+    "slot_lease", "slot_leases", "lens_state", "per_task_contract",
+    "evaluate_state", "fix_state", "_stage_bindings",
+})
+_BRANCH_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _scope_overlap(left: Mapping[str, object],
+                   right: Mapping[str, object]) -> bool:
+    left_modules = set(left["modules"])
+    right_modules = set(right["modules"])
+    if left_modules & right_modules:
+        return True
+    left_stems = tp.scope_stems(left["scope"])
+    right_stems = tp.scope_stems(right["scope"])
+    return any(tp.seg_prefix(a, b) or tp.seg_prefix(b, a)
+               for a in left_stems for b in right_stems)
+
+
+def _direct_worktree(ws: str, task_id: str, revision: str) -> str:
+    """Create one isolated worktree through the incumbent repository owner."""
+    path = runtime_storage.task_worktree_path(ws, task_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    token = _BRANCH_SAFE.sub("-", str(task_id)).strip("-.") or "task"
+    manager = repository.RepositoryManager()
+    manager._run(  # noqa: SLF001 - the incumbent owner is the live boundary
+        ["git", "worktree", "add", "-b", f"tp/{token}", path, revision],
+        cwd=ws)
+    return path
+
+
+def _assignment_wait(
+        member_ids: list[str], *,
+        wait_policy_factory: Callable[[str, int], dict] | None,
+        wait_invocation_factory: Callable[[Mapping[str, object],
+                                           list[str]], dict] | None) \
+        -> tuple[dict, dict]:
+    if wait_policy_factory is None or wait_invocation_factory is None:
+        import loop
+        wait_policy_factory = wait_policy_factory or loop.event_wait_policy
+        wait_invocation_factory = (wait_invocation_factory or
+                                   loop.event_wait_invocation)
+    policy = wait_policy_factory("build-c-direct", len(member_ids))
+    if not isinstance(policy, Mapping) or \
+            policy.get("schema") != "taskplane.wait-policy/v1" or \
+            policy.get("mode") != "event" or \
+            policy.get("scheduled_polling") is not False or \
+            int(policy.get("timeout_seconds") or 0) < 1800 or \
+            policy.get("reissue_after") != ["completion", "attention"] or \
+            int(policy.get("outstanding_count") or 0) != len(member_ids):
+        raise ScopeAssignmentError(
+            "direct assignment requires one non-polling event wait")
+    invocation = wait_invocation_factory(policy, member_ids)
+    if not isinstance(invocation, Mapping) or \
+            invocation.get("schema") != \
+            "taskplane.event-wait-invocation/v1" or \
+            invocation.get("operation") != "wait_for_events" or \
+            invocation.get("scheduled") is not False or \
+            invocation.get("reissue") is not False or \
+            list(invocation.get("outstanding_members") or []) != member_ids:
+        raise ScopeAssignmentError(
+            "direct assignment event wait invocation is invalid")
+    return dict(policy), dict(invocation)
+
+
+def assign_scopes(
+        ws: str, state: Mapping[str, object], *, graph: dict | None = None,
+        revision: str | None = None,
+        create_worktree: Callable[[str, str, str], str] = _direct_worktree,
+        register_worktree: Callable[[str, str, str], object] =
+        runtime_storage.register_task_worktree,
+        wait_policy_factory: Callable[[str, int], dict] | None = None,
+        wait_invocation_factory: Callable[[Mapping[str, object],
+                                           list[str]], dict] | None = None) \
+        -> dict:
+    """Assign the first deterministic set of ready graph-disjoint tasks.
+
+    This is the thin BUILD-C path: it creates and registers isolated
+    worktrees directly.  It deliberately creates no legacy wave, claim,
+    build-lease, per-task review, Evaluate, or Fix state.
+    """
+    if not isinstance(state, Mapping):
+        raise ScopeAssignmentError("direct assignment state is invalid")
+    present_legacy = sorted(key for key in _LEGACY_BUILD_STATE
+                            if state.get(key))
+    if present_legacy:
+        raise ScopeAssignmentError(
+            "direct assignment refuses legacy BUILD state: " +
+            ", ".join(present_legacy))
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        raise ScopeAssignmentError("sealed Plan tasks are missing")
+    graph = graph if isinstance(graph, dict) else depgraph.load(ws)
+    modules = graph.get("modules")
+    if not isinstance(modules, Mapping) or not modules:
+        raise ScopeAssignmentError("dependency graph identity is unavailable")
+    revision = str(revision or tp.git_head(ws) or "").strip()
+    if not revision:
+        raise ScopeAssignmentError("assignment revision is unavailable")
+
+    passed = {str(row.get("id")) for row in tasks
+              if isinstance(row, Mapping) and
+              row.get("status") in {"passed", "accepted"}}
+    candidates = []
+    for row in tasks:
+        if not isinstance(row, Mapping) or row.get("status") != "pending":
+            continue
+        task_id = str(row.get("id") or "").strip()
+        scope = list(row.get("scope") or [])
+        deps = {str(value) for value in row.get("deps") or []}
+        if not task_id or not scope or not deps <= passed:
+            continue
+        graph_modules = depgraph.scope_modules(ws, scope)
+        if not graph_modules or any(value not in modules
+                                    for value in graph_modules):
+            raise ScopeAssignmentError(
+                f"task {task_id} has ambiguous graph identity")
+        candidates.append({"task_id": task_id, "scope": scope,
+                           "modules": sorted(graph_modules)})
+
+    selected: list[dict] = []
+    serialized = []
+    for candidate in candidates:
+        blocker = next((row for row in selected
+                        if _scope_overlap(candidate, row)), None)
+        if blocker is not None:
+            serialized.append({"task_id": candidate["task_id"],
+                               "blocked_by": blocker["task_id"],
+                               "reason": "scope_overlap"})
+        else:
+            selected.append(candidate)
+    if not selected:
+        raise ScopeAssignmentError("no ready scope can be assigned")
+
+    member_ids = [row["task_id"] for row in selected]
+    wait_policy, wait_invocation = _assignment_wait(
+        member_ids, wait_policy_factory=wait_policy_factory,
+        wait_invocation_factory=wait_invocation_factory)
+    dispatch_material = {"revision": revision, "members": member_ids}
+    dispatch_id = "build-c-direct-" + hashlib.sha256(json.dumps(
+        dispatch_material, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()[:20]
+
+    assignments = []
+    for candidate in selected:
+        task_id = candidate["task_id"]
+        worker = os.path.realpath(create_worktree(ws, task_id, revision))
+        registration = register_worktree(ws, worker, task_id)
+        if not isinstance(registration, Mapping) or \
+                registration.get("schema") != \
+                "taskplane.managed-task-worktree/v1" or \
+                registration.get("task_id") != task_id or \
+                os.path.realpath(str(registration.get("path") or "")) != \
+                worker or not str(registration.get("branch_tip") or ""):
+            raise ScopeAssignmentError(
+                f"task {task_id} registration identity is invalid")
+        assignments.append({
+            "task_id": task_id, "scope": candidate["scope"],
+            "graph_modules": candidate["modules"], "worktree": worker,
+            "registration": dict(registration),
+        })
+
+    material = {
+        "schema": SCOPE_ASSIGNMENT_SCHEMA, "revision": revision,
+        "assignments": assignments, "serialized": serialized,
+        "dispatch_set": {
+            "schema": "taskplane.dispatch-set/v1", "id": dispatch_id,
+            "concurrent": True, "member_count": len(assignments),
+            "members": member_ids,
+        },
+        "wait_policy": wait_policy,
+        "wait_invocation": wait_invocation,
+    }
+    return {**material, "fingerprint": hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()}
 
 
 def _program_authority(ledger: Mapping[str, object]) -> Mapping[str, object]:

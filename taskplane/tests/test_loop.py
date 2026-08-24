@@ -91,6 +91,133 @@ class TestProgramOrder(unittest.TestCase):
         self.assertNotIn("automatic_sweep_route", build_c_source)
         self.assertNotIn("lens.route", build_c_source)
 
+
+class TestScopeAssignment(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.ws = git_ws(self.tmp, [TASK])
+        self.tasks = [
+            {"id": "t-a", "scope": ["src/a/**"], "deps": [],
+             "status": "pending"},
+            {"id": "t-b", "scope": ["src/b/**"], "deps": [],
+             "status": "pending"},
+            {"id": "t-a-next", "scope": ["src/a/nested/**"], "deps": [],
+             "status": "pending"},
+        ]
+        self.graph = {
+            "modules": {
+                "a": {"files": ["src/a/one.py"]},
+                "a/nested": {"files": ["src/a/nested/two.py"]},
+                "b": {"files": ["src/b/one.py"]},
+            },
+            "edges": [], "files": {},
+            "meta": {"fingerprint": "graph-1"},
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _assign(self, **overrides):
+        created = []
+        registered = []
+
+        def create(ws, task_id, revision):
+            path = os.path.join(self.tmp, task_id)
+            created.append((task_id, revision, path))
+            return path
+
+        def register(ws, worker, task_id):
+            registered.append((task_id, worker))
+            return {"schema": "taskplane.managed-task-worktree/v1",
+                    "task_id": task_id, "path": worker,
+                    "branch_tip": "a" * 40}
+
+        args = {
+            "graph": self.graph,
+            "create_worktree": create,
+            "register_worktree": register,
+            "revision": "a" * 40,
+        }
+        args.update(overrides)
+        receipt = build_c.assign_scopes(
+            self.ws, {"tasks": self.tasks}, **args)
+        return receipt, created, registered
+
+    def test_scope_assignment_runs_disjoint_scopes_concurrently_and_serializes_overlap(self):
+        receipt, created, registered = self._assign()
+
+        self.assertEqual([row["task_id"] for row in receipt["assignments"]],
+                         ["t-a", "t-b"])
+        self.assertEqual(receipt["serialized"], [{
+            "task_id": "t-a-next", "blocked_by": "t-a",
+            "reason": "scope_overlap",
+        }])
+        self.assertTrue(receipt["dispatch_set"]["concurrent"])
+        self.assertEqual(receipt["dispatch_set"]["member_count"], 2)
+        self.assertEqual(receipt["wait_invocation"]["operation"],
+                         "wait_for_events")
+        self.assertFalse(receipt["wait_policy"]["scheduled_polling"])
+        self.assertEqual(receipt["wait_policy"]["timeout_seconds"], 1800)
+        self.assertEqual([row[0] for row in created], ["t-a", "t-b"])
+        self.assertEqual([row[0] for row in registered], ["t-a", "t-b"])
+
+        encoded = json.dumps(receipt, sort_keys=True).lower()
+        for forbidden in ("wave", "claim", "build_lease", "build-lease",
+                          "slot_lease", "lens_state", "evaluate", "fix"):
+            self.assertNotIn(forbidden, encoded)
+
+    def test_scope_assignment_uses_real_repository_and_storage_edges(self):
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.ws,
+            text=True).strip()
+
+        receipt = build_c.assign_scopes(
+            self.ws, {"tasks": [{
+                "id": "t-live", "scope": ["src/a/**"], "deps": [],
+                "status": "pending",
+            }]}, graph=self.graph, revision=revision)
+
+        assignment = receipt["assignments"][0]
+        self.assertTrue(os.path.isdir(assignment["worktree"]))
+        self.assertEqual(subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=assignment["worktree"],
+            text=True).strip(), revision)
+        persisted = runtime_storage.load_task_worktree_registration(
+            self.ws, "t-live")
+        self.assertEqual(persisted["path"], assignment["worktree"])
+        self.assertEqual(persisted["branch_tip"], revision)
+
+    def test_scope_assignment_fails_when_live_graph_or_registration_edge_is_severed(self):
+        with unittest.mock.patch("build_c.depgraph.scope_modules",
+                                 return_value=[]):
+            with self.assertRaisesRegex(build_c.ScopeAssignmentError,
+                                        "graph identity"):
+                self._assign()
+
+        def severed_registration(ws, worker, task_id):
+            return {"schema": "taskplane.managed-task-worktree/v1",
+                    "task_id": "wrong", "path": worker,
+                    "branch_tip": "a" * 40}
+
+        with self.assertRaisesRegex(build_c.ScopeAssignmentError,
+                                    "registration identity"):
+            self._assign(register_worktree=severed_registration)
+
+    def test_scope_assignment_refuses_legacy_state_and_invalid_event_wait(self):
+        with self.assertRaisesRegex(build_c.ScopeAssignmentError,
+                                    "legacy BUILD state"):
+            build_c.assign_scopes(
+                self.ws, {"tasks": self.tasks, "wave": {"id": "old"}},
+                graph=self.graph, create_worktree=lambda *args: "unused",
+                register_worktree=lambda *args: {}, revision="a" * 40)
+
+        with self.assertRaisesRegex(build_c.ScopeAssignmentError,
+                                    "event wait"):
+            self._assign(wait_policy_factory=lambda *_: {
+                "schema": "taskplane.wait-policy/v1", "mode": "poll",
+                "scheduled_polling": True, "timeout_seconds": 1,
+            })
+
 class TestBuildCCheckpointSpec(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
