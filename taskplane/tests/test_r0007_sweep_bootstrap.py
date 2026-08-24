@@ -108,15 +108,40 @@ def test_define_projection_reuses_one_quick_selector_and_one_event_wait(
 
     def start_review(*args, **kwargs):
         calls.append(kwargs)
+        kwargs["router"]()
+        dispatch_set = {
+            "schema": "taskplane.dispatch-set/v1",
+            "id": "automatic-review-sweep", "concurrent": True,
+            "member_count": 4,
+        }
+        wait_policy = {
+            "schema": "taskplane.wait-policy/v1",
+            "outstanding_set": dispatch_set["id"],
+            "outstanding_count": 4, "mode": "event",
+            "timeout_seconds": 1800, "scheduled_polling": False,
+            "reissue_after": ["completion", "attention"],
+        }
+        slots = [
+            {"slot_id": f"sweep.{lens_id}", "lens_ids": [lens_id],
+             "dispatch_set": dispatch_set, "wait_policy": wait_policy}
+            for lens_id in ("architecture", "security", "qa",
+                            "code-quality")
+        ]
         return {
             "schema": "taskplane.review-start-manifest/v2",
             "status": "ready", "stage": "define", "run_id": "define-1",
-            "slots": [
-                {"slot_id": f"sweep.{lens_id}", "lens_ids": [lens_id]}
-                for lens_id in ("architecture", "security", "qa",
-                                "code-quality")
-            ],
+            "routing_mode": "selective", "routing_counts": {
+                "sweep": 4, "n/a": 22},
+            "review_depth_policy": {
+                "depth": "quick-only", "deep_slots_allowed": False,
+                "deep_slots": [], "promotion_attempts": 0,
+                "quick_slots": [row["slot_id"] for row in slots],
+            },
+            "slots": slots,
         }
+
+    def selector(*args, **kwargs):
+        return {"lenses": [], "context": {}}
 
     def bind_actions(_ws, manifest, *, task_id):
         assert task_id == "define"
@@ -133,7 +158,8 @@ def test_define_projection_reuses_one_quick_selector_and_one_event_wait(
         workspace,
         {"goal": "approved program", "design_fingerprint": "design-1",
          "design_approved_by": "user"},
-        start_review=start_review, bind_actions=bind_actions,
+        start_review=start_review, selector=selector,
+        bind_actions=bind_actions,
         graph={"meta": {"content_fingerprint": "graph-1"},
                "modules": {}, "edges": []}, revision="abc123")
 
@@ -143,6 +169,9 @@ def test_define_projection_reuses_one_quick_selector_and_one_event_wait(
         "depth": "quick-only"}
     assert projected["dispatch_set"]["concurrent"] is True
     assert projected["dispatch_set"]["member_count"] == 4
+    assert projected["dispatch_set"]["id"] == "automatic-review-sweep"
+    assert projected["selector_invocations"] == 1
+    assert projected["serial_fallback"] is False
     assert projected["selected_lenses"][0] == "architecture"
     assert projected["wait_invocation"]["scheduled"] is False
     assert "routing" not in projected
@@ -151,6 +180,7 @@ def test_define_projection_reuses_one_quick_selector_and_one_event_wait(
 def test_define_projection_refuses_deep_or_selector_reentry_shapes(tmp_path):
     manifest = {
         "status": "ready", "stage": "define", "run_id": "define-1",
+        "routing_mode": "selective",
         "slots": [
             {"slot_id": "deep.architecture", "lens_ids": ["architecture"]},
             {"slot_id": "sweep.security", "lens_ids": ["security"]},
@@ -160,6 +190,90 @@ def test_define_projection_refuses_deep_or_selector_reentry_shapes(tmp_path):
     }
     with pytest.raises(build_c.DefineProjectionError, match="quick sweep"):
         build_c.validate_define_projection(manifest)
+
+
+@pytest.mark.parametrize(
+    ("selector_calls", "concurrent", "message"),
+    [(2, True, "exactly one selector invocation"),
+     (1, False, "concurrent router-produced dispatch set")],
+)
+def test_define_projection_refuses_reentered_or_serial_router_evidence(
+        tmp_path, selector_calls, concurrent, message):
+    workspace = str(tmp_path)
+    (tmp_path / "exports").mkdir()
+    (tmp_path / "design").mkdir()
+    (tmp_path / "exports" / "r0012-program-ledger.json").write_text(
+        json.dumps({
+            "schema": "taskplane.r0012-program-ledger/v1",
+            "program_authority": {
+                "schema": build_c.PROGRAM_LEDGER_SCHEMA,
+                "consolidated_approval": {
+                    "approved": True, "actor": "user",
+                    "authority_receipt": "decision:0045"},
+                "r0009": {"accepted": True,
+                           "evidence_digest": "baseline:green"},
+                "r0010": {"status": "active"},
+                "r0011": {"exact_sha_green": False,
+                           "signed_off_by": None},
+            },
+        }), encoding="utf-8")
+    (tmp_path / "design" / "contract.json").write_text(json.dumps({
+        "graph": {"proposed_modules": ["taskplane/loop.py"]},
+    }), encoding="utf-8")
+    dispatch_set = {
+        "schema": "taskplane.dispatch-set/v1",
+        "id": "automatic-review-sweep", "concurrent": concurrent,
+        "member_count": 4,
+    }
+    wait_policy = {
+        "schema": "taskplane.wait-policy/v1",
+        "outstanding_set": dispatch_set["id"],
+        "outstanding_count": 4, "mode": "event",
+        "timeout_seconds": 1800, "scheduled_polling": False,
+        "reissue_after": ["completion", "attention"],
+    }
+    slots = [
+        {"slot_id": f"sweep.{lens_id}", "lens_ids": [lens_id],
+         "dispatch_set": dispatch_set, "wait_policy": wait_policy}
+        for lens_id in ("architecture", "security", "qa", "code-quality")
+    ]
+
+    def start_review(*args, **kwargs):
+        router = kwargs.get("router")
+        if router:
+            for _ in range(selector_calls):
+                router()
+        return {
+            "status": "ready", "stage": "define", "run_id": "define-1",
+            "routing_mode": "selective",
+            "routing_counts": {"sweep": 4, "n/a": 22},
+            "review_depth_policy": {
+                "depth": "quick-only", "deep_slots_allowed": False,
+                "deep_slots": [], "promotion_attempts": 0,
+                "quick_slots": [row["slot_id"] for row in slots],
+            },
+            "slots": slots,
+        }
+
+    def bind_actions(_ws, manifest, *, task_id):
+        return {**manifest, "wait_invocation": {
+            "operation": "wait_for_events",
+            "outstanding_members": [row["slot_id"]
+                                    for row in manifest["slots"]],
+            "timeout_seconds": 1800, "scheduled": False,
+            "reissue": False,
+        }}
+
+    with pytest.raises(build_c.DefineProjectionError, match=message):
+        build_c.project_define(
+            workspace,
+            {"goal": "approved program", "design_fingerprint": "design-1",
+             "design_approved_by": "user"},
+            start_review=start_review,
+            selector=lambda *args, **kwargs: {
+                "lenses": [], "context": {}},
+            bind_actions=bind_actions,
+            graph={"modules": {}, "edges": []}, revision="abc123")
 
 
 def test_directives_pin_membership_without_promoting_depth():

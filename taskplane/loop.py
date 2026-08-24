@@ -7143,6 +7143,7 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             try:
                 define_projection = build_c.project_define(
                     ws, state,
+                    selector=lens_router.route,
                     bind_actions=_bind_stateless_review_contract_actions)
             except (build_c.ProgramAuthorityError,
                     build_c.DefineProjectionError) as exc:
@@ -7215,6 +7216,7 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             try:
                 define_projection = build_c.project_define(
                     ws, state,
+                    selector=lens_router.route,
                     bind_actions=_bind_stateless_review_contract_actions)
             except (build_c.ProgramAuthorityError,
                     build_c.DefineProjectionError) as exc:

@@ -135,10 +135,13 @@ def _define_impact(graph: Mapping[str, object], files: list[str]) -> dict:
     }
 
 
-def validate_define_projection(manifest: Mapping[str, object]) -> list[str]:
-    """Validate only the invariants added at DEFINE; never select again."""
+def _validated_define_evidence(manifest: Mapping[str, object]) -> dict:
+    """Validate and retain the ReviewKernel evidence emitted for DEFINE."""
     if manifest.get("status") != "ready" or manifest.get("stage") != "define":
         raise DefineProjectionError("DEFINE review did not become ready")
+    if manifest.get("routing_mode") != "selective":
+        raise DefineProjectionError(
+            "DEFINE requires selective quick-only routing")
     slots = manifest.get("slots")
     if not isinstance(slots, list) or not 4 <= len(slots) <= 5:
         raise DefineProjectionError(
@@ -161,12 +164,68 @@ def validate_define_projection(manifest: Mapping[str, object]) -> list[str]:
     if "architecture" not in selected:
         raise DefineProjectionError(
             "DEFINE quick sweep requires the architecture floor")
-    return ["architecture", *sorted(set(selected) - {"architecture"})]
+
+    slot_ids = [str(row["slot_id"]) for row in slots]
+    depth = manifest.get("review_depth_policy")
+    if not isinstance(depth, Mapping) or \
+            depth.get("depth") != "quick-only" or \
+            depth.get("deep_slots_allowed") is not False or \
+            depth.get("deep_slots") != [] or \
+            depth.get("promotion_attempts") != 0 or \
+            not isinstance(depth.get("quick_slots"), list) or \
+            sorted(depth["quick_slots"]) != sorted(slot_ids):
+        raise DefineProjectionError(
+            "DEFINE requires observed quick-only depth evidence")
+    routing_counts = manifest.get("routing_counts")
+    if not isinstance(routing_counts, Mapping) or \
+            int(routing_counts.get("sweep") or 0) != len(slots) or \
+            set(routing_counts) - {"sweep", "n/a"}:
+        raise DefineProjectionError(
+            "DEFINE may not dispatch deep, full, or 26-lens review")
+
+    dispatch_sets = [row.get("dispatch_set") for row in slots]
+    if not all(isinstance(row, Mapping) for row in dispatch_sets):
+        raise DefineProjectionError(
+            "DEFINE slots require router-produced dispatch evidence")
+    dispatch_set = dict(dispatch_sets[0])
+    if any(dict(row) != dispatch_set for row in dispatch_sets[1:]) or \
+            dispatch_set.get("schema") != "taskplane.dispatch-set/v1" or \
+            not str(dispatch_set.get("id") or "").strip() or \
+            dispatch_set.get("concurrent") is not True or \
+            int(dispatch_set.get("member_count") or 0) != len(slots):
+        raise DefineProjectionError(
+            "DEFINE requires one concurrent router-produced dispatch set")
+    wait_policies = [row.get("wait_policy") for row in slots]
+    if not all(isinstance(row, Mapping) for row in wait_policies) or any(
+            row.get("schema") != "taskplane.wait-policy/v1" or
+            row.get("outstanding_set") != dispatch_set["id"] or
+            int(row.get("outstanding_count") or 0) != len(slots) or
+            row.get("mode") != "event" or
+            int(row.get("timeout_seconds") or 0) < 1800 or
+            row.get("scheduled_polling") is not False or
+            set(row.get("reissue_after") or []) != {"completion", "attention"}
+            for row in wait_policies):
+        raise DefineProjectionError(
+            "DEFINE requires router-produced event wait evidence")
+    return {
+        "selected_lenses": [
+            "architecture", *sorted(set(selected) - {"architecture"})],
+        "dispatch_set": dispatch_set,
+        "automatic_deep": bool(depth.get("deep_slots")),
+        "automatic_full": manifest.get("routing_mode") == "all",
+        "serial_fallback": dispatch_set.get("concurrent") is not True,
+    }
+
+
+def validate_define_projection(manifest: Mapping[str, object]) -> list[str]:
+    """Validate only the invariants added at DEFINE; never select again."""
+    return _validated_define_evidence(manifest)["selected_lenses"]
 
 
 def project_define(
         ws: str, state: Mapping[str, object], *,
         start_review: Callable[..., dict] = review.start_review,
+        selector: Callable[..., dict] | None = None,
         bind_actions: Callable[..., dict] | None = None,
         graph: dict | None = None, revision: str | None = None) -> dict:
     """Invoke ReviewKernel once and expose its quick slots concurrently.
@@ -196,6 +255,18 @@ def project_define(
         "text": str(state.get("goal") or "Approved Design definition"),
         "review_policy": {"depth": "quick-only"},
     }
+    if selector is None:
+        raise DefineProjectionError(
+            "DEFINE requires an observable ReviewKernel selector")
+    selector_invocations = 0
+
+    def observed_router() -> dict:
+        nonlocal selector_invocations
+        selector_invocations += 1
+        return selector(
+            files, task_type="design", breadth="routed", stage="define",
+            workspace=ws, requirement_text=requirement["text"])
+
     manifest = start_review(
         ws, target=target, graph=graph,
         impact=_define_impact(graph, files),
@@ -205,8 +276,12 @@ def project_define(
         contracts=["contract:define.design-review",
                    "contract:review.routing",
                    "contract:review.depth-boundary"],
-        stage="define", task_type="design", base="HEAD")
-    selected = validate_define_projection(manifest)
+        stage="define", task_type="design", base="HEAD",
+        router=observed_router)
+    if selector_invocations != 1:
+        raise DefineProjectionError(
+            "DEFINE requires exactly one selector invocation")
+    evidence = _validated_define_evidence(manifest)
     if bind_actions is None:
         import loop
         bind_actions = loop._bind_stateless_review_contract_actions
@@ -223,18 +298,21 @@ def project_define(
     if members != [str(row.get("slot_id") or "") for row in slots]:
         raise DefineProjectionError(
             "DEFINE wait must cover the emitted quick slots exactly once")
+    if any(not isinstance(row, Mapping) or
+           dict(row.get("dispatch_set") or {}) != evidence["dispatch_set"]
+           for row in slots):
+        raise DefineProjectionError(
+            "DEFINE binding must preserve router-produced dispatch evidence")
     return {
         "schema": DEFINE_PROJECTION_SCHEMA,
         "status": "ready", "stage": "define",
         "program_authority": authority,
         "run_id": str(bound.get("run_id") or ""),
-        "selected_lenses": selected,
-        "dispatch_set": {
-            "concurrent": True, "member_count": len(slots),
-            "members": members,
-        },
+        "selected_lenses": evidence["selected_lenses"],
+        "dispatch_set": evidence["dispatch_set"],
         "slots": slots, "wait_invocation": dict(wait),
-        "selector_invocations": 1,
-        "automatic_deep": False, "automatic_full": False,
-        "serial_fallback": False,
+        "selector_invocations": selector_invocations,
+        "automatic_deep": evidence["automatic_deep"],
+        "automatic_full": evidence["automatic_full"],
+        "serial_fallback": evidence["serial_fallback"],
     }
