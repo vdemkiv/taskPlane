@@ -16,6 +16,7 @@ import review_progression
 import storage as runtime_storage
 import taskplane_lite as tp
 import tp as tp_cli
+import build_c
 
 
 R0006_DIRECTIVE = (
@@ -78,6 +79,87 @@ def test_automatic_review_is_one_four_or_five_lens_sweep():
         wave["dispatch_set"]["id"]
     assert wave["wait_policy"]["timeout_seconds"] >= 1800
     assert wave["wait_policy"]["scheduled_polling"] is False
+
+
+def test_define_projection_reuses_one_quick_selector_and_one_event_wait(
+        tmp_path):
+    workspace = str(tmp_path)
+    (tmp_path / "exports").mkdir()
+    (tmp_path / "design").mkdir()
+    (tmp_path / "exports" / "r0012-program-ledger.json").write_text(
+        json.dumps({
+            "schema": "taskplane.r0012-program-ledger/v1",
+            "program_authority": {
+                "schema": build_c.PROGRAM_LEDGER_SCHEMA,
+                "consolidated_approval": {
+                    "approved": True, "actor": "user",
+                    "authority_receipt": "decision:0045"},
+                "r0009": {"accepted": True,
+                           "evidence_digest": "baseline:green"},
+                "r0010": {"status": "active"},
+                "r0011": {"exact_sha_green": False,
+                           "signed_off_by": None},
+            },
+        }), encoding="utf-8")
+    (tmp_path / "design" / "contract.json").write_text(json.dumps({
+        "graph": {"proposed_modules": ["taskplane/loop.py"]},
+    }), encoding="utf-8")
+    calls = []
+
+    def start_review(*args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "schema": "taskplane.review-start-manifest/v2",
+            "status": "ready", "stage": "define", "run_id": "define-1",
+            "slots": [
+                {"slot_id": f"sweep.{lens_id}", "lens_ids": [lens_id]}
+                for lens_id in ("architecture", "security", "qa",
+                                "code-quality")
+            ],
+        }
+
+    def bind_actions(_ws, manifest, *, task_id):
+        assert task_id == "define"
+        return {**manifest, "wait_invocation": {
+            "schema": "taskplane.event-wait-invocation/v1",
+            "operation": "wait_for_events",
+            "outstanding_members": [row["slot_id"]
+                                    for row in manifest["slots"]],
+            "timeout_seconds": 1800, "scheduled": False,
+            "reissue": False, "wake": None,
+        }}
+
+    projected = build_c.project_define(
+        workspace,
+        {"goal": "approved program", "design_fingerprint": "design-1",
+         "design_approved_by": "user"},
+        start_review=start_review, bind_actions=bind_actions,
+        graph={"meta": {"content_fingerprint": "graph-1"},
+               "modules": {}, "edges": []}, revision="abc123")
+
+    assert len(calls) == 1
+    assert calls[0]["stage"] == "define"
+    assert calls[0]["requirement"]["review_policy"] == {
+        "depth": "quick-only"}
+    assert projected["dispatch_set"]["concurrent"] is True
+    assert projected["dispatch_set"]["member_count"] == 4
+    assert projected["selected_lenses"][0] == "architecture"
+    assert projected["wait_invocation"]["scheduled"] is False
+    assert "routing" not in projected
+
+
+def test_define_projection_refuses_deep_or_selector_reentry_shapes(tmp_path):
+    manifest = {
+        "status": "ready", "stage": "define", "run_id": "define-1",
+        "slots": [
+            {"slot_id": "deep.architecture", "lens_ids": ["architecture"]},
+            {"slot_id": "sweep.security", "lens_ids": ["security"]},
+            {"slot_id": "sweep.qa", "lens_ids": ["qa"]},
+            {"slot_id": "sweep.code-quality", "lens_ids": ["code-quality"]},
+        ],
+    }
+    with pytest.raises(build_c.DefineProjectionError, match="quick sweep"):
+        build_c.validate_define_projection(manifest)
 
 
 def test_directives_pin_membership_without_promoting_depth():

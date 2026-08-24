@@ -40,6 +40,25 @@
     ],
     "seventh_category_result": "refuse-until-new-attributed-human-scope-decision"
   },
+  "program_authority": {
+    "schema": "taskplane.program-phase-ledger/v1",
+    "consolidated_approval": {
+      "approved": true,
+      "actor": "user",
+      "authority_receipt": "scope-decision:0045"
+    },
+    "r0009": {
+      "accepted": true,
+      "evidence_digest": "exports/r0012-v21716-baseline.json:c420bfc1cd3a01cb111d735272bef5097b83ad8cc3bc9d9f8a2f14cf53e68bb5"
+    },
+    "r0010": {
+      "status": "active"
+    },
+    "r0011": {
+      "exact_sha_green": false,
+      "signed_off_by": null
+    }
+  },
   "reuse_only_capabilities": [
     "cli-to-governed-command-engine reachability",
     "loop-to-governed-command-engine reachability",

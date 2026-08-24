@@ -18,6 +18,7 @@ import review  # noqa: E402
 import review_evidence  # noqa: E402
 import storage as runtime_storage  # noqa: E402
 import checkpoint  # noqa: E402
+import build_c  # noqa: E402
 
 
 def git_ws(tmp, tasks):
@@ -37,6 +38,58 @@ def git_ws(tmp, tasks):
 TASK = {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
         "criteria": ["complete() marks done"]}
 
+
+class TestProgramOrder(unittest.TestCase):
+    def _ledger(self):
+        return {
+            "schema": "taskplane.r0012-program-ledger/v1",
+            "program_authority": {
+                "schema": build_c.PROGRAM_LEDGER_SCHEMA,
+                "consolidated_approval": {
+                    "approved": True, "actor": "user",
+                    "authority_receipt": "decision:0045"},
+                "r0009": {"accepted": True,
+                           "evidence_digest": "baseline:green"},
+                "r0010": {"status": "active"},
+                "r0011": {"exact_sha_green": False,
+                           "signed_off_by": None},
+            },
+        }
+
+    def test_program_order_opens_only_authorized_phase(self):
+        authority = build_c.require_program_phase(self._ledger(), "r0010")
+        self.assertEqual(authority["phase"], "r0010")
+        self.assertEqual(authority["status"], "authorized")
+
+        missing_approval = self._ledger()
+        missing_approval["program_authority"]["consolidated_approval"] = {
+            "approved": False, "actor": "", "authority_receipt": ""}
+        with self.assertRaisesRegex(build_c.ProgramAuthorityError,
+                                    "consolidated human approval"):
+            build_c.require_program_phase(missing_approval, "r0010")
+
+        missing_r0009 = self._ledger()
+        missing_r0009["program_authority"]["r0009"]["accepted"] = False
+        with self.assertRaisesRegex(build_c.ProgramAuthorityError,
+                                    "R-0009 acceptance"):
+            build_c.require_program_phase(missing_r0009, "r0010")
+
+        with self.assertRaisesRegex(build_c.ProgramAuthorityError,
+                                    "exact-SHA proof and human sign-off"):
+            build_c.require_program_phase(self._ledger(), "r0011")
+
+    def test_program_order_wiring_precedes_plan_execution(self):
+        source = open(loop.__file__, encoding="utf-8").read()
+        approve_start = source.index("def approve(")
+        approve_end = source.index("\ndef retro(", approve_start)
+        approve_body = source[approve_start:approve_end]
+        projection = approve_body.index("build_c.project_define(")
+        execute = approve_body.index('state["step"] = "execute"')
+        self.assertLess(projection, execute)
+        build_c_source = open(build_c.__file__, encoding="utf-8").read()
+        self.assertIn("start_review(", build_c_source)
+        self.assertNotIn("automatic_sweep_route", build_c_source)
+        self.assertNotIn("lens.route", build_c_source)
 
 class TestBuildCCheckpointSpec(unittest.TestCase):
     def setUp(self):

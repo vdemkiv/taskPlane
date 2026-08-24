@@ -39,6 +39,7 @@ import sys
 import time
 
 import authority as authority_engine
+import build_c
 import checkpoint
 import command_wave
 import governed_commands
@@ -7114,6 +7115,7 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
     refinement = None
     attestation_warning = None
     gate_notices: list = []
+    define_projection = None
     if not str(by or "").strip() and step in ("plan_approval", "signoff"):
         # L5 (v2.2.1): symmetric attestation. Design approval hard-requires
         # --by; these two gates stay compatible but an anonymous pass is
@@ -7137,6 +7139,16 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         contract, _ = _design_contract(ws)
         state["design_fingerprint"] = _design_evidence_fingerprint(ws, contract)
         state["design_approved_by"] = by
+        if not state.get("design_only") and build_c.program_enabled(ws):
+            try:
+                define_projection = build_c.project_define(
+                    ws, state,
+                    bind_actions=_bind_stateless_review_contract_actions)
+            except (build_c.ProgramAuthorityError,
+                    build_c.DefineProjectionError) as exc:
+                return {"error": f"DEFINE projection refused: {exc}",
+                        "step": step, "define_projection": {"slots": []}}
+            state["define_projection"] = define_projection
         state["step"] = "done" if state.get("design_only") else "plan"
         tp.trace(ws, "loop_approve", gate="design", by=by,
                  fingerprint=state["design_fingerprint"][:12])
@@ -7195,6 +7207,20 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             tp.trace(ws, "authority_packet", actor=receipt["actor"],
                      packet=packet["fingerprint"],
                      receipt=receipt["fingerprint"])
+        if build_c.program_enabled(ws) and not state.get("define_projection"):
+            state["design_approved_by"] = str(by or "").strip()
+            state["design_fingerprint"] = str(
+                state.get("design_fingerprint") or
+                _design_evidence_fingerprint(ws))
+            try:
+                define_projection = build_c.project_define(
+                    ws, state,
+                    bind_actions=_bind_stateless_review_contract_actions)
+            except (build_c.ProgramAuthorityError,
+                    build_c.DefineProjectionError) as exc:
+                return {"error": f"DEFINE projection refused: {exc}",
+                        "step": step, "define_projection": {"slots": []}}
+            state["define_projection"] = define_projection
         # Baseline for later diff-routing at EVALUATE/EM.
         state["baseline"] = tp.git_head(ws)
         state["step"] = "execute"
@@ -7288,6 +7314,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         out["stage_transition"] = stage_transition
     if refinement:
         out["refinement"] = refinement
+    if define_projection is not None:
+        out["define_projection"] = define_projection
     if attestation_warning:
         out["warning"] = attestation_warning
     if gate_notices:
