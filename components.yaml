@@ -9,3 +9,9 @@ exclude:
   # routing works. They currently mint api/auth/components/src as product
   # modules and route lenses at code nobody wrote.
   - taskplane/tests/fixtures
+
+# BUILD-C owners are explicit graph declarations. The v2.17.16 parser treats
+# unknown sections as forward-compatible metadata, so this does not alter the
+# incumbent exclusion or decomposition behavior.
+owners:
+  - taskplane/checkpoint.py

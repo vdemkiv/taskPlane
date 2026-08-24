@@ -17,6 +17,7 @@ import evaluator_health  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import storage as runtime_storage  # noqa: E402
+import checkpoint  # noqa: E402
 
 
 def git_ws(tmp, tasks):
@@ -35,6 +36,120 @@ def git_ws(tmp, tasks):
 
 TASK = {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
         "criteria": ["complete() marks done"]}
+
+
+class TestBuildCCheckpointSpec(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.ws = git_ws(self.tmp, [TASK])
+        self.proof = "taskplane/tests/test_focused.py"
+        proof = os.path.join(self.ws, self.proof)
+        os.makedirs(os.path.dirname(proof), exist_ok=True)
+        with open(proof, "w", encoding="utf-8") as stream:
+            stream.write("def test_focused():\n    assert True\n")
+        subprocess.run(["git", "add", self.proof], cwd=self.ws, check=True)
+        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
+                        "commit", "-qm", "focused proof"], cwd=self.ws,
+                       check=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _spec(self, **updates):
+        value = {
+            "schema": checkpoint.CHECKPOINT_SCHEMA,
+            "checkpoint_id": "cp-r0010-ac-1",
+            "phase": "build",
+            "ac_ids": ["AC-1"],
+            "predecessor_checkpoint_ids": [],
+            "worktree_revision": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=self.ws,
+                text=True).strip(),
+            "declared_scope": ["taskplane/checkpoint.py", "taskplane/tests/**"],
+            "focused_proof": {
+                "path": self.proof,
+                "argv": ["python3", "-m", "pytest", "-q", self.proof],
+            },
+            "ratchet_baseline": {"cycle_count": 0},
+        }
+        value.update(updates)
+        return value
+
+    def test_build_c_checkpoint_preflight_binds_tracked_proof_and_phase_order(self):
+        validated = checkpoint.validate_checkpoint_spec(self.ws, self._spec())
+        self.assertEqual(validated["focused_proof"]["path"], self.proof)
+        self.assertEqual(validated["ordered_phases"], [
+            "compile_import", "focused_proof", "forbidden_state_counts",
+            "ratchet_delta", "engineering_judgment",
+        ])
+
+        with open(os.path.join(self.ws, self.proof), "a",
+                  encoding="utf-8") as stream:
+            stream.write("# changed after the named revision\n")
+        with self.assertRaisesRegex(checkpoint.CheckpointSpecError,
+                                    "exact HEAD"):
+            checkpoint.validate_checkpoint_spec(self.ws, self._spec())
+
+    def test_build_c_checkpoint_refuses_missing_or_untracked_focused_proof(self):
+        missing = self._spec(focused_proof={
+            "path": "taskplane/tests/missing.py",
+            "argv": ["python3", "-m", "pytest", "-q",
+                     "taskplane/tests/missing.py"],
+        })
+        with self.assertRaisesRegex(checkpoint.CheckpointSpecError,
+                                    "taskplane/tests/missing.py"):
+            checkpoint.validate_checkpoint_spec(self.ws, missing)
+
+        untracked_path = os.path.join(self.ws, "taskplane", "tests",
+                                      "untracked.py")
+        with open(untracked_path, "w", encoding="utf-8") as stream:
+            stream.write("def test_untracked():\n    assert True\n")
+        untracked = self._spec(
+            declared_scope=["taskplane/checkpoint.py",
+                            "taskplane/tests/untracked.py"],
+            focused_proof={
+                "path": "taskplane/tests/untracked.py",
+                "argv": ["python3", "-m", "pytest", "-q",
+                         "taskplane/tests/untracked.py"],
+            })
+        with self.assertRaisesRegex(checkpoint.CheckpointSpecError,
+                                    "tracked regular file"):
+            checkpoint.validate_checkpoint_spec(self.ws, untracked)
+
+
+class TestClosedGapPlan(unittest.TestCase):
+    def _tasks(self):
+        return [
+            {"id": f"t0{i + 2}-r0010-gap", "scope": [f"taskplane/g{i}.py"],
+             "gap_category": category}
+            for i, category in enumerate(checkpoint.CLOSED_GAP_CATEGORIES)
+        ]
+
+    def test_closed_gap_plan_accepts_each_of_the_six_categories_once(self):
+        verdict = checkpoint.validate_closed_gap_plan(self._tasks())
+        self.assertTrue(verdict["passed"], verdict)
+        self.assertFalse(verdict["scope_decision_required"])
+        self.assertEqual(verdict["categories"],
+                         list(checkpoint.CLOSED_GAP_CATEGORIES))
+
+    def test_closed_gap_plan_rejects_missing_duplicate_and_seventh_category(self):
+        missing = self._tasks()
+        missing[0].pop("gap_category")
+        self.assertFalse(checkpoint.validate_closed_gap_plan(missing)["passed"])
+
+        duplicate = self._tasks()
+        duplicate[-1]["gap_category"] = duplicate[0]["gap_category"]
+        duplicate_verdict = checkpoint.validate_closed_gap_plan(duplicate)
+        self.assertFalse(duplicate_verdict["passed"])
+        self.assertIn("duplicate", " ".join(duplicate_verdict["errors"]))
+
+        seventh = self._tasks()
+        seventh.append({"id": "t09-r0010-gap", "scope": ["taskplane/g6.py"],
+                        "gap_category": "seventh-category"})
+        seventh_verdict = checkpoint.validate_closed_gap_plan(seventh)
+        self.assertFalse(seventh_verdict["passed"])
+        self.assertTrue(seventh_verdict["scope_decision_required"])
+        self.assertIn("seventh-category", " ".join(seventh_verdict["errors"]))
 
 
 def submit_gate(ws, outcome="pass", task_id=None):
