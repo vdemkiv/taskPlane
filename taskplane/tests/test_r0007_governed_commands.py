@@ -631,6 +631,128 @@ def _checkpoint_runtime_argv(workspace, spec):
         str(workspace), spec)["focused_proof"]["argv"]
 
 
+def _checkpoint_submit_task(spec):
+    return {
+        "id": "checkpoint-task",
+        "scope": list(spec["declared_scope"]),
+        "tests": "true",
+        "criteria": ["AC-1"],
+        "checkpoint": {
+            "checkpoint_id": spec["checkpoint_id"],
+            "phase": spec["phase"],
+            "ac_ids": list(spec["ac_ids"]),
+            "predecessor_checkpoint_ids": [],
+            "focused_proof": {
+                "path": spec["focused_proof"]["path"],
+                "argv": list(spec["focused_proof"]["argv"]),
+            },
+            "ratchet_baseline": dict(spec["ratchet_baseline"]),
+        },
+    }
+
+
+def _save_checkpoint_submit_loop(workspace, task):
+    loop.save(str(workspace), {
+        "governance_revision": 2,
+        "submission_required": True,
+        "graph_governance": False,
+        "goal": "checkpoint wiring",
+        "parallel": False,
+        "step": "execute",
+        "tasks": [task],
+        "current_task": 0,
+    })
+
+
+def test_submit_checkpoint_runs_live_runtime_and_mints_receipt(
+        tmp_path, monkeypatch):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    task = _checkpoint_submit_task(spec)
+    _save_checkpoint_submit_loop(workspace, task)
+    monkeypatch.setattr(loop.runtime_eval, "guide_loop", lambda *a, **k: {
+        "schema": "taskplane.runtime-guidance/v1",
+        "status": "on_path", "step": "execute",
+    })
+
+    submitted = loop.submit(str(workspace), "pass")
+
+    assert submitted["submitted"] is True
+    receipt = submitted["submission"]["checkpoint_receipt"]
+    assert receipt["producer"] == "taskplane.checkpoint-engine/v1"
+    assert receipt["worktree_revision"] == spec["worktree_revision"]
+    assert receipt["identity"]["checkpoint_id"] == spec["checkpoint_id"]
+    assert receipt["verdict"] == "green"
+
+
+def test_submit_checkpoint_missing_proof_refuses_by_name_before_runtime(
+        tmp_path, monkeypatch):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    task = _checkpoint_submit_task(spec)
+    missing = "taskplane/tests/missing_submit_checkpoint.py"
+    task["checkpoint"]["focused_proof"] = {
+        "path": missing,
+        "argv": ["python3", "-m", "pytest", "-q", missing],
+    }
+    _save_checkpoint_submit_loop(workspace, task)
+    monkeypatch.setattr(loop.runtime_eval, "guide_loop", lambda *a, **k: {
+        "schema": "taskplane.runtime-guidance/v1",
+        "status": "on_path", "step": "execute",
+    })
+    monkeypatch.setattr(
+        loop.governed_commands, "execute",
+        lambda *a, **k: pytest.fail("runtime started before checkpoint preflight"))
+
+    refused = loop.submit(str(workspace), "pass")
+
+    assert refused["submitted"] is False
+    assert missing in refused["error"]
+    assert loop.load(str(workspace)).get("_submission") is None
+
+
+def test_submit_checkpoint_rejects_caller_authored_receipt(
+        tmp_path, monkeypatch):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    task = _checkpoint_submit_task(spec)
+    task["checkpoint"]["receipt"] = {"verdict": "green"}
+    _save_checkpoint_submit_loop(workspace, task)
+    monkeypatch.setattr(loop.runtime_eval, "guide_loop", lambda *a, **k: {
+        "schema": "taskplane.runtime-guidance/v1",
+        "status": "on_path", "step": "execute",
+    })
+    monkeypatch.setattr(
+        loop.governed_commands, "execute",
+        lambda *a, **k: pytest.fail("forged receipt reached runtime"))
+
+    refused = loop.submit(str(workspace), "pass")
+
+    assert refused["submitted"] is False
+    assert "engine-owned fields: receipt" in refused["error"]
+    assert loop.load(str(workspace)).get("_submission") is None
+
+
+def test_submit_checkpoint_red_blocks_receipt_and_later_submission(
+        tmp_path, monkeypatch):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    proof = workspace / spec["focused_proof"]["path"]
+    proof.write_text("def test_focused():\n    assert False\n", encoding="utf-8")
+    subprocess.run(["git", "add", spec["focused_proof"]["path"]],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "red checkpoint proof"],
+                   cwd=workspace, check=True)
+    task = _checkpoint_submit_task(spec)
+    _save_checkpoint_submit_loop(workspace, task)
+    monkeypatch.setattr(loop.runtime_eval, "guide_loop", lambda *a, **k: {
+        "schema": "taskplane.runtime-guidance/v1",
+        "status": "on_path", "step": "execute",
+    })
+
+    refused = loop.submit(str(workspace), "pass")
+
+    assert refused["submitted"] is False
+    assert "later phases stopped" in refused["error"]
+    assert loop.load(str(workspace)).get("_submission") is None
+
+
 def _run_governed_checkpoint_command(workspace, argv, task_id):
     authorization = "agent:checkpoint"
     launched = governed_commands.execute(str(workspace), "launch", {

@@ -117,6 +117,28 @@ class TestBuildCCheckpointSpec(unittest.TestCase):
             checkpoint.validate_checkpoint_spec(self.ws, untracked)
 
 
+class TestSubmitCheckpointWiring(unittest.TestCase):
+    def test_submit_checkpoint_edges_are_mutation_sensitive(self):
+        source = open(loop.__file__, encoding="utf-8").read()
+        start = source.index("def _run_submit_checkpoint(")
+        end = source.index("\ndef submit(", start)
+        body = source[start:end]
+        preflight = body.index("checkpoint.validate_checkpoint_spec(")
+        launch = body.index('governed_commands.execute(act_ws, "launch"')
+        wait = body.index('governed_commands.execute(act_ws, "wait"')
+        receipt = body.index("checkpoint.validate_and_mint(")
+        self.assertLess(preflight, launch)
+        self.assertLess(launch, wait)
+        self.assertLess(wait, receipt)
+
+        submit_start = source.index("def submit(")
+        submit_end = source.index("\ndef _submission_staleness(", submit_start)
+        submit_body = source[submit_start:submit_end]
+        self.assertIn("_run_submit_checkpoint(", submit_body)
+        self.assertIn('submission["checkpoint_receipt"] = checkpoint_receipt',
+                      submit_body)
+
+
 class TestClosedGapPlan(unittest.TestCase):
     def _tasks(self):
         return [

@@ -39,6 +39,7 @@ import sys
 import time
 
 import authority as authority_engine
+import checkpoint
 import command_wave
 import governed_commands
 import depgraph
@@ -5814,6 +5815,62 @@ def _submission_evidence_engine_workspace(
     return ws if contained.returncode == 0 else act_ws
 
 
+def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
+                           task: Mapping[str, object], act_ws: str) -> dict:
+    """Run one task-declared AC checkpoint through the incumbent runtime.
+
+    The Plan declares stable checkpoint inputs.  Submit owns the mutable
+    repository identity and scope, while ``checkpoint`` remains the sole
+    preflight and receipt authority.  This keeps command lifecycle behavior
+    on the existing governed launch/wait path and prevents a task-authored
+    mapping from masquerading as proof.
+    """
+    declaration = task.get("checkpoint")
+    if not isinstance(declaration, Mapping):
+        raise checkpoint.CheckpointSpecError(
+            f"task {task.get('id') or '?'} checkpoint declaration must be "
+            "a mapping")
+    reserved = sorted(set(declaration) & {
+        "schema", "worktree_revision", "declared_scope", "receipt",
+        "producer", "result",
+    })
+    if reserved:
+        raise checkpoint.CheckpointSpecError(
+            "checkpoint declaration contains engine-owned fields: " +
+            ", ".join(reserved))
+    spec = {
+        **dict(declaration),
+        "schema": checkpoint.CHECKPOINT_SCHEMA,
+        "worktree_revision": tp.git_head(act_ws),
+        "declared_scope": list(task.get("scope") or []),
+    }
+    validated = checkpoint.validate_checkpoint_spec(act_ws, spec)
+    checkpoint_id = validated["checkpoint_id"]
+    authorization = "loop-submit-checkpoint:" + str(task.get("id") or "task")
+    run_id = str(state.get("run_id") or state.get("requirement_id") or
+                 "loop")
+    launched = governed_commands.execute(act_ws, "launch", {
+        "authorization": authorization,
+        "argv": validated["focused_proof"]["argv"],
+        "run_id": run_id,
+        "task_id": str(task.get("id") or "task"),
+    })
+    if launched.get("error"):
+        raise checkpoint.CheckpointReceiptError(
+            f"checkpoint {checkpoint_id} runtime launch failed: " +
+            str(launched["error"]))
+    observed = governed_commands.execute(act_ws, "wait", {
+        "authorization": authorization,
+        "handle": launched["handle"],
+        "consumer": "checkpoint:" + checkpoint_id,
+    })
+    if observed.get("error"):
+        raise checkpoint.CheckpointReceiptError(
+            f"checkpoint {checkpoint_id} runtime wait failed: " +
+            str(observed["error"]))
+    return checkpoint.validate_and_mint(act_ws, spec, observed)
+
+
 def submit(ws: str, outcome: str, note: str = "",
            task_id: str | None = None) -> dict:
     """Worker submission — evidence request, never a state transition.
@@ -5878,6 +5935,7 @@ def submit(ws: str, outcome: str, note: str = "",
         act_ws = tws if tws and os.path.isdir(tws) else ws
 
     runtime_guidance = None
+    checkpoint_receipt = None
     if outcome == "pass":
         runtime_guidance = runtime_eval.guide_loop(ws, task_id=task_id)
         if runtime_guidance.get("error"):
@@ -5906,6 +5964,17 @@ def submit(ws: str, outcome: str, note: str = "",
                             "errors": evidence_errors}}
                    if evidence_errors else {}),
             }
+        if step in ("execute", "fix") and isinstance(
+                (task or {}).get("checkpoint"), Mapping):
+            try:
+                checkpoint_receipt = _run_submit_checkpoint(
+                    ws, state, task, act_ws)
+            except checkpoint.CheckpointSpecError as exc:
+                return {
+                    "error": f"AC checkpoint refused: {exc}",
+                    "submitted": False, "transitioned": False,
+                    "runtime_eval": runtime_guidance,
+                }
 
     snapshot = tp.snapshot_ref(act_ws)
     evidence_paths = runtime_storage.submission_evidence_paths(act_ws, step)
@@ -5938,6 +6007,8 @@ def submit(ws: str, outcome: str, note: str = "",
             tp.workspace_engine_fingerprint(evidence_engine_ws),
         "submitted_at": int(time.time()),
     }
+    if checkpoint_receipt is not None:
+        submission["checkpoint_receipt"] = checkpoint_receipt
     with mutate(ws) as locked:
         if locked is None:
             return {"error": "no active loop"}
