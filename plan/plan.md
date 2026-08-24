@@ -4,7 +4,7 @@
 
 Deliver the approved consolidated R-0009 → R-0010 → R-0011 program from the governed v2.17.16 baseline without importing, repairing, reverting, or releasing any v2.17.17-or-later history.
 
-The authoritative branch is codex/r0009-r0011-from-v2.17.16 at bba3354e7fc5eb052beac74af230611ae48bd7db, tagged v2.17.16. The approved Design fingerprint is 1d4f2dc4bf609736614a28c878866fe1abadeae024aa34a4d2a54f27b1feace7 and its baseline graph fingerprint is 6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d.
+The authoritative branch is codex/r0009-r0011-from-v2.17.16 at bba3354e7fc5eb052beac74af230611ae48bd7db, tagged v2.17.16. The approved Design fingerprint is 840f65e57be5d73e7cfec0d7cdfd7c4c58900dad0c253e433a0ffde2cacf740a and its solution-design evidence fingerprint is d860e0125fb506adc723d37d3a824aa4ce0b66688be280b92773387ebd6bd4cc. The re-anchored graph at fc87449a34b358c24764d819cab89e4b696af141 has content fingerprint 15db8883461bc4c42ef48daf5398bb2c7f77b7b4485c33be99243a5ef0b039fd, scan-quality fingerprint fe8085f2d9065ad96805caed363cc63721ac5fb9b4941abee81cef80ca7175fd, 92 modules, 296 edges, and 523 files.
 
 The one bounded impact query returned 28 impacted modules through the approved radius and zero unknown modules. Every task copies the typed graph policy unchanged: local depth 3, contract-only boundaries, contract depth 1, and requirement depth 1.
 

@@ -275,7 +275,7 @@
     }
   ],
   "graph": {
-    "baseline_fingerprint": "6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d",
+    "baseline_fingerprint": "15db8883461bc4c42ef48daf5398bb2c7f77b7b4485c33be99243a5ef0b039fd",
     "proposed_modules": [
       ".github/workflows/ci.yml",
       "components.yaml",
@@ -651,7 +651,7 @@
     "dor": [
       {
         "check": "Baseline graph identity is exact and Design is an overlay",
-        "evidence": "Engine fingerprint 6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d at bba3354e7fc5eb052beac74af230611ae48bd7db; 92 modules, 293 edges, complete/non-degraded; Design runs no graph mutation."
+        "evidence": "Engine content fingerprint 15db8883461bc4c42ef48daf5398bb2c7f77b7b4485c33be99243a5ef0b039fd and scan-quality fingerprint fe8085f2d9065ad96805caed363cc63721ac5fb9b4941abee81cef80ca7175fd at approved Design/Plan commit fc87449a34b358c24764d819cab89e4b696af141; 92 modules, 296 edges, 523 files, complete/non-degraded; Design runs no graph mutation."
       },
       {
         "check": "Current-state warning is mitigated by cited production sources",
@@ -677,7 +677,7 @@
     "dod": [
       {
         "check": "Design did not mutate the baseline graph",
-        "evidence": "The orchestrator recomputes and requires baseline fingerprint 6060c8327fd79c31980db5adb38b1eb1344d361f32d41b586befa37837a4352d before human approval."
+        "evidence": "The orchestrator recomputes and requires baseline content fingerprint 15db8883461bc4c42ef48daf5398bb2c7f77b7b4485c33be99243a5ef0b039fd at scanned revision fc87449a34b358c24764d819cab89e4b696af141 before accepting the re-anchored Design."
       },
       {
         "check": "Realized graph matches the approved overlay",
@@ -947,7 +947,7 @@
       "blockers": 0,
       "evidence": "Deep solution-design review checked the exact bba3354e v2.17.16 source premises, materially distinct alternatives, closed six-gap scope, incumbent command/wait/review/graph/worktree reuse, new module ownership, 19 contract edges, synchronous cancellation and 16 KiB output bounds, all 20 executable acceptance mappings, same-commit severed-edge gate, 23-test/279-schema/seven-PROVE completeness, type/package/free-threaded boundaries, failure-signal consistency, one-fix recovery, forward-only rollback, and separate human actions. No greenfield duplication, unverifiable mapping, impossible rollback, unsupported boundary, silent debt, or sequencing invention remains.",
       "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "44306bb9dd44e3c63717cc772a772897b9fbdb45f093931029e80fc41a7d1799",
+      "content_fingerprint": "d860e0125fb506adc723d37d3a824aa4ce0b66688be280b92773387ebd6bd4cc",
       "self_attested": true
     }
   ],
