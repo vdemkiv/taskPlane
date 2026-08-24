@@ -2773,3 +2773,27 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
         TestLoop._assert_loop_binds_worker_action_to_each_immutable_review_slot
     test_managed_worktree_result_is_exact_and_fail_closed = \
         TestLoop._assert_managed_worktree_result_is_exact_and_fail_closed
+
+
+class TestReviewBridge(unittest.TestCase):
+    def test_review_bridge_execute_gate_uses_safe_argv(self):
+        completed = subprocess.CompletedProcess(
+            ["python3", "-m", "pytest", "-q"], 0, "", "")
+        with unittest.mock.patch(
+                "subprocess.run", return_value=completed) as invoked:
+            with loop._claimed_execute_suite_binding():
+                result = tp.run_suite_command(
+                    ".", "python3 -m pytest -q")
+        self.assertEqual(result.returncode, 0)
+        argv = invoked.call_args.args[0]
+        self.assertEqual(argv, ["python3", "-m", "pytest", "-q"])
+        self.assertFalse(invoked.call_args.kwargs["shell"])
+
+    def test_review_bridge_execute_gate_rejects_shell_operators(self):
+        with unittest.mock.patch("subprocess.run") as invoked:
+            with loop._claimed_execute_suite_binding():
+                result = tp.run_suite_command(
+                    ".", "python3 -m pytest && touch escaped")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("shell operators", result.stderr)
+        invoked.assert_not_called()

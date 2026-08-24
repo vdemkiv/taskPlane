@@ -170,7 +170,20 @@ def test_define_projection_reuses_one_quick_selector_and_one_event_wait(
 
     def bind_actions(_ws, manifest, *, task_id):
         assert task_id == "define"
-        return {**manifest, "wait_invocation": {
+        slots = []
+        for row in manifest["slots"]:
+            task_slot = "review-" + row["slot_id"].replace(".", "-")
+            slots.append({**row, "contract_bootstrap": {
+                "activation_order": "orchestrator_before_subagent_start",
+                "environment": {"TASKPLANE_TASK": task_slot},
+                "task_slot": task_slot,
+            }})
+        return {**manifest, "slots": slots, "collection": {
+            "schema": "taskplane.review-collection-bridge/v1",
+            "function": "loop.collect_review_bridge",
+            "run_id": manifest["run_id"],
+            "release_incomplete_producers": True,
+        }, "wait_invocation": {
             "schema": "taskplane.event-wait-invocation/v1",
             "operation": "wait_for_events",
             "outstanding_members": [row["slot_id"]
@@ -347,7 +360,7 @@ def test_em_instruction_consumes_exact_concurrent_sweep_slots_once():
     assert '"once. Refuse selector re-entry, serial fallback' in em_text
 
 
-def test_live_review_dispatches_independent_sweep_set_and_collects_all(
+def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
         tmp_path, monkeypatch):
     workspace = str(tmp_path)
     subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
@@ -471,7 +484,10 @@ def test_live_review_dispatches_independent_sweep_set_and_collects_all(
     assert len({row["action"]["action_id"] for row in bootstraps}) == 5
     assert {row["command"] for row in bootstraps} == {
         "review activate-contract"}
-    assert all(row["environment"] == {} for row in bootstraps)
+    assert all(row["activation_order"] ==
+               "orchestrator_before_subagent_start" for row in bootstraps)
+    assert all(row["environment"] == {
+        "TASKPLANE_TASK": row["task_slot"]} for row in bootstraps)
     assert all("TASKPLANE_TASK=" not in row["host_command"]
                for row in bootstraps)
     cli = Path(__file__).resolve().parents[1] / "tp.py"
@@ -572,20 +588,26 @@ def test_live_review_dispatches_independent_sweep_set_and_collects_all(
             result["references_applied"] = brief["language_references"]
         content = json.dumps(result, sort_keys=True, separators=(",", ":"))
         event = {
-            "session_id": "sweep-session",
+            "turn_id": f"sweep-child-turn-{index}",
+            "tool_use_id": f"sweep-write-{index}",
             "agent_id": f"sweep-child-{index}", "tool_name": "Write",
             "tool_input": {"file_path": slot["result_path"],
                            "content": content},
         }
         producer_slot = brief["producer_contract"]["task_slot"]
-        producer_contract = tp.load_json(
-            tp.active_contract_path(workspace, producer_slot),
-            what="active sweep producer")
-        review.register_slot_producer(
-            workspace, event=event, contract=producer_contract,
-            task_slot=producer_slot)
         screen_environment = os.environ.copy()
-        screen_environment.pop("TASKPLANE_TASK", None)
+        screen_environment.update(
+            {"TASKPLANE_TASK": producer_slot,
+             "TASKPLANE_HOOK_PATH": "native"})
+        started = subprocess.run(
+            [sys.executable, str(cli), "subagent-start"], cwd=workspace,
+            env=screen_environment, input=json.dumps({
+                "cwd": workspace,
+                "turn_id": event["turn_id"],
+                "agent_id": event["agent_id"],
+                "agent_type": "default",
+            }), text=True, capture_output=True, check=False)
+        assert started.returncode == 0, started.stderr
         screened = subprocess.run(
             [sys.executable, str(cli), "screen"], cwd=workspace,
             env=screen_environment, input=json.dumps(event), text=True,
@@ -598,9 +620,39 @@ def test_live_review_dispatches_independent_sweep_set_and_collects_all(
 
     assert tp.list_task_slots(workspace) == []
 
-    collected = review.collect_review(
+    collected = loop.collect_review_bridge(
         workspace, publish=False, run_id=opened["run_id"])
     assert collected["status"] == "complete"
     assert collected["slot_conservation"]["collected"]["count"] == len(briefs)
     assert set(collected["slot_conservation"]["collected"]["slot_ids"]) == {
         slot["slot_id"] for slot in state["slots"]}
+
+
+def test_review_bridge_releases_missing_result_producer_slots(
+        tmp_path, monkeypatch):
+    workspace = str(tmp_path)
+    slots = []
+    for suffix in ("a", "b"):
+        task_slot = f"review-{suffix * 20}"
+        producer = {
+            "task": f"review producer {suffix}",
+            "task_slot": task_slot,
+            "read_only": True,
+            "write_allow": [f".eval/results/{suffix}.json"],
+        }
+        slots.append({"slot_id": f"sweep.{suffix}",
+                      "producer_contract": producer})
+        tp.atomic_write_json(
+            tp.active_contract_path(workspace, task_slot), producer)
+    state = {"run_id": "missing-results", "status": "ready",
+             "slots": slots}
+    monkeypatch.setattr(review, "_load_state",
+                        lambda *_args, **_kwargs: state)
+    monkeypatch.setattr(review, "collect_review", lambda *_args, **_kwargs: {
+        "status": "incomplete", "repairs": ["sweep.a", "sweep.b"]})
+
+    result = loop.collect_review_bridge(
+        workspace, publish=False, run_id="missing-results")
+
+    assert result["status"] == "incomplete"
+    assert tp.list_task_slots(workspace) == []

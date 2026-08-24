@@ -3617,10 +3617,15 @@ def _bind_stateless_review_contract_actions(
         slot["contract_bootstrap"] = {
             "schema": "taskplane.review-contract-bootstrap/v1",
             "required_before_evidence": True,
+            "activation_order": "orchestrator_before_subagent_start",
             "authority": "signed_action",
             "active_slot_semantics": "derived_cache_not_authority",
             "function": "taskplane_lite.activate_review_contract_action",
-            "environment": {},
+            # Dispatch metadata, not an inline shell prefix. The orchestrator
+            # activates the signed contract first and injects this exact slot
+            # into the native child lifecycle so SubagentStart can bind the
+            # child to its lease before evidence is authored.
+            "environment": {"TASKPLANE_TASK": producer["task_slot"]},
             "command": "review activate-contract",
             "command_argv": command_argv,
             "host_command": shlex.join(command_argv),
@@ -3637,6 +3642,12 @@ def _bind_stateless_review_contract_actions(
                 "review contract bootstrap needs one shared wait policy")
         bound["wait_invocation"] = event_wait_invocation(
             wait_policies[0], outstanding_members)
+        bound["collection"] = {
+            "schema": "taskplane.review-collection-bridge/v1",
+            "function": "loop.collect_review_bridge",
+            "run_id": run_id,
+            "release_incomplete_producers": True,
+        }
     return bound
 
 
@@ -4951,10 +4962,12 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                     "against real behavior, apply each ROUTED lens (prompt at "
                     "lenses/<id>.md) — inline ones yourself, one governed "
                     "read-only subagent per subagent-mode lens. Pass each "
-                    "slot's contract_bootstrap unchanged; the exact worker "
-                    "must verify its signed action and derive its read-only "
-                    "contract before evidence access, without requiring a "
-                    "pre-existing active slot or hook lifecycle side effect. "
+                    "slot's contract_bootstrap unchanged: the orchestrator "
+                    "must activate its signed contract before spawning that "
+                    "worker and inject contract_bootstrap.environment into "
+                    "the native child lifecycle. The exact worker start is "
+                    "then host-observed and lease-bound before evidence "
+                    "access. "
                     "Then disposition "
                     "graph impact + affected requirements; reject stale Design "
                     f"evidence. Fill the empty slots in {evaluator_result} "
@@ -4973,9 +4986,12 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
               "result_path, then issue exactly `review_kernel.wait_invocation` "
               "once. Refuse selector re-entry, serial fallback, and any "
               "deep/light/full/26-lens dispatch. "
-              "Each exact worker verifies the signed action and derives its "
-              "read-only contract before evidence access. Do not re-derive "
-              "diff or impact per lens. "
+              "Before each spawn, activate that slot's signed action and "
+              "inject contract_bootstrap.environment into the native child "
+              "lifecycle, so its SubagentStart is lease-bound before "
+              "evidence access. Collect only through "
+              "review_kernel.collection after the single event wait. Do "
+              "not re-derive diff or impact per lens. "
               "Synthesize all verdicts + requirement-vs-implementation into "
               f"{os.path.join(review_root, 'report.md')} AND "
               f"{os.path.join(review_root, 'findings.json')} (including "
@@ -5171,12 +5187,41 @@ def _claimed_execute_suite_binding():
     original_runner = tp.run_suite_command
     original_lookup = tp.suite_cache_lookup
 
+    def safe_argv(command):
+        if isinstance(command, (list, tuple)):
+            argv = list(command)
+            if not argv or any(not isinstance(value, str) or not value
+                               for value in argv):
+                raise ValueError("declared suite argv is invalid")
+            return argv
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("declared suite command is invalid")
+        try:
+            lexer = shlex.shlex(
+                command, posix=True, punctuation_chars="|&;<>")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            argv = list(lexer)
+        except ValueError as exc:
+            raise ValueError(
+                f"declared suite command has invalid quoting: {exc}") \
+                from exc
+        if not argv or any(token and set(token) <= set("|&;<>")
+                           for token in argv):
+            raise ValueError(
+                "declared suite command contains shell operators")
+        return argv
+
     def run_claimed(workspace, command, *, env=None, timeout=600):
-        shell = not isinstance(command, (list, tuple))
+        try:
+            argv = safe_argv(command)
+        except ValueError as exc:
+            return subprocess.CompletedProcess(
+                command, 2, stdout="", stderr=str(exc))
         return subprocess.run(
-            command if shell else list(command),
+            argv,
             cwd=workspace,
-            shell=shell,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -5192,6 +5237,24 @@ def _claimed_execute_suite_binding():
     finally:
         tp.run_suite_command = original_runner
         tp.suite_cache_lookup = original_lookup
+
+
+def collect_review_bridge(review_ws: str, *, publish: bool,
+                          run_id: str) -> dict:
+    """Collect a ReviewKernel run and release its exact producer slots.
+
+    A provisional collection still ends the producer wave: missing or
+    invalid outputs become named repair evidence, while stale producer
+    contracts must not remain in the parent contract union.
+    """
+    import review as review_kernel
+
+    state = review_kernel._load_state(review_ws, run_id)
+    try:
+        return review_kernel.collect_review(
+            review_ws, publish=publish, run_id=run_id)
+    finally:
+        review_kernel._release_slot_contracts(review_ws, state)
 
 
 def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
@@ -5251,7 +5314,7 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     if kernel and kernel.get("status") == "ready" and \
             kernel.get("stage") == EVALUATE_ROUTE_STAGE:
         try:
-            _review.collect_review(
+            collect_review_bridge(
                 kernel_ws, publish=False, run_id=kernel.get("run_id"))
             kernel = _review._load_state(
                 kernel_ws, kernel.get("run_id"))

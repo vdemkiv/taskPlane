@@ -693,6 +693,24 @@ def project_define(
            for row in slots):
         raise DefineProjectionError(
             "DEFINE binding must preserve router-produced dispatch evidence")
+    for row in slots:
+        bootstrap = row.get("contract_bootstrap")
+        if not isinstance(bootstrap, Mapping) or \
+                bootstrap.get("activation_order") != \
+                "orchestrator_before_subagent_start" or \
+                bootstrap.get("environment") != {
+                    "TASKPLANE_TASK": bootstrap.get("task_slot")}:
+            raise DefineProjectionError(
+                "DEFINE producer activation must precede SubagentStart")
+    collection = bound.get("collection")
+    if not isinstance(collection, Mapping) or \
+            collection.get("schema") != \
+            "taskplane.review-collection-bridge/v1" or \
+            collection.get("function") != "loop.collect_review_bridge" or \
+            collection.get("run_id") != bound.get("run_id") or \
+            collection.get("release_incomplete_producers") is not True:
+        raise DefineProjectionError(
+            "DEFINE requires the producer-releasing collection bridge")
     return {
         "schema": DEFINE_PROJECTION_SCHEMA,
         "status": "ready", "stage": "define",
@@ -701,6 +719,7 @@ def project_define(
         "selected_lenses": evidence["selected_lenses"],
         "dispatch_set": evidence["dispatch_set"],
         "slots": slots, "wait_invocation": dict(wait),
+        "collection": dict(collection),
         "selector_invocations": selector_invocations,
         "automatic_deep": evidence["automatic_deep"],
         "automatic_full": evidence["automatic_full"],
