@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -217,6 +218,192 @@ class TestScopeAssignment(unittest.TestCase):
                 "schema": "taskplane.wait-policy/v1", "mode": "poll",
                 "scheduled_polling": True, "timeout_seconds": 1,
             })
+
+
+class TestIntegrationAuthorization(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.ws = git_ws(self.tmp, [TASK])
+        self.task_id = "t-live"
+        self.scope = ["src/todo/a.py"]
+        self.worker = runtime_storage.task_worktree_path(
+            self.ws, self.task_id)
+        os.makedirs(os.path.dirname(self.worker), exist_ok=True)
+        subprocess.run([
+            "git", "worktree", "add", "-q", "-b", "tp/t-live",
+            self.worker, "HEAD",
+        ], cwd=self.ws, check=True)
+        with open(os.path.join(self.worker, "src", "todo", "a.py"), "a",
+                  encoding="utf-8") as stream:
+            stream.write("y=2\n")
+        subprocess.run(["git", "add", "src/todo/a.py"], cwd=self.worker,
+                       check=True)
+        subprocess.run([
+            "git", "-c", "user.email=e@e", "-c", "user.name=t",
+            "commit", "-qm", "green task",
+        ], cwd=self.worker, check=True)
+        self.tip = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.worker,
+            text=True).strip()
+        runtime_storage.register_task_worktree(
+            self.ws, self.worker, self.task_id)
+        self.contract = {
+            "task_id": "contract-live", "task": "integration fixture",
+            "allowed_tools": ["Read"],
+        }
+        tp.activate(self.worker, dict(self.contract), snapshot=None)
+        self.receipt = self._receipt()
+        self._save_state(self.receipt)
+        self.primary_before = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.ws,
+            text=True).strip()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    @staticmethod
+    def _digest(value):
+        material = {key: item for key, item in value.items()
+                    if key != "receipt_digest"}
+        return hashlib.sha256(json.dumps(
+            material, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")).hexdigest()
+
+    def _receipt(self, **updates):
+        active = tp.load_active(self.worker)
+        receipt = {
+            "schema": checkpoint.CHECKPOINT_RECEIPT_SCHEMA,
+            "producer": "taskplane.checkpoint-engine/v1",
+            "engine_fingerprint": "e" * 64,
+            "active_contract_fingerprint": hashlib.sha256(json.dumps(
+                active, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")).hexdigest(),
+            "identity": {
+                "run_id": "legacy", "task_id": self.task_id,
+                "checkpoint_id": "cp-live", "ac_ids": ["AC-live"],
+            },
+            "phase": "build",
+            "ordered_phases": list(checkpoint.ORDERED_CHECKPOINT_PHASES),
+            "completed_phases": ["focused_proof"],
+            "command": {}, "environment_fingerprint": "f" * 64,
+            "output": {}, "result": {"state": "succeeded", "exit_code": 0},
+            "worktree_revision": self.tip,
+            "declared_scope": list(self.scope),
+            "predecessor_receipt_digests": [], "verdict": "green",
+        }
+        receipt.update(updates)
+        receipt["receipt_digest"] = self._digest(receipt)
+        return receipt
+
+    def _save_state(self, receipt=None, *, task_updates=None, deps=None):
+        task = {
+            "id": self.task_id, "scope": list(self.scope),
+            "deps": list(deps or []), "status": "running",
+            "workspace": self.worker,
+        }
+        if receipt is not None:
+            task["_submission"] = {
+                "task": self.task_id, "outcome": "pass",
+                "checkpoint_receipt": receipt,
+            }
+        task.update(task_updates or {})
+        loop.save(self.ws, {"step": "execute", "tasks": [task]})
+
+    def test_integration_authorization_merges_only_engine_green_exact_sha(self):
+        predecessor_digest = "a" * 64
+        receipt = self._receipt(
+            predecessor_receipt_digests=[predecessor_digest])
+        dependency = {
+            "id": "dep", "status": "integrated",
+            "integration_authorization": {
+                "checkpoint_receipt_digest": predecessor_digest,
+                "authorized_revision": "b" * 40,
+            },
+        }
+        task = {
+            "id": self.task_id, "scope": list(self.scope), "deps": ["dep"],
+            "status": "running", "workspace": self.worker,
+            "_submission": {"task": self.task_id, "outcome": "pass",
+                            "checkpoint_receipt": receipt},
+        }
+        loop.save(self.ws, {"step": "execute", "tasks": [dependency, task]})
+        authorized = build_c.integrate_on_green(self.ws, self.task_id)
+
+        self.assertEqual(authorized["status"], "integrated")
+        self.assertEqual(authorized["authorized_revision"], self.tip)
+        self.assertEqual(authorized["checkpoint_receipt_digest"],
+                         receipt["receipt_digest"])
+        self.assertEqual(authorized["predecessor_receipt_digests"],
+                         [predecessor_digest])
+        self.assertEqual(authorized["merge_receipt"]["branch_tip"], self.tip)
+        self.assertEqual(subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.ws,
+            text=True).strip(), self.tip)
+
+    def test_integration_authorization_rejects_missing_red_stale_mixed_and_branch_tip_only(self):
+        mutations = []
+        red = self._receipt(verdict="red")
+        mutations.append((red, {}, "green checkpoint"))
+        stale = self._receipt(worktree_revision=self.primary_before)
+        mutations.append((stale, {}, "registered worktree tip"))
+        mixed = self._receipt(identity={
+            "run_id": "legacy", "task_id": "other",
+            "checkpoint_id": "cp-live", "ac_ids": ["AC-live"],
+        })
+        mutations.append((mixed, {}, "task identity"))
+        mismatched_scope = self._receipt(declared_scope=["src/other.py"])
+        mutations.append((mismatched_scope, {}, "declared scope"))
+        caller_authored = dict(self.receipt, caller_verdict="green")
+        caller_authored["receipt_digest"] = self._digest(caller_authored)
+        mutations.append((caller_authored, {}, "caller-authored"))
+        mutations.append((None, {"target_commit": self.tip},
+                          "engine checkpoint receipt"))
+
+        for receipt, task_updates, message in mutations:
+            with self.subTest(message=message):
+                self._save_state(receipt, task_updates=task_updates)
+                with self.assertRaisesRegex(
+                        build_c.IntegrationAuthorizationError, message):
+                    build_c.integrate_on_green(self.ws, self.task_id)
+                self.assertEqual(subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=self.ws,
+                    text=True).strip(), self.primary_before)
+
+    def test_integration_authorization_requires_exact_green_predecessors(self):
+        predecessor_digest = "a" * 64
+        receipt = self._receipt(
+            predecessor_receipt_digests=[predecessor_digest])
+        dependency = {
+            "id": "dep", "status": "failed",
+            "integration_authorization": {
+                "checkpoint_receipt_digest": predecessor_digest,
+                "authorized_revision": "b" * 40,
+            },
+        }
+        task = {
+            "id": self.task_id, "scope": list(self.scope), "deps": ["dep"],
+            "status": "running", "workspace": self.worker,
+            "_submission": {"task": self.task_id, "outcome": "pass",
+                            "checkpoint_receipt": receipt},
+        }
+        loop.save(self.ws, {"step": "execute", "tasks": [dependency, task]})
+        with self.assertRaisesRegex(build_c.IntegrationAuthorizationError,
+                                    "predecessor dep is not green"):
+            build_c.integrate_on_green(self.ws, self.task_id)
+        self.assertEqual(subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.ws,
+            text=True).strip(), self.primary_before)
+
+    def test_merge_on_green_severed_repository_edge_fails_closed(self):
+        with unittest.mock.patch(
+                "build_c.repository.RepositoryManager.merge_registered_task",
+                side_effect=RuntimeError("severed integration edge")):
+            with self.assertRaisesRegex(build_c.IntegrationAuthorizationError,
+                                        "severed integration edge"):
+                build_c.integrate_on_green(self.ws, self.task_id)
+        self.assertEqual(subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.ws,
+            text=True).strip(), self.primary_before)
 
 class TestBuildCCheckpointSpec(unittest.TestCase):
     def setUp(self):

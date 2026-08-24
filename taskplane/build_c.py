@@ -14,6 +14,7 @@ import os
 import re
 
 import depgraph
+import checkpoint
 import repository
 import review
 import storage as runtime_storage
@@ -23,6 +24,8 @@ import taskplane_lite as tp
 PROGRAM_LEDGER_SCHEMA = "taskplane.program-phase-ledger/v1"
 DEFINE_PROJECTION_SCHEMA = "taskplane.define-projection/v1"
 SCOPE_ASSIGNMENT_SCHEMA = "taskplane.scope-disjoint-assignment/v1"
+INTEGRATION_AUTHORIZATION_SCHEMA = \
+    "taskplane.build-c-integration-authorization/v1"
 
 
 class ProgramAuthorityError(RuntimeError):
@@ -37,12 +40,25 @@ class ScopeAssignmentError(RuntimeError):
     """Direct BUILD-C assignment could not preserve scope isolation."""
 
 
+class IntegrationAuthorizationError(RuntimeError):
+    """A task cannot cross the BUILD-C integration boundary."""
+
+
 _LEGACY_BUILD_STATE = frozenset({
     "wave", "waves", "claim", "claims", "build_lease", "build_leases",
     "slot_lease", "slot_leases", "lens_state", "per_task_contract",
     "evaluate_state", "fix_state", "_stage_bindings",
 })
 _BRANCH_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_CHECKPOINT_RECEIPT_FIELDS = frozenset({
+    "schema", "producer", "engine_fingerprint",
+    "active_contract_fingerprint", "identity", "phase",
+    "ordered_phases", "completed_phases", "command",
+    "environment_fingerprint", "output", "result", "worktree_revision",
+    "declared_scope", "predecessor_receipt_digests", "verdict",
+    "receipt_digest",
+})
 
 
 def _scope_overlap(left: Mapping[str, object],
@@ -213,6 +229,177 @@ def assign_scopes(
     }
     return {**material, "fingerprint": hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()}
+
+
+def _integration_state(ws: str) -> Mapping[str, object]:
+    # Imported here to preserve build_c -> loop's existing lazy boundary.
+    import loop
+    state = loop.load(ws)
+    if not isinstance(state, Mapping):
+        raise IntegrationAuthorizationError(
+            "live BUILD-C integration state is missing")
+    return state
+
+
+def _checkpoint_integration_receipt(
+        receipt: object, *, task_id: str, run_id: str, revision: str,
+        scope: list[str], active_contract: Mapping[str, object]) -> dict:
+    if not isinstance(receipt, Mapping):
+        raise IntegrationAuthorizationError(
+            "engine checkpoint receipt is missing")
+    unknown = sorted(set(receipt) - _CHECKPOINT_RECEIPT_FIELDS)
+    missing = sorted(_CHECKPOINT_RECEIPT_FIELDS - set(receipt))
+    if unknown:
+        raise IntegrationAuthorizationError(
+            "checkpoint receipt has caller-authored fields: " +
+            ", ".join(unknown))
+    if missing:
+        raise IntegrationAuthorizationError(
+            "engine checkpoint receipt is missing fields: " +
+            ", ".join(missing))
+    if receipt.get("schema") != checkpoint.CHECKPOINT_RECEIPT_SCHEMA or \
+            receipt.get("producer") != "taskplane.checkpoint-engine/v1" or \
+            receipt.get("verdict") != "green" or \
+            (receipt.get("result") or {}).get("state") != "succeeded" or \
+            (receipt.get("result") or {}).get("exit_code") != 0:
+        raise IntegrationAuthorizationError(
+            "integration requires an engine green checkpoint")
+    digest = receipt.get("receipt_digest")
+    if not isinstance(digest, str) or not _DIGEST.fullmatch(digest) or \
+            digest != checkpoint.receipt_digest(receipt):
+        raise IntegrationAuthorizationError(
+            "checkpoint receipt digest is invalid or mixed")
+    identity = receipt.get("identity")
+    if not isinstance(identity, Mapping) or set(identity) != {
+            "run_id", "task_id", "checkpoint_id", "ac_ids"} or \
+            identity.get("task_id") != task_id or \
+            identity.get("run_id") != run_id:
+        raise IntegrationAuthorizationError(
+            "checkpoint task identity is mixed")
+    if receipt.get("worktree_revision") != revision:
+        raise IntegrationAuthorizationError(
+            "checkpoint does not name the registered worktree tip")
+    if receipt.get("declared_scope") != scope:
+        raise IntegrationAuthorizationError(
+            "checkpoint declared scope does not match the sealed task")
+    if receipt.get("ordered_phases") != \
+            list(checkpoint.ORDERED_CHECKPOINT_PHASES) or \
+            receipt.get("completed_phases") != ["focused_proof"]:
+        raise IntegrationAuthorizationError(
+            "checkpoint phase evidence is missing or mixed")
+    expected_contract = hashlib.sha256(json.dumps(
+        active_contract, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")).hexdigest()
+    if receipt.get("active_contract_fingerprint") != expected_contract or \
+            not isinstance(receipt.get("engine_fingerprint"), str) or \
+            not _DIGEST.fullmatch(receipt["engine_fingerprint"]):
+        raise IntegrationAuthorizationError(
+            "checkpoint is not bound to the active engine contract")
+    return dict(receipt)
+
+
+def _green_predecessor_digests(
+        tasks: list[object], task: Mapping[str, object]) -> list[str]:
+    by_id = {str(row.get("id")): row for row in tasks
+             if isinstance(row, Mapping) and row.get("id")}
+    digests = []
+    for dependency in task.get("deps") or []:
+        dependency_id = str(dependency)
+        predecessor = by_id.get(dependency_id)
+        if not isinstance(predecessor, Mapping) or \
+                predecessor.get("status") not in {
+                    "passed", "accepted", "integrated"}:
+            raise IntegrationAuthorizationError(
+                f"predecessor {dependency_id} is not green")
+        authorization = predecessor.get("integration_authorization")
+        digest = ((authorization or {}).get("checkpoint_receipt_digest")
+                  if isinstance(authorization, Mapping) else None)
+        if not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
+            raise IntegrationAuthorizationError(
+                f"predecessor {dependency_id} has no green integration "
+                "authorization")
+        digests.append(digest)
+    return digests
+
+
+def integrate_on_green(primary_checkout: str, task_id: str) -> dict:
+    """Integrate exactly the engine-checkpointed registered task revision.
+
+    The receipt is deliberately not a parameter: only the checkpoint nested
+    in the live engine submission can authorize this boundary.  Branch tips,
+    caller-authored receipt lookalikes, and stale or mixed identities therefore
+    cannot become merge authority.
+    """
+    primary = os.path.realpath(primary_checkout)
+    state = _integration_state(primary)
+    if state.get("step") != "execute":
+        raise IntegrationAuthorizationError(
+            "BUILD-C integration is available only during execute")
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        raise IntegrationAuthorizationError("sealed Plan tasks are missing")
+    task = next((row for row in tasks if isinstance(row, Mapping) and
+                 row.get("id") == task_id), None)
+    if task is None:
+        raise IntegrationAuthorizationError(
+            f"task {task_id} is not in the sealed Plan")
+    submission = task.get("_submission")
+    if not isinstance(submission, Mapping) or \
+            submission.get("task") != task_id or \
+            submission.get("outcome") != "pass":
+        raise IntegrationAuthorizationError(
+            "engine checkpoint receipt is missing from a green submission")
+    try:
+        registration = runtime_storage.refresh_task_worktree_tip(
+            primary, task_id)
+    except Exception as exc:
+        raise IntegrationAuthorizationError(
+            f"registered worktree identity is invalid: {exc}") from exc
+    worker = os.path.realpath(str(registration.get("path") or ""))
+    if os.path.realpath(str(task.get("workspace") or "")) != worker:
+        raise IntegrationAuthorizationError(
+            "task workspace and managed registration are mixed")
+    active_contract = tp.load_active(worker)
+    if not isinstance(active_contract, Mapping):
+        raise IntegrationAuthorizationError(
+            "checkpoint active engine contract is missing")
+    revision = str(registration.get("branch_tip") or "")
+    scope = list(task.get("scope") or [])
+    receipt = _checkpoint_integration_receipt(
+        submission.get("checkpoint_receipt"), task_id=task_id,
+        run_id=str(registration.get("run_id") or "legacy"),
+        revision=revision, scope=scope, active_contract=active_contract)
+    predecessor_digests = _green_predecessor_digests(tasks, task)
+    if receipt.get("predecessor_receipt_digests") != predecessor_digests:
+        raise IntegrationAuthorizationError(
+            "checkpoint predecessor receipts are stale or mixed")
+    try:
+        merge_receipt = repository.RepositoryManager().merge_registered_task(
+            primary, task_id=task_id,
+            run_id=str(registration.get("run_id") or "legacy"))
+    except Exception as exc:
+        raise IntegrationAuthorizationError(
+            f"repository integration failed closed: {exc}") from exc
+    if not isinstance(merge_receipt, Mapping) or \
+            merge_receipt.get("task_id") != task_id or \
+            merge_receipt.get("branch_tip") != revision or \
+            os.path.realpath(str(merge_receipt.get("managed_path") or "")) != \
+            worker or \
+            os.path.realpath(str(
+                merge_receipt.get("primary_checkout") or "")) != primary:
+        raise IntegrationAuthorizationError(
+            "repository merge receipt does not match authorization")
+    material = {
+        "schema": INTEGRATION_AUTHORIZATION_SCHEMA,
+        "status": "integrated", "task_id": task_id,
+        "authorized_revision": revision,
+        "checkpoint_receipt_digest": receipt["receipt_digest"],
+        "predecessor_receipt_digests": predecessor_digests,
+        "merge_receipt": dict(merge_receipt),
+    }
+    return {**material, "fingerprint": hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"), default=str
     ).encode("utf-8")).hexdigest()}
 
 
