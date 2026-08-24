@@ -1051,6 +1051,11 @@ class TestLoop(unittest.TestCase):
         accepted = loop.load(ws)["tasks"][0]
         self.assertEqual(accepted["status"], "passed")
         self.assertEqual(accepted["human_resolution"]["decision"], "pass")
+        self.assertEqual(
+            accepted["reanchor_authority"]["schema"],
+            loop._REANCHOR_AUTHORITY_REF_SCHEMA)
+        self.assertTrue(os.path.isfile(runtime_storage.evaluation_path(
+            ws, "reanchor-authority.json")))
 
     def test_human_pass_refuses_unmet_criteria(self):
         ws, _, _ = self._gate_evaluator_unavailable()
@@ -1218,8 +1223,13 @@ class TestLoop(unittest.TestCase):
                 ["git", "commit", "-qm", "record evaluator evidence"],
                 cwd=ws, check=True, capture_output=True, text=True)
             task = dict(TASK)
-            prior = dict(task, status="passed", workspace=ws,
-                         target_commit=tp.git_head(ws))
+            authority_ref, source_revision = \
+                loop._persist_reanchor_authority(
+                    ws, task, "independent-pass")
+            prior = dict(
+                task, status="passed", workspace=ws,
+                target_commit=source_revision,
+                reanchor_authority=authority_ref)
             return loop._verify_reanchor_task_evidence(ws, task, prior)
 
         for sentinel in (False, 0):
@@ -1232,6 +1242,125 @@ class TestLoop(unittest.TestCase):
         evidence, error = verify("receipt: evaluator independently passed")
         self.assertIsNone(error)
         self.assertEqual(evidence["resolution"], "independent-pass")
+
+    def _authoritative_reanchor_case(self):
+        ws = git_ws(tempfile.mkdtemp(dir=self.tmp), [TASK])
+        verdict_path = runtime_storage.evaluation_path(ws)
+        os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
+        verdict = {
+            "schema": "taskplane.evaluator-output/v1",
+            "task": "t1",
+            "requirement": "",
+            "verdict": "pass",
+            "criteria": [{
+                "criterion": TASK["criteria"][0],
+                "status": "met",
+                "evidence": "receipt: independently verified source",
+            }],
+            "failures": [],
+        }
+        with open(verdict_path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream, sort_keys=True)
+        subprocess.run(
+            ["git", "add", "-f", ".eval/verdict.json"], cwd=ws,
+            check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "record authoritative evaluation"],
+            cwd=ws, check=True, capture_output=True, text=True)
+        task = dict(TASK)
+        authority_ref, source_revision = loop._persist_reanchor_authority(
+            ws, task, "independent-pass")
+        prior = dict(
+            task, status="passed", workspace=ws,
+            target_commit=source_revision,
+            reanchor_authority=authority_ref)
+        return ws, task, prior, verdict_path
+
+    def test_define_projection_reanchor_authority_fails_closed_on_tamper_missing_and_mixed_revision(self):
+        ws, task, prior, verdict_path = self._authoritative_reanchor_case()
+        receipt_path = runtime_storage.evaluation_path(
+            ws, "reanchor-authority.json")
+
+        evidence, error = loop._verify_reanchor_task_evidence(
+            ws, task, prior)
+        self.assertIsNone(error)
+        self.assertEqual(evidence["resolution"], "independent-pass")
+
+        missing_path = receipt_path + ".missing"
+        os.replace(receipt_path, missing_path)
+        try:
+            evidence, error = loop._verify_reanchor_task_evidence(
+                ws, task, prior)
+            self.assertIsNone(evidence)
+            self.assertIn("authority is unavailable", error)
+        finally:
+            os.replace(missing_path, receipt_path)
+
+        receipt_bytes = open(receipt_path, "rb").read()
+        with open(receipt_path, "ab") as stream:
+            stream.write(b"\n")
+        evidence, error = loop._verify_reanchor_task_evidence(
+            ws, task, prior)
+        self.assertIsNone(evidence)
+        self.assertEqual(
+            error, "engine-authored reanchor authority bytes changed")
+        with open(receipt_path, "wb") as stream:
+            stream.write(receipt_bytes)
+
+        verdict_bytes = open(verdict_path, "rb").read()
+        with open(verdict_path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["caller_authored_copy"] = True
+        with open(verdict_path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream, sort_keys=True)
+        evidence, error = loop._verify_reanchor_task_evidence(
+            ws, task, prior)
+        self.assertIsNone(evidence)
+        self.assertEqual(
+            error,
+            "engine-authored reanchor authority does not match exact pass")
+        with open(verdict_path, "wb") as stream:
+            stream.write(verdict_bytes)
+
+        with open(os.path.join(ws, "src", "todo", "a.py"), "a",
+                  encoding="utf-8") as stream:
+            stream.write("# later revision\n")
+        subprocess.run(
+            ["git", "add", "src/todo/a.py"], cwd=ws,
+            check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "later mixed revision"], cwd=ws,
+            check=True, capture_output=True, text=True)
+        mixed_prior = dict(prior, target_commit=tp.git_head(ws))
+        evidence, error = loop._verify_reanchor_task_evidence(
+            ws, task, mixed_prior)
+        self.assertIsNone(evidence)
+        self.assertEqual(
+            error,
+            "engine-authored reanchor authority does not match exact pass")
+
+    def test_define_projection_reanchor_ancestry_timeout_fails_closed(self):
+        ws, task, prior, _ = self._authoritative_reanchor_case()
+        real_run = subprocess.run
+        observed_timeouts = []
+
+        def time_out_ancestry(argv, **kwargs):
+            if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+                observed_timeouts.append(kwargs.get("timeout"))
+                raise subprocess.TimeoutExpired(
+                    argv, kwargs.get("timeout"))
+            return real_run(argv, **kwargs)
+
+        with unittest.mock.patch("subprocess.run",
+                                 side_effect=time_out_ancestry):
+            evidence, error = loop._verify_reanchor_task_evidence(
+                ws, task, prior)
+
+        self.assertIsNone(evidence)
+        self.assertEqual(
+            error, "passed source ancestry verification timed out")
+        self.assertEqual(observed_timeouts,
+                         [loop._REANCHOR_ANCESTRY_TIMEOUT_SECONDS])
 
     def test_define_projection_replan_changed_criteria_stays_pending(self):
         prior = dict(TASK, status="passed", workspace=self.tmp,
@@ -2940,13 +3069,34 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
 class TestReviewBridge(unittest.TestCase):
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
         canonical = sys.modules.get("taskplane_lite")
+        launcher = types.SimpleNamespace(
+            __file__="/launcher/v2.17.16/taskplane_lite.py",
+            review_execution_root_identity=lambda *_: (_ for _ in ()).throw(
+                AssertionError("launcher runtime was used")))
+        workspace = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
 
-        runtime = loop._review_runtime_kernel()
+        with unittest.mock.patch.object(loop, "tp", launcher), \
+                unittest.mock.patch.object(
+                    loop, "_REVIEW_RUNTIME_BUNDLE", None):
+            runtime, evidence, review_kernel = \
+                loop._review_runtime_modules()
+            binding = evidence.create_execution_binding(
+                workspace,
+                target={"fingerprint": "target-v2.17.17", "head": "abc123"},
+                run_id="target-run", lens_ids=["architecture"],
+                slot_id="sweep.architecture",
+                lease_fingerprint="a" * 64,
+                producer="target-producer")
 
-        self.assertEqual(
-            os.path.realpath(runtime.__file__),
-            os.path.realpath(os.path.join(
-                os.path.dirname(loop.__file__), "taskplane_lite.py")))
+        self.assertEqual(binding["schema"],
+                         "taskplane.review-execution-binding/v1")
+        self.assertIs(evidence.tp, runtime)
+        self.assertIs(review_kernel.tp, runtime)
+        self.assertIs(review_kernel.review_evidence_runtime, evidence)
+        self.assertEqual(os.path.realpath(runtime.__file__), os.path.realpath(
+            os.path.join(os.path.dirname(loop.__file__),
+                         "taskplane_lite.py")))
         self.assertIs(sys.modules.get("taskplane_lite"), canonical)
 
     def test_review_bridge_execute_gate_uses_safe_argv(self):

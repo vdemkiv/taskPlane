@@ -363,8 +363,11 @@ def test_em_instruction_consumes_exact_concurrent_sweep_slots_once():
 def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
         tmp_path, monkeypatch):
     workspace = str(tmp_path)
-    monkeypatch.setattr(
-        review_evidence, "tp", loop._review_runtime_kernel())
+    runtime_kernel, evidence_kernel, review_kernel = \
+        loop._review_runtime_modules()
+    assert evidence_kernel.tp is runtime_kernel
+    assert review_kernel.tp is runtime_kernel
+    assert review_kernel.review_evidence_runtime is evidence_kernel
     subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
     outer_run_id = "outer-delivery-run"
     identity = runtime_storage.resolve_repository_identity(workspace)
@@ -378,7 +381,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     (tmp_path / "src/service.py").write_text(
         "def changed():\n    return 2\n", encoding="utf-8")
     production_calls = []
-    production_slot_plan = review._slot_plan
+    production_slot_plan = review_kernel._slot_plan
     wait_calls = []
     production_wait_invocation = loop.event_wait_invocation
 
@@ -390,10 +393,10 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
         wait_calls.append((args, kwargs))
         return production_wait_invocation(*args, **kwargs)
 
-    monkeypatch.setattr(review, "_slot_plan", observed_slot_plan)
+    monkeypatch.setattr(review_kernel, "_slot_plan", observed_slot_plan)
     monkeypatch.setattr(loop, "event_wait_invocation",
                         observed_wait_invocation)
-    opened = review.start_review(
+    opened = review_kernel.start_review(
         workspace,
         target={"fingerprint": "target-1", "head": "abc123"},
         graph={"meta": {"scanned_head": "abc123",
@@ -418,8 +421,8 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     assert "architecture" in {
         slot["lens_ids"][0] for slot in opened["slots"]}
 
-    state = review._load_state(workspace, opened["run_id"])
-    store = review_evidence.ArtifactStore(workspace)
+    state = review_kernel._load_state(workspace, opened["run_id"])
+    store = evidence_kernel.ArtifactStore(workspace)
     assert len(state["slots"]) == len(opened["slots"])
     briefs = [store.read(slot["brief"]) for slot in state["slots"]]
     leases = [store.read(slot["lease"]) for slot in state["slots"]]
@@ -652,10 +655,12 @@ def test_review_bridge_releases_missing_result_producer_slots(
             tp.active_contract_path(workspace, task_slot), producer)
     state = {"run_id": "missing-results", "status": "ready",
              "slots": slots}
-    monkeypatch.setattr(review, "_load_state",
+    _, _, review_kernel = loop._review_runtime_modules()
+    monkeypatch.setattr(review_kernel, "_load_state",
                         lambda *_args, **_kwargs: state)
-    monkeypatch.setattr(review, "collect_review", lambda *_args, **_kwargs: {
-        "status": "incomplete", "repairs": ["sweep.a", "sweep.b"]})
+    monkeypatch.setattr(
+        review_kernel, "collect_review", lambda *_args, **_kwargs: {
+            "status": "incomplete", "repairs": ["sweep.a", "sweep.b"]})
 
     result = loop.collect_review_bridge(
         workspace, publish=False, run_id="missing-results")

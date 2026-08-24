@@ -31,6 +31,7 @@ import base64
 import contextlib
 import contextvars
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -3481,6 +3482,105 @@ def _diff_files(ws: str, base: str) -> list:
                                "--exclude-standard"])).splitlines() if f]
 
 
+_REVIEW_RUNTIME_BUNDLE = None
+
+
+def _private_review_module(name: str, path: str, overrides: dict):
+    """Load one target module with private import bindings.
+
+    The canonical import table belongs to the launcher process and is never
+    replaced.  Functions defined in the returned module retain this private
+    importer, including their later in-function imports.
+    """
+    import builtins
+    import types
+    module = types.ModuleType(name)
+    module.__file__ = path
+    module.__package__ = ""
+    importer = builtins.__import__
+
+    def target_import(import_name, globals=None, locals=None,
+                      fromlist=(), level=0):
+        if level == 0 and import_name in overrides:
+            return overrides[import_name]
+        return importer(import_name, globals, locals, fromlist, level)
+
+    private_builtins = dict(vars(builtins))
+    private_builtins["__import__"] = target_import
+    module.__dict__["__builtins__"] = private_builtins
+    with open(path, "rb") as stream:
+        source = stream.read()
+    # Class decorators such as dataclasses resolve the defining module while
+    # its body executes.  Expose the private identity only for that bounded
+    # load, then restore the launcher's import table exactly.
+    missing = object()
+    previous = sys.modules.get(name, missing)
+    sys.modules[name] = module
+    try:
+        exec(compile(source, path, "exec"), module.__dict__)
+    finally:
+        if previous is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+    return module
+
+
+def _review_runtime_modules():
+    """Return one checkout-consistent runtime/evidence/review bundle."""
+    global _REVIEW_RUNTIME_BUNDLE
+    root = os.path.realpath(os.path.dirname(__file__))
+    paths = {
+        "runtime": os.path.join(root, "taskplane_lite.py"),
+        "evidence": os.path.join(root, "review_evidence.py"),
+        "review": os.path.join(root, "review.py"),
+    }
+    cached = _REVIEW_RUNTIME_BUNDLE
+    if isinstance(cached, dict) and cached.get("root") == root:
+        return (cached["runtime"], cached["evidence"], cached["review"])
+
+    import review as imported_review
+    import review_evidence as imported_evidence
+    imported_runtime_path = os.path.realpath(str(
+        getattr(tp, "__file__", "") or ""))
+    evidence_path = os.path.realpath(str(
+        getattr(imported_evidence, "__file__", "") or ""))
+    review_path = os.path.realpath(str(
+        getattr(imported_review, "__file__", "") or ""))
+    consistent = (
+        imported_runtime_path == paths["runtime"]
+        and evidence_path == paths["evidence"]
+        and review_path == paths["review"]
+        and getattr(imported_evidence, "tp", None) is tp
+        and getattr(imported_review, "tp", None) is tp
+        and getattr(imported_review, "review_evidence_runtime", None)
+        is imported_evidence
+    )
+    if consistent:
+        runtime, evidence, review_kernel = tp, imported_evidence, imported_review
+    else:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_taskplane_target_runtime", paths["runtime"])
+        if spec is None or spec.loader is None:
+            raise RuntimeError("target review runtime cannot be loaded")
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        evidence = _private_review_module(
+            "_taskplane_target_review_evidence", paths["evidence"],
+            {"taskplane_lite": runtime})
+        review_kernel = _private_review_module(
+            "_taskplane_target_review", paths["review"], {
+                "taskplane_lite": runtime,
+                "review_evidence": evidence,
+            })
+    _REVIEW_RUNTIME_BUNDLE = {
+        "root": root, "runtime": runtime,
+        "evidence": evidence, "review": review_kernel,
+    }
+    return runtime, evidence, review_kernel
+
+
 def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                    task: dict | None, graph: dict, impact: dict,
                    requirement: dict | None,
@@ -3488,13 +3588,12 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
     """One evidence/routing kernel shared by Evaluate and final EM."""
     import hashlib
     import subprocess
-    import review
-    import review_evidence
+    runtime_kernel, review_evidence, review = _review_runtime_modules()
 
     files = [f for f in _diff_files(diff_ws, base)
              if not f.startswith(lens_router.LOOP_OWNED) and
              (not task or not task.get("scope") or
-              tp.match_any(f, task.get("scope") or []))]
+              runtime_kernel.match_any(f, task.get("scope") or []))]
     diff_rc, patch = review.canonical_diff_patch(
         diff_ws, base, paths=files)
     if diff_rc:
@@ -3537,37 +3636,6 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         "status": manifest.get("status"), "breadth": "routed"}})
 
 
-_REVIEW_RUNTIME_KERNEL = None
-
-
-def _review_runtime_kernel():
-    """Resolve the enforcement kernel shipped beside this loop module.
-
-    The suite launcher can be an older primary checkout while the governed
-    target is a task worktree.  Keep the target runtime private to this
-    producer-activation boundary: never replace the canonical module in
-    ``sys.modules``, but never sign target actions with the launcher copy.
-    """
-    global _REVIEW_RUNTIME_KERNEL
-    target = os.path.realpath(os.path.join(
-        os.path.dirname(__file__), "taskplane_lite.py"))
-    imported = os.path.realpath(str(getattr(tp, "__file__", "") or ""))
-    if imported == target:
-        return tp
-    cached = _REVIEW_RUNTIME_KERNEL
-    if os.path.realpath(str(getattr(cached, "__file__", "") or "")) == target:
-        return cached
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "_taskplane_review_runtime", target)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("target review runtime cannot be loaded")
-    runtime = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runtime)
-    _REVIEW_RUNTIME_KERNEL = runtime
-    return runtime
-
-
 def _bind_stateless_review_contract_actions(
         review_ws: str, manifest: dict, *, task_id: str,
         now: int | None = None) -> dict:
@@ -3579,8 +3647,7 @@ def _bind_stateless_review_contract_actions(
     least-privilege read-only enforcement cache before evidence access.
     """
     import hashlib
-    import review_evidence
-    runtime_kernel = _review_runtime_kernel()
+    runtime_kernel, review_evidence, _ = _review_runtime_modules()
 
     if not isinstance(manifest, dict) or manifest.get("status") != "ready":
         return manifest
@@ -5216,6 +5283,112 @@ def _verified_criterion_evidence(value) -> bool:
     return False
 
 
+_REANCHOR_AUTHORITY_SCHEMA = "taskplane.reanchor-pass-authority/v1"
+_REANCHOR_AUTHORITY_REF_SCHEMA = \
+    "taskplane.reanchor-pass-authority-reference/v1"
+_REANCHOR_ANCESTRY_TIMEOUT_SECONDS = 10
+
+
+def _reanchor_authority_material(task: Mapping, *, source_revision: str,
+                                 evaluation_sha256: str,
+                                 disposition: str,
+                                 outage_identity=None) -> dict:
+    return {
+        "schema": _REANCHOR_AUTHORITY_SCHEMA,
+        "task_id": str(task.get("id") or ""),
+        "contract_fingerprint": _reanchor_fingerprint(task),
+        "source_revision": str(source_revision or "").lower(),
+        "evaluation_sha256": str(evaluation_sha256 or "").lower(),
+        "disposition": str(disposition or ""),
+        "outage_identity": (outage_identity if disposition ==
+                            "human-resolved-orchestration-outage" else None),
+    }
+
+
+def _persist_reanchor_authority(workspace: str, task: Mapping,
+                                disposition: str) -> tuple[dict, str]:
+    """Persist one signed receipt only after an authoritative pass gate."""
+    # The gate binds the checkout it actually judged.  Never inherit a
+    # caller-authored/copyable target_commit field as signing authority.
+    source_revision = str(tp.git_head(workspace) or "").lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", source_revision):
+        raise ValueError("reanchor authority source revision is invalid")
+    verdict_path = runtime_storage.evaluation_path(workspace)
+    with open(verdict_path, "rb") as stream:
+        verdict_bytes = stream.read()
+    evaluation_sha256 = hashlib.sha256(verdict_bytes).hexdigest()
+    warning = task.get("evaluation") if isinstance(
+        task.get("evaluation"), Mapping) else {}
+    material = _reanchor_authority_material(
+        task, source_revision=source_revision,
+        evaluation_sha256=evaluation_sha256,
+        disposition=disposition,
+        outage_identity=warning.get("outage_identity"))
+    authority = tp._review_contract_authority(workspace, create=True)
+    unsigned = {**material, "key_id": authority["key_id"]}
+    signature = hmac.new(
+        authority["secret"], tp.canonical_json_bytes(unsigned),
+        hashlib.sha256).hexdigest()
+    receipt = {**unsigned, "signature": signature}
+    receipt_path = runtime_storage.evaluation_path(
+        workspace, "reanchor-authority.json")
+    tp.atomic_write_json(receipt_path, receipt, sort_keys=True)
+    with open(receipt_path, "rb") as stream:
+        receipt_bytes = stream.read()
+    reference = {
+        "schema": _REANCHOR_AUTHORITY_REF_SCHEMA,
+        "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "key_id": authority["key_id"],
+    }
+    return reference, source_revision
+
+
+def _verify_reanchor_authority(workspace: str, task: Mapping,
+                               prior: Mapping, *, source_revision: str,
+                               evaluation_sha256: str,
+                               disposition: str) -> str | None:
+    reference = prior.get("reanchor_authority")
+    if not isinstance(reference, Mapping) or reference.get("schema") != \
+            _REANCHOR_AUTHORITY_REF_SCHEMA or set(reference) != {
+                "schema", "receipt_sha256", "key_id"}:
+        return "engine-authored reanchor authority receipt is missing"
+    receipt_path = runtime_storage.evaluation_path(
+        workspace, "reanchor-authority.json")
+    try:
+        with open(receipt_path, "rb") as stream:
+            receipt_bytes = stream.read()
+        receipt = json.loads(receipt_bytes)
+    except (OSError, ValueError) as exc:
+        return f"engine-authored reanchor authority is unavailable: {exc}"
+    if hashlib.sha256(receipt_bytes).hexdigest() != \
+            reference.get("receipt_sha256"):
+        return "engine-authored reanchor authority bytes changed"
+    expected = _reanchor_authority_material(
+        task, source_revision=source_revision,
+        evaluation_sha256=evaluation_sha256,
+        disposition=disposition,
+        outage_identity=((prior.get("evaluation") or {}).get(
+            "outage_identity") if isinstance(
+                prior.get("evaluation"), Mapping) else None))
+    try:
+        authority = tp._review_contract_authority(workspace, create=False)
+    except Exception as exc:
+        return f"reanchor signing authority is unavailable: {exc}"
+    if not isinstance(receipt, Mapping):
+        return "engine-authored reanchor authority is malformed"
+    unsigned = {**expected, "key_id": authority["key_id"]}
+    signature = hmac.new(
+        authority["secret"], tp.canonical_json_bytes(unsigned),
+        hashlib.sha256).hexdigest()
+    if reference.get("key_id") != authority["key_id"] or \
+            set(receipt) != set(unsigned) | {"signature"} or \
+            {key: receipt.get(key) for key in unsigned} != unsigned or \
+            not hmac.compare_digest(str(receipt.get("signature") or ""),
+                                    signature):
+        return "engine-authored reanchor authority does not match exact pass"
+    return None
+
+
 def _verify_reanchor_task_evidence(
         ws: str, task: Mapping, prior: Mapping) -> tuple[dict | None,
                                                          str | None]:
@@ -5252,9 +5425,13 @@ def _verify_reanchor_task_evidence(
     # Safe argv only: source evidence must still be reachable from the tree
     # whose new Plan is being accepted.
     import subprocess
-    ancestry = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", target, "HEAD"],
-        cwd=ws, capture_output=True, text=True, check=False)
+    try:
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", target, "HEAD"],
+            cwd=ws, capture_output=True, text=True, check=False,
+            timeout=_REANCHOR_ANCESTRY_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return None, "passed source ancestry verification timed out"
     if ancestry.returncode != 0:
         return None, "passed source target is not in the current repository history"
 
@@ -5320,11 +5497,18 @@ def _verify_reanchor_task_evidence(
     elif verdict.get("verdict") != "pass" or failures:
         return None, "durable evaluator verdict is not an exact pass"
 
+    evaluation_sha256 = hashlib.sha256(verdict_bytes).hexdigest()
+    authority_error = _verify_reanchor_authority(
+        workspace, task, prior, source_revision=target,
+        evaluation_sha256=evaluation_sha256, disposition=resolution)
+    if authority_error:
+        return None, authority_error
+
     return {
         "target_commit": target,
         "workspace": workspace,
         "evaluation_path": verdict_path,
-        "evaluation_sha256": hashlib.sha256(verdict_bytes).hexdigest(),
+        "evaluation_sha256": evaluation_sha256,
         "resolution": resolution,
     }, None
 
@@ -5408,7 +5592,7 @@ def _reanchor_replanned_tasks(
             task["status"] = "passed"
             task["fix_cycles"] = int(prior.get("fix_cycles") or 0)
             for field in ("workspace", "target_commit", "human_resolution",
-                          "evaluation"):
+                          "evaluation", "reanchor_authority"):
                 if field in prior:
                     task[field] = json.loads(json.dumps(prior[field]))
             restored_ids.add(task_id)
@@ -5579,7 +5763,7 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
     invalid outputs become named repair evidence, while stale producer
     contracts must not remain in the parent contract union.
     """
-    import review as review_kernel
+    _, _, review_kernel = _review_runtime_modules()
 
     state = review_kernel._load_state(review_ws, run_id)
     try:
@@ -6944,6 +7128,20 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             if stale:
                 return {"error": stale + " during gate validation — submit "
                                  "the final state again", "step": step}
+        if outcome == "pass" and step == "evaluate":
+            current = _current_task(state)
+            try:
+                authority_ref, source_revision = \
+                    _persist_reanchor_authority(
+                        act_ws, current, "independent-pass")
+            except Exception as exc:
+                return {"error": "evaluation pass authority could not be "
+                                 "persisted fail-closed: "
+                                 f"{exc.__class__.__name__}: {exc}",
+                        "step": step}
+            current["workspace"] = os.path.realpath(act_ws)
+            current["target_commit"] = source_revision
+            current["reanchor_authority"] = authority_ref
         refreshed_fix_registration = None
         if outcome == "pass" and step == "fix" and state.get("parallel"):
             current = _current_task(state)
@@ -7988,12 +8186,23 @@ def resolve(ws: str, decision: str) -> dict:
         # This is a HUMAN recovery decision over a mechanically valid outage
         # envelope, not an evaluator self-pass.  Preserve the outage evidence
         # and make the exceptional acceptance explicit in task state.
-        t["status"] = "passed"
         t["human_resolution"] = {
             "decision": "pass",
             "reason": "criteria met; quick-only evaluation accepted during "
                       "orchestration outage",
         }
+        try:
+            authority_ref, source_revision = _persist_reanchor_authority(
+                act_ws, t, "human-resolved-orchestration-outage")
+        except Exception as exc:
+            t.pop("human_resolution", None)
+            return {"error": "human pass authority could not be persisted "
+                    "fail-closed: "
+                    f"{exc.__class__.__name__}: {exc}"}
+        t["workspace"] = os.path.realpath(act_ws)
+        t["target_commit"] = source_revision
+        t["reanchor_authority"] = authority_ref
+        t["status"] = "passed"
         after_last = ("selection" if state.get("ab")
                       and not state.get("selection") else "em")
         if state.get("parallel"):
