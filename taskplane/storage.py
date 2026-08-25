@@ -159,7 +159,7 @@ def resolve_repository_identity(workspace: str, *, remote: str | None = None) \
     # Hosted repositories are keyed by remote and already unify worktrees.
     # Linked worktrees of a local-only repository share one Git common dir.
     # Keying by the checkout path split one repository into unrelated owners.
-    digest = hashlib.sha256((common_root or root).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(family_root.encode("utf-8")).hexdigest()[:16]
     return RepositoryIdentity(
         repo_id=f"local/{name.lower()}/{digest}", kind="local", host=None,
         owner=None, name=name, remote=value, workspace=root)

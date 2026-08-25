@@ -48,6 +48,16 @@ class TestRepositoryIdentity(unittest.TestCase):
         self.assertEqual(identities[0].repo_id, identities[1].repo_id)
         self.assertNotEqual(identities[0].workspace, identities[1].workspace)
 
+    def test_local_identity_is_stable_across_git_initialization(self):
+        root = tempfile.mkdtemp(prefix="tp-local-identity-")
+        before = storage.resolve_repository_identity(root)
+
+        self.assertEqual(_git(root, "init", "-q").returncode, 0)
+        after = storage.resolve_repository_identity(root)
+
+        self.assertEqual(after.repo_id, before.repo_id)
+        self.assertEqual(after.key, before.key)
+
 
 class TestStorageLayout(unittest.TestCase):
     def test_code_runs_artifacts_and_knowledge_have_distinct_roots(self):

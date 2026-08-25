@@ -730,15 +730,20 @@ def test_real_wave_recovers_task_bindings_after_post_split_crash(
 
 def test_interim_evaluate_terminalizes_only_without_starting_bogus_build(
         tmp_path, monkeypatch) -> None:
+    from taskplane.tests.test_stage_cross_host import _write_reanchorable_pass
+
     ws, store, root, _started = _start_real_stage_loop(
         tmp_path / "interim-evaluate", monkeypatch, stage_kind="build",
         stage_id="stage-build-interim-parent")
+    criterion = "the task completes without disturbing its sibling stage root"
     tasks = [
         {"id": "t01", "scope": ["README.md"], "tests": "true",
          "deps": [], "status": "pending",
+         "req": "R-0004", "criteria": [criterion],
          "target_commit": loop.tp.git_head(ws)},
         {"id": "t02", "scope": ["b/**"], "tests": "true",
          "deps": [], "status": "pending",
+         "req": "R-0004", "criteria": [criterion],
          "target_commit": loop.tp.git_head(ws)},
     ]
     state = loop.load(ws)
@@ -776,12 +781,7 @@ def test_interim_evaluate_terminalizes_only_without_starting_bogus_build(
     state.setdefault("_stage_bindings", {}).setdefault("t01", {})[
         "evaluate"] = evaluate_id
     loop.save(ws, state)
-    evaluation_path = Path(loop.runtime_storage.evaluation_path(ws))
-    evaluation_path.parent.mkdir(parents=True, exist_ok=True)
-    evaluation_path.write_text(json.dumps({
-        "task": "t01", "requirement": "R-0004", "verdict": "pass",
-        "status": "complete", "findings": [],
-    }) + "\n", encoding="utf-8")
+    _write_reanchorable_pass(ws, state["tasks"][0])
     evaluated_submission = loop.submit(ws, "pass")
     assert "error" not in evaluated_submission, evaluated_submission
     monkeypatch.setattr(loop, "_evaluation_errors", lambda *_a, **_k: [])

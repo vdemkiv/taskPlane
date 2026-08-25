@@ -289,14 +289,17 @@ def _parallel_loop_wave(
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
     requirement = _record_bootstrap_requirement(workspace)
+    criterion = "the task completes without disturbing its sibling stage root"
     tasks = [
         {
             "id": "t-left", "scope": ["left/**"], "tests": "true",
             "deps": [], "status": "pending", "merge_on_pass": False,
+            "req": str(requirement["id"]), "criteria": [criterion],
         },
         {
             "id": "t-right", "scope": ["right/**"], "tests": "true",
             "deps": [], "status": "pending", "merge_on_pass": False,
+            "req": str(requirement["id"]), "criteria": [criterion],
         },
     ]
     plan_dir = workspace / "plan"
@@ -339,6 +342,23 @@ def _parallel_loop_wave(
         str(initial["run_id"]), manifest["stage_heads"][parent_id]["object"])
     assert parent["stage_kind"] == "build"
     return workspace, store, parent
+
+
+def _write_reanchorable_pass(workspace: str | Path, task: dict) -> None:
+    verdict_path = Path(loop.runtime_storage.evaluation_path(str(workspace)))
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    verdict_path.write_text(json.dumps({
+        "schema": "taskplane.evaluator-output/v1",
+        "task": task["id"],
+        "requirement": task["req"],
+        "verdict": "pass",
+        "criteria": [{
+            "criterion": criterion,
+            "status": "met",
+            "evidence": "verified by the stage integration fixture",
+        } for criterion in task["criteria"]],
+        "failures": [],
+    }, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def test_cross_host_surfaces_preserve_one_canonical_bounded_startup(
@@ -750,6 +770,9 @@ def test_interim_parallel_evaluate_leaves_only_the_other_task_root_active(
     evaluating["step"] = "evaluate"
     evaluating["current_task"] = 0
     loop.save(str(workspace), evaluating)
+    task = evaluating["tasks"][0]
+    evaluation_workspace = task.get("workspace") or str(workspace)
+    _write_reanchorable_pass(evaluation_workspace, task)
     monkeypatch.setattr(loop, "_evaluation_errors", lambda *_a, **_k: [])
     monkeypatch.setattr(
         loop.tp, "engine_skew_refusal", lambda *_a, **_k: None)
