@@ -37,6 +37,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -112,6 +113,7 @@ def _scrub_review_bootstrap(value: dict) -> dict:
         "<SHA>", str(action.get("result_path") or ""))
 
     argv = list(out.get("command_argv") or [])
+    host_python = str(argv[0]) if argv else ""
     if argv:
         argv[0] = "<PYTHON>"
     for flag, token in (("--task-slot", "review-<SLOT>"),
@@ -129,8 +131,14 @@ def _scrub_review_bootstrap(value: dict) -> dict:
         r"_[0-9a-f]{8}$", "_<LEASE>",
         str(expected.get("worker_identity") or ""))
     command = str(out.get("host_command") or "")
-    if " <PLUGIN>/" in command:
-        command = "<PYTHON> <PLUGIN>/" + command.split(" <PLUGIN>/", 1)[1]
+    # Production authors host_command with shlex.join(command_argv). Replace
+    # that exact first argv before the later recursive path scrub turns the
+    # plugin root into <PLUGIN>. Looking for <PLUGIN> here is too early and
+    # leaks the generator's Python executable into the frozen golden.
+    quoted_python = shlex.quote(host_python) if host_python else ""
+    if quoted_python and (command == quoted_python or
+                          command.startswith(quoted_python + " ")):
+        command = "<PYTHON>" + command[len(quoted_python):]
     command = _REVIEW_SLOT_RE.sub("review-<SLOT>", command)
     command = re.sub(r"--signed-action\s+\S+",
                      "--signed-action <SIGNED_ACTION>", command)
@@ -334,3 +342,17 @@ def assert_deterministic(body: str, name: str) -> None:
             (r'"observed_at": "(?!<TIME>)', "enforcement timestamp")):
         assert not re.search(pattern, body), \
             f"{name}: nondeterministic {label} leaked"
+    pending = [json.loads(body)]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if value.get("schema") == \
+                    "taskplane.review-contract-bootstrap/v1":
+                assert (value.get("command_argv") or [None])[0] == \
+                    "<PYTHON>", f"{name}: bootstrap argv interpreter leaked"
+                assert str(value.get("host_command") or "").startswith(
+                    "<PYTHON> "), \
+                    f"{name}: bootstrap host interpreter leaked"
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)

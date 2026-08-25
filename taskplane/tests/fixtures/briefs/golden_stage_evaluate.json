@@ -1534,7 +1534,7 @@
             "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
           },
           "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
+          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
           "required_before_evidence": true,
           "schema": "taskplane.review-contract-bootstrap/v1",
           "task_slot": "review-<SLOT>",
@@ -1663,7 +1663,7 @@
             "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
           },
           "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
+          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
           "required_before_evidence": true,
           "schema": "taskplane.review-contract-bootstrap/v1",
           "task_slot": "review-<SLOT>",
@@ -1792,7 +1792,7 @@
             "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
           },
           "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
+          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
           "required_before_evidence": true,
           "schema": "taskplane.review-contract-bootstrap/v1",
           "task_slot": "review-<SLOT>",
@@ -1921,7 +1921,7 @@
             "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
           },
           "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
+          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
           "required_before_evidence": true,
           "schema": "taskplane.review-contract-bootstrap/v1",
           "task_slot": "review-<SLOT>",
