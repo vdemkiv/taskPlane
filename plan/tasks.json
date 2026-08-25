@@ -1,54 +1,20 @@
 {
   "tasks": [
     {
-      "id": "t03-ac3-released-tip-legacy-prerequisite",
-      "scope": [
-        "taskplane/loop.py",
-        "taskplane/tests/test_loop.py"
-      ],
-      "tests": "python -m pytest -q taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py",
-      "req": "R-0001",
-      "deps": [],
-      "type": "reliability",
-      "acceptance_refs": [
-        "AC1 — a shelf contract runs end-to-end via pickup with zero run/track state (trace evidence). Verify with a signed shelf fixture and trace assertions covering pickup through the existing BUILD-C checkpoint and green integration while proving zero run, track, claim, lease, wave, or equivalent state.",
-        "AC2 — cold start on a fresh checkout at the same SHA to first executing checkpoint in <2 minutes. Verify with a wall-clock integration test from a fresh checkout, empty private Taskplane home, exact authorized SHA, and no warmed or inherited runtime state."
-      ],
-      "contracts": [
-        "contract:pickup.stateless-front-door",
-        "contract:build-c.acceptance-checkpoint"
-      ],
-      "new_modules": [],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC1 and AC2 already passed on exact commits 70f311ad75de33a530a6ba43ac213883a1e95c3f and 5cc647cabd8bd8528b3044184e38d3317f593f27 respectively, with their accepted evidence preserved in audited append-only replan history and prior evaluator/reanchor authority records; omitting them from this executable plan is deliberate non-replay, not missing dependency or acceptance coverage.",
-        "Human authorized path 1: minimally repair the exact released-tip routed-lens/producer regression required to make AC3 legacy selectors green; preserve pickup isolation and keep AC4+ locked",
-        "The execution environment must supply authoritative Python 3.12+pytest8 through PATH; the frozen task command, receipts, and second-checkout resume evidence must not depend on a machine-local interpreter or temporary virtual environment.",
-        "The ordinary legacy selector `python -m pytest -q taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py` must be fully green and complete comfortably below the installed Taskplane runner's 600-second bound by removing regression delays, never by increasing a timeout, skipping, xfail, weakening assertions, or weakening signed bootstrap, wait-policy, producer, or lease contracts.",
-        "Work test-first: update the exact legacy regression helper/fixture to follow the current signed bootstrap, event wait-policy, producer-contract, and lease protocols; change production `taskplane/loop.py` only when the focused failure proves a production repair is required.",
-        "No broad Phase 0, E0, R-0011, R-0013, hook, release, or unrelated redesign work is permitted; only the smallest released-tip prerequisite may change."
-      ]
-    },
-    {
       "id": "t04-ac3-live-build-c-seam-reverify",
       "scope": [
-        "taskplane/pickup.py",
-        "taskplane/build_c.py",
         "taskplane/checkpoint.py",
         "taskplane/tests/test_pickup.py"
       ],
-      "tests": "python -m pytest -q taskplane/tests/test_pickup.py taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py && git diff --exit-code 381ee41c34a10ae7a6eb029b4f4851db5ba9c8b9 -- taskplane/tp.py taskplane/pickup.py taskplane/build_c.py taskplane/checkpoint.py taskplane/design_contract.py taskplane/repository.py taskplane/storage.py taskplane/taskplane_lite.py taskplane/tests/test_pickup.py hooks .taskplane/codex-hook.py",
+      "tests": "python -m pytest -q taskplane/tests/test_pickup.py::test_stateless_checkpoint_preserves_active_virtualenv_interpreter_symlink_and_attests_revision taskplane/tests/test_pickup.py::test_severed_pickup_to_build_c_edge_fails && python -m pytest -q taskplane/tests/test_pickup.py taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py && git diff --exit-code 381ee41c34a10ae7a6eb029b4f4851db5ba9c8b9 -- taskplane/tp.py taskplane/pickup.py taskplane/build_c.py taskplane/design_contract.py taskplane/repository.py taskplane/storage.py taskplane/taskplane_lite.py hooks .taskplane/codex-hook.py",
       "req": "R-0001",
-      "deps": [
-        "t03-ac3-released-tip-legacy-prerequisite"
-      ],
+      "deps": [],
       "type": "integration",
+      "acceptance_refs": [
+        "AC1 — a shelf contract runs end-to-end via pickup with zero run/track state (trace evidence). Verify with a signed shelf fixture and trace assertions covering pickup through the existing BUILD-C checkpoint and green integration while proving zero run, track, claim, lease, wave, or equivalent state.",
+        "AC2 — cold start on a fresh checkout at the same SHA to first executing checkpoint in <2 minutes. Verify with a wall-clock integration test from a fresh checkout, empty private Taskplane home, exact authorized SHA, and no warmed or inherited runtime state.",
+        "AC3 — severed-edge tests: cutting the pickup→build_c entry fails; legacy loop path untouched and its suite still green. Verify with a severed pickup-to-BUILD-C seam and the unchanged legacy-loop regression selectors."
+      ],
       "contracts": [
         "contract:pickup.stateless-front-door",
         "contract:build-c.direct-assignment",
@@ -84,9 +50,13 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC3 — severed-edge tests: cutting the pickup→build_c entry fails; legacy loop path untouched and its suite still green. Verify with a mutation or seam test that removes the pickup-to-BUILD-C edge and must fail, plus the unchanged legacy-loop selectors proving their existing path remains green.",
         "AC3 — severed-edge tests: cutting the pickup→build_c entry fails; legacy loop path untouched and its suite still green. Verify with a severed pickup-to-BUILD-C seam and the unchanged legacy-loop regression selectors.",
-        "Human authorized path 1: minimally repair the exact released-tip routed-lens/producer regression required to make AC3 legacy selectors green; preserve pickup isolation and keep AC4+ locked"
+        "AC1 and AC2 remain satisfied by their prior accepted exact-commit evidence, and the released-tip prerequisite T03 is already passed and audited at exact SHA 5c28165f800fffcac20aa2004d9a2b38efb195cf; all three are deliberately omitted from executable work and must not be replayed.",
+        "The human-approved T04 amendment permits changes only to `taskplane/checkpoint.py` and `taskplane/tests/test_pickup.py`; AC4 and every later task remain locked until this AC3 checkpoint passes.",
+        "Repair `taskplane/checkpoint.py::run_and_mint_stateless` so the active engine's absolute virtual-environment interpreter path is preserved without dereferencing its symlink to a base interpreter, while the exact interpreter identity, argv, environment, pytest 8 execution, revision attestation, and resulting receipt remain engine-bound; caller PATH must never select or substitute an arbitrary interpreter.",
+        "Add the targeted same-commit regression `test_stateless_checkpoint_preserves_active_virtualenv_interpreter_symlink_and_attests_revision`, proving the virtual-environment interpreter symlink path is retained and actual pytest execution plus revision attestation succeeds; a fixture-only workaround is not acceptable.",
+        "Run the targeted interpreter regression, the severed pickup-to-BUILD-C proof, the full pickup suite, and the unchanged legacy loop/governed-command selectors through portable `python -m pytest`; do not increase a timeout, skip, xfail, weaken an assertion, or weaken interpreter, producer, revision, environment, checkpoint, or receipt authority.",
+        "Diff evidence against 381ee41c34a10ae7a6eb029b4f4851db5ba9c8b9 must prove `taskplane/tp.py`, `taskplane/pickup.py`, `taskplane/build_c.py`, `taskplane/design_contract.py`, `taskplane/repository.py`, `taskplane/storage.py`, `taskplane/taskplane_lite.py`, `hooks/**`, and `.taskplane/codex-hook.py` are unchanged; no Phase 0, E0, R-0011, other R-0013, hook, legacy-loop, release, or unrelated redesign work is permitted."
       ]
     },
     {
@@ -208,7 +178,7 @@
       },
       "criteria": [
         "Update shipped version metadata and release notes to 2.17.20 only after the functional acceptance path is green; do not push, tag, publish, or mutate `origin/main` within this delivery authority.",
-        "AC5 — full suite on the final SHA: no new failures. Verify with `python -m pytest taskplane/tests -q` on the final clean commit and compare the result with the exact baseline; any new failure blocks release review."
+        "Re-run the already-green full portable suite after the metadata-only change so the final 2.17.20 candidate remains bound to one exact clean SHA; any failure blocks final review and does not create a new acceptance checkpoint."
       ]
     }
   ]
