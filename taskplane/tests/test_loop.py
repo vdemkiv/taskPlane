@@ -209,7 +209,7 @@ class TestScopeAssignment(unittest.TestCase):
     def test_scope_assignment_uses_real_repository_and_storage_edges(self):
         revision = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
-            text=True).strip()
+            text=True, encoding="utf-8", errors="replace").strip()
 
         receipt = build_c.assign_scopes(
             self.ws, {"tasks": [{
@@ -221,7 +221,7 @@ class TestScopeAssignment(unittest.TestCase):
         self.assertTrue(os.path.isdir(assignment["worktree"]))
         self.assertEqual(subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=assignment["worktree"],
-            text=True).strip(), revision)
+            text=True, encoding="utf-8", errors="replace").strip(), revision)
         persisted = runtime_storage.load_task_worktree_registration(
             self.ws, "t-live")
         self.assertEqual(persisted["path"], assignment["worktree"])
@@ -283,7 +283,7 @@ class TestIntegrationAuthorization(unittest.TestCase):
         ], cwd=self.worker, check=True)
         self.tip = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.worker,
-            text=True).strip()
+            text=True, encoding="utf-8", errors="replace").strip()
         runtime_storage.register_task_worktree(
             self.ws, self.worker, self.task_id)
         self.contract = {
@@ -295,7 +295,7 @@ class TestIntegrationAuthorization(unittest.TestCase):
         self._save_state(self.receipt)
         self.primary_before = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
-            text=True).strip()
+            text=True, encoding="utf-8", errors="replace").strip()
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -377,7 +377,7 @@ class TestIntegrationAuthorization(unittest.TestCase):
         self.assertEqual(authorized["merge_receipt"]["branch_tip"], self.tip)
         self.assertEqual(subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
-            text=True).strip(), self.tip)
+            text=True, encoding="utf-8", errors="replace").strip(), self.tip)
 
     def test_integration_authorization_rejects_missing_red_stale_mixed_and_branch_tip_only(self):
         mutations = []
@@ -406,7 +406,8 @@ class TestIntegrationAuthorization(unittest.TestCase):
                     build_c.integrate_on_green(self.ws, self.task_id)
                 self.assertEqual(subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=self.ws,
-                    text=True).strip(), self.primary_before)
+                    text=True, encoding="utf-8",
+                    errors="replace").strip(), self.primary_before)
 
     def test_integration_authorization_requires_exact_green_predecessors(self):
         predecessor_digest = "a" * 64
@@ -431,7 +432,8 @@ class TestIntegrationAuthorization(unittest.TestCase):
             build_c.integrate_on_green(self.ws, self.task_id)
         self.assertEqual(subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
-            text=True).strip(), self.primary_before)
+            text=True, encoding="utf-8", errors="replace").strip(),
+            self.primary_before)
 
     def test_merge_on_green_severed_repository_edge_fails_closed(self):
         with unittest.mock.patch(
@@ -442,7 +444,8 @@ class TestIntegrationAuthorization(unittest.TestCase):
                 build_c.integrate_on_green(self.ws, self.task_id)
         self.assertEqual(subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
-            text=True).strip(), self.primary_before)
+            text=True, encoding="utf-8", errors="replace").strip(),
+            self.primary_before)
 
 class TestBuildCCheckpointSpec(unittest.TestCase):
     def setUp(self):
@@ -470,7 +473,7 @@ class TestBuildCCheckpointSpec(unittest.TestCase):
             "predecessor_checkpoint_ids": [],
             "worktree_revision": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=self.ws,
-                text=True).strip(),
+                text=True, encoding="utf-8", errors="replace").strip(),
             "declared_scope": ["taskplane/checkpoint.py", "taskplane/tests/**"],
             "focused_proof": {
                 "path": self.proof,
@@ -1286,10 +1289,12 @@ class TestLoop(unittest.TestCase):
                 }, stream)
             subprocess.run(
                 ["git", "add", "-f", ".eval/verdict.json"], cwd=ws,
-                check=True, capture_output=True, text=True)
+                check=True, capture_output=True, text=True,
+                encoding="utf-8", errors="replace")
             subprocess.run(
                 ["git", "commit", "-qm", "record evaluator evidence"],
-                cwd=ws, check=True, capture_output=True, text=True)
+                cwd=ws, check=True, capture_output=True, text=True,
+                encoding="utf-8", errors="replace")
             task = dict(TASK)
             prior = dict(
                 task, status="passed", workspace=ws,
@@ -1319,9 +1324,11 @@ class TestLoop(unittest.TestCase):
     def _authoritative_reanchor_case(self):
         ws, _, _ = self._gate_evaluator_unavailable()
         subprocess.run(["git", "add", "src/todo/a.py"], cwd=ws,
-                       check=True, capture_output=True, text=True)
+                       check=True, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
         subprocess.run(["git", "commit", "-qm", "bind evaluated source"],
-                       cwd=ws, check=True, capture_output=True, text=True)
+                       cwd=ws, check=True, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
         state = loop.load(ws)
         task_state = state["tasks"][0]
         task_state["evaluation"]["reason_code"] = \
@@ -1402,10 +1409,12 @@ class TestLoop(unittest.TestCase):
             stream.write("# later revision\n")
         subprocess.run(
             ["git", "add", "src/todo/a.py"], cwd=ws,
-            check=True, capture_output=True, text=True)
+            check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
         subprocess.run(
             ["git", "commit", "-qm", "later mixed revision"], cwd=ws,
-            check=True, capture_output=True, text=True)
+            check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
         mixed_prior = dict(prior, target_commit=tp.git_head(ws))
         evidence, error = loop._verify_reanchor_task_evidence(
             ws, task, mixed_prior)
@@ -2419,7 +2428,7 @@ class TestManagedWorktreeGraphPublication(unittest.TestCase):
         result = subprocess.run(
             ["git", "worktree", "add", "-q", "-b", "tp/t1-recovery",
              self.worker, "HEAD"], cwd=self.ws, capture_output=True,
-            text=True)
+            text=True, encoding="utf-8", errors="replace")
         self.assertEqual(result.returncode, 0, result.stderr)
         claimed = loop.claim(self.ws, "t1", self.worker)
         self.assertNotIn("error", claimed)

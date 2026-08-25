@@ -23,7 +23,8 @@ import tp as tp_cli  # noqa: E402
 
 def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8",
+                   errors="replace")
 
 
 def _broken_workspace(tmp_path: Path) -> Path:

@@ -191,7 +191,7 @@ def test_importing_cli_does_not_eagerly_import_stage_entities() -> None:
 
     result = subprocess.run(
         [sys.executable, "-c", script], text=True, capture_output=True,
-        env=env, check=False)
+        encoding="utf-8", errors="replace", env=env, check=False)
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) is False

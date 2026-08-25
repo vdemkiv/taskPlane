@@ -533,7 +533,8 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
             "cwd": workspace, "turn_id": "host-pretool-mutated",
             "tool_name": "Bash",
             "tool_input": {"command": shlex.join(mutated_argv)},
-        }), text=True, capture_output=True, check=False)
+        }), text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False)
     assert denied_mutation.returncode == 0, denied_mutation.stderr
     assert json.loads(denied_mutation.stdout)["decision"] == "block"
     assert tp.list_task_slots(workspace) == []
@@ -551,14 +552,16 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
                 "turn_id": "host-pretool-" + expected["action_id"],
                 "tool_name": "Bash",
                 "tool_input": {"command": bootstrap["host_command"]},
-            }), text=True, capture_output=True, check=False)
+            }), text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False)
         assert screened.returncode == 0, screened.stderr
         assert screened.stdout == ""
         assert bootstrap["task_slot"] in tp.list_task_slots(workspace)
         activated = subprocess.run(
             ["/usr/bin/env", *bootstrap["command_argv"]], cwd=workspace,
             env=environment,
-            text=True, capture_output=True, check=False)
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False)
         assert activated.returncode == 0, activated.stderr
         receipt = json.loads(activated.stdout)
         assert receipt["status"] == "active"
@@ -575,7 +578,8 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
             "tool_name": "Bash",
             "tool_input": {
                 "command": f"{sys.executable} -m taskplane_lite"},
-        }), text=True, capture_output=True, check=False)
+        }), text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False)
     assert legacy_screened.returncode == 0, legacy_screened.stderr
     legacy_denial = json.loads(legacy_screened.stdout)
     assert legacy_denial["decision"] == "block"
@@ -622,12 +626,14 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
                 "turn_id": event["turn_id"],
                 "agent_id": event["agent_id"],
                 "agent_type": "default",
-            }), text=True, capture_output=True, check=False)
+            }), text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False)
         assert started.returncode == 0, started.stderr
         screened = subprocess.run(
             [*native_cli, "screen"], cwd=workspace,
             env=screen_environment, input=json.dumps(event), text=True,
-            capture_output=True, check=False)
+            encoding="utf-8", errors="replace", capture_output=True,
+            check=False)
         assert screened.returncode == 0, screened.stderr
         assert '"decision": "block"' not in screened.stdout
         path = os.path.join(workspace, slot["result_path"])

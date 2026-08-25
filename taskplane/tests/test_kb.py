@@ -80,6 +80,7 @@ class TestKBLoopIntegration(unittest.TestCase):
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
         json.dump({"tasks": [{"id": "t1", "scope": ["src/todo/**"],
+                              "criteria": ["complete() marks done"],
                               "tests": "true"}]},
                   open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
 

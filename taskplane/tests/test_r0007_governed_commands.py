@@ -29,7 +29,8 @@ def _direct_cli(cli, workspace, *arguments):
     environment.pop("PYTHONPATH", None)
     completed = subprocess.run(
         [str(cli), *arguments], cwd=workspace, env=environment,
-        capture_output=True, text=True, timeout=15, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=15, check=False)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -560,7 +561,8 @@ def _checkpoint_workspace(tmp_path):
         plan_minted=True)
     contract_engine.activate(str(workspace), contract, snapshot=None)
     revision = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+        encoding="utf-8", errors="replace").strip()
     argv = ["python3", "-m", "pytest", "-q",
             "taskplane/tests/test_focused.py"]
     spec = {
@@ -879,7 +881,8 @@ def test_checkpoint_receipt_rejects_runtime_result_from_prior_revision(tmp_path)
     subprocess.run(["git", "commit", "--allow-empty", "-qm", "new tip"],
                    cwd=workspace, check=True)
     spec["worktree_revision"] = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+        encoding="utf-8", errors="replace").strip()
 
     with pytest.raises(checkpoint.CheckpointReceiptError,
                        match="exact revision"):
@@ -892,7 +895,8 @@ def test_checkpoint_receipt_rejects_predeclared_future_revision(tmp_path):
     subprocess.run(["git", "commit", "--allow-empty", "-qm", "future tip"],
                    cwd=workspace, check=True)
     revision_b = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+        encoding="utf-8", errors="replace").strip()
     subprocess.run(["git", "checkout", "-q", revision_a], cwd=workspace,
                    check=True)
 

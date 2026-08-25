@@ -962,7 +962,8 @@ class TestHookWiring(unittest.TestCase):
             self.assertIn("if defined PLUGIN_ROOT", w)
             self.assertIn("CLAUDE_PLUGIN_ROOT", w)
             action = cli._codex_hook_action(h["command"])
-            if action in {"screen", "screen-dispatch", "context"}:
+            if action in {"screen", "screen-dispatch", "screen-skill",
+                          "context"}:
                 self.assertIn("exit /b 2", w,
                               "enforcement/context roots fail closed")
             else:

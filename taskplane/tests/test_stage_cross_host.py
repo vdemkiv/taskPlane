@@ -111,7 +111,7 @@ def _snapshot(dispatch: dict[str, object]) -> HostSurfaceSnapshot:
 def _git(workspace: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", *args], cwd=workspace, text=True, capture_output=True,
-        check=True)
+        encoding="utf-8", errors="replace", check=True)
     return result.stdout.strip()
 
 

@@ -5789,7 +5789,8 @@ def _verify_reanchor_task_evidence(
     try:
         ancestry = subprocess.run(
             ["git", "merge-base", "--is-ancestor", target, "HEAD"],
-            cwd=ws, capture_output=True, text=True, check=False,
+            cwd=ws, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False,
             timeout=_REANCHOR_ANCESTRY_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         return None, "passed source ancestry verification timed out"

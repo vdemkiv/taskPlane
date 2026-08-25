@@ -192,7 +192,8 @@ def _repository_path(worktree: str, value: object, field: str) -> tuple[str, str
 
 def _git(worktree: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", *args], cwd=worktree, capture_output=True,
-                          text=True, check=False)
+                          text=True, encoding="utf-8", errors="replace",
+                          check=False)
 
 
 def _scope_contains(path: str, scope: Sequence[str]) -> bool:

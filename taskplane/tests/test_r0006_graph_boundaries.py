@@ -71,6 +71,8 @@ def _fresh_python(source: str, *args: str) -> dict:
         cwd=ROOT,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )

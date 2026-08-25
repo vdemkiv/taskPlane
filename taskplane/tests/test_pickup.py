@@ -36,7 +36,8 @@ def _signature(value: object, key: bytes) -> str:
 
 def _git(checkout: Path, *args: str) -> str:
     return subprocess.check_output(
-        ["git", *args], cwd=checkout, text=True
+        ["git", *args], cwd=checkout, text=True, encoding="utf-8",
+        errors="replace"
     ).strip()
 
 
