@@ -2939,6 +2939,13 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                               not in seen_directives)
         requested = _directive_lens_ids(directive_rows, catalog)
         membership_pins = set(requested)
+        if graph_degraded:
+            # The immutable-diff fallback is useful only if both mandatory
+            # uncertainty floors survive the later bounded-sweep selection.
+            # Architecture is selected implicitly by the sweep router;
+            # pinning both here also prevents security from being displaced
+            # by a higher-scoring ordinary lens inside the 4--5 lens cap.
+            membership_pins.update({"architecture", "security"})
         if retry_lenses is not None:
             retry = {str(value) for value in retry_lenses if str(value)}
             known = {str(row.get("id") or "")

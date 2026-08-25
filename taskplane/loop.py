@@ -5269,6 +5269,16 @@ def event_wait_invocation(policy: Mapping[str, object],
     }
 
 
+# BUILD-C consumes these incumbent services through dependency inversion.
+# Keeping the binding here prevents the BUILD-C phase module from entering
+# the loop/review import SCC while retaining fail-closed state and wait rules.
+build_c.bind_loop_runtime(
+    state_loader=load,
+    wait_policy_factory=event_wait_policy,
+    wait_invocation_factory=event_wait_invocation,
+)
+
+
 def _instruction(step: str, state: dict, ws: str | None = None) -> str:
     t = _current_task(state)
     evaluator_result, review_root = runtime_storage.instruction_artifact_paths(ws)
@@ -8111,9 +8121,11 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         state["design_fingerprint"] = _design_evidence_fingerprint(ws, contract)
         state["design_approved_by"] = by
         if not state.get("design_only") and build_c.program_enabled(ws):
+            _, _, review_kernel = _review_runtime_modules()
             try:
                 define_projection = build_c.project_define(
                     ws, state,
+                    start_review=review_kernel.start_review,
                     selector=lens_router.route,
                     bind_actions=_bind_stateless_review_contract_actions)
             except (build_c.ProgramAuthorityError,
@@ -8184,9 +8196,11 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             state["design_fingerprint"] = str(
                 state.get("design_fingerprint") or
                 _design_evidence_fingerprint(ws))
+            _, _, review_kernel = _review_runtime_modules()
             try:
                 define_projection = build_c.project_define(
                     ws, state,
+                    start_review=review_kernel.start_review,
                     selector=lens_router.route,
                     bind_actions=_bind_stateless_review_contract_actions)
             except (build_c.ProgramAuthorityError,

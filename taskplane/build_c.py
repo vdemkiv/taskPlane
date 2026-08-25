@@ -16,7 +16,6 @@ import re
 import depgraph
 import checkpoint
 import repository
-import review
 import storage as runtime_storage
 import taskplane_lite as tp
 
@@ -59,6 +58,26 @@ _CHECKPOINT_RECEIPT_FIELDS = frozenset({
     "declared_scope", "predecessor_receipt_digests", "verdict",
     "receipt_digest",
 })
+_integration_state_loader: Callable[[str], object] | None = None
+_wait_policy_factory: Callable[[str, int], dict] | None = None
+_wait_invocation_factory: Callable[[Mapping[str, object],
+                                    list[str]], dict] | None = None
+
+
+def bind_loop_runtime(
+        *, state_loader: Callable[[str], object],
+        wait_policy_factory: Callable[[str, int], dict],
+        wait_invocation_factory: Callable[[Mapping[str, object],
+                                           list[str]], dict]) -> None:
+    """Bind loop-owned services without creating a BUILD-C -> loop edge."""
+    if not all(callable(value) for value in (
+            state_loader, wait_policy_factory, wait_invocation_factory)):
+        raise TypeError("BUILD-C loop runtime services must be callable")
+    global _integration_state_loader, _wait_policy_factory
+    global _wait_invocation_factory
+    _integration_state_loader = state_loader
+    _wait_policy_factory = wait_policy_factory
+    _wait_invocation_factory = wait_invocation_factory
 
 
 def _scope_overlap(left: Mapping[str, object],
@@ -92,10 +111,12 @@ def _assignment_wait(
                                            list[str]], dict] | None) \
         -> tuple[dict, dict]:
     if wait_policy_factory is None or wait_invocation_factory is None:
-        import loop
-        wait_policy_factory = wait_policy_factory or loop.event_wait_policy
+        wait_policy_factory = wait_policy_factory or _wait_policy_factory
         wait_invocation_factory = (wait_invocation_factory or
-                                   loop.event_wait_invocation)
+                                   _wait_invocation_factory)
+    if wait_policy_factory is None or wait_invocation_factory is None:
+        raise ScopeAssignmentError(
+            "direct assignment loop runtime services are unavailable")
     policy = wait_policy_factory("build-c-direct", len(member_ids))
     if not isinstance(policy, Mapping) or \
             policy.get("schema") != "taskplane.wait-policy/v1" or \
@@ -233,9 +254,10 @@ def assign_scopes(
 
 
 def _integration_state(ws: str) -> Mapping[str, object]:
-    # Imported here to preserve build_c -> loop's existing lazy boundary.
-    import loop
-    state = loop.load(ws)
+    if _integration_state_loader is None:
+        raise IntegrationAuthorizationError(
+            "live BUILD-C integration state loader is unavailable")
+    state = _integration_state_loader(ws)
     if not isinstance(state, Mapping):
         raise IntegrationAuthorizationError(
             "live BUILD-C integration state is missing")
@@ -729,7 +751,7 @@ def validate_define_projection(manifest: Mapping[str, object]) -> list[str]:
 
 def project_define(
         ws: str, state: Mapping[str, object], *,
-        start_review: Callable[..., dict] = review.start_review,
+        start_review: Callable[..., dict] | None = None,
         selector: Callable[..., dict] | None = None,
         bind_actions: Callable[..., dict] | None = None,
         graph: dict | None = None, revision: str | None = None) -> dict:
@@ -763,6 +785,12 @@ def project_define(
     if selector is None:
         raise DefineProjectionError(
             "DEFINE requires an observable ReviewKernel selector")
+    if start_review is None:
+        raise DefineProjectionError(
+            "DEFINE requires the loop-owned ReviewKernel entry")
+    if bind_actions is None:
+        raise DefineProjectionError(
+            "DEFINE requires the loop-owned review binding entry")
     selector_invocations = 0
 
     def observed_router() -> dict:
@@ -787,9 +815,6 @@ def project_define(
         raise DefineProjectionError(
             "DEFINE requires exactly one selector invocation")
     evidence = _validated_define_evidence(manifest)
-    if bind_actions is None:
-        import loop
-        bind_actions = loop._bind_stateless_review_contract_actions
     bound = bind_actions(ws, manifest, task_id="define")
     wait = bound.get("wait_invocation") if isinstance(bound, Mapping) else None
     if not isinstance(wait, Mapping) or wait.get("scheduled") is not False or \
