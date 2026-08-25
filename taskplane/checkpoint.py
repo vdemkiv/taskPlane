@@ -512,7 +512,8 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
 
 def validate_and_mint(worktree: str, spec: Mapping,
                       command_result: Mapping, *,
-                      predecessor_receipts: Sequence[Mapping] = ()) -> dict:
+                      predecessor_receipts: Sequence[Mapping] = (),
+                      active_contract: Mapping | None = None) -> dict:
     """Mint one green receipt exclusively from runtime and repository facts.
 
     The caller supplies only the checkpoint specification and the incumbent
@@ -528,7 +529,8 @@ def validate_and_mint(worktree: str, spec: Mapping,
         validated, predecessor_receipts)
     observed = _validated_runtime_result(worktree, validated, command_result)
 
-    contract = contract_engine.load_active(str(Path(worktree).resolve()))
+    contract = (active_contract if active_contract is not None else
+                contract_engine.load_active(str(Path(worktree).resolve())))
     if not isinstance(contract, Mapping):
         raise CheckpointReceiptError(
             "checkpoint receipt requires an exact active contract")
@@ -586,6 +588,80 @@ def validate_and_mint(worktree: str, spec: Mapping,
     }
     receipt["receipt_digest"] = receipt_digest(receipt)
     return receipt
+
+
+def run_and_mint_stateless(worktree: str, spec: Mapping, *,
+                           identity: Mapping, active_contract: Mapping) -> dict:
+    """Run one focused proof and mint the incumbent receipt without state."""
+    validated = validate_checkpoint_spec(worktree, spec)
+    argv = list(validated["focused_proof"]["argv"])
+    environment = os.environ.copy()
+    package_root = str(Path(__file__).resolve().parent.parent)
+    prior_pythonpath = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = (
+        package_root if not prior_pythonpath else
+        package_root + os.pathsep + prior_pythonpath
+    )
+    completed = subprocess.run(
+        argv, cwd=worktree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", check=False,
+        env=environment,
+    )
+    state = "succeeded" if completed.returncode == 0 else "failed"
+    output = completed.stdout or ""
+    output_bytes = output.encode("utf-8")
+    output_digest = hashlib.sha256(output_bytes).hexdigest()
+    command_digest = _canonical_digest(argv)
+    command_fingerprint = hashlib.sha256(
+        command_digest.encode("utf-8")
+    ).hexdigest()
+    handle = hashlib.sha256(_pickup_runtime_material(
+        identity, validated["checkpoint_id"], validated["worktree_revision"]
+    )).hexdigest()[:32]
+    checked_identity = _validated_identity(identity, "pickup")
+    artifact = {
+        "path": "pickup/focused-proof.log", "sha256": output_digest,
+        "bytes": len(output_bytes), "truncated": False,
+    }
+    event = {
+        "schema": _EVENT_SCHEMA, "handle": handle, "revision": 1,
+        "state": state, "reason": state, "exit_code": completed.returncode,
+        "elapsed_ms": 0, "output_delta": output, "artifact": artifact,
+        "delivery_key": "pickup-focused-proof", "identity": checked_identity,
+        "delivery_receipt": {
+            "schema": _DELIVERY_SCHEMA, "consumer": "pickup:checkpoint",
+            "delivery_key": "pickup-focused-proof", "revision": 1,
+        },
+    }
+    snapshot = {
+        "schema": _STATE_SCHEMA, "handle": handle,
+        "workspace_fingerprint": hashlib.sha256(
+            str(Path(worktree).resolve()).encode("utf-8")
+        ).hexdigest(),
+        "authorization_fingerprint": _canonical_digest(active_contract),
+        "command_fingerprint": command_fingerprint, "state": state,
+        "revision": 1, "identity": checked_identity,
+        "exit_code": completed.returncode, "reason": state,
+        "artifact": artifact, "output_summary": output,
+        "output_digest": output_digest, "metrics": {"output_redactions": 0},
+    }
+    result = {
+        "schema": _RESULT_SCHEMA, "action": "wait", "handle": handle,
+        "identity": checked_identity,
+        "lifecycle_states": ["created", "running", state],
+        "snapshot": snapshot, "event": event,
+    }
+    return validate_and_mint(
+        worktree, spec, result, active_contract=active_contract
+    )
+
+
+def _pickup_runtime_material(identity: Mapping, checkpoint_id: str,
+                             revision: str) -> bytes:
+    return json.dumps({
+        "identity": dict(identity), "checkpoint_id": checkpoint_id,
+        "revision": revision,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _is_r0010_code_task(task: Mapping) -> bool:

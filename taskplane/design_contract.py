@@ -10,8 +10,10 @@ they change — new validation goes in a helper, not inline.
 from __future__ import annotations
 import contextlib
 import hashlib
+import hmac
 import json
 import os
+import re
 
 import depgraph
 import kb
@@ -37,6 +39,96 @@ def read_json(path: str) -> tuple[dict | None, list]:
 DESIGN_SCHEMA = "taskplane.design/v1"
 DESIGN_CONTRACT = os.path.join("design", "contract.json")
 DESIGN_NARRATIVE = os.path.join("design", "design.md")
+
+PICKUP_CONTRACT_SCHEMA = "taskplane.approved-pickup-contract/v1"
+PICKUP_DESIGN_SCHEMA = "taskplane.pickup-design/v1"
+PICKUP_APPROVAL_SCHEMA = "taskplane.pickup-design-approval/v1"
+PICKUP_ENGINE_RECEIPT_SCHEMA = "taskplane.pickup-engine-receipt/v1"
+_PICKUP_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_PICKUP_SHA = re.compile(r"[0-9a-f]{40,64}\Z")
+
+
+class PickupAuthorityError(ValueError):
+    """A shelf Design Contract lacks authentic current pickup authority."""
+
+
+def _pickup_canonical(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+
+
+def _pickup_signed_mapping(value: object, *, fields: frozenset[str],
+                           schema: str, label: str, key: bytes,
+                           key_id: str) -> dict:
+    if not isinstance(value, dict) or set(value) != fields | {"signature"}:
+        raise PickupAuthorityError(f"{label} fields are invalid")
+    if value.get("schema") != schema or value.get("key_id") != key_id:
+        raise PickupAuthorityError(f"{label} identity is invalid")
+    unsigned = {name: value[name] for name in fields}
+    expected = hmac.new(
+        key, _pickup_canonical(unsigned), hashlib.sha256
+    ).hexdigest()
+    signature = str(value.get("signature") or "")
+    if not _PICKUP_DIGEST.fullmatch(signature) or not hmac.compare_digest(
+            signature, expected):
+        raise PickupAuthorityError(f"{label} signature is invalid")
+    return dict(value)
+
+
+def load_approved_contract_for_pickup(checkout: str, path: str) -> dict:
+    """Verify one closed signed shelf authority without reading loop state."""
+    try:
+        signing_authority = tp._review_contract_authority(  # noqa: SLF001
+            checkout, create=False
+        )
+    except tp.StateError as exc:
+        raise PickupAuthorityError("engine receipt key is unavailable") from exc
+    key = signing_authority["secret"]
+    key_id = signing_authority["key_id"]
+    value, errors = read_json(path)
+    if errors or value is None:
+        raise PickupAuthorityError("; ".join(errors))
+    if "engine_receipt" not in value:
+        raise PickupAuthorityError("engine receipt is missing")
+    if set(value) != {"schema", "design", "approval", "engine_receipt"} or \
+            value.get("schema") != PICKUP_CONTRACT_SCHEMA:
+        raise PickupAuthorityError("approved Design Contract fields are invalid")
+    design = value.get("design")
+    if not isinstance(design, dict) or set(design) != {
+            "schema", "source_sha", "element"} or \
+            design.get("schema") != PICKUP_DESIGN_SCHEMA or \
+            not _PICKUP_SHA.fullmatch(str(design.get("source_sha") or "")):
+        raise PickupAuthorityError("approved Design Contract body is invalid")
+    fingerprint = hashlib.sha256(_pickup_canonical(design)).hexdigest()
+    approval = _pickup_signed_mapping(
+        value.get("approval"),
+        fields=frozenset({"schema", "actor", "design_fingerprint", "key_id"}),
+        schema=PICKUP_APPROVAL_SCHEMA, label="approved Design Contract",
+        key=key, key_id=key_id,
+    )
+    if not str(approval.get("actor") or "").startswith("human:") or \
+            approval.get("design_fingerprint") != fingerprint:
+        raise PickupAuthorityError("approved Design Contract is stale or unsigned")
+    receipt = _pickup_signed_mapping(
+        value.get("engine_receipt"),
+        fields=frozenset({
+            "schema", "producer", "source_sha", "design_fingerprint", "key_id",
+        }),
+        schema=PICKUP_ENGINE_RECEIPT_SCHEMA, label="engine receipt",
+        key=key, key_id=key_id,
+    )
+    if receipt.get("producer") != "taskplane.design-approval-engine/v1" or \
+            receipt.get("source_sha") != design["source_sha"] or \
+            receipt.get("design_fingerprint") != fingerprint:
+        raise PickupAuthorityError("engine receipt is missing or mismatched")
+    return {
+        "source_sha": design["source_sha"],
+        "design_fingerprint": fingerprint,
+        "element": design["element"],
+        "approval": approval,
+        "engine_receipt": receipt,
+    }
 
 # ONE contract-id prefix rule (v2.3.0 L1). This is the STRICTER of the two
 # rules that used to diverge: plan readiness (depgraph.py) accepts only

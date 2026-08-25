@@ -403,6 +403,88 @@ def integrate_on_green(primary_checkout: str, task_id: str) -> dict:
     ).encode("utf-8")).hexdigest()}
 
 
+def assign_pickup_scope(checkout: str, micro_plan: Mapping[str, object]) -> dict:
+    """Bind one explicit pickup element without registering private state."""
+    if not isinstance(micro_plan, Mapping) or set(micro_plan) != {
+            "element_id", "scope", "criterion", "fingerprint"}:
+        raise ScopeAssignmentError("pickup micro-plan identity is invalid")
+    scope = micro_plan.get("scope")
+    criterion = micro_plan.get("criterion")
+    if not isinstance(scope, list) or not scope or not isinstance(
+            criterion, Mapping):
+        raise ScopeAssignmentError("pickup micro-plan has no bounded scope")
+    revision = tp.git_head(checkout)
+    if not revision:
+        raise ScopeAssignmentError("pickup assignment revision is unavailable")
+    material = {
+        "schema": SCOPE_ASSIGNMENT_SCHEMA, "mode": "pickup-stateless",
+        "task_id": str(micro_plan["element_id"]), "scope": list(scope),
+        "criterion_id": str(criterion.get("id") or ""),
+        "revision": revision, "micro_plan_fingerprint": micro_plan["fingerprint"],
+    }
+    return {**material, "fingerprint": hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()}
+
+
+def run_pickup(checkout: str, micro_plan: Mapping[str, object], *,
+               emit: Callable[[str], None]) -> dict:
+    """Run one explicit AC through checkpoint and repository ownership."""
+    assignment = assign_pickup_scope(checkout, micro_plan)
+    emit("pickup.build_c.assigned")
+    criterion = micro_plan["criterion"]
+    proof = criterion["proof"]
+    checkpoint_id = "pickup-" + hashlib.sha256(json.dumps({
+        "assignment": assignment["fingerprint"],
+        "criterion": criterion["id"],
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:20]
+    spec = {
+        "schema": checkpoint.CHECKPOINT_SCHEMA,
+        "checkpoint_id": checkpoint_id, "phase": "build",
+        "ac_ids": [criterion["id"]], "predecessor_checkpoint_ids": [],
+        "worktree_revision": assignment["revision"],
+        "declared_scope": list(assignment["scope"]),
+        "focused_proof": {"path": proof["path"], "argv": list(proof["argv"])},
+        "ratchet_baseline": {"cycle_count": 0},
+    }
+    run_id = "pickup-" + str(micro_plan["fingerprint"])[:24]
+    identity = {
+        "schema": "taskplane.governed-command-identity/v1",
+        "run_id": run_id, "task_id": assignment["task_id"],
+    }
+    active_contract = {
+        "schema": "taskplane.pickup-active-contract/v1",
+        "task_id": assignment["task_id"], "scope": assignment["scope"],
+        "revision": assignment["revision"],
+        "micro_plan_fingerprint": micro_plan["fingerprint"],
+    }
+    emit("pickup.checkpoint.started")
+    receipt = checkpoint.run_and_mint_stateless(
+        checkout, spec, identity=identity, active_contract=active_contract
+    )
+    emit("pickup.checkpoint.terminal")
+    checked = _checkpoint_integration_receipt(
+        receipt, task_id=assignment["task_id"], run_id=run_id,
+        revision=assignment["revision"], scope=assignment["scope"],
+        active_contract=active_contract,
+    )
+    merge_receipt = repository.RepositoryManager().accept_pickup_revision(
+        checkout, task_id=assignment["task_id"],
+        revision=assignment["revision"],
+    )
+    emit("pickup.integration.outcome")
+    return {
+        "checkpoint": checked,
+        "integration": {
+            "schema": INTEGRATION_AUTHORIZATION_SCHEMA,
+            "status": "integrated", "task_id": assignment["task_id"],
+            "authorized_revision": assignment["revision"],
+            "checkpoint_receipt_digest": checked["receipt_digest"],
+            "merge_receipt": merge_receipt,
+        },
+    }
+
+
 def _program_authority(ledger: Mapping[str, object]) -> Mapping[str, object]:
     if ledger.get("schema") != "taskplane.r0012-program-ledger/v1":
         raise ProgramAuthorityError("program ledger schema is invalid")

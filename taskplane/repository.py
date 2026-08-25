@@ -438,6 +438,23 @@ class RepositoryManager:
             primary, task_id=task_id,
             run_id=run_id or registration.get("run_id"))
 
+    def accept_pickup_revision(self, primary_checkout: str, *, task_id: str,
+                               revision: str) -> dict:
+        """Accept an exact already-current revision at the merge boundary."""
+        primary = os.path.realpath(primary_checkout)
+        observed = self._run(["git", "rev-parse", "HEAD"], cwd=primary)
+        if observed != revision:
+            raise RepositoryAcquisitionError(
+                "identity", "pickup revision differs from repository HEAD")
+        material = {
+            "schema": "taskplane.repository-pickup-merge/v1",
+            "status": "integrated", "task_id": task_id,
+            "primary_checkout": primary, "branch_tip": revision,
+        }
+        return {**material, "fingerprint": hashlib.sha256(json.dumps(
+            material, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()}
+
     def acquire_pr(self, identity: storage.RepositoryIdentity,
                    target: dict) -> AcquisitionResult:
         metadata = self._metadata(target)

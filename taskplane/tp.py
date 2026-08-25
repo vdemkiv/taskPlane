@@ -6722,6 +6722,18 @@ def cmd_help(a) -> int:
     return 0
 
 
+def cmd_pickup(a) -> int:
+    """Run one signed repository shelf contract without loop state."""
+    import pickup
+    try:
+        result = pickup.run(_workspace(a.workspace), a.design_contract)
+    except pickup.PickupRefusal as exc:
+        print(f"taskplane: pickup refused: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _utf8_streams() -> None:
     """Make stdout/stderr UTF-8 regardless of the host's console codepage.
 
@@ -6805,6 +6817,17 @@ def main(argv=None) -> int:
         return compatibility_refusal
     p = argparse.ArgumentParser(prog="tp.py")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    pickup_parser = sub.add_parser(
+        "pickup", help="run one signed shelf Design Contract without a loop"
+    )
+    pickup_parser.add_argument(
+        "design_contract", help="repository-relative signed Design Contract"
+    )
+    pickup_parser.add_argument(
+        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP
+    )
+    pickup_parser.set_defaults(fn=cmd_pickup)
 
     n = sub.add_parser("new", help="create + activate a Task Contract")
     n.add_argument("goal", nargs="+")
