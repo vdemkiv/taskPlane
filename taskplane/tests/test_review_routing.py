@@ -342,7 +342,12 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             "contracts": [],
         }
         manifest = {"run_id": "a" * 32, "status": "ready"}
+        quality_ref = {"kind": "graph-quality", "fingerprint": "q" * 64}
+        caller_expander = mock.Mock(name="caller_expander")
         with mock.patch.object(loop, "_diff_files", return_value=changed), \
+                mock.patch.object(
+                    loop, "_strict_review_graph_quality",
+                    return_value=({}, quality_ref, caller_expander)), \
                 mock.patch.object(
                     review, "canonical_diff_patch",
                     return_value=(0, "diff --git a/taskplane/review.py "
@@ -350,7 +355,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 mock.patch.object(review, "start_review",
                                   return_value=manifest), \
                 mock.patch.object(review, "_load_state",
-                                  return_value={"routing": {"lenses": []}}):
+                                  return_value={"quality": quality_ref,
+                                                "routing": {"lenses": []}}):
             opened, _routing = loop._review_kernel(
                 self.ws, self.ws, base="HEAD", step="evaluate", task=task,
                 graph=self.graph, impact=self.impact,

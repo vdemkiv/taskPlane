@@ -97,7 +97,8 @@ class TestLoopImpactWiring(unittest.TestCase):
         dg.scan(ws)
         with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [{"id": "t1", "scope": ["src/db/**"],
-                                  "tests": "true"}]}, f)
+                                  "tests": "true",
+                                  "criteria": ["db change works"]}]}, f)
         loop.init(ws, "db work", spec_path="s", checkpoints=["plan"])
         loop.next_action(ws); loop.gate(ws, "pass"); loop.approve(ws)
         loop.next_action(ws)
@@ -129,7 +130,8 @@ class TestImpactExcludesLoopOwned(unittest.TestCase):
         dg.scan(ws)
         with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [{"id": "t1", "scope": ["src/db/**"],
-                                  "tests": "true"}]}, f)
+                                  "tests": "true",
+                                  "criteria": ["db change works"]}]}, f)
         loop.init(ws, "g", spec_path="s", checkpoints=["plan"])
         loop.next_action(ws); loop.gate(ws, "pass"); loop.approve(ws)
         loop.next_action(ws)

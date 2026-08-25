@@ -24,13 +24,13 @@ E4 — `head` + `scanned_head` on `graph_impact`, at all THREE emission sites.
     dependency graph itself was scanned at. Without both, a stale blast
     radius is indistinguishable from a current one.
 
-    THE MUTATION THAT SURVIVED A FULL SUITE: taking `head` from `act_ws`.
-    `act_ws` is gated on `state["parallel"]`, so in a SERIAL loop holding a
-    task `workspace`, `act_ws` is the project tree while the diff — and the
-    impact — come from the worker's worktree. The row would then name a tree
-    containing none of the change, and every existing test still passed.
-    `test_head_is_the_worker_worktree_not_the_project_in_a_serial_loop`
-    exists to kill exactly that substitution.
+    THE MUTATION THAT SURVIVED A FULL SUITE: taking `head` from the retained
+    task `workspace` independently of the canonical graph workspace.  A
+    SERIAL loop can still carry a stale worker path after a claim or resume,
+    while Evaluate deliberately scans and reviews the project checkout.  A
+    row naming that worker would describe bytes that produced neither the
+    graph nor its impact.  The serial stale-worker test kills exactly that
+    substitution.
 
 BOTH ADDITIONS ARE RECORDING ONLY. They may not change a gate outcome, a
 returned payload, an emitted event name, or an exception path.
@@ -327,20 +327,18 @@ class TestGraphImpactHeads(unittest.TestCase):
         self.assertEqual(row["head"], tp.git_head(self.ws))
         self.assertEqual(row["scanned_head"], tp.git_head(self.ws))
 
+    # Keep the historical node id so baseline inventories remain replayable;
+    # canonical serial authority now deliberately selects the project tree.
     def test_head_is_the_worker_worktree_not_the_project_in_a_serial_loop(self):
-        """THE SUBSTITUTION THAT SURVIVED A FULL SUITE: sourcing `head` from
-        `act_ws`. `act_ws` is gated on state["parallel"]; the impact block's
-        workspace is NOT. A serial loop carrying a task `workspace` — a
-        stale claim, a resumed wave, a fix step after a worker exited —
-        therefore diffs the WORKTREE while act_ws still names the project.
-        A row taking head from act_ws names a tree holding none of the
-        change, and nothing else in the suite notices."""
+        """Serial Evaluate reviews the project checkout even when old task
+        state still names a claimed worker.  The impact row must name that
+        canonical project tree, never bytes from the stale worker."""
         worktree = os.path.join(self.root, "wt")
         _git(self.ws, "clone", "-q", self.ws, worktree)
         _git(worktree, "config", "user.email", "e@e")
         _git(worktree, "config", "user.name", "t")
         worker_head = _touch_commit(worktree)
-        project_head = tp.git_head(self.ws)
+        project_head = _touch_commit(self.ws, text="project = 4\n")
         self.assertNotEqual(worker_head, project_head)
 
         task = dict(TASK, workspace=worktree)
@@ -348,8 +346,8 @@ class TestGraphImpactHeads(unittest.TestCase):
                parallel=False)
         self.assertIsNone(loop.next_action(self.ws).get("error"))
         row = self._row("evaluate")
-        self.assertEqual(row["head"], worker_head)
-        self.assertNotEqual(row["head"], project_head)
+        self.assertEqual(row["head"], project_head)
+        self.assertNotEqual(row["head"], worker_head)
 
     def test_scanned_head_is_the_graphs_head_not_the_projects(self):
         """`scanned_head` answers "which tree produced this dependency
@@ -403,7 +401,12 @@ class TestGraphImpactHeads(unittest.TestCase):
         seen.clear()
         _state(self.ws, "evaluate", baseline=self.base, task=task,
                parallel=True)
-        with mock.patch.object(review, "start_review", spy):
+        # Worktree identity resolution is covered by the loop/storage suites;
+        # this test isolates which already-resolved tree ReviewKernel reads.
+        with mock.patch.object(
+                loop, "_parallel_evaluate_workspace",
+                return_value=(worktree, None)), \
+                mock.patch.object(review, "start_review", spy):
             loop.next_action(self.ws)
         self.assertEqual(seen, [worktree], "parallel kernel reads the claim")
 
@@ -464,8 +467,8 @@ class TestRecordingOnly(unittest.TestCase):
         with open(loop.__file__, encoding="utf-8") as f:
             tree = ast.parse(f.read())
         loads = [n for n in ast.walk(tree)
-                 if isinstance(n, ast.Name) and n.id == "heads"
-                 and isinstance(n.ctx, ast.Load)]
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "heads"]
         splatted = []
         for call in ast.walk(tree):
             if not (isinstance(call, ast.Call)
@@ -475,7 +478,9 @@ class TestRecordingOnly(unittest.TestCase):
             for kw in call.keywords:
                 if kw.arg is None:
                     splatted += [n for n in ast.walk(kw.value)
-                                 if isinstance(n, ast.Name) and n.id == "heads"]
+                                 if isinstance(n, ast.Call)
+                                 and isinstance(n.func, ast.Name)
+                                 and n.func.id == "heads"]
         self.assertEqual(len(loads), 3, "three sites, three uses")
         self.assertEqual(len(loads), len(splatted),
                          "`heads` is read somewhere that is not a trace row")

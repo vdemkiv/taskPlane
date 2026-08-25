@@ -4943,7 +4943,12 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                  lenses=[[x["id"], x["mode"]] for x in routing["lenses"]])
 
     def heads():                    # lazy: only an emitting branch pays
-        return {"head": tp.git_head(ws if step == "em" else wtree),
+        # The row must name the same canonical tree that supplied the graph
+        # and impact.  A serial loop can retain an old task workspace after
+        # a claim or resume, but Evaluate deliberately reviews the project
+        # checkout in that mode.  Naming that stale worker tree would make
+        # the trace describe bytes that were never scanned.
+        return {"head": tp.git_head(graph_ws),
                 "scanned_head": (depgraph.load(graph_ws).get("meta")
                                  or {}).get("scanned_head")}
     # Blast radius from the persistent dependency graph — the reviewer sees

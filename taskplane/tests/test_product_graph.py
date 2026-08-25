@@ -85,7 +85,8 @@ class TestProductLayer(unittest.TestCase):
         loop.save(self.ws, state)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"tasks": [{"id": "t1", "req": requirement["id"],
-                              "scope": ["src/api/**"], "tests": "true"}]},
+                              "scope": ["src/api/**"], "tests": "true",
+                              "criteria": ["API remains correct"]}]},
                   open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass")
         state = loop.load(self.ws)
