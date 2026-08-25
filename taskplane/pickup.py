@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import tempfile
 import time
 from collections.abc import Mapping, MutableSequence
 
@@ -430,13 +431,22 @@ def _write_receipt(checkout: str, authority: Mapping[str, object],
         payload = json.dumps(
             receipt, indent=2, sort_keys=True, ensure_ascii=True
         ) + "\n"
-        descriptor = os.open(
-            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=directory
         )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
-            target.write(payload)
-            target.flush()
-            os.fsync(target.fileno())
+        temporary = Path(temporary_name)
+        try:
+            os.chmod(temporary, 0o644)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+                descriptor = -1
+                target.write(payload)
+                target.flush()
+                os.fsync(target.fileno())
+            os.link(temporary, path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
     except FileExistsError as exc:
         raise PickupRefusal(
             "receipt-lineage: receipt collision refused"

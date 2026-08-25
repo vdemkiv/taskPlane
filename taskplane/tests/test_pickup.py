@@ -210,12 +210,21 @@ def _receipt_digest(receipt: dict) -> str:
     return hashlib.sha256(_canonical(material)).hexdigest()
 
 
-def _write_receipt_variant(source: Path, *, ordinal: int,
-                           changes: dict[str, object]) -> Path:
+def _write_structural_receipt_variant(source: Path, *, label: str) -> Path:
+    """Create a distinct receipt that remains valid through field checks."""
     receipt = json.loads(source.read_text(encoding="utf-8"))
-    receipt.update(changes)
-    receipt["ordinal"] = ordinal
+    merge_receipt = dict(receipt["merge_receipt"])
+    merge_receipt["primary_checkout"] = str(
+        source.parent.resolve() / f"{label}-checkout"
+    )
+    merge_material = dict(merge_receipt)
+    merge_material.pop("fingerprint")
+    merge_receipt["fingerprint"] = hashlib.sha256(
+        _canonical(merge_material)
+    ).hexdigest()
+    receipt["merge_receipt"] = merge_receipt
     receipt["receipt_digest"] = _receipt_digest(receipt)
+    ordinal = int(receipt["ordinal"])
     criterion_id = str(receipt["criterion_id"])
     target = source.parent / (
         f"{ordinal}-{criterion_id}-{receipt['receipt_digest']}.json"
@@ -760,26 +769,23 @@ def test_receipt_lineage_rejects_collision_fork_gap_and_digest_tamper(
     first_receipt = _pickup_receipts(checkout)[0]
     first = json.loads(first_receipt.read_text(encoding="utf-8"))
     _commit(checkout, "record first pickup criterion")
+    second_receipt: Path | None = None
+    if mutation in {"fork", "gap"}:
+        pickup.run(str(checkout), authority_rel)
+        second_receipt = _pickup_receipts(checkout)[1]
+        _commit(checkout, "record second pickup criterion")
     if mutation == "collision":
-        _write_receipt_variant(
-            first_receipt, ordinal=1,
-            changes={"micro_plan_fingerprint": "f" * 64},
+        _write_structural_receipt_variant(
+            first_receipt, label="collision",
         )
     elif mutation == "fork":
-        second = _write_receipt_variant(
-            first_receipt, ordinal=2,
-            changes={
-                "criterion_id": "AC2",
-                "predecessor_receipt_digest": first["receipt_digest"],
-            },
-        )
-        _write_receipt_variant(
-            second, ordinal=2,
-            changes={"micro_plan_fingerprint": "e" * 64},
+        assert second_receipt is not None
+        _write_structural_receipt_variant(
+            second_receipt, label="fork",
         )
     elif mutation == "gap":
-        gap = first_receipt.with_name(first_receipt.name.replace("1-", "2-", 1))
-        first_receipt.rename(gap)
+        assert second_receipt is not None
+        first_receipt.unlink()
     else:
         first["terminal_status"] = "tampered"
         first_receipt.write_text(
@@ -794,8 +800,51 @@ def test_receipt_lineage_rejects_collision_fork_gap_and_digest_tamper(
         ),
     )
 
-    with pytest.raises(pickup.PickupRefusal, match="receipt-lineage"):
+    expected = ("collision, fork, or gap detected"
+                if mutation != "digest-tamper"
+                else "receipt digest/path mismatch")
+    with pytest.raises(pickup.PickupRefusal, match=expected):
         pickup.run(str(checkout), authority_rel)
+
+
+def test_failed_receipt_publication_leaves_no_collision_and_retry_succeeds(
+        signed_shelf: tuple[Path, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout, authority_rel = signed_shelf
+    _set_shelf_criteria(checkout, authority_rel, ["AC1", "AC2"])
+    captured: dict[str, tuple[object, ...]] = {}
+    write_receipt = pickup._write_receipt  # noqa: SLF001
+
+    def capture(*args: object, **_kwargs: object) -> dict:
+        captured["args"] = args
+        raise pickup.PickupRefusal("captured after integration")
+
+    monkeypatch.setattr(pickup, "_write_receipt", capture)
+    with pytest.raises(pickup.PickupRefusal, match="captured after integration"):
+        pickup.run(str(checkout), authority_rel)
+    monkeypatch.setattr(pickup, "_write_receipt", write_receipt)
+
+    real_fsync = pickup.os.fsync
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("injected receipt fsync failure")
+
+    monkeypatch.setattr(pickup.os, "fsync", fail_fsync)
+    with pytest.raises(pickup.PickupRefusal, match="receipt write failed"):
+        write_receipt(*captured["args"])
+    assert not [
+        path for path in (checkout / "exports").rglob("*") if path.is_file()
+    ]
+
+    monkeypatch.setattr(pickup.os, "fsync", real_fsync)
+    receipt = write_receipt(*captured["args"])
+    receipt_paths = _pickup_receipts(checkout)
+    assert len(receipt_paths) == 1
+    assert receipt_paths[0].read_text(encoding="utf-8").endswith("\n")
+    assert json.loads(receipt_paths[0].read_text(encoding="utf-8")) == receipt
+    prior_bytes = receipt_paths[0].read_bytes()
+    with pytest.raises(pickup.PickupRefusal, match="receipt collision refused"):
+        write_receipt(*captured["args"])
+    assert receipt_paths[0].read_bytes() == prior_bytes
 
 
 def test_interrupted_checkpoint_preserves_prior_receipts_and_blocks_merge(
