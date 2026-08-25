@@ -10,7 +10,7 @@
       "name": "taskplane",
       "source": ".",
       "description": "AI software-delivery control plane for Claude and Codex. Design, build, review, or check status with one simple taskplane prompt while a strict harness enforces approved Design Contracts, dependency-aware Definition of Ready and Done, scoped execution, fingerprinted worker evidence, orchestrator validation, human approvals, selective review from a 26-lens catalog, durable project memory, and a live dashboard.",
-      "version": "2.17.19",
+      "version": "2.17.20",
       "homepage": "https://github.com/vdemkiv/taskPlane",
       "repository": "https://github.com/vdemkiv/taskPlane",
       "license": "Apache-2.0",
@@ -29,5 +29,5 @@
       ]
     }
   ],
-  "version": "2.17.19"
+  "version": "2.17.20"
 }
