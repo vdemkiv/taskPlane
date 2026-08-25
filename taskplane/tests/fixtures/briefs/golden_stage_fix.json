@@ -7,9 +7,10 @@
 # Scrub rules (stage_fixture.py docstring): env scrub (CODEX_*/
 # TASKPLANE_MODEL_*/TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/
 # CLAUDE_CODE_WORKFLOWS/TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path
-# tokens; unix times
-# zeroed; git shas + graph fingerprints -> <SHA>; calendar dates ->
-# <DATE>; sorted keys; indent=2.
+# tokens; unix times zeroed; enforcement observations -> <TIME>; git shas,
+# graph fingerprints and signed-local evidence -> <SHA>; dispatch intents and
+# ReviewKernel leases/signatures -> stable tokens; calendar dates -> <DATE>;
+# sorted keys; indent=2.
 {
   "artifacts": {
     "note": "gate-state snapshot (dashboard, plan, findings, graph, HEADLINES.md) \u2014 on a team store commit it with the work so the org sees progress; future sessions read it instead of re-deriving (token cache)",
@@ -60,10 +61,103 @@
   },
   "design": null,
   "design_graph": null,
+  "dispatch_intent": {
+    "evidence": {
+      "authoritative": false,
+      "delivery_observed": false,
+      "execution_observed": false,
+      "host_observed": false,
+      "may_satisfy_delivery_gate": false,
+      "may_satisfy_execution_gate": false
+    },
+    "identity": {
+      "run_id": "<SHA>",
+      "schema": "taskplane.governed-command-identity/v1",
+      "task_id": "t1"
+    },
+    "intended_consumer": "tp-fixer:t1",
+    "intent_id": "<INTENT>",
+    "kind": "dispatch_intent",
+    "payload_fingerprint": "<SHA>",
+    "schema": "taskplane.native-agent-dispatch-intent-telemetry/v1",
+    "telemetry_path": "<WS>/.taskplane/dispatch-intent-telemetry-v1/<INTENT>.json",
+    "transport": "native_agent",
+    "wait_policy": {
+      "minimum_timeout_seconds": 300,
+      "mode": "event",
+      "outstanding_count": 1,
+      "outstanding_set": "fix:t1",
+      "reissue_after": [
+        "completion",
+        "attention"
+      ],
+      "scheduled_polling": false,
+      "schema": "taskplane.wait-policy/v1",
+      "timeout_seconds": 1800
+    },
+    "wave_id": null
+  },
   "dor": {
     "blockers": [],
     "ready": true,
     "warnings": []
+  },
+  "enforcement": {
+    "advisory": null,
+    "evidence_id": "<SHA>",
+    "host": "claude",
+    "meter_evidence": {
+      "governed": false,
+      "hook_seen": false,
+      "warning": null
+    },
+    "mode": "warn",
+    "observed_at": "<TIME>",
+    "reasons": [
+      "no session-compatible hook receipt or screen activity"
+    ],
+    "receipt_evidence": {
+      "capabilities": {
+        "managed_policy_permission": {
+          "confidence": "low",
+          "reason": "no host-observed managed policy permission receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "native_plugin_hooks_loaded": {
+          "confidence": "low",
+          "reason": "no host-observed native plugin hooks loaded receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "repository_bridge_loaded": {
+          "confidence": "low",
+          "reason": "no host-observed repository bridge loaded receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "repository_trust": {
+          "confidence": "low",
+          "reason": "no host-observed repository trust receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "stable_event_identity": {
+          "confidence": "low",
+          "reason": "no host-observed stable event identity receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        }
+      },
+      "effective_path": "transitioning"
+    },
+    "repository_fingerprint": "<SHA>",
+    "revision": "<SHA>",
+    "run_id": null,
+    "schema": "taskplane.enforcement-status/v1",
+    "session_fingerprint": null,
+    "status": "unproven",
+    "workspace_fingerprint": "<SHA>"
   },
   "impact": {
     "boundary_nodes": [],
@@ -72,6 +166,26 @@
     "depth_truncated": false,
     "graph": {
       "content_fingerprint": "<SHA>",
+      "graph_scan_quality": {
+        "affected_modules": [],
+        "degraded": false,
+        "failures": [],
+        "fingerprint": "<SHA>",
+        "mode": "modules",
+        "producers": {
+          "base-scanner": {
+            "failures": [],
+            "status": "complete"
+          },
+          "decomposition": {
+            "failures": [],
+            "status": "not-requested"
+          }
+        },
+        "recovery": "repair the named source/producer and rerun `tp graph scan --strict`",
+        "scanned_revision": "<SHA>",
+        "schema": "taskplane.graph-scan-quality/v1"
+      },
       "scanned_at": 0,
       "scanned_head": "<SHA>",
       "scanners": {
@@ -347,8 +461,34 @@
       "src/alpha/**"
     ],
     "status": "built",
+    "target_commit": "<SHA>",
     "tests": "true",
     "workspace": "<WS>/.tp-work/t1"
   },
-  "task_name": "tp_step_fixer_t1_39fb60c2"
+  "task_name": "tp_step_fixer_t1_39fb60c2",
+  "wait_invocation": {
+    "operation": "wait_for_events",
+    "outstanding_members": [
+      "t1"
+    ],
+    "outstanding_set": "fix:t1",
+    "reissue": false,
+    "scheduled": false,
+    "schema": "taskplane.event-wait-invocation/v1",
+    "timeout_seconds": 1800,
+    "wake": null
+  },
+  "wait_policy": {
+    "minimum_timeout_seconds": 300,
+    "mode": "event",
+    "outstanding_count": 1,
+    "outstanding_set": "fix:t1",
+    "reissue_after": [
+      "completion",
+      "attention"
+    ],
+    "scheduled_polling": false,
+    "schema": "taskplane.wait-policy/v1",
+    "timeout_seconds": 1800
+  }
 }

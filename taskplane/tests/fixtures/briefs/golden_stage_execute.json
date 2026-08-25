@@ -7,10 +7,68 @@
 # Scrub rules (stage_fixture.py docstring): env scrub (CODEX_*/
 # TASKPLANE_MODEL_*/TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/
 # CLAUDE_CODE_WORKFLOWS/TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path
-# tokens; unix times
-# zeroed; git shas + graph fingerprints -> <SHA>; calendar dates ->
-# <DATE>; sorted keys; indent=2.
+# tokens; unix times zeroed; enforcement observations -> <TIME>; git shas,
+# graph fingerprints and signed-local evidence -> <SHA>; dispatch intents and
+# ReviewKernel leases/signatures -> stable tokens; calendar dates -> <DATE>;
+# sorted keys; indent=2.
 {
+  "enforcement": {
+    "advisory": null,
+    "evidence_id": "<SHA>",
+    "host": "claude",
+    "meter_evidence": {
+      "governed": false,
+      "hook_seen": false,
+      "warning": null
+    },
+    "mode": "warn",
+    "observed_at": "<TIME>",
+    "reasons": [
+      "no session-compatible hook receipt or screen activity"
+    ],
+    "receipt_evidence": {
+      "capabilities": {
+        "managed_policy_permission": {
+          "confidence": "low",
+          "reason": "no host-observed managed policy permission receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "native_plugin_hooks_loaded": {
+          "confidence": "low",
+          "reason": "no host-observed native plugin hooks loaded receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "repository_bridge_loaded": {
+          "confidence": "low",
+          "reason": "no host-observed repository bridge loaded receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "repository_trust": {
+          "confidence": "low",
+          "reason": "no host-observed repository trust receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        },
+        "stable_event_identity": {
+          "confidence": "low",
+          "reason": "no host-observed stable event identity receipt",
+          "source": "no-host-receipt",
+          "status": "unknown"
+        }
+      },
+      "effective_path": "transitioning"
+    },
+    "repository_fingerprint": "<SHA>",
+    "revision": "<SHA>",
+    "run_id": null,
+    "schema": "taskplane.enforcement-status/v1",
+    "session_fingerprint": null,
+    "status": "unproven",
+    "workspace_fingerprint": "<SHA>"
+  },
   "held": [],
   "instruction": "Dispatch ONE governed subagent per wave entry, concurrently. Per task: (1) `git worktree add <worktree> -b tp/<task>` from the approved baseline; (2) `tp.py loop claim <task> --agent-workspace <worktree>` \u2014 activates THAT task's contract in THAT worktree, so the hook confines the agent mechanically; (3) the subagent builds inside its worktree (TDD, primed lenses, acceptance criteria); (4) it COMMITS its work in the worktree (`git add -A && git commit`) and runs `tp.py loop submit pass|fail --task <id>`. The orchestrator alone runs the matching `loop gate`. When the wave empties, `loop next` evaluates each built task; on evaluate PASS merge its branch (`git merge tp/<task>`) and remove the worktree. EXCEPTION \u2014 entries with merge_on_pass=false are A/B variants: do NOT merge them; when all variants pass, the loop pauses at the SELECTION gate and the human picks what ships.",
   "parallel": true,
@@ -45,9 +103,115 @@
     "schema": "taskplane.runtime-guidance/v1"
   },
   "step": "execute",
+  "wait_invocation": {
+    "operation": "wait_for_events",
+    "outstanding_members": [
+      "t1",
+      "t2"
+    ],
+    "outstanding_set": "execute-wave",
+    "reissue": false,
+    "scheduled": false,
+    "schema": "taskplane.event-wait-invocation/v1",
+    "timeout_seconds": 1800,
+    "wake": null
+  },
   "wave": [
     {
       "design": null,
+      "dispatch_intent": {
+        "evidence": {
+          "authoritative": false,
+          "delivery_observed": false,
+          "execution_observed": false,
+          "host_observed": false,
+          "may_satisfy_delivery_gate": false,
+          "may_satisfy_execution_gate": false
+        },
+        "identity": {
+          "run_id": "<SHA>",
+          "schema": "taskplane.governed-command-identity/v1",
+          "task_id": "t1"
+        },
+        "intended_consumer": "tp-executor:t1",
+        "intent_id": "<INTENT>",
+        "kind": "dispatch_intent",
+        "payload_fingerprint": "<SHA>",
+        "schema": "taskplane.native-agent-dispatch-intent-telemetry/v1",
+        "telemetry_path": "<WS>/.taskplane/dispatch-intent-telemetry-v1/<INTENT>.json",
+        "transport": "native_agent",
+        "wait_policy": {
+          "minimum_timeout_seconds": 300,
+          "mode": "event",
+          "outstanding_count": 2,
+          "outstanding_set": "execute-wave",
+          "reissue_after": [
+            "completion",
+            "attention"
+          ],
+          "scheduled_polling": false,
+          "schema": "taskplane.wait-policy/v1",
+          "timeout_seconds": 1800
+        },
+        "wave_id": "execute-wave"
+      },
+      "enforcement": {
+        "advisory": null,
+        "evidence_id": "<SHA>",
+        "host": "claude",
+        "meter_evidence": {
+          "governed": false,
+          "hook_seen": false,
+          "warning": null
+        },
+        "mode": "warn",
+        "observed_at": "<TIME>",
+        "reasons": [
+          "no session-compatible hook receipt or screen activity"
+        ],
+        "receipt_evidence": {
+          "capabilities": {
+            "managed_policy_permission": {
+              "confidence": "low",
+              "reason": "no host-observed managed policy permission receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "native_plugin_hooks_loaded": {
+              "confidence": "low",
+              "reason": "no host-observed native plugin hooks loaded receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "repository_bridge_loaded": {
+              "confidence": "low",
+              "reason": "no host-observed repository bridge loaded receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "repository_trust": {
+              "confidence": "low",
+              "reason": "no host-observed repository trust receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "stable_event_identity": {
+              "confidence": "low",
+              "reason": "no host-observed stable event identity receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            }
+          },
+          "effective_path": "transitioning"
+        },
+        "repository_fingerprint": "<SHA>",
+        "revision": "<SHA>",
+        "run_id": null,
+        "schema": "taskplane.enforcement-status/v1",
+        "session_fingerprint": null,
+        "status": "unproven",
+        "workspace_fingerprint": "<SHA>"
+      },
       "knowledge": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
       "language_references": [
         {
@@ -242,10 +406,116 @@
         "variant": null
       },
       "task_name": "tp_step_executor_t1_6a951176",
+      "wait_policy": {
+        "minimum_timeout_seconds": 300,
+        "mode": "event",
+        "outstanding_count": 2,
+        "outstanding_set": "execute-wave",
+        "reissue_after": [
+          "completion",
+          "attention"
+        ],
+        "scheduled_polling": false,
+        "schema": "taskplane.wait-policy/v1",
+        "timeout_seconds": 1800
+      },
       "worktree": ".tp-work/t1"
     },
     {
       "design": null,
+      "dispatch_intent": {
+        "evidence": {
+          "authoritative": false,
+          "delivery_observed": false,
+          "execution_observed": false,
+          "host_observed": false,
+          "may_satisfy_delivery_gate": false,
+          "may_satisfy_execution_gate": false
+        },
+        "identity": {
+          "run_id": "<SHA>",
+          "schema": "taskplane.governed-command-identity/v1",
+          "task_id": "t2"
+        },
+        "intended_consumer": "tp-executor:t2",
+        "intent_id": "<INTENT>",
+        "kind": "dispatch_intent",
+        "payload_fingerprint": "<SHA>",
+        "schema": "taskplane.native-agent-dispatch-intent-telemetry/v1",
+        "telemetry_path": "<WS>/.taskplane/dispatch-intent-telemetry-v1/<INTENT>.json",
+        "transport": "native_agent",
+        "wait_policy": {
+          "minimum_timeout_seconds": 300,
+          "mode": "event",
+          "outstanding_count": 2,
+          "outstanding_set": "execute-wave",
+          "reissue_after": [
+            "completion",
+            "attention"
+          ],
+          "scheduled_polling": false,
+          "schema": "taskplane.wait-policy/v1",
+          "timeout_seconds": 1800
+        },
+        "wave_id": "execute-wave"
+      },
+      "enforcement": {
+        "advisory": null,
+        "evidence_id": "<SHA>",
+        "host": "claude",
+        "meter_evidence": {
+          "governed": false,
+          "hook_seen": false,
+          "warning": null
+        },
+        "mode": "warn",
+        "observed_at": "<TIME>",
+        "reasons": [
+          "no session-compatible hook receipt or screen activity"
+        ],
+        "receipt_evidence": {
+          "capabilities": {
+            "managed_policy_permission": {
+              "confidence": "low",
+              "reason": "no host-observed managed policy permission receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "native_plugin_hooks_loaded": {
+              "confidence": "low",
+              "reason": "no host-observed native plugin hooks loaded receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "repository_bridge_loaded": {
+              "confidence": "low",
+              "reason": "no host-observed repository bridge loaded receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "repository_trust": {
+              "confidence": "low",
+              "reason": "no host-observed repository trust receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            },
+            "stable_event_identity": {
+              "confidence": "low",
+              "reason": "no host-observed stable event identity receipt",
+              "source": "no-host-receipt",
+              "status": "unknown"
+            }
+          },
+          "effective_path": "transitioning"
+        },
+        "repository_fingerprint": "<SHA>",
+        "revision": "<SHA>",
+        "run_id": null,
+        "schema": "taskplane.enforcement-status/v1",
+        "session_fingerprint": null,
+        "status": "unproven",
+        "workspace_fingerprint": "<SHA>"
+      },
       "knowledge": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
       "language_references": [
         {
@@ -440,6 +710,19 @@
         "variant": null
       },
       "task_name": "tp_step_executor_t2_ec1cc71e",
+      "wait_policy": {
+        "minimum_timeout_seconds": 300,
+        "mode": "event",
+        "outstanding_count": 2,
+        "outstanding_set": "execute-wave",
+        "reissue_after": [
+          "completion",
+          "attention"
+        ],
+        "scheduled_polling": false,
+        "schema": "taskplane.wait-policy/v1",
+        "timeout_seconds": 1800
+      },
       "worktree": ".tp-work/t2"
     }
   ]

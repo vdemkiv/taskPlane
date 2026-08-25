@@ -130,9 +130,10 @@ STAGE_HEADER = """\
 # Scrub rules (stage_fixture.py docstring): env scrub (CODEX_*/
 # TASKPLANE_MODEL_*/TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/
 # CLAUDE_CODE_WORKFLOWS/TASKPLANE_TASK unset); <WS>/<STORE>/<PLUGIN> path
-# tokens; unix times
-# zeroed; git shas + graph fingerprints -> <SHA>; calendar dates ->
-# <DATE>; sorted keys; indent=2.
+# tokens; unix times zeroed; enforcement observations -> <TIME>; git shas,
+# graph fingerprints and signed-local evidence -> <SHA>; dispatch intents and
+# ReviewKernel leases/signatures -> stable tokens; calendar dates -> <DATE>;
+# sorted keys; indent=2.
 """
 
 

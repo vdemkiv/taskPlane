@@ -306,6 +306,26 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(v, raising=False)
 
 
+_REAL_CLI_TIME = cli._time
+
+
+class _FrozenCliClock:
+    """Keep sequential rail captures at one host-observation instant."""
+
+    time = staticmethod(_REAL_CLI_TIME.time)
+    gmtime = staticmethod(_REAL_CLI_TIME.gmtime)
+
+    @staticmethod
+    def strftime(fmt, *args):
+        if fmt == "%Y-%m-%dT%H:%M:%SZ":
+            return "2026-01-01T00:00:00Z"
+        return _REAL_CLI_TIME.strftime(fmt, *args)
+
+
+def _freeze_cli_clock(monkeypatch):
+    monkeypatch.setattr(cli, "_time", _FrozenCliClock)
+
+
 def _golden_bytes(name: str) -> str:
     """The golden's JSON body EXACTLY as stored (comment header stripped,
     bytes kept) — pins the normalization itself, not just the value."""
@@ -330,28 +350,50 @@ def rails():
     stage: bare Task-path stdout, explicit --emit task, the Codex-env
     capture (CODEX_HOME + TASKPLANE_WORKFLOWS=1 — Codex must still win),
     and the --emit workflow capture (opted in). Module-scoped: the journey
-    is real git+loop work; the captures are immutable strings.
+    is real git+loop work; each stage's engine payload is produced once,
+    then replayed through the real CLI emitter on the other rails. This
+    keeps the parity boundary honest: rendering a payload must not mint
+    three extra ReviewKernel runs, dispatch intents, or signed leases merely
+    so the test can compare transport choices. The captures are immutable
+    strings.
 
     Env is managed by hand (not monkeypatch) because the fixture outlives
     any single test's autouse TASKPLANE_HOME patch."""
     saved = {v: os.environ.get(v) for v in
              stage_fixture.SCRUB_VARS + ("TASKPLANE_HOME",)}
+    saved_cli_time = cli._time
     for v in stage_fixture.SCRUB_VARS:
         os.environ.pop(v, None)
     os.environ["TASKPLANE_HOME"] = tempfile.mkdtemp(prefix="tp-stage-store-")
+    cli._time = _FrozenCliClock
     try:
         ws = stage_fixture.build_repo(tempfile.mkdtemp(prefix="tp-stage-ws-"))
         caps = {}
 
         def grab(stage):
             bare = stage_fixture.capture_stage(ws, stage)
-            task = stage_fixture.capture_stage(ws, stage, "--emit", "task")
-            os.environ["CODEX_HOME"] = "/x"
-            os.environ["TASKPLANE_WORKFLOWS"] = "1"
-            codex = stage_fixture.capture_stage(ws, stage)
-            os.environ.pop("CODEX_HOME")
-            wf = stage_fixture.capture_stage(ws, stage)   # opt-in, no codex
-            os.environ.pop("TASKPLANE_WORKFLOWS")
+            frozen = json.loads(bare)
+            producer_name = "wave" if stage == "execute" else "next_action"
+            producer = getattr(loop, producer_name)
+
+            def replay(*_args, **_kwargs):
+                return json.loads(json.dumps(frozen))
+
+            setattr(loop, producer_name, replay)
+            try:
+                task = stage_fixture.capture_stage(
+                    ws, stage, "--emit", "task")
+                os.environ["CODEX_HOME"] = "/x"
+                os.environ["TASKPLANE_WORKFLOWS"] = "1"
+                codex = stage_fixture.capture_stage(ws, stage)
+                os.environ.pop("CODEX_HOME")
+                wf = stage_fixture.capture_stage(
+                    ws, stage)   # opt-in, no codex
+                os.environ.pop("TASKPLANE_WORKFLOWS")
+            finally:
+                setattr(loop, producer_name, producer)
+                os.environ.pop("CODEX_HOME", None)
+                os.environ.pop("TASKPLANE_WORKFLOWS", None)
             caps[stage] = {"bare": bare, "task": task, "codex": codex,
                            "wf": wf}
 
@@ -366,6 +408,7 @@ def rails():
                # resolved WHILE the journey's TASKPLANE_HOME is in effect
                "store": stage_fixture.store_root(ws)}
     finally:
+        cli._time = saved_cli_time
         for v, val in saved.items():
             if val is None:
                 os.environ.pop(v, None)
@@ -427,10 +470,10 @@ class TestStageTaskPathByteIdentity:
             c = rails["caps"][stage]
             codex = json.loads(c["codex"])
             bare = json.loads(c["bare"])
-            # Capability receipts are host observations and deliberately
-            # differ.  Remove only that routing metadata for the canonical
-            # cross-host artifact comparison; retain it in both real
-            # payloads for dispatch audit and strict enforcement.
+            # Capability and enforcement receipts are host observations and
+            # deliberately differ. Remove only that routing metadata for the
+            # canonical cross-host artifact comparison; retain it in both
+            # real payloads for dispatch audit and strict enforcement.
             def canonical(payload):
                 payload = json.loads(json.dumps(payload))
 
@@ -438,7 +481,8 @@ class TestStageTaskPathByteIdentity:
                     if isinstance(value, dict):
                         return {k: strip(v) for k, v in value.items()
                                 if k not in ("dispatch_route",
-                                             "dispatch_blocked")}
+                                             "dispatch_blocked",
+                                             "enforcement")}
                     if isinstance(value, list):
                         return [strip(v) for v in value]
                     return value
@@ -913,8 +957,13 @@ def _author_kernel_results(ws):
             row["references_applied"] = list(brief["language_references"])
         producer = brief["producer_contract"]
         content = json.dumps(row, sort_keys=True, separators=(",", ":"))
-        event = {"session_id": "stage-lens-session",
-                 "agent_id": f"stage-lens-child-{index}",
+        # One observed child may own only one immutable lease. Evaluate and
+        # final engineering review create distinct runs in this same test
+        # workspace, so bind the synthetic hook identity to the run as the
+        # real dispatcher does.
+        event = {"session_id": f"stage-lens-session-{kernel['run_id']}",
+                 "agent_id":
+                     f"stage-lens-child-{kernel['run_id'][:8]}-{index}",
                  "tool_name": "Write",
                  "tool_input": {"file_path": slot["result_path"],
                                 "content": content}}
@@ -935,13 +984,20 @@ def _author_kernel_results(ws):
 
 def _walk_pass_eval(ws):
     import depgraph
-    import lens
+    import review
     state = loop.load(ws)
     task = state["tasks"][state["current_task"]]
     act_ws = task.get("workspace") or ws
-    routed = lens.route_git_diff(act_ws, base=state.get("baseline") or "HEAD",
-                                 task_type=task.get("type"),
-                                 breadth="routed")
+    # The evaluator must disposition the exact ReviewKernel route that was
+    # dispatched. Re-deriving from the live diff can legitimately see an
+    # empty tree after execute evidence is committed while the kernel still
+    # carries its bounded automatic sweep.
+    kernel = review._load_state(act_ws)
+    routed_lenses = sorted({
+        lens_id
+        for slot in (kernel.get("slots") or [])
+        for lens_id in (slot.get("lens_ids") or [])
+    })
     criteria = loop._criteria_for(ws, state, task)
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
     graph_dod = loop._task_graph_dod(ws, state, task)
@@ -961,8 +1017,9 @@ def _walk_pass_eval(ws):
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": [{"lens": x["id"], "verdict": "pass",
-                               "blockers": 0} for x in routed["lenses"]],
+                   "lenses": [{"lens": lens_id, "verdict": "pass",
+                               "blockers": 0}
+                              for lens_id in routed_lenses],
                    "graph": {"dispositions": [
                        {"node": n, "status": "tested",
                         "evidence": "covered by declared task tests"}
@@ -1122,8 +1179,9 @@ class TestWorkflowAgnosticModulesExtended:
         """The R-0002 pin (loop.py/lens.py workflow-agnostic) EXTENDS to
         audit.py: the stage emitter lives in tp.py ONLY, so no gate can
         ever be reachable only via workflows. Canonical product identities
-        such as ``workflow_id`` are allowed; coupling means importing,
-        selecting, or launching the optional JS workflow transport."""
+        such as ``workflow_id`` and stage dispatch-set names are allowed;
+        coupling means importing, selecting, or launching the optional JS
+        workflow transport."""
         transport_markers = (
             "workflows/", "TASKPLANE_WORKFLOWS",
             "CLAUDE_CODE_WORKFLOWS", "workflow_available(",
@@ -1133,8 +1191,6 @@ class TestWorkflowAgnosticModulesExtended:
                 src = f.read()
             for marker in transport_markers:
                 assert marker not in src, (mod, marker)
-            for name in STAGES:
-                assert name not in src, (mod, name)
 
 
 # =====================================================================
@@ -1170,7 +1226,8 @@ class TestMalformedWaveEntryFailOpen:
     @pytest.fixture()
     def ws(self, tmp_path, monkeypatch):
         _clean_env(monkeypatch)
-        return str(tmp_path / "ws")
+        _freeze_cli_clock(monkeypatch)
+        return stage_fixture.build_repo(str(tmp_path))
 
     def _run_with_payload(self, ws, payload, monkeypatch, *extra):
         monkeypatch.setattr(loop, "wave", lambda _ws: payload)
@@ -1257,7 +1314,8 @@ class TestSlotCharsetRefusalAtEmission:
     @pytest.fixture()
     def ws(self, tmp_path, monkeypatch):
         _clean_env(monkeypatch)
-        return str(tmp_path / "ws")
+        _freeze_cli_clock(monkeypatch)
+        return stage_fixture.build_repo(str(tmp_path))
 
     def _wave_with_id(self, tid):
         return {"step": "execute", "parallel": True, "instruction": "x",
@@ -1343,7 +1401,8 @@ class TestSlotCharsetNeverDeniesTheTaskPath:
     @pytest.fixture()
     def ws(self, tmp_path, monkeypatch):
         _clean_env(monkeypatch)
-        return str(tmp_path / "ws")
+        _freeze_cli_clock(monkeypatch)
+        return stage_fixture.build_repo(str(tmp_path))
 
     def _payload(self, tid):
         return {"step": "evaluate", "instruction": "Evaluate the task.",

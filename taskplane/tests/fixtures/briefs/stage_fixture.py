@@ -20,9 +20,10 @@ is documented and applied identically at capture and replay):
     and <PLUGIN> (loop payloads carry task worktree paths, the artifacts
     cache path, and role_instructions);
   * no timestamps — unix-time values under the keys updated_at/scanned_at/
-    submitted_at are zeroed, immutable artifact-reference digests/byte sizes
-    are normalized, git shas / graph fingerprints under
-    scanned_head/content_fingerprint/snapshot/fingerprint/baseline become
+    submitted_at are zeroed, enforcement observed_at values become <TIME>,
+    immutable artifact-reference digests/byte sizes are normalized, git shas
+    / graph fingerprints / enforcement evidence ids under scanned_head/
+    content_fingerprint/snapshot/fingerprint/baseline/evidence_id become
     <SHA>, and calendar dates (YYYY-MM-DD, e.g. the KB decision date) become
     <DATE> wherever they appear in strings;
   * stable ids — task ids (t1/t2), the KB decision id (0001) and the goal
@@ -75,8 +76,69 @@ TASKS = [
 
 _ZERO_KEYS = ("updated_at", "scanned_at", "submitted_at")
 _SHA_KEYS = ("scanned_head", "content_fingerprint", "snapshot",
-             "fingerprint", "baseline", "run_id")
+             "fingerprint", "baseline", "run_id", "evidence_id",
+             "revision", "scanned_revision", "target_commit")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_HEX64_RE = re.compile(r"\b[0-9a-f]{64}\b")
+_REVIEW_SLOT_RE = re.compile(r"\breview-[0-9a-f]{20}\b")
+
+
+def _scrub_review_bootstrap(value: dict) -> dict:
+    """Normalize one signed, path-bound ReviewKernel bootstrap projection.
+
+    The action remains structurally frozen, including every semantic binding,
+    while the local signing key, signature, issuance time, lease-derived slot,
+    and opaque transport encodings are portable tokens.
+    """
+    out = json.loads(json.dumps(value))
+    action = out.get("action") or {}
+    action["action_id"] = "<ACTION>"
+    action["issued_at"] = 0
+    action["expires_at"] = 0
+    action["key_id"] = "<SHA>"
+    action["signature"] = "<SHA>"
+    action["worker_identity"] = re.sub(
+        r"_[0-9a-f]{8}$", "_<LEASE>",
+        str(action.get("worker_identity") or ""))
+    producer = action.get("producer_contract") or {}
+    producer["task"] = _HEX64_RE.sub("<SHA>", str(producer.get("task") or ""))
+    producer["task_slot"] = _REVIEW_SLOT_RE.sub(
+        "review-<SLOT>", str(producer.get("task_slot") or ""))
+    producer["write_allow"] = [
+        _HEX64_RE.sub("<SHA>", str(path))
+        for path in producer.get("write_allow") or []
+    ]
+    action["result_path"] = _HEX64_RE.sub(
+        "<SHA>", str(action.get("result_path") or ""))
+
+    argv = list(out.get("command_argv") or [])
+    if argv:
+        argv[0] = "<PYTHON>"
+    for flag, token in (("--task-slot", "review-<SLOT>"),
+                        ("--signed-action", "<SIGNED_ACTION>"),
+                        ("--expected-identity", "<EXPECTED_IDENTITY>")):
+        if flag in argv and argv.index(flag) + 1 < len(argv):
+            argv[argv.index(flag) + 1] = token
+    out["command_argv"] = argv
+    environment = out.get("environment") or {}
+    if "TASKPLANE_TASK" in environment:
+        environment["TASKPLANE_TASK"] = "review-<SLOT>"
+    expected = out.get("expected") or {}
+    expected["action_id"] = "<ACTION>"
+    expected["worker_identity"] = re.sub(
+        r"_[0-9a-f]{8}$", "_<LEASE>",
+        str(expected.get("worker_identity") or ""))
+    command = str(out.get("host_command") or "")
+    if " <PLUGIN>/" in command:
+        command = "<PYTHON> <PLUGIN>/" + command.split(" <PLUGIN>/", 1)[1]
+    command = _REVIEW_SLOT_RE.sub("review-<SLOT>", command)
+    command = re.sub(r"--signed-action\s+\S+",
+                     "--signed-action <SIGNED_ACTION>", command)
+    command = re.sub(r"--expected-identity\s+\S+",
+                     "--expected-identity <EXPECTED_IDENTITY>", command)
+    out["host_command"] = command
+    out["task_slot"] = "review-<SLOT>"
+    return out
 
 
 def _git(ws, *args):
@@ -203,6 +265,17 @@ def scrub(payload, ws: str, store: "str | None" = None):
 
     def clean(obj):
         if isinstance(obj, dict):
+            if obj.get("schema") == \
+                    "taskplane.review-contract-bootstrap/v1":
+                obj = _scrub_review_bootstrap(obj)
+            elif obj.get("schema") == \
+                    "taskplane.native-agent-dispatch-intent-telemetry/v1":
+                obj = dict(obj)
+                obj["intent_id"] = "<INTENT>"
+                if isinstance(obj.get("telemetry_path"), str):
+                    obj["telemetry_path"] = re.sub(
+                        r"intent-[0-9a-f]{32}\.json$", "<INTENT>.json",
+                        obj["telemetry_path"])
             if obj.get("schema") == "taskplane.artifact-reference/v1":
                 obj = dict(obj)
                 obj["fingerprint"] = "<SHA>"
@@ -216,9 +289,13 @@ def scrub(payload, ws: str, store: "str | None" = None):
             for k, v in obj.items():
                 if k in _ZERO_KEYS and isinstance(v, (int, float)):
                     out[k] = 0
+                elif k == "observed_at" and isinstance(v, str) and v:
+                    out[k] = "<TIME>"
                 elif (k in _SHA_KEYS or k.endswith("_fingerprint")) \
                         and isinstance(v, str) and v:
                     out[k] = "<SHA>"
+                elif k == "result_path" and isinstance(v, str):
+                    out[k] = _HEX64_RE.sub("<SHA>", v)
                 else:
                     out[k] = clean(v)
             return out
@@ -250,3 +327,10 @@ def assert_deterministic(body: str, name: str) -> None:
     assert not _DATE_RE.search(body), f"{name}: calendar date leaked"
     for k in ('"timestamp"', '"time"', '"date": "2'):
         assert k not in body, f"{name}: nondeterministic field {k} leaked"
+    for pattern, label in (
+            (r'intent-[0-9a-f]{32}', "dispatch intent id"),
+            (r'review-[0-9a-f]{20}', "review slot id"),
+            (r'review-action-[0-9a-f]{24}', "review action id"),
+            (r'"observed_at": "(?!<TIME>)', "enforcement timestamp")):
+        assert not re.search(pattern, body), \
+            f"{name}: nondeterministic {label} leaked"

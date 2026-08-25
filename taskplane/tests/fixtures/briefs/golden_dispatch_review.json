@@ -10,210 +10,13 @@
 {
   "base": "HEAD",
   "changed_files": 2,
-  "deep": [
-    {
-      "agent": "tp-lens",
-      "checks": [
-        "gitleaks",
-        "semgrep --config auto",
-        "dependency audit",
-        "zizmor (GitHub Actions workflows, when `.github/**` is in the diff)"
-      ],
-      "contract": {
-        "max_actions": 45,
-        "read_only": true,
-        "task_slot": "lens-security",
-        "write_allow": [
-          ".em-review/lens-security/**"
-        ]
-      },
-      "evidence": [
-        "path: src/api/auth.py matches **/api/**",
-        "content: auth/secret markers in src/api/auth.py"
-      ],
-      "id": "security",
-      "language_references": [
-        {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
-          "language": "python",
-          "lens": "security",
-          "path": "lenses/references/python-engineering.md",
-          "section": "Security"
-        }
-      ],
-      "looks_for": "secrets (exposure = compromise, rotate not delete), authz gaps incl. object-level/IDOR, injection, SSRF, unsafe input, security misconfiguration, supply-chain & build integrity (deps, lockfiles, CI workflows, install scripts, pinning), fail-open error paths, AI/agent surface risk",
-      "model": null,
-      "model_tier": "deep",
-      "name": "Security",
-      "output": ".em-review/lens-security/findings.json",
-      "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-security`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the SECURITY lens to the diff against `HEAD`.\nLOOK FOR: secrets (exposure = compromise, rotate not delete), authz gaps incl. object-level/IDOR, injection, SSRF, unsafe input, security misconfiguration, supply-chain & build integrity (deps, lockfiles, CI workflows, install scripts, pinning), fail-open error paths, AI/agent surface risk.\nCHECKS: gitleaks; semgrep --config auto; dependency audit; zizmor (GitHub Actions workflows, when `.github/**` is in the diff).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-security/findings.json` as {\"lens\":\"security\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.\nLANGUAGE REFERENCES: read and apply lenses/references/python-engineering.md#Security sha256=cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7. Resolve these plugin-relative paths against the plugin root that contains your role_instructions file. These pinned standards are part of this brief; do not substitute model memory for them. Copy the exact reference records into references_applied in the leased result.\n\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\n",
-      "reasoning_effort": "high",
-      "role": "tp-lens",
-      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
-      "role_marker": "taskplane-role:tp-lens",
-      "score": 0.65,
-      "task_name": "tp_lens_security_8c38142f",
-      "task_slot": "lens-security",
-      "tier": "deep",
-      "verdict": "deep"
-    },
-    {
-      "agent": "tp-lens",
-      "checks": [
-        "lint (repo's configured linter, warnings included)",
-        "typecheck",
-        "jscpd / `dupl` / pylint R0801 \u2014 copy-paste census, diff-scoped",
-        "**suppression delta**: NEW escape hatches introduced by this diff only \u2014"
-      ],
-      "contract": {
-        "max_actions": 45,
-        "read_only": true,
-        "task_slot": "lens-code-quality",
-        "write_allow": [
-          ".em-review/lens-code-quality/**"
-        ]
-      },
-      "evidence": [
-        "path: code change (src/api/auth.py)",
-        "content: code constructs in src/api/auth.py"
-      ],
-      "id": "code-quality",
-      "language_references": [
-        {
-          "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
-          "language": "python",
-          "lens": "code-quality",
-          "path": "lenses/references/python-code-quality.md"
-        }
-      ],
-      "looks_for": "logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality",
-      "model": null,
-      "model_tier": "standard",
-      "name": "Code quality",
-      "output": ".em-review/lens-code-quality/findings.json",
-      "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-code-quality`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the CODE QUALITY lens to the diff against `HEAD`.\nLOOK FOR: logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality.\nCHECKS: lint (repo's configured linter, warnings included); typecheck; jscpd / `dupl` / pylint R0801 \u2014 copy-paste census, diff-scoped; **suppression delta**: NEW escape hatches introduced by this diff only \u2014.\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-code-quality/findings.json` as {\"lens\":\"code-quality\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.\nLANGUAGE REFERENCES: read and apply lenses/references/python-code-quality.md sha256=8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7. Resolve these plugin-relative paths against the plugin root that contains your role_instructions file. These pinned standards are part of this brief; do not substitute model memory for them. Copy the exact reference records into references_applied in the leased result.\n\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\n",
-      "reasoning_effort": "medium",
-      "role": "tp-lens",
-      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
-      "role_marker": "taskplane-role:tp-lens",
-      "score": 0.65,
-      "task_name": "tp_lens_code_quality_359a6283",
-      "task_slot": "lens-code-quality",
-      "tier": "deep",
-      "verdict": "deep"
-    },
-    {
-      "agent": "tp-lens",
-      "checks": [],
-      "contract": {
-        "max_actions": 45,
-        "read_only": true,
-        "task_slot": "lens-tech-writer",
-        "write_allow": [
-          ".em-review/lens-tech-writer/**"
-        ]
-      },
-      "evidence": [
-        "path: docs/guide.md matches **/*.md",
-        "content: doc structure in docs/guide.md",
-        "documentation surface: docs/guide.md"
-      ],
-      "id": "tech-writer",
-      "looks_for": "documented commands/flags/endpoints/paths/defaults/outputs that the diff has made untrue, capabilities removed or renamed with docs left behind, examples that no longer run, the right documentation TYPE for the change (reference / how-to / explanation / tutorial) and one reader-question per document, prerequisites and destructive-step warnings placed after the step they govern, new documentation nobody can reach, one name per concept, decisions made in the diff and recorded nowhere, changelog entries that describe commits rather than user outcomes",
-      "model": null,
-      "model_tier": "standard",
-      "name": "Technical writing",
-      "output": ".em-review/lens-tech-writer/findings.json",
-      "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-tech-writer`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the TECHNICAL WRITING lens to the diff against `HEAD`.\nLOOK FOR: documented commands/flags/endpoints/paths/defaults/outputs that the diff has made untrue, capabilities removed or renamed with docs left behind, examples that no longer run, the right documentation TYPE for the change (reference / how-to / explanation / tutorial) and one reader-question per document, prerequisites and destructive-step warnings placed after the step they govern, new documentation nobody can reach, one name per concept, decisions made in the diff and recorded nowhere, changelog entries that describe commits rather than user outcomes.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-tech-writer/findings.json` as {\"lens\":\"tech-writer\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\n",
-      "reasoning_effort": "medium",
-      "role": "tp-lens",
-      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
-      "role_marker": "taskplane-role:tp-lens",
-      "score": 0.65,
-      "task_name": "tp_lens_tech_writer_f889ba12",
-      "task_slot": "lens-tech-writer",
-      "tier": "deep",
-      "verdict": "deep"
-    },
-    {
-      "agent": "tp-lens",
-      "checks": [],
-      "contract": {
-        "max_actions": 45,
-        "read_only": true,
-        "task_slot": "lens-qa",
-        "write_allow": [
-          ".em-review/lens-qa/**"
-        ]
-      },
-      "evidence": [
-        "change shape: code changed with no test file",
-        "mandatory review floor: qa runs deep \u2014 mixed code and documentation change"
-      ],
-      "id": "qa",
-      "language_references": [
-        {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
-          "language": "python",
-          "lens": "qa",
-          "path": "lenses/references/python-engineering.md",
-          "section": "QA"
-        }
-      ],
-      "looks_for": "test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths",
-      "model": null,
-      "model_tier": "standard",
-      "name": "QA",
-      "output": ".em-review/lens-qa/findings.json",
-      "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-qa`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the QA lens to the diff against `HEAD`.\nLOOK FOR: test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-qa/findings.json` as {\"lens\":\"qa\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.\nLANGUAGE REFERENCES: read and apply lenses/references/python-engineering.md#QA sha256=cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7. Resolve these plugin-relative paths against the plugin root that contains your role_instructions file. These pinned standards are part of this brief; do not substitute model memory for them. Copy the exact reference records into references_applied in the leased result.\n\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\n",
-      "reasoning_effort": "medium",
-      "role": "tp-lens",
-      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
-      "role_marker": "taskplane-role:tp-lens",
-      "score": 0.35,
-      "task_name": "tp_lens_qa_471e2e6f",
-      "task_slot": "lens-qa",
-      "tier": "deep",
-      "verdict": "deep"
-    },
-    {
-      "agent": "tp-lens",
-      "checks": [],
-      "contract": {
-        "max_actions": 45,
-        "read_only": true,
-        "task_slot": "lens-architecture",
-        "write_allow": [
-          ".em-review/lens-architecture/**"
-        ]
-      },
-      "evidence": [
-        "floor: architecture promoted to light \u2014 code change (src/api/auth.py)",
-        "mandatory review floor: architecture runs deep \u2014 mixed code and documentation change"
-      ],
-      "id": "architecture",
-      "looks_for": "component/service decomposition, data flow & coupling measured against the dependency graph, state & consistency, scaling & failure modes, structure introduced without a requirement that needs it",
-      "model": null,
-      "model_tier": "deep",
-      "name": "System design & architecture",
-      "output": ".em-review/lens-architecture/findings.json",
-      "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-architecture`. Keep it set for every `tp.py` call you make (new / screen / clear).\nApply the SYSTEM DESIGN & ARCHITECTURE lens to the diff against `HEAD`.\nLOOK FOR: component/service decomposition, data flow & coupling measured against the dependency graph, state & consistency, scaling & failure modes, structure introduced without a requirement that needs it.\nCHECKS: (use your judgment).\nYou are READ-ONLY toward code \u2014 inspect the diff and the files it touches, run non-mutating checks, but change NOTHING. Write your findings ONLY to `.em-review/lens-architecture/findings.json` as {\"lens\":\"architecture\",\"findings\":[{\"severity\":\"high|med|low\",\"class\":\"regression|pre-existing|observation\",\"file\":\"path\",\"line\":N,\"title\":\"...\",\"scenario\":\"concrete failure\",\"fix\":\"direction\"}]} \u2014 an empty list means the lens is clean. CLASS each finding honestly: `regression` = this diff broke it, `pre-existing` = defect predates the diff, `observation` = improvement idea, not a defect. Stay strictly in your lens; another agent owns the others.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\n",
-      "reasoning_effort": "high",
-      "role": "tp-lens",
-      "role_instructions": "<PLUGIN>/agents/tp-lens.md",
-      "role_marker": "taskplane-role:tp-lens",
-      "score": 0.0,
-      "task_name": "tp_lens_architecture_ce6dbb2d",
-      "task_slot": "lens-architecture",
-      "tier": "deep",
-      "verdict": "deep"
-    }
-  ],
+  "deep": [],
   "instruction": "Dispatch ONE tp-lens agent per DEEP brief IN PARALLEL (single message, multiple Task calls) plus one for the SWEEP \u2014 each activates its read-only contract, applies exactly its lens to the diff, and writes its own findings.json. None can modify code (read-only harness). When they return, merge every lens's findings into one findings dashboard (`tp findings`) for the human review gate.",
   "nothing_to_review": false,
   "routing_decision": {
     "accessibility": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 accessibility signals: no UI files, no ARIA/alt/focus markers, no accessibility keywords in the requirement"
       ],
       "score": 0.0,
@@ -222,28 +25,32 @@
     "architecture": {
       "evidence": [
         "floor: architecture promoted to light \u2014 code change (src/api/auth.py)",
-        "mandatory review floor: architecture runs deep \u2014 mixed code and documentation change"
+        "mandatory review floor: architecture runs deep \u2014 mixed code and documentation change",
+        "automatic architecture sweep floor"
       ],
       "score": 0.0,
-      "verdict": "deep"
+      "verdict": "sweep"
     },
     "backend": {
       "evidence": [
-        "path: src/api/auth.py matches **/api/**"
+        "path: src/api/auth.py matches **/api/**",
+        "automatic bounded sweep selection"
       ],
       "score": 0.35,
-      "verdict": "light"
+      "verdict": "sweep"
     },
     "code-quality": {
       "evidence": [
         "path: code change (src/api/auth.py)",
-        "content: code constructs in src/api/auth.py"
+        "content: code constructs in src/api/auth.py",
+        "automatic bounded sweep selection"
       ],
       "score": 0.65,
-      "verdict": "deep"
+      "verdict": "sweep"
     },
     "cost-finops": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 cost-finops signals: no IaC/k8s files, no provisioning or cost markers, no cost keywords in the requirement"
       ],
       "score": 0.0,
@@ -251,6 +58,7 @@
     },
     "data-safety": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 data-safety signals: no migration/schema files, no DDL or backfill markers, no migration keywords in the requirement"
       ],
       "score": 0.0,
@@ -258,6 +66,7 @@
     },
     "dba": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 dba signals: no sql/models/schema files, no DDL or index markers, no query patterns, no ORM models"
       ],
       "score": 0.0,
@@ -265,6 +74,7 @@
     },
     "design": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 design signals: no UI component files, no UI markup, no UX keywords in the requirement"
       ],
       "score": 0.0,
@@ -272,6 +82,7 @@
     },
     "devops": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 devops signals: no CI/container/IaC files, no pipeline or build markers, no devops keywords in the requirement"
       ],
       "score": 0.0,
@@ -279,6 +90,7 @@
     },
     "frontend": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 frontend signals: no frontend files, no component markup, no state management, no render/bundle-perf markers"
       ],
       "score": 0.0,
@@ -286,20 +98,22 @@
     },
     "i18n": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 i18n signals: no locale files, no i18n imports, no user-facing string literals in scope"
       ],
       "score": 0.0,
       "verdict": "n/a"
     },
     "integrability": {
-      "evidence": [
-        "path: src/api/auth.py matches **/api/**"
+      "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)"
       ],
       "score": 0.35,
-      "verdict": "light"
+      "verdict": "n/a"
     },
     "mobile": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 mobile signals: no ios/android files, no platform APIs, no lifecycle or permission markers, no offline/battery markers"
       ],
       "score": 0.0,
@@ -307,6 +121,7 @@
     },
     "privacy-compliance": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 privacy-compliance signals: no privacy/analytics/consent paths, no PII or consent markers, no privacy keywords in the requirement"
       ],
       "score": 0.0,
@@ -314,6 +129,7 @@
     },
     "product": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 product signals: no spec/requirements files, no acceptance-criteria markers, no product keywords in the requirement"
       ],
       "score": 0.0,
@@ -321,36 +137,38 @@
     },
     "project-management": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 project-management signals: no plan/roadmap files, no milestone or rollout structure, no delivery keywords in the requirement"
       ],
       "score": 0.0,
       "verdict": "n/a"
     },
     "qa": {
-      "evidence": [
-        "change shape: code changed with no test file",
-        "mandatory review floor: qa runs deep \u2014 mixed code and documentation change"
+      "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)"
       ],
       "score": 0.35,
-      "verdict": "deep"
+      "verdict": "n/a"
     },
     "scalability": {
-      "evidence": [
-        "path: src/api/auth.py matches **/api/**"
+      "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)"
       ],
       "score": 0.35,
-      "verdict": "light"
+      "verdict": "n/a"
     },
     "security": {
       "evidence": [
         "path: src/api/auth.py matches **/api/**",
-        "content: auth/secret markers in src/api/auth.py"
+        "content: auth/secret markers in src/api/auth.py",
+        "automatic bounded sweep selection"
       ],
       "score": 0.65,
-      "verdict": "deep"
+      "verdict": "sweep"
     },
     "services-selection": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 services-selection signals: no dependency manifests, no dependency additions, no selection keywords in the requirement"
       ],
       "score": 0.0,
@@ -358,6 +176,7 @@
     },
     "solution-design": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 solution-design signals: no design/ files, no design-contract markers, no solution-design keywords in the requirement"
       ],
       "score": 0.0,
@@ -365,6 +184,7 @@
     },
     "sre": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 sre signals: no monitoring/alerts/runbook files, no observability or resilience markers, no SRE keywords in the requirement"
       ],
       "score": 0.0,
@@ -374,20 +194,22 @@
       "evidence": [
         "path: docs/guide.md matches **/*.md",
         "content: doc structure in docs/guide.md",
-        "documentation surface: docs/guide.md"
+        "documentation surface: docs/guide.md",
+        "automatic bounded sweep selection"
       ],
       "score": 0.65,
-      "verdict": "deep"
+      "verdict": "sweep"
     },
     "testability": {
-      "evidence": [
-        "path: code change (src/api/auth.py)"
+      "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)"
       ],
       "score": 0.35,
-      "verdict": "light"
+      "verdict": "n/a"
     },
     "time-to-market": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 time-to-market signals: no plan/spec files, no scope or phasing markers, no time-to-market keywords in the requirement"
       ],
       "score": 0.0,
@@ -395,6 +217,7 @@
     },
     "tradeoffs": {
       "negative_evidence": [
+        "not selected by automatic bounded sweep (4\u20135 lens cap)",
         "0 tradeoffs signals: no adr/design/plan files, no alternatives or decision markers, no trade-off keywords in the requirement"
       ],
       "score": 0.0,
@@ -411,44 +234,56 @@
         ".em-review/lens-sweep/**"
       ]
     },
+    "dispatch_set": {
+      "concurrent": true,
+      "id": "automatic-review-sweep",
+      "member_count": 5,
+      "schema": "taskplane.dispatch-set/v1"
+    },
     "ids": [
-      "backend",
-      "integrability",
-      "scalability",
-      "testability"
+      "architecture",
+      "code-quality",
+      "security",
+      "tech-writer",
+      "backend"
     ],
     "language_references": [
       {
-        "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+        "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
         "language": "python",
-        "lens": "integrability",
-        "path": "lenses/references/python-engineering.md",
-        "section": "Integrability"
+        "lens": "code-quality",
+        "path": "lenses/references/python-code-quality.md"
       },
       {
         "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
         "language": "python",
-        "lens": "scalability",
+        "lens": "security",
         "path": "lenses/references/python-engineering.md",
-        "section": "Scalability"
-      },
-      {
-        "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
-        "language": "python",
-        "lens": "testability",
-        "path": "lenses/references/python-engineering.md",
-        "section": "Testability"
+        "section": "Security"
       }
     ],
     "model": "haiku",
     "model_tier": "cheap",
     "output": ".em-review/lens-sweep/findings.json",
-    "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-sweep`. Keep it set for every `tp.py` call you make (new / screen / clear).\nQuick SWEEP of these lenses against the diff vs `HEAD`: Back-end engineering, Integrability, Scalability & performance, Testability. Run each lens's top checks only \u2014 flag or clear in one line each. READ-ONLY: write findings (each with a `lens` field and a `class` field \u2014 regression|pre-existing|observation) to `.em-review/lens-sweep/findings.json`, change no code.\n\nLANGUAGE REFERENCES: read and apply lenses/references/python-engineering.md#Integrability sha256=cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7, lenses/references/python-engineering.md#Scalability sha256=cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7, lenses/references/python-engineering.md#Testability sha256=cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7. Resolve these plugin-relative paths against the plugin root that contains your role_instructions file. These pinned standards are part of this brief; do not substitute model memory for them. Copy the exact reference records into references_applied in the leased result.\n\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
+    "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-sweep`. Keep it set for every `tp.py` call you make (new / screen / clear).\nQuick SWEEP of these lenses against the diff vs `HEAD`: System design & architecture, Code quality, Security, Technical writing, Back-end engineering. Run each lens's top checks only \u2014 flag or clear in one line each. READ-ONLY: write findings (each with a `lens` field and a `class` field \u2014 regression|pre-existing|observation) to `.em-review/lens-sweep/findings.json`, change no code.\n\nLANGUAGE REFERENCES: read and apply lenses/references/python-code-quality.md sha256=8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7, lenses/references/python-engineering.md#Security sha256=cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7. Resolve these plugin-relative paths against the plugin root that contains your role_instructions file. These pinned standards are part of this brief; do not substitute model memory for them. Copy the exact reference records into references_applied in the leased result.\n\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
     "reasoning_effort": "low",
     "role": "tp-lens",
     "role_instructions": "<PLUGIN>/agents/tp-lens.md",
     "role_marker": "taskplane-role:tp-lens",
     "task_name": "tp_lens_sweep_94e23878",
-    "task_slot": "lens-sweep"
+    "task_slot": "lens-sweep",
+    "wait_policy": {
+      "minimum_timeout_seconds": 300,
+      "mode": "event",
+      "outstanding_count": 5,
+      "outstanding_set": "automatic-review-sweep",
+      "reissue_after": [
+        "completion",
+        "attention"
+      ],
+      "scheduled_polling": false,
+      "schema": "taskplane.wait-policy/v1",
+      "timeout_seconds": 1800
+    }
   }
 }

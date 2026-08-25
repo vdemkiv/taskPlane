@@ -323,6 +323,12 @@
         ".em-review/lens-sweep/**"
       ]
     },
+    "dispatch_set": {
+      "concurrent": true,
+      "id": "automatic-review-sweep",
+      "member_count": 17,
+      "schema": "taskplane.dispatch-set/v1"
+    },
     "ids": [
       "product",
       "design",
@@ -373,6 +379,19 @@
     "role_instructions": "<PLUGIN>/agents/tp-lens.md",
     "role_marker": "taskplane-role:tp-lens",
     "task_name": "tp_lens_sweep_94e23878",
-    "task_slot": "lens-sweep"
+    "task_slot": "lens-sweep",
+    "wait_policy": {
+      "minimum_timeout_seconds": 300,
+      "mode": "event",
+      "outstanding_count": 17,
+      "outstanding_set": "automatic-review-sweep",
+      "reissue_after": [
+        "completion",
+        "attention"
+      ],
+      "scheduled_polling": false,
+      "schema": "taskplane.wait-policy/v1",
+      "timeout_seconds": 1800
+    }
   }
 }
