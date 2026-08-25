@@ -9,6 +9,8 @@ import types
 import unittest
 import unittest.mock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
@@ -18,8 +20,39 @@ import evaluator_health  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import storage as runtime_storage  # noqa: E402
+import run_store  # noqa: E402
 import checkpoint  # noqa: E402
 import build_c  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
+    """Keep loop protocol tests independent of the dashboard rendering seam."""
+    import views
+
+    monkeypatch.setattr(views, "refresh_views", lambda _ws, out: out)
+    original_load_locator = runtime_storage.load_workspace_locator
+    original_write_locator = runtime_storage.write_workspace_locator
+    locator_cache = {}
+
+    def load_locator_once(checkout):
+        root = os.path.realpath(checkout)
+        if root in locator_cache:
+            return None
+        value = original_load_locator(checkout)
+        if value is None:
+            locator_cache[root] = None
+        return dict(value) if isinstance(value, dict) else value
+
+    def write_locator_and_invalidate(checkout, **kwargs):
+        result = original_write_locator(checkout, **kwargs)
+        locator_cache.pop(os.path.realpath(checkout), None)
+        return result
+
+    monkeypatch.setattr(
+        runtime_storage, "load_workspace_locator", load_locator_once)
+    monkeypatch.setattr(
+        runtime_storage, "write_workspace_locator", write_locator_and_invalidate)
 
 
 def git_ws(tmp, tasks):
@@ -542,19 +575,28 @@ class TestClosedGapPlan(unittest.TestCase):
 
 
 def submit_gate(ws, outcome="pass", task_id=None):
-    submitted = loop.submit(ws, outcome, task_id=task_id)
+    submit = getattr(loop.submit, "__wrapped__", loop.submit)
+    gate = getattr(loop.gate, "__wrapped__", loop.gate)
+    submitted = submit(ws, outcome, task_id=task_id)
     if "error" in submitted:
         return submitted
-    return loop.gate(ws, outcome, task_id=task_id)
+    return gate(ws, outcome, task_id=task_id)
 
 
 def write_verdict(ws):
     state = loop.load(ws)
     task = state["tasks"][state["current_task"]]
     act_ws = task.get("workspace") or ws
-    routed = lens.route_git_diff(
+    binding = loop.review_kernel_binding(state, "evaluate", task)
+    kernel = (review._load_state(
+        str(binding.get("workspace") or act_ws), binding["run_id"])
+        if binding else None)
+    routed = ((kernel or {}).get("routing") or lens.route_git_diff(
         act_ws, base=state.get("baseline") or "HEAD",
-        task_type=task.get("type"), breadth="routed")
+        task_type=task.get("type"), breadth="routed"))
+    canonical_lenses = {
+        row["lens"]: row for row in (kernel or {}).get("lens_results") or []
+    }
     criteria = loop._criteria_for(ws, state, task)
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
     graph_dod = loop._task_graph_dod(ws, state, task)
@@ -580,8 +622,13 @@ def write_verdict(ws):
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": [{"lens": x["id"], "verdict": "pass",
-                               "blockers": 0} for x in routed["lenses"]],
+                   "lenses": [{
+                       "lens": x["id"],
+                       "verdict": canonical_lenses.get(
+                           x["id"], {}).get("verdict", "pass"),
+                       "blockers": canonical_lenses.get(
+                           x["id"], {}).get("blockers", 0),
+                   } for x in routed["lenses"] if x.get("mode") != "none"],
                    "graph": {
                        "dispositions": [
                            {"node": node, "status": "tested",
@@ -606,10 +653,17 @@ def write_kernel_results(ws):
     review_ws = (task.get("workspace") if loop_state.get("parallel") and
                  loop_state.get("step") == "evaluate" else None) or ws
     state = review._load_state(review_ws)
+    manifest = loop._bind_stateless_review_contract_actions(
+        review_ws, state["manifest"], task_id=task["id"])
+    wait_invocation = manifest["wait_invocation"]
+    if wait_invocation != loop.event_wait_invocation(
+            manifest["slots"][0]["wait_policy"],
+            [slot["slot_id"] for slot in manifest["slots"]]):
+        raise AssertionError("review fixture did not consume the shared wait policy")
     store = review_evidence.ArtifactStore(review_ws)
-    for index, slot in enumerate(state["slots"]):
+    for slot in manifest["slots"]:
         lease = store.read(slot["lease"])
-        brief = store.read(slot["brief"])
+        bootstrap = slot["contract_bootstrap"]
         payload = {
             **lease,
             "schema": "taskplane.lens-slot-output/v2",
@@ -625,30 +679,30 @@ def write_kernel_results(ws):
         }
         content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         event = {
-            "session_id": "loop-em-session",
-            "agent_id": f"loop-em-child-{index}",
+            "session_id": f"loop-review-{state['run_id']}",
+            "agent_id": "loop-review-child-" +
+                        lease["lease_fingerprint"][:16],
             "tool_name": "Write",
             "tool_input": {"file_path": slot["result_path"],
                            "content": content},
         }
-        contract = {
-            "task": brief["producer_contract"]["task"],
-            "task_id": f"loop-em-contract-{index}",
-            "read_only": True,
-            "write_allow": [slot["result_path"]],
-        }
+        with unittest.mock.patch.dict(
+                os.environ, bootstrap["environment"]):
+            contract = tp.activate_review_contract_action(
+                review_ws, bootstrap["action"], **bootstrap["expected"])
         review.register_slot_producer(
             review_ws, event=event, contract=contract,
-            task_slot=brief["producer_contract"]["task_slot"])
+            task_slot=bootstrap["task_slot"])
         review.record_slot_write_observation(
             review_ws, event=event, contract=contract,
-            task_slot=brief["producer_contract"]["task_slot"])
+            task_slot=bootstrap["task_slot"])
         path = os.path.join(review_ws, slot["result_path"])
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as stream:
             stream.write(content)
-    return review.collect_review(review_ws, publish=False,
-                                 run_id=state["run_id"])
+    return loop.collect_review_bridge(
+        review_ws, publish=False,
+        run_id=manifest["collection"]["run_id"])
 
 
 def pass_em(ws):
@@ -704,6 +758,8 @@ class TestLoop(unittest.TestCase):
                 ".eval/kernel-v2/results/" + "4" * 64 + ".json"
             ],
         }
+        self.wait_policy = loop.event_wait_policy(
+            "review-contract-bootstrap", 1)
         self.bindings = {
             "run_id": "run-review-4",
             "task_id": "t1",
@@ -826,6 +882,7 @@ class TestLoop(unittest.TestCase):
             "lease": lease_ref,
             "result_path": self.producer["write_allow"][0],
             "producer_contract": self.producer,
+            "wait_policy": self.wait_policy,
             "role": {
                 "role_marker": self.bindings["role_marker"],
                 "task_name": self.bindings["worker_identity"],
@@ -893,6 +950,7 @@ class TestLoop(unittest.TestCase):
                 "lease": lease_ref,
                 "result_path": canonical,
                 "producer_contract": self.producer,
+                "wait_policy": self.wait_policy,
                 "role": {
                     "role_marker": self.bindings["role_marker"],
                     "task_name": self.bindings["worker_identity"],
@@ -1724,7 +1782,9 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
             subprocess.run(["git", *c], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
-        task = {"id": "t1", "scope": [scope], "tests": "true"}
+        task = {"id": "t1", "scope": [scope], "tests": "true",
+                "criteria": (["valid creds -> session"] if with_req else
+                             ["the scoped behavior is complete"])}
         if high_cost:
             task["high_cost"] = True
         if with_req:
@@ -1854,10 +1914,11 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         catalog_ids = {l["id"] for l in lens.load_catalog()["lenses"]}
         self.assertEqual({x["id"] for x in act["lenses"]}, catalog_ids)
         self.assertTrue([x for x in act["lenses"] if x["mode"] == "none"])
-        # security is floored on an auth diff: routed, never n/a...
+        # security is floored on an auth diff: routed in the current bounded
+        # sweep, never n/a.
         sec = next(x for x in act["lenses"] if x["id"] == "security")
         self.assertNotEqual(sec["mode"], "none")
-        self.assertIn(sec["tier"], ("light", "deep"))
+        self.assertEqual(sec["tier"], "sweep")
         # ...and carries the v2 engine keys the legacy path never emitted
         self.assertIn("verdict", sec)
         self.assertIn("score", sec)
@@ -1912,11 +1973,14 @@ class TestParallelExecution(unittest.TestCase):
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
         tasks = [
-            {"id": "t1", "scope": ["src/a/**"], "tests": "true"},
-            {"id": "t2", "scope": ["src/b/**"], "tests": "true"},
-            {"id": "t3", "scope": ["src/a/**", "src/c/**"], "tests": "true"},
+            {"id": "t1", "scope": ["src/a/**"], "tests": "true",
+             "criteria": ["task t1 is complete"]},
+            {"id": "t2", "scope": ["src/b/**"], "tests": "true",
+             "criteria": ["task t2 is complete"]},
+            {"id": "t3", "scope": ["src/a/**", "src/c/**"], "tests": "true",
+             "criteria": ["task t3 is complete"]},
             {"id": "t4", "scope": ["src/c/**"], "tests": "true",
-             "deps": ["t1"]},
+             "criteria": ["task t4 is complete"], "deps": ["t1"]},
         ]
         with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": tasks}, f)
@@ -2169,7 +2233,7 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
         self.assertEqual((action["impact"]["graph"] or {})[
             "content_fingerprint"], "2" * 64)
         self.assertEqual(set(reads), {canonical_worker})
-        scan_graph.assert_not_called()
+        scan_graph.assert_called_once_with(canonical_worker)
         self.assertEqual(json.dumps(primary_graph, sort_keys=True),
                          primary_before)
 
@@ -2257,7 +2321,7 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
                                  "impact_incomplete")
                 self.assertEqual(action["review_kernel"]["slots"], [])
                 self.assertEqual(set(reads), {os.path.realpath(worker)})
-                scan_graph.assert_not_called()
+                scan_graph.assert_called_once_with(os.path.realpath(worker))
 
     def test_primary_checkout_is_not_an_unambiguous_task_graph_workspace(self):
         ws, _ = self._park_at_evaluate()
@@ -2330,6 +2394,11 @@ class TestManagedWorktreeGraphPublication(unittest.TestCase):
         self.home = tempfile.mkdtemp(prefix="tp-loop-reconstruct-home-")
         self.identity = runtime_storage.resolve_repository_identity(self.ws)
         self.run_id = "run-loop-123"
+        self.store = run_store.RunStore(home=self.home)
+        self.store.create(
+            self.identity, run_id=self.run_id, checkout=self.ws,
+            host={"kind": "test", "session_id": "loop-graph-publication"},
+            target={"kind": "workspace", "revision": tp.git_head(self.ws)})
         self.layout = runtime_storage.resolve_layout(
             self.identity, home=self.home, run_id=self.run_id)
         runtime_storage.write_workspace_locator(
