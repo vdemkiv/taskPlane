@@ -230,7 +230,11 @@ def test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds(
         "PYTHONNOUSERSITE": "1",
         "TASKPLANE_HOME": str(private_home),
     }
+    # Keep the cold child beyond Python-aware suite-runner interception while
+    # rebuilding only the explicitly allowed environment before exec.
     command = [
+        "/usr/bin/env", "-i",
+        *(f"{name}={value}" for name, value in clean_environment.items()),
         sys.executable, "-I", str(fresh_checkout / "taskplane" / "tp.py"),
         "pickup", authority_rel, "--workspace", str(checkout),
     ]
@@ -238,7 +242,7 @@ def test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds(
     completed = subprocess.run(
         command,
         cwd=fresh_checkout,
-        env=clean_environment,
+        env={},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
