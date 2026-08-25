@@ -38,10 +38,15 @@ def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
     def load_locator_once(checkout):
         root = os.path.realpath(checkout)
         if root in locator_cache:
-            return None
+            if not os.path.exists(locator_cache[root]):
+                return None
+            locator_cache.pop(root)
         value = original_load_locator(checkout)
         if value is None:
-            locator_cache[root] = None
+            try:
+                locator_cache[root] = runtime_storage._locator_path(checkout)
+            except runtime_storage.StorageIdentityError:
+                pass
         return dict(value) if isinstance(value, dict) else value
 
     def write_locator_and_invalidate(checkout, **kwargs):
