@@ -21,7 +21,7 @@ The spec, Design, backlog Design inventory, and this Plan are governance evidenc
 
 The single required Taskplane 2.17.19 graph-impact call used the pinned Python 3.12/pytest 8 runtime and exactly the remaining eight implementation/release paths. It returned:
 
-- graph fingerprint `c6e3f9ed00e00c75fe07d3a4734633ea19d36d81b7a7ef4ce39d289025e26199`;
+- graph fingerprint `9fc30294ef7a01be81b1ffb5d78bfe52c13d1f85d96d699e56ff7f41323cf158`;
 - scan-quality fingerprint `588762304418faac88c9b244efa50eb756e2cafe9a871bcdcaef7ca1100f57c6`;
 - source SHA `a73f125e762670323d0e4a8fbbef3a1edf3ea958`;
 - 27 impacted modules, zero unknown modules, and no degraded producer;
@@ -56,7 +56,7 @@ Operator mode appends strict `taskplane.pickup-receipt/v2` after an incumbent co
 
 The no-flag private-secret path, v1 verifier/key source and exact receipt shape, direct assignment, BUILD-C, checkpoint, merge-on-green, retry-safe atomic publication, one-criterion discipline, and zero run/track/claim/lease/wave/private-handoff state remain unchanged. AC4 behavior plus its focused positive, negative, type-boundary, CLI, v1/v2, and v1-compatibility proofs land in the same commit.
 
-Validation is increasing-cost: focused fail-fast selectors, the full pickup file, compile/import smoke, diff hygiene, then exact protected-surface comparison. Manual changed-line review requires complete boundary annotations and zero new `Any`, `cast`, type-ignore, noqa, untyped-dict boundary, or equivalent escape. No pydantic, ruff, black, mypy, pyright, formatter, lint, strict-type dependency/configuration, debt record, or precedent is added.
+The single machine-gate and regression-coverage-authority command for T05 is `/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest -q taskplane/tests/test_pickup.py`. Supplemental checks remain mandatory evidence and were already executed over implementation commit `4c5e40aa18a5d7ca3709ea8cbf274f7c6c2132e9`: focused selectors 37 passed; the full pickup file 54 passed; `py_compile` passed; `git diff --check` passed; the protected-surface diff against `a73f125e762670323d0e4a8fbbef3a1edf3ea958` passed; and the manual escape review passed. That manual changed-line review requires complete boundary annotations and zero new `Any`, `cast`, type-ignore, noqa, untyped-dict boundary, or equivalent escape. No pydantic, ruff, black, mypy, pyright, formatter, lint, strict-type dependency/configuration, debt record, or precedent is added.
 
 ### T06 — bounded 2.17.20 release surfaces
 

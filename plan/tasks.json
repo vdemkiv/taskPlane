@@ -7,7 +7,7 @@
         "taskplane/pickup.py",
         "taskplane/tests/test_pickup.py"
       ],
-      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest -q -x taskplane/tests/test_pickup.py::test_second_checkout_resumes_from_git_receipts_without_private_home taskplane/tests/test_pickup.py::test_pickup_cli_requires_canonical_trust_source_and_rejects_all_lookalikes_before_dispatch taskplane/tests/test_pickup.py::test_operator_trust_factory_serializer_and_receipt_round_trip_lowercase_40_and_64_sha taskplane/tests/test_pickup.py::test_operator_trust_negative_matrix_preserves_prior_receipts_and_never_reaches_build_c taskplane/tests/test_pickup.py::test_private_secret_pickup_path_remains_strict_v1_and_green && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest -q taskplane/tests/test_pickup.py && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m py_compile taskplane/tp.py taskplane/pickup.py taskplane/tests/test_pickup.py && git diff --check && git diff --exit-code a73f125e762670323d0e4a8fbbef3a1edf3ea958 -- taskplane/design_contract.py taskplane/taskplane_lite.py taskplane/build_c.py taskplane/checkpoint.py taskplane/repository.py taskplane/storage.py taskplane/loop.py hooks .taskplane/codex-hook.py components.yaml .github deploy README.md CHANGELOG.md .codex-plugin/plugin.json .claude-plugin/plugin.json .claude-plugin/marketplace.json",
+      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest -q taskplane/tests/test_pickup.py",
       "req": "R-0002",
       "deps": [],
       "type": "security",
