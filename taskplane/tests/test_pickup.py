@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
+from collections.abc import Callable, Mapping
+from dataclasses import FrozenInstanceError, fields, is_dataclass
 import hashlib
 import hmac
+import inspect
 import json
 import os
 from pathlib import Path
@@ -9,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import get_type_hints
 
 import pytest
 
@@ -204,7 +209,7 @@ def _pickup_receipts(checkout: Path) -> list[Path]:
     return sorted((checkout / "exports" / "pickup").rglob("*.json"))
 
 
-def _receipt_digest(receipt: dict) -> str:
+def _receipt_digest(receipt: dict[str, object]) -> str:
     material = dict(receipt)
     material.pop("receipt_digest", None)
     return hashlib.sha256(_canonical(material)).hexdigest()
@@ -234,6 +239,41 @@ def _write_structural_receipt_variant(source: Path, *, label: str) -> Path:
         encoding="utf-8",
     )
     return target
+
+
+def _shelf_source_sha(checkout: Path, authority_rel: str) -> str:
+    authority = json.loads(
+        (checkout / authority_rel).read_text(encoding="utf-8")
+    )
+    return str(authority["design"]["source_sha"])
+
+
+def _rewrite_receipt(path: Path, receipt: dict[str, object]) -> Path:
+    receipt["receipt_digest"] = _receipt_digest(receipt)
+    target = path.parent / (
+        f"{receipt['ordinal']}-{receipt['criterion_id']}-"
+        f"{receipt['receipt_digest']}.json"
+    )
+    if target != path:
+        path.unlink()
+    target.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
+
+def _prepare_repository_only_resume(
+        checkout: Path, authority_rel: str, *, prior_count: int = 1) -> str:
+    _set_shelf_criteria(
+        checkout, authority_rel, ["AC1", "AC2", "AC3", "AC4"]
+    )
+    for ordinal in range(1, prior_count + 1):
+        pickup.run(str(checkout), authority_rel)
+        _commit(checkout, f"record pickup criterion {ordinal}")
+    source_sha = _shelf_source_sha(checkout, authority_rel)
+    shutil.rmtree(checkout / ".taskplane")
+    return source_sha
 
 
 def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestration_state(
@@ -521,15 +561,16 @@ def test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds(
 def test_public_tp_pickup_cli_delegates_workspace_contract_and_renders_result(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
-    observed: list[tuple[str, str]] = []
+    observed: list[tuple[str, str, str | None]] = []
     delegated = {
         "schema": "taskplane.pickup-result/v1",
         "status": "integrated",
         "trace": ["pickup.integration.outcome"],
     }
 
-    def run(checkout: str, design_path: str) -> dict:
-        observed.append((checkout, design_path))
+    def run(checkout: str, design_path: str, *,
+            trust_source: str | None = None) -> dict[str, object]:
+        observed.append((checkout, design_path, trust_source))
         return delegated
 
     monkeypatch.setattr(pickup, "run", run)
@@ -539,7 +580,9 @@ def test_public_tp_pickup_cli_delegates_workspace_contract_and_renders_result(
     ])
 
     assert exit_code == 0
-    assert observed == [(str(tmp_path.resolve()), "design/shelf.json")]
+    assert observed == [(
+        str(tmp_path.resolve()), "design/shelf.json", None,
+    )]
     assert json.loads(capsys.readouterr().out) == delegated
 
 
@@ -710,9 +753,11 @@ def test_tampered_or_unsigned_contract_refuses_before_build_c_without_state_or_r
 
 def test_second_checkout_resumes_from_git_receipts_without_private_home(
         signed_shelf: tuple[Path, str], tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
     first_checkout, authority_rel = signed_shelf
     _set_shelf_criteria(first_checkout, authority_rel, ["AC1", "AC2"])
+    source_sha = _shelf_source_sha(first_checkout, authority_rel)
     first_private_home = tmp_path / "first-private-home"
     monkeypatch.setenv("TASKPLANE_HOME", str(first_private_home))
 
@@ -738,23 +783,382 @@ def test_second_checkout_resumes_from_git_receipts_without_private_home(
     )
     second_private_home = tmp_path / "second-empty-private-home"
     monkeypatch.setenv("TASKPLANE_HOME", str(second_private_home))
+    observed_micro_plans: list[Mapping[str, object]] = []
+    real_run_pickup = pickup.build_c.run_pickup
 
-    resumed = pickup.run(str(second_checkout), authority_rel)
+    def capture_micro_plan(
+            checkout: str, micro_plan: Mapping[str, object], *,
+            emit: Callable[[str], None]) -> dict[str, object]:
+        observed_micro_plans.append(micro_plan)
+        return real_run_pickup(checkout, micro_plan, emit=emit)
 
+    monkeypatch.setattr(pickup.build_c, "run_pickup", capture_micro_plan)
+
+    exit_code = tp.main([
+        "pickup", authority_rel, "--workspace", str(second_checkout),
+        "--trust-source", source_sha,
+    ])
+    resumed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
     assert resumed["receipt"]["ordinal"] == 2
     assert resumed["receipt"]["criterion_id"] == "AC2"
+    assert resumed["receipt"]["schema"] == "taskplane.pickup-receipt/v2"
+    assert resumed["receipt"]["operator_trust"] == {
+        "schema": "taskplane.pickup-operator-trust/v1",
+        "authority_mode": "attributed-operator-trust",
+        "flag_name": "--trust-source",
+        "flag_value": source_sha,
+        "cryptographic_authenticity_claimed": False,
+    }
     assert resumed["receipt"]["predecessor_receipt_digest"] == \
         first_receipt_digest
     assert resumed["receipt"]["authorized_source_sha"] == \
         first_result["receipt"]["authorized_source_sha"]
     assert resumed["receipt"]["design_fingerprint"] == \
         first_result["receipt"]["design_fingerprint"]
+    assert resumed["trace"].index("pickup.operator_trust.accepted") < \
+        resumed["trace"].index("pickup.build_c.assigned")
     assert "pickup.receipt.lineage" in resumed["trace"]
     assert len(_pickup_receipts(second_checkout)) == 2
     assert _pickup_receipts(second_checkout)[0].read_bytes() == \
         first_receipt_bytes
     assert not second_private_home.exists()
     assert not (second_checkout / ".taskplane").exists()
+    assert resumed["storage_audit"] == {
+        "run": 0, "track": 0, "claim": 0, "lease": 0, "wave": 0,
+        "equivalent": 0,
+    }
+    assert len(observed_micro_plans) == 1
+    handed_off = json.dumps(observed_micro_plans[0], sort_keys=True)
+    assert "operator_trust" not in handed_off
+    assert "trust-source" not in handed_off
+    assert source_sha not in handed_off
+
+
+def test_pickup_cli_requires_canonical_trust_source_and_rejects_all_lookalikes_before_dispatch(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    private_home = tmp_path / "private-home"
+    monkeypatch.setenv("TASKPLANE_HOME", str(private_home))
+    dispatched: list[tuple[str, str]] = []
+    source_sha = "a" * 40
+
+    def observe_dispatch(arguments: argparse.Namespace) -> int:
+        workspace = str(arguments.workspace)
+        trust_source = str(arguments.trust_source)
+        dispatched.append((workspace, trust_source))
+        return 0
+
+    def forbid_pickup(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("noncanonical option reached pickup.run")
+
+    monkeypatch.setattr(tp, "cmd_pickup", observe_dispatch)
+    monkeypatch.setattr(pickup, "run", forbid_pickup)
+
+    assert tp.main([
+        "pickup", "design/shelf.json", "--workspace", str(tmp_path),
+        "--trust-source", source_sha,
+    ]) == 0
+    assert dispatched == [(str(tmp_path), source_sha)]
+
+    with pytest.raises(SystemExit) as help_exit:
+        tp.main(["pickup", "--help"])
+    assert help_exit.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--workspace" in help_text
+    assert "--trust-source" in help_text
+    assert "signed Design Contract" not in help_text
+
+    lookalikes = [
+        "--t", "--tr", "--tru", "--trus", "--trust", "--trust-",
+        "--trust-s", "--trust-so", "--trust-sou", "--trust-sour",
+        "--trust-sourc", "--Trust-source", "--TRUST-SOURCE",
+        "--trust_source", "--trustsource", "--trust-sources",
+    ]
+    for option in lookalikes:
+        with pytest.raises(SystemExit) as refusal:
+            tp.main([
+                "pickup", "design/shelf.json", "--workspace", str(tmp_path),
+                option, source_sha,
+            ])
+        assert refusal.value.code == 2
+        capsys.readouterr()
+
+    assert dispatched == [(str(tmp_path), source_sha)]
+    assert not private_home.exists()
+    assert not (tmp_path / "exports").exists()
+
+
+@pytest.mark.parametrize("source_sha", ["a" * 40, "b" * 64])
+def test_operator_trust_factory_serializer_and_receipt_round_trip_lowercase_40_and_64_sha(
+        source_sha: str) -> None:
+    parsed = pickup._parse_operator_trust(
+        source_sha, boundary="cli", expected_source_sha=source_sha,
+        required=True,
+    )
+
+    assert parsed is not None
+    assert is_dataclass(parsed)
+    assert type(parsed).__dataclass_params__.frozen is True
+    assert type(parsed).__slots__ == (
+        "authority_mode", "flag_name", "flag_value",
+        "cryptographic_authenticity_claimed",
+    )
+    assert [field.name for field in fields(parsed)] == [
+        "authority_mode", "flag_name", "flag_value",
+        "cryptographic_authenticity_claimed",
+    ]
+    assert list(inspect.signature(pickup._parse_operator_trust).parameters) == [
+        "raw", "boundary", "expected_source_sha", "required",
+    ]
+    assert set(get_type_hints(pickup._OperatorTrust)) == {
+        "authority_mode", "flag_name", "flag_value",
+        "cryptographic_authenticity_claimed",
+    }
+
+    serialized = pickup._serialize_operator_trust(parsed)
+    assert serialized == {
+        "schema": "taskplane.pickup-operator-trust/v1",
+        "authority_mode": "attributed-operator-trust",
+        "flag_name": "--trust-source",
+        "flag_value": source_sha,
+        "cryptographic_authenticity_claimed": False,
+    }
+    assert pickup._parse_operator_trust(
+        serialized, boundary="receipt", expected_source_sha=source_sha,
+        required=True,
+    ) == parsed
+    with pytest.raises(FrozenInstanceError):
+        parsed.flag_value = "0" * len(source_sha)
+
+
+@pytest.mark.parametrize("case", [
+    "missing-flag",
+    "sha-39", "sha-41", "sha-63", "sha-65", "uppercase-sha",
+    "whitespace-sha", "symbolic-sha", "non-hex-sha", "mismatched-sha",
+    "missing-shelf", "malformed-shelf", "structural-shelf-tamper",
+    "receipt-digest", "receipt-path", "predecessor", "fork", "gap",
+    "collision", "mixed-lineage-identity", "malformed-v2-fields",
+    "missing-v2-field", "true-authenticity-claim", "mixed-v2-source",
+    "v1-after-v2", "approval-digest-mismatch", "engine-digest-mismatch",
+    "mixed-authorized-source", "factory-boundary", "factory-cli-type",
+    "factory-receipt-missing", "factory-receipt-extra",
+])
+def test_operator_trust_negative_matrix_preserves_prior_receipts_and_never_reaches_build_c(
+        signed_shelf: tuple[Path, str], tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    checkout, authority_rel = signed_shelf
+    two_v1_receipts = case in {"predecessor", "fork", "gap"}
+    source_sha = _prepare_repository_only_resume(
+        checkout, authority_rel, prior_count=2 if two_v1_receipts else 1
+    )
+    private_home = tmp_path / "operator-empty-private-home"
+    monkeypatch.setenv("TASKPLANE_HOME", str(private_home))
+    trust_source: str | None = source_sha
+
+    if case == "missing-flag":
+        trust_source = None
+    elif case.startswith("sha-"):
+        trust_source = "a" * int(case.split("-")[1])
+    elif case == "uppercase-sha":
+        trust_source = source_sha.upper()
+    elif case == "whitespace-sha":
+        trust_source = f" {source_sha} "
+    elif case == "symbolic-sha":
+        trust_source = "HEAD"
+    elif case == "non-hex-sha":
+        trust_source = "g" * 40
+    elif case == "mismatched-sha":
+        trust_source = ("0" if source_sha[0] != "0" else "1") + source_sha[1:]
+    elif case.startswith("factory-"):
+        pass
+    elif case == "missing-shelf":
+        (checkout / authority_rel).unlink()
+        _commit(checkout, "remove shelf evidence")
+    elif case == "malformed-shelf":
+        (checkout / authority_rel).write_text("{broken\n", encoding="utf-8")
+        _commit(checkout, "malform shelf evidence")
+    elif case == "structural-shelf-tamper":
+        authority_path = checkout / authority_rel
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
+        authority["design"]["element"]["id"] = "tampered-element"
+        authority_path.write_text(
+            json.dumps(authority, indent=2) + "\n", encoding="utf-8"
+        )
+        _commit(checkout, "tamper shelf structure")
+    elif case in {
+            "malformed-v2-fields", "true-authenticity-claim",
+            "missing-v2-field", "mixed-v2-source", "v1-after-v2"}:
+        pickup.run(
+            str(checkout), authority_rel, trust_source=source_sha
+        )
+        _commit(checkout, "record operator pickup criterion")
+        if case == "v1-after-v2":
+            pickup.run(
+                str(checkout), authority_rel, trust_source=source_sha
+            )
+            _commit(checkout, "record second operator pickup criterion")
+        receipt_path = _pickup_receipts(checkout)[-1]
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        operator_trust = receipt["operator_trust"]
+        assert isinstance(operator_trust, dict)
+        if case == "malformed-v2-fields":
+            operator_trust["unknown"] = "field"
+        elif case == "missing-v2-field":
+            operator_trust.pop("flag_name")
+        elif case == "true-authenticity-claim":
+            operator_trust["cryptographic_authenticity_claimed"] = True
+        elif case == "mixed-v2-source":
+            operator_trust["flag_value"] = (
+                ("0" if source_sha[0] != "0" else "1") + source_sha[1:]
+            )
+        else:
+            receipt["schema"] = "taskplane.pickup-receipt/v1"
+            receipt.pop("operator_trust")
+        _rewrite_receipt(receipt_path, receipt)
+        _commit(checkout, f"record {case}")
+    else:
+        receipt_paths = _pickup_receipts(checkout)
+        receipt_path = receipt_paths[-1]
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if case == "receipt-digest":
+            receipt["terminal_status"] = "tampered"
+            receipt_path.write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        elif case == "receipt-path":
+            receipt_path.rename(receipt_path.with_name("renamed.json"))
+        elif case == "predecessor":
+            receipt["predecessor_receipt_digest"] = "0" * 64
+            _rewrite_receipt(receipt_path, receipt)
+        elif case == "fork":
+            _write_structural_receipt_variant(receipt_path, label="fork")
+        elif case == "gap":
+            receipt_paths[0].unlink()
+        elif case == "collision":
+            _write_structural_receipt_variant(receipt_path, label="collision")
+        elif case == "mixed-lineage-identity":
+            receipt["design_fingerprint"] = "0" * 64
+            _rewrite_receipt(receipt_path, receipt)
+        elif case == "approval-digest-mismatch":
+            receipt["approval_digest"] = "0" * 64
+            _rewrite_receipt(receipt_path, receipt)
+        elif case == "engine-digest-mismatch":
+            receipt["engine_receipt_digest"] = "0" * 64
+            _rewrite_receipt(receipt_path, receipt)
+        elif case == "mixed-authorized-source":
+            receipt["authorized_source_sha"] = (
+                ("0" if source_sha[0] != "0" else "1") + source_sha[1:]
+            )
+            _rewrite_receipt(receipt_path, receipt)
+        _commit(checkout, f"record {case}")
+
+    prior_receipts = _byte_snapshot(checkout / "exports")
+    private_state = _byte_snapshot(private_home)
+    trace: list[str] = []
+
+    def forbid_execution(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError(f"{case} reached BUILD-C/checkpoint/merge")
+
+    monkeypatch.setattr(pickup.build_c, "run_pickup", forbid_execution)
+    monkeypatch.setattr(checkpoint, "run_and_mint_stateless", forbid_execution)
+    monkeypatch.setattr(
+        pickup.build_c.repository.RepositoryManager,
+        "accept_pickup_revision", forbid_execution,
+    )
+
+    with pytest.raises(pickup.PickupRefusal):
+        if case == "factory-boundary":
+            pickup._parse_operator_trust(
+                source_sha, boundary="unknown",
+                expected_source_sha=source_sha, required=True,
+            )
+        elif case == "factory-cli-type":
+            pickup._parse_operator_trust(
+                7, boundary="cli", expected_source_sha=source_sha,
+                required=True,
+            )
+        elif case == "factory-receipt-missing":
+            pickup._parse_operator_trust(
+                {"schema": "taskplane.pickup-operator-trust/v1"},
+                boundary="receipt", expected_source_sha=source_sha,
+                required=True,
+            )
+        elif case == "factory-receipt-extra":
+            operator_mapping = {
+                "schema": "taskplane.pickup-operator-trust/v1",
+                "authority_mode": "attributed-operator-trust",
+                "flag_name": "--trust-source",
+                "flag_value": source_sha,
+                "cryptographic_authenticity_claimed": False,
+                "unknown": "field",
+            }
+            pickup._parse_operator_trust(
+                operator_mapping, boundary="receipt",
+                expected_source_sha=source_sha, required=True,
+            )
+        else:
+            pickup.run(
+                str(checkout), authority_rel, trust_source=trust_source,
+                trace=trace,
+            )
+
+    assert not any(
+        "build_c" in event or "checkpoint" in event for event in trace
+    )
+    assert _byte_snapshot(checkout / "exports") == prior_receipts
+    assert _byte_snapshot(private_home) == private_state == {}
+    assert not list((checkout / "exports").rglob("*.tmp"))
+
+
+def test_private_secret_pickup_path_remains_strict_v1_and_green(
+        signed_shelf: tuple[Path, str],
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout, authority_rel = signed_shelf
+    _set_shelf_criteria(checkout, authority_rel, ["AC1", "AC2"])
+    source_sha = _shelf_source_sha(checkout, authority_rel)
+    calls: list[tuple[str, str]] = []
+    real_loader = pickup.design_contract.load_approved_contract_for_pickup
+
+    def observe_loader(
+            checkout_path: str, authority_path: str) -> dict[str, object]:
+        calls.append((checkout_path, authority_path))
+        return real_loader(checkout_path, authority_path)
+
+    monkeypatch.setattr(
+        pickup.design_contract, "load_approved_contract_for_pickup",
+        observe_loader,
+    )
+
+    result = pickup.run(str(checkout), authority_rel)
+    receipt = result["receipt"]
+
+    assert calls == [(str(checkout), str(checkout / authority_rel))]
+    assert result["status"] == "integrated"
+    assert receipt["schema"] == "taskplane.pickup-receipt/v1"
+    assert set(receipt) == {
+        "schema", "producer", "authorized_source_sha",
+        "design_fingerprint", "approval_digest", "engine_receipt_digest",
+        "element_id", "micro_plan_fingerprint", "ordinal", "criterion_id",
+        "predecessor_receipt_digest", "assigned_revision", "declared_scope",
+        "checkpoint_receipt", "checkpoint_receipt_digest", "merge_receipt",
+        "merge_outcome", "repository_tree_fingerprint", "terminal_status",
+        "receipt_digest",
+    }
+    assert "operator_trust" not in receipt
+
+    _commit(checkout, "record private-secret pickup criterion")
+    operator_result = pickup.run(
+        str(checkout), authority_rel, trust_source=source_sha
+    )
+
+    assert len(calls) == 1
+    assert operator_result["receipt"]["schema"] == \
+        "taskplane.pickup-receipt/v2"
+    assert operator_result["receipt"]["operator_trust"]["flag_value"] == \
+        source_sha
 
 
 @pytest.mark.parametrize("mutation", [

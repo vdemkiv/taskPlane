@@ -6722,11 +6722,14 @@ def cmd_help(a) -> int:
     return 0
 
 
-def cmd_pickup(a) -> int:
-    """Run one signed repository shelf contract without loop state."""
+def cmd_pickup(a: argparse.Namespace) -> int:
+    """Run one approved repository shelf contract without loop state."""
     import pickup
     try:
-        result = pickup.run(_workspace(a.workspace), a.design_contract)
+        result = pickup.run(
+            _workspace(a.workspace), a.design_contract,
+            trust_source=a.trust_source,
+        )
     except pickup.PickupRefusal as exc:
         print(f"taskplane: pickup refused: {exc}", file=sys.stderr)
         return 1
@@ -6819,13 +6822,18 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pickup_parser = sub.add_parser(
-        "pickup", help="run one signed shelf Design Contract without a loop"
+        "pickup", help="run one approved shelf Design Contract without a loop",
+        allow_abbrev=False,
     )
     pickup_parser.add_argument(
-        "design_contract", help="repository-relative signed Design Contract"
+        "design_contract", help="repository-relative approved Design Contract"
     )
     pickup_parser.add_argument(
         "--workspace", default=argparse.SUPPRESS, help=_WS_HELP
+    )
+    pickup_parser.add_argument(
+        "--trust-source",
+        help="attribute one exact full source SHA to the invoking operator",
     )
     pickup_parser.set_defaults(fn=cmd_pickup)
 

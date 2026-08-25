@@ -11,17 +11,20 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Mapping, MutableSequence
+from dataclasses import dataclass
 
 import build_c
 import design_contract
 
 
 _SHA = re.compile(r"[0-9a-f]{40,64}\Z")
+_OPERATOR_SOURCE_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _PATH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-_RECEIPT_SCHEMA = "taskplane.pickup-receipt/v1"
+_RECEIPT_SCHEMA_V1 = "taskplane.pickup-receipt/v1"
+_RECEIPT_SCHEMA_V2 = "taskplane.pickup-receipt/v2"
 _RECEIPT_PRODUCER = "taskplane.pickup/v1"
-_RECEIPT_FIELDS = frozenset({
+_RECEIPT_FIELDS_V1 = frozenset({
     "schema", "producer", "authorized_source_sha", "design_fingerprint",
     "approval_digest", "engine_receipt_digest", "element_id",
     "micro_plan_fingerprint", "ordinal", "criterion_id",
@@ -30,10 +33,89 @@ _RECEIPT_FIELDS = frozenset({
     "merge_outcome", "repository_tree_fingerprint", "terminal_status",
     "receipt_digest",
 })
+_RECEIPT_FIELDS_V2 = _RECEIPT_FIELDS_V1 | {"operator_trust"}
+_OPERATOR_TRUST_SCHEMA = "taskplane.pickup-operator-trust/v1"
+_OPERATOR_TRUST_FIELDS = frozenset({
+    "schema", "authority_mode", "flag_name", "flag_value",
+    "cryptographic_authenticity_claimed",
+})
+_OPERATOR_TRUST_MODE = "attributed-operator-trust"
+_OPERATOR_TRUST_FLAG = "--trust-source"
 
 
 class PickupRefusal(RuntimeError):
     """Pickup refused at a named pre-execution trust boundary."""
+
+
+@dataclass(frozen=True, slots=True)
+class _OperatorTrust:
+    authority_mode: str
+    flag_name: str
+    flag_value: str
+    cryptographic_authenticity_claimed: bool
+
+
+def _parse_operator_trust(
+        raw: str | Mapping[str, object] | None, *, boundary: str,
+        expected_source_sha: str, required: bool) -> _OperatorTrust | None:
+    if boundary not in {"cli", "receipt"} or not isinstance(required, bool):
+        raise PickupRefusal("operator-trust: boundary is invalid")
+    if boundary == "cli":
+        if raw is None:
+            if required:
+                raise PickupRefusal(
+                    "operator-trust: --trust-source is required"
+                )
+            return None
+        if not isinstance(raw, str):
+            raise PickupRefusal(
+                "operator-trust: --trust-source is malformed"
+            )
+        flag_value = raw
+    else:
+        flag_value_raw = raw.get("flag_value") \
+            if isinstance(raw, Mapping) else None
+        if not isinstance(raw, Mapping) or \
+                set(raw) != _OPERATOR_TRUST_FIELDS or \
+                raw.get("schema") != _OPERATOR_TRUST_SCHEMA or \
+                raw.get("authority_mode") != _OPERATOR_TRUST_MODE or \
+                raw.get("flag_name") != _OPERATOR_TRUST_FLAG or \
+                raw.get("cryptographic_authenticity_claimed") is not False or \
+                not isinstance(flag_value_raw, str):
+            raise PickupRefusal(
+                "receipt-lineage: operator trust fields are invalid"
+            )
+        flag_value = flag_value_raw
+    if not _OPERATOR_SOURCE_SHA.fullmatch(expected_source_sha):
+        raise PickupRefusal(
+            "operator-trust: shelf source SHA is malformed"
+        )
+    if not _OPERATOR_SOURCE_SHA.fullmatch(flag_value):
+        raise PickupRefusal(
+            "operator-trust: --trust-source is malformed"
+        )
+    if flag_value != expected_source_sha:
+        raise PickupRefusal(
+            "operator-trust: --trust-source does not match shelf source SHA"
+        )
+    return _OperatorTrust(
+        authority_mode=_OPERATOR_TRUST_MODE,
+        flag_name=_OPERATOR_TRUST_FLAG,
+        flag_value=flag_value,
+        cryptographic_authenticity_claimed=False,
+    )
+
+
+def _serialize_operator_trust(
+        value: _OperatorTrust) -> dict[str, object]:
+    return {
+        "schema": _OPERATOR_TRUST_SCHEMA,
+        "authority_mode": value.authority_mode,
+        "flag_name": value.flag_name,
+        "flag_value": value.flag_value,
+        "cryptographic_authenticity_claimed":
+            value.cryptographic_authenticity_claimed,
+    }
 
 
 def _canonical(value: object) -> bytes:
@@ -237,9 +319,22 @@ def _changed_paths(checkout: str, older: str, newer: str) -> set[str]:
 
 
 def _validate_receipt(checkout: str, authority: Mapping[str, object],
-                      path: Path, receipt: object) -> dict:
-    if not isinstance(receipt, dict) or set(receipt) != _RECEIPT_FIELDS:
+                      path: Path, receipt: object) -> dict[str, object]:
+    if not isinstance(receipt, dict):
         raise PickupRefusal("receipt-lineage: receipt fields are invalid")
+    schema = receipt.get("schema")
+    if schema == _RECEIPT_SCHEMA_V1:
+        if set(receipt) != _RECEIPT_FIELDS_V1:
+            raise PickupRefusal("receipt-lineage: receipt fields are invalid")
+    elif schema == _RECEIPT_SCHEMA_V2:
+        if set(receipt) != _RECEIPT_FIELDS_V2:
+            raise PickupRefusal("receipt-lineage: receipt fields are invalid")
+        _parse_operator_trust(
+            receipt.get("operator_trust"), boundary="receipt",
+            expected_source_sha=str(authority["source_sha"]), required=True,
+        )
+    else:
+        raise PickupRefusal("receipt-lineage: receipt schema is invalid")
     element = _normalized_element(authority)
     ordinal = receipt.get("ordinal")
     if isinstance(ordinal, bool) or not isinstance(ordinal, int) or \
@@ -252,8 +347,7 @@ def _validate_receipt(checkout: str, authority: Mapping[str, object],
     if path.name != expected_name or \
             receipt.get("receipt_digest") != expected_digest:
         raise PickupRefusal("receipt-lineage: receipt digest/path mismatch")
-    if receipt.get("schema") != _RECEIPT_SCHEMA or \
-            receipt.get("producer") != _RECEIPT_PRODUCER or \
+    if receipt.get("producer") != _RECEIPT_PRODUCER or \
             receipt.get("authorized_source_sha") != authority["source_sha"] or \
             receipt.get("design_fingerprint") != \
                 authority["design_fingerprint"] or \
@@ -295,7 +389,7 @@ def _validate_receipt(checkout: str, authority: Mapping[str, object],
 
 
 def _load_receipts(checkout: str,
-                   authority: Mapping[str, object]) -> list[dict]:
+                   authority: Mapping[str, object]) -> list[dict[str, object]]:
     directory = _receipt_directory(checkout, authority)
     if not directory.exists():
         return []
@@ -309,7 +403,7 @@ def _load_receipts(checkout: str,
         raise PickupRefusal(
             "receipt-lineage: receipts could not be read"
         ) from exc
-    receipts: list[dict] = []
+    receipts: list[dict[str, object]] = []
     for path in paths:
         try:
             if path.is_symlink() or not path.is_file():
@@ -332,7 +426,14 @@ def _load_receipts(checkout: str,
         raise PickupRefusal(
             "receipt-lineage: collision, fork, or gap detected")
     predecessor: str | None = None
+    operator_lineage_started = False
     for receipt in receipts:
+        if receipt["schema"] == _RECEIPT_SCHEMA_V2:
+            operator_lineage_started = True
+        elif operator_lineage_started:
+            raise PickupRefusal(
+                "receipt-lineage: v1 receipt follows v2 operator lineage"
+            )
         if receipt.get("predecessor_receipt_digest") != predecessor:
             raise PickupRefusal(
                 "receipt-lineage: predecessor chain is invalid")
@@ -342,7 +443,7 @@ def _load_receipts(checkout: str,
 
 def _verify_receipt_history(checkout: str, authority_rel: str,
                             authority: Mapping[str, object],
-                            receipts: list[dict]) -> None:
+                            receipts: list[dict[str, object]]) -> None:
     if not receipts:
         _verify_source_lineage(
             checkout, authority_rel, str(authority["source_sha"])
@@ -371,8 +472,9 @@ def _verify_receipt_history(checkout: str, authority_rel: str,
 
 def _write_receipt(checkout: str, authority: Mapping[str, object],
                    micro_plan: Mapping[str, object], ordinal: int,
-                   predecessor: str | None, result: Mapping[str, object]) \
-        -> dict:
+                   predecessor: str | None, result: Mapping[str, object],
+                   operator_trust: _OperatorTrust | None) \
+        -> dict[str, object]:
     checkpoint_receipt = result.get("checkpoint")
     integration = result.get("integration")
     merge_receipt = (integration.get("merge_receipt")
@@ -389,7 +491,9 @@ def _write_receipt(checkout: str, authority: Mapping[str, object],
     except build_c.IntegrationAuthorizationError as exc:
         raise PickupRefusal(f"receipt-lineage: {exc}") from exc
     receipt = {
-        "schema": _RECEIPT_SCHEMA, "producer": _RECEIPT_PRODUCER,
+        "schema": (_RECEIPT_SCHEMA_V2 if operator_trust is not None
+                   else _RECEIPT_SCHEMA_V1),
+        "producer": _RECEIPT_PRODUCER,
         "authorized_source_sha": authority["source_sha"],
         "design_fingerprint": authority["design_fingerprint"],
         "approval_digest": _digest(authority["approval"]),
@@ -410,6 +514,8 @@ def _write_receipt(checkout: str, authority: Mapping[str, object],
         ),
         "terminal_status": "green",
     }
+    if operator_trust is not None:
+        receipt["operator_trust"] = _serialize_operator_trust(operator_trust)
     receipt["receipt_digest"] = _receipt_digest(receipt)
     directory = _receipt_directory(checkout, authority)
     root = Path(checkout).resolve()
@@ -458,8 +564,8 @@ def _write_receipt(checkout: str, authority: Mapping[str, object],
     return receipt
 
 
-def run(checkout: str, design_path: str, *,
-        trace: MutableSequence[str] | None = None) -> dict:
+def run(checkout: str, design_path: str, *, trust_source: str | None = None,
+        trace: MutableSequence[str] | None = None) -> dict[str, object]:
     """Execute one approved shelf criterion without orchestration state."""
     cli_entry = time.monotonic()
     events = trace if trace is not None else []
@@ -478,7 +584,7 @@ def run(checkout: str, design_path: str, *,
     authority_key = Path(root).joinpath(
         ".taskplane", "review-contract-authority.json"
     )
-    resume_authority = not authority_key.is_file()
+    resume_authority = trust_source is not None or not authority_key.is_file()
     if resume_authority:
         authority = _resume_authority(authority_path)
     else:
@@ -490,11 +596,17 @@ def run(checkout: str, design_path: str, *,
             boundary = ("engine-receipt" if "engine receipt" in str(exc).lower()
                         else "approved-design")
             raise PickupRefusal(f"{boundary}: {exc}") from exc
+    operator_trust = _parse_operator_trust(
+        trust_source, boundary="cli",
+        expected_source_sha=str(authority["source_sha"]),
+        required=resume_authority,
+    )
     events.append("pickup.preflight.authority")
     receipts = _load_receipts(root, authority)
-    if resume_authority and not receipts:
+    if operator_trust is None and receipts and \
+            receipts[-1]["schema"] == _RECEIPT_SCHEMA_V2:
         raise PickupRefusal(
-            "engine-receipt: repository resume has no prior verified receipt"
+            "receipt-lineage: v1 receipt follows v2 operator lineage"
         )
     _verify_receipt_history(root, authority_rel, authority, receipts)
     events.append("pickup.preflight.checkout")
@@ -518,6 +630,8 @@ def run(checkout: str, design_path: str, *,
         }
     micro_plan = _micro_plan(authority, next_ordinal)
     events.append("pickup.micro_plan.ready")
+    if operator_trust is not None:
+        events.append("pickup.operator_trust.accepted")
     build_c_entry = getattr(build_c, "run_pickup", None)
     if not callable(build_c_entry):
         raise PickupRefusal(
@@ -535,6 +649,7 @@ def run(checkout: str, design_path: str, *,
     receipt = _write_receipt(
         root, authority, micro_plan, next_ordinal,
         str(receipts[-1]["receipt_digest"]) if receipts else None, result,
+        operator_trust,
     )
     events.append("pickup.storage.audit")
     return {
