@@ -15,7 +15,9 @@ import depgraph  # noqa: E402
 import dashboard  # noqa: E402
 import lens  # noqa: E402
 import requirements as reqs  # noqa: E402
-import runtime_eval  # noqa: E402
+from taskplane.tests.review_kernel_support import (  # noqa: E402
+    complete_evaluate_slots,
+)
 
 
 def _git(ws, *a):
@@ -31,21 +33,47 @@ def _repo(prefix="tp-fix-"):
     return ws
 
 
+def _claim_variant_worktrees(ws):
+    """Give simulated variant builds their real isolated task worktrees."""
+    for task in loop.load(ws)["tasks"]:
+        if task.get("status") != "pending":
+            continue
+        worker = os.path.join(ws, ".tp-work", task["id"])
+        _git(ws, "worktree", "add", "-q", worker, "-b",
+             "tp/" + task["id"])
+        claimed = loop.claim(ws, task["id"], worker)
+        if claimed.get("error"):
+            raise AssertionError(claimed["error"])
+        depgraph.scan(worker)
+
+
 def _pass_eval(ws):
+    brief = loop.next_action(ws)
+    if brief.get("error"):
+        raise AssertionError(brief["error"])
     state = loop.load(ws)
     task = state["tasks"][state["current_task"]]
-    routed = lens.route_git_diff(ws, base=state.get("baseline") or "HEAD",
-                                 task_type=task.get("type"), breadth="routed")
-    os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-    with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"task": task["id"], "verdict": "pass",
+    act_ws = task.get("workspace") if state.get("parallel") else ws
+    complete_evaluate_slots(
+        act_ws, session_id="selfreview-" + task["id"])
+    routed = [row for row in brief["lenses"] if row.get("mode") != "none"]
+    os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
+    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"schema": "taskplane.evaluator-output/v1",
+                   "task": task["id"],
+                   "requirement": task.get("req") or
+                                  state.get("requirement_id") or "",
+                   "verdict": "pass",
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified"}
                                 for c in loop._criteria_for(ws, state, task)],
-                   "lenses": [{"lens": x["id"], "verdict": "pass",
-                               "blockers": 0} for x in routed["lenses"]],
+                   "lenses": [{"lens": row["id"], "verdict": "pass",
+                               "blockers": 0} for row in routed],
+                   "graph": {"dispositions": [],
+                             "requirements_checked": [],
+                             "contracts_checked": []},
                    "failures": []}, f)
-    facts = {key: True for key in runtime_eval.REVIEW_FACTS}
     with mock.patch("runtime_eval.guide_loop",
                     return_value={"status": "on_path", "recovered": False}):
         loop.submit(ws, "pass")
@@ -97,9 +125,11 @@ class TestEngine(unittest.TestCase):
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"mode": "ab-selection", "tasks": [
             {"id": ids[0], "variant": "A", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t"},
+             "new_modules": ["src"], "tests": "t",
+             "criteria": ["variant A is ready for human selection"]},
             {"id": ids[1], "variant": "B", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t"}]},
+             "new_modules": ["src"], "tests": "t",
+             "criteria": ["variant B is ready for human selection"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
@@ -112,16 +142,20 @@ class TestEngine(unittest.TestCase):
         loop.select(self.ws, "hybrid")
         json.dump({"mode": "ab-selection", "tasks": [
             {"id": "ga", "variant": "A", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t"},
+             "new_modules": ["src"], "tests": "t",
+             "criteria": ["grafted variant A passes review"]},
             {"id": "gb", "variant": "B", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t"}]},
+             "new_modules": ["src"], "tests": "t",
+             "criteria": ["grafted variant B passes review"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
+        _claim_variant_worktrees(self.ws)
         s = loop.load(self.ws)
         for t in s["tasks"]:
             t["status"] = "passed"
         s["step"] = "evaluate"; s["current_task"] = len(s["tasks"]) - 1
+        s["tasks"][s["current_task"]]["status"] = "built"
         loop.save(self.ws, s)
         r = _pass_eval(self.ws)
         self.assertEqual(r["step"], "selection")
@@ -132,11 +166,13 @@ class TestEngine(unittest.TestCase):
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"tasks": [
             {"id": "t1", "scope": ["a/**"], "new_modules": ["a"],
-             "tests": "t"},
+             "tests": "t", "criteria": ["task one passes review"]},
             {"id": "t2", "scope": ["b/**"], "new_modules": ["b"],
-             "deps": ["t1"], "tests": "t"},
+             "deps": ["t1"], "tests": "t",
+             "criteria": ["task two passes review"]},
             {"id": "t3", "scope": ["c/**"], "new_modules": ["c"],
-             "deps": ["t2"], "tests": "t"}]},
+             "deps": ["t2"], "tests": "t",
+             "criteria": ["task three passes review"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws); s["step"] = "escalated"; s["current_task"] = 0
@@ -152,9 +188,10 @@ class TestEngine(unittest.TestCase):
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"tasks": [
             {"id": "t1", "scope": ["a/**"], "new_modules": ["a"],
-             "tests": "t"},
+             "tests": "t", "criteria": ["task one passes review"]},
             {"id": "t2", "scope": ["b/**"], "new_modules": ["b"],
-             "deps": ["t1"], "tests": "t"}]},
+             "deps": ["t1"], "tests": "t",
+             "criteria": ["task two passes review"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
@@ -177,9 +214,11 @@ class TestEngine(unittest.TestCase):
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"mode": "ab-selection", "tasks": [
             {"id": "va", "variant": "A", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t"},
+             "new_modules": ["src"], "tests": "t",
+             "criteria": ["variant A is ready for human selection"]},
             {"id": "vb", "variant": "B", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t"}]},
+             "new_modules": ["src"], "tests": "t",
+             "criteria": ["variant B is ready for human selection"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass")
         self.assertTrue(loop.load(self.ws)["parallel"])
@@ -196,8 +235,10 @@ class TestEngine(unittest.TestCase):
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
         json.dump({"tasks": [
-            {"id": "t1", "req": "R-0001", "scope": ["src/auth/**"], "tests": "t"},
-            {"id": "t2", "req": "R-0001", "scope": ["src/pay/**"], "tests": "t"}]},
+            {"id": "t1", "req": "R-0001", "scope": ["src/auth/**"],
+             "tests": "t", "criteria": ["shared edges stay"]},
+            {"id": "t2", "req": "R-0001", "scope": ["src/pay/**"],
+             "tests": "t", "criteria": ["shared edges stay"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.gate(self.ws, "pass")
         g = depgraph.load(self.ws)
