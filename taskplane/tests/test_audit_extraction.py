@@ -35,6 +35,7 @@ Scenario coverage (the audit surface):
   * decision-shape helpers (_routing_decision_from_meta, _routing_decision_of,
     _router_regression_key, _is_router_regression) on every accepted shape.
 """
+import ast
 import json
 import os
 import subprocess
@@ -562,73 +563,27 @@ class TestExtractionStructure(unittest.TestCase):
         for name in MOVED_CONSTANTS:
             self.assertIn(f"{name} = ", src)
 
-    def test_loop_shrank_by_the_moved_region(self):
-        """Pre-extraction loop.py was 3191 lines; the moved audit region was
-        ~255. Pin the shrink so the bodies cannot quietly creep back.
+    def test_extraction_boundary_is_one_direct_reexport_import(self):
+        """Guard the audit boundary, independent of unrelated loop growth.
 
-        Raised twice, both on the record — the discipline the per-task cost
-        ratchet asks of everyone.
-
-        2990 → 2994 (P1–P3, R-0012): the evaluate brief now tells agents to
-        call `tp loop evidence` instead of hand-assembling sixty shell
-        calls' worth of facts. The bundle itself went OUT to evidence.py.
-
-        2994 → 3003 (R-0013): submit stamps the engine that produced the
-        evidence, not the process submitting it — A4 had shipped inert
-        without it. The blocking-claim bar went OUT to audit.py, which
-        already owns the em-gate evidence half.
-
-        3003 → 3005 (yield meter): an import and ONE call at the single
-        point every gate transition passes, recording what the harness
-        RETURNS beside what ci_loop_cost.py already pins that it costs. Two
-        lines is the whole engine-side footprint — everything else lives in
-        yield_meter.py, which gates nothing and can be deleted without
-        touching the loop. Raised deliberately: the alternative was to hide
-        the hook somewhere it did not belong to keep a number flat, which
-        is how ratchets stop meaning anything.
-
-        3005 → 2907 (D-0011): rendering the dashboard and publishing the
-        gate snapshot moved OUT to views.py — the extraction this module's
-        own comment had been recording as debt since v2.3.0 ("rendering/
-        publishing belongs in the CLI/driver layer"). The engine keeps the
-        seam and nothing else. The ratchet is LOWERED to the new figure in
-        the same commit: a ceiling left at the old number would quietly
-        hand back the 98 lines this bought.
-
-        2907 → 3100 (v2.14 selective review kernel): the final EM path now
-        binds graph quality, one canonical routing decision, leased findings,
-        and revision identity at the gate. Those integration seams belong in
-        loop.py; the audit implementation remains extracted and is still
-        guarded by the body/constant assertions above.
-
-        3100 → 3260 (R-0011 host-native workflow UX): canonical progress and
-        durable approval session authority initially landed beside loop state.
-
-        4108 → 3970 (R-0001 mechanical repair): host-native presentation
-        sessions, topology projection, and pipeline rendering moved OUT to
-        progress.py. The authority integration seams remain beside loop state;
-        this ratchet is lowered immediately by the extracted region.
-
-        3970 → 4222 (R-0003): one canonical enforcement projection and the
-        orchestrator-owned merge-receipt/cleanup transaction now cross the
-        loop state boundary. Domain classification and destructive eligibility
-        remain extracted in enforcement.py and worktree_cleanup.py; loop.py
-        contains only their atomic lifecycle and transition seams.
-
-        4222 → 8797 (R-0001–R-0013): stage-native lifecycle, repository
-        authority, review evidence, recovery, and bounded history integration
-        added engine seams to loop.py.  The audit extraction is still guarded
-        by the body/constant ownership assertions above; this broad ceiling is
-        advanced only after those assertions and the frozen differential are
-        green again.
-
-        What guards the extraction itself is the body/constant assertions
-        above, not this count."""
-        with open(loop.__file__, encoding="utf-8") as f:
-            n = len(f.readlines())
-        self.assertLessEqual(
-            n, 8797, f"loop.py is {n} lines — the extraction shrink "
-            "(3191 → ~2961) has been undone or eroded")
+        A whole-file line ceiling stopped measuring this extraction once the
+        engine gained stage, evidence, and recovery seams.  The durable
+        property is structural: loop.py has one direct, unaliased re-export
+        import for the complete moved surface, while the adjacent tests prove
+        that no moved body or constant has crept back into loop.py.
+        """
+        imports = [
+            node for node in ast.walk(ast.parse(_src(loop)))
+            if isinstance(node, ast.ImportFrom) and node.module == "audit"
+        ]
+        self.assertEqual(len(imports), 1)
+        imported = {alias.name: alias.asname for alias in imports[0].names}
+        for name in MOVED_CONSTANTS + MOVED_FUNCTIONS:
+            with self.subTest(name=name):
+                self.assertIn(name, imported)
+                self.assertIsNone(
+                    imported[name],
+                    f"loop.{name} must remain a direct audit.py re-export")
 
     def test_gate_math_stays_single_sourced_in_loop(self):
         """audit.py CALLS the frozen finding_blocks rule; it must never grow
