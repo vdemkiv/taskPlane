@@ -948,7 +948,8 @@ class TestLoop(unittest.TestCase):
             contract = self._activate(action)
             self.assertEqual(contract["write_allow"], [canonical])
 
-            store = review_evidence.ArtifactStore(self.ws)
+            _, evidence_runtime, _ = loop._review_runtime_modules()
+            store = evidence_runtime.ArtifactStore(self.ws)
             lease_ref = store.put("lease", self.lease)
             brief_ref = store.put("lens-brief", {
                 "schema": "taskplane.lens-brief/v2",
@@ -2032,8 +2033,8 @@ class TestParallelExecution(unittest.TestCase):
         """EXECUTE DoD must import and test the claimed branch's bytes."""
         tests = (
             "python3 -c \"import sys; sys.path.insert(0, 'src/a'); "
-            "import taskplane_lite; assert "
-            "taskplane_lite.WORKTREE_ONLY_EXECUTE_DOD\""
+            "import worker_probe; assert "
+            "worker_probe.WORKTREE_ONLY_EXECUTE_DOD\""
         )
         ws = self._ws()
         state = loop.load(ws)
@@ -2047,10 +2048,9 @@ class TestParallelExecution(unittest.TestCase):
             cwd=ws, check=True,
         )
         loop.claim(ws, "t1", agent_ws)
-        module = os.path.join(agent_ws, "src", "a", "taskplane_lite.py")
+        module = os.path.join(agent_ws, "src", "a", "worker_probe.py")
         os.makedirs(os.path.dirname(module), exist_ok=True)
-        shutil.copyfile(tp.__file__, module)
-        with open(module, "a", encoding="utf-8") as stream:
+        with open(module, "w", encoding="utf-8") as stream:
             stream.write("WORKTREE_ONLY_EXECUTE_DOD = True\n")
         subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
         subprocess.run(
