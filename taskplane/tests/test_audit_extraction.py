@@ -418,7 +418,16 @@ SCENARIOS = {
 
 def run_scenario(fn, mod):
     with tempfile.TemporaryDirectory() as tmp:
-        with mock.patch.dict(os.environ):
+        # This corpus froze the audit extraction before automatic Review
+        # started projecting every route to a bounded 4--5 lens sweep.  The
+        # extraction contract owns how audit.py consumes a routing decision;
+        # it does not own the later selector policy.  Hold that dependency at
+        # its capture-time seam so a policy change cannot masquerade as an
+        # extraction regression.  Live automatic-policy coverage below runs
+        # without this patch.
+        with mock.patch.dict(os.environ), mock.patch.object(
+                lens, "automatic_sweep_route",
+                side_effect=lambda routing, **_kwargs: routing):
             os.environ.pop("TASKPLANE_AUDIT_EVERY", None)
             return fn(mod, tmp)
 
@@ -480,6 +489,29 @@ class TestDifferentialViaAudit(DifferentialMixin, unittest.TestCase):
     """The corpus replayed through audit.<name> directly — the extracted
     module must be byte-identical to the pre-extraction loop.py too."""
     mod = audit
+
+
+class TestLiveAuditRoutingPolicy(unittest.TestCase):
+    """The frozen extraction seam above must not weaken today's policy."""
+
+    def test_live_shadow_route_records_the_bounded_automatic_decision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _git_ws(tmp)
+            info = audit._audit_brief(ws, {"release_review": True})
+
+        decision = info["routing_decision"]
+        catalog_ids = {entry["id"] for entry in lens.load_catalog()["lenses"]}
+        selected = {lid for lid, row in decision.items()
+                    if row.get("verdict") == "sweep"}
+        omitted = catalog_ids - selected
+        self.assertEqual(set(decision), catalog_ids)
+        self.assertIn("architecture", selected)
+        self.assertGreaterEqual(len(selected), 4)
+        self.assertLessEqual(len(selected), 5)
+        self.assertTrue(omitted)
+        for lens_id in omitted:
+            self.assertEqual(decision[lens_id]["verdict"], "n/a")
+            self.assertTrue(decision[lens_id].get("negative_evidence"))
 
 
 # The full moved surface: every one of these must resolve at loop.<name>
@@ -583,12 +615,19 @@ class TestExtractionStructure(unittest.TestCase):
         remain extracted in enforcement.py and worktree_cleanup.py; loop.py
         contains only their atomic lifecycle and transition seams.
 
+        4222 → 8797 (R-0001–R-0013): stage-native lifecycle, repository
+        authority, review evidence, recovery, and bounded history integration
+        added engine seams to loop.py.  The audit extraction is still guarded
+        by the body/constant ownership assertions above; this broad ceiling is
+        advanced only after those assertions and the frozen differential are
+        green again.
+
         What guards the extraction itself is the body/constant assertions
         above, not this count."""
         with open(loop.__file__, encoding="utf-8") as f:
             n = len(f.readlines())
         self.assertLessEqual(
-            n, 4222, f"loop.py is {n} lines — the extraction shrink "
+            n, 8797, f"loop.py is {n} lines — the extraction shrink "
             "(3191 → ~2961) has been undone or eroded")
 
     def test_gate_math_stays_single_sourced_in_loop(self):

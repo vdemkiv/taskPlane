@@ -74,7 +74,12 @@ def pass_eval(ws):
         row = {**lease, "schema": "taskplane.lens-slot-output/v2",
                "authored_by": "lens-slot", "findings": [],
                "lens_results": [
-                   {"lens": lens_id, "verdict": "pass", "blockers": 0}
+                   {"lens": lens_id, "verdict": "pass", "blockers": 0,
+                    "checked_evidence": [{
+                        "file": "src/todo/a.py", "line": 1,
+                        "claim": ("audit cadence fixture inspected the "
+                                  "changed task source"),
+                    }]}
                    for lens_id in lease["lens_ids"]]}
         content = json.dumps(row, sort_keys=True, separators=(",", ":"))
         event = {"session_id": "audit-eval-session",
