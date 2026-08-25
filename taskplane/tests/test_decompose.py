@@ -621,7 +621,12 @@ class _WebshopBase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def route(self, files, **kw):
-        return lens.route(files, stage="review", workspace=self.ws, **kw)
+        # Exercise the component mapper's own deep/light/n/a decision before
+        # an automatic Review/Evaluate call projects that decision into its
+        # separate bounded 4–5-lens sweep.  The automatic policy is covered
+        # by test_lens_route_v2; these tests own component assembly, floors,
+        # forced human routing, attribution, and the fail-open superset.
+        return lens.route(files, use_signals=True, workspace=self.ws, **kw)
 
     def doctor(self, fn):
         """Mutate the persisted graph.json (cache-poisoning harness)."""

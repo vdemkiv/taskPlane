@@ -438,6 +438,14 @@ def _enforcement_check(
         run_id=run_id, revision=(revision if revision is not None
                                  else tp.git_head(ws)), mode=mode,
         observed_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
+    if (not advisory and prior and
+            prior.get("evidence_id") == decision.get("evidence_id")):
+        # The evidence id deliberately excludes observation time: two checks
+        # with the same structural receipt, meter, revision, and policy are
+        # one canonical decision.  Keep its original observation record so
+        # retrying an idempotent Task-path dispatch cannot change stdout just
+        # because the wall clock advanced between invocations.
+        decision = prior
     if advisory:
         try:
             decision = enforcement_kernel.acknowledge_advisory(
