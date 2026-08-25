@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -161,6 +162,69 @@ def _replace_shelf_proof(checkout: Path, authority_rel: str,
         encoding="utf-8",
     )
     _commit(checkout, "replace signed shelf authority")
+
+
+def _set_shelf_criteria(checkout: Path, authority_rel: str,
+                        criterion_ids: list[str]) -> None:
+    """Re-sign one shelf element with an ordered manual-criterion list."""
+    authority_path = checkout / authority_rel
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["design"]["element"]["acceptance"] = [
+        {
+            "id": criterion_id,
+            "proof": {
+                "path": "tests/test_proof.py",
+                "argv": [
+                    "python3", "-m", "pytest", "-q", "-p",
+                    "no:cacheprovider", "tests/test_proof.py",
+                ],
+            },
+        }
+        for criterion_id in criterion_ids
+    ]
+    design_fingerprint = hashlib.sha256(
+        _canonical(authority["design"])
+    ).hexdigest()
+    signing_authority = contract_engine._review_contract_authority(  # noqa: SLF001
+        str(checkout), create=False
+    )
+    for field in ("approval", "engine_receipt"):
+        authority[field]["design_fingerprint"] = design_fingerprint
+        authority[field].pop("signature")
+        authority[field]["signature"] = _signature(
+            authority[field], signing_authority["secret"]
+        )
+    authority_path.write_text(
+        json.dumps(authority, indent=2) + "\n", encoding="utf-8"
+    )
+    _commit(checkout, "authorize ordered shelf criteria")
+
+
+def _pickup_receipts(checkout: Path) -> list[Path]:
+    return sorted((checkout / "exports" / "pickup").rglob("*.json"))
+
+
+def _receipt_digest(receipt: dict) -> str:
+    material = dict(receipt)
+    material.pop("receipt_digest", None)
+    return hashlib.sha256(_canonical(material)).hexdigest()
+
+
+def _write_receipt_variant(source: Path, *, ordinal: int,
+                           changes: dict[str, object]) -> Path:
+    receipt = json.loads(source.read_text(encoding="utf-8"))
+    receipt.update(changes)
+    receipt["ordinal"] = ordinal
+    receipt["receipt_digest"] = _receipt_digest(receipt)
+    criterion_id = str(receipt["criterion_id"])
+    target = source.parent / (
+        f"{ordinal}-{criterion_id}-{receipt['receipt_digest']}.json"
+    )
+    target.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return target
 
 
 def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestration_state(
@@ -633,3 +697,133 @@ def test_tampered_or_unsigned_contract_refuses_before_build_c_without_state_or_r
                        for event in trace)
         assert _home_snapshot(private_home) == []
         assert not (checkout / "exports").exists()
+
+
+def test_second_checkout_resumes_from_git_receipts_without_private_home(
+        signed_shelf: tuple[Path, str], tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    first_checkout, authority_rel = signed_shelf
+    _set_shelf_criteria(first_checkout, authority_rel, ["AC1", "AC2"])
+    first_private_home = tmp_path / "first-private-home"
+    monkeypatch.setenv("TASKPLANE_HOME", str(first_private_home))
+
+    first_result = pickup.run(str(first_checkout), authority_rel)
+
+    first_receipts = _pickup_receipts(first_checkout)
+    assert first_result["receipt"]["ordinal"] == 1
+    assert first_result["receipt"]["criterion_id"] == "AC1"
+    assert len(first_receipts) == 1
+    first_receipt_bytes = first_receipts[0].read_bytes()
+    first_receipt_digest = first_result["receipt"]["receipt_digest"]
+    _commit(first_checkout, "record first pickup criterion")
+    assert not first_private_home.exists()
+    shutil.rmtree(first_checkout / ".taskplane")
+
+    second_checkout = tmp_path / "second-checkout"
+    subprocess.run(
+        [
+            "git", "clone", "--quiet", "--no-hardlinks",
+            str(first_checkout), str(second_checkout),
+        ],
+        check=True,
+    )
+    second_private_home = tmp_path / "second-empty-private-home"
+    monkeypatch.setenv("TASKPLANE_HOME", str(second_private_home))
+
+    resumed = pickup.run(str(second_checkout), authority_rel)
+
+    assert resumed["receipt"]["ordinal"] == 2
+    assert resumed["receipt"]["criterion_id"] == "AC2"
+    assert resumed["receipt"]["predecessor_receipt_digest"] == \
+        first_receipt_digest
+    assert resumed["receipt"]["authorized_source_sha"] == \
+        first_result["receipt"]["authorized_source_sha"]
+    assert resumed["receipt"]["design_fingerprint"] == \
+        first_result["receipt"]["design_fingerprint"]
+    assert "pickup.receipt.lineage" in resumed["trace"]
+    assert len(_pickup_receipts(second_checkout)) == 2
+    assert _pickup_receipts(second_checkout)[0].read_bytes() == \
+        first_receipt_bytes
+    assert not second_private_home.exists()
+    assert not (second_checkout / ".taskplane").exists()
+
+
+@pytest.mark.parametrize("mutation", [
+    "collision", "fork", "gap", "digest-tamper",
+])
+def test_receipt_lineage_rejects_collision_fork_gap_and_digest_tamper(
+        signed_shelf: tuple[Path, str], tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
+    checkout, authority_rel = signed_shelf
+    _set_shelf_criteria(checkout, authority_rel, ["AC1", "AC2", "AC3"])
+    pickup.run(str(checkout), authority_rel)
+    first_receipt = _pickup_receipts(checkout)[0]
+    first = json.loads(first_receipt.read_text(encoding="utf-8"))
+    _commit(checkout, "record first pickup criterion")
+    if mutation == "collision":
+        _write_receipt_variant(
+            first_receipt, ordinal=1,
+            changes={"micro_plan_fingerprint": "f" * 64},
+        )
+    elif mutation == "fork":
+        second = _write_receipt_variant(
+            first_receipt, ordinal=2,
+            changes={
+                "criterion_id": "AC2",
+                "predecessor_receipt_digest": first["receipt_digest"],
+            },
+        )
+        _write_receipt_variant(
+            second, ordinal=2,
+            changes={"micro_plan_fingerprint": "e" * 64},
+        )
+    elif mutation == "gap":
+        gap = first_receipt.with_name(first_receipt.name.replace("1-", "2-", 1))
+        first_receipt.rename(gap)
+    else:
+        first["terminal_status"] = "tampered"
+        first_receipt.write_text(
+            json.dumps(first, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    _commit(checkout, f"record {mutation} pickup lineage")
+    monkeypatch.setattr(
+        pickup.build_c, "run_pickup",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid lineage reached BUILD-C execution"
+        ),
+    )
+
+    with pytest.raises(pickup.PickupRefusal, match="receipt-lineage"):
+        pickup.run(str(checkout), authority_rel)
+
+
+def test_interrupted_checkpoint_preserves_prior_receipts_and_blocks_merge(
+        signed_shelf: tuple[Path, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout, authority_rel = signed_shelf
+    _set_shelf_criteria(checkout, authority_rel, ["AC1", "AC2"])
+    pickup.run(str(checkout), authority_rel)
+    first_receipt = _pickup_receipts(checkout)[0]
+    prior_bytes = first_receipt.read_bytes()
+    _commit(checkout, "record first pickup criterion")
+    merge_calls: list[str] = []
+
+    def interrupt(*_args: object, **_kwargs: object) -> dict:
+        raise checkpoint.CheckpointSpecError("focused_proof ended interrupted")
+
+    def forbid_merge(*_args: object, **_kwargs: object) -> dict:
+        merge_calls.append("called")
+        raise AssertionError("interrupted checkpoint reached merge")
+
+    monkeypatch.setattr(checkpoint, "run_and_mint_stateless", interrupt)
+    monkeypatch.setattr(
+        pickup.build_c.repository.RepositoryManager,
+        "accept_pickup_revision", forbid_merge,
+    )
+
+    with pytest.raises(pickup.PickupRefusal, match="interrupted"):
+        pickup.run(str(checkout), authority_rel)
+
+    assert _pickup_receipts(checkout) == [first_receipt]
+    assert first_receipt.read_bytes() == prior_bytes
+    assert merge_calls == []

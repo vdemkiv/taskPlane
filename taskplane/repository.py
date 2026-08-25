@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Callable
+from typing import Callable, Mapping
 
 import storage
 import recovery
@@ -30,6 +30,10 @@ _AUTHORITY_REPOSITORY_ID = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
 _AUTHORITY_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 _WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+_PICKUP_MERGE_FIELDS = frozenset({
+    "schema", "status", "task_id", "primary_checkout", "branch_tip",
+    "fingerprint",
+})
 
 
 class RepositoryAcquisitionError(RuntimeError):
@@ -262,6 +266,35 @@ def _classify_failure(output: str) -> str:
             "remote end hung up")):
         return "network"
     return "checkout"
+
+
+def validate_pickup_merge_receipt(receipt: object, *, task_id: str,
+                                  revision: str) -> dict:
+    """Validate historical pickup merge evidence without checkout-local state."""
+    if not isinstance(receipt, Mapping) or set(receipt) != \
+            _PICKUP_MERGE_FIELDS:
+        raise RepositoryAcquisitionError(
+            "identity", "pickup merge receipt fields are invalid")
+    primary = receipt.get("primary_checkout")
+    if not isinstance(primary, str) or not os.path.isabs(primary) or \
+            not primary.strip():
+        raise RepositoryAcquisitionError(
+            "identity", "pickup merge receipt checkout is invalid")
+    material = {
+        name: receipt[name] for name in _PICKUP_MERGE_FIELDS
+        if name != "fingerprint"
+    }
+    expected = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+    if receipt.get("schema") != "taskplane.repository-pickup-merge/v1" or \
+            receipt.get("status") != "integrated" or \
+            receipt.get("task_id") != task_id or \
+            receipt.get("branch_tip") != revision or \
+            receipt.get("fingerprint") != expected:
+        raise RepositoryAcquisitionError(
+            "identity", "pickup merge receipt identity is invalid")
+    return dict(receipt)
 
 
 class RepositoryManager:

@@ -427,6 +427,36 @@ def assign_pickup_scope(checkout: str, micro_plan: Mapping[str, object]) -> dict
     ).encode("utf-8")).hexdigest()}
 
 
+def validate_pickup_evidence(checkpoint_receipt: object,
+                             merge_receipt: object, *,
+                             micro_plan: Mapping[str, object],
+                             revision: str) -> tuple[dict, dict]:
+    """Revalidate repository-resident pickup evidence for resume."""
+    task_id = str(micro_plan.get("element_id") or "")
+    scope = micro_plan.get("scope")
+    if not task_id or not isinstance(scope, list):
+        raise IntegrationAuthorizationError(
+            "pickup evidence micro-plan is invalid")
+    run_id = "pickup-" + str(micro_plan.get("fingerprint") or "")[:24]
+    active_contract = {
+        "schema": "taskplane.pickup-active-contract/v1",
+        "task_id": task_id, "scope": list(scope), "revision": revision,
+        "micro_plan_fingerprint": micro_plan.get("fingerprint"),
+    }
+    checked_checkpoint = _checkpoint_integration_receipt(
+        checkpoint_receipt, task_id=task_id, run_id=run_id,
+        revision=revision, scope=list(scope),
+        active_contract=active_contract,
+    )
+    try:
+        checked_merge = repository.validate_pickup_merge_receipt(
+            merge_receipt, task_id=task_id, revision=revision
+        )
+    except repository.RepositoryAcquisitionError as exc:
+        raise IntegrationAuthorizationError(str(exc)) from exc
+    return checked_checkpoint, checked_merge
+
+
 def run_pickup(checkout: str, micro_plan: Mapping[str, object], *,
                emit: Callable[[str], None]) -> dict:
     """Run one explicit AC through checkpoint and repository ownership."""
