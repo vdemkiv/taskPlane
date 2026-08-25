@@ -116,6 +116,20 @@ class TestH2LockedGateTransition(_Env):
             state["submission_required"] = False
             state["step"] = "evaluate"
             loop.save(ws, state)
+            verdict_path = loop.runtime_storage.evaluation_path(ws)
+            os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
+            with open(verdict_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "schema": "taskplane.evaluator-output/v1",
+                    "task": "t1",
+                    "requirement": "",
+                    "criteria": [{
+                        "criterion": "c", "status": "met",
+                        "evidence": "locked transition fixture",
+                    }],
+                    "failures": [],
+                    "verdict": "pass",
+                }, handle)
             out = loop.gate(ws, "pass")
         finally:
             loop._evaluation_errors = orig

@@ -38,6 +38,7 @@ STARTUP_FIELDS = {
     "schema",
     "stage_id",
     "authority",
+    "input_manifest_bytes",
     "input_handoff",
     "selected_artifacts",
     "budget",

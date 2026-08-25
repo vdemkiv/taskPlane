@@ -2963,7 +2963,8 @@ def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
             from exc
     if handoff.get("fingerprint") != expected:
         raise StageDispatchError("verified handoff fingerprint mismatch")
-    if len(canonical_json_bytes(handoff)) > 64 * 1024:
+    handoff_bytes = canonical_json_bytes(handoff)
+    if len(handoff_bytes) > 64 * 1024:
         raise StageDispatchError("verified handoff exceeds its bound")
     producer = handoff.get("producer")
     if not isinstance(producer, dict) or set(producer) != {
@@ -3014,7 +3015,8 @@ def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
             "verified handoff authorization does not match stage authority")
     input_reference = stage.get("input_manifest_ref")
     if not isinstance(input_reference, dict) or \
-            input_reference.get("fingerprint") != expected:
+            input_reference.get("fingerprint") != expected or \
+            input_reference.get("bytes") != len(handoff_bytes):
         raise StageDispatchError(
             "stage input does not bind the verified handoff")
     if not isinstance(selected_artifacts, list):
@@ -3117,7 +3119,10 @@ def _verify_stage_authority_reference(value) -> dict:
         raise StageDispatchError("stage authority reference is invalid")
     _stage_fingerprint(
         value.get("fingerprint"), "stage authority reference fingerprint")
-    return _json_detach(value, "stage authority reference")
+    # The complete startup serialization below is the closed JSON boundary.
+    # Avoid serializing this already closed two-field projection a second
+    # time during read-side verification.
+    return dict(value)
 
 
 def _dispatch_handoff_projection(handoff: dict,
@@ -3153,7 +3158,10 @@ def _verify_dispatch_handoff_projection(value, authority_reference: dict) \
     if value.get("authorization") != authority_reference:
         raise StageDispatchError(
             "stage dispatch handoff authority reference mismatch")
-    return _json_detach(value, "stage dispatch handoff projection")
+    # ``payload`` was just canonicalized to verify its fingerprint and the
+    # complete startup is canonicalized once more below.  A third detach
+    # serialization adds startup cost without strengthening the boundary.
+    return dict(value)
 
 
 def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
@@ -3192,6 +3200,8 @@ def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
         "schema": STAGE_STARTUP_SCHEMA,
         "stage_id": checked_stage["stage_id"],
         "authority": authority_reference,
+        "input_manifest_bytes":
+            checked_stage["input_manifest_ref"]["bytes"],
         "input_handoff": dispatch_handoff,
         "selected_artifacts": _json_detach(
             selected_artifacts, "selected artifacts"),
@@ -3210,6 +3220,10 @@ def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
     selected_bytes = sum(int(reference.get("bytes") or 0)
                          for reference in startup["selected_artifacts"])
     telemetry = {
+        # Preserve the size of the verified repository-resident input
+        # manifest.  The agent-facing handoff is a privacy projection and is
+        # intentionally a different byte sequence.
+        "manifest_bytes": checked_stage["input_manifest_ref"]["bytes"],
         "startup_bytes": len(serialized),
         # This is a deterministic budgeting estimate, not provider usage.
         "startup_tokens": (len(serialized) + 3) // 4,
@@ -3282,7 +3296,8 @@ def stage_startup_bytes(dispatch: dict) -> bytes:
             startup.get("schema") != STAGE_STARTUP_SCHEMA:
         raise StageDispatchError("stage startup payload is invalid")
     required = {
-        "schema", "stage_id", "authority", "input_handoff",
+        "schema", "stage_id", "authority", "input_manifest_bytes",
+        "input_handoff",
         "selected_artifacts", "budget", "execution_claim", "attempt_id",
     }
     fields = frozenset(startup)
@@ -3307,6 +3322,7 @@ def stage_startup_bytes(dispatch: dict) -> bytes:
         raise StageDispatchError(
             "stage startup handoff selected artifacts mismatch")
     expected_telemetry = {
+        "manifest_bytes": startup.get("input_manifest_bytes"),
         "startup_bytes": len(serialized),
         "startup_tokens": (len(serialized) + 3) // 4,
         "selected_ref_count": len(selected),
@@ -3315,6 +3331,10 @@ def stage_startup_bytes(dispatch: dict) -> bytes:
                                   if isinstance(row, dict)),
         "predecessor_root_opens": 0,
     }
+    input_manifest_bytes = startup.get("input_manifest_bytes")
+    if isinstance(input_manifest_bytes, bool) or not isinstance(
+            input_manifest_bytes, int) or input_manifest_bytes < 0:
+        raise StageDispatchError("stage startup telemetry mismatch")
     if dispatch.get("telemetry") != expected_telemetry:
         raise StageDispatchError("stage startup telemetry mismatch")
     return serialized

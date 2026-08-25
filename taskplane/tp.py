@@ -411,7 +411,8 @@ def _saved_enforcement(value) -> dict | None:
 def _enforcement_check(
         ws: str, *, saved=None, advisory: bool = False,
         actor: str | None = None, run_id: str | None = None,
-        revision: str | int | None = None) -> tuple[dict, dict | None]:
+        revision: str | int | None = None,
+        prospective_activation: bool = False) -> tuple[dict, dict | None]:
     """Compute one decision and, in strict mode, one machine refusal."""
     prior = _saved_enforcement(saved)
     workspace_fp = hashlib.sha256(os.path.normcase(os.path.realpath(
@@ -421,8 +422,19 @@ def _enforcement_check(
         return prior, None
     snapshot = _host_capability_snapshot(ws)
     mode = _screen_enforcement_mode(snapshot.host)
+    # A named slot does not exist until ``new`` activates it.  Loading that
+    # slot to calculate pre-activation liveness would fail closed whenever a
+    # sibling contract already exists, making a second slot impossible to
+    # create.  Activation still performs every host-enforcement check; only
+    # the not-yet-existent contract's liveness is necessarily ungoverned.
+    prospective_slot = tp.task_slot() if prospective_activation else None
+    missing_prospective_slot = bool(
+        prospective_slot is not None and not os.path.exists(
+            tp.active_contract_path(ws, prospective_slot)))
+    liveness = tp.screen_liveness(
+        ws, contract={}) if missing_prospective_slot else tp.screen_liveness(ws)
     decision = enforcement_kernel.enforcement_status(
-        ws, snapshot=snapshot, liveness=tp.screen_liveness(ws),
+        ws, snapshot=snapshot, liveness=liveness,
         run_id=run_id, revision=(revision if revision is not None
                                  else tp.git_head(ws)), mode=mode,
         observed_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
@@ -949,7 +961,7 @@ def cmd_new(a) -> int:
         return 1
     enforcement, refusal = _enforcement_check(
         ws, advisory=bool(getattr(a, "advisory", False)),
-        actor=getattr(a, "by", None))
+        actor=getattr(a, "by", None), prospective_activation=True)
     if refusal:
         print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
         return 1
@@ -1916,9 +1928,14 @@ def cmd_clear(a) -> int:
         tp.safe_remove(path)
     else:
         tp.clear(ws)                      # FUSE-safe removal (safe_remove)
+    remaining = len(tp.list_task_slots(ws)) + int(os.path.exists(
+        os.path.join(tp.tp_dir(ws), "active_contract.json")))
+    disposition = (
+        f" — workspace remains governed by {remaining} other "
+        f"contract{'s' if remaining != 1 else ''}."
+        if remaining else " — workspace is ungoverned again.")
     print(f"taskplane: contract {c.get('task_id','')} cleared"
-          + (f" (slot {slot})" if slot else "")
-          + " — workspace is ungoverned again.")
+          + (f" (slot {slot})" if slot else "") + disposition)
     if getattr(a, "approved_by", None):
         tp.trace(ws, "contract_clear_human_approval",
                  approved_by=a.approved_by, slots=[slot or "legacy"])

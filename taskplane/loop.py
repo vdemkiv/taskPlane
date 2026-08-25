@@ -2947,8 +2947,10 @@ def _automatic_merge_cleanup(ws: str, task: dict) -> dict | None:
 
 def cleanup_replay(ws: str) -> dict:
     """One bounded maintenance pass over durable receipts only."""
-    if refusal := _stage_loop_mutation_refusal(ws):
-        return refusal
+    # Cleanup replay is receipt-scoped lifecycle maintenance, not a stage or
+    # singleton workflow transition.  It must remain available while the
+    # stage-native rollout is paused so a crash after a durable merge receipt
+    # cannot strand an eligible worktree indefinitely.
     import worktree_cleanup
 
     state = load(ws)

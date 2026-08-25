@@ -128,6 +128,8 @@ def test_clear_with_a_sibling_slot_active_releases_only_its_own(tmp_path):
     assert r.returncode == 0, (r.stdout, r.stderr)
     assert not os.path.exists(os.path.join(active, "tA.json"))
     assert os.path.exists(os.path.join(active, "tB.json")), r.stdout
+    assert "remains governed by 1 other contract" in r.stdout, r.stdout
+    assert "workspace is ungoverned" not in r.stdout, r.stdout
 
 
 def test_clear_with_no_slot_and_no_contract_still_reports_and_exits_zero(

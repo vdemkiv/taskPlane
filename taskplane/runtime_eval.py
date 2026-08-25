@@ -200,7 +200,8 @@ def stage_startup_projection(dispatch: dict) -> dict:
         raise taskplane_lite.StageDispatchError(
             "stage startup telemetry is invalid")
     telemetry_fields = (
-        "startup_bytes", "startup_tokens", "selected_ref_count",
+        "manifest_bytes", "startup_bytes", "startup_tokens",
+        "selected_ref_count",
         "selected_ref_bytes", "predecessor_root_opens")
     if any(type(telemetry.get(field)) is not int
            or telemetry[field] < 0 for field in telemetry_fields):
@@ -212,16 +213,10 @@ def stage_startup_projection(dispatch: dict) -> dict:
             telemetry["startup_tokens"] != startup_token_estimate:
         raise taskplane_lite.StageDispatchError(
             "stage startup telemetry mismatch")
-    startup = dispatch.get("startup")
-    handoff = startup.get("input_handoff") \
-        if isinstance(startup, dict) else None
-    if not isinstance(handoff, dict):
-        raise taskplane_lite.StageDispatchError(
-            "stage startup input handoff is invalid")
     return {
         "schema": STAGE_STARTUP_PROJECTION_SCHEMA,
         "startup_sha256": hashlib.sha256(serialized).hexdigest(),
-        "manifest_bytes": len(taskplane_lite.canonical_json_bytes(handoff)),
+        "manifest_bytes": telemetry["manifest_bytes"],
         "startup_bytes": startup_bytes,
         "startup_token_estimate": startup_token_estimate,
         "selected_ref_count": telemetry["selected_ref_count"],

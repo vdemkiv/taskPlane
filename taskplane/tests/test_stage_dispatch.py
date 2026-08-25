@@ -281,6 +281,7 @@ def test_stage_runtime_dispatch_is_deterministic_selected_only_and_bounded() \
     assert first["startup"]["selected_artifacts"] == \
         stage["selected_artifacts"]
     assert first["telemetry"] == {
+        "manifest_bytes": stage["input_manifest_ref"]["bytes"],
         "startup_bytes": len(taskplane_lite.stage_startup_bytes(first)),
         "startup_tokens": (
             len(taskplane_lite.stage_startup_bytes(first)) + 3) // 4,
@@ -306,8 +307,10 @@ def test_stage_runtime_dispatch_is_deterministic_selected_only_and_bounded() \
     assert handoff["authorization"]["session_id"] == "codex-thread-1"
 
 
-@pytest.mark.parametrize("tamper", ["authority", "handoff-authority",
-                                     "handoff-fingerprint"])
+@pytest.mark.parametrize("tamper", [
+    "authority", "handoff-authority", "handoff-fingerprint",
+    "manifest-bytes",
+])
 def test_stage_startup_bytes_rejects_tampered_privacy_projection(
         tamper: str) -> None:
     stage, handoff = _stage_and_handoff()
@@ -317,6 +320,8 @@ def test_stage_startup_bytes_rejects_tampered_privacy_projection(
     elif tamper == "handoff-authority":
         dispatch["startup"]["input_handoff"]["authorization"][
             "fingerprint"] = "0" * 64
+    elif tamper == "manifest-bytes":
+        dispatch["telemetry"]["manifest_bytes"] += 1
     else:
         dispatch["startup"]["input_handoff"]["fingerprint"] = "0" * 64
     serialized = taskplane_lite.canonical_json_bytes(dispatch["startup"])
@@ -624,7 +629,14 @@ def test_loop_stage_command_allows_an_explicit_new_run_canary(
         loop, "_verified_stage_handoff",
         lambda *_args: handoff_value)
     monkeypatch.setattr(loop, "_stage_dispatch", lambda *_args, **_kwargs: dispatch)
-    monkeypatch.setattr(loop, "load", lambda _workspace: None)
+    monkeypatch.setattr(loop, "load", lambda _workspace: {
+        "step": "plan",
+        "tasks": None,
+        "current_task": 0,
+        "_stage_native_new_run_pristine": True,
+    })
+    monkeypatch.setattr(
+        loop, "_persist_stage_run_binding", lambda *_args, **_kwargs: {})
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
 
     result = loop.stage_command("/repo", "start", {
