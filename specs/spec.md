@@ -1,133 +1,244 @@
-# Stateless `tp pickup` front door
+# Remaining `tp pickup` delivery — attributed operator trust
+
+## Attributed human scope decision
+
+`human:user` selected an operator-trust continuation for R-0002. AC4 requires
+the explicit invocation `--trust-source <exact-source-sha>`; it does not claim
+cryptographic authenticity. The asymmetric-approval proposal is shelved and
+must not enter this delivery.
 
 ## Problem
 
-Taskplane has a proven BUILD-C execution path, but using it currently depends on
-private loop/runtime state. A previously approved Design Contract that is
-already on a repository shelf needs a small, trustworthy front door that can
-begin and resume one bounded delivery directly from repository facts.
+The stateless `tp pickup <design-contract>` path and its first four bounded
+tasks are complete, but repository-only AC4 resume needs an explicit human
+authority input that a fresh checkout can compare with the shelf and receipt
+lineage without inheriting private Taskplane state. The remaining delivery
+must record and enforce that attributed operator-trust input while describing
+its security limitation honestly.
 
 ## Users and context
 
-- A human operator has an already signed and approved Design Contract in the
-  repository and explicitly selects it with `tp pickup <design-contract>`.
-- The checkout is at the exact source SHA named by that authority and is clean.
-- The operator wants only the selected contract element delivered, with the
-  existing BUILD-C checkpoint and merge-on-green guarantees, without starting
-  or inheriting a Taskplane loop.
-- The target release is Taskplane 2.17.20. Final release review may prepare
-  evidence, but pushing, tagging, publishing, or changing `origin/main` remains
-  a separate human authority decision.
+- A human operator selects one existing shelf Design Contract from a clean
+  checkout and supplies `--trust-source <exact-source-sha>`.
+- The flag value is the exact source SHA the human chooses to trust. It must
+  equal the shelf's exact authorized source SHA and the source identity already
+  bound to the Design fingerprint and repository receipt lineage.
+- A second checkout starts with no private Taskplane home and no private-store
+  handoff. It resumes using Git-tracked shelf and `exports/` evidence plus the
+  newly supplied attributed operator-trust flag.
+- The existing v1 symmetric shelf-signature path remains available only
+  through its incumbent private-secret runtime path and is unchanged.
+- The target candidate is Taskplane 2.17.20. Push, tag, publication, release,
+  and `origin/main` mutation remain separate human authority.
+
+## Inherited limitation — standing state, not new R-0002 debt
+
+Human gate approvals currently record unauthenticated actor strings. The only
+shelf signature currently available is computed with a symmetric secret held
+in private runtime state. The `--trust-source` mode neither removes nor
+strengthens those facts and must never be described as authenticating the
+human, producer, shelf signature, or engine receipt. This is documented
+inherited standing state, not debt newly incurred by R-0002, and no `req debt`
+record is authorized for it.
+
+## Completed inventory — retain, do not replay
+
+The amended Plan must retain these facts as non-executable history:
+
+1. **T01 / AC1 evidence:**
+   `70f311ad75de33a530a6ba43ac213883a1e95c3f`.
+2. **T02 / AC2 evidence:**
+   `5cc647cabd8bd8528b3044184e38d3317f593f27`.
+3. **T03 released-tip prerequisite evidence:**
+   `5c28165f800fffcac20aa2004d9a2b38efb195cf`.
+4. **T04 / AC3 evidence:**
+   `0c19087e3eb28d70869f2752f12c2d3742f33810`.
+5. Repository-only resume implementation at
+   `3ee3a17a695bf059f90504507a8eb5fe690fb52d` and retry-safe atomic receipt
+   publication at `a73f125e762670323d0e4a8fbbef3a1edf3ea958` remain
+   implementation inventory and must not be replayed or replaced.
+
+AC1–AC3 may execute only as unchanged regression coverage within AC5. They and
+the atomic-publication repair must not receive new implementation, checkpoint,
+evaluation, or acceptance tasks.
 
 ## In scope
 
-1. Provide the public command `tp pickup <design-contract>` for one signed,
-   repository-resident Design Contract element.
-2. Fail closed before execution unless the checkout is clean, its exact SHA is
-   the authorized SHA, the repository Design Contract and its approval are
-   authentic and current, and the required engine receipt is valid for that
-   same SHA and Design fingerprint.
-3. Keep the existing hook security layer unchanged. Pickup must neither bypass
-   it nor claim stronger hook evidence than the host provides.
-4. Remain stateless with respect to Taskplane orchestration: pickup creates no
-   run, track, claim, lease, wave, or equivalent private coordination state and
-   does not require an active loop.
-5. Bound the delivery to a micro-plan for the one selected contract element.
-   No unrelated Design, Plan, requirement, program, or backlog content may be
-   imported into that micro-plan.
-6. Enter the existing direct-scope assignment and BUILD-C acceptance-checkpoint
-   contracts, and permit integration only when the exact assigned revision has
-   a valid green engine checkpoint and the existing merge boundary accepts it.
-7. Use manual checkpoint discipline: execute and record one acceptance
-   criterion at a time. The production behavior and the tests proving each
-   acceptance criterion land in the same implementation commit.
-8. Commit durable pickup receipts below `exports/`. Receipt identity is keyed
-   by the exact repository SHA plus the Design evidence fingerprint, is
-   content-addressed/tamper-evident, records the bounded checkpoint lineage and
-   merge outcome, and contains enough repository-resident evidence for another
-   checkout at the same SHA to resume without any private-store handoff.
-9. On the final clean SHA, run quick security and QA review concurrently, then
-   an engineering-manager review. Stop after those results for explicit human
-   push authority.
-10. Update shipped version metadata and release notes to 2.17.20 only after the
-    functional acceptance path is green; do not push, tag, publish, or mutate
-    `origin/main` within this delivery authority.
+1. Extend the public pickup invocation with the required exact flag
+   `--trust-source <exact-source-sha>` for repository-only AC4 resume.
+2. Treat the flag as attributed human operator authority for this invocation.
+   Record the exact flag name and exact value verbatim in the pickup receipt;
+   do not normalize, abbreviate, replace, or infer the recorded authority.
+3. Require the value to be a well-formed exact Git source SHA and to equal the
+   shelf's exact authorized source SHA. Preserve the existing binding among
+   that SHA, the canonical Design fingerprint, receipt path/digests,
+   predecessor chain, element, criterion, assigned revision, checkpoint, and
+   merge outcome.
+4. From a fresh second checkout with no private Taskplane home or first-
+   checkout handoff, use the explicitly repeated trust-source flag plus
+   Git-tracked shelf and receipt evidence to resume the next manual criterion
+   through the incumbent pickup path.
+5. Fail closed before BUILD-C on a missing flag, malformed SHA, SHA mismatch,
+   missing or malformed shelf evidence, structural shelf tampering, receipt
+   digest/path mismatch, predecessor mismatch, fork, gap, collision, or mixed
+   SHA/Design-fingerprint/lineage identity.
+6. On every such refusal, preserve every prior committed receipt byte-for-byte,
+   create no authoritative partial receipt, and authorize no checkpoint or
+   merge.
+7. Preserve zero run, track, claim, lease, wave, active-loop, or private-
+   handoff state and preserve one-acceptance-criterion-at-a-time checkpoint
+   discipline. AC4 behavior and its direct positive and negative proofs land
+   in the same bounded implementation commit.
+8. Preserve the existing `tp pickup` → direct BUILD-C assignment → engine
+   checkpoint → merge-on-green path, exact assigned-revision checks,
+   retry-safe atomic `exports/` publication, and receipt directory identity
+   keyed by exact source SHA plus Design fingerprint.
+9. Preserve v1 symmetric shelf handling through its current private-secret
+   path without changing its contract, key source, signature behavior, or
+   claims.
+10. After AC4 passes, update only the bounded shipped version/release surfaces
+    to 2.17.20 and run AC5 on the exact final clean candidate SHA.
+11. After AC5 passes, run one quick security and one quick QA review
+    concurrently against that exact SHA and evidence set, then one
+    engineering-manager review against the same SHA. Stop for explicit human
+    push authority.
+
+## No-authenticity claim
+
+The operator-trust mode proves only that the caller supplied an attributed
+exact source SHA and that repository structures agree with it. It does not
+cryptographically authenticate the actor string, human approval, producer,
+shelf document, engine receipt, or origin of repository bytes. Public output,
+receipts, documentation, tests, review evidence, and release notes must use
+operator-trust language and must not use `authenticated`, `cryptographically
+verified`, `signed by the human`, or an equivalent authenticity claim for this
+mode.
 
 ## Out of scope
 
-- Phase 0, E0, every R-0011 feature or redesign item, and every other R-0013
-  intake, design, plan, or delivery item.
-- Replaying completed T01-T08a or adopting any paused R-0013 content.
-- Changing the host hook, hook policy, security interception, enforcement
-  strength, or hook receipt semantics.
-- Changing, replacing, or routing through the legacy loop path; changing its
-  run/track/claim/lease/wave lifecycle or its behavior.
-- Creating a second checkpoint engine, merge implementation, worktree manager,
-  Design approval system, requirement flow, or private receipt store.
-- Broad Design or Plan work, automatic Phase 0/E0 evaluation, or an automatic
-  full/deep/serial-all/all-lens review sweep.
-- Push, tag, release, marketplace publication, package publication, or any
-  direct mutation of `origin/main` before explicit human authority.
+- Repository-verifiable asymmetric authenticity in the current delivery.
+- Any signer, verifier, public/private key workflow, signing dependency,
+  allowed-signers runtime, certificate authority, key-management service,
+  rotation/revocation mechanism, or hand-rolled cryptography.
+- Changes to the existing v1 symmetric shelf-signature implementation or its
+  private-secret runtime path.
+- Changes to protected completed-work surfaces beyond the narrow public CLI,
+  pickup authority/receipt projection, direct pickup tests, and bounded release
+  metadata named below.
+- Reimplementation or replay of T01–T04, AC1–AC3, repository-resume
+  groundwork, or retry-safe atomic receipt publication.
+- Phase 0, E0, any R-0011 work, or any unrelated R-0013 intake, Design, Plan,
+  review, or delivery content.
+- Changes to hook security, hook receipts, enforcement strength, the legacy
+  loop, or the legacy run/track/claim/lease/wave lifecycle.
+- A second BUILD-C, checkpoint, merge, Design approval, worktree, or receipt
+  engine; automatic full/deep/serial-all/all-lens review sweeps.
+- Push, tag, marketplace/package publication, release, or any mutation of
+  `origin/main` before explicit human authority.
 - Changes to retained worktrees, paused branches, dormant runtimes, or any
   Taskplane home other than the isolated pickup delivery home.
 
 ## Acceptance criteria
 
-1. **AC1 — a shelf contract runs end-to-end via pickup with zero run/track
-   state (trace evidence).** Verify with an approved signed shelf fixture and a
-   trace assertion that covers pickup through the existing BUILD-C checkpoint
-   and green integration boundary, while proving no run, track, claim, lease,
-   wave, or equivalent orchestration record was created.
-2. **AC2 — cold start on a fresh checkout at the same SHA to first executing
-   checkpoint in <2 minutes.** Verify with a wall-clock integration test from a
-   new checkout, empty private Taskplane home, exact authorized SHA, and no
-   warmed process or inherited runtime state.
-3. **AC3 — severed-edge tests: cutting the pickup→build_c entry fails; legacy
-   loop path untouched and its suite still green.** Verify with a mutation or
-   seam test that removes the pickup-to-BUILD-C edge and must fail, plus the
-   unchanged legacy-loop selectors proving their existing path remains green.
-4. **AC4 — a second checkout resumes from repo-resident receipts with no
-   private-store handoff.** Verify by completing at least one manual criterion,
-   discarding access to the first checkout's private Taskplane home, and
-   resuming from a second checkout using only Git-tracked Design authority and
-   `exports/` receipts at the same SHA/fingerprint identity.
-5. **AC5 — full suite on the final SHA: no new failures.** Verify with
-   `python -m pytest taskplane/tests -q` on the final clean commit and compare
-   the result with the exact baseline; any new failure blocks release review.
+1. **AC4 — a fresh second checkout resumes through explicit attributed
+   operator trust with no private-store handoff.** After one manual criterion
+   and its atomic pickup receipt are committed, a fresh second checkout with an
+   empty/nonexistent Taskplane home and no access to the first checkout must
+   invoke pickup with `--trust-source <exact-source-sha>`. The exact flag and
+   full SHA value must be recorded verbatim in the new pickup receipt as
+   attributed human authority; the SHA must equal the shelf's exact authorized
+   source SHA and the existing exact-SHA/Design-fingerprint/receipt-lineage
+   identity. The next existing BUILD-C checkpoint must run with zero
+   run/track/claim/lease/wave/private-handoff state, and output must make no
+   cryptographic-authenticity claim. Focused negative proofs for a missing
+   flag, malformed SHA, SHA mismatch, malformed/missing shelf evidence,
+   structural tampering, digest/path/predecessor mismatch, fork, gap,
+   collision, and mixed lineage identity must all refuse before BUILD-C,
+   preserve prior receipts byte-identically, create no authoritative partial
+   receipt, and authorize no merge. The unchanged v1 private-secret symmetric
+   path must retain its existing focused green coverage.
+2. **AC5 — full suite on the final SHA: no new failures.** After the AC4 commit
+   and consistent 2.17.20 version/release metadata are committed, verify the
+   checkout is clean and run `python -m pytest taskplane/tests -q` with the
+   pinned delivery interpreter on that exact candidate SHA. The suite must
+   include unchanged pickup, v1 symmetric, atomic-publication, hook, and
+   legacy-loop regressions and report zero new failures. Any failure blocks
+   final review and grants no broad repair authority.
+3. **2.17.20 release surfaces are consistent and bounded.** README,
+   CHANGELOG, Codex plugin manifest, Claude plugin manifest, and marketplace
+   manifest must all identify 2.17.20, parse successfully, describe the
+   operator-trust limitation accurately, and perform no push, tag, publication,
+   release, or `origin/main` mutation.
+
+## Post-acceptance release gate — loop owned
+
+**Final review and authority stop are exact-SHA bound.** Quick security and QA
+must complete concurrently against the AC5 SHA, followed by an engineering-
+manager review against the identical SHA and evidence fingerprints. The
+workflow stops before every external release mutation and requires explicit
+human push authority.
+
+This gate is mandatory after AC5, but it is not an implementation task or an
+evaluator-owned acceptance criterion. The loop owns its security/QA → EM →
+human push-authority sequence, matching the original `Ship:` instruction.
 
 ## Required failure behavior
 
-- Dirty bytes, untracked product files, SHA drift, stale Design bytes, missing
-  or invalid approval, Design-fingerprint drift, missing or mismatched engine
-  receipt, forged caller evidence, receipt collisions, or an already-consumed
-  incompatible outcome must refuse before execution or integration by naming
-  the failed boundary.
-- A failed acceptance checkpoint remains durable evidence but never authorizes
-  the next criterion or merge.
-- Interruption must not create private handoff state, erase prior receipts,
-  overwrite evidence for another SHA/fingerprint pair, or affect the legacy
-  loop.
+- Trust-source validation is pre-BUILD-C. No rejected authority/shelf/lineage
+  case may reach assignment, checkpoint execution, receipt publication, or
+  integration.
+- The receipt records the human-supplied flag and full SHA without converting
+  the record into a cryptographic-authenticity claim.
+- A matching SHA never excuses dirty checkout bytes, malformed shelf evidence,
+  structural/digest/path/predecessor/fork/gap/collision failure, stale Design
+  fingerprint, mixed checkpoint identity, or a non-green result.
+- An interruption or publication failure keeps prior committed receipts
+  byte-identical and remains safe to retry through the already-delivered atomic
+  publication behavior.
 
-## Release evidence and authority boundary
+## Design backlog — not picked up now
 
-After AC1-AC5 are green on one final clean commit, obtain one quick security
-pass and one quick QA pass concurrently against that exact SHA, then obtain an
-engineering-manager review against the same SHA and evidence set. Report the
-2.17.20 release candidate and stop. A human must separately authorize pushing
-`origin/main`, creating a tag, publishing, or any release-side mutation.
+- **Element:** `asymmetric-approval-authority`
+- **Inventory:** the blocked/conditional Design document only; it is not an
+  approved current-delivery contract, Plan task, implementation target,
+  evaluation claim, or new R-0002 debt record.
+- **Preferred future runtime:** OpenSSH `ssh-keygen -Y` verification with a
+  committed allowed-signers trust file. Verification fails closed when
+  OpenSSH is unavailable. The future design adds no signing dependency and no
+  hand-rolled cryptography.
+- **Pickup triggers:** a second operator, an untrusted producer host, or an
+  external evidence-verification requirement.
+- **Current disposition:** shelved by attributed human decision; explicitly not
+  picked up in this delivery.
+
+Because Taskplane 2.17.19 cannot delete contracts from requirement metadata,
+`contract:pickup.asymmetric-authenticity` and
+`resource:repository.pickup-public-verification-material` remain historical
+backlog inventory on R-0002. They MUST NOT create Plan tasks, implementation
+scope, acceptance/evaluation claims, graph-realization claims, or release
+claims in this delivery.
 
 ## Contract handoff
 
-### Canonical boundary ids
+### Active canonical boundary ids
 
 ```yaml
 contracts:
   - contract:pickup.stateless-front-door
+  - contract:pickup.operator-trust-source
   - contract:design.approved-contract
   - contract:build-c.direct-assignment
   - contract:build-c.acceptance-checkpoint
   - contract:repository.merge-on-green
   - resource:exports.pickup-receipts
+```
+
+### Historical backlog-only metadata
+
+```yaml
+historical_contracts_not_authorized_for_delivery:
+  - contract:pickup.asymmetric-authenticity
+  - resource:repository.pickup-public-verification-material
 ```
 
 ### Scope
@@ -136,12 +247,6 @@ contracts:
 scope_paths:
   - taskplane/tp.py
   - taskplane/pickup.py
-  - taskplane/build_c.py
-  - taskplane/checkpoint.py
-  - taskplane/design_contract.py
-  - taskplane/repository.py
-  - taskplane/storage.py
-  - taskplane/taskplane_lite.py
   - taskplane/tests/test_pickup.py
   - exports/**
   - README.md
@@ -153,10 +258,14 @@ out_of_scope:
   - hooks/**
   - .taskplane/codex-hook.py
   - taskplane/loop.py
+  - taskplane/build_c.py
+  - taskplane/checkpoint.py
+  - taskplane/design_contract.py
+  - taskplane/repository.py
+  - taskplane/storage.py
+  - taskplane/taskplane_lite.py
   - plan/**
   - backlog/**
-  - design/**
-  - requirements/**
   - components.yaml
   - .github/**
   - deploy/**
@@ -166,32 +275,34 @@ dod:
   test_command: python -m pytest taskplane/tests -q
 ```
 
-Existing direct assignment, checkpoint, Design-fingerprint, and repository
-merge contracts are consumption boundaries. Their internal realization is not
-product authority for a redesign. If an implementation cannot meet this
-requirement without changing an out-of-scope boundary, it must stop for a new
-human scope decision.
+If AC4 cannot be met inside these active scope paths without modifying a
+protected or asymmetric/signing surface, stop for a new human scope decision.
 
 ## Non-functional requirements
 
-- **security:** Fail closed on checkout, SHA, signed approval, Design
-  fingerprint, engine receipt, scope, and integration-identity mismatch. Do not
-  weaken or modify hook security, and do not accept caller-authored evidence as
-  engine authority.
-- **architecture:** Preserve the one-way pickup-to-existing-BUILD-C boundary,
-  the existing checkpoint and merge owners, and the unchanged legacy loop.
-  Pickup is a bounded front door, not a second orchestration system.
-- **data-safety:** Repository receipts are append-safe, tamper-evident, keyed by
-  exact SHA plus Design fingerprint, and cannot overwrite, confuse, or discard
-  another attempt's evidence.
-- **sre:** A cold fresh checkout reaches its first executing checkpoint in less
-  than 120 seconds, failures are deterministic and named, and interruption is
-  resumable from committed repository evidence.
-- **integrability:** The public CLI works from a fresh same-SHA checkout,
-  consumes the existing Design/BUILD-C/checkpoint/merge contracts without
-  changing the legacy loop, and remains covered by the full portable suite.
+- **security:** Operator-trust mode validates a human-supplied exact source SHA
+  against the shelf and existing SHA/Design-fingerprint/lineage identities and
+  fails closed before BUILD-C on every named mismatch. It makes no
+  cryptographic-authenticity claim, adds no secret/key/verifier dependency, and
+  leaves the v1 private-secret symmetric path unchanged.
+- **architecture:** Add only the narrow `--trust-source` CLI-to-pickup authority
+  projection and receipt field. Preserve the incumbent BUILD-C, checkpoint,
+  merge, atomic-publication, hook, legacy-loop, and v1 symmetric boundaries;
+  create no signer/verifier/key workflow or alternate runtime.
+- **data-safety:** The full flag and SHA are recorded verbatim as attributed
+  human authority; structural and lineage checks remain exact. All negative
+  paths preserve prior receipts byte-identically, create no authoritative
+  partial file, and authorize no checkpoint or merge.
+- **sre:** A cold same-SHA checkout with no private Taskplane home resumes
+  deterministically when the explicit trust source matches and fails by named
+  pre-BUILD-C reason when it is missing, malformed, mismatched, or paired with
+  invalid shelf/lineage evidence.
+- **integrability:** The new optional-authority mode preserves the completed
+  stateless pickup path, existing v1 symmetric behavior, public CLI contract,
+  exact full-suite command, and bounded 2.17.20 release surfaces without
+  changing hooks or the legacy loop.
 
 ## Open questions
 
-None. Any need to widen scope, alter the legacy loop or hook layer, or perform a
-release mutation is a new human decision rather than an implementation choice.
+None. The human selected attributed operator trust and explicitly shelved
+asymmetric authenticity until a named trigger occurs.

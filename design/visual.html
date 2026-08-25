@@ -3,80 +3,40 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>R-0001 stateless pickup sequence</title>
+  <title>R-0002 attributed operator-trust sequence</title>
   <style>
-    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-    body { margin: 0; background: #0b1020; color: #e8eefc; }
-    main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 48px; }
-    h1 { font-size: 28px; margin: 0 0 8px; }
-    .lede { color: #aebbd7; margin: 0 0 28px; }
-    .flow { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 12px; align-items: stretch; }
-    .node { border: 1px solid #344365; border-radius: 14px; background: #121a30; padding: 16px; min-height: 118px; }
-    .node h2 { font-size: 15px; margin: 0 0 8px; color: #9fc2ff; }
-    .node p { font-size: 13px; line-height: 1.45; margin: 0; color: #d2dcf3; }
-    .arrow { text-align: center; color: #6fa4ff; font-size: 20px; margin: 10px 0; }
-    .sequence { display: grid; grid-template-columns: 1fr 42px 1fr 42px 1fr; gap: 4px; align-items: center; }
-    .state-free { margin-top: 22px; border: 1px solid #4c765f; background: #10271d; border-radius: 14px; padding: 16px; }
-    .state-free strong { color: #8de0ad; }
-    .resume { margin-top: 22px; display: grid; grid-template-columns: 1fr 72px 1fr; gap: 12px; align-items: center; }
-    .repo { border-color: #765f38; background: #2a2113; }
-    .small { color: #aebbd7; font-size: 12px; margin-top: 8px; }
-    @media (max-width: 900px) {
-      .flow { grid-template-columns: 1fr; }
-      .sequence, .resume { grid-template-columns: 1fr; }
-      .arrow { transform: rotate(90deg); }
-    }
+    :root { color-scheme: light; font: 16px/1.45 system-ui,sans-serif; --ink:#17202a; --muted:#566573; --line:#8395a7; --active:#176b46; --backlog:#8a6d1d; --paper:#f6f8fa; }
+    body { margin:0; background:var(--paper); color:var(--ink); }
+    main { max-width:1120px; margin:32px auto; padding:0 24px 40px; }
+    h1 { font-size:1.55rem; margin:0 0 6px; }
+    p { color:var(--muted); margin:0 0 24px; }
+    .flow { display:grid; grid-template-columns:repeat(6,minmax(130px,1fr)); gap:18px; }
+    .node { position:relative; background:white; border:2px solid var(--line); border-radius:12px; padding:14px; min-height:134px; }
+    .node:not(:last-child)::after { content:"→"; position:absolute; right:-17px; top:50%; transform:translateY(-50%); color:var(--muted); font-weight:800; font-size:20px; }
+    .node strong { display:block; margin-bottom:7px; }
+    .node small { color:var(--muted); }
+    .active { border-color:var(--active); }
+    .rule { margin-top:24px; border-left:5px solid var(--active); background:white; padding:14px 16px; }
+    .backlog { margin-top:18px; border:2px dashed var(--backlog); background:#fffdf5; border-radius:10px; padding:14px 16px; }
+    .backlog strong { color:var(--backlog); }
+    @media(max-width:900px){ .flow{grid-template-columns:1fr}.node:not(:last-child)::after{content:"↓";right:50%;top:auto;bottom:-22px;transform:translateX(50%)} }
   </style>
 </head>
 <body>
 <main>
-  <h1>Stateless <code>tp pickup</code>: one authority, one AC, existing green boundary</h1>
-  <p class="lede">The new code is the blue adapter. Trust and mutation remain with the incumbent Design, BUILD-C/checkpoint, and repository owners.</p>
-
-  <section class="flow" aria-label="Initial pickup flow">
-    <div class="node">
-      <h2>1 · Shelf authority</h2>
-      <p>Repository Design Contract, signed approval, engine receipt, authorized source SHA, and recomputed Design fingerprint must agree.</p>
-    </div>
-    <div class="node">
-      <h2>2 · Pickup adapter</h2>
-      <p>Clean exact checkout. One selected element. In-memory micro-plan. Exactly one current acceptance criterion.</p>
-    </div>
-    <div class="node">
-      <h2>3 · BUILD-C</h2>
-      <p>Existing direct-scope assignment. Existing exact-revision acceptance checkpoint. Red stops here.</p>
-    </div>
-    <div class="node">
-      <h2>4 · Repository owner</h2>
-      <p>Only the BUILD-C-authorized green revision reaches the incumbent merge-on-green boundary.</p>
-    </div>
-    <div class="node repo">
-      <h2>5 · Git receipt</h2>
-      <p>Append-only export binds source SHA + Design fingerprint + AC + checkpoint + merge + predecessor digest.</p>
-    </div>
+  <h1>R-0002: explicit operator assertion before the existing pickup path</h1>
+  <p>The active path compares one exact caller-supplied SHA with the shelf and existing repository lineage. It records that assertion and explicitly denies a cryptographic-origin claim.</p>
+  <section class="flow" aria-label="Attributed operator trust sequence">
+    <div class="node active"><strong>Human invocation</strong><small>tp pickup shelf.json<br>--trust-source<br>&lt;full SHA&gt;</small></div>
+    <div class="node"><strong>tp.py</strong><small>Forward exact string<br>No normalization<br>Neutral help/output</small></div>
+    <div class="node active"><strong>One parse factory</strong><small>40/64 lowercase hex<br>Equals shelf source<br>Frozen typed value</small></div>
+    <div class="node"><strong>Existing BUILD-C</strong><small>Direct assignment<br>One checkpoint<br>Green integration</small></div>
+    <div class="node"><strong>Explicit serializer</strong><small>Atomic receipt v2<br>Exact flag + value<br>Claim field = false</small></div>
+    <div class="node"><strong>Next checkout</strong><small>Tracked shelf + receipts<br>New explicit assertion<br>Zero private handoff</small></div>
   </section>
-
-  <div class="sequence" aria-hidden="true">
-    <div></div><div class="arrow">→</div><div></div><div class="arrow">→</div><div></div>
-  </div>
-
-  <section class="state-free">
-    <strong>Private coordination state: exactly zero.</strong>
-    No loop, run, track, wave, claim, lease, stage, per-task lens, or private receipt handoff is created. The hook security layer is unchanged.
-  </section>
-
-  <section class="resume" aria-label="Second checkout resume">
-    <div class="node repo">
-      <h2>Checkout A commits evidence</h2>
-      <p>After one green AC and merge outcome, its immutable receipt is tracked under the authorized-source-SHA/Design-fingerprint key.</p>
-    </div>
-    <div class="arrow">→</div>
-    <div class="node">
-      <h2>Checkout B resumes</h2>
-      <p>With an empty unrelated Taskplane home, validate the Git Design authority and receipt lineage, derive the next AC, and re-enter BUILD-C.</p>
-      <p class="small">No private-store transfer; forks, gaps, collisions, or unexplained history fail before execution.</p>
-    </div>
-  </section>
+  <div class="rule"><strong>Fail before BUILD-C:</strong> missing/malformed/mismatched input, invalid shelf structure, or any digest/path/predecessor/fork/gap/collision/mixed-lineage failure preserves all prior receipts and authorizes no checkpoint or merge.</div>
+  <div class="rule"><strong>Scoped tooling disposition:</strong> this standard-library-only AC4 uses the incumbent compile/import, introspection, focused/full pytest, and manual annotation/escape-hatch checks. No pydantic, ruff, black, mypy, or pyright dependency/config is added; this is not a standing waiver.</div>
+  <div class="backlog"><strong>No active edge:</strong> asymmetric approval authority and repository public trust are decision-0008 backlog inventory only. OpenSSH + allowed-signers may be redesigned after a trigger; no signer, verifier, key, dependency, or protected-surface change enters 2.17.20.</div>
 </main>
 </body>
 </html>

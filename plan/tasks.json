@@ -1,94 +1,48 @@
 {
   "tasks": [
     {
-      "id": "t04-ac3-live-build-c-seam-reverify",
+      "id": "t05-ac4-attributed-operator-trust-resume",
       "scope": [
-        "taskplane/checkpoint.py",
+        "taskplane/tp.py",
+        "taskplane/pickup.py",
         "taskplane/tests/test_pickup.py"
       ],
-      "tests": "python -m pytest -q taskplane/tests/test_pickup.py::test_stateless_checkpoint_preserves_active_virtualenv_interpreter_symlink_and_attests_revision taskplane/tests/test_pickup.py::test_severed_pickup_to_build_c_edge_fails && python -m pytest -q taskplane/tests/test_pickup.py taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py && git diff --exit-code 381ee41c34a10ae7a6eb029b4f4851db5ba9c8b9 -- taskplane/tp.py taskplane/pickup.py taskplane/build_c.py taskplane/design_contract.py taskplane/repository.py taskplane/storage.py taskplane/taskplane_lite.py hooks .taskplane/codex-hook.py",
-      "req": "R-0001",
+      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest -q -x taskplane/tests/test_pickup.py::test_second_checkout_resumes_from_git_receipts_without_private_home taskplane/tests/test_pickup.py::test_pickup_cli_requires_canonical_trust_source_and_rejects_all_lookalikes_before_dispatch taskplane/tests/test_pickup.py::test_operator_trust_factory_serializer_and_receipt_round_trip_lowercase_40_and_64_sha taskplane/tests/test_pickup.py::test_operator_trust_negative_matrix_preserves_prior_receipts_and_never_reaches_build_c taskplane/tests/test_pickup.py::test_private_secret_pickup_path_remains_strict_v1_and_green && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest -q taskplane/tests/test_pickup.py && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m py_compile taskplane/tp.py taskplane/pickup.py taskplane/tests/test_pickup.py && git diff --check && git diff --exit-code a73f125e762670323d0e4a8fbbef3a1edf3ea958 -- taskplane/design_contract.py taskplane/taskplane_lite.py taskplane/build_c.py taskplane/checkpoint.py taskplane/repository.py taskplane/storage.py taskplane/loop.py hooks .taskplane/codex-hook.py components.yaml .github deploy README.md CHANGELOG.md .codex-plugin/plugin.json .claude-plugin/plugin.json .claude-plugin/marketplace.json",
+      "req": "R-0002",
       "deps": [],
-      "type": "integration",
-      "acceptance_refs": [
-        "AC1 — a shelf contract runs end-to-end via pickup with zero run/track state (trace evidence). Verify with a signed shelf fixture and trace assertions covering pickup through the existing BUILD-C checkpoint and green integration while proving zero run, track, claim, lease, wave, or equivalent state.",
-        "AC2 — cold start on a fresh checkout at the same SHA to first executing checkpoint in <2 minutes. Verify with a wall-clock integration test from a fresh checkout, empty private Taskplane home, exact authorized SHA, and no warmed or inherited runtime state.",
-        "AC3 — severed-edge tests: cutting the pickup→build_c entry fails; legacy loop path untouched and its suite still green. Verify with a severed pickup-to-BUILD-C seam and the unchanged legacy-loop regression selectors."
-      ],
+      "type": "security",
       "contracts": [
         "contract:pickup.stateless-front-door",
+        "contract:pickup.operator-trust-source",
+        "contract:design.approved-contract",
         "contract:build-c.direct-assignment",
-        "contract:build-c.acceptance-checkpoint"
+        "contract:build-c.acceptance-checkpoint",
+        "contract:repository.merge-on-green",
+        "resource:exports.pickup-receipts"
       ],
       "new_modules": [
         "taskplane/tp.py",
         "taskplane/pickup.py",
+        "taskplane/tests/test_pickup.py",
+        "taskplane/design_contract.py",
+        "taskplane/taskplane_lite.py",
         "taskplane/build_c.py",
         "taskplane/checkpoint.py",
-        "taskplane/design_contract.py",
-        "taskplane/storage.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/tests/test_pickup.py"
-      ],
-      "design_edges": [
-        "taskplane/pickup.py->contract:pickup.stateless-front-door:provides",
-        "taskplane/design_contract.py->contract:design.approved-contract:provides",
-        "contract:design.approved-contract->taskplane/pickup.py:consumes",
-        "taskplane/build_c.py->contract:build-c.direct-assignment:provides",
-        "contract:build-c.direct-assignment->taskplane/pickup.py:consumes",
-        "taskplane/pickup.py->taskplane/build_c.py:runtime",
-        "taskplane/build_c.py->taskplane/checkpoint.py:runtime",
-        "taskplane/checkpoint.py->contract:build-c.acceptance-checkpoint:provides",
-        "contract:build-c.acceptance-checkpoint->taskplane/pickup.py:consumes",
-        "taskplane/tests/test_pickup.py->taskplane/pickup.py:test",
-        "taskplane/tests/test_pickup.py->taskplane/storage.py:test"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC3 — severed-edge tests: cutting the pickup→build_c entry fails; legacy loop path untouched and its suite still green. Verify with a severed pickup-to-BUILD-C seam and the unchanged legacy-loop regression selectors.",
-        "AC1 and AC2 remain satisfied by their prior accepted exact-commit evidence, and the released-tip prerequisite T03 is already passed and audited at exact SHA 5c28165f800fffcac20aa2004d9a2b38efb195cf; all three are deliberately omitted from executable work and must not be replayed.",
-        "The human-approved T04 amendment permits changes only to `taskplane/checkpoint.py` and `taskplane/tests/test_pickup.py`; AC4 and every later task remain locked until this AC3 checkpoint passes.",
-        "Repair `taskplane/checkpoint.py::run_and_mint_stateless` so the active engine's absolute virtual-environment interpreter path is preserved without dereferencing its symlink to a base interpreter, while the exact interpreter identity, argv, environment, pytest 8 execution, revision attestation, and resulting receipt remain engine-bound; caller PATH must never select or substitute an arbitrary interpreter.",
-        "Add the targeted same-commit regression `test_stateless_checkpoint_preserves_active_virtualenv_interpreter_symlink_and_attests_revision`, proving the virtual-environment interpreter symlink path is retained and actual pytest execution plus revision attestation succeeds; a fixture-only workaround is not acceptable.",
-        "Run the targeted interpreter regression, the severed pickup-to-BUILD-C proof, the full pickup suite, and the unchanged legacy loop/governed-command selectors through portable `python -m pytest`; do not increase a timeout, skip, xfail, weaken an assertion, or weaken interpreter, producer, revision, environment, checkpoint, or receipt authority.",
-        "Diff evidence against 381ee41c34a10ae7a6eb029b4f4851db5ba9c8b9 must prove `taskplane/tp.py`, `taskplane/pickup.py`, `taskplane/build_c.py`, `taskplane/design_contract.py`, `taskplane/repository.py`, `taskplane/storage.py`, `taskplane/taskplane_lite.py`, `hooks/**`, and `.taskplane/codex-hook.py` are unchanged; no Phase 0, E0, R-0011, other R-0013, hook, legacy-loop, release, or unrelated redesign work is permitted."
-      ]
-    },
-    {
-      "id": "t05-ac4-repository-receipt-resume",
-      "scope": [
-        "taskplane/pickup.py",
-        "taskplane/build_c.py",
         "taskplane/repository.py",
-        "taskplane/tests/test_pickup.py",
-        "exports/**"
-      ],
-      "tests": "python -m pytest -q taskplane/tests/test_pickup.py::test_second_checkout_resumes_from_git_receipts_without_private_home taskplane/tests/test_pickup.py::test_receipt_lineage_rejects_collision_fork_gap_and_digest_tamper taskplane/tests/test_pickup.py::test_interrupted_checkpoint_preserves_prior_receipts_and_blocks_merge",
-      "req": "R-0001",
-      "deps": [
-        "t04-ac3-live-build-c-seam-reverify"
-      ],
-      "type": "reliability",
-      "contracts": [
-        "contract:pickup.stateless-front-door",
-        "contract:design.approved-contract",
-        "contract:build-c.acceptance-checkpoint",
-        "contract:repository.merge-on-green",
-        "resource:exports.pickup-receipts"
-      ],
-      "new_modules": [
-        "taskplane/repository.py"
+        "taskplane/storage.py"
       ],
       "design_edges": [
-        "taskplane/build_c.py->taskplane/repository.py:runtime",
-        "taskplane/repository.py->contract:repository.merge-on-green:provides",
+        "taskplane/tp.py->contract:pickup.operator-trust-source:provides",
+        "contract:pickup.operator-trust-source->taskplane/pickup.py:consumes",
+        "taskplane/pickup.py->contract:pickup.stateless-front-door:changes",
+        "contract:design.approved-contract->taskplane/pickup.py:structural-consumes",
+        "contract:build-c.direct-assignment->taskplane/pickup.py:consumes",
+        "contract:build-c.acceptance-checkpoint->taskplane/pickup.py:consumes",
         "contract:repository.merge-on-green->taskplane/pickup.py:consumes",
-        "taskplane/pickup.py->resource:exports.pickup-receipts:provides"
+        "taskplane/pickup.py->resource:exports.pickup-receipts:provides",
+        "taskplane/pickup.py->taskplane/build_c.py:runtime-existing",
+        "taskplane/tests/test_pickup.py->taskplane/tp.py:test",
+        "taskplane/tests/test_pickup.py->taskplane/pickup.py:test"
       ],
       "impact_policy": {
         "local_depth": 3,
@@ -97,50 +51,22 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "AC4 — a second checkout resumes from repo-resident receipts with no private-store handoff. Verify by completing at least one manual criterion, discarding access to the first checkout's private Taskplane home, and resuming from a second checkout using only Git-tracked Design authority and `exports/` receipts at the same SHA/fingerprint identity.",
-        "AC4 — a second checkout resumes from repo-resident receipts with no private-store handoff. Verify after at least one manual criterion using only Git-tracked Design authority and exports receipts at the same SHA and Design fingerprint."
+        "AC4 — a fresh second checkout resumes through explicit attributed operator trust with no private-store handoff. After one manual criterion and atomic receipt are committed, a fresh second checkout with an empty or nonexistent Taskplane home and no first-checkout access invokes pickup with --trust-source <exact-source-sha>. The exact flag and full SHA are recorded verbatim in the new receipt as attributed human authority; the SHA equals the shelf authorized source SHA and existing exact-SHA, Design-fingerprint, and receipt-lineage identity; the next existing BUILD-C checkpoint runs with zero run, track, claim, lease, wave, or private-handoff state; and no output claims cryptographic authenticity. Missing flag, malformed SHA, SHA mismatch, missing or malformed shelf evidence, structural tampering, digest, path, or predecessor mismatch, fork, gap, collision, and mixed lineage identity all refuse before BUILD-C, preserve prior receipts byte-identically, create no authoritative partial receipt, and authorize no merge. The unchanged v1 private-secret symmetric path retains focused green coverage.",
+        "Completed T01 through T04, repository-only resume at 3ee3a17a695bf059f90504507a8eb5fe690fb52d, and retry-safe atomic receipt publication at a73f125e762670323d0e4a8fbbef3a1edf3ea958 are inventory only and must not be replayed, replaced, or assigned a new checkpoint or evaluation.",
+        "Only the pickup subparser sets `allow_abbrev=False`; canonical `--workspace` remains supported and displayed, shortened workspace spellings are unsupported by attributed human decision and receive no compatibility shim or abbreviation tests, and the root parser plus unrelated subparsers remain unchanged.",
+        "The only accepted trust option is exact `--trust-source`: all eleven proper prefixes (`--t`, `--tr`, `--tru`, `--trus`, `--trust`, `--trust-`, `--trust-s`, `--trust-so`, `--trust-sou`, `--trust-sour`, `--trust-sourc`) plus named alternate-case, underscore, omitted-hyphen, and suffix forms refuse before `cmd_pickup`, `pickup.run`, BUILD-C, receipt publication, or private-state creation.",
+        "Define one private `_OperatorTrust` standard-library dataclass with `frozen=True` and `slots=True`; `_parse_operator_trust(raw, *, boundary, expected_source_sha, required)` is the sole CLI-string and receipt-mapping construction factory, `_serialize_operator_trust` explicitly emits only the five closed persisted fields, and neither raw authority data nor `_OperatorTrust` crosses the unchanged micro-plan handoff to BUILD-C.",
+        "Accept only exact unmodified lowercase 40- or 64-hex source SHAs that byte-match the shelf source identity; focused positives cover both lengths, while wrong lengths, uppercase, whitespace, symbolic/non-hex inputs, and well-formed mismatches refuse without normalization, coercion, ref resolution, or inference.",
+        "The v2 receipt records the exact verbatim `--trust-source` flag/value as attributed human authority with `cryptographic_authenticity_claimed: false`; public output, traces, tests, and receipt data must make no cryptographic-authenticity, signed-human, producer-origin, or repository-origin claim.",
+        "Operator mode appends only a strict additive `taskplane.pickup-receipt/v2` after a zero-or-more contiguous incumbent-v1 prefix; v1 after v2, malformed/unknown/missing operator fields, a true authenticity claim, mixed source or Design identity, and digest/path/predecessor/fork/gap/collision/mixed-lineage failures refuse before BUILD-C and leave every prior receipt byte-identical with no authoritative partial file.",
+        "The no-flag incumbent private-secret path remains byte- and behavior-compatible, invokes the unchanged v1 verifier/key source, writes the exact v1 receipt field set without `operator_trust`, and retains its existing focused green and tamper coverage.",
+        "Positive and negative operator-trust paths preserve the existing `assign_direct_scopes` → BUILD-C → checkpoint → merge-on-green path, one-criterion discipline, retry-safe atomic publication, and exactly zero run, track, claim, lease, wave, active-loop, private-handoff, or equivalent state.",
+        "Production behavior and all focused AC4 proofs land in the same commit. Manually review every changed active Python line for complete annotations and zero unapproved `Any`, `cast`, `# type: ignore`, `# noqa`, untyped-dict boundary, or equivalent escape; add no pydantic, ruff, black, mypy, pyright, formatter, linter, strict-type dependency, configuration, debt, or precedent.",
+        "No handwritten argv scan, private argparse override, root-wide parser change, signer/verifier/key/public-trust work, historical asymmetric runtime claim, protected-surface change, Phase 0, E0, R-0011, unrelated R-0013, hook/legacy-loop work, new dependency/tooling, or release mutation is permitted."
       ]
     },
     {
-      "id": "t06-ac5-final-functional-suite",
-      "scope": [
-        "taskplane/tests/test_pickup.py"
-      ],
-      "tests": "python -m pytest taskplane/tests -q",
-      "req": "R-0001",
-      "deps": [
-        "t05-ac4-repository-receipt-resume"
-      ],
-      "type": "reliability",
-      "contracts": [
-        "contract:pickup.stateless-front-door",
-        "contract:design.approved-contract",
-        "contract:build-c.direct-assignment",
-        "contract:build-c.acceptance-checkpoint",
-        "contract:repository.merge-on-green",
-        "resource:exports.pickup-receipts"
-      ],
-      "new_modules": [],
-      "design_edges": [
-        "taskplane/tp.py->taskplane/pickup.py:runtime",
-        "taskplane/pickup.py->taskplane/build_c.py:runtime",
-        "taskplane/build_c.py->taskplane/checkpoint.py:runtime",
-        "taskplane/build_c.py->taskplane/repository.py:runtime",
-        "taskplane/pickup.py->resource:exports.pickup-receipts:provides"
-      ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "AC5 — full suite on the final SHA: no new failures. Verify with `python -m pytest taskplane/tests -q` on the final clean commit and compare the result with the exact baseline; any new failure blocks release review.",
-        "AC5 — full suite on the final SHA: no new failures. Verify with python -m pytest taskplane/tests -q on the final clean commit against the exact baseline; any new failure blocks release review."
-      ]
-    },
-    {
-      "id": "t07-v21720-release-surfaces",
+      "id": "t06-v21720-bounded-release-surfaces",
       "scope": [
         "README.md",
         "CHANGELOG.md",
@@ -148,18 +74,15 @@
         ".claude-plugin/plugin.json",
         ".claude-plugin/marketplace.json"
       ],
-      "tests": "python -m json.tool .codex-plugin/plugin.json >/dev/null && python -m json.tool .claude-plugin/plugin.json >/dev/null && python -m json.tool .claude-plugin/marketplace.json >/dev/null && rg -q '2\\.17\\.20' README.md CHANGELOG.md .codex-plugin/plugin.json .claude-plugin/plugin.json .claude-plugin/marketplace.json && python -m pytest taskplane/tests -q && git diff --exit-code 726acd108d3ca431e680183de129918842202eda -- hooks .taskplane/codex-hook.py",
-      "req": "R-0001",
+      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m json.tool .codex-plugin/plugin.json >/dev/null && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m json.tool .claude-plugin/plugin.json >/dev/null && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m json.tool .claude-plugin/marketplace.json >/dev/null && /private/tmp/taskplane-py312-pytest8-20260824/bin/python taskplane/tp.py version | rg -q '2\\.17\\.20' && /private/tmp/taskplane-py312-pytest8-20260824/bin/python taskplane/tp.py pickup --help | rg -q -- '--trust-source' && rg -q '2\\.17\\.20' README.md CHANGELOG.md .codex-plugin/plugin.json .claude-plugin/plugin.json .claude-plugin/marketplace.json && rg -qi 'operator.trust|attributed operator trust' README.md CHANGELOG.md && rg -qi 'no cryptographic|does not cryptographically' README.md CHANGELOG.md && git diff --check && git diff --exit-code HEAD^ -- taskplane hooks .taskplane/codex-hook.py components.yaml .github deploy",
+      "req": "R-0002",
       "deps": [
-        "t06-ac5-final-functional-suite"
+        "t05-ac4-attributed-operator-trust-resume"
       ],
       "type": "integration",
       "contracts": [
         "contract:pickup.stateless-front-door",
-        "contract:design.approved-contract",
-        "contract:build-c.direct-assignment",
-        "contract:build-c.acceptance-checkpoint",
-        "contract:repository.merge-on-green",
+        "contract:pickup.operator-trust-source",
         "resource:exports.pickup-receipts"
       ],
       "new_modules": [
@@ -177,8 +100,41 @@
         "requirement_depth": 1
       },
       "criteria": [
-        "Update shipped version metadata and release notes to 2.17.20 only after the functional acceptance path is green; do not push, tag, publish, or mutate `origin/main` within this delivery authority.",
-        "Re-run the already-green full portable suite after the metadata-only change so the final 2.17.20 candidate remains bound to one exact clean SHA; any failure blocks final review and does not create a new acceptance checkpoint."
+        "2.17.20 release surfaces are consistent and bounded. README, CHANGELOG, Codex plugin manifest, Claude plugin manifest, and marketplace manifest identify 2.17.20, parse successfully, describe the operator-trust limitation accurately, and perform no push, tag, publication, release, or origin/main mutation.",
+        "This bounded metadata commit starts only after AC4 is committed and green, changes no product/test/protected file, states that operator trust is attributed structural agreement rather than cryptographic authenticity, and introduces no signing/asymmetric claim, dependency, tooling, push, tag, publication, package/marketplace release, or `origin/main` mutation."
+      ]
+    },
+    {
+      "id": "t07-ac5-final-clean-sha-proof",
+      "scope": [
+        "exports/**"
+      ],
+      "tests": "test -z \"$(git status --porcelain --untracked-files=all)\" && git rev-parse HEAD && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest taskplane/tests -q",
+      "req": "R-0002",
+      "deps": [
+        "t06-v21720-bounded-release-surfaces"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:pickup.stateless-front-door",
+        "contract:pickup.operator-trust-source",
+        "contract:design.approved-contract",
+        "contract:build-c.direct-assignment",
+        "contract:build-c.acceptance-checkpoint",
+        "contract:repository.merge-on-green",
+        "resource:exports.pickup-receipts"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC5 — full suite on the final SHA: no new failures. After the AC4 commit and consistent 2.17.20 version and release metadata are committed, the exact candidate checkout is clean and python -m pytest taskplane/tests -q with the pinned delivery interpreter reports zero new failures, including unchanged pickup, v1 symmetric, atomic-publication, hook, and legacy-loop regressions; any failure blocks final review and grants no broad repair authority.",
+        "This checkpoint changes no product, test, documentation, manifest, hook, or release file and grants no repair authority. It may persist only an explicitly authorized repository delivery proof or receipt under `exports/**` when the approved Design/engine requires that artifact; otherwise it records the governed command receipt without a repository change."
       ]
     }
   ]

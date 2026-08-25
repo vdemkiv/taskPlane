@@ -1,75 +1,97 @@
-# Plan — amended AC3 checkpoint execution for stateless `tp pickup`
+# Plan — remaining attributed operator-trust pickup delivery
 
-## Authority and completed evidence
+## Authority, baseline, and non-replay inventory
 
-This minimum replan remains anchored to R-0001 and the approved Design fingerprint `f3ccf610cb8b6cc17c8ce68a087f5edf691693e42ddc3c3441d354026952970d`. The approved graph baseline remains `e0d54a84434269c488941a265f865803c90c7e8adaa0796159ea60a3257adc8b`; the human amendment changes no Design module, contract, edge, or depth policy.
+This Plan replaces all stale Plan authority and is bound to governing `specs/spec.md` SHA-256 `0ae3d5c0071e06b76cc67cd7216c6b9cc68231d18354634a8a6d8fa18984eda4`, approved Design content fingerprint `2cb1e7c7bd38e0f6ea3566fe0f454a757d60d488527c57ebb4026b6709ec34d9`, and engine-approved Design fingerprint `cc7060089b88e213736d2a584e30abad72e621f6a68b47399cc5dc13f62f76ea`. The exact product baseline is `a73f125e762670323d0e4a8fbbef3a1edf3ea958`; the approved post-Design graph fingerprint is `c6e3f9ed00e00c75fe07d3a4734633ea19d36d81b7a7ef4ce39d289025e26199` (55 modules / 177 edges).
 
-Completed work is audit history, not executable inventory. AC1 and AC2 retain their accepted exact-commit evidence at `70f311ad75de33a530a6ba43ac213883a1e95c3f` and `5cc647cabd8bd8528b3044184e38d3317f593f27`. The released-tip prerequisite T03 is passed and audited at `5c28165f800fffcac20aa2004d9a2b38efb195cf`. T01 through T03 are deliberately absent from `plan/tasks.json`; none may be replayed.
+Completed commits are inventory only and receive no task, checkpoint, implementation, or evaluation replay:
 
-T04 failed with a production defect in `taskplane/checkpoint.py::run_and_mint_stateless`: dereferencing `sys.executable` through `os.path.realpath` escaped the active authoritative virtual environment to `/usr/local/opt/python@3.12/bin/python3.12`, where pytest was unavailable. Preserving the active virtual-environment executable path runs pytest 8 and produces the required revision attestation. The human approved only the smallest repair: `taskplane/checkpoint.py` plus its direct regression in `taskplane/tests/test_pickup.py`.
+- T01 / AC1: `70f311ad75de33a530a6ba43ac213883a1e95c3f`
+- T02 / AC2: `5cc647cabd8bd8528b3044184e38d3317f593f27`
+- T03 released-tip prerequisite: `5c28165f800fffcac20aa2004d9a2b38efb195cf`
+- T04 / AC3: `0c19087e3eb28d70869f2752f12c2d3742f33810`
+- repository-only resume groundwork: `3ee3a17a695bf059f90504507a8eb5fe690fb52d`
+- retry-safe atomic receipt publication: `a73f125e762670323d0e4a8fbbef3a1edf3ea958`
 
-The one required bounded impact query covered exactly those two paths at `5c28165f800fffcac20aa2004d9a2b38efb195cf`. It returned 27 impacted modules, zero unknown modules, no truncation or degraded scan, affected requirement `req:R-0001`, graph fingerprint `0e269f67a62c3caab0a41b9377bdb920f7a6be72cd808640416be8b474a0d942`, and scan-quality fingerprint `409cbc082b9fcfbefd746c3622d3ae8b2c36f315bf1e928150ce5dec4a665ee8`. Every remaining task keeps the approved local-depth 3, contract-only, contract-depth 1, requirement-depth 1 policy.
+AC1 through AC3 may run only as unchanged regressions inside the final AC5 suite. Phase 0, E0, R-0011, unrelated R-0013, asymmetric/signing work, atomic-publication repair, protected surfaces, new dependencies/tooling, and external release mutation remain excluded.
 
-## Remaining serial delivery
+The spec, Design, backlog Design inventory, and this Plan are governance evidence. Their already-dirty bytes must be committed only after Plan authorization in a governance-only commit, separate from the AC4 behavior-and-test commit. This planner does not commit them.
 
-The executable graph is `T04 → T05 → T06 → T07`. Each functional checkpoint owns one acceptance criterion. Production behavior and its focused proof land in the same implementation commit. A failed or incomplete checkpoint cannot unlock the next task.
+## Bounded graph result
 
-### T04 — AC3: interpreter-bound stateless checkpoint and live BUILD-C seam
+The single required Taskplane 2.17.19 graph-impact call used the pinned Python 3.12/pytest 8 runtime and exactly the remaining eight implementation/release paths. It returned:
 
-T04 is now the root task. Its only writable source/test paths are:
+- graph fingerprint `c6e3f9ed00e00c75fe07d3a4734633ea19d36d81b7a7ef4ce39d289025e26199`;
+- scan-quality fingerprint `588762304418faac88c9b244efa50eb756e2cafe9a871bcdcaef7ca1100f57c6`;
+- source SHA `a73f125e762670323d0e4a8fbbef3a1edf3ea958`;
+- 27 impacted modules, zero unknown modules, and no degraded producer;
+- the approved depth policy: local 3, contract-only boundary, contract 1, requirement 1; and
+- policy-bounded truncation only at the R-0001 → R-0002 requirement-depth boundary, with no local depth truncation.
 
-- `taskplane/checkpoint.py`
-- `taskplane/tests/test_pickup.py`
+No new module or dependency is introduced.
 
-Repair `run_and_mint_stateless` so it preserves the active engine's absolute virtual-environment interpreter path without dereferencing the symlink to a base interpreter. The interpreter identity, argv, environment, pytest result, revision attestation, and checkpoint receipt remain bound to engine evidence. The caller's `PATH` must not select or substitute another interpreter.
+## Remaining serial graph
 
-The same commit adds `test_stateless_checkpoint_preserves_active_virtualenv_interpreter_symlink_and_attests_revision`. It must exercise the actual pytest/revision-attestation path, not merely inspect a fixture or mock away execution. T04 then runs that focused regression, the severed pickup-to-BUILD-C proof, the full pickup suite, and the unchanged legacy loop/governed-command selectors using portable `python -m pytest`.
+Only three executable tasks remain:
 
-The protected-diff check freezes these surfaces against `381ee41c34a10ae7a6eb029b4f4851db5ba9c8b9`:
+`T05 AC4 operator trust → T06 2.17.20 surfaces → T07 AC5 exact-SHA proof`
+
+There are zero per-task lenses. DEFINE's five-lens sweep remains the sole DEFINE sweep. The only planned concurrency is the loop-owned final quick security plus QA pair after AC5.
+
+### T05 — one AC4 implementation commit
+
+Writable scope is exactly:
 
 - `taskplane/tp.py`
 - `taskplane/pickup.py`
-- `taskplane/build_c.py`
-- `taskplane/design_contract.py`
-- `taskplane/repository.py`
-- `taskplane/storage.py`
-- `taskplane/taskplane_lite.py`
-- `hooks/**`
-- `.taskplane/codex-hook.py`
+- `taskplane/tests/test_pickup.py`
 
-No timeout increase, skip, xfail, assertion weakening, PATH-selected interpreter, fixture-only workaround, alternate checkpoint authority, or receipt weakening can satisfy T04. AC4 and later work remain locked until the exact AC3 command is green.
+The pickup subparser alone disables option abbreviation for every pickup option. Canonical `--workspace` remains supported and visible. The human decision classifies shortened pickup spellings as accidental and unsupported, so no alias, shim, shortened-workspace test inventory, handwritten argv scan, private argparse override, root-parser change, or unrelated-subparser change is authorized.
 
-### T05 — AC4: repository-only receipt resume
+The only accepted trust token is exact `--trust-source`. The public seam must reject all eleven proper prefixes and the named case, underscore, omitted-hyphen, and suffix lookalikes before `cmd_pickup`, `pickup.run`, BUILD-C, receipt publication, or state mutation.
 
-After T04 passes, prove that a second checkout resumes from Git-tracked Design authority and `exports/` receipts without access to the first private Taskplane home. The receipt chain remains keyed by exact authorized source SHA plus Design fingerprint, append-only, tamper-evident, contiguous, and collision/fork/gap resistant. Interrupted or red checkpoint evidence preserves prior receipts but authorizes neither the next criterion nor merge.
+`taskplane/pickup.py` adds exactly one frozen/slotted private `_OperatorTrust`, one sole `_parse_operator_trust` construction factory shared by raw CLI and raw receipt input, and one explicit closed serializer. It accepts only exact unmodified lowercase 40- or 64-hex values matching the shelf source SHA. Raw mappings and the typed trust value stop inside pickup; BUILD-C receives only the incumbent normalized micro-plan.
 
-### T06 — AC5: final functional suite
+Operator mode appends strict `taskplane.pickup-receipt/v2` after an incumbent contiguous v1 prefix. The exact flag and full value are recorded verbatim as attributed operator authority with `cryptographic_authenticity_claimed: false`. It never claims human, producer, shelf, engine, or repository cryptographic authenticity. V1 after v2, malformed v2 assertions, source/Design mismatch, shelf structural failure, digest/path/predecessor mismatch, fork, gap, collision, and mixed lineage refuse before BUILD-C, preserve all prior receipts byte-for-byte, and create no authoritative partial receipt.
 
-After AC4 passes, run `python -m pytest taskplane/tests -q` on the exact clean functional SHA and compare with the exact baseline. Any new failure blocks release metadata. This verification checkpoint grants no broad repair authority; a defect returns to its owning bounded scope.
+The no-flag private-secret path, v1 verifier/key source and exact receipt shape, direct assignment, BUILD-C, checkpoint, merge-on-green, retry-safe atomic publication, one-criterion discipline, and zero run/track/claim/lease/wave/private-handoff state remain unchanged. AC4 behavior plus its focused positive, negative, type-boundary, CLI, v1/v2, and v1-compatibility proofs land in the same commit.
 
-### T07 — 2.17.20 release surfaces
+Validation is increasing-cost: focused fail-fast selectors, the full pickup file, compile/import smoke, diff hygiene, then exact protected-surface comparison. Manual changed-line review requires complete boundary annotations and zero new `Any`, `cast`, type-ignore, noqa, untyped-dict boundary, or equivalent escape. No pydantic, ruff, black, mypy, pyright, formatter, lint, strict-type dependency/configuration, debt record, or precedent is added.
 
-Only after functional AC1 through AC5 are green, update README, CHANGELOG, `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` consistently to 2.17.20. Revalidate all three JSON manifests and rerun the full portable suite on the final clean candidate SHA. This task performs no push, tag, publication, marketplace release, package release, or `origin/main` mutation.
+### T06 — bounded 2.17.20 release surfaces
 
-## Design and contract coverage
+After AC4 is committed and green, change only README, CHANGELOG, Codex manifest, Claude manifest, and marketplace manifest. All five identify 2.17.20; the three JSON files parse; the pinned CLI version and pickup-help smoke pass; and README/CHANGELOG truthfully state that attributed operator trust is structural agreement, not cryptographic authenticity.
 
-The remaining tasks preserve all fourteen approved proposed-module identities, all sixteen proposed edges, the five acceptance-map criteria through accepted history plus current executable ownership, and all six canonical boundaries:
+This is a metadata-only commit. It changes no product, test, protected, signing, or tooling surface and performs no push, tag, package/marketplace publication, release, or `origin/main` mutation.
+
+### T07 — AC5 clean exact-SHA proof
+
+After T06, the checkout must be clean. Record its exact HEAD and run exactly:
+
+`/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest taskplane/tests -q`
+
+Zero new failures are required, including unchanged pickup, v1 symmetric, atomic-publication, hook, and legacy-loop regressions. A failure blocks and grants no product or broad repair authority. T07 changes no product, test, documentation, manifest, hook, or release file. It may persist only explicitly authorized delivery proof under `exports/**` if the approved engine requires a repository artifact; otherwise the governed command receipt is external loop evidence.
+
+## Contracts, graph coverage, and fail-closed representation
+
+Active task contracts are limited to the seven governing canonical ids:
 
 - `contract:pickup.stateless-front-door`
+- `contract:pickup.operator-trust-source`
 - `contract:design.approved-contract`
 - `contract:build-c.direct-assignment`
 - `contract:build-c.acceptance-checkpoint`
 - `contract:repository.merge-on-green`
 - `resource:exports.pickup-receipts`
 
-T04 changes only the incumbent checkpoint owner and its direct test. The existing pickup, BUILD-C, Design authority, repository, private-state witnesses, legacy loop, and hook surfaces remain consumption or protected-verification boundaries rather than redesign scope. There is no new module, second checkpoint engine, alternate interpreter authority, private receipt store, or expanded graph edge.
+The task set declares all fourteen exact approved module identities, all eleven active proposed edges, exactly three task-owned acceptance strings, exactly seven active canonical contract ids, and the exact 3/1/1 contract-only policy. Protected incumbent modules appear only as Design coverage and diff witnesses; they are outside write scope.
 
-## Risks, exclusions, and final stop
+`contract:pickup.asymmetric-authenticity` and `resource:repository.pickup-public-verification-material` remain historical negative-drift inventory only. They are intentionally absent from active task contracts and `design_edges`; no task, runtime, implementation, release, evaluation, or as-built claim realizes their metadata-only relation.
 
-- Interpreter escape: preserve the authoritative active virtual-environment path and bind its absolute identity, argv, and environment into checkpoint evidence; never resolve through caller PATH or dereference to a base interpreter that lacks the governed runtime.
-- False-green fixture: the regression must execute real pytest and produce revision attestation.
-- Security drift: protected pickup and hook bytes remain frozen, and the severed-edge proof must still fail when pickup no longer reaches BUILD-C.
-- Premature progression: T04 gates AC4; AC4 gates AC5; functional green gates 2.17.20 metadata.
-- Scope drift: Phase 0, E0, R-0011, every other R-0013 item, hook changes, unrelated legacy-loop work, timeout changes, broad redesign, and external release mutations remain excluded.
+The historical ids are absent from the active requirement contract registry, approved Design contracts, proposed edges, task contracts, and task edge claims. They remain only non-authoritative backlog inventory. The mandatory final quick security/QA, same-SHA EM, and push-authority stop are separately classified as loop-owned post-acceptance governance, not a fourth acceptance criterion, executable task, proposed edge, implementation claim, or per-task lens.
 
-After T07 is green on one exact clean SHA, run exactly two quick reviews concurrently against that SHA and evidence set: security and QA. After both finish, run the engineering-manager review against the identical SHA. Report the 2.17.20 candidate and stop for explicit human push authority.
+## Final governed review and authority stop
+
+After AC5 passes, the loop dispatches quick security and quick QA concurrently against the identical AC5 SHA and evidence fingerprints. Only after both complete does EM review that same SHA/evidence. The workflow then stops for explicit human push authority.
+
+These are governed review stages/checkpoints, not per-task lenses or implementation tasks. No push, tag, publication, package/marketplace release, or `origin/main` mutation is authorized by this Plan.
