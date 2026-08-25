@@ -317,12 +317,14 @@ class TestEmitWorkflow:
         # args IS the dispatch payload: identical briefs, slots intact
         assert args["deep"] == payload["deep"]
         assert args["sweep"] == payload["sweep"]
-        assert args["deep"], "fixture must route at least one deep lens"
-        for b in args["deep"]:
-            assert b["task_slot"] == f"lens-{b['id']}"
-            assert b["contract"]["task_slot"] == b["task_slot"]
-            assert f"export TASKPLANE_TASK={b['task_slot']}" in b["prompt"]
-            assert b["output"] == f".em-review/lens-{b['id']}/findings.json"
+        assert args["deep"] == []
+        sweep = args["sweep"]
+        assert sweep
+        assert 4 <= len(sweep["ids"]) <= 5
+        assert sweep["task_slot"] == "lens-sweep"
+        assert sweep["contract"]["task_slot"] == sweep["task_slot"]
+        assert f"export TASKPLANE_TASK={sweep['task_slot']}" in sweep["prompt"]
+        assert sweep["output"] == ".em-review/lens-sweep/findings.json"
 
     def test_auto_picks_workflow_when_opted_in(self, tmp_path, monkeypatch):
         _clean_env(monkeypatch)

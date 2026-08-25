@@ -362,6 +362,8 @@ def test_em_instruction_consumes_exact_concurrent_sweep_slots_once():
 
 def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
         tmp_path, monkeypatch):
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     workspace = str(tmp_path)
     runtime_kernel, evidence_kernel, review_kernel = \
         loop._review_runtime_modules()
@@ -600,6 +602,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
             result["references_applied"] = brief["language_references"]
         content = json.dumps(result, sort_keys=True, separators=(",", ":"))
         event = {
+            "session_id": "sweep-producer-session",
             "turn_id": f"sweep-child-turn-{index}",
             "tool_use_id": f"sweep-write-{index}",
             "agent_id": f"sweep-child-{index}", "tool_name": "Write",
@@ -615,6 +618,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
             [*native_cli, "subagent-start"], cwd=workspace,
             env=screen_environment, input=json.dumps({
                 "cwd": workspace,
+                "session_id": event["session_id"],
                 "turn_id": event["turn_id"],
                 "agent_id": event["agent_id"],
                 "agent_type": "default",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import subprocess
 import sys
@@ -61,6 +62,64 @@ def _result(lease: dict | None = None, *, findings=None) -> dict:
         }],
         "findings": copy.deepcopy(findings or []),
     }
+
+
+def _write_fixture_slot_results(fixture, *, verdict_by_lens: dict[str, str],
+                                run_id: str) -> None:
+    """Author one sealed result per slot with lens-specific verdicts."""
+    state = review._load_state(fixture.ws, run_id)
+    store = review_evidence.ArtifactStore(fixture.ws)
+    for index, slot in enumerate(state["slots"]):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        lens_results = []
+        for lens_id in lease["lens_ids"]:
+            verdict = verdict_by_lens.get(lens_id, "pass")
+            lens_results.append({
+                "lens": lens_id,
+                "verdict": verdict,
+                "blockers": 1 if verdict == "fail" else 0,
+                **({"checked_evidence": [{
+                    "file": "src/service.py",
+                    "line": 1,
+                    "claim": "reviewed the changed service behavior",
+                }]} if verdict == "pass" else {}),
+            })
+        row = {
+            **lease,
+            "schema": "taskplane.lens-slot-output/v2",
+            "authored_by": "lens-slot",
+            "lens_results": lens_results,
+            "findings": [],
+        }
+        if brief.get("language_references"):
+            row["references_applied"] = list(brief["language_references"])
+        content = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        event = {
+            "session_id": f"lens-session-{state['run_id']}",
+            "agent_id": f"lens-child-{state['run_id'][:8]}-{index}",
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": slot["result_path"],
+                "content": content,
+            },
+        }
+        contract = {
+            "task": brief["producer_contract"]["task"],
+            "task_id": f"lens-contract-{index}",
+            "read_only": True,
+            "write_allow": [slot["result_path"]],
+        }
+        review.register_slot_producer(
+            fixture.ws, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        review.record_slot_write_observation(
+            fixture.ws, event=event, contract=contract,
+            task_slot=brief["producer_contract"]["task_slot"])
+        path = os.path.join(fixture.ws, slot["result_path"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(content)
 
 
 def _partial_revision(tmp_path, findings: list[dict], *, prior=None) -> dict:
@@ -391,10 +450,20 @@ def test_real_collector_consumes_repair_and_exact_execution_binding():
 
         manifest = review.collect_review(
             fixture.ws, publish=False, run_id=started["run_id"])
+        collected = review._load_state(fixture.ws, started["run_id"])
         canonical_results = [store.read(ref)
                              for ref in store.references("slot-result")]
 
-        assert manifest["status"] == "needs_deep_followup"
+        assert manifest["status"] == "complete"
+        assert manifest["review_depth_policy"]["outcome"] == \
+            "correction_required"
+        assert manifest["quick_corrections"]
+        assert all(row["action"] == "return-same-task-for-correction"
+                   and row["deep_dispatch"] is False
+                   for row in manifest["quick_corrections"])
+        assert "adaptive_wave" not in collected
+        assert review.blocking_findings_by_lens(
+            collected["revision"]["findings"])
         assert canonical_results
         assert all(row["repair_audit"]["equivalence"] == "proven"
                    for row in canonical_results)
@@ -471,8 +540,9 @@ def test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and
         started = fixture._start(
             retry_lenses={"security"}, retry_source_run_id="a" * 32)
         before = review._load_state(fixture.ws, started["run_id"])
-        assert len(before["slots"]) == 1
-        original = before["slots"][0]
+        assert 4 <= len(before["slots"]) <= 5
+        original = next(slot for slot in before["slots"]
+                        if slot["lens_ids"] == ["security"])
         original_brief = review_evidence.ArtifactStore(fixture.ws).read(
             original["brief"])
         original_task = original_brief["role"]["task_name"]
@@ -480,8 +550,9 @@ def test_collect_rejects_fail_to_pass_normalization_without_checked_evidence_and
         # A producer may report fail without checked evidence. With no
         # canonical blocking finding, changing that to pass would invent a
         # positive judgment unsupported by anything the producer inspected.
-        fixture._write_slot_results(
-            verdict="fail", findings=[], run_id=started["run_id"])
+        _write_fixture_slot_results(
+            fixture, verdict_by_lens={"security": "fail"},
+            run_id=started["run_id"])
         manifest = review.collect_review(
             fixture.ws, publish=False, run_id=started["run_id"])
         after = review._load_state(fixture.ws, started["run_id"])
