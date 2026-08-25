@@ -89,6 +89,7 @@ not repeated in the tables.
 | `tp.py new` | create + activate a Task Contract |
 | `tp.py north-star` | on-demand strategic review: print the project's north star, or render a strategic note |
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
+| `tp.py pickup` | run one approved shelf Design Contract without a loop |
 | `tp.py ready` | Definition-of-Ready entry gate |
 | `tp.py repository` | automatic source precondition: resolve, authenticate, acquire, checkout, verify, and resume |
 | `tp.py repository migrate` | register clean legacy .em-review/scratch clones without moving or deleting anything |
@@ -902,6 +903,19 @@ cold-start readiness — folder + git snapshot + init; renders the onboarding da
 | `--install-codex-hooks` | flag | install/refresh the repo-local Codex lifecycle hook bridge before reporting readiness |
 | `--json` | flag | print the readiness report instead of the widget |
 | `--out` | OUT | also write the fragment to this path |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py pickup`
+
+run one approved shelf Design Contract without a loop
+
+Positional arguments:
+
+- `design_contract` — repository-relative approved Design Contract
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--trust-source` | TRUST_SOURCE | attribute one exact full source SHA to the invoking operator |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py ready`
