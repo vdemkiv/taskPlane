@@ -143,6 +143,26 @@ def _byte_snapshot(root: Path) -> dict[str, bytes]:
     } if root.exists() else {}
 
 
+def _replace_shelf_proof(checkout: Path, authority_rel: str,
+                         proof_source: str) -> None:
+    """Replace the signed proof while preserving exact source lineage."""
+    (checkout / "tests" / "test_proof.py").write_text(
+        proof_source, encoding="utf-8"
+    )
+    source_sha = _commit(checkout, "replace shelf proof")
+    signing_authority = contract_engine._review_contract_authority(  # noqa: SLF001
+        str(checkout), create=False
+    )
+    (checkout / authority_rel).write_text(
+        json.dumps(_authority_document(
+            source_sha, key=signing_authority["secret"],
+            key_id=signing_authority["key_id"],
+        ), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _commit(checkout, "replace signed shelf authority")
+
+
 def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestration_state(
         signed_shelf: tuple[Path, str], tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -187,6 +207,14 @@ def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestr
     assert result["checkpoint"]["producer"] == \
         "taskplane.checkpoint-engine/v1"
     assert result["checkpoint"]["verdict"] == "green"
+    authorized_argv = result["checkpoint"]["command"]["argv"]
+    runtime_argv = result["checkpoint"]["command"]["runtime_argv"]
+    assert runtime_argv == [
+        os.path.realpath(sys.executable), "-m", "pytest",
+        *authorized_argv[1:],
+    ]
+    assert result["checkpoint"]["command"]["runtime_fingerprint"] == \
+        hashlib.sha256(_canonical(runtime_argv)).hexdigest()
     assert result["integration"]["status"] == "integrated"
     assert result["storage_audit"] == {
         "run": 0, "track": 0, "claim": 0, "lease": 0, "wave": 0,
@@ -214,6 +242,69 @@ def test_severed_pickup_to_build_c_edge_fails(
     assert exit_code == 1
     assert captured.out == ""
     assert "pickup-build-c: BUILD-C entry is unavailable" in captured.err
+
+
+def test_failing_focused_proof_is_a_named_public_pickup_refusal(
+        signed_shelf: tuple[Path, str],
+        capsys: pytest.CaptureFixture[str]) -> None:
+    checkout, authority_rel = signed_shelf
+    _replace_shelf_proof(
+        checkout, authority_rel,
+        "def test_proof():\n    assert False\n",
+    )
+
+    exit_code = tp.main([
+        "pickup", authority_rel, "--workspace", str(checkout),
+    ])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "pickup-build-c: focused_proof ended failed" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_focused_proof_ignores_caller_path_pytest_substitution(
+        signed_shelf: tuple[Path, str], tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    checkout, authority_rel = signed_shelf
+    _replace_shelf_proof(
+        checkout, authority_rel,
+        "def test_proof():\n    assert False\n",
+    )
+    forged_bin = tmp_path / "forged-bin"
+    forged_bin.mkdir()
+    invoked = tmp_path / "forged-pytest-invoked"
+    forged_pytest = forged_bin / "pytest"
+    forged_pytest.write_text(
+        "#!/bin/sh\n"
+        f"printf invoked > {invoked}\n"
+        "revision=\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = --taskplane-checkpoint-revision ]; then\n"
+        "    shift\n"
+        "    revision=$1\n"
+        "  fi\n"
+        "  shift\n"
+        "done\n"
+        "printf 'taskplane-checkpoint-observed-revision=%s\\n' \"$revision\"\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    forged_pytest.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH", str(forged_bin) + os.pathsep + os.environ["PATH"]
+    )
+
+    exit_code = tp.main([
+        "pickup", authority_rel, "--workspace", str(checkout),
+    ])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "pickup-build-c: focused_proof ended failed" in captured.err
+    assert not invoked.exists()
 
 
 def test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds(
@@ -312,6 +403,11 @@ def test_large_focused_proof_retains_bounded_evidence_and_reaches_terminal_picku
         signed_shelf: tuple[Path, str], monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
     checkout, authority_rel = signed_shelf
+    emitted_bytes = checkpoint._PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES * 2  # noqa: SLF001
+    _replace_shelf_proof(
+        checkout, authority_rel,
+        f"def test_proof():\n    print('x' * {emitted_bytes})\n",
+    )
     authority_path = checkout / authority_rel
     authority = json.loads(authority_path.read_text(encoding="utf-8"))
     signing_authority = contract_engine._review_contract_authority(  # noqa: SLF001
@@ -346,8 +442,6 @@ def test_large_focused_proof_retains_bounded_evidence_and_reaches_terminal_picku
         return validate_and_mint(worktree, spec, command_result, **kwargs)
 
     monkeypatch.setattr(checkpoint, "validate_and_mint", capture_result)
-    emitted_bytes = checkpoint._PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES * 2  # noqa: SLF001
-    monkeypatch.setenv("TASKPLANE_PICKUP_TEST_OUTPUT_BYTES", str(emitted_bytes))
 
     exit_code = tp.main([
         "pickup", authority_rel, "--workspace", str(checkout),

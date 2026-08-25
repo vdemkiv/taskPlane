@@ -15,6 +15,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -66,6 +67,9 @@ _STATE_SCHEMA = "taskplane.command-state/v1"
 _DELIVERY_SCHEMA = "taskplane.command-delivery-receipt/v1"
 _SAFE_ENVIRONMENT_KEYS = (
     "LANG", "LC_ALL", "LC_CTYPE", "PATH", "PYTHONHASHSEED", "TZ",
+)
+_STATELESS_INHERITED_ENVIRONMENT_KEYS = (
+    "LANG", "LC_ALL", "LC_CTYPE", "PYTHONHASHSEED", "TZ",
 )
 _PYTHON_EXECUTABLE = re.compile(r"python(?:\d+(?:\.\d+)*)?\Z")
 _PYTEST_EXECUTABLES = frozenset({"pytest", "py.test"})
@@ -205,7 +209,7 @@ def _reserved_pytest_identity_arg(value: str) -> bool:
 
 def _focused_pytest_argv(argv: Sequence[str], proof_path: str,
                          revision: str, scope: Sequence[str]) -> list[str]:
-    """Return a direct pytest command cryptographically bound to ``revision``.
+    """Return a pytest command cryptographically bound to ``revision``.
 
     The incumbent command analyzer supports direct pytest commands, so the
     common ``python -m pytest`` spelling is normalized to that existing form.
@@ -568,7 +572,10 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
 def validate_and_mint(worktree: str, spec: Mapping,
                       command_result: Mapping, *,
                       predecessor_receipts: Sequence[Mapping] = (),
-                      active_contract: Mapping | None = None) -> dict:
+                      active_contract: Mapping | None = None,
+                      runtime_environment: Mapping[str, str] | None = None,
+                      runtime_command: Sequence[str] | None = None
+                      ) -> dict:
     """Mint one green receipt exclusively from runtime and repository facts.
 
     The caller supplies only the checkpoint specification and the incumbent
@@ -583,6 +590,18 @@ def validate_and_mint(worktree: str, spec: Mapping,
     predecessor_digests = _validated_predecessors(
         validated, predecessor_receipts)
     observed = _validated_runtime_result(worktree, validated, command_result)
+    runtime_command_evidence = {}
+    if runtime_command is not None:
+        runtime_command = list(runtime_command)
+        runtime_fingerprint = _canonical_digest(runtime_command)
+        if (observed["snapshot"].get("metrics") or {}).get(
+                "runtime_command_fingerprint") != runtime_fingerprint:
+            raise CheckpointReceiptError(
+                "stateless runtime command identity is mixed")
+        runtime_command_evidence = {
+            "runtime_argv": runtime_command,
+            "runtime_fingerprint": runtime_fingerprint,
+        }
 
     contract = (active_contract if active_contract is not None else
                 contract_engine.load_active(str(Path(worktree).resolve())))
@@ -592,10 +611,11 @@ def validate_and_mint(worktree: str, spec: Mapping,
     event = observed["event"]
     snapshot = observed["snapshot"]
     artifact = observed["artifact"]
-    environment = {
-        key: os.environ[key] for key in _SAFE_ENVIRONMENT_KEYS
-        if key in os.environ
-    }
+    environment = (dict(runtime_environment)
+                   if runtime_environment is not None else {
+                       key: os.environ[key] for key in _SAFE_ENVIRONMENT_KEYS
+                       if key in os.environ
+                   })
     engine_material = {
         "producer": _ENGINE_PRODUCER,
         "checkpoint_schema": CHECKPOINT_SCHEMA,
@@ -622,6 +642,7 @@ def validate_and_mint(worktree: str, spec: Mapping,
             "fingerprint": snapshot["command_fingerprint"],
             "handle": event["handle"],
             "runtime_revision": event["revision"],
+            **runtime_command_evidence,
         },
         "environment_fingerprint": _canonical_digest(environment),
         "output": {
@@ -649,14 +670,21 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
                            identity: Mapping, active_contract: Mapping) -> dict:
     """Run one focused proof and mint the incumbent receipt without state."""
     validated = validate_checkpoint_spec(worktree, spec)
-    argv = list(validated["focused_proof"]["argv"])
-    environment = os.environ.copy()
+    authorized_argv = list(validated["focused_proof"]["argv"])
+    argv = [os.path.realpath(sys.executable), "-m", "pytest",
+            *authorized_argv[1:]]
     package_root = str(Path(__file__).resolve().parent.parent)
-    prior_pythonpath = environment.get("PYTHONPATH", "")
-    environment["PYTHONPATH"] = (
-        package_root if not prior_pythonpath else
-        package_root + os.pathsep + prior_pythonpath
-    )
+    environment = {
+        key: os.environ[key] for key in _STATELESS_INHERITED_ENVIRONMENT_KEYS
+        if key in os.environ
+    }
+    environment.update({
+        "PATH": os.defpath,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONPATH": package_root,
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    })
     process = subprocess.Popen(
         argv, cwd=worktree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
@@ -666,7 +694,7 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
         _bounded_process_output(process)
     returncode = process.wait()
     state = "succeeded" if returncode == 0 else "failed"
-    command_digest = _canonical_digest(argv)
+    command_digest = _canonical_digest(authorized_argv)
     command_fingerprint = hashlib.sha256(
         command_digest.encode("utf-8")
     ).hexdigest()
@@ -698,7 +726,10 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
         "revision": 1, "identity": checked_identity,
         "exit_code": returncode, "reason": state,
         "artifact": artifact, "output_summary": output,
-        "output_digest": output_digest, "metrics": {"output_redactions": 0},
+        "output_digest": output_digest, "metrics": {
+            "output_redactions": 0,
+            "runtime_command_fingerprint": _canonical_digest(argv),
+        },
     }
     result = {
         "schema": _RESULT_SCHEMA, "action": "wait", "handle": handle,
@@ -707,7 +738,8 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
         "snapshot": snapshot, "event": event,
     }
     return validate_and_mint(
-        worktree, spec, result, active_contract=active_contract
+        worktree, spec, result, active_contract=active_contract,
+        runtime_environment=environment, runtime_command=argv,
     )
 
 

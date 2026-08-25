@@ -459,9 +459,12 @@ def run_pickup(checkout: str, micro_plan: Mapping[str, object], *,
         "micro_plan_fingerprint": micro_plan["fingerprint"],
     }
     emit("pickup.checkpoint.started")
-    receipt = checkpoint.run_and_mint_stateless(
-        checkout, spec, identity=identity, active_contract=active_contract
-    )
+    try:
+        receipt = checkpoint.run_and_mint_stateless(
+            checkout, spec, identity=identity, active_contract=active_contract
+        )
+    except checkpoint.CheckpointSpecError as exc:
+        raise IntegrationAuthorizationError(str(exc)) from exc
     emit("pickup.checkpoint.terminal")
     checked = _checkpoint_integration_receipt(
         receipt, task_id=assignment["task_id"], run_id=run_id,
