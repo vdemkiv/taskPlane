@@ -210,7 +210,7 @@ def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestr
     authorized_argv = result["checkpoint"]["command"]["argv"]
     runtime_argv = result["checkpoint"]["command"]["runtime_argv"]
     assert runtime_argv == [
-        os.path.realpath(sys.executable), "-m", "pytest",
+        os.path.abspath(sys.executable), "-m", "pytest",
         *authorized_argv[1:],
     ]
     assert result["checkpoint"]["command"]["runtime_fingerprint"] == \
@@ -223,6 +223,77 @@ def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestr
     assert _home_snapshot(private_home) == before
     assert _byte_snapshot(checkout / ".taskplane") == control_before
     assert mutation_calls == []
+
+
+def test_stateless_checkpoint_preserves_active_virtualenv_interpreter_symlink_and_attests_revision(
+        signed_shelf: tuple[Path, str], tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout, _ = signed_shelf
+    revision = _git(checkout, "rev-parse", "HEAD")
+    active_interpreter = os.path.abspath(sys.executable)
+    forged_bin = tmp_path / "forged-bin"
+    forged_bin.mkdir()
+    forged_python = forged_bin / "python"
+    forged_python.write_text(
+        "#!/bin/sh\nexit 97\n", encoding="utf-8"
+    )
+    forged_python.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH", str(forged_bin) + os.pathsep + os.environ["PATH"]
+    )
+
+    spec = {
+        "schema": checkpoint.CHECKPOINT_SCHEMA,
+        "checkpoint_id": "pickup-interpreter-regression",
+        "phase": "build",
+        "ac_ids": ["AC3"],
+        "predecessor_checkpoint_ids": [],
+        "worktree_revision": revision,
+        "declared_scope": ["tests/test_proof.py"],
+        "focused_proof": {
+            "path": "tests/test_proof.py",
+            "argv": [
+                "python3", "-m", "pytest", "-q", "-p",
+                "no:cacheprovider", "tests/test_proof.py",
+            ],
+        },
+        "ratchet_baseline": {"cycle_count": 0},
+    }
+    identity = {
+        "schema": "taskplane.governed-command-identity/v1",
+        "run_id": "pickup-interpreter-regression",
+        "task_id": "element-ac1",
+    }
+    active_contract = {
+        "schema": "taskplane.pickup-active-contract/v1",
+        "task_id": "element-ac1",
+        "scope": ["tests/test_proof.py"],
+        "revision": revision,
+        "micro_plan_fingerprint": "interpreter-regression",
+    }
+    observed: dict[str, dict] = {}
+    validate_and_mint = checkpoint.validate_and_mint
+
+    def capture_result(worktree: str, checkpoint_spec: dict,
+                       command_result: dict, **kwargs: object) -> dict:
+        observed["command_result"] = command_result
+        return validate_and_mint(
+            worktree, checkpoint_spec, command_result, **kwargs
+        )
+
+    monkeypatch.setattr(checkpoint, "validate_and_mint", capture_result)
+
+    receipt = checkpoint.run_and_mint_stateless(
+        str(checkout), spec, identity=identity,
+        active_contract=active_contract,
+    )
+
+    assert receipt["verdict"] == "green"
+    assert receipt["command"]["runtime_argv"][0] == active_interpreter
+    assert receipt["command"]["runtime_argv"][0] != str(forged_python)
+    assert (
+        "taskplane-checkpoint-observed-revision=" + revision
+    ) in observed["command_result"]["event"]["output_delta"]
 
 
 def test_severed_pickup_to_build_c_edge_fails(

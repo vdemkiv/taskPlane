@@ -671,7 +671,7 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
     """Run one focused proof and mint the incumbent receipt without state."""
     validated = validate_checkpoint_spec(worktree, spec)
     authorized_argv = list(validated["focused_proof"]["argv"])
-    argv = [os.path.realpath(sys.executable), "-m", "pytest",
+    argv = [os.path.abspath(sys.executable), "-m", "pytest",
             *authorized_argv[1:]]
     package_root = str(Path(__file__).resolve().parent.parent)
     environment = {
