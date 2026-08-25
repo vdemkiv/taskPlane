@@ -1,953 +1,473 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0012",
-  "title": "Compatibility-first BUILD-C spine and durable boundary-first PROVE",
-  "summary": "Bind the consolidated program to governed v2.17.16, close R-0009 as no-build evidence, add exactly six live R-0010 BUILD-C gaps over incumbent command/review/worktree primitives, then re-deliver donor surfaces through a durable seven-part R-0011 PROVE.",
+  "requirement": "R-0001",
+  "title": "Stateless tp pickup front door for signed shelf Design Contracts",
+  "summary": "Add one bounded CLI adapter that verifies repository-resident approved Design authority at an exact clean SHA, derives a one-element in-memory micro-plan, enters the incumbent BUILD-C direct-assignment/checkpoint/merge boundaries one AC at a time, and persists the only resumable handoff as a Git-tracked content-addressed receipt chain.",
   "current_state": {
-    "summary": "At exact HEAD bba3354e7fc5eb052beac74af230611ae48bd7db (v2.17.16, tree a7f46dbf6859f7d2122c4ee6ce99006b4862197a), public CLI and loop roots already call the governed command engine, which composes durable CommandRuntime and CommandAdapter owners. Event waits are 1800-second wake-only/non-polling, automatic review selects exactly 4–5 concurrent quick lenses including architecture, and automatic deep is refused because a direct-human command is not shipped. Existing graph/worktree/merge-receipt/review/evidence/enforcement primitives are reusable. loop.submit has no AC checkpoint, Design approval has no DEFINE ReviewKernel call, default parallel Build uses wave/claim/stage-split state, merge lacks checkpoint-SHA authorization, and the R-0011 prove/tier/registry modules, frozen inventory, exports, and exact 23 tests are absent. The engine inventory is empty, so these facts are grounded in the cited sources and exact Git objects.",
+    "summary": "At exact baseline 726acd108d3ca431e680183de129918842202eda, tp.py has no pickup command. build_c.py already owns direct graph-disjoint assignment and exact green-checkpoint integration; checkpoint.py owns exact-revision checkpoint specs and engine-minted receipts; design_contract.py owns Design evidence fingerprints/current approval validation; repository.py owns registered worktree merge receipts; storage.py exposes the private state surfaces pickup must not create. The supplied graph baseline is e0d54a84434269c488941a265f865803c90c7e8adaa0796159ea60a3257adc8b with 50 modules and 165 edges. No stateless shelf front door or repository pickup receipt chain exists.",
     "sources": [
       "specs/spec.md",
-      ".github/workflows/ci.yml",
-      "components.yaml",
-      "plan/tasks.json",
-      "taskplane/preflight.py",
-      "taskplane/command_runtime.py",
-      "taskplane/command_adapters.py",
-      "taskplane/governed_commands.py",
-      "taskplane/loop.py",
       "taskplane/tp.py",
-      "taskplane/lens.py",
-      "taskplane/review.py",
-      "taskplane/depgraph.py",
+      "taskplane/build_c.py",
+      "taskplane/checkpoint.py",
+      "taskplane/design_contract.py",
       "taskplane/repository.py",
       "taskplane/storage.py",
-      "taskplane/worktree_cleanup.py",
-      "taskplane/evidence.py",
-      "taskplane/import_cycles.py",
-      "taskplane/dashboard.py",
-      "taskplane/retro.py",
-      "taskplane/tests/test_r0007_governed_commands.py",
-      "taskplane/tests/test_r0007_sweep_bootstrap.py",
-      "taskplane/tests/test_loop.py",
-      "taskplane/tests/test_r0006_pushed_sha.py",
-      "scripts/ci_evals.py",
-      "scripts/ci_loop_cost.py"
+      "README.md",
+      "CHANGELOG.md",
+      ".codex-plugin/plugin.json",
+      ".claude-plugin/plugin.json",
+      ".claude-plugin/marketplace.json"
     ]
   },
+  "constraints": [
+    "Only tp pickup for one selected Design Contract element is in scope; no Phase 0, E0, R-0011, or other R-0013 content.",
+    "The hook security layer and legacy loop path remain byte- and behavior-unchanged.",
+    "Pickup creates no run, track, wave, claim, lease, stage, per-task-lens, or equivalent private coordination record.",
+    "Existing approved-Design, BUILD-C direct-assignment, checkpoint, and repository merge contracts are consumption boundaries, not redesign authority.",
+    "Manual delivery advances one acceptance criterion at a time; behavior and its focused test share the implementation commit.",
+    "Version 2.17.20 metadata follows functional green; push, tag, publish, and origin/main mutation require later human authority."
+  ],
+  "quality_targets": [
+    {
+      "target": "cold_start_to_first_checkpoint_seconds",
+      "threshold": "< 120.0 seconds",
+      "measurement": "Monotonic timestamps at public CLI entry and pickup.checkpoint.started in a fresh checkout with an empty private Taskplane home and no warmed process."
+    },
+    {
+      "target": "private_orchestration_records_created",
+      "threshold": "exactly 0",
+      "measurement": "Instrument storage mutation entry points and compare the isolated TASKPLANE_HOME tree before and after pickup and second-checkout resume."
+    },
+    {
+      "target": "receipt_lineage",
+      "threshold": "exactly one contiguous successor per completed criterion; 0 forks, gaps, overwrites, or digest mismatches",
+      "measurement": "Recompute canonical receipt/path/predecessor digests while scanning the source-SHA/Design-fingerprint/element directory."
+    },
+    {
+      "target": "final_regression",
+      "threshold": "0 new failures",
+      "measurement": "python -m pytest taskplane/tests -q on the final clean SHA compared with the exact baseline result."
+    }
+  ],
   "alternatives": [
     {
-      "id": "compatibility-first-checkpoint-spine",
-      "name": "Compatibility-first checkpoint spine",
-      "description": "Record v2.17.16 without code change, add only six missing BUILD-C live edges over incumbent boundaries, then re-deliver donor content through the proven spine and durable PROVE.",
+      "id": "thin-stateless-build-c-adapter",
+      "name": "Thin stateless adapter over BUILD-C",
+      "description": "Add pickup.py and minimum explicit-input façades while retaining the incumbent Design approval, direct assignment, checkpoint, and repository merge owners.",
       "tradeoffs": {
         "gains": [
-          "Smallest authorized production delta",
-          "Preserves event waits, bounded review, graph/worktree identity, and receipts",
-          "Makes every new behavior positive- and severed-edge testable",
-          "Keeps donor history as source evidence only"
+          "Satisfies zero orchestration state and Git-only resume",
+          "Reuses the live checkpoint and green-integration validation",
+          "Keeps hook security and the legacy loop unchanged",
+          "Makes pickup-to-BUILD-C reachability mutation-sensitive"
         ],
         "costs": [
-          "R-0010 bootstraps under manual checkpoints",
-          "R-0011 waits for exact pushed-SHA proof and sign-off",
-          "Adds versioned checkpoint/phase/proof evidence schemas"
+          "BUILD-C needs a small explicit-input façade beside its loop-state wrapper",
+          "Pickup must validate append-only receipt lineage and collision behavior"
         ],
-        "revisit_when": "A baseline-positive capability fails a live reuse fixture, or a seventh gap is proven and a human expands Product scope."
+        "revisit_when": "More than one selected element must be scheduled concurrently, or an incumbent boundary cannot accept explicit verified inputs without a separately approved semantic redesign."
       }
     },
     {
-      "id": "donor-first-retrofit",
-      "name": "Donor first, BUILD-C retrofit",
-      "description": "Port later boundary-first surfaces first and add checkpointing/reconciliation afterward.",
+      "id": "ephemeral-loop",
+      "name": "Ephemeral loop then cleanup",
+      "description": "Create a normal loop and synthetic one-task Plan, execute through it, then delete the private state.",
       "tradeoffs": {
         "gains": [
-          "Donor-visible functionality appears sooner",
-          "Source layout is familiar from later history"
+          "Reuses current top-level loop wrappers",
+          "Requires little new BUILD-C adapter code"
         ],
         "costs": [
-          "Violates predecessor order",
-          "Cannot prove first BUILD-C shakedown",
-          "Treats ungoverned history as authority",
-          "Can integrate before checkpoint evidence"
+          "Creates forbidden run and equivalent coordination state",
+          "Cleanup destroys or strands interruption evidence",
+          "Second-checkout resume requires private-store handoff"
         ],
-        "revisit_when": "Only under a replacement requirement explicitly authorizing later-history implementation input."
+        "revisit_when": "Only under a replacement Product requirement that explicitly permits private orchestration state."
       }
     },
     {
-      "id": "new-orchestration-core",
-      "name": "New orchestration core",
-      "description": "Replace runtime, router, worktree, receipt, and proof paths with a greenfield scheduler and evidence service.",
+      "id": "independent-pickup-engine",
+      "name": "Independent pickup executor and merger",
+      "description": "Implement assignment, command execution, checkpoint receipts, worktree ownership, and merge directly in pickup.py.",
       "tradeoffs": {
         "gains": [
-          "One uniform state model",
-          "No compatibility adapter"
+          "One locally self-contained implementation",
+          "No adapter changes in existing owners"
         ],
         "costs": [
-          "Rebuilds proven capabilities",
-          "Exceeds six gaps",
-          "Creates migration/rollback risk",
-          "Invalidates reuse matrix"
+          "Duplicates the checkpoint and merge trust boundaries",
+          "Creates divergent receipt semantics",
+          "Violates the required pickup-to-BUILD-C edge and explicit out-of-scope rules"
         ],
-        "revisit_when": "Multiple incumbent contracts fail production compatibility and Product authorizes platform redesign."
+        "revisit_when": "The incumbent BUILD-C/checkpoint/repository contracts are formally retired by a separately approved migration."
       }
     },
     {
-      "id": "verification-only",
-      "name": "Verification-only status quo",
-      "description": "Record v2.17.16 and stop after R-0009.",
+      "id": "status-quo",
+      "name": "Status quo",
+      "description": "Leave signed shelf Design Contracts executable only through private loop state.",
       "tradeoffs": {
         "gains": [
-          "Zero product change",
-          "Immediate rollback"
+          "No source or release change",
+          "No new receipt format"
         ],
         "costs": [
-          "Leaves six R-0010 gaps open",
-          "Delivers none of R-0011"
+          "Does not satisfy AC1 through AC4",
+          "Cannot provide the intended first production pickup use"
         ],
-        "revisit_when": "Product cancels R-0010/R-0011 after R-0009."
+        "revisit_when": "Product cancels R-0001."
       }
     }
   ],
-  "selected_approach": "compatibility-first-checkpoint-spine",
-  "decision": "Select the compatibility-first checkpoint spine because it alone satisfies the authoritative baseline, six-gap scope, predecessor gates, reuse invariants, live-edge rule, and donor-as-source-only boundary. Two new R-0010 owners compose incumbent runtime/review/graph/worktree contracts; three new R-0011 proof owners make exact-identity PROVE the sole completion evidence.",
+  "selected_approach": "thin-stateless-build-c-adapter",
+  "decision": "Select the thin stateless BUILD-C adapter because it is the only option that simultaneously preserves existing approval/checkpoint/merge ownership, creates zero private orchestration handoff state, proves a live pickup-to-BUILD-C edge, and makes another checkout resumable from Git-tracked authority and receipts. If an incumbent boundary requires semantic redesign or a new signer, stop for human scope rather than widening this adapter.",
   "modules": {
     "existing": [
-      ".github/workflows/ci.yml",
-      "components.yaml",
-      "plan/tasks.json",
-      "scripts/ci_evals.py",
-      "scripts/ci_loop_cost.py",
-      "specs/spec.md",
-      "taskplane/preflight.py",
       "taskplane/tp.py",
-      "taskplane/loop.py",
-      "taskplane/governed_commands.py",
-      "taskplane/command_runtime.py",
-      "taskplane/command_adapters.py",
-      "taskplane/lens.py",
-      "taskplane/review.py",
-      "taskplane/depgraph.py",
-      "taskplane/repository.py",
-      "taskplane/storage.py",
-      "taskplane/worktree_cleanup.py",
-      "taskplane/evidence.py",
-      "taskplane/import_cycles.py",
-      "taskplane/dashboard.py",
-      "taskplane/retro.py",
-      "taskplane/tests/test_r0007_governed_commands.py",
-      "taskplane/tests/test_r0007_sweep_bootstrap.py",
-      "taskplane/tests/test_loop.py",
-      "taskplane/tests/test_r0006_pushed_sha.py"
-    ],
-    "new": [
       "taskplane/build_c.py",
       "taskplane/checkpoint.py",
-      "taskplane/prove.py",
-      "taskplane/test_tiers.py",
-      "taskplane/schema_registry.py",
-      "taskplane/schema-registry.json",
-      "taskplane/tests/fixtures/full-suite-inventory.json",
-      "taskplane/tests/test_r0008_plan_baseline.py",
-      "taskplane/tests/test_r0008_schema_registry.py",
-      "taskplane/tests/test_r0008_wiring_define_baseline.py",
-      "taskplane/tests/test_r0008_define_review.py",
-      "taskplane/tests/test_r0008_wiring_define_review.py",
-      "taskplane/tests/test_r0008_delivery_modes.py",
-      "taskplane/tests/test_r0008_direct_build.py",
-      "taskplane/tests/test_r0008_wiring_delivery_modes.py",
-      "taskplane/tests/test_r0008_test_tiers.py",
-      "taskplane/tests/test_r0008_wiring_test_tiers.py",
-      "taskplane/tests/test_r0008_impact_reconciliation.py",
-      "taskplane/tests/test_r0008_batch_acceptance.py",
-      "taskplane/tests/test_r0008_wiring_reconciliation.py",
-      "taskplane/tests/test_r0008_prove.py",
-      "taskplane/tests/test_r0008_prove_canaries.py",
-      "taskplane/tests/test_r0008_fix_reprove.py",
-      "taskplane/tests/test_r0008_wiring_prove.py",
-      "taskplane/tests/test_r0008_ci_ratchets.py",
-      "taskplane/tests/test_r0008_full_suite_inventory.py",
-      "taskplane/tests/test_r0008_wiring_ci.py",
-      "taskplane/tests/test_r0008_operations.py",
-      "taskplane/tests/test_r0008_dogfood_bundle.py",
-      "taskplane/tests/test_r0008_production_wiring.py",
-      "exports/r0012-v21716-baseline.json",
-      "exports/r0012-program-ledger.json",
-      "exports/r0012-donor-provenance.json",
-      "exports/r0012-prove-journal.jsonl",
-      "exports/r0012-prove-bundle.json",
-      "exports/r0012-retro.json"
+      "taskplane/design_contract.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/taskplane_lite.py",
+      "README.md",
+      "CHANGELOG.md",
+      ".codex-plugin/plugin.json",
+      ".claude-plugin/plugin.json",
+      ".claude-plugin/marketplace.json"
+    ],
+    "new": [
+      "taskplane/pickup.py",
+      "taskplane/tests/test_pickup.py"
     ]
   },
   "contracts": [
     {
       "relation": "provides",
-      "id": "contract:program.r0009-r0011-order",
-      "description": "One-way consolidated approval and R-0009→R-0010→R-0011 eligibility ledger."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:baseline.v2.17.16-authority",
-      "description": "Exact branch/commit/tag/tree and no-build baseline scope evidence."
+      "id": "contract:pickup.stateless-front-door",
+      "description": "One repository-local command verifies exact shelf authority, derives one in-memory micro-plan, and enters existing BUILD-C boundaries without orchestration state."
     },
     {
       "relation": "consumes",
-      "id": "contract:runtime.command-events",
-      "description": "Existing durable command lifecycle, terminal events, bounded output, and delivery receipt primitives."
+      "id": "contract:design.approved-contract",
+      "description": "Existing signed approved Design evidence, approval, engine receipt, authorized source SHA, and recomputed Design fingerprint validation."
     },
     {
       "relation": "consumes",
-      "id": "contract:review.routing",
-      "description": "Existing applicability selector and concurrent 4–5 quick-lens dispatch."
+      "id": "contract:build-c.direct-assignment",
+      "description": "Existing graph-disjoint exact-scope assignment semantics exposed through an explicit-input one-element façade."
     },
     {
       "relation": "consumes",
-      "id": "contract:review.depth-boundary",
-      "description": "Existing quick-only architecture floor and fail-closed unavailable automatic deep policy."
+      "id": "contract:build-c.acceptance-checkpoint",
+      "description": "Existing one-AC exact-revision checkpoint specification, governed-command observation, and engine-green receipt authority."
+    },
+    {
+      "relation": "consumes",
+      "id": "contract:repository.merge-on-green",
+      "description": "Existing repository owner integrates only the exact BUILD-C-authorized green revision and returns its merge receipt."
     },
     {
       "relation": "provides",
-      "id": "contract:governance.build-c-checkpoint",
-      "description": "Ordered AC-focused checkpoint specification and fail-closed phase result."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:governance.checkpoint-receipt",
-      "description": "Engine-minted exact-revision receipt bound to runtime-observed command evidence."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:orchestration.scope-disjoint-assignment",
-      "description": "Direct dependency-ordered graph-disjoint worktree assignments with no legacy wave/claim/lease state."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:orchestration.merge-on-green",
-      "description": "Exact checkpoint-SHA integration authorization before the incumbent merge receipt."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:define.design-review",
-      "description": "Real Design/Plan-boundary invocation of the incumbent quick applicability router."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:orchestration.delivery-mode",
-      "description": "Boundary-first DEFINE→thin BUILD-C→PROVE default with retained governed-build compatibility mode."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:plan.reconciliation-baseline",
-      "description": "Sealed Plan modules, impact/tolerance, contracts, scopes, ACs, graph revision, and identity policy."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:prove.batch-evidence",
-      "description": "Durable seven-component exact-identity PROVE journal and terminal bundle."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:graph.impact-reconciliation",
-      "description": "Both-direction predicted/actual graph-diff comparison with explicit tolerance."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:test.tier-manifest",
-      "description": "Complete import-derived one-tier-per-test manifest and execution selection."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:schema.registry",
-      "description": "Frozen existing-schema truth and fail-closed new-id registration."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:import-cycle-ratchet",
-      "description": "Adds LOC and PROVE receipt binding while preserving incumbent SCC history enforcement."
-    },
-    {
-      "relation": "provides",
-      "id": "contract:retro.delivery-efficiency",
-      "description": "Exact-revision BUILD-C/PROVE cost, wait, defect, attempt, and stop/re-scope metrics."
-    },
-    {
-      "relation": "changes",
-      "id": "contract:governance.delivery-authority",
-      "description": "Adds consolidated phase and per-external-action human gates without weakening existing authority."
+      "id": "resource:exports.pickup-receipts",
+      "description": "Append-only Git-tracked receipt lineage keyed by authorized source SHA and Design evidence fingerprint, sufficient for private-store-free resume."
     }
   ],
   "graph": {
-    "baseline_fingerprint": "a377a00651e46b5c4a28154edc043ee2dbaaf77cbfe82d2b29fde01585f9414d",
+    "baseline_fingerprint": "e0d54a84434269c488941a265f865803c90c7e8adaa0796159ea60a3257adc8b",
+    "baseline_summary": {
+      "modules": 50,
+      "edges": 165
+    },
     "proposed_modules": [
-      ".github/workflows/ci.yml",
-      "components.yaml",
-      "plan/tasks.json",
-      "scripts/ci_evals.py",
-      "scripts/ci_loop_cost.py",
-      "specs/spec.md",
-      "taskplane/preflight.py",
       "taskplane/tp.py",
-      "taskplane/loop.py",
-      "taskplane/governed_commands.py",
-      "taskplane/command_runtime.py",
-      "taskplane/command_adapters.py",
-      "taskplane/lens.py",
-      "taskplane/review.py",
-      "taskplane/depgraph.py",
-      "taskplane/repository.py",
-      "taskplane/storage.py",
-      "taskplane/worktree_cleanup.py",
-      "taskplane/evidence.py",
-      "taskplane/import_cycles.py",
-      "taskplane/dashboard.py",
-      "taskplane/retro.py",
-      "taskplane/tests/test_r0007_governed_commands.py",
-      "taskplane/tests/test_r0007_sweep_bootstrap.py",
-      "taskplane/tests/test_loop.py",
-      "taskplane/tests/test_r0006_pushed_sha.py",
+      "taskplane/pickup.py",
       "taskplane/build_c.py",
       "taskplane/checkpoint.py",
-      "taskplane/prove.py",
-      "taskplane/test_tiers.py",
-      "taskplane/schema_registry.py",
-      "taskplane/schema-registry.json",
-      "taskplane/tests/fixtures/full-suite-inventory.json",
-      "taskplane/tests/test_r0008_plan_baseline.py",
-      "taskplane/tests/test_r0008_schema_registry.py",
-      "taskplane/tests/test_r0008_wiring_define_baseline.py",
-      "taskplane/tests/test_r0008_define_review.py",
-      "taskplane/tests/test_r0008_wiring_define_review.py",
-      "taskplane/tests/test_r0008_delivery_modes.py",
-      "taskplane/tests/test_r0008_direct_build.py",
-      "taskplane/tests/test_r0008_wiring_delivery_modes.py",
-      "taskplane/tests/test_r0008_test_tiers.py",
-      "taskplane/tests/test_r0008_wiring_test_tiers.py",
-      "taskplane/tests/test_r0008_impact_reconciliation.py",
-      "taskplane/tests/test_r0008_batch_acceptance.py",
-      "taskplane/tests/test_r0008_wiring_reconciliation.py",
-      "taskplane/tests/test_r0008_prove.py",
-      "taskplane/tests/test_r0008_prove_canaries.py",
-      "taskplane/tests/test_r0008_fix_reprove.py",
-      "taskplane/tests/test_r0008_wiring_prove.py",
-      "taskplane/tests/test_r0008_ci_ratchets.py",
-      "taskplane/tests/test_r0008_full_suite_inventory.py",
-      "taskplane/tests/test_r0008_wiring_ci.py",
-      "taskplane/tests/test_r0008_operations.py",
-      "taskplane/tests/test_r0008_dogfood_bundle.py",
-      "taskplane/tests/test_r0008_production_wiring.py",
-      "exports/r0012-v21716-baseline.json",
-      "exports/r0012-program-ledger.json",
-      "exports/r0012-donor-provenance.json",
-      "exports/r0012-prove-journal.jsonl",
-      "exports/r0012-prove-bundle.json",
-      "exports/r0012-retro.json"
+      "taskplane/design_contract.py",
+      "taskplane/repository.py",
+      "taskplane/storage.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/tests/test_pickup.py",
+      "README.md",
+      "CHANGELOG.md",
+      ".codex-plugin/plugin.json",
+      ".claude-plugin/plugin.json",
+      ".claude-plugin/marketplace.json"
     ],
     "proposed_edges": [
       {
+        "from": "taskplane/tp.py",
+        "to": "taskplane/pickup.py",
+        "kind": "runtime",
+        "reason": "The public pickup parser delegates once to the bounded pickup coordinator."
+      },
+      {
+        "from": "taskplane/pickup.py",
+        "to": "contract:pickup.stateless-front-door",
+        "kind": "provides",
+        "reason": "Pickup owns exact preflight, one-element micro-planning, ordered AC advancement, and named refusal boundaries."
+      },
+      {
+        "from": "taskplane/design_contract.py",
+        "to": "contract:design.approved-contract",
+        "kind": "provides",
+        "reason": "The incumbent Design owner recomputes evidence identity and verifies existing signed approval and engine receipt authority."
+      },
+      {
+        "from": "contract:design.approved-contract",
+        "to": "taskplane/pickup.py",
+        "kind": "consumes",
+        "reason": "Pickup cannot plan or execute until repository authority, approval, engine receipt, source SHA, and Design fingerprint agree."
+      },
+      {
         "from": "taskplane/build_c.py",
-        "to": "contract:program.r0009-r0011-order",
+        "to": "contract:build-c.direct-assignment",
         "kind": "provides",
-        "reason": "BUILD-C validates and advances the one-way program phase ledger."
+        "reason": "BUILD-C remains the owner of graph-disjoint direct assignment and explicit-scope validation."
       },
       {
-        "from": "taskplane/preflight.py",
-        "to": "contract:baseline.v2.17.16-authority",
-        "kind": "provides",
-        "reason": "Preflight verifies the exact governed baseline and no-build tree identity."
-      },
-      {
-        "from": "contract:runtime.command-events",
-        "to": "taskplane/checkpoint.py",
+        "from": "contract:build-c.direct-assignment",
+        "to": "taskplane/pickup.py",
         "kind": "consumes",
-        "reason": "Checkpoints consume incumbent durable runtime events and receipts."
-      },
-      {
-        "from": "contract:review.routing",
-        "to": "taskplane/build_c.py",
-        "kind": "consumes",
-        "reason": "DEFINE delegates applicability and membership to the incumbent router."
-      },
-      {
-        "from": "contract:review.depth-boundary",
-        "to": "taskplane/build_c.py",
-        "kind": "consumes",
-        "reason": "DEFINE and final review inherit quick-only and automatic-deep refusal."
+        "reason": "The one-element micro-plan enters the incumbent direct-assignment boundary without creating loop state."
       },
       {
         "from": "taskplane/checkpoint.py",
-        "to": "contract:governance.build-c-checkpoint",
+        "to": "contract:build-c.acceptance-checkpoint",
         "kind": "provides",
-        "reason": "Checkpoint owns ordered AC-focused validation."
+        "reason": "The incumbent checkpoint owner validates exact HEAD/scope/proof/runtime evidence and mints engine-green receipts."
       },
       {
-        "from": "taskplane/checkpoint.py",
-        "to": "contract:governance.checkpoint-receipt",
+        "from": "contract:build-c.acceptance-checkpoint",
+        "to": "taskplane/pickup.py",
+        "kind": "consumes",
+        "reason": "Pickup advances exactly one current AC only through the existing checkpoint contract."
+      },
+      {
+        "from": "taskplane/repository.py",
+        "to": "contract:repository.merge-on-green",
         "kind": "provides",
-        "reason": "Checkpoint mints engine-owned exact-revision receipts from runtime evidence."
+        "reason": "RepositoryManager remains the sole worktree identity and ordinary Git merge owner."
       },
       {
-        "from": "taskplane/build_c.py",
-        "to": "contract:orchestration.scope-disjoint-assignment",
+        "from": "contract:repository.merge-on-green",
+        "to": "taskplane/pickup.py",
+        "kind": "consumes",
+        "reason": "Pickup records a merge only after BUILD-C authorizes the exact green assigned revision."
+      },
+      {
+        "from": "taskplane/pickup.py",
+        "to": "resource:exports.pickup-receipts",
         "kind": "provides",
-        "reason": "BUILD-C assigns graph-disjoint ready scopes directly."
+        "reason": "Pickup persists the only resumable handoff as a content-addressed Git-tracked receipt chain."
       },
       {
-        "from": "taskplane/build_c.py",
-        "to": "contract:orchestration.merge-on-green",
-        "kind": "provides",
-        "reason": "BUILD-C authorizes only the exact green checkpoint SHA for merge."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "contract:define.design-review",
-        "kind": "provides",
-        "reason": "BUILD-C invokes DEFINE review at the Design/Plan boundary."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "contract:orchestration.delivery-mode",
-        "kind": "provides",
-        "reason": "BUILD-C owns boundary-first direct mode and retained compatibility mode."
-      },
-      {
-        "from": "taskplane/preflight.py",
-        "to": "contract:plan.reconciliation-baseline",
-        "kind": "provides",
-        "reason": "Preflight seals the complete approved Plan identity set before Build."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "contract:prove.batch-evidence",
-        "kind": "provides",
-        "reason": "PROVE owns seven terminal receipts, durable attempts, and the final bundle."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "contract:graph.impact-reconciliation",
-        "kind": "provides",
-        "reason": "PROVE compares predicted and actual graph/diff identities both ways."
-      },
-      {
-        "from": "taskplane/test_tiers.py",
-        "to": "contract:test.tier-manifest",
-        "kind": "provides",
-        "reason": "Tier generator owns complete import-derived test classification."
-      },
-      {
-        "from": "taskplane/schema_registry.py",
-        "to": "contract:schema.registry",
-        "kind": "provides",
-        "reason": "Schema validator owns frozen existing ids and new-id registration."
-      },
-      {
-        "from": "taskplane/import_cycles.py",
-        "to": "contract:import-cycle-ratchet",
-        "kind": "changes",
-        "reason": "The incumbent cycle ratchet adds LOC and PROVE receipt binding."
-      },
-      {
-        "from": "taskplane/retro.py",
-        "to": "contract:retro.delivery-efficiency",
-        "kind": "provides",
-        "reason": "Retro emits exact-revision BUILD-C and PROVE efficiency evidence."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "contract:governance.delivery-authority",
-        "kind": "changes",
-        "reason": "BUILD-C enforces consolidated phase and separate external-action authority."
-      },
-      {
-        "from": "taskplane/tp.py",
-        "to": "taskplane/loop.py",
+        "from": "taskplane/pickup.py",
+        "to": "taskplane/build_c.py",
         "kind": "runtime",
-        "reason": "Public loop commands retain the incumbent orchestration root."
+        "reason": "This is the mandatory live pickup-to-BUILD-C seam; severing it must fail AC3."
       },
       {
-        "from": "taskplane/tp.py",
-        "to": "taskplane/prove.py",
-        "kind": "runtime",
-        "reason": "The public prove command forwards closed arguments to PROVE."
-      },
-      {
-        "from": "taskplane/loop.py",
-        "to": "taskplane/governed_commands.py",
-        "kind": "runtime",
-        "reason": "Live submission invokes the existing governed command engine."
-      },
-      {
-        "from": "taskplane/loop.py",
+        "from": "taskplane/build_c.py",
         "to": "taskplane/checkpoint.py",
         "kind": "runtime",
-        "reason": "Live submission validates runtime results through the AC checkpoint."
-      },
-      {
-        "from": "taskplane/loop.py",
-        "to": "taskplane/build_c.py",
-        "kind": "runtime",
-        "reason": "Live transitions invoke phase, DEFINE, assignment, and integration authorities."
-      },
-      {
-        "from": "taskplane/checkpoint.py",
-        "to": "taskplane/governed_commands.py",
-        "kind": "runtime",
-        "reason": "Checkpoint commands launch and wait through the existing lifecycle."
-      },
-      {
-        "from": "taskplane/governed_commands.py",
-        "to": "taskplane/command_runtime.py",
-        "kind": "runtime",
-        "reason": "Governed commands persist durable lifecycle events and receipts."
-      },
-      {
-        "from": "taskplane/governed_commands.py",
-        "to": "taskplane/command_adapters.py",
-        "kind": "runtime",
-        "reason": "Governed commands delegate host launch/wait/cancel to adapters."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "taskplane/review.py",
-        "kind": "runtime",
-        "reason": "DEFINE starts the incumbent ReviewKernel at the real boundary."
-      },
-      {
-        "from": "taskplane/review.py",
-        "to": "taskplane/lens.py",
-        "kind": "runtime",
-        "reason": "Review uses the incumbent automatic 4–5 quick selector."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "taskplane/depgraph.py",
-        "kind": "runtime",
-        "reason": "Direct assignment derives readiness, overlap, and scope identity from the graph."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "taskplane/storage.py",
-        "kind": "runtime",
-        "reason": "Direct assignments use incumbent registered isolated worktree identities."
+        "reason": "The pickup BUILD-C façade invokes the incumbent exact-revision checkpoint owner."
       },
       {
         "from": "taskplane/build_c.py",
         "to": "taskplane/repository.py",
         "kind": "runtime",
-        "reason": "Authorized green revisions enter the incumbent merge operation."
+        "reason": "BUILD-C green authorization delegates exact-revision integration to the incumbent repository owner."
       },
       {
-        "from": "taskplane/repository.py",
-        "to": "taskplane/worktree_cleanup.py",
-        "kind": "runtime",
-        "reason": "Merge retains the existing durable receipt-before-cleanup order."
+        "from": "taskplane/tests/test_pickup.py",
+        "to": "taskplane/pickup.py",
+        "kind": "test",
+        "reason": "Focused acceptance, cold-start, mutation, collision, interruption, and second-checkout proofs exercise the public pickup coordinator."
       },
       {
-        "from": "taskplane/prove.py",
-        "to": "taskplane/preflight.py",
-        "kind": "runtime",
-        "reason": "PROVE consumes the sealed Plan and exact repository identity."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "taskplane/test_tiers.py",
-        "kind": "runtime",
-        "reason": "PROVE runs the generated thin Tier-0 selection."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "taskplane/schema_registry.py",
-        "kind": "runtime",
-        "reason": "PROVE validates frozen and newly introduced schemas."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "taskplane/import_cycles.py",
-        "kind": "runtime",
-        "reason": "PROVE invokes the incumbent SCC/cycle ratchet plus LOC binding."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "taskplane/evidence.py",
-        "kind": "runtime",
-        "reason": "PROVE provides canonical engine evidence to the independent AC evaluator."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "scripts/ci_evals.py",
-        "kind": "runtime",
-        "reason": "PROVE consumes zero-token and exact pushed-SHA required-check receipts."
-      },
-      {
-        "from": ".github/workflows/ci.yml",
-        "to": "taskplane/prove.py",
-        "kind": "runtime",
-        "reason": "CI invokes the public proof battery and wiring ratchets."
-      },
-      {
-        "from": ".github/workflows/ci.yml",
-        "to": "scripts/ci_evals.py",
-        "kind": "runtime",
-        "reason": "CI preserves incumbent zero-token and pushed-SHA authority."
-      },
-      {
-        "from": "taskplane/preflight.py",
-        "to": "exports/r0012-v21716-baseline.json",
-        "kind": "writes",
-        "reason": "R-0009 writes exact baseline and reuse-only evidence."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "exports/r0012-program-ledger.json",
-        "kind": "writes",
-        "reason": "Phase and approval transitions persist append-safe authority evidence."
-      },
-      {
-        "from": "taskplane/build_c.py",
-        "to": "exports/r0012-donor-provenance.json",
-        "kind": "writes",
-        "reason": "R-0011 records source-content provenance without importing donor history."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "exports/r0012-prove-journal.jsonl",
-        "kind": "writes",
-        "reason": "Each proof attempt appends immutable component and recovery events."
-      },
-      {
-        "from": "taskplane/prove.py",
-        "to": "exports/r0012-prove-bundle.json",
-        "kind": "writes",
-        "reason": "The terminal proof bundle binds the one canonical identity set."
-      },
-      {
-        "from": "taskplane/retro.py",
-        "to": "exports/r0012-retro.json",
-        "kind": "writes",
-        "reason": "Retro binds required economics and outcomes to the final revision."
-      },
-      {
-        "from": "components.yaml",
-        "to": "taskplane/build_c.py",
-        "kind": "declares",
-        "reason": "The component graph declares the new BUILD-C owner."
-      },
-      {
-        "from": "components.yaml",
-        "to": "taskplane/checkpoint.py",
-        "kind": "declares",
-        "reason": "The component graph declares the checkpoint owner."
-      },
-      {
-        "from": "components.yaml",
-        "to": "taskplane/prove.py",
-        "kind": "declares",
-        "reason": "The component graph declares the PROVE owner."
+        "from": "taskplane/tests/test_pickup.py",
+        "to": "taskplane/storage.py",
+        "kind": "test",
+        "reason": "Negative instrumentation proves pickup creates no private orchestration record and resume reads no private handoff."
       }
     ],
     "depth_policy": {
       "local_depth": 3,
       "boundary_mode": "contract-only",
       "contract_depth": 1,
-      "requirement_depth": 1
+      "requirement_depth": 1,
+      "rationale": "Inspect the local adapter and incumbent owners to depth 3, then stop after one hop at each named Design, BUILD-C, checkpoint, repository, exports, or requirement boundary."
     },
     "dor": [
       {
-        "check": "Baseline graph identity is exact and Design is an overlay",
-        "evidence": "Engine content fingerprint a377a00651e46b5c4a28154edc043ee2dbaaf77cbfe82d2b29fde01585f9414d and scan-quality fingerprint d128a3e7aeae7fc468e79c186e4407ce52ce8b66f6e21024f75c7bcf6b33e73a at exact pre-Design baseline 45eed52ff331db28ff229ba8f72761732564fc54; 92 modules, 296 edges, 523 files, complete/non-degraded; Design runs no graph mutation."
+        "check": "Exact baseline identity is captured before Design mutation.",
+        "evidence": "HEAD 726acd108d3ca431e680183de129918842202eda and graph e0d54a84434269c488941a265f865803c90c7e8adaa0796159ea60a3257adc8b with 50 modules/165 edges."
       },
       {
-        "check": "Current-state warning is mitigated by cited production sources",
-        "evidence": "Read-only Git and source inspection verified both governed command roots, runtime/adapters, event waits, router/deep boundary, worktree/merge owners, the six absent live edges, and absent R-0011 modules/tests."
+        "check": "All changed/new owners and six canonical boundary ids are declared.",
+        "evidence": "modules, contracts, and proposed_modules/edges name the CLI, pickup adapter, incumbent Design/BUILD-C/checkpoint/repository owners, test, exports resource, docs, and manifests."
       },
       {
-        "check": "R-0010 scope is closed before Plan",
-        "evidence": "Exactly six category ids are defined; every baseline-positive command/wait/review/graph/worktree/receipt/finding/enforcement behavior is verification/reuse-only; a seventh category requires human scope change."
+        "check": "Hard boundaries and traversal are settled.",
+        "evidence": "Contract-only depth 3/1/1; loop, hooks, Plan, backlog, requirements, graph, CI, deploy, Phase 0, E0, R-0011, and other R-0013 content are outside execution scope."
       },
       {
-        "check": "Modules and contract boundaries are owned",
-        "evidence": "Every existing/new module appears in proposed_modules and each of 19 requirement contracts has exactly one proposed owner edge with the declared relation."
-      },
-      {
-        "check": "Traversal and cross-boundary policy are bounded",
-        "evidence": "Local depth 3, contract-only stops, contract/requirement depth 1; engine impact has 28 known modules and zero unknowns inside the radius, truncated only beyond declared depth."
-      },
-      {
-        "check": "Ordering, fixtures, and identity inputs are resolved",
-        "evidence": "The three phase transitions, manual R-0010 bootstrap, exact 23-test catalog, 279-schema reproduction, seven PROVE components, graph/diff namespace, CPython matrix, and separate human actions are named with no open Design decisions."
+        "check": "The WHAT is complete and unambiguous.",
+        "evidence": "R-0001 has five exact ACs, a one-element command shape, numeric cold-start/state targets, explicit failure behavior, and no open Product questions."
       }
     ],
     "dod": [
       {
-        "check": "Design did not mutate the baseline graph",
-        "evidence": "The orchestrator recomputes and requires baseline content fingerprint a377a00651e46b5c4a28154edc043ee2dbaaf77cbfe82d2b29fde01585f9414d at scanned revision 45eed52ff331db28ff229ba8f72761732564fc54 before accepting the exact-baseline Design."
+        "check": "Final graph realizes only the declared additive pickup overlay.",
+        "evidence": "Review rescans the final SHA and matches tp.py→pickup.py→build_c.py plus incumbent checkpoint/repository and exports edges; any extra orchestration owner or unknown module is drift."
       },
       {
-        "check": "Realized graph matches the approved overlay",
-        "evidence": "Final graph scan and Engineering meta.design enumerate every proposed module, FROM→TO:KIND edge, and all 19 contracts with verdict conformant and empty drift."
+        "check": "The mandatory pickup-to-BUILD-C seam is live.",
+        "evidence": "The signed shelf end-to-end test passes normally and fails when taskplane/pickup.py→taskplane/build_c.py is severed."
       },
       {
-        "check": "Every production edge is live and mutation-sensitive",
-        "evidence": "Same-commit tests positively invoke CLI/loop/runtime/checkpoint/DEFINE/assignment/integration/PROVE/CI/dashboard/Retro paths and fail when each declared edge is severed; dormant/direct-unit-only code is rejected."
+        "check": "Legacy loop and hook boundaries are unchanged.",
+        "evidence": "Git diff reports no taskplane/loop.py, hooks/**, or .taskplane/codex-hook.py changes and the unchanged loop/governed-command selectors remain green."
       },
       {
-        "check": "R-0009 and baseline-positive compatibility remain unchanged",
-        "evidence": "Tree comparison proves zero R-0009 product change; differential fixtures preserve v2.17.16 command events, waits, quick routing, deep refusal, identities, receipts, findings, leases, and enforcement."
+        "check": "Stateless and resume claims are realized, not inferred.",
+        "evidence": "Trace/storage instrumentation proves zero private orchestration records; a second checkout with an empty unrelated home resumes solely from tracked Design authority and exports lineage."
       },
       {
-        "check": "R-0010 is exactly the six authorized gaps",
-        "evidence": "Plan and implementation inventory map each code-bearing task to one gap id, reject a seventh/reimplementation, and prove no wave/claim/build-lease/per-task-lens state on the direct path."
-      },
-      {
-        "check": "R-0011 proof/catalog/package floors are complete",
-        "evidence": "All 23 exact tests, frozen full-suite inventory, registry, tiers, seven PROVE receipts, canaries, strict typing, CPython 3.10–3.13 plus available 3.14 compile/import, deterministic clean plugin package install, cycle/graph/CI ratchets, and Retro targets pass on one exact SHA."
-      },
-      {
-        "check": "All 20 acceptance mappings fail closed",
-        "evidence": "Each mapping names an executable positive fixture and negative mutation; final non-builder evidence dispositions every criterion exactly once and the gate rejects missing, duplicate, stale, or builder-authored proof."
-      },
-      {
-        "check": "Rollout, rollback, and external authority remain enforceable",
-        "evidence": "Direct BUILD-C remains disabled until R-0010 proof; R-0011 stays closed until exact-SHA sign-off; red attempts remain isolated/durable; every external/destructive action has a distinct prior human approval."
+        "check": "Release surfaces and final verification are exact-SHA consistent.",
+        "evidence": "All three manifests, README, and CHANGELOG name 2.17.20 only after AC1–AC5; full suite, concurrent quick security+QA, and subsequent EM evidence bind one clean final SHA."
       }
     ]
   },
   "acceptance_map": [
     {
-      "criterion": "Before consolidated human approval, live attempts to create Plan/Build/integration/PROVE/release state refuse; after approval R-0010 remains blocked until R-0009 acceptance and R-0011 until R-0010 exact pushed-SHA proof and human sign-off.",
-      "design_element": "taskplane/build_c.py + contract:program.r0009-r0011-order + contract:governance.delivery-authority",
-      "validation": "Extend taskplane/tests/test_loop.py with a live phase-transition fixture: attempts before approval and before each predecessor create no Plan/task/worktree/PROVE state; the exact attributed approvals open only the next phase."
+      "criterion": "AC1 — a shelf contract runs end-to-end via pickup with zero run/track state (trace evidence). Verify with a signed shelf fixture and trace assertions covering pickup through the existing BUILD-C checkpoint and green integration while proving zero run, track, claim, lease, wave, or equivalent state.",
+      "design_element": "contract:pickup.stateless-front-door",
+      "validation": "Run taskplane/tests/test_pickup.py::test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestration_state through the public CLI seam; assert ordered pickup→BUILD-C→checkpoint→repository trace and exactly zero private orchestration mutations/home records."
     },
     {
-      "criterion": "A machine check resolves the declared branch to bba3354e7fc5eb052beac74af230611ae48bd7db, verifies v2.17.16, records tree fingerprint and attributed scope decision, and refuses any v2.17.17-or-later revision as baseline or implementation input.",
-      "design_element": "taskplane/preflight.py + contract:baseline.v2.17.16-authority + exports/r0012-v21716-baseline.json",
-      "validation": "Run the R-0009 baseline machine check from taskplane/tests/test_r0008_plan_baseline.py against the branch/tag/tree fixture; substitute a v2.17.17+ commit or moved tag and require baseline_later_history_refused."
+      "criterion": "AC2 — cold start on a fresh checkout at the same SHA to first executing checkpoint in <2 minutes. Verify with a wall-clock integration test from a fresh checkout, empty private Taskplane home, exact authorized SHA, and no warmed or inherited runtime state.",
+      "design_element": "taskplane/pickup.py",
+      "validation": "Run taskplane/tests/test_pickup.py::test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds with a new checkout, empty TASKPLANE_HOME, no warm process, exact authority SHA, and monotonic CLI-entry/checkpoint-start timestamps requiring elapsed < 120.0 seconds."
     },
     {
-      "criterion": "R-0009 before/after tree fingerprints are identical and audit evidence contains only baseline/scope artifacts with zero code write, reset, revert, merge, donor mutation, tag, push, or release; old reset/revert criteria are superseded rather than executed.",
-      "design_element": "exports/r0012-v21716-baseline.json + exports/r0012-program-ledger.json",
-      "validation": "In taskplane/tests/test_r0008_plan_baseline.py compare tracked product-tree fingerprints before/after R-0009 and assert the action ledger contains none of code_write/reset/revert/merge/donor_mutation/tag/push/release; seed each forbidden action and require failure."
+      "criterion": "AC3 — severed-edge tests: cutting the pickup→build_c entry fails; legacy loop path untouched and its suite still green. Verify with a severed pickup-to-BUILD-C seam and the unchanged legacy-loop regression selectors.",
+      "design_element": "taskplane/pickup.py->taskplane/build_c.py",
+      "validation": "Run taskplane/tests/test_pickup.py::test_severed_pickup_to_build_c_edge_fails and require the end-to-end fixture to fail when the call is cut; also run python -m pytest taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py -q against byte-unchanged loop/hook sources."
     },
     {
-      "criterion": "Live v2.17.16 fixtures prove CLI→governed-command-engine, loop→governed-command-engine, runtime/adapter use, non-polling waits, exactly 4–5 quick lenses including architecture at existing boundaries, and fail-closed automatic deep refusal; edge mutations fail and passing rows are reuse-only.",
-      "design_element": "taskplane/governed_commands.py + taskplane/command_runtime.py + taskplane/review.py + selected approach:compatibility-first-checkpoint-spine",
-      "validation": "Run existing taskplane/tests/test_r0007_governed_commands.py and test_r0007_sweep_bootstrap.py live fixtures plus mutation rows for CLI, loop, runtime, adapters, wait, router, architecture, and deep refusal; require every green row to be reuse_only."
+      "criterion": "AC4 — a second checkout resumes from repo-resident receipts with no private-store handoff. Verify after at least one manual criterion using only Git-tracked Design authority and exports receipts at the same SHA and Design fingerprint.",
+      "design_element": "resource:exports.pickup-receipts",
+      "validation": "Run taskplane/tests/test_pickup.py::test_second_checkout_resumes_from_git_receipts_without_private_home: complete one AC, commit its export, remove access to the first home, clone/checkout the recorded lineage, and resume using only tracked authority/receipt bytes for the same authorized-source-SHA/Design-fingerprint identity."
     },
     {
-      "criterion": "R-0010 Plan maps every implementation task to exactly one of the six closed gap categories and every baseline-positive capability to verification/reuse; reimplementation or a seventh category fails readiness pending human scope decision.",
-      "design_element": "taskplane/build_c.py + contract:orchestration.delivery-mode",
-      "validation": "Add taskplane/tests/test_r0008_delivery_modes.py Plan-readiness fixtures requiring every R-0010 task to carry exactly one of six closed category ids; seed a reuse-positive implementation task and seventh id and require scope_decision_required."
-    },
-    {
-      "criterion": "The live governed submit path invokes the existing command runtime then the AC checkpoint; missing proof refuses by name, real focused proof mints an exact-revision engine receipt, caller-authored receipts fail, red stops later phases, and severing submit→runtime, submit→checkpoint, or checkpoint→receipt fails same-commit mutations.",
-      "design_element": "taskplane/loop.py + taskplane/checkpoint.py + contract:governance.checkpoint-receipt",
-      "validation": "Add live tests in taskplane/tests/test_r0007_governed_commands.py that invoke public loop submit with a real focused proof, missing file, caller receipt, red command, and severed submit→runtime/submit→checkpoint/checkpoint→receipt edges; only the real exact-revision path may mint green."
-    },
-    {
-      "criterion": "A live DEFINE transition reuses the current router for exactly 4 or 5 concurrent quick slots including architecture and no deep; live direct assignment runs disjoint scopes concurrently with zero claim/build-lease/wave state and serializes overlap; live integration accepts only the green checkpoint SHA; each severed edge fails.",
-      "design_element": "taskplane/build_c.py + contract:define.design-review + contract:orchestration.scope-disjoint-assignment + contract:orchestration.merge-on-green",
-      "validation": "Run taskplane/tests/test_r0008_define_review.py, test_r0008_direct_build.py, and wiring companions through live transitions; assert 4–5 concurrent quick slots with architecture, no legacy state, overlap serialization, disjoint concurrency, exact green-SHA merge, and mutation failure for every edge."
-    },
-    {
-      "criterion": "Compatibility fixtures show no observable change to existing command events, waits, review/build routing, architecture inclusion, nonhuman deep refusal, graph/worktree identities, receipts, findings, leases, or enforcement, and no passing implementation is replaced.",
-      "design_element": "selected approach:compatibility-first-checkpoint-spine + contract:runtime.command-events + contract:review.depth-boundary",
-      "validation": "Run differential compatibility fixtures in test_r0007_governed_commands.py, test_r0007_sweep_bootstrap.py, test_loop.py, and enforcement/review tests against v2.17.16 golden outputs; reject any replaced baseline-positive implementation or observable payload change."
-    },
-    {
-      "criterion": "R-0010 final SHA passes full suite, compile/import matrix, zero-token corpus, cycle and graph ratchets without new undispositioned failure; after authorized push fetched-SHA proof and human sign-off are green for that exact revision before R-0011 opens.",
-      "design_element": "taskplane/build_c.py + scripts/ci_evals.py + exports/r0012-program-ledger.json",
-      "validation": "On the R-0010 exact final SHA run full pytest, CPython 3.10–3.13 compile/import, zero-token corpus, cycle and graph ratchets; after separately authorized push run ci_evals.py --prove-pushed-sha and require the same SHA plus attributed sign-off before R-0011 eligibility."
-    },
-    {
-      "criterion": "Every R-0011 donor surface records content provenance and a fresh R-0010 checkpoint, and ancestry/diff evidence proves no v2.17.17-or-later commit was merged, cherry-picked, or treated as proof.",
-      "design_element": "exports/r0012-donor-provenance.json + taskplane/checkpoint.py",
-      "validation": "In taskplane/tests/test_r0008_dogfood_bundle.py recompute path/content hashes and Git ancestry for every donor-derived row; inject a later commit parent/cherry-pick or prior receipt and require later_history_or_stale_proof."
-    },
-    {
-      "criterion": "A fresh requirement completes DEFINE→thin BUILD-C→PROVE; DEFINE and post-change review each emit exactly 4 or 5 concurrent quick lenses including architecture, BUILD carries only permitted checkpoint state and zero legacy per-task governance/lens state, and sign-off receives the durable bundle.",
-      "design_element": "taskplane/build_c.py + taskplane/prove.py + contract:orchestration.delivery-mode",
-      "validation": "Run taskplane/tests/test_r0008_production_wiring.py from a fresh requirement through DEFINE→thin BUILD-C→PROVE; assert both reviews have 4–5 concurrent quick slots with architecture, BUILD has only checkpoint state, and sign-off cites the durable bundle."
-    },
-    {
-      "criterion": "A machine comparison finds exactly the 23 catalog paths in specs/spec.md, each present/passing on the final SHA or individually human re-scoped before dependents; missing, skipped, renamed, duplicate, or silently cut files fail checkpoint and final completeness.",
-      "design_element": "taskplane/prove.py + exact 23-test catalog decision",
-      "validation": "Run taskplane/tests/test_r0008_full_suite_inventory.py to compare the canonical catalog to tracked paths and results; individually seed missing, skip, rename, duplicate, silent cut, and late re-scope and require nonzero completeness."
-    },
-    {
-      "criterion": "Against the 279-existing-schema reproduction all 279 classify existing and zero newly unregistered; one genuinely new id fails by name until registered, and duplicate, malformed, stale-fingerprint, or self-unregistered data fails.",
-      "design_element": "taskplane/schema_registry.py + taskplane/schema-registry.json + contract:schema.registry",
-      "validation": "Run taskplane/tests/test_r0008_schema_registry.py against the frozen 279-id fixture and one new id; seed duplicate, malformed, stale fingerprint, and self-unregistration rows and require named failures."
-    },
-    {
-      "criterion": "Import-graph tiering classifies every tracked test once, rejects Tier-0 quarantine reachability, proves thin PROVE runs zero Tier-2 and governed-build all Tier-2, and dispositions every full-suite failure relative to v2.17.16 with zero undispositioned new failure.",
-      "design_element": "taskplane/test_tiers.py + taskplane/tests/fixtures/full-suite-inventory.json + contract:test.tier-manifest",
-      "validation": "Run taskplane/tests/test_r0008_test_tiers.py and test_r0008_full_suite_inventory.py; assert every tracked test exactly once, Tier-0 quarantine rejection, zero Tier-2 in thin PROVE, all Tier-2 in governed-build, and zero undispositioned new failures."
-    },
-    {
-      "criterion": "A public tp prove emits one terminal receipt for each seven-component battery part and binds one Plan, diff, graph revision, full-suite receipt, clean repository revision, required-check set, and exact pushed SHA; stale, mixed, missing, duplicate, partial, or caller-authored identities fail.",
-      "design_element": "taskplane/prove.py + contract:prove.batch-evidence + exports/r0012-prove-journal.jsonl",
-      "validation": "Invoke public tp prove in taskplane/tests/test_r0008_prove.py and wiring test; require exactly seven terminal receipts bound to one identity set, then inject stale/mixed/missing/duplicate/partial/caller evidence and require nonzero."
-    },
-    {
-      "criterion": "Compatible-identity fixtures fail predicted-but-untouched and actual-but-unpredicted modules by name; one non-builder pass proves every Plan AC exactly once; syntax, cycle, corpus, and scope canaries each go red for the intended cause and green only after reversion.",
-      "design_element": "taskplane/prove.py + contract:graph.impact-reconciliation",
-      "validation": "Run test_r0008_impact_reconciliation.py, test_r0008_batch_acceptance.py, and test_r0008_prove_canaries.py; seed both reconciliation directions plus syntax/cycle/corpus/scope canaries and require isolated red then green only after reversion."
-    },
-    {
-      "criterion": "First red PROVE permits one checkpointed fix and complete re-PROVE; second red blocks sign-off with attributed human action, and restart/resume preserves attempts without overwriting or reusing partial green.",
-      "design_element": "taskplane/prove.py + exports/r0012-prove-journal.jsonl",
-      "validation": "Run taskplane/tests/test_r0008_fix_reprove.py with first-red/fix/re-PROVE, second-red, crash/restart, and partial-green fixtures; assert only one fix authorization, second-red human action, and immutable prior attempts."
-    },
-    {
-      "criterion": "T09 and every production behavior pass through actual governed entry points with positive evidence and fail when same-commit call-edge mutations sever reachability; conformant behavior remains unchanged while dormant/test-only code cannot pass.",
-      "design_element": "selected approach:compatibility-first-checkpoint-spine + live-edge and mutation verification gate",
-      "validation": "Run the same-commit production wiring suite including taskplane/tests/test_r0008_production_wiring.py and existing R-0007 edge tests; remove each declared call edge in mutation fixtures and require failure while unchanged reachable T09 behavior retains its golden output."
-    },
-    {
-      "criterion": "On R-0011 final SHA full suite, compile matrix, corpus, cycle/SCC/LOC, graph/impact, registry, tier, quick-finding, and collection gates are green; Retro binds all metrics, reports empty waits below 10 percent, and fails over 24 hours without prior human re-scope; authorized pushed-SHA proof is green for that SHA.",
-      "design_element": "taskplane/prove.py + taskplane/retro.py + contract:retro.delivery-efficiency",
-      "validation": "On the final SHA run CI/PROVE floors and taskplane/tests/test_r0008_operations.py; assert all named gates green, exact-SHA Retro metrics complete, empty_wait_share < 0.10, >24h without prior re-scope fails, and authorized fetched-SHA proof matches."
-    },
-    {
-      "criterion": "Every external action actually performed—main integration, push, tag, release/marketplace publication, destructive history action, or scope-expanding exception—has distinct attributed human approval, and missing approval prevents only that action.",
-      "design_element": "taskplane/build_c.py + contract:governance.delivery-authority + exports/r0012-program-ledger.json",
-      "validation": "Run taskplane/tests/test_r0008_operations.py with each external action class independently; an action without its own prior attributed approval must refuse while safe local evidence remains valid, and approval reuse across classes fails."
+      "criterion": "AC5 — full suite on the final SHA: no new failures. Verify with python -m pytest taskplane/tests -q on the final clean commit against the exact baseline; any new failure blocks release review.",
+      "design_element": "taskplane/tests/test_pickup.py",
+      "validation": "On the final clean commit run python -m pytest taskplane/tests -q, record exact SHA/argv/result counts, and compare with the exact baseline; any new failure blocks release review."
     }
   ],
   "risks": [
     {
-      "risk": "A baseline-positive capability is accidentally reimplemented.",
-      "mitigation": "Closed reuse matrix plus six-category Plan readiness and differential golden fixtures reject the task before Build.",
-      "owner": "Plan approver"
+      "risk": "A digest lookalike or caller boolean is accepted as Design approval or engine authority.",
+      "mitigation": "The incumbent approved-contract verifier recomputes Design evidence and validates the existing signed approval/engine receipt with a closed field set; pickup cannot author producer, result, or approval fields.",
+      "owner": "taskplane/design_contract.py"
     },
     {
-      "risk": "Caller-authored checkpoint fields impersonate engine evidence.",
-      "mitigation": "Checkpoint accepts only CommandRuntime/Git-derived fields, rejects unknown observed fields, and binds engine/contract/command/environment/output/result/revision digests.",
-      "owner": "checkpoint module"
+      "risk": "Stateless pickup writes hidden coordination state under another name.",
+      "mitigation": "pickup.py imports no loop/run/track/claim/lease/wave owner; tests instrument storage mutation entry points and compare an empty isolated home before/after start and second-checkout resume.",
+      "owner": "taskplane/pickup.py and QA"
     },
     {
-      "risk": "A green receipt authorizes another worktree revision.",
-      "mitigation": "Integration authorization requires equality among checkpoint target SHA, registered worktree tip, predecessor receipts, assignment scope, and merge receipt.",
-      "owner": "BUILD-C integration"
+      "risk": "A parallel checkpoint or merge implementation drifts from BUILD-C.",
+      "mitigation": "Pickup calls explicit-input BUILD-C façades that reuse shared checkpoint and integration validation; repository.py remains the sole Git worktree/merge owner; severing pickup→BUILD-C fails AC3.",
+      "owner": "taskplane/build_c.py and taskplane/repository.py"
     },
     {
-      "risk": "Legacy wave/claim/lease state leaks into thin BUILD.",
-      "mitigation": "Direct mode has a closed state schema and asserts zero forbidden records; governed-build remains separate and retained.",
-      "owner": "loop module"
+      "risk": "Receipt persistence creates an impossible self-referential Git commit SHA.",
+      "mitigation": "Receipt keys use the original authorized source SHA plus Design fingerprint and bind integrated tree/receipt digests, never the future evidence commit's SHA.",
+      "owner": "taskplane/pickup.py"
     },
     {
-      "risk": "Later donor history is imported as proof.",
-      "mitigation": "Path/content provenance is separated from Git authority; ancestry and diff checks reject v2.17.17+ parents, cherry-picks, and receipts.",
-      "owner": "R-0011 provenance owner"
+      "risk": "Resume accepts a fork, collision, or unrelated repository history.",
+      "mitigation": "Require one contiguous ordinal/predecessor chain and exact merged tree lineage for one source-SHA/fingerprint/element tuple; reject forks, gaps, overwrites, foreign receipts, and unexplained history before assignment.",
+      "owner": "taskplane/pickup.py"
     },
     {
-      "risk": "PROVE components attest different revisions or plans.",
-      "mitigation": "One canonical identity set is validated before collection and every component receipt repeats its digest; mixed evidence fails.",
-      "owner": "PROVE module"
-    },
-    {
-      "risk": "A restart overwrites red or partial proof.",
-      "mitigation": "Append-only attempt ids and predecessor digests preserve every event; resume may only continue the same open attempt.",
-      "owner": "PROVE journal"
-    },
-    {
-      "risk": "New Python modules or registry data are omitted from plugin packages.",
-      "mitigation": "Strict typing, support-matrix compile/import, deterministic package contents, clean installed-plugin smoke, and archive provenance checks are blocking.",
-      "owner": "CI"
+      "risk": "Version metadata or release authority advances before functional proof.",
+      "mitigation": "Make 2.17.20 metadata the last functional checkpoint; bind quick security/QA and EM to one final clean SHA, then stop before push/tag/publication.",
+      "owner": "release task and engineering manager"
     }
   ],
   "failure_modes": [
     {
-      "mode": "Baseline identity or later-history input differs.",
-      "detection": "signal:r0012.baseline-identity reports branch/tag/tree/later_history mismatch.",
-      "recovery": "Program owner corrects the local evidence selection or returns to Product in the same R-0009 attempt; no executable state is created."
+      "mode": "Checkout or approved Design authority is dirty, stale, symlinked, outside the repository, or identity-mismatched.",
+      "detection": "pickup.preflight.refusal",
+      "recovery": "The operator restores a clean exact authorized checkout and valid repository authority, then re-invokes pickup; no execution or receipt write occurs before that boundary."
     },
     {
-      "mode": "Consolidated/predecessor authority is absent or a seventh gap appears.",
-      "detection": "signal:r0012.phase-authority reports missing approval, predecessor, or unknown gap category.",
-      "recovery": "Human supplies the missing attributed decision or records a new scope decision before a single transition retry; existing safe evidence stays valid."
+      "mode": "The signed approval or engine receipt is missing, forged, caller-authored, or bound to another SHA/fingerprint.",
+      "detection": "pickup.preflight.refusal",
+      "recovery": "The Design authority owner supplies valid existing signed evidence for the exact repository bytes; pickup never repairs, re-signs, or downgrades the check."
     },
     {
-      "mode": "Focused proof is absent, fails, is canceled/dies, or targets a stale revision.",
-      "detection": "signal:r0012.checkpoint names AC, file, command, revision, terminal condition, and stopped phase.",
-      "recovery": "Task owner repairs only the declared AC scope and runs a new checkpoint on a new exact revision; no later phase or integration runs."
+      "mode": "The current acceptance checkpoint is red, canceled, errored, stale, truncated, or mixed.",
+      "detection": "pickup.checkpoint.terminal",
+      "recovery": "The assigned worker leaves the failed evidence intact, corrects only the same AC under manual authority, and reruns that checkpoint; later ACs and integration remain blocked."
     },
     {
-      "mode": "Checkpoint evidence is forged, truncated where completeness is required, or identity-mixed.",
-      "detection": "signal:r0012.checkpoint-receipt reports the mismatched runtime/engine/command/environment/output/result/revision field.",
-      "recovery": "Checkpoint owner discards caller data and re-derives one receipt from the durable runtime journal within the same checkpoint attempt."
+      "mode": "BUILD-C or the repository rejects exact revision, scope, predecessor, or merge identity.",
+      "detection": "pickup.integration.outcome",
+      "recovery": "The operator preserves the isolated worktree and receipt evidence, fixes the named identity mismatch, and retries the same AC; no alternate merge path is allowed."
     },
     {
-      "mode": "DEFINE/final review emits invalid depth, count, architecture, concurrency, or wait.",
-      "detection": "signal:r0012.review-projection reports the boundary and invalid selector/manifest field.",
-      "recovery": "Orchestration owner corrects the incumbent-router invocation and restarts that projection; zero Plan/sign-off authority is created."
+      "mode": "Receipt lineage has a collision, overwrite attempt, fork, gap, digest/path mismatch, or incompatible consumed outcome.",
+      "detection": "pickup.receipt.lineage",
+      "recovery": "The operator restores the unique Git-tracked lineage or obtains a human scope decision; pickup writes no replacement over existing evidence and executes nothing while ambiguous."
     },
     {
-      "mode": "Assignment overlaps, escapes scope, or has ambiguous identity.",
-      "detection": "signal:r0012.assignment names the tasks, canonical scopes, overlap/out-of-scope path, and graph identity.",
-      "recovery": "BUILD-C serializes valid overlap automatically or the planner obtains a corrected approved Plan before redispatch; no affected branch integrates."
+      "mode": "Pickup creates or resume reads private orchestration handoff state.",
+      "detection": "pickup.storage.audit",
+      "recovery": "QA blocks the candidate; implementation removes the offending state edge and repeats AC1/AC4 from an empty home before any release metadata or review."
     },
     {
-      "mode": "Integration receives red, stale, or dependency-incomplete work.",
-      "detection": "signal:r0012.integration reports checkpoint digest, registered tip, predecessor status, and refusal.",
-      "recovery": "Orchestrator retains the worktree and waits for one new green exact-tip checkpoint; dependents remain isolated and are never rebased onto red."
-    },
-    {
-      "mode": "Tier, schema, reconciliation, or canary proof fails.",
-      "detection": "signal:r0012.tier-registry or signal:r0012.reconciliation names the missing/test/schema/module/canary condition.",
-      "recovery": "Non-builder evaluator permits the one checkpointed batch fix, then PROVE reruns all seven components on a new exact revision."
-    },
-    {
-      "mode": "A PROVE component is missing, mixed, duplicate, partial, or second-red.",
-      "detection": "signal:r0012.prove-component and signal:r0012.prove-attempt report component, attempt, identity, durable predecessor, and limit.",
-      "recovery": "Proof owner resumes the open attempt or starts the one allowed complete re-PROVE; second red blocks and returns an attributed human action."
-    },
-    {
-      "mode": "An external action lacks its own approval.",
-      "detection": "signal:r0012.external-action names the action class, exact target, and missing/mismatched approval.",
-      "recovery": "Release owner obtains a distinct prior attributed approval or leaves only that action unperformed; local evidence remains valid."
+      "mode": "Cold start reaches the first executing checkpoint at or after 120.0 seconds.",
+      "detection": "pickup.cold_start.seconds",
+      "recovery": "The pickup owner removes pre-checkpoint work such as scans/private bootstrap and reruns the fresh-process test; release remains blocked until the measured value is < 120.0 seconds."
     }
   ],
   "observability": {
     "signals": [
-      "signal:r0012.phase-authority — phase, predecessor, revision, actor/receipt, decision",
-      "signal:r0012.baseline-identity — branch, commit, tag object/target, tree, reuse-matrix digest",
-      "signal:r0012.checkpoint — AC, proof file/command, ordered phase, revision, terminal condition, verdict",
-      "signal:r0012.checkpoint-receipt — runtime/engine/command/environment/output/result/revision digests",
-      "signal:r0012.assignment — ready/held tasks, scopes, overlap reason, worktree revisions, forbidden-state counts",
-      "signal:r0012.integration — checkpoint digest, authorized SHA, merge receipt, refusal reason",
-      "signal:r0012.review-projection — boundary, selected lenses, architecture, concurrency, wait, deep refusals",
-      "signal:r0012.prove-component — attempt, component, identity set, terminal status, receipt digest",
-      "signal:r0012.prove-attempt — attempt count, fix authorization, predecessor, bundle status",
-      "signal:r0012.reconciliation — predicted/actual/tolerance sets and named drift/cuts",
-      "signal:r0012.tier-registry — tier coverage/quarantine and schema existing/new/error counts",
-      "signal:r0012.retro — revision, wall clock, tokens, checkpoints/cost, waits, defects, attempts, stops",
-      "signal:r0012.external-action — class, approval actor/receipt, exact target, performed/refused"
+      "pickup.preflight.refusal",
+      "pickup.checkpoint.started",
+      "pickup.checkpoint.terminal",
+      "pickup.integration.outcome",
+      "pickup.receipt.lineage",
+      "pickup.storage.audit",
+      "pickup.cold_start.seconds"
     ],
-    "alerts": [
-      "alert:r0012-phase-refusal — executable state requested before consolidated or predecessor authority",
-      "alert:r0012-checkpoint-red — missing/failing/stale/forged checkpoint blocks dependents and integration",
-      "alert:r0012-proof-red — PROVE component red; first permits one fix, second requires human action",
-      "alert:r0012-identity-drift — baseline, Plan/diff/graph, worktree, receipt, or pushed-SHA identity mismatch",
-      "alert:r0012-review-depth — automatic slot count/depth/architecture/concurrency invariant violated",
-      "alert:r0012-external-authority — external/destructive action attempted without its distinct approval"
-    ]
+    "alerts_none_rationale": "Pickup is a synchronous local CLI with no always-on service. Every refusal is immediate, named, and nonzero; durable signals live in the Git receipt/trace evidence, and the final quick security/QA plus EM reviews inspect them on one exact SHA."
   },
   "rollout": {
-    "strategy": "After one attributed consolidated Design approval, record no-build R-0009 baseline/reuse evidence; bootstrap R-0010 manually in checkpoint/receipt, submit wiring, DEFINE, direct assignment, merge authorization, then compatibility/live-edge order; require separate authorized push, exact fetched-SHA proof, and human R-0010 sign-off; re-deliver R-0011 in the eight catalog groups through R-0010, then run final review, complete PROVE, Retro, and separately approved external actions.",
-    "rollback": "Before sharing, abandon local code-bearing branches and return to unchanged bba3354e while retaining/superseding evidence append-safely. Direct BUILD-C remains disabled until green and existing governed-build stays intact; red R-0010 keeps R-0011 closed. After sharing, correct forward or disable the delivery mode—never reset, force-push, move tags, delete receipts, or mutate donor evidence. Failed R-0011 PROVE keeps durable attempts and blocks sign-off."
+    "strategy": "After human Design and Plan authorization, deliver AC1 through AC5 as ordered manual checkpoints, one AC at a time with behavior and focused test in the same implementation commit. Keep loop/hooks unchanged. Update README, CHANGELOG, and all three manifests to 2.17.20 only after the functional path is green. Run security and QA quick passes concurrently on one final clean SHA, then EM on that SHA, and stop for explicit push authority.",
+    "rollback": "There is no migration or replacement contract. Before sharing, abandon the isolated branch or normally revert the additive pickup commits. After sharing, use a forward revert that removes the pickup CLI/module/façades and restores prior version metadata while retaining committed export evidence. Never reset, force-push, delete receipts, move tags, mutate origin/main, or alter legacy loop/hook state."
   },
   "visualization": {
     "required": true,
-    "kind": "state-transition",
+    "kind": "sequence",
     "path": "design/visual.html",
-    "reason": "The no-build R-0009 closure, manually bootstrapped R-0010, exact-SHA/human boundary, R-0011 one-fix PROVE loop, and independent external actions form an ordered failure-sensitive state machine that is materially clearer visually."
+    "reason": "The initial exact-SHA authority path, one-AC BUILD-C sequence, post-merge receipt persistence, and private-store-free second-checkout resume are materially clearer as one boundary diagram."
   },
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "Deep solution-design review checked the exact bba3354e v2.17.16 source premises, materially distinct alternatives, closed six-gap scope, incumbent command/wait/review/graph/worktree reuse, new module ownership, 19 contract edges, synchronous cancellation and 16 KiB output bounds, all 20 executable acceptance mappings, same-commit severed-edge gate, 23-test/279-schema/seven-PROVE completeness, type/package/free-threaded boundaries, failure-signal consistency, one-fix recovery, forward-only rollback, and separate human actions. No greenfield duplication, unverifiable mapping, impossible rollback, unsupported boundary, silent debt, or sequencing invention remains.",
-      "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "6b9191831fd83e12c8e04d8488a663a9a17a53c1f82813aa567e4f3b98d89288",
+      "evidence": "Grounded the adapter in tp.py, build_c.py, checkpoint.py, design_contract.py, repository.py, and storage.py; compared four materially distinct approaches; traced every AC to a named graph element and failing executable validation; checked numeric cold-start/zero-state targets, signal-linked failure recovery, additive rollback, and scope proportionality with no new signer, loop, checkpoint engine, merge engine, or private store.",
+      "produced_by": "tp-designer:tp_step_designer_design_28973ea6",
+      "content_fingerprint": "f7fe4768cdd8edfeb55587e03ad535fa7887a4d15d3dc508fc2e4850f89c28b4",
       "self_attested": true
     }
   ],

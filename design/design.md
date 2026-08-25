@@ -1,247 +1,222 @@
-# R-0012 Design — Compatibility-first BUILD-C spine from v2.17.16
+# R-0001 Design — Stateless `tp pickup` front door
 
-Status: proposed HOW for human approval. This Design is an overlay only; it does not authorize Plan, Build, integration, PROVE, or any external action.
+Status: proposed HOW for human review. This Design is an overlay only. It does not approve itself, authorize a Plan, start Build, or authorize push, tag, publication, or release mutation.
 
 ## Decision
 
-Select a **compatibility-first checkpoint spine**:
+Select a **thin stateless pickup adapter over the existing BUILD-C boundaries**.
 
-1. R-0009 records governed v2.17.16 as the sole baseline and closes as evidence-only, with no product-tree change.
-2. R-0010 extends the live v2.17.16 loop through exactly six missing BUILD-C capabilities: AC checkpoints, engine-minted checkpoint receipts, submit-to-checkpoint wiring, DEFINE projection through the incumbent router, checkpoint-authorized integration, and direct graph-disjoint assignment without claim/build-lease/wave state.
-3. R-0011 re-delivers donor content as new source changes through that checkpoint spine, then makes one durable seven-component PROVE bundle the only completion authority.
+`tp pickup <design-contract>` resolves one repository-relative signed shelf Design Contract, verifies its existing approval and engine receipt, checks a clean exact authorized Git identity, and selects exactly one contract element. A new `taskplane/pickup.py` module derives an in-memory, one-element micro-plan and asks `taskplane/build_c.py` for the existing direct-scope assignment, acceptance-checkpoint, and green-integration operations. Pickup does not initialize or load the legacy loop, and it never creates a run, track, wave, claim, lease, per-task lens, or equivalent private coordination record.
 
-The selected design preserves every baseline-positive production call edge. It adds two narrowly owned R-0010 modules—`taskplane/checkpoint.py` for checkpoint execution/receipt validation and `taskplane/build_c.py` for phase authority, DEFINE projection, direct assignment, delivery mode, and merge authorization—and three R-0011 proof modules: `taskplane/prove.py`, `taskplane/test_tiers.py`, and `taskplane/schema_registry.py`.
+The only durable handoff is an append-only receipt chain below `exports/pickup/`, rooted by the authorized source SHA and Design evidence fingerprint. Each receipt binds one acceptance criterion, its predecessor receipt, the exact assigned revision, the engine checkpoint receipt, and the repository merge outcome. A new checkout reconstructs the next criterion solely from the Git-tracked Design authority and that chain; an empty or unrelated `TASKPLANE_HOME` changes no result.
 
-No Build begins before one attributed human approval of this complete Design. R-0010 remains blocked until the evidence-only R-0009 decision is accepted. R-0011 remains blocked until R-0010 has exact pushed-SHA proof and a separate human sign-off. Main integration, pushes, tags, publications, destructive history actions, and scope expansion remain independent human gates.
+This is an adapter, not a second orchestration system. `taskplane/checkpoint.py` remains the checkpoint specification and engine-receipt owner; `taskplane/repository.py` remains the worktree/merge owner; `taskplane/design_contract.py` remains the Design evidence-fingerprint and approval-verification owner. `taskplane/build_c.py` exposes small loop-independent façades around its incumbent direct-assignment and green-integration validation so pickup does not copy them. Existing loop entry points retain their signatures and behavior. The hook security layer is unchanged.
 
-## Current state at governed v2.17.16
+## Grounded current state at `726acd108d3ca431e680183de129918842202eda`
 
-The engine supplied no current-state inventory, so the design is grounded in the exact Git identity and cited production sources:
+The Taskplane current-state inventory is empty, so this design is grounded in the supplied baseline graph and cited repository sources:
 
-- `HEAD`, branch `codex/r0009-r0011-from-v2.17.16`, and dereferenced tag `v2.17.16` name `bba3354e7fc5eb052beac74af230611ae48bd7db`; the tree is `a7f46dbf6859f7d2122c4ee6ce99006b4862197a`.
-- `taskplane/tp.py::cmd_command` calls `governed_command_engine.execute`; `taskplane/loop.py::governed_command` calls `governed_commands.execute`. `taskplane/governed_commands.py` composes `CommandAdapter` and `CommandRuntime`.
-- `taskplane/command_runtime.py` persists append-first transitions, immutable identity bindings, 16 KiB redacted output summaries, terminal states, and delivery receipts. `taskplane/command_adapters.py` owns launch, reconnect, wait, cancellation, and host process binding.
-- `taskplane/loop.py::event_wait_policy` and `event_wait_invocation` emit one 1800-second event wait, prohibit scheduled polling, and allow reissue only after completion or attention. Existing review and wave flows invoke them.
-- `taskplane/review.py::start_review` invokes `lens.automatic_sweep_route`; the selector emits exactly four or five concurrent sweep slots including architecture. `review_depth_policy` and manifest validation refuse automatic/adaptive deep with `direct-human-command-not-shipped`.
-- Existing graph, repository, storage, worktree cleanup, merge receipt, findings, review lease, enforcement, pushed-SHA, zero-token, and SCC/cycle primitives are live and reusable.
-- The missing R-0010 edges are visible in production code: `loop.submit` records runtime-eval and snapshot evidence but does not execute an AC checkpoint; the Design/Plan boundary does not start a DEFINE projection; default parallel delivery uses `wave`, `claim`, and stage-split state; `_automatic_merge_cleanup` has no checkpoint-specific exact-SHA authorization.
-- `taskplane/prove.py`, `taskplane/test_tiers.py`, `taskplane/schema_registry.py`, `taskplane/schema-registry.json`, `taskplane/tests/fixtures/full-suite-inventory.json`, and the 23 named R-0011 test paths do not exist at the baseline.
-- The exact pre-Design baseline scan at commit `45eed52ff331db28ff229ba8f72761732564fc54` is complete and non-degraded: content fingerprint `a377a00651e46b5c4a28154edc043ee2dbaaf77cbfe82d2b29fde01585f9414d`, scan-quality fingerprint `d128a3e7aeae7fc468e79c186e4407ce52ce8b66f6e21024f75c7bcf6b33e73a`, 92 modules, 296 edges, and 523 files. Review traverses local dependencies to depth 3 and stops at named contracts after one contract and one requirement hop. The engine reports 28 known impacted modules and no unknowns inside that radius.
+- The supplied graph baseline is `e0d54a84434269c488941a265f865803c90c7e8adaa0796159ea60a3257adc8b`: 50 modules and 165 edges. Design traversal remains local depth 3, contract-only at named boundaries, one contract hop, and one requirement hop.
+- `taskplane/tp.py` owns the public parser and user-facing error boundary. It has no `pickup` command at the baseline.
+- `taskplane/build_c.py::assign_scopes` already selects dependency-ready graph-disjoint scopes and documents that the direct path creates no legacy wave, claim, build-lease, per-task review, Evaluate, or Fix state. `integrate_on_green` already rejects mixed caller evidence, validates an engine-green checkpoint for the exact registered revision/scope, and delegates the merge to `RepositoryManager`.
+- `taskplane/checkpoint.py::validate_checkpoint_spec` fails before execution on unknown fields, an untracked or dirty proof, scope mismatch, or stale HEAD. `validate_and_mint` accepts the incumbent governed-command wait result, derives engine-owned receipt fields, and binds the exact worktree revision, scope, predecessor receipt digests, command output, and active engine contract.
+- `taskplane/design_contract.py` already computes Design content and evidence fingerprints and validates current approved Design evidence. Pickup consumes this authority; it does not define a second approval mechanism or accept a digest lookalike as approval.
+- `taskplane/repository.py::RepositoryManager.merge_registered_task` is the incumbent merge owner and returns durable repository receipt data. Pickup must reach this owner through BUILD-C authorization, not invoke Git merge itself.
+- `taskplane/storage.py` shows the private run/worktree/claim layout that pickup must not use as its handoff. It is a negative witness in AC1 and AC4, not a new pickup store.
+- `README.md` and `CHANGELOG.md` describe the existing BUILD-C checkpoint, bounded review, and legacy flow. The three plugin manifests currently name 2.17.19. Version and release-note changes are last, only after AC1–AC5 are green.
+
+No current source provides a stateless public front door, a one-element pickup micro-plan, or a Git-resident pickup receipt chain. Those are the only new capabilities.
 
 ## Alternatives considered
 
-### A. Compatibility-first checkpoint spine (selected)
+### A. Thin stateless adapter over BUILD-C (selected)
 
-Keep the proven v2.17.16 runtime/review/repository boundaries, add the six missing R-0010 edges, and re-deliver R-0011 only after BUILD-C proves itself.
+Add `taskplane/pickup.py`, a public CLI adapter, and the minimum loop-independent BUILD-C/repository entry seams. Keep the shelf authority, checkpoint engine, direct assignment rules, and merge validation with their incumbent owners.
 
-- Gains: smallest authorized change; preserves event-driven waits and bounded review; makes each new edge mutation-sensitive; provides a clean rollback to the unchanged baseline mode; prevents donor history from becoming proof.
-- Costs: R-0010 must bootstrap under manual checkpoints; R-0011 cannot begin until a pushed exact-SHA receipt and human sign-off exist; the durable proof schemas add explicit evidence maintenance.
-- Revisit when: a baseline-positive capability fails its live reuse fixture, or a seventh gap is demonstrated and a human expands scope.
+- Gains: satisfies zero orchestration state; reuses the live checkpoint and green-integration code; makes the pickup-to-BUILD-C edge mutation-testable; preserves the legacy loop and hook layer; enables Git-only resume.
+- Costs: BUILD-C needs a small explicit-input façade because its current integration wrapper reads loop state; receipt lineage and collision checks become a new repository artifact contract.
+- Revisit when: more than one contract element must be scheduled concurrently, a required existing BUILD-C boundary cannot accept explicit verified inputs without semantic change, or Product authorizes a broader orchestration mode.
 
-### B. Port donor behavior first, then retrofit BUILD-C
+### B. Create an ephemeral loop and delete it after pickup
 
-Copy boundary-first modules/tests into the baseline, then add checkpointing and reconciliation around the result.
+Initialize a normal Taskplane loop, synthesize a one-task Plan, run the existing loop path, then remove its private state.
 
-- Gains: donor functionality appears sooner and offers familiar source material.
-- Costs: violates the required phase order, treats ungoverned later history as implementation authority, cannot truthfully prove the first BUILD-C shakedown, and risks integrating red work.
-- Revisit when: never under R-0012; it requires a replacement Product decision.
+- Gains: reuses the current top-level loop wrappers with little refactoring.
+- Costs: creates exactly the run/track/claim/lease/wave-equivalent state R-0001 forbids; deletion destroys interruption evidence; a second checkout depends on private-store handoff; cleanup failure leaves hidden authority.
+- Revisit when: never for R-0001; it requires a replacement Product requirement that permits private orchestration state.
 
-### C. Replace the loop with a new orchestration core
+### C. Independent pickup executor and merge engine
 
-Create a greenfield scheduler, receipt store, router, worktree manager, and proof service.
+Implement worktree creation, command execution, checkpoint receipts, and Git integration entirely inside `pickup.py`.
 
-- Gains: one internally uniform model without compatibility adapters.
-- Costs: rebuilds capabilities already proven at v2.17.16, expands beyond six gaps, creates migration/rollback risk, and invalidates the closed reuse matrix.
-- Revisit when: multiple incumbent contracts independently fail live compatibility and Product authorizes a platform redesign.
+- Gains: the new path could be locally self-contained.
+- Costs: duplicates four trust boundaries, creates a second checkpoint and merge implementation, invites receipt drift, weakens severed-edge confidence, and violates explicit out-of-scope constraints.
+- Revisit when: incumbent BUILD-C and repository contracts are formally retired under a separate approved migration.
 
-### D. Verification-only status quo
+### D. Status quo
 
-Record v2.17.16 and make no BUILD-C or boundary-first changes.
+Leave signed shelf contracts executable only through private loop state.
 
-- Gains: zero product change and immediate reversibility.
-- Costs: leaves all six verified R-0010 gaps and every R-0011 acceptance criterion unsatisfied.
-- Revisit when: Product cancels R-0010/R-0011 and closes the consolidated program after R-0009.
+- Gains: no source or release change.
+- Costs: satisfies none of AC1–AC4 and leaves no production path for the intended R-0013 design-intake pickup.
+- Revisit when: Product cancels the pickup front door.
 
-## Module ownership
+## Module ownership and APIs
 
-### R-0009 evidence-only composition
+### `taskplane/tp.py` — public adapter
 
-- `taskplane/preflight.py` verifies branch, commit, tag, tree, Design/Plan authority, and tree equality using existing Git/read-only helpers.
-- `scripts/ci_evals.py` remains the exact pushed-SHA and required-check authority; it is invoked, not reimplemented.
-- `exports/r0012-v21716-baseline.json` records the exact baseline identity, attributed scope decision, product-tree fingerprint, and closed reuse matrix.
-- `exports/r0012-program-ledger.json` is an append-safe logical ledger of consolidated approval, R-0009 acceptance, R-0010/R-0011 eligibility, sign-offs, and separately authorized external actions. R-0009 writes only these evidence surfaces.
+- Add exactly one command shape: `tp pickup <design-contract>` plus the existing common workspace option.
+- Resolve the positional path relative to the selected checkout; absolute paths, `..`, symlinks, non-regular files, and paths outside the repository fail before authority parsing.
+- Delegate once to `pickup.run(...)`. The CLI does not read loop state or perform assignment, checkpoint, merge, or receipt validation itself.
+- Render deterministic named-boundary failures and nonzero exit through the incumbent public error boundary.
 
-### R-0010 checkpoint spine
+### `taskplane/pickup.py` — new bounded coordinator
 
-- `taskplane/checkpoint.py` owns `taskplane.build-c-checkpoint/v1` specifications, ordered checkpoint phases, runtime-result validation, and `taskplane.build-c-checkpoint-receipt/v1`. It trusts only engine-observed command events and repository identity.
-- `taskplane/build_c.py` owns `taskplane.program-phase-ledger/v1`, `taskplane.scope-disjoint-assignment/v1`, `taskplane.integration-authorization/v1`, and the direct BUILD-C mode. It validates phase eligibility, asks the existing router for DEFINE, derives non-overlapping assignments from Plan/graph scope, and authorizes merge only for the checkpoint’s exact green revision.
-- `taskplane/loop.py` remains the live orchestration root. Its submission path calls the existing governed command engine and checkpoint owner; its Design/Plan transition calls BUILD-C DEFINE projection; its execution dispatch calls direct assignment; its integration path consumes exact checkpoint authorization.
-- `taskplane/governed_commands.py`, `command_runtime.py`, and `command_adapters.py` remain the only command lifecycle. No checkpoint runner, polling loop, or receipt store is forked.
-- `taskplane/review.py` and `lens.py` remain the only applicability/router path. DEFINE is a new caller of the incumbent selector, not a second selector.
-- `taskplane/depgraph.py`, `storage.py`, `repository.py`, and `worktree_cleanup.py` remain the graph/worktree/merge substrate. BUILD-C skips legacy wave/claim/build-lease state but does not fork repository identity or merge receipts.
+Own these pure or explicit-input operations:
 
-### R-0011 boundary-first proving delivery
+1. `load_authority(checkout, design_path)` asks `design_contract.py` to validate the existing signed approved-contract and engine-receipt contract. The returned immutable authority contains the authorized source SHA, Design evidence fingerprint, approval identity/digest, engine receipt digest, declared element ids, scopes, and acceptance criteria. Caller-authored substitutes and unknown authority fields fail.
+2. `verify_checkout(checkout, authority)` proves regular-file/no-symlink authority bytes, a clean tracked and untracked product tree, and either (a) initial `HEAD == authority.source_sha`, or (b) an exact valid pickup receipt lineage rooted at that SHA/fingerprint. Resume accepts no unrelated history or dirty evidence.
+3. `micro_plan(authority, element_id, receipts)` produces exactly one pending element and exactly its ordered acceptance criteria. Selection is deterministic: the contract's sole element is implicit; multiple elements require the contract's existing selected-element field and otherwise refuse. No requirement, Plan, backlog, or neighboring Design content is read.
+4. `next_checkpoint(...)` advances at most one acceptance criterion. Its predecessor is the prior immutable pickup receipt. It constructs the existing checkpoint specification from the selected element's declared scope and tracked focused proof, then calls the BUILD-C façade.
+5. `write_receipt(...)` writes only after a green exact-revision checkpoint and accepted repository merge. Receipt discovery, validation, and collision handling are append-only and deterministic.
 
-- `taskplane/preflight.py` additionally seals `taskplane.plan-reconciliation-baseline/v1`: new modules, predicted impact and tolerance, contracts, task scopes, AC identities, graph revision, and compatible graph/diff identity rules.
-- `taskplane/test_tiers.py` generates `taskplane.test-tier-manifest/v1` from the import graph and proves every tracked test appears exactly once, Tier-0 cannot reach quarantine, thin PROVE runs zero Tier-2, and governed-build runs all applicable Tier-2.
-- `taskplane/schema_registry.py` validates the frozen 279-existing-schema reproduction and `taskplane/schema-registry.json`; new identifiers must be explicitly registered and a schema cannot unregister itself.
-- `taskplane/prove.py` owns the public seven-component PROVE orchestration, identity reconciliation, full-suite dispositions, independent AC evaluation, canaries, durable attempt journal, bundle, and one-fix limit.
-- `taskplane/tp.py` adds only the public `prove` CLI adapter and forwards closed arguments to `taskplane.prove`.
-- `.github/workflows/ci.yml` invokes the public PROVE/ratchet surfaces and continues to invoke incumbent zero-token, compatibility, pushed-SHA, packaging, and cycle checks.
-- `taskplane/dashboard.py` renders the phase/checkpoint/PROVE journal in semantic text and machine-equivalent state.
-- `taskplane/retro.py` binds the required delivery metrics to the final revision and writes `exports/r0012-retro.json`.
-- The exact 23 `taskplane/tests/test_r0008_*.py` files named in the requirement are new focused and live-wiring proofs. `taskplane/tests/fixtures/full-suite-inventory.json` is the frozen baseline disposition input.
+The module imports no loop, run store, track store, claim, lease, wave, ReviewKernel, or hook module. It does not call storage mutation APIs. A test-only trace sink records function-boundary events without becoming authority.
 
-## Runtime and data contracts
+### `taskplane/design_contract.py` — existing authority owner
 
-### Phase authority
+Expose a narrow `load_approved_contract_for_pickup(checkout, path)` verifier over the existing `contract:design.approved-contract`. It must:
 
-`taskplane.program-phase-ledger/v1` is append-safe and content-addressed. Its only forward transitions are:
+- recompute the Design evidence fingerprint from repository bytes;
+- validate the existing signed approval and engine receipt using incumbent verification, never a caller-provided boolean or bare digest;
+- require the authorized source SHA, approval, engine receipt, and Design fingerprint to agree;
+- return a closed normalized mapping for pickup; and
+- perform no approval write, approval migration, or hook/security action.
 
-`awaiting_consolidated_approval → r0009_ready → r0009_accepted → r0010_active → r0010_exact_sha_green → r0010_signed_off → r0011_active → r0011_proved → r0011_signed_off`.
+If the incumbent approved-contract cannot supply this proof from repository facts, the implementation stops for a human scope decision; it must not invent a second signer or approval schema.
 
-A transition carries actor/authority receipt, prior-record digest, phase target, exact repository revision, and evidence digests. Refusal creates no executable stage. External actions are separate rows with their own prior human approval and action receipt; phase approval never implies one.
+### `taskplane/build_c.py` — existing BUILD-C owner
 
-### Checkpoint
+Expose an explicit-input pickup façade that reuses, rather than forks, current validation:
 
-`taskplane.build-c-checkpoint/v1` contains checkpoint id, phase, AC ids, predecessor checkpoint ids, exact worktree revision, declared scope, focused-proof repository path and argv, and ratchet baseline. The path must be a regular tracked file inside the worktree before any command starts.
+- `assign_direct_scopes(...)` receives the one-element micro-plan and exact source revision, selects exactly one scope, and delegates worktree creation to the repository owner. Pickup mode disables private registration persistence and returns an in-memory assignment receipt bound to source SHA, Design fingerprint, element id, scope, and worktree identity.
+- `run_acceptance_checkpoint(...)` uses the incumbent governed command lifecycle and `checkpoint.validate_checkpoint_spec`/`validate_and_mint`. The pickup identity is deterministic from source SHA + Design fingerprint + element id, not a created run record. Exactly one AC id is permitted per invocation.
+- `integrate_pickup_on_green(...)` calls the same closed checkpoint validation used by `integrate_on_green`, requires the assignment's exact revision/scope and predecessor digest, and then calls the repository merge owner. It accepts no caller-authored green status.
 
-The live synchronous call path is:
+Existing `assign_scopes` and `integrate_on_green` remain behaviorally and signature compatible. Shared pure validation may be extracted, but the legacy loop caller and its state lifecycle are not changed.
 
-`tp.py loop submit → loop.submit → governed_commands.execute(launch/wait) → CommandAdapter → CommandRuntime events → checkpoint.validate_and_mint → build_c phase/integration eligibility`.
+### `taskplane/checkpoint.py` — existing checkpoint owner
 
-A green `taskplane.build-c-checkpoint-receipt/v1` binds:
+Remain the sole checkpoint spec and engine-green receipt authority. Pickup supplies one AC, exact HEAD, scope, proof argv, and predecessor receipt. The existing engine derives producer, output, result, revision, environment, and receipt digest. Any required stateless engine-receipt adapter must verify the existing signed engine receipt and produce the same active-contract fingerprint semantics without persisting a run or weakening the current path. No second checkpoint schema or producer is introduced.
 
-- engine and active-contract fingerprints;
-- run/task/checkpoint/AC identities;
-- exact command argv/cwd fingerprint and sanitized environment fingerprint;
-- bounded redacted output digest/byte count/truncation, terminal result, and exit code;
-- exact repository/worktree revision and declared scope;
-- ordered phase receipts for compile/import, focused proof, forbidden-state counts, ratchet delta, and one Engineering judgment over only that AC evidence delta;
-- predecessor receipt digests and final verdict.
+### `taskplane/repository.py` — existing worktree and merge owner
 
-Observed fields come from `CommandRuntime` snapshots/events and Git. Caller-authored producer, result, output, environment, revision, or receipt fields are rejected as unknown. A red, errored, canceled, dead, missing-proof, stale-revision, or truncated-required-output result mints no green receipt and runs no later checkpoint phase. Checkpoints dispatch zero lenses.
+Add or expose explicit-input operations for a short-lived pickup worktree and exact-revision merge, while preserving the existing `RepositoryManager` as sole Git mutation owner. The merge operation receives BUILD-C authorization, verifies primary/worker identity and exact branch tip, performs ordinary merge-on-green, and returns the incumbent merge receipt shape. Pickup never shells out to `git merge` itself. Worktree cleanup remains receipt-scoped and recoverable.
 
-Command execution stays synchronous at the orchestration boundary. Cancellation/death propagate as named terminal runtime events and wake the one existing event wait. No asyncio task or `ExceptionGroup` is introduced.
+### Negative witnesses and release surfaces
 
-### DEFINE review
+- `taskplane/storage.py` and `taskplane/taskplane_lite.py` remain unchanged; AC1/AC4 instrument their mutation entry points and private home to prove pickup created no orchestration state.
+- `taskplane/tests/test_pickup.py` owns the signed shelf fixture, trace, cold-start, severed-edge, second-checkout, collision/tamper, interruption, and release-metadata-focused coverage.
+- `README.md`, `CHANGELOG.md`, `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` change only after the functional path is green, consistently naming 2.17.20 and the bounded authority boundary.
+- `hooks/**`, `.taskplane/codex-hook.py`, `taskplane/loop.py`, `plan/**`, `backlog/**`, `requirements/**`, `components.yaml`, `.github/**`, and deploy surfaces are byte-unchanged.
 
-After the attributed consolidated Design approval and before Plan execution state, `loop.approve` calls `build_c.project_define`, which calls `review.start_review(stage="define")`. That uses `lens.automatic_sweep_route` once, yielding exactly four or five concurrent quick slots including architecture, one event wait, and no deep/full/26-lens/serial fallback. Any slot-count, architecture, depth, graph-quality, or collection violation returns zero Plan authority.
+## Runtime sequence and contracts
 
-### Direct assignment and merge
+### Initial start
 
-`build_c.assign` consumes the sealed Plan plus `depgraph` scope/identity. It topologically selects ready tasks, assigns pairwise graph-disjoint scopes concurrently to isolated registered worktrees, and serializes overlaps by dependency order. Its durable assignment receipt contains no wave, claim, build-task lease, or per-task lens state. An out-of-scope write invalidates the assignment and creates no integration authorization.
+1. CLI resolves the repository-local regular Design Contract path.
+2. The approved-contract owner verifies signed approval, engine receipt, source SHA, and recomputed Design fingerprint.
+3. Pickup proves the checkout clean and exactly at the authorized source SHA; it audits that no pickup lineage already conflicts.
+4. Pickup derives one in-memory element and its ordered AC list, without reading any private Taskplane state.
+5. BUILD-C assigns the one declared scope through the repository worktree owner.
+6. The host executes the bounded element work. Production behavior and the focused proof for the current AC are committed together.
+7. BUILD-C runs exactly that AC through the existing checkpoint engine. A red or interrupted checkpoint is durable negative evidence and cannot reach integration.
+8. A green checkpoint for the exact assigned revision enters the existing merge-on-green owner.
+9. Pickup writes one immutable export receipt after the merge outcome. The next invocation repeats from repository facts for the next AC.
 
-`build_c.authorize_integration` accepts only a green checkpoint receipt whose target revision equals the registered worktree tip, whose predecessors are green, and whose scope matches the assignment. Only then may `RepositoryManager.merge_registered_task` run and mint the incumbent merge receipt. Red worktrees and their dependents stay isolated; no rebase onto a red revision is permitted.
+### Resume
 
-### Plan identity, schema, tiers, and PROVE
+Receipt files live at:
 
-The sealed Plan uses canonical repository-relative module identities and records graph fingerprint/revision, predicted impact, explicit tolerance, contracts, scopes, AC ids, and new-module identities. The diff uses the same namespace. Ambiguous identities fail before reconciliation.
+`exports/pickup/<authorized-source-sha>/<design-evidence-fingerprint>/<element-id>/<ordinal>-<ac-id>-<receipt-digest>.json`
 
-`taskplane.schema-registry/v1` records id, owner module, introduced revision, shape fingerprint, and status. The frozen fixture contains exactly 279 baseline-existing ids. Unknown new ids block until registered; duplicate/malformed/stale/self-unregistered rows fail.
+Each `taskplane.pickup-receipt/v1` contains a closed field set:
 
-`taskplane.test-tier-manifest/v1` records every tracked test once with import-graph fingerprint, tier, reason, and owning component. Tier-0-to-quarantine reachability and omissions fail. Thin PROVE refuses any Tier-2 execution; governed-build completeness requires every applicable Tier-2 test.
+- authorized source SHA, Design evidence fingerprint, signed approval digest, engine receipt digest, element id, and micro-plan fingerprint;
+- criterion ordinal/id and predecessor pickup-receipt digest (null only for the first criterion);
+- exact assigned worktree revision and declared scope;
+- the complete validated checkpoint receipt plus its canonical digest;
+- the complete incumbent merge receipt, merge outcome, and repository tree fingerprint after integration;
+- producer id `taskplane.pickup/v1`, terminal status, and canonical receipt digest.
 
-`tp prove` creates one append-only `taskplane.prove-journal/v1` attempt and exactly seven terminal component receipts:
+The file name digest must equal the canonical digest of its bytes excluding its own digest field. Existing paths are never overwritten. Duplicate ordinals, forks, digest/path mismatch, a gap, a receipt for another SHA/fingerprint/element, an incompatible terminal outcome, or history not explained by the validated merge lineage fails by naming `receipt-lineage` before execution.
 
-1. compile/import across the supported CPython 3.10–3.13 matrix;
-2. generated Tier-0 manifest execution;
-3. credential-empty zero-token corpus;
-4. cycle/SCC/LOC ratchet;
-5. four-canary red/revert/green component;
-6. graph/diff impact reconciliation;
-7. independent non-builder batched AC walk.
+The receipt key remains the original authorized source SHA plus the unchanged Design fingerprint. Resume verifies the new checkout's Git tree and ancestry against the latest accepted merge receipt; it never treats an evidence commit's self-referential Git SHA as receipt content. Thus the chain is content-addressed without an impossible receipt-commit hash cycle. A second checkout may use a completely empty private Taskplane home because every required authority and predecessor byte is tracked in Git.
 
-The final `taskplane.prove-bundle/v1` binds one Plan fingerprint, diff fingerprint, graph revision, full-suite inventory receipt, clean repository revision, required-check receipt set, exact pushed SHA, and the seven component receipts. Stale, mixed, duplicate, caller-authored, missing, or partial evidence fails nonzero. First red permits exactly one new checkpointed batch fix and a complete second attempt; second red records an attributable human action and blocks sign-off. Restart resumes the immutable attempt journal and never overwrites partial or failed rows.
+### Failure boundaries
 
-### Python and packaging
+- `checkout-clean`: dirty tracked bytes, untracked product files, symlink authority, or authority outside the repository.
+- `source-sha`: initial HEAD mismatch or resumed history/tree not explained by the receipt lineage.
+- `approved-design`: stale Design bytes, missing/invalid approval, or approval/Design fingerprint mismatch.
+- `engine-receipt`: missing, forged, unknown-field, wrong-SHA, wrong-fingerprint, or wrong-producer engine evidence.
+- `micro-plan`: zero/multiple ambiguous elements, scope escape, unrelated content, unknown AC, or more than one current AC.
+- `pickup-build-c`: missing or severed direct-assignment/checkpoint entry.
+- `acceptance-checkpoint`: red, canceled, errored, stale, truncated, mixed, or caller-authored checkpoint evidence.
+- `green-integration`: revision/scope/predecessor mismatch or rejected repository merge.
+- `receipt-lineage`: collision, overwrite attempt, fork, gap, digest mismatch, foreign identity, or incompatible consumed outcome.
 
-All new runtime code stays in the existing `taskplane` namespace, uses the standard library only, and adds no runtime dependency, import-time client, or global mutable authority. Public trust-boundary records are runtime-validated even when typed. Shared state is file-locked and append-safe; concurrency tests use separate processes and do not infer safety from the GIL or claim untested free-threaded extension support.
+Every refusal is synchronous, names one boundary, exits nonzero, and authorizes neither the next AC nor merge.
 
-The supported runtime floor remains the shipped CPython 3.10–3.13 matrix. The Python 3.14 solution-design guidance is applied by keeping syntax portable and adding a 3.14 compile/import leg when available. New modules receive strict static type checking in CI with a pinned development-only checker. Taskplane ships plugin archives rather than a wheel, so clean-wheel installation is not applicable; deterministic clean Codex/Claude package installation, archive-content checks for the new modules/JSON registry, and import smoke tests are the packaging DoD. No lockfile or runtime package surface changes.
+## Acceptance-to-validation map
 
-## Live-edge and mutation verification gate
-
-A behavior is delivered only when the same commit contains both positive production invocation and a severed-edge test:
-
-| Edge or invariant | Positive production evidence | Required severed-edge/mutation evidence |
+| Criterion | Design element | Executable validation |
 |---|---|---|
-| CLI/loop → governed engine → runtime/adapters | Existing public CLI and loop fixtures launch, wait, reconnect/cancel, and bind results | Remove each call/import; `test_r0007_governed_commands.py` fails |
-| Event wait | Completion, attention, error, cancellation, and death wake once; scheduled polling count is zero | Replace event invocation with polling or allow timeout reissue; sweep/command tests fail |
-| Existing review/deep boundary | Existing review/build stages emit 4–5 concurrent quick slots with architecture; nonhuman deep refuses | Remove router/architecture/depth validation; sweep bootstrap fails |
-| submit → runtime → checkpoint → receipt | A real governed submit runs the declared focused proof and returns the engine receipt for its exact revision | Cut any of the three edges or inject caller receipt fields; focused production-flow tests fail |
-| Design approval → DEFINE router | The real approval transition emits one DEFINE quick set | Cut `build_c.project_define` or bypass `review.start_review`; wiring test fails |
-| Plan → direct assignment → worktree | Disjoint scopes dispatch concurrently, overlap serializes, no legacy state exists | Cut graph call, seed overlap/out-of-scope write, or add claim/wave/lease state; direct-build tests fail |
-| checkpoint → integration → merge receipt | Only the checkpoint target SHA merges | Cut authorization or substitute another/red SHA; integration fixture fails closed |
-| public CLI → seven PROVE components → journal/bundle | One public command produces seven exact terminal receipts | Cut any component/collector edge, mix identities, or inject caller evidence; PROVE wiring tests fail |
-| CI/dashboard/Retro live consumers | CI blocks on PROVE and ratchets; dashboard and Retro render the same journal/revision | Remove each invocation; wiring/operations tests fail |
-| T09 and donor surfaces | Actual governed entry points exercise reachable conformant behavior | Sever every claimed production call edge; dormant/test-only implementations fail |
+| AC1 | `contract:pickup.stateless-front-door` plus the BUILD-C/checkpoint/merge chain | `test_pickup.py::test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestration_state` runs a signed fixture through the real CLI seam, asserts the ordered trace, and snapshots an empty private home plus instrumented storage mutation calls. |
+| AC2 | `pickup.verify_checkout` → `pickup.micro_plan` → `build_c.assign_direct_scopes` | `test_pickup.py::test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds` uses a fresh Git checkout, empty home, no warm process, monotonic start/checkpoint timestamps, and requires `< 120.0` seconds. |
+| AC3 | the proposed runtime edge `taskplane/pickup.py → taskplane/build_c.py` | `test_pickup.py::test_severed_pickup_to_build_c_edge_fails` removes/replaces the call and requires the end-to-end fixture to fail; `python -m pytest taskplane/tests/test_loop.py taskplane/tests/test_r0007_governed_commands.py -q` proves the unchanged legacy path. |
+| AC4 | `resource:exports.pickup-receipts` lineage | `test_pickup.py::test_second_checkout_resumes_from_git_receipts_without_private_home` completes one AC, commits its export, destroys access to the first home, and resumes in a second checkout from tracked Design/receipt bytes only. |
+| AC5 | final exact-SHA regression evidence | Run `python -m pytest taskplane/tests -q` on the final clean commit, record the command/SHA/counts, and compare with the exact baseline so any new failure blocks review. |
 
-The exact 23-path catalog is a closed set checked by the PROVE completeness component. Missing, renamed, duplicated, skipped, or silently cut paths fail. T09 is preserved without rewrite when its production reachability and current contract conformance pass; only a proven missing edge or conformance delta permits a minimum correction.
+The delivery itself uses five ordered manual checkpoints, AC1 through AC5. Each functional change and the focused test proving that AC are in the same implementation commit. A checkpoint receipt may follow as an evidence commit because it can only exist after execution and merge; it never substitutes for the same-commit behavior/test rule.
 
-## Observability and quality targets
+## Quality targets and observability
 
-Machine signals are versioned, deterministic, and render with equivalent semantic text:
+- Initial pickup with a fresh checkout and empty private home reaches the first executing checkpoint in strictly less than 120.0 wall-clock seconds, measured with a monotonic clock at CLI entry and checkpoint-start trace emission.
+- Pickup creates exactly zero run, track, claim, lease, wave, stage, per-task-lens, or equivalent coordination records and performs zero private-store handoff reads during resume.
+- Every successful criterion has exactly one unambiguous receipt-chain successor; every receipt and predecessor digest is 64 lowercase hexadecimal characters and recomputes exactly.
+- Integration count is zero unless the exact assigned revision has one engine-green checkpoint for the current single AC and matching predecessor lineage.
+- The final full suite has zero failures not present at the exact baseline and no skipped pickup acceptance proof.
 
-- `signal:r0012.phase-authority`: phase, predecessor, exact revision, actor/receipt, decision.
-- `signal:r0012.baseline-identity`: branch, commit, tag object/target, tree, reuse-matrix digest.
-- `signal:r0012.checkpoint`: AC, proof path/command, phase, revision, terminal condition, verdict.
-- `signal:r0012.checkpoint-receipt`: runtime/engine/command/environment/output/result/revision digests.
-- `signal:r0012.assignment`: ready/held tasks, scope identities, overlap reason, worktree revisions, forbidden-state counts.
-- `signal:r0012.integration`: checkpoint digest, authorized SHA, merge receipt, refusal reason.
-- `signal:r0012.review-projection`: boundary, selected quick lenses, architecture inclusion, concurrency, wait invocation, deep refusals.
-- `signal:r0012.prove-component`: attempt, component, identity set, terminal status, receipt digest.
-- `signal:r0012.prove-attempt`: attempt count, fix authorization, durable predecessor, bundle status.
-- `signal:r0012.reconciliation`: predicted/actual/tolerance sets and named drift/cuts.
-- `signal:r0012.tier-registry`: tier coverage/quarantine reachability and schema existing/new/error counts.
-- `signal:r0012.retro`: exact revision, wall clock, tokens, checkpoints, mean cost, empty-wait share, defects/checkpoint, PROVE defects, attempts, stop/re-scope events.
-- `signal:r0012.external-action`: action class, approval actor/receipt, exact target, performed/refused.
-
-Exact targets: zero R-0009 product-tree changes; exactly six R-0010 implementation categories; exactly 4–5 automatic quick lenses including architecture; zero automatic deep/full/26/serial fallback slots; zero scheduled polling; checkpoint output summaries bounded to 16 KiB; exactly 23 catalog paths; 279 baseline-existing schemas and zero falsely new; exactly seven terminal PROVE component receipts per attempt; at most two full PROVE attempts; zero new undispositioned final failures; empty-wait share below 10%; and failure for a run exceeding 24 hours without prior human re-scope. Runtime availability/RPO/RTO are not applicable to this local governed CLI; interruption safety is instead measured by durable resume and zero partial-green reuse.
-
-## Failure modes and recovery
-
-- Baseline or later-history mismatch: `signal:r0012.baseline-identity` refuses R-0009 in the same invocation. The program owner corrects only the evidence/branch selection or returns to Product; no executable state exists.
-- Missing consolidated/predecessor authority or seventh gap: `signal:r0012.phase-authority` refuses before Plan/task/worktree creation. The human supplies the missing approval or records a new scope decision; retry is bounded to that transition.
-- Missing proof, command failure, cancellation, death, or stale checkpoint revision: `signal:r0012.checkpoint` is red and later phases do not run. The task owner repairs the declared AC scope and reruns that checkpoint once on a new exact revision.
-- Forged or mixed checkpoint evidence: `signal:r0012.checkpoint-receipt` refuses before a green receipt or integration state. The checkpoint owner re-derives evidence from the durable runtime journal; caller data is discarded.
-- Invalid quick projection or deep request: `signal:r0012.review-projection` creates no downstream authority. The orchestration owner corrects the incumbent-router invocation; automatic fallback is forbidden.
-- Overlap, out-of-scope write, or ambiguous graph identity: `signal:r0012.assignment` serializes overlap or refuses the affected assignment before integration. The planner corrects scope/identity under a new approved Plan if needed.
-- Red/stale merge attempt: `signal:r0012.integration` keeps the worktree and dependents isolated. The orchestrator accepts only a new green checkpoint for that exact tip; it never rebases dependents onto red.
-- Tier/schema/reconciliation/canary failure: `signal:r0012.tier-registry` or `signal:r0012.reconciliation` makes the current PROVE attempt red. The non-builder evaluator authorizes the single checkpointed batch fix, followed by a complete new attempt.
-- Missing, mixed, duplicate, or partial PROVE receipt: `signal:r0012.prove-component` and `signal:r0012.prove-attempt` block the bundle. The proof owner resumes the current durable attempt or starts the one allowed re-PROVE; a second red returns human action.
-- Missing external approval: `signal:r0012.external-action` blocks only that action. The release owner obtains a distinct attributed approval or leaves the action unperformed.
+Machine-visible signals are `pickup.preflight.refusal`, `pickup.checkpoint.started`, `pickup.checkpoint.terminal`, `pickup.integration.outcome`, `pickup.receipt.lineage`, `pickup.storage.audit`, and `pickup.cold_start.seconds`. They are deterministic trace/export fields, not remote telemetry. There is no always-on service, so no automated alert channel is introduced; nonzero CLI refusal is immediate operator action and the final quick security/QA plus EM reviews inspect the exact-SHA evidence.
 
 ## Risks and controls
 
-- **Scope creep disguised as compatibility work:** the Plan schema permits only six R-0010 category ids and fails on any task without exactly one. Owner: Plan approver.
-- **Checkpoint self-attestation:** runtime-observed fields and engine fingerprints are minted after execution; unknown caller fields fail. Owner: checkpoint module.
-- **A green task merging at another SHA:** authorization binds checkpoint digest, registered worktree tip, and merge receipt. Owner: BUILD-C integration.
-- **Legacy state leaking into thin BUILD:** direct mode asserts zero wave/claim/build-lease/per-task-lens records; governed-build remains a separate retained compatibility mode. Owner: loop.
-- **Donor history smuggling:** content provenance is path/hash only; ancestry/diff proof rejects v2.17.17+ commits as parents, cherry-picks, or evidence. Owner: R-0011 provenance record.
-- **Seven-part proof becoming seven inconsistent identities:** the final bundle accepts only one canonical identity set and rejects mixing before collection. Owner: PROVE.
-- **Retry overwriting a failure:** append-only attempt ids and predecessor digests preserve red/superseded evidence. Owner: PROVE journal.
-- **Python/package drift:** new modules remain stdlib runtime code, are strictly type-checked, run across the support matrix, and are proven in clean deterministic plugin archives. Owner: CI.
+- **A digest lookalike becomes approval.** Mitigation: the approved-contract owner verifies the incumbent signed approval and engine receipt; pickup accepts neither booleans nor caller-authored producer/result fields. Owner: `taskplane/design_contract.py`.
+- **Stateless becomes hidden state under another name.** Mitigation: no loop/private-store imports in pickup, instrumentation of storage mutation APIs, empty-home before/after snapshot, and second-checkout proof. Owner: `taskplane/pickup.py` and QA.
+- **A second orchestration or merge path drifts.** Mitigation: BUILD-C/repository façades reuse shared validation and the incumbent owner; severed-edge coverage fails if pickup no longer reaches BUILD-C. Owner: `taskplane/build_c.py` and `taskplane/repository.py`.
+- **Receipt commits create SHA self-reference.** Mitigation: lineage is rooted at the authorized source SHA and binds merged tree/receipt digests, never its own future evidence-commit SHA. Owner: `taskplane/pickup.py`.
+- **Resume follows a forked or foreign chain.** Mitigation: require one contiguous ordinal/predecessor chain for one source-SHA/fingerprint/element tuple; forks, gaps, and unrelated history fail before assignment. Owner: `taskplane/pickup.py`.
+- **Release metadata lands before behavior.** Mitigation: version/docs/manifests are a final checkpoint after AC1–AC5; final review targets one clean SHA. Owner: release task and EM.
 
-No silent technical debt is accepted. Retained governed-build machinery is an explicit compatibility surface, not a deletion candidate in this requirement. Its future removal requires a separate requirement and signed evidence; R-0012 neither expands nor silently accepts that debt.
+No silent technical debt is accepted. The additive pickup receipt schema is intentionally local and Git-resident; there is no migration or compatibility burden on existing loop state. Supporting multi-element or concurrent pickup is explicitly deferred to a new requirement, not designed as an unused extension point here.
 
-## Rollout and rollback
+## Rollout, review, and rollback
 
-1. Obtain one attributed consolidated Design approval; before it, every executable stage refuses.
-2. Record R-0009 baseline/reuse evidence only and prove the product tree unchanged.
-3. Deliver R-0010 under manual AC/group checkpoints: phase authority and checkpoint/receipt first, submit wiring second, DEFINE projection third, direct assignment fourth, checkpoint-authorized integration fifth, then the compatibility and live-edge matrix.
-4. After local R-0010 floors are green, require a separate push approval, fetched exact-SHA proof, and human R-0010 sign-off.
-5. Re-deliver R-0011 in graph-disjoint groups matching the eight catalog groups, each through R-0010 checkpoints; seal Plan identity, tier/registry, PROVE/reconciliation, CI/operations, then run final review/PROVE/Retro.
-6. Cross each integration, push, tag, publication, destructive-history, or scope-expansion boundary only with its own attributed approval.
+1. After human Design and consolidated Plan authorization, implement the manual AC1–AC5 checkpoint sequence only.
+2. Keep hooks and the legacy loop byte-unchanged. If the existing approved-contract, checkpoint, or repository boundary cannot be consumed without redesign, stop for a human scope decision.
+3. After functional AC1–AC5 are green, update README, CHANGELOG, and the three manifests consistently to 2.17.20.
+4. On one final clean SHA, run security and QA as two concurrent quick passes, followed by engineering-manager review on the same SHA and evidence set.
+5. Report the release candidate and stop for explicit push authority. Do not push, tag, publish, or mutate `origin/main`.
 
-Before any shared mutation, rollback is branch abandonment back to unchanged `bba3354e...`; R-0009 evidence is superseded by an append-only record, not rewritten. While R-0010 is unproven, direct BUILD-C remains disabled and the existing governed-build path remains intact. A red R-0010 leaves R-0011 closed. After a commit is shared, rollback is a new forward correction or disabling delivery-mode transition—never reset, force-push, tag movement, receipt deletion, or donor mutation. A failed R-0011 PROVE leaves all checkpoint/journal evidence readable and blocks sign-off; it does not roll back into unproven integration.
+Rollback before any shared mutation is branch abandonment or a normal revert of the additive pickup commits. After a shared commit, rollback is a forward revert that removes the CLI/module/façades and restores prior version metadata while retaining already-committed export evidence. There is no data migration, hook change, loop-state migration, force-push, receipt deletion, or tag movement. Existing Taskplane releases ignore the additive `exports/pickup/` records.
+
+## Visualization decision
+
+A sequence visual is required because the distinction among initial exact-SHA authority, one-AC BUILD-C execution, post-merge receipt persistence, and Git-only second-checkout resume is easy to misread as an ephemeral loop. The visual makes the one-way boundaries and the absent private-store handoff explicit.
 
 ## Solution-design lens result
 
-The design is grounded in exact v2.17.16 sources and does not rebuild the proven command, wait, review, graph, worktree, receipt, findings, or enforcement machinery. The alternatives are materially different, and the selected approach is the only one consistent with the six-gap scope and predecessor gates. Every one of the 20 acceptance criteria maps to a named module/contract and executable positive/negative validation. All changed contracts have reversible rollout, every failure mode names an emitted signal plus an actor and bounded recovery, and Plan can decompose the phase/call-edge order without inventing authority or identity rules.
-
-The state-transition visual is required because the non-code R-0009 closure, manual R-0010 bootstrap, exact-SHA/human gate, R-0011 one-fix PROVE loop, and separately controlled external actions are materially easier to audit as one state machine.
+The selected adapter is grounded in the cited incumbent owners, not a greenfield replacement. The rejected alternatives are materially different and explain why ephemeral-loop reuse and duplicated execution are unacceptable. Every AC maps to a named module/contract and a test that fails when that element is severed. Quality targets are numeric, failure detections name emitted signals, rollback is additive and migration-free, and the work can be decomposed without deciding new Product scope. The solution-design attestation is self-attested by this designer and must be surfaced at the human gate.
 
 ## Open questions
 
-None.
+None. Any need to change hook security, the legacy loop, introduce a new approval/signature scheme, redesign an incumbent BUILD-C/checkpoint/merge contract, widen beyond one selected element, or perform a release mutation is a new human scope decision.

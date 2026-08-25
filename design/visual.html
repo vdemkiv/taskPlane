@@ -1,32 +1,82 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>R-0012 ordered delivery state transition</title>
-<style>
-:root{color-scheme:light dark;--bg:#f7f5ef;--card:#fff;--ink:#17212b;--muted:#52606d;--line:#81909e;--ok:#176b4d;--warn:#a14c15;--stop:#9b2c2c;--accent:#3158a6}
-@media(prefers-color-scheme:dark){:root{--bg:#11161c;--card:#1b232c;--ink:#eef3f7;--muted:#a9b6c2;--line:#6e8091;--ok:#55c89a;--warn:#f1a866;--stop:#ff8585;--accent:#8fb2ff}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,sans-serif}.wrap{max-width:1180px;margin:auto;padding:32px 22px 56px}h1{font-size:clamp(1.7rem,3vw,2.5rem);margin:0 0 8px}.lede{color:var(--muted);max-width:78ch}.flow{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:18px;margin:32px 0}.state{position:relative;background:var(--card);border:2px solid var(--line);border-radius:14px;padding:18px;min-height:190px;box-shadow:0 4px 18px #0001}.state:not(:last-child)::after{content:"→";position:absolute;right:-18px;top:43%;width:18px;text-align:center;color:var(--accent);font-weight:800}.state h2{font-size:1rem;margin:0 0 10px;color:var(--accent)}.state p,.state li{font-size:.9rem}.gate{border-color:var(--warn)}.done{border-color:var(--ok)}.proof{border-color:var(--accent)}ul{padding-left:19px}.branch{display:grid;grid-template-columns:1fr 1fr;gap:18px}.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}.red{border-left:6px solid var(--stop)}.green{border-left:6px solid var(--ok)}code{font-size:.85em}.legend{color:var(--muted);font-size:.9rem;margin-top:24px}
-@media(max-width:850px){.flow{grid-template-columns:1fr}.state:not(:last-child)::after{content:"↓";right:auto;left:50%;top:auto;bottom:-21px}.branch{grid-template-columns:1fr}}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>R-0001 stateless pickup sequence</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; background: #0b1020; color: #e8eefc; }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 48px; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    .lede { color: #aebbd7; margin: 0 0 28px; }
+    .flow { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 12px; align-items: stretch; }
+    .node { border: 1px solid #344365; border-radius: 14px; background: #121a30; padding: 16px; min-height: 118px; }
+    .node h2 { font-size: 15px; margin: 0 0 8px; color: #9fc2ff; }
+    .node p { font-size: 13px; line-height: 1.45; margin: 0; color: #d2dcf3; }
+    .arrow { text-align: center; color: #6fa4ff; font-size: 20px; margin: 10px 0; }
+    .sequence { display: grid; grid-template-columns: 1fr 42px 1fr 42px 1fr; gap: 4px; align-items: center; }
+    .state-free { margin-top: 22px; border: 1px solid #4c765f; background: #10271d; border-radius: 14px; padding: 16px; }
+    .state-free strong { color: #8de0ad; }
+    .resume { margin-top: 22px; display: grid; grid-template-columns: 1fr 72px 1fr; gap: 12px; align-items: center; }
+    .repo { border-color: #765f38; background: #2a2113; }
+    .small { color: #aebbd7; font-size: 12px; margin-top: 8px; }
+    @media (max-width: 900px) {
+      .flow { grid-template-columns: 1fr; }
+      .sequence, .resume { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+    }
+  </style>
 </head>
 <body>
-<div class="wrap" role="main">
-<h1>R-0012: governed v2.17.16 → BUILD-C → boundary-first PROVE</h1>
-<p class="lede">One-way authority with fail-closed checkpoints. Green arrows require the evidence named in each state; no state implies permission for an external action.</p>
-<div class="flow" role="group" aria-label="Ordered program states">
-<div class="state gate"><h2>0 · Consolidated approval</h2><p>Product and Design only until one attributed human approval.</p><ul><li>No Plan or execution state</li><li>No external action</li></ul></div>
-<div class="state done"><h2>R-0009 · No-build baseline</h2><p>Record exact <code>bba3354e…</code>, v2.17.16 tag/tree, scope decision, and reuse matrix.</p><ul><li>Zero product-tree change</li><li>Later history excluded</li></ul></div>
-<div class="state"><h2>R-0010 · Six gaps</h2><p>Manual checkpoint bootstrap over incumbent runtime/router/graph/worktree primitives.</p><ul><li>Submit → runtime → checkpoint</li><li>DEFINE, direct assignment, merge-on-green</li></ul></div>
-<div class="state gate"><h2>Exact-SHA + human gate</h2><p>Full floors, separately approved push, fetched-SHA proof, then R-0010 sign-off.</p><ul><li>Red keeps R-0011 closed</li><li>Passing baseline paths unchanged</li></ul></div>
-<div class="state proof"><h2>R-0011 · Re-deliver and PROVE</h2><p>Fresh checkpointed donor content, exact 23 tests, registry/tiering, seven terminal receipts.</p><ul><li>One batch fix allowed</li><li>Second red → human action</li></ul></div>
-</div>
-<div class="branch" role="group" aria-label="Failure and completion paths">
-<div class="panel red"><h2>Any red or stale identity</h2><p>Stop the dependent transition. Preserve the worktree, checkpoint, and PROVE journal. R-0010 allows a new exact-revision checkpoint; R-0011 permits one complete fix/re-PROVE, then requires a human decision.</p></div>
-<div class="panel green"><h2>Final green bundle</h2><p>All seven component receipts, Plan/diff/graph/full-suite/required-check identities, exact pushed SHA, final 4–5 quick review, and Retro agree. Sign-off becomes available; each push/tag/publication/integration still has its own approval.</p></div>
-</div>
-<p class="legend">Reuse invariant: v2.17.16 command events, wake-only waits, 4–5 concurrent quick review including architecture, and fail-closed automatic deep remain on their existing production paths.</p>
-</div>
+<main>
+  <h1>Stateless <code>tp pickup</code>: one authority, one AC, existing green boundary</h1>
+  <p class="lede">The new code is the blue adapter. Trust and mutation remain with the incumbent Design, BUILD-C/checkpoint, and repository owners.</p>
+
+  <section class="flow" aria-label="Initial pickup flow">
+    <div class="node">
+      <h2>1 · Shelf authority</h2>
+      <p>Repository Design Contract, signed approval, engine receipt, authorized source SHA, and recomputed Design fingerprint must agree.</p>
+    </div>
+    <div class="node">
+      <h2>2 · Pickup adapter</h2>
+      <p>Clean exact checkout. One selected element. In-memory micro-plan. Exactly one current acceptance criterion.</p>
+    </div>
+    <div class="node">
+      <h2>3 · BUILD-C</h2>
+      <p>Existing direct-scope assignment. Existing exact-revision acceptance checkpoint. Red stops here.</p>
+    </div>
+    <div class="node">
+      <h2>4 · Repository owner</h2>
+      <p>Only the BUILD-C-authorized green revision reaches the incumbent merge-on-green boundary.</p>
+    </div>
+    <div class="node repo">
+      <h2>5 · Git receipt</h2>
+      <p>Append-only export binds source SHA + Design fingerprint + AC + checkpoint + merge + predecessor digest.</p>
+    </div>
+  </section>
+
+  <div class="sequence" aria-hidden="true">
+    <div></div><div class="arrow">→</div><div></div><div class="arrow">→</div><div></div>
+  </div>
+
+  <section class="state-free">
+    <strong>Private coordination state: exactly zero.</strong>
+    No loop, run, track, wave, claim, lease, stage, per-task lens, or private receipt handoff is created. The hook security layer is unchanged.
+  </section>
+
+  <section class="resume" aria-label="Second checkout resume">
+    <div class="node repo">
+      <h2>Checkout A commits evidence</h2>
+      <p>After one green AC and merge outcome, its immutable receipt is tracked under the authorized-source-SHA/Design-fingerprint key.</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node">
+      <h2>Checkout B resumes</h2>
+      <p>With an empty unrelated Taskplane home, validate the Git Design authority and receipt lineage, derive the next AC, and re-enter BUILD-C.</p>
+      <p class="small">No private-store transfer; forks, gaps, collisions, or unexplained history fail before execution.</p>
+    </div>
+  </section>
+</main>
 </body>
 </html>
