@@ -6,7 +6,7 @@
     "skills/tp-go/SKILL.md",
     "skills/tp-go/flow.json"
   ],
-  "inputs_fingerprint": "51f88923546a20b102a3a1e59b49a7b07259124affeed75073f8cdf4a5ec2983",
+  "inputs_fingerprint": "f6c5e80814bdd42106fe96ade544087ada5c6f81c789969a459a8ad694980a5f",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp lens dispatch",

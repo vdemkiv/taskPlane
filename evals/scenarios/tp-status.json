@@ -3,7 +3,7 @@
   "skill": "tp-status",
   "title": "A read-only mission-control snapshot that never advances the work it reports",
   "source_files": ["skills/tp-status/SKILL.md", "skills/tp-status/flow.json"],
-  "inputs_fingerprint": "6b8ca5ae36e4bb23dd6457597f369869b58d2d9a00ed23359277e3afa0a9c73d",
+  "inputs_fingerprint": "ef2e046e7345d8d8911ab63fcad0763b532cb20f833fb939ca9d16bfa98f460a",
   "expects_derivations": [],
   "declared_surfaces": ["tp status", "tp dashboard", "tp graph html"],
   "terminal": "response",

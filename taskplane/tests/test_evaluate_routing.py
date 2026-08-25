@@ -228,8 +228,9 @@ class TestEmUsesSelectiveKernel(unittest.TestCase):
             changed_symbols=["changed"], bounds=bounds)
         self.assertEqual(direct["callers"], ["api", "job"])
         source = inspect.getsource(loop._review_kernel)
-        self.assertIn("caller_expander=review.bounded_caller_expander(graph)",
+        self.assertIn("caller_expander = review.bounded_caller_expander(graph)",
                       source)
+        self.assertIn("caller_expander=caller_expander", source)
 
 
 class TestCanonicalFindingEnforcement(unittest.TestCase):
@@ -321,7 +322,7 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
         self.assertEqual(em["step"], "em")
         catalog_ids = {l["id"] for l in lens.load_catalog()["lenses"]}
         self.assertEqual({x["id"] for x in em["lenses"]}, catalog_ids)
-        self.assertTrue(any(x["tier"] in ("deep", "light")
+        self.assertTrue(any(x["tier"] == "sweep"
                             for x in em["lenses"]))
         self.assertTrue(any(x["tier"] == "n/a" for x in em["lenses"]))
         for x in em["lenses"]:
@@ -352,16 +353,16 @@ class TestFloorsSurviveBuildProfileNarrowing(unittest.TestCase):
             "hooks/guard.py": "def guard():\n    return True\n",
             "src/app/feature.py": "def feature():\n    return 3\n"})
         by_id = {x["id"]: x for x in act["lenses"]}
-        # security: never n/a on an enforcement-touching diff
+        # security: quick-only routing still selects the enforcement floor
         sec = by_id["security"]
-        self.assertIn(sec["tier"], ("light", "deep"))
+        self.assertEqual(sec["tier"], "sweep")
         self.assertNotEqual(sec["mode"], "none")
-        # architecture: >= light on any code change, and it survives the
-        # build-profile narrowing precisely BECAUSE it is floored
+        # architecture: the quick sweep survives build-profile narrowing
+        # precisely because code changes retain the architecture floor
         profile = lens.load_catalog()["stage_profiles"]["build"]
         self.assertNotIn("architecture", profile)   # narrowing is real
         arch = by_id["architecture"]
-        self.assertIn(arch["tier"], ("light", "deep"))
+        self.assertEqual(arch["tier"], "sweep")
         self.assertNotEqual(arch["mode"], "none")
         self.assertIn("floor", arch)
 

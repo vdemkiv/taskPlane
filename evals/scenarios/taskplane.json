@@ -6,7 +6,7 @@
     "skills/taskplane/SKILL.md",
     "skills/taskplane/flow.json"
   ],
-  "inputs_fingerprint": "51ab2d7cca6a430d2b3ad6a3defdfe8d45fce557eeb1d7d593d192edc892472b",
+  "inputs_fingerprint": "c620345a6cd817e9c098d8b3490bcdb5d2c4b0262b190a0fffa38cd091831456",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp loop next",
