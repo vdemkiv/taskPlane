@@ -30,6 +30,7 @@ def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
     """Keep loop protocol tests independent of the dashboard rendering seam."""
     import views
 
+    monkeypatch.delenv("TASKPLANE_NO_SUITE_CACHE", raising=False)
     monkeypatch.setattr(views, "refresh_views", lambda _ws, out: out)
     original_load_locator = runtime_storage.load_workspace_locator
     original_write_locator = runtime_storage.write_workspace_locator
@@ -941,14 +942,17 @@ class TestLoop(unittest.TestCase):
         canonical = os.path.join(
             lenses_root, "results", f"{fingerprint}.json")
         self.producer["write_allow"] = [canonical]
+        _, evidence_runtime, _ = loop._review_runtime_modules()
 
         with unittest.mock.patch(
-                "storage.load_workspace_locator", return_value=locator):
+                "storage.load_workspace_locator", return_value=locator), \
+                unittest.mock.patch.object(
+                    evidence_runtime.runtime_storage,
+                    "load_workspace_locator", return_value=locator):
             action = self._issue()
             contract = self._activate(action)
             self.assertEqual(contract["write_allow"], [canonical])
 
-            _, evidence_runtime, _ = loop._review_runtime_modules()
             store = evidence_runtime.ArtifactStore(self.ws)
             lease_ref = store.put("lease", self.lease)
             brief_ref = store.put("lens-brief", {
