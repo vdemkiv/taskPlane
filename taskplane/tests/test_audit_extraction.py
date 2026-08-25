@@ -563,7 +563,7 @@ class TestExtractionStructure(unittest.TestCase):
         for name in MOVED_CONSTANTS:
             self.assertIn(f"{name} = ", src)
 
-    def test_extraction_boundary_is_one_direct_reexport_import(self):
+    def test_loop_shrank_by_the_moved_region(self):
         """Guard the audit boundary, independent of unrelated loop growth.
 
         A whole-file line ceiling stopped measuring this extraction once the
