@@ -136,8 +136,13 @@ def run(checkout: str, design_path: str, *,
     events.append("pickup.preflight.checkout")
     micro_plan = _micro_plan(authority)
     events.append("pickup.micro_plan.ready")
+    build_c_entry = getattr(build_c, "run_pickup", None)
+    if not callable(build_c_entry):
+        raise PickupRefusal(
+            "pickup-build-c: BUILD-C entry is unavailable"
+        )
     try:
-        result = build_c.run_pickup(root, micro_plan, emit=emit)
+        result = build_c_entry(root, micro_plan, emit=emit)
     except (build_c.ScopeAssignmentError,
             build_c.IntegrationAuthorizationError) as exc:
         raise PickupRefusal(f"pickup-build-c: {exc}") from exc

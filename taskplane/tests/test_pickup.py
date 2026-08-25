@@ -197,6 +197,25 @@ def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestr
     assert mutation_calls == []
 
 
+def test_severed_pickup_to_build_c_edge_fails(
+        signed_shelf: tuple[Path, str], monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    checkout, authority_rel = signed_shelf
+
+    # Remove the callable itself so this exercises a genuinely absent runtime
+    # edge rather than replacing BUILD-C with a mock that can report success.
+    monkeypatch.delattr(pickup.build_c, "run_pickup")
+
+    exit_code = tp.main([
+        "pickup", authority_rel, "--workspace", str(checkout),
+    ])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "pickup-build-c: BUILD-C entry is unavailable" in captured.err
+
+
 def test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds(
         signed_shelf: tuple[Path, str], tmp_path: Path) -> None:
     checkout, authority_rel = signed_shelf
