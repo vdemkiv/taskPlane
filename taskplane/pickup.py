@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import time
 from collections.abc import MutableSequence
 
 import build_c
@@ -108,7 +109,17 @@ def _micro_plan(authority: dict) -> dict:
 def run(checkout: str, design_path: str, *,
         trace: MutableSequence[str] | None = None) -> dict:
     """Execute one approved shelf criterion without orchestration state."""
+    cli_entry = time.monotonic()
     events = trace if trace is not None else []
+    checkpoint_started_after_seconds: float | None = None
+
+    def emit(event: str) -> None:
+        nonlocal checkpoint_started_after_seconds
+        if event == "pickup.checkpoint.started" and \
+                checkpoint_started_after_seconds is None:
+            checkpoint_started_after_seconds = time.monotonic() - cli_entry
+        events.append(event)
+
     root = os.path.realpath(checkout)
     authority_path, authority_rel = _authority_path(root, design_path)
     _verify_clean(root)
@@ -126,14 +137,21 @@ def run(checkout: str, design_path: str, *,
     micro_plan = _micro_plan(authority)
     events.append("pickup.micro_plan.ready")
     try:
-        result = build_c.run_pickup(root, micro_plan, emit=events.append)
+        result = build_c.run_pickup(root, micro_plan, emit=emit)
     except (build_c.ScopeAssignmentError,
             build_c.IntegrationAuthorizationError) as exc:
         raise PickupRefusal(f"pickup-build-c: {exc}") from exc
+    if checkpoint_started_after_seconds is None:
+        raise PickupRefusal(
+            "pickup-build-c: checkpoint start was not observed"
+        )
     events.append("pickup.storage.audit")
     return {
         "schema": "taskplane.pickup-result/v1", "status": "integrated",
         **result, "trace": list(events),
+        "timing": {
+            "pickup.cold_start.seconds": checkpoint_started_after_seconds,
+        },
         "storage_audit": {
             "run": 0, "track": 0, "claim": 0, "lease": 0, "wave": 0,
             "equivalent": 0,

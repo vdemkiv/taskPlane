@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -193,6 +195,69 @@ def test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestr
     assert _home_snapshot(private_home) == before
     assert _byte_snapshot(checkout / ".taskplane") == control_before
     assert mutation_calls == []
+
+
+def test_fresh_checkout_reaches_first_executing_checkpoint_under_120_seconds(
+        signed_shelf: tuple[Path, str], tmp_path: Path) -> None:
+    checkout, authority_rel = signed_shelf
+    repository_root = Path(__file__).resolve().parents[2]
+    implementation_sha = _git(repository_root, "rev-parse", "HEAD")
+    implementation_tree = _git(
+        repository_root, "rev-parse", f"{implementation_sha}^{{tree}}"
+    )
+    fresh_checkout = tmp_path / "fresh-implementation-checkout"
+    subprocess.run(
+        [
+            "git", "clone", "--quiet", "--no-hardlinks", "--no-checkout",
+            str(repository_root), str(fresh_checkout),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "--quiet", "--detach", implementation_sha],
+        cwd=fresh_checkout,
+        check=True,
+    )
+    assert _git(fresh_checkout, "rev-parse", "HEAD") == implementation_sha
+    assert _git(fresh_checkout, "rev-parse", "HEAD^{tree}") == \
+        implementation_tree
+
+    private_home = tmp_path / "empty-unrelated-taskplane-home"
+    assert not private_home.exists()
+    clean_environment = {
+        "PATH": os.environ["PATH"],
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "TASKPLANE_HOME": str(private_home),
+    }
+    command = [
+        sys.executable, "-I", str(fresh_checkout / "taskplane" / "tp.py"),
+        "pickup", authority_rel, "--workspace", str(checkout),
+    ]
+    cli_entry = time.monotonic()
+    completed = subprocess.run(
+        command,
+        cwd=fresh_checkout,
+        env=clean_environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        check=False,
+    )
+    cli_terminal = time.monotonic()
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    cold_start_seconds = result["timing"]["pickup.cold_start.seconds"]
+    assert 0.0 <= cold_start_seconds < 120.0
+    assert cli_terminal - cli_entry < 120.0
+    assert result["trace"].index("pickup.checkpoint.started") < \
+        result["trace"].index("pickup.checkpoint.terminal")
+    assert not private_home.exists()
+    assert _git(fresh_checkout, "status", "--porcelain=v1") == ""
 
 
 def test_public_tp_pickup_cli_delegates_workspace_contract_and_renders_result(
