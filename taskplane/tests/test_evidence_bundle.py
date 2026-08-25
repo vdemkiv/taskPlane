@@ -374,14 +374,18 @@ class TestDegradationIsLoud(_AtEvaluate):
             action = loop.next_action(ws)
         self.assertEqual(action["review_kernel"]["status"],
                          "impact_incomplete")
+        self.assertIn("error", action)
         with mock.patch.object(loop.lens_router, "route_git_diff",
                                side_effect=AssertionError("must not remap")):
             bundle = loop.evidence(ws)
-        self.assertEqual(bundle["review_kernel"]["status"],
-                         "impact_incomplete")
+        # Graph-quality preflight failed before a route could be sealed, so
+        # there is deliberately no citable run id. Evidence must fail closed
+        # on the absent binding instead of inventing a second kernel.
+        self.assertNotIn("review_kernel", bundle)
         self.assertEqual(bundle["lenses"], [])
         self.assertEqual(bundle["lenses_not_applicable"], [])
-        self.assertIn("impact_incomplete", bundle["lenses_error"])
+        self.assertIn("no exact evaluator ReviewKernel binding",
+                      bundle["lenses_error"])
 
 
 class TestTheSuiteIsCitedNotRerun(_AtEvaluate):

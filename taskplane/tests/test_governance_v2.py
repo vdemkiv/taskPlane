@@ -126,7 +126,8 @@ class TestGovernanceV2(unittest.TestCase):
                         "id": "contract:orders-v1"}])
         task = {"id": "t1", "req": child["id"],
                 "type": "distributed", "scope": ["src/core/**"],
-                "tests": "true", "contracts": []}
+                "tests": "true", "criteria": ["works"],
+                "contracts": []}
         self._plan_to_execute(task)
         inherited = loop.load(self.ws)["tasks"][0]["contracts"]
         self.assertEqual(inherited[0]["id"], "contract:orders-v1")

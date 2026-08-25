@@ -5,11 +5,65 @@ protocol. Older sign-off, audit-cadence, and scope tests only need a valid
 canonical revision so their unrelated assertion reaches the intended seam.
 """
 import hashlib
+import json
 import os
 
 import review
 import review_evidence
 import taskplane_lite as tp
+
+
+def complete_evaluate_slots(ws, *, session_id="evaluate-fixture"):
+    """Author every leased Evaluate result through its observed producer.
+
+    Tests for a later gate rule use this helper to satisfy the real
+    ReviewKernel boundary instead of bypassing it with free-form verdicts.
+    """
+    state = review._load_state(ws)
+    store = review_evidence.ArtifactStore(ws)
+    for index, slot in enumerate(state.get("slots") or []):
+        lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
+        payload = {
+            **lease,
+            "schema": "taskplane.lens-slot-output/v2",
+            "authored_by": "lens-slot",
+            "lens_results": [
+                {"lens": lens_id, "verdict": "pass", "blockers": 0,
+                 "checked_evidence": [
+                     {"file": "src/a.py", "line": 1,
+                      "claim": "reviewed governed source"}
+                 ]}
+                for lens_id in lease["lens_ids"]
+            ],
+            "findings": [],
+        }
+        if brief.get("language_references"):
+            payload["references_applied"] = list(
+                brief["language_references"])
+        content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        event = {
+            "session_id": session_id,
+            "agent_id": f"{session_id}-{index}",
+            "tool_name": "Write",
+            "tool_input": {"file_path": slot["result_path"],
+                           "content": content},
+        }
+        contract = {
+            "task": brief["producer_contract"]["task"],
+            "task_id": f"{session_id}-contract",
+            "read_only": True,
+            "write_allow": [slot["result_path"]],
+        }
+        task_slot = brief["producer_contract"]["task_slot"]
+        review.register_slot_producer(
+            ws, event=event, contract=contract, task_slot=task_slot)
+        review.record_slot_write_observation(
+            ws, event=event, contract=contract, task_slot=task_slot)
+        path = os.path.join(ws, slot["result_path"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(content)
 
 
 def complete_review(ws, *, coverage, impact=None, tests=None, findings=None,

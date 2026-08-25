@@ -3702,6 +3702,7 @@ def _review_runtime_modules():
 
     import review as imported_review
     import review_evidence as imported_evidence
+    import graph_quality as imported_graph_quality
     import storage as imported_storage
     imported_runtime_path = os.path.realpath(str(
         getattr(tp, "__file__", "") or ""))
@@ -3711,12 +3712,15 @@ def _review_runtime_modules():
         getattr(imported_evidence, "__file__", "") or ""))
     review_path = os.path.realpath(str(
         getattr(imported_review, "__file__", "") or ""))
+    graph_quality_path = os.path.realpath(str(
+        getattr(imported_graph_quality, "__file__", "") or ""))
     consistent = (
         not force_private
         and imported_runtime_path == pinned["taskplane_lite"]["path"]
         and storage_path == pinned["storage"]["path"]
         and evidence_path == pinned["review_evidence"]["path"]
         and review_path == pinned["review"]["path"]
+        and graph_quality_path == pinned["graph_quality"]["path"]
         and getattr(imported_evidence, "tp", None) is tp
         and getattr(imported_evidence, "runtime_storage", None)
         is imported_storage
@@ -3728,11 +3732,13 @@ def _review_runtime_modules():
     )
     if consistent:
         runtime, evidence, review_kernel = tp, imported_evidence, imported_review
+        graph_quality_kernel = imported_graph_quality
     else:
         target_storage = loader.load("storage")
         runtime = loader.load("taskplane_lite")
         evidence = loader.load("review_evidence")
         review_kernel = loader.load("review")
+        graph_quality_kernel = loader.load("graph_quality")
         runtime_import = runtime.__dict__["__builtins__"]["__import__"]
         if getattr(evidence, "tp", None) is not runtime or \
                 getattr(evidence, "runtime_storage", None) is not \
@@ -3745,7 +3751,8 @@ def _review_runtime_modules():
                 "target review runtime bundle is internally inconsistent")
     _REVIEW_RUNTIME_BUNDLE = {
         "root": root, "runtime": runtime,
-        "evidence": evidence, "review": review_kernel, "loader": loader,
+        "evidence": evidence, "review": review_kernel,
+        "graph_quality": graph_quality_kernel, "loader": loader,
     }
     return runtime, evidence, review_kernel
 
@@ -3766,10 +3773,9 @@ def _strict_review_graph_quality(review_ws: str, *, target: dict,
                                  symbols: list, review_module,
                                  evidence_module) -> tuple[dict, dict, object]:
     """Persist admissible current graph evidence before the one route."""
-    loader = (_REVIEW_RUNTIME_BUNDLE or {}).get("loader")
-    if loader is None:
-        raise RuntimeError("target review dependency loader is unavailable")
-    graph_quality = loader.load("graph_quality")
+    graph_quality = (_REVIEW_RUNTIME_BUNDLE or {}).get("graph_quality")
+    if graph_quality is None:
+        raise RuntimeError("target graph-quality runtime is unavailable")
     source_change = any(os.path.splitext(path)[1].lower() in {
         ".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go",
         ".cs", ".java", ".rb"} for path in files)

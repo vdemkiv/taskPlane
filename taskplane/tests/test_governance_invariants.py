@@ -12,7 +12,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
-from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
+from taskplane.tests.review_kernel_support import (  # noqa: E402
+    complete_evaluate_slots,
+    complete_review,
+)
 
 
 def _repo():
@@ -40,16 +43,19 @@ def _state(ws, step, tests="true"):
 
 
 def _write_eval(ws, state):
-    task = state["tasks"][0]
-    routed = lens.route_git_diff(ws, base=state["baseline"], breadth="routed")
+    bundle = loop.evidence(ws)
+    verdict = bundle["verdict_template"]
+    verdict["verdict"] = "pass"
+    for row in verdict["criteria"]:
+        row["status"] = "met"
+        row["evidence"] = "covered by the task's tests"
+    for row in verdict["lenses"]:
+        row["verdict"] = "pass"
+        row["blockers"] = 0
+    complete_evaluate_slots(ws)
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
     with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"task": task["id"], "verdict": "pass",
-                   "criteria": [{"criterion": "feature works",
-                                  "status": "met", "evidence": "true"}],
-                   "lenses": [{"lens": x["id"], "verdict": "pass",
-                               "blockers": 0} for x in routed["lenses"]],
-                   "failures": []}, f)
+        json.dump(verdict, f)
 
 
 def _write_em(ws):

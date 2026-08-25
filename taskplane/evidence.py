@@ -147,7 +147,7 @@ def _canonical_kernel_obligations(ws: str, expected_stage: str, *,
         verdict = (row or {}).get("verdict")
         if verdict == "n/a":
             not_applicable.append(lens_id)
-        elif verdict in {"deep", "light"}:
+        elif verdict in {"deep", "light", "sweep"}:
             lenses.append({"lens": lens_id,
                            "mode": "subagent" if verdict == "deep" else "inline",
                            "verdict": "", "blockers": None})
