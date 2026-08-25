@@ -1,16 +1,14 @@
 {
   "tasks": [
     {
-      "id": "t05-ac4-attributed-operator-trust-resume",
+      "id": "t07-ac5-bounded-no-pickup-regression-proof",
       "scope": [
-        "taskplane/tp.py",
-        "taskplane/pickup.py",
-        "taskplane/tests/test_pickup.py"
+        "exports/**"
       ],
-      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest -q taskplane/tests/test_pickup.py",
+      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -c 'import json,pathlib,subprocess,sys; run=lambda argv,**kwargs: subprocess.run(argv,check=True,**kwargs); base=\"f15588137a0b2470494318836798820200d63a56\"; assert run([\"git\",\"status\",\"--porcelain\",\"--untracked-files=all\"],capture_output=True,text=True).stdout==\"\"; head=run([\"git\",\"rev-parse\",\"HEAD\"],capture_output=True,text=True).stdout.strip(); print(\"exact_head=\"+head,flush=True); run([\"git\",\"merge-base\",\"--is-ancestor\",base,\"HEAD\"]); changed=set(filter(None,run([\"git\",\"diff\",\"--name-only\",base,\"HEAD\"],capture_output=True,text=True).stdout.splitlines())); assert changed<={\"plan/plan.md\",\"plan/tasks.json\"},changed; run([sys.executable,\"-m\",\"pytest\",\"-q\",\"taskplane/tests/test_pickup.py\"]); codex=json.loads(pathlib.Path(\".codex-plugin/plugin.json\").read_text()); claude=json.loads(pathlib.Path(\".claude-plugin/plugin.json\").read_text()); market=json.loads(pathlib.Path(\".claude-plugin/marketplace.json\").read_text()); assert {codex[\"version\"],claude[\"version\"],market[\"version\"],market[\"plugins\"][0][\"version\"]}=={\"2.17.20\"}; assert \"2.17.20\" in run([sys.executable,\"taskplane/tp.py\",\"version\"],capture_output=True,text=True).stdout; help_text=run([sys.executable,\"taskplane/tp.py\",\"pickup\",\"--help\"],capture_output=True,text=True).stdout; assert \"--trust-source\" in help_text and \"--workspace\" in help_text; readme=pathlib.Path(\"README.md\").read_text().lower(); changelog=pathlib.Path(\"CHANGELOG.md\").read_text().lower(); assert \"2.17.20\" in readme and \"operator trust\" in readme and \"not cryptographic\" in readme; assert \"2.17.20\" in changelog and \"attributed human authority\" in changelog and \"does not cryptographically authenticate\" in changelog'",
       "req": "R-0002",
       "deps": [],
-      "type": "security",
+      "type": "reliability",
       "contracts": [
         "contract:pickup.stateless-front-door",
         "contract:pickup.operator-trust-source",
@@ -29,7 +27,12 @@
         "taskplane/build_c.py",
         "taskplane/checkpoint.py",
         "taskplane/repository.py",
-        "taskplane/storage.py"
+        "taskplane/storage.py",
+        "README.md",
+        "CHANGELOG.md",
+        ".codex-plugin/plugin.json",
+        ".claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json"
       ],
       "design_edges": [
         "taskplane/tp.py->contract:pickup.operator-trust-source:provides",
@@ -52,89 +55,13 @@
       },
       "criteria": [
         "AC4 — a fresh second checkout resumes through explicit attributed operator trust with no private-store handoff. After one manual criterion and atomic receipt are committed, a fresh second checkout with an empty or nonexistent Taskplane home and no first-checkout access invokes pickup with --trust-source <exact-source-sha>. The exact flag and full SHA are recorded verbatim in the new receipt as attributed human authority; the SHA equals the shelf authorized source SHA and existing exact-SHA, Design-fingerprint, and receipt-lineage identity; the next existing BUILD-C checkpoint runs with zero run, track, claim, lease, wave, or private-handoff state; and no output claims cryptographic authenticity. Missing flag, malformed SHA, SHA mismatch, missing or malformed shelf evidence, structural tampering, digest, path, or predecessor mismatch, fork, gap, collision, and mixed lineage identity all refuse before BUILD-C, preserve prior receipts byte-identically, create no authoritative partial receipt, and authorize no merge. The unchanged v1 private-secret symmetric path retains focused green coverage.",
-        "Completed T01 through T04, repository-only resume at 3ee3a17a695bf059f90504507a8eb5fe690fb52d, and retry-safe atomic receipt publication at a73f125e762670323d0e4a8fbbef3a1edf3ea958 are inventory only and must not be replayed, replaced, or assigned a new checkpoint or evaluation.",
-        "Only the pickup subparser sets `allow_abbrev=False`; canonical `--workspace` remains supported and displayed, shortened workspace spellings are unsupported by attributed human decision and receive no compatibility shim or abbreviation tests, and the root parser plus unrelated subparsers remain unchanged.",
-        "The only accepted trust option is exact `--trust-source`: all eleven proper prefixes (`--t`, `--tr`, `--tru`, `--trus`, `--trust`, `--trust-`, `--trust-s`, `--trust-so`, `--trust-sou`, `--trust-sour`, `--trust-sourc`) plus named alternate-case, underscore, omitted-hyphen, and suffix forms refuse before `cmd_pickup`, `pickup.run`, BUILD-C, receipt publication, or private-state creation.",
-        "Define one private `_OperatorTrust` standard-library dataclass with `frozen=True` and `slots=True`; `_parse_operator_trust(raw, *, boundary, expected_source_sha, required)` is the sole CLI-string and receipt-mapping construction factory, `_serialize_operator_trust` explicitly emits only the five closed persisted fields, and neither raw authority data nor `_OperatorTrust` crosses the unchanged micro-plan handoff to BUILD-C.",
-        "Accept only exact unmodified lowercase 40- or 64-hex source SHAs that byte-match the shelf source identity; focused positives cover both lengths, while wrong lengths, uppercase, whitespace, symbolic/non-hex inputs, and well-formed mismatches refuse without normalization, coercion, ref resolution, or inference.",
-        "The v2 receipt records the exact verbatim `--trust-source` flag/value as attributed human authority with `cryptographic_authenticity_claimed: false`; public output, traces, tests, and receipt data must make no cryptographic-authenticity, signed-human, producer-origin, or repository-origin claim.",
-        "Operator mode appends only a strict additive `taskplane.pickup-receipt/v2` after a zero-or-more contiguous incumbent-v1 prefix; v1 after v2, malformed/unknown/missing operator fields, a true authenticity claim, mixed source or Design identity, and digest/path/predecessor/fork/gap/collision/mixed-lineage failures refuse before BUILD-C and leave every prior receipt byte-identical with no authoritative partial file.",
-        "The no-flag incumbent private-secret path remains byte- and behavior-compatible, invokes the unchanged v1 verifier/key source, writes the exact v1 receipt field set without `operator_trust`, and retains its existing focused green and tamper coverage.",
-        "Positive and negative operator-trust paths preserve the existing `assign_direct_scopes` → BUILD-C → checkpoint → merge-on-green path, one-criterion discipline, retry-safe atomic publication, and exactly zero run, track, claim, lease, wave, active-loop, private-handoff, or equivalent state.",
-        "Production behavior and all focused AC4 proofs land in the same commit. Manually review every changed active Python line for complete annotations and zero unapproved `Any`, `cast`, `# type: ignore`, `# noqa`, untyped-dict boundary, or equivalent escape; add no pydantic, ruff, black, mypy, pyright, formatter, linter, strict-type dependency, configuration, debt, or precedent.",
-        "No handwritten argv scan, private argparse override, root-wide parser change, signer/verifier/key/public-trust work, historical asymmetric runtime claim, protected-surface change, Phase 0, E0, R-0011, unrelated R-0013, hook/legacy-loop work, new dependency/tooling, or release mutation is permitted."
-      ]
-    },
-    {
-      "id": "t06-v21720-bounded-release-surfaces",
-      "scope": [
-        "README.md",
-        "CHANGELOG.md",
-        ".codex-plugin/plugin.json",
-        ".claude-plugin/plugin.json",
-        ".claude-plugin/marketplace.json"
-      ],
-      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -m json.tool .codex-plugin/plugin.json >/dev/null && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m json.tool .claude-plugin/plugin.json >/dev/null && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m json.tool .claude-plugin/marketplace.json >/dev/null && /private/tmp/taskplane-py312-pytest8-20260824/bin/python taskplane/tp.py version | rg -q '2\\.17\\.20' && /private/tmp/taskplane-py312-pytest8-20260824/bin/python taskplane/tp.py pickup --help | rg -q -- '--trust-source' && rg -q '2\\.17\\.20' README.md CHANGELOG.md .codex-plugin/plugin.json .claude-plugin/plugin.json .claude-plugin/marketplace.json && rg -qi 'operator.trust|attributed operator trust' README.md CHANGELOG.md && rg -qi 'no cryptographic|does not cryptographically' README.md CHANGELOG.md && git diff --check && git diff --exit-code HEAD^ -- taskplane hooks .taskplane/codex-hook.py components.yaml .github deploy",
-      "req": "R-0002",
-      "deps": [
-        "t05-ac4-attributed-operator-trust-resume"
-      ],
-      "type": "integration",
-      "contracts": [
-        "contract:pickup.stateless-front-door",
-        "contract:pickup.operator-trust-source",
-        "resource:exports.pickup-receipts"
-      ],
-      "new_modules": [
-        "README.md",
-        "CHANGELOG.md",
-        ".codex-plugin/plugin.json",
-        ".claude-plugin/plugin.json",
-        ".claude-plugin/marketplace.json"
-      ],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
-        "2.17.20 release surfaces are consistent and bounded. README, CHANGELOG, Codex plugin manifest, Claude plugin manifest, and marketplace manifest identify 2.17.20, parse successfully, describe the operator-trust limitation accurately, and perform no push, tag, publication, release, or origin/main mutation.",
-        "This bounded metadata commit starts only after AC4 is committed and green, changes no product/test/protected file, states that operator trust is attributed structural agreement rather than cryptographic authenticity, and introduces no signing/asymmetric claim, dependency, tooling, push, tag, publication, package/marketplace release, or `origin/main` mutation."
-      ]
-    },
-    {
-      "id": "t07-ac5-final-clean-sha-proof",
-      "scope": [
-        "exports/**"
-      ],
-      "tests": "test -z \"$(git status --porcelain --untracked-files=all)\" && git rev-parse HEAD && /private/tmp/taskplane-py312-pytest8-20260824/bin/python -m pytest taskplane/tests -q",
-      "req": "R-0002",
-      "deps": [
-        "t06-v21720-bounded-release-surfaces"
-      ],
-      "type": "reliability",
-      "contracts": [
-        "contract:pickup.stateless-front-door",
-        "contract:pickup.operator-trust-source",
-        "contract:design.approved-contract",
-        "contract:build-c.direct-assignment",
-        "contract:build-c.acceptance-checkpoint",
-        "contract:repository.merge-on-green",
-        "resource:exports.pickup-receipts"
-      ],
-      "new_modules": [],
-      "design_edges": [],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
-      "criteria": [
         "AC5 — full suite on the final SHA: no new failures. After the AC4 commit and consistent 2.17.20 version and release metadata are committed, the exact candidate checkout is clean and python -m pytest taskplane/tests -q with the pinned delivery interpreter reports zero new failures, including unchanged pickup, v1 symmetric, atomic-publication, hook, and legacy-loop regressions; any failure blocks final review and grants no broad repair authority.",
-        "This checkpoint changes no product, test, documentation, manifest, hook, or release file and grants no repair authority. It may persist only an explicitly authorized repository delivery proof or receipt under `exports/**` when the approved Design/engine requires that artifact; otherwise it records the governed command receipt without a repository change."
+        "2.17.20 release surfaces are consistent and bounded. README, CHANGELOG, Codex plugin manifest, Claude plugin manifest, and marketplace manifest identify 2.17.20, parse successfully, describe the operator-trust limitation accurately, and perform no push, tag, publication, release, or origin/main mutation.",
+        "Archived T05 is accepted non-replay evidence: implementation commit 4c5e40aa18a5d7ca3709ea8cbf274f7c6c2132e9 delivered AC4 with 37 focused and 54 full-pickup tests green plus py_compile, diff hygiene, protected-surface comparison, and manual escape review; the audited replan history records the human pass and reanchor authority.",
+        "Archived T06 is accepted non-replay evidence at exact release-surface commit f15588137a0b2470494318836798820200d63a56: the bounded execute gate was green, the five release surfaces identify 2.17.20, and the audited replan history records the human pass and reanchor authority.",
+        "The human baseline exception accepts the isolated pickup wave: the prior T07 full-suite run at f15588137a0b2470494318836798820200d63a56 stopped at 42% with 42 failed, 1781 passed, and 1 skipped; all 42 selected failing nodeids reproduce at released main/CI SHA 726acd108d3ca431e680183de129918842202eda across six isolated clean-clone checks, all observed identities are legacy governance, routing, evidence, graph, golden, or loop failures, and no taskplane/tests/test_pickup.py failure was observed.",
+        "GitHub CI #106 (https://github.com/vdemkiv/taskPlane/actions/runs/32774798956) is already red at exact SHA 726acd108d3ca431e680183de129918842202eda. Public logs hide nodeids, but job-surface mapping accounts for 42 of 42 observed failures. Remediation of this inherited red-CI baseline is deferred to a separate post-2.17.20 delivery and grants this task no repair authority.",
+        "This proof task requires no repository change. It may persist only explicitly authorized delivery evidence or receipts under exports/**; it must not modify product, tests, Design, spec, backlog, release surfaces, hooks, legacy loop, Phase 0, E0, R-0011, unrelated R-0013, or external repository/release state, and it must not run the full suite or any automatic lens sweep."
       ]
     }
   ]
